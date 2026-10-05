@@ -277,3 +277,32 @@ legacy root invalidation takes 34493.30/34318.37 ms (5001 reads), compared with
 865.94/862.98 ms after classification (zero reads, graph reused). The fixture
 measures the replay-invalidation consequence, not native FSEvents delivery,
 cache load/persist, search, or final presentation.
+
+## Windows cache publication (#517)
+
+Windows builds search generations in unique directories under
+`generations/<fingerprint>.repairs/<uuid>`. The existing completed-generation
+lookup opens them only after the writer and merge workers finish and a `complete`
+marker is written. Publication does not move a directory containing file handles.
+Cancelled/incomplete attempts are disposable; completed generations are immutable
+and another attempt never removes them. Other platforms keep directory publication
+but explicitly finish merging before moving staging.
+
+Source-bank/startup snapshot persistence is independent of successful disk search.
+A memory-only search fallback saves no disk search generation in its snapshot.
+The complete cold inventory is sent to the UI before search construction, just as
+the warm inventory is, so a search-cache failure cannot hold the tree until Ready.
+
+Windows source revisions use a shared metadata-only handle with no symlink
+following. Volume serial, file index, size, last write and native change time are
+compared exactly. Precise native change time allows rounded imported mtime reuse;
+uncertain/unsupported metadata or genuinely coarse timestamps still require reads.
+Old Windows stamps lack native identity/change time and refresh once. This extends
+the preserved-mtime regression to Windows; native NTFS execution remains owner QA,
+while the Windows CI cross-build validates the production API/cfg path.
+
+QA on bragi: open the same local vault, wait for reconciliation once, Quit and
+relaunch without edits. Expect `warm_cache.found:true`, immediate tree/last note,
+`read` near zero, `reused` near the note count, and `graph_reused:true`, with no
+search publication Access denied. Inspect `reuse.imprecise_revision` and
+`reuse.unavailable_metadata` if a filesystem cannot supply a precise native stamp.
