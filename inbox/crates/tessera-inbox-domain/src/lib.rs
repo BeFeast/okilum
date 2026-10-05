@@ -1,4 +1,6 @@
 //! Detached Inbox values. No filesystem, provider, desktop or Brain dependency.
+pub mod execution;
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 

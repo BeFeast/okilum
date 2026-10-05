@@ -183,6 +183,8 @@ impl From<store::Error> for ApiError {
             store::Error::OperationConflict | store::Error::ItemConflict => {
                 Self(StatusCode::CONFLICT, "identity_conflict")
             }
+            store::Error::ExecutionRevisionConflict => Self(StatusCode::CONFLICT, "stale_revision"),
+            store::Error::InvalidExecution(_) => Self(StatusCode::BAD_REQUEST, "invalid_execution"),
             store::Error::PublicationConflict => Self(StatusCode::CONFLICT, "publication_conflict"),
             store::Error::InvalidPublication => {
                 Self(StatusCode::BAD_REQUEST, "invalid_publication")
