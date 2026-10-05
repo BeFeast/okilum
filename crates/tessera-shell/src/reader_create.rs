@@ -7,6 +7,8 @@ pub(super) struct Creation {
     pub directory: bool,
     pub input: Entity<InputState>,
     pub error: Option<String>,
+    pub templates: Option<tessera_core::note_templates::Catalog>,
+    pub selected_template: Option<String>,
     _subscription: Subscription,
 }
 
@@ -111,13 +113,25 @@ impl Reader {
             cx.notify();
             return;
         }
-        let folder = folder.map(str::to_owned).unwrap_or_else(|| {
+        let mut folder = folder.map(str::to_owned).unwrap_or_else(|| {
             Path::new(&self.current_rel)
                 .parent()
                 .unwrap_or(Path::new(""))
                 .to_string_lossy()
                 .into_owned()
         });
+        let templates = tessera_core::note_templates::Catalog::load(&self.vault_root);
+        // A template opened for inspection must not turn Cmd-N into a write
+        // inside the templates collection.
+        if templates
+            .as_ref()
+            .is_ok_and(|catalog| catalog.contains_target(Path::new(&folder)))
+        {
+            folder.clear();
+        }
+        let error = templates.as_ref().err().map(|e| format!("{e:#}"));
+        let templates = templates.ok();
+        let selected_template = templates.as_ref().and_then(|c| c.default_file());
         self.reveal_in_tree(&folder, window, cx);
         let input = cx.new(|cx| {
             InputState::new(window, cx).placeholder(if directory {
@@ -152,11 +166,26 @@ impl Reader {
             folder,
             directory,
             input,
-            error: None,
+            error: if directory { None } else { error },
+            templates,
+            selected_template,
             _subscription: subscription,
         });
         self.scroll_tree_to(insertion);
         cx.notify();
+    }
+    pub(super) fn choose_creation_template(
+        &mut self,
+        selected: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(create) = self.creation.as_mut() {
+            create.selected_template = selected;
+            create.error = None;
+            create.input.update(cx, |input, cx| input.focus(window, cx));
+            cx.notify();
+        }
     }
     pub(super) fn cancel_creation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.creation = None;
@@ -171,6 +200,8 @@ impl Reader {
         let directory = create.directory;
         let name = create.input.read(cx).value().to_string();
         let folder = create.folder.clone();
+        let templates = create.templates.clone();
+        let selected_template = create.selected_template.clone();
         let result = (|| -> anyhow::Result<(String, Option<String>)> {
             anyhow::ensure!(
                 root == self.vault_root,
@@ -198,15 +229,16 @@ impl Reader {
                     .session_directory
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("No draft recovery storage"))?;
-                let date = time::OffsetDateTime::now_local()
-                    .unwrap_or_else(|_| time::OffsetDateTime::now_utc())
-                    .date()
-                    .to_string();
+                let now = time::OffsetDateTime::now_local()
+                    .unwrap_or_else(|_| time::OffsetDateTime::now_utc());
+                let catalog = templates.as_ref().ok_or_else(|| anyhow::anyhow!("Templates could not be loaded. Cancel and retry after fixing templates.json"))?;
                 Some(tessera_core::note_files::create_from_template(
                     &root,
                     &relative,
-                    &date,
+                    now,
                     &state.join("editor-drafts"),
+                    catalog,
+                    selected_template.as_deref(),
                 )?)
             };
             Ok((rel, source))
@@ -400,6 +432,51 @@ mod tests {
             assert_eq!(reader.current_rel, "Selected/Meeting.md");
             assert!(reader.editing.is_some());
         });
+        std::fs::create_dir_all(root.join("_Assets/Templates")).unwrap();
+        std::fs::write(root.join("_Assets/Templates/Note.md"), "Default {{title}}").unwrap();
+        std::fs::write(
+            root.join("_Assets/Templates/Meeting.md"),
+            "Meeting {{title}} {{date:YYYY-MM-DD}}",
+        )
+        .unwrap();
+        reader.update_in(visual, |reader, window, cx| {
+            reader.new_note(Some(""), window, cx);
+            assert_eq!(
+                reader
+                    .creation
+                    .as_ref()
+                    .unwrap()
+                    .selected_template
+                    .as_deref(),
+                Some("Note.md")
+            );
+            reader.choose_creation_template(Some("Meeting.md".into()), window, cx);
+            let input = reader.creation.as_ref().unwrap().input.clone();
+            input.update(cx, |input, cx| input.set_value("Planning", window, cx));
+            reader.commit_creation(window, cx);
+            assert_eq!(reader.current_rel, "Planning.md");
+            reader.new_note(None, window, cx);
+            assert_eq!(
+                reader
+                    .creation
+                    .as_ref()
+                    .unwrap()
+                    .selected_template
+                    .as_deref(),
+                Some("Note.md")
+            );
+            reader.cancel_creation(window, cx);
+            reader.new_note(Some("_Assets/Templates"), window, cx);
+            assert_eq!(reader.creation.as_ref().unwrap().folder, "");
+            reader.cancel_creation(window, cx);
+        });
+        assert!(std::fs::read_to_string(root.join("Planning.md"))
+            .unwrap()
+            .starts_with("Meeting Planning "));
+        assert_eq!(
+            std::fs::read_to_string(root.join("_Assets/Templates/Meeting.md")).unwrap(),
+            "Meeting {{title}} {{date:YYYY-MM-DD}}"
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

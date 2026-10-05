@@ -276,7 +276,7 @@ reads. Snapshot reconciliation took 6,745 ms; candidate-index construction added
 check before publishing, so that work does not extend the readiness dependency.
 These are core preparation timings, not an end-to-end macOS startup measurement.
 
-## Inline creation and folder templates (#466)
+## Inline creation and vault templates (#466)
 
 New File / New Folder in the folder context menu or Folders header starts an
 editable tree row. ⌘N (Ctrl+N on Linux) uses the current note's folder and opens
@@ -285,11 +285,21 @@ Markdown names imply `.md`. Invalid names and collisions remain inline.
 Intermediate folders created before a later failure are kept; no existing file
 is replaced. Windows remains read-only.
 
-New notes begin with `type: Note`, today's `created: YYYY-MM-DD`, and an H1
-matching the typed filename stem. The nearest regular UTF-8 `_template.md`
-from the destination folder up to the vault root overrides this source.
-`{{title}}` and `{{date}}` are substituted once; other bytes, including line
-endings and unknown placeholders, stay unchanged. Templates over 1 MiB and
-symbolic links abort creation with an error. `_template.md` is reserved, never a creation target.
-New folders and notes cannot traverse symlinks or overwrite an existing name;
-orphan drafts and active writers also block note creation.
+New notes use `Note.md` from `_Assets/Templates/`, or the folder named in
+`.obsidian/templates.json`. If Note.md is absent, the built-in source has
+`type: Note`, `created: YYYY-MM-DD`, and an H1 matching the typed filename stem.
+The inline ⌄ picker chooses another template or the built-in note for this
+creation only; the next New File returns to Note.md. No per-folder overrides.
+
+Templates support `{{title}}`, `{{date}}`, `{{time}}`, `{{date:FORMAT}}`,
+and `{{time:FORMAT}}`. Formats support Moment tokens YYYY, MM, DD, HH, mm, ss
+and bracketed literals; bare date/time use Obsidian's dateFormat/timeFormat or
+YYYY-MM-DD / HH:mm. Unknown variables and unsupported formats remain literal.
+Substitution is one pass: inserted titles are never interpreted as templates.
+Other source bytes, including BOM and line endings, stay unchanged.
+
+The templates folder appears normally in the tree. New File from a template
+uses the vault root, and new-note destinations inside the template collection
+are rejected. Templates and settings must be regular UTF-8 files, at most 1 MiB;
+symlinks, invalid settings and unreadable selected templates abort with an error.
+Windows stays read-only. Orphan drafts and active writers block note creation.

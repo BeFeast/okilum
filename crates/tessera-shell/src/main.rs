@@ -2204,6 +2204,13 @@ impl Reader {
                 .as_ref()
                 .is_some_and(|source| source.root == self.vault.root);
             self.tree.refresh(&self.vault_root, &self.vault.entries);
+            #[cfg(unix)]
+            {
+                let folder = tessera_core::note_templates::Catalog::load(&self.vault_root)
+                    .map(|catalog| catalog.folder.to_string_lossy().into_owned())
+                    .unwrap_or_else(|_| tessera_core::note_templates::DEFAULT_FOLDER.into());
+                self.tree.set_templates_folder(folder);
+            }
             self.tree_source = Some(self.vault.clone());
             // Reconciliation must not re-center a tree the user already scrolled.
             if !same_root || self.tree.cursor.is_none() {
@@ -2875,7 +2882,7 @@ impl Reader {
     /// docs/design/reader.md §Sidebar: Recent, Pinned, Inbox and the real
     /// folder hierarchy (#335, #369), with a quick-open entry point (#433).
     fn render_tree(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        use gpui_component::menu::{ContextMenuExt as _, PopupMenuItem};
+        use gpui_component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem};
         use reader_sidebar::Section;
         use tessera_core::vault::EntryKind;
         let p = brand::palette(cx);
@@ -2961,19 +2968,74 @@ impl Reader {
             };
             match item {
                 #[cfg(unix)]
-                SideItem::Create(input, depth, directory) => row_base("inline-create-row".into())
-                    .key_context("InlineCreate")
-                    .pl(px(18. + depth as f32 * 14.))
-                    .child(
-                        Icon::new(if directory {
-                            IconName::Folder
-                        } else {
-                            IconName::FileText
+                SideItem::Create(input, depth, directory, templates, selected) => {
+                    row_base("inline-create-row".into())
+                        .key_context("InlineCreate")
+                        .pl(px(18. + depth as f32 * 14.))
+                        .child(
+                            Icon::new(if directory {
+                                IconName::Folder
+                            } else {
+                                IconName::FileText
+                            })
+                            .small(),
+                        )
+                        .child(div().flex_1().min_w_0().child(Input::new(&input).small()))
+                        .when(!directory, |row| {
+                            row.child(
+                                Button::new("create-template-picker")
+                                    .ghost()
+                                    .small()
+                                    .label(
+                                        selected
+                                            .as_deref()
+                                            .unwrap_or("Built-in")
+                                            .trim_end_matches(".md")
+                                            .chars()
+                                            .take(10)
+                                            .collect::<String>(),
+                                    )
+                                    .icon(IconName::ChevronDown)
+                                    .tooltip(format!(
+                                        "Template: {}",
+                                        selected.as_deref().unwrap_or("Built-in")
+                                    ))
+                                    .dropdown_menu_with_anchor(
+                                        Anchor::TopRight,
+                                        move |menu, _, _| {
+                                            let option = |label: String, value: Option<String>| {
+                                                let entity = entity.clone();
+                                                let act = act.clone();
+                                                PopupMenuItem::new(label)
+                                                    .checked(value == selected)
+                                                    .on_click(move |_, window, cx| {
+                                                        act(
+                                                            &entity,
+                                                            window,
+                                                            cx,
+                                                            &|this, window, cx| {
+                                                                this.choose_creation_template(
+                                                                    value.clone(),
+                                                                    window,
+                                                                    cx,
+                                                                );
+                                                            },
+                                                        )
+                                                    })
+                                            };
+                                            let mut menu =
+                                                menu.item(option("Built-in note".into(), None));
+                                            for name in &templates {
+                                                menu = menu
+                                                    .item(option(name.clone(), Some(name.clone())));
+                                            }
+                                            menu
+                                        },
+                                    ),
+                            )
                         })
-                        .small(),
-                    )
-                    .child(Input::new(&input).small())
-                    .into_any_element(),
+                        .into_any_element()
+                }
                 #[cfg(unix)]
                 SideItem::CreateError(error) => row_base("inline-create-error".into())
                     .text_color(p.danger)
@@ -4727,7 +4789,7 @@ enum SideItem {
     Empty(&'static str),
     Tree(reader_tree::Row),
     #[cfg(unix)]
-    Create(Entity<InputState>, usize, bool),
+    Create(Entity<InputState>, usize, bool, Vec<String>, Option<String>),
     #[cfg(unix)]
     CreateError(String),
 }
@@ -4738,6 +4800,11 @@ fn append_creation_rows(items: &mut Vec<SideItem>, create: &reader_create::Creat
         create.input.clone(),
         depth,
         create.directory,
+        create
+            .templates
+            .as_ref()
+            .map_or_else(Vec::new, |c| c.files.clone()),
+        create.selected_template.clone(),
     ));
     if let Some(error) = &create.error {
         items.push(SideItem::CreateError(error.clone()));
