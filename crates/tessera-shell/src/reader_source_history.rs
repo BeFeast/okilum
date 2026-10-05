@@ -13,6 +13,10 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !drafts_only {
+            self.open_timeline(window, cx);
+            return;
+        }
         let Some(state) = self.session_directory.clone() else {
             self.link_notice = Some("No recovery storage is available.".into());
             cx.notify();
@@ -219,7 +223,7 @@ impl Reader {
         .detach();
     }
 
-    fn save_source_copy(
+    pub(super) fn save_source_copy(
         &mut self,
         version: Version,
         root: PathBuf,

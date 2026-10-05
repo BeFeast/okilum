@@ -58,6 +58,11 @@ mod reader_startup;
 mod reader_table_tests;
 #[cfg(unix)]
 mod reader_templates;
+#[cfg(unix)]
+mod reader_timeline;
+#[cfg(windows)]
+#[path = "reader_timeline_windows.rs"]
+mod reader_timeline;
 mod reader_tree;
 mod text_ranges;
 mod updater;
@@ -119,6 +124,8 @@ actions!(
         RenameNote,
         RecoverLinkMoves,
         NoteSourceHistory,
+        HistoryVersionNext,
+        HistoryVersionPrevious,
         RecoverUnsavedNotes,
         ToggleSource,
         SaveSource,
@@ -181,6 +188,12 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("space", QuickLookFile, Some("ReaderTree")),
     ]);
 
+    cx.bind_keys([
+        KeyBinding::new("down", HistoryVersionNext, Some("ReaderHistory")),
+        KeyBinding::new("up", HistoryVersionPrevious, Some("ReaderHistory")),
+        KeyBinding::new("down", HistoryVersionNext, Some("ReaderHistory > Input")),
+        KeyBinding::new("up", HistoryVersionPrevious, Some("ReaderHistory > Input")),
+    ]);
     let ctx = Some(READER_CONTEXT);
     // `j`/`k` are plain letters: with an input focused they must keep being
     // text, so those two are disabled anywhere under an `Input` context.
@@ -1103,6 +1116,7 @@ struct Reader {
     properties: Result<Vec<tessera_core::properties::Property>, String>,
     /// A wide table shown at window width over the document (#368).
     table_overlay: Option<Entity<TextViewState>>,
+    timeline: Option<reader_timeline::Timeline>,
     /// Inline properties expanded above the document (right panel closed).
     properties_open: bool,
     show_hidden_properties: bool,
@@ -1299,6 +1313,7 @@ impl Reader {
             backlinks_expanded: std::collections::HashSet::new(),
             properties: Ok(Vec::new()),
             table_overlay: None,
+            timeline: None,
             properties_open: false,
             show_hidden_properties: false,
             // docs/design/reader.md: from R2 the sidebar starts open where it
@@ -1587,6 +1602,9 @@ impl Reader {
             self.quick_open.remember(rel);
         }
         self.document_header_hidden = px(0.);
+        if self.current_rel != rel {
+            self.timeline = None;
+        }
         self.current_rel = rel.to_string();
         self.file_preview = if tessera_core::excalidraw::is_drawing(rel) {
             reader_files::FilePreview::load(&self.vault_root, rel).ok()
@@ -1758,6 +1776,10 @@ impl Reader {
         }
         if self.table_overlay.is_some() {
             self.close_table_overlay(window, cx);
+            return;
+        }
+        if self.active_timeline().is_some_and(|t| t.selected.is_some()) {
+            self.back_from_timeline(window, cx);
             return;
         }
         if self.loading.as_ref().is_some_and(|l| l.active) {
@@ -2689,7 +2711,15 @@ impl Reader {
                 self.notes_count_label(),
             )
         } else {
-            ("On this page".to_owned(), String::new())
+            (
+                if self.active_timeline().is_some() {
+                    "Note history"
+                } else {
+                    "On this page"
+                }
+                .to_owned(),
+                String::new(),
+            )
         };
         h_flex()
             .h(px(READER_HEADER_HEIGHT))
@@ -3444,6 +3474,9 @@ impl Reader {
     }
 
     fn render_main(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        if let Some(preview) = self.render_timeline_preview(window, cx) {
+            return preview;
+        }
         if self.selected_file().is_empty()
             && !self
                 .loading
@@ -4015,6 +4048,9 @@ impl Reader {
     /// docs/design/reader.md §Right panel: Contents above «Linked from», each
     /// scrolling on its own so neither can hide the other.
     fn render_right_panel(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.active_timeline().is_some() {
+            return self.render_timeline(cx);
+        }
         let p = brand::palette(cx);
         let faint = brand::reader_palette(cx).text_faint;
         let section = |icon: &'static str, label: String| {
@@ -4892,7 +4928,17 @@ impl Render for Reader {
             .min_w_0()
             .min_h_0()
             .relative()
-            .key_context(READER_CONTEXT)
+            .key_context(
+                if self
+                    .active_timeline()
+                    .is_some_and(|t| t.selected.is_some() || self.editing.is_none())
+                    && !self.quick_open.open
+                {
+                    "Reader ReaderHistory"
+                } else {
+                    READER_CONTEXT
+                },
+            )
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(|this, _: &QuickOpen, window, cx| {
                 this.open_quick_open(false, window, cx)
@@ -4904,6 +4950,12 @@ impl Render for Reader {
             .on_action(cx.listener(|this, _: &PalettePrevious, _, cx| this.move_quick_open(-1, cx)))
             .on_action(cx.listener(|this, _: &NewNote, window, cx| this.new_note(None, window, cx)))
             .on_action(cx.listener(|this, _: &RenameNote, window, cx| this.rename_note(window, cx)))
+            .on_action(cx.listener(|this, _: &HistoryVersionNext, window, cx| {
+                this.step_timeline(true, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &HistoryVersionPrevious, window, cx| {
+                this.step_timeline(false, window, cx)
+            }))
             .on_action(cx.listener(|this, _: &NoteSourceHistory, window, cx| {
                 this.source_history(false, window, cx)
             }))

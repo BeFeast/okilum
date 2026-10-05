@@ -140,6 +140,10 @@ impl Reader {
     }
 
     pub(super) fn toggle_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active_timeline().is_some_and(|t| t.selected.is_some()) {
+            self.toggle_timeline_source(window, cx);
+            return;
+        }
         if self.file_preview.is_some() {
             return;
         }
@@ -293,7 +297,10 @@ impl Reader {
             },
         );
         let blur = cx.on_blur(&input.focus_handle(cx), window, |this, _, cx| {
-            this.save_source(cx);
+            // History is a read-only detour; preserve a dirty live buffer.
+            if this.active_timeline().is_none() {
+                this.save_source(cx);
+            }
         });
         if store.dirty() {
             self.link_notice = Some(
@@ -319,6 +326,9 @@ impl Reader {
     }
 
     pub(super) fn request_source_save(&mut self, cx: &mut Context<Self>) {
+        if self.active_timeline().is_some_and(|t| t.selected.is_some()) {
+            return;
+        }
         let Some(editing) = &mut self.editing else {
             return;
         };
@@ -905,6 +915,10 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !self.source_is_dirty(cx),
+            "Save or discard unsaved edits before restoring a version"
+        );
         self.check_move_editors(std::slice::from_ref(&self.current_rel), cx)?;
         let state = self
             .session_directory
@@ -990,7 +1004,8 @@ mod tests {
                 original
             );
             r.source_history(false, window, cx);
-            assert!(window.has_active_dialog(cx));
+            assert!(!window.has_active_dialog(cx));
+            assert!(r.active_timeline().is_some());
         });
         visual.run_until_parked();
         visual.update(|window, cx| {
@@ -1019,11 +1034,12 @@ mod tests {
         reader.update_in(visual, |r, window, cx| {
             r.source_history(false, window, cx);
             assert!(
-                window.has_active_dialog(cx),
+                r.active_timeline().is_some(),
                 "missing current file must not hide its retained history"
             );
-            window.close_dialog(cx);
+            assert!(!window.has_active_dialog(cx));
         });
+        visual.run_until_parked();
         std::fs::remove_dir_all(directory).unwrap();
     }
 

@@ -458,3 +458,24 @@ Files also selects a templates folder per vault (default `_Assets/Templates`).
 that folder, substitutes `{{title}}` and local `{{date}}`, and creates a new note
 without modifying the template or overwriting an existing destination. Folder
 preferences and template contents are read only for these explicit user actions.
+
+### Note history (#475)
+
+Note More → Note history replaces the right panel with a timeline for the current
+note. Each row shows relative age, an explicit UTC date, byte/line delta against
+the reviewed current file, and the protected marker where applicable. Loading and
+read errors stay in the panel. “On this page” returns to Contents and Linked from.
+
+Selecting a version previews it in the document area without replacing the live
+Reader or editor buffer. The banner identifies the version and offers Restore,
+Show changes, Source/Preview, Back to current, and Save as recovered note. Link-move
+versions also offer Recover whole link move. Up/Down selects adjacent versions;
+Escape or Back to current returns to the live document without closing the panel.
+Source is read-only; Show changes compares the replaced line span to the reviewed
+current file. Switching notes clears the historical preview.
+
+Restore has no confirmation dialog. It preserves the replaced current bytes in
+history and offers Undo in a persistent toast. Both restore and undo retain the
+existing dirty-editor and exact-current-byte guards; a racing edit is never silently
+overwritten. Restore failures appear in the banner. Recovery of unsaved drafts
+continues to use its existing dialog.
