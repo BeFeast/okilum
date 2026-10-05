@@ -180,3 +180,29 @@ fn new_cyrillic_note_in_hidden_folder_is_reported_but_service_notes_are_not() {
     assert!(!changes.changed.contains("node_modules/generated.md"));
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn note_rename_and_atomic_save_are_incremental_but_directory_move_requires_rescan() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("vault");
+    fs::create_dir_all(root.join("notes")).unwrap();
+    fs::write(root.join("notes/a.md"), "# A").unwrap();
+    let mut watcher = VaultWatcher::new(&root).unwrap();
+    fs::rename(root.join("notes/a.md"), root.join("notes/b.md")).unwrap();
+    let changes = watcher.wait(WAIT).unwrap();
+    assert!(!changes.rescan, "known note rename: {changes:?}");
+    assert!(changes.changed.contains("notes/b.md"));
+    assert!(changes.removed.contains("notes/a.md"));
+    let staging = root.join("notes/.tessera-save-test");
+    fs::write(&staging, "replacement").unwrap();
+    fs::rename(&staging, root.join("notes/b.md")).unwrap();
+    let changes = watcher.wait(WAIT).unwrap();
+    assert!(!changes.rescan, "atomic save: {changes:?}");
+    assert!(changes.changed.contains("notes/b.md"));
+    fs::rename(root.join("notes"), root.join("moved")).unwrap();
+    let changes = watcher.wait(WAIT).unwrap();
+    assert!(
+        changes.rescan,
+        "directory event is the positive rescan control: {changes:?}"
+    );
+}

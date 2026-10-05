@@ -35,11 +35,11 @@ sha2 = "0.10"
 similar = { version = "=2.7.0", default-features = false }
 uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
+tempfile = "3"
 time = { version = "0.3", features = ["formatting", "parsing", "local-offset"] }
 
 [dev-dependencies]
 velopack = { version = "=1.2.161", features = ["public-utils"] }
-tempfile = "3"
 unicode-linebreak = "0.1.5"
 unicode-segmentation = "1.12.0"
 gpui = { workspace = true, features = ["test-support"] }
@@ -50,7 +50,6 @@ wayland-protocols-wlr = { version = "=0.3.12", features = ["client"] }
 rustix = { version = "=1.1.4", features = ["event", "net", "pipe", "fs", "process"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-tempfile = "3"
 objc2 = "=0.6.4"
 objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSPasteboard"] }
 objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSData", "NSString", "NSFileManager", "NSURL", "NSError"] }

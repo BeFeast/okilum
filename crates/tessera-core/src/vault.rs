@@ -566,6 +566,72 @@ impl Vault {
         self.inventory_complete &= self.unreadable.is_empty();
     }
 
+    /// Apply a validated regular-note identity without a directory walk.
+    fn set_note_identity(&mut self, path: &str, present: bool) {
+        self.entries.retain(|entry| entry.path != path);
+        self.notes.retain(|note| note.path != path);
+        self.path_map.retain(|_, value| value != path);
+        self.suffix_map.retain(|_, values| {
+            values.retain(|value| value != path);
+            !values.is_empty()
+        });
+        self.occupied_paths.remove(path);
+        self.non_directory_paths.remove(path);
+        self.symlink_paths.remove(path);
+        if present {
+            self.occupied_paths.insert(path.into());
+            self.non_directory_paths.insert(path.into());
+            self.entries.push(VaultEntry {
+                path: path.into(),
+                kind: EntryKind::Markdown,
+            });
+            self.notes.push(Note {
+                path: path.into(),
+                title: Path::new(path)
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned(),
+            });
+            let lower = path.to_lowercase();
+            let key = lower.trim_end_matches(".md");
+            self.path_map.insert(key.into(), path.into());
+            let parts: Vec<_> = key.split('/').collect();
+            for i in 0..parts.len() {
+                let values = self.suffix_map.entry(parts[i..].join("/")).or_default();
+                values.push(path.into());
+                values.sort();
+                values.dedup();
+            }
+            self.entries.sort_by(|a, b| a.path.cmp(&b.path));
+            self.notes.sort_by(|a, b| a.path.cmp(&b.path));
+        }
+    }
+
+    fn refresh_backlinks_from(
+        &mut self,
+        selected: &std::collections::BTreeSet<String>,
+        checkpoint: &mut impl FnMut(&str, usize) -> Result<()>,
+        source: impl FnMut(&str) -> Option<String>,
+    ) -> Result<()> {
+        let mut retained = std::mem::take(&mut self.backlink_map);
+        for incoming in retained.values_mut() {
+            incoming.retain(|link| !selected.contains(&link.path));
+        }
+        let identities: HashSet<_> = self.notes.iter().map(|note| &note.path).collect();
+        retained.retain(|target, incoming| identities.contains(target) && !incoming.is_empty());
+        let result = self.build_backlinks_selected(Some(selected), checkpoint, source);
+        if result.is_ok() {
+            for (target, incoming) in std::mem::take(&mut self.backlink_map) {
+                let links = retained.entry(target).or_default();
+                links.extend(incoming);
+                links.sort_by(|a, b| a.path.cmp(&b.path));
+            }
+        }
+        self.backlink_map = retained;
+        result
+    }
+
     /// Build only note identity from an already accepted inventory; performs no I/O.
     pub fn from_note_paths(paths: impl IntoIterator<Item = String>) -> Self {
         let mut vault = Self {
@@ -969,6 +1035,15 @@ impl Vault {
         checkpoint: &mut impl FnMut(&str, usize) -> Result<()>,
         mut source: impl FnMut(&str) -> Option<String>,
     ) -> Result<()> {
+        self.build_backlinks_selected(None, checkpoint, &mut source)
+    }
+
+    fn build_backlinks_selected(
+        &mut self,
+        selected: Option<&std::collections::BTreeSet<String>>,
+        checkpoint: &mut impl FnMut(&str, usize) -> Result<()>,
+        mut source: impl FnMut(&str) -> Option<String>,
+    ) -> Result<()> {
         // Resolve graph identities against one metadata inventory and canonical
         // root. Full UI/file actions retain their explicit filesystem checks.
         let mut resolver = self.clone();
@@ -976,7 +1051,12 @@ impl Vault {
         resolver.graph_os_paths = Default::default();
         let link_re = wikilink_re();
         let mut map: HashMap<String, Vec<Backlink>> = HashMap::new();
-        for (count, note) in self.notes.iter().enumerate() {
+        for (count, note) in self
+            .notes
+            .iter()
+            .filter(|note| selected.is_none_or(|paths| paths.contains(&note.path)))
+            .enumerate()
+        {
             checkpoint("Preparing backlinks", count)?;
             let Some(text) = source(&note.path) else {
                 continue;

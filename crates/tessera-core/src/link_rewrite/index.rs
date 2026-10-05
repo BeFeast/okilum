@@ -35,6 +35,26 @@ impl CandidateIndex {
         index
     }
 
+    /// Conservative metadata-free referrers, including unresolved destinations.
+    pub fn referrers_for(&self, target: &str) -> BTreeSet<String> {
+        let mut selected = BTreeSet::new();
+        if let Some(key) = path_key(target) {
+            if let Some(paths) = self.keys.get(&key) {
+                selected.extend(paths.iter().cloned());
+            }
+            for (path, line) in &self.fallback_lines {
+                if line.contains(&key) {
+                    selected.insert(path.clone());
+                }
+            }
+        }
+        selected
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     pub fn revision(&self) -> &str {
         &self.revision
     }
@@ -93,7 +113,8 @@ impl CandidateIndex {
         }
     }
 
-    pub(super) fn select(
+    #[cfg(unix)]
+    pub(crate) fn select(
         &self,
         root: &Path,
         vault: &Vault,
@@ -136,7 +157,12 @@ impl CandidateIndex {
 }
 
 fn key(target: &str, wiki: bool) -> Option<String> {
-    let base = target.split('#').next()?.trim();
+    let base = if wiki {
+        target.split(['#', '^']).next()?
+    } else {
+        target.split('#').next()?
+    }
+    .trim();
     let decoded = if wiki {
         base.to_owned()
     } else {

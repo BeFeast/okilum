@@ -19,6 +19,7 @@ pub mod file_editor;
 #[cfg(all(unix, feature = "brain"))]
 pub mod goal_criteria;
 pub mod ir;
+pub mod link_candidates;
 #[cfg(unix)]
 pub mod link_rewrite;
 pub mod maestro_observation;

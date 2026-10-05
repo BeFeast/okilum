@@ -1,6 +1,7 @@
 //! Disposable Reader snapshots. Canonical notes remain the only source of truth.
 use super::*;
 use anyhow::{bail, ensure};
+pub mod incremental;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -153,6 +154,8 @@ pub struct StartupSnapshot {
     links: HashMap<String, Vec<Backlink>>,
     unreadable: Vec<CachedUnreadable>,
     primary: Option<(String, Source)>,
+    #[serde(default)]
+    source_id: Option<String>,
     pub search_generation: Option<String>,
     #[serde(skip)]
     previous: Option<Box<Snapshot>>,
@@ -347,6 +350,7 @@ impl StartupSnapshot {
                 links: snapshot.links.clone(),
                 unreadable: snapshot.unreadable.clone(),
                 primary: None,
+                source_id: Some(snapshot.id.clone()),
                 search_generation: snapshot.search_generation.clone(),
                 latest: latest_primary(base, &snapshot.root),
                 previous: Some(Box::new(snapshot)),
@@ -370,6 +374,10 @@ impl StartupSnapshot {
             snapshot.schema == SCHEMA && snapshot.root == root.canonicalize()?,
             "Reader startup cache schema/root mismatch"
         );
+        let delta = incremental::Delta::load(base, &snapshot.root, snapshot.source_id.as_deref())?;
+        if let Some(delta) = &delta {
+            delta.apply_startup(&mut snapshot);
+        }
         validate_inventory(
             &snapshot.root,
             &snapshot.entries,
@@ -390,6 +398,9 @@ impl StartupSnapshot {
             String::from_utf8(STANDARD.decode(&source.bytes)?)?;
         }
         snapshot.latest = latest_primary(base, &snapshot.root);
+        if let Some(delta) = &delta {
+            delta.apply_startup(&mut snapshot);
+        }
         Ok(snapshot)
     }
 
@@ -495,6 +506,19 @@ fn relative(path: &str) -> bool {
 }
 
 impl Snapshot {
+    /// Prepared outgoing identities, including ambiguous/property/Markdown
+    /// targets. Scheduling this set never reads canonical files.
+    pub fn linked_paths_from(&self, source: &str) -> Vec<String> {
+        let mut targets: Vec<_> = self
+            .links
+            .iter()
+            .filter(|(_, incoming)| incoming.iter().any(|link| link.path == source))
+            .map(|(path, _)| path.clone())
+            .collect();
+        targets.sort();
+        targets
+    }
+
     pub fn load(base: &Path, root: &Path) -> Option<Self> {
         Self::load_checked(base, root).ok()
     }
@@ -514,7 +538,8 @@ impl Snapshot {
             bytes.len() as u64 <= MAX_BYTES,
             "Reader source bank exceeds size limit"
         );
-        let snapshot: Self = serde_json::from_slice(&bytes).context("Decode Reader source bank")?;
+        let mut snapshot: Self =
+            serde_json::from_slice(&bytes).context("Decode Reader source bank")?;
         ensure!(
             snapshot.schema == SCHEMA,
             "Reader source bank schema mismatch"
@@ -523,6 +548,9 @@ impl Snapshot {
             snapshot.root == root.canonicalize()?,
             "Reader source bank root mismatch"
         );
+        if let Some(delta) = incremental::Delta::load(base, &snapshot.root, Some(&snapshot.id))? {
+            delta.apply_snapshot(&mut snapshot);
+        }
         validate_inventory(
             &snapshot.root,
             &snapshot.entries,
@@ -681,12 +709,51 @@ pub fn reconcile_parallel_with_reader(
     checkpoint: &mut impl FnMut(&str, usize) -> Result<()>,
     read: &(impl Fn(&Path) -> std::io::Result<Vec<u8>> + Sync),
 ) -> Result<(Vault, Snapshot, ReconcileStats)> {
+    reconcile_parallel_prioritized_with_reader(root, previous, force_read, &[], checkpoint, read)
+}
+
+pub fn reconcile_parallel_prioritized(
+    root: &Path,
+    previous: Option<&Snapshot>,
+    force_read: bool,
+    priority: &[String],
+    checkpoint: &mut impl FnMut(&str, usize) -> Result<()>,
+) -> Result<(Vault, Snapshot, ReconcileStats)> {
+    reconcile_parallel_prioritized_with_reader(
+        root,
+        previous,
+        force_read,
+        priority,
+        checkpoint,
+        &|path| std::fs::read(path),
+    )
+}
+
+fn reconcile_parallel_prioritized_with_reader(
+    root: &Path,
+    previous: Option<&Snapshot>,
+    force_read: bool,
+    priority: &[String],
+    checkpoint: &mut impl FnMut(&str, usize) -> Result<()>,
+    read: &(impl Fn(&Path) -> std::io::Result<Vec<u8>> + Sync),
+) -> Result<(Vault, Snapshot, ReconcileStats)> {
     use std::sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc,
     };
     let (canonical, previous, mut vault) = begin_reconcile(root, previous, checkpoint)?;
-    let notes = &vault.notes;
+    let mut work: Vec<_> = vault.notes.iter().collect();
+    work.sort_by_key(|note| {
+        priority
+            .iter()
+            .position(|path| {
+                path == &note.path
+                    || (path == "/" && !note.path.contains('/'))
+                    || (path.ends_with('/') && note.path.starts_with(path))
+            })
+            .unwrap_or(priority.len())
+    });
+    let notes = &work;
     let next = AtomicUsize::new(0);
     let stopped = AtomicBool::new(false);
     let mut bank = CheckedSources::default();
@@ -718,6 +785,9 @@ pub fn reconcile_parallel_with_reader(
                     Ok((path, result)) => {
                         bank.insert(&path, result);
                         completed += 1;
+                        if completed.is_multiple_of(64) {
+                            std::thread::yield_now();
+                        }
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
                     Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -928,6 +998,7 @@ pub fn save_provisional(
                 .cloned()
                 .map(|source| (path.to_owned(), source))
         }),
+        source_id: Some(snapshot.id.clone()),
         search_generation: snapshot.search_generation.clone(),
         previous: None,
         latest: None,
@@ -2129,5 +2200,89 @@ mod tests {
         cold_times.sort();
         warm_times.sort();
         println!("5000 notes, inventory+graph (search excluded), same-process OS-warm files: cold {cold_times:?}ms p50={}ms; snapshot-load+reconcile warm {warm_times:?}ms p50={}ms", cold_times[2], warm_times[2]);
+    }
+    #[test]
+    fn priority_schedules_current_folder_links_and_recent_before_rest_without_reordering_inventory()
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir_all(root.join("z")).unwrap();
+        std::fs::create_dir_all(root.join("f")).unwrap();
+        let mut preferred = std::collections::BTreeSet::from([
+            "z/current.md".to_string(),
+            "link.md".into(),
+            "recent.md".into(),
+        ]);
+        for n in 0..5 {
+            preferred.insert(format!("f/n{n}.md"));
+        }
+        for path in preferred
+            .iter()
+            .cloned()
+            .chain((0..10).map(|n| format!("other{n}.md")))
+        {
+            std::fs::write(root.join(path), "# Source\n\n[[link]]").unwrap();
+        }
+        let (send, receive) = std::sync::mpsc::channel();
+        let gate = std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let read_gate = gate.clone();
+        let work_root = root.clone();
+        let worker = std::thread::spawn(move || {
+            reconcile_parallel_prioritized_with_reader(
+                &work_root,
+                None,
+                false,
+                &[
+                    "z/current.md".into(),
+                    "f/".into(),
+                    "link.md".into(),
+                    "recent.md".into(),
+                ],
+                &mut |_, _| Ok(()),
+                &|path| {
+                    send.send(note_path(path.strip_prefix(&work_root).unwrap()))
+                        .unwrap();
+                    let (lock, signal) = &*read_gate;
+                    let mut released = lock.lock().unwrap();
+                    while !*released {
+                        released = signal.wait(released).unwrap();
+                    }
+                    std::fs::read(path)
+                },
+            )
+            .unwrap()
+        });
+        let first: std::collections::BTreeSet<_> = (0..SOURCE_READ_WORKERS)
+            .map(|_| {
+                receive
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(
+            first, preferred,
+            "all first-wave workers take priority paths; positive control includes rest notes"
+        );
+        *gate.0.lock().unwrap() = true;
+        gate.1.notify_all();
+        let (vault, snapshot, _) = worker.join().unwrap();
+        let (serial, full, _) = reconcile(&root, None, false, &mut |_, _| Ok(())).unwrap();
+        assert_eq!(
+            vault
+                .notes
+                .iter()
+                .map(|note| &note.path)
+                .collect::<Vec<_>>(),
+            serial
+                .notes
+                .iter()
+                .map(|note| &note.path)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(snapshot.sources().unwrap(), full.sources().unwrap());
+        assert_eq!(
+            serde_json::to_value(vault.backlink_map).unwrap(),
+            serde_json::to_value(serial.backlink_map).unwrap()
+        );
     }
 }

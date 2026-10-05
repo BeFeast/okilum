@@ -65,7 +65,6 @@ enum Event {
         revision: u64,
     },
     Ready {
-        #[cfg(unix)]
         move_snapshot: Box<tessera_core::vault::warm::Snapshot>,
         vault: Vault,
         searcher: Option<Box<Searcher>>,
@@ -496,6 +495,23 @@ fn prepare_rest_with_io_and_snapshot(
         snapshot.invalidate_paths(&replay.dirty);
     }
     let force_source_read = replay.force_all || opts.force_source_read;
+    let mut priority = opts.note.iter().cloned().collect::<Vec<_>>();
+    if let Some(current) = &opts.note {
+        if let Some(parent) = Path::new(current).parent() {
+            let parent = tessera_core::vault::note_path(parent);
+            priority.push(if parent.is_empty() {
+                "/".into()
+            } else {
+                format!("{parent}/")
+            });
+        }
+        if let Some(saved) = &previous {
+            // Reuse the prepared graph, including Markdown/property/ambiguous
+            // targets. Scheduling must not introduce per-link filesystem I/O.
+            priority.extend(saved.linked_paths_from(current));
+        }
+    }
+    priority.extend(opts.reconcile_recent.iter().cloned());
     loop {
         cancel.check()?;
         let mut last = std::time::Instant::now();
@@ -523,7 +539,13 @@ fn prepare_rest_with_io_and_snapshot(
             Ok(())
         };
         let reconciled = if parallel {
-            warm::reconcile_parallel(root, previous.as_ref(), force_source_read, &mut report)
+            warm::reconcile_parallel_prioritized(
+                root,
+                previous.as_ref(),
+                force_source_read,
+                &priority,
+                &mut report,
+            )
         } else {
             warm::reconcile_with_reader(
                 root,
@@ -596,7 +618,12 @@ fn prepare_rest_with_io_and_snapshot(
         if let Some(hook) = &opts.rest_snapshot_hook {
             hook();
         }
-        let generation = format!("{:x}", fingerprint.finalize());
+        let fingerprint = format!("{:x}", fingerprint.finalize());
+        let generation = if stats.graph_reused {
+            snapshot.search_generation.clone().unwrap_or(fingerprint)
+        } else {
+            fingerprint
+        };
         let destination = base.join("generations").join(&generation);
         let mut searcher = None;
         if disk_search {
@@ -694,7 +721,6 @@ fn prepare_rest_with_io_and_snapshot(
             .collect();
         drop(title_phase);
         return Ok(Event::Ready {
-            #[cfg(unix)]
             move_snapshot: Box::new(snapshot),
             vault,
             searcher: searcher.map(Box::new),
@@ -1085,7 +1111,7 @@ impl Reader {
         }
     }
 
-    fn reconcile_inventory_document(
+    pub(super) fn reconcile_inventory_document(
         &mut self,
         sources: &std::collections::HashMap<String, String>,
         window: &mut Window,
@@ -1359,6 +1385,7 @@ impl Reader {
         self.invalidate_links();
         let opts = Opts {
             force_source_read,
+            reconcile_recent: self.quick_open.recent.clone(),
             vault: Some(self.vault_root.clone()),
             note: Some(self.current_rel.clone()),
             diagnostics: self
@@ -1381,6 +1408,20 @@ impl Reader {
     ) {
         if opts.session_directory.is_none() {
             opts.session_directory = self.session_directory.clone();
+        }
+        if opts.reconcile_recent.is_empty() {
+            opts.reconcile_recent = self.quick_open.recent.clone();
+        }
+        if let Some(cancel) = self.incremental_cancel.take() {
+            cancel.cancel();
+        }
+        self.incremental_epoch = self.incremental_epoch.wrapping_add(1);
+        self.incremental_state = None;
+        self.incremental_initializing = false;
+        self.incremental_active = false;
+        #[cfg(unix)]
+        {
+            self.move_index = None;
         }
         // Supersession is not terminal session failure: the replacement still
         // owns the intent to publish. Explicit Cancel uses cancel_loading.
@@ -1613,7 +1654,6 @@ impl Reader {
                                 this.refresh_quick_open(cx);
                             }
                             Event::Ready {
-                                #[cfg(unix)]
                                 move_snapshot,
                                 vault,
                                 searcher,
@@ -1623,24 +1663,34 @@ impl Reader {
                                 sources,
                                 titles,
                             } => {
+                                this.incremental_initializing = true;
+                                let index_root = this.vault_root.clone();
+                                let generation = this.loading.as_ref().map(|load| load.generation);
+                                let epoch = this.incremental_epoch;
+                                let state_vault = vault.clone();
                                 #[cfg(unix)]
-                                {
-                                    this.move_index = None;
-                                    let index_root = this.vault_root.clone();
-                                    let generation = this.loading.as_ref().map(|load| load.generation);
-                                    let index_task = cx.background_executor().spawn(async move {
-                                        Arc::new(tessera_core::link_rewrite::CandidateIndex::from_snapshot(&move_snapshot))
+                                { this.move_index = None; }
+                                let index_task = cx.background_executor().spawn(async move {
+                                    let state = tessera_core::vault::warm::incremental::State::new(state_vault, *move_snapshot);
+                                    #[cfg(unix)]
+                                    let candidates = state.candidates.clone();
+                                    (state, { #[cfg(unix)] { Some(candidates) } #[cfg(not(unix))] { None::<()> } })
+                                });
+                                cx.spawn(async move |this, cx| {
+                                    let (state, candidates) = index_task.await;
+                                    let _ = this.update(cx, |this, cx| {
+                                        if this.vault_root == index_root && this.incremental_epoch == epoch
+                                            && this.loading.as_ref().map(|load| load.generation) == generation {
+                                            this.incremental_state = Some(state);
+                                            this.incremental_initializing = false;
+                                            #[cfg(unix)]
+                                            { this.move_index = candidates; }
+                                            #[cfg(not(unix))]
+                                            let _ = candidates;
+                                            cx.notify();
+                                        }
                                     });
-                                    cx.spawn(async move |this, cx| {
-                                        let index = index_task.await;
-                                        let _ = this.update(cx, |this, cx| {
-                                            if this.vault_root == index_root && this.loading.as_ref().map(|load| load.generation) == generation {
-                                                this.move_index = Some(index);
-                                                cx.notify();
-                                            }
-                                        });
-                                    }).detach();
-                                }
+                                }).detach();
                                 this.vault = Arc::new(vault);
                                 this.searcher = searcher.map(|searcher| Arc::new(*searcher));
                                 this.watcher = watcher;

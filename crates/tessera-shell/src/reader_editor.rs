@@ -65,6 +65,12 @@ pub(crate) fn save_window(window: AnyWindowHandle, cx: &mut App) -> bool {
 }
 
 impl Editing {
+    #[cfg(test)]
+    pub(super) fn set_value(&self, value: &str, window: &mut Window, cx: &mut Context<Reader>) {
+        self.input
+            .update(cx, |input, cx| input.set_value(value, window, cx));
+    }
+
     fn status(&self) -> &'static str {
         if self.conflict_detected {
             "Conflict"
@@ -435,6 +441,7 @@ impl Reader {
         editing.recovery_epoch = editing.recovery_epoch.wrapping_add(1);
         editing.protecting = false;
         let text = editing.input.read(cx).value().to_string();
+        let source_changed = editing.store.dirty() || editing.store.text() != text;
         let result = editing
             .store
             .set_text(text)
@@ -449,6 +456,9 @@ impl Reader {
                 editing.conflict_detected = false;
                 editing.save_failed = false;
                 editing.protecting = false;
+                if source_changed {
+                    self.queue_saved_source(cx);
+                }
                 cx.notify();
                 true
             }
