@@ -94,6 +94,10 @@ fn read_file(folder: &OwnedFd, name: &str) -> Result<Option<String>> {
 
 impl Catalog {
     pub fn load(root: &Path) -> Result<Self> {
+        Self::load_with_folder(root, None)
+    }
+
+    pub fn load_with_folder(root: &Path, override_folder: Option<&str>) -> Result<Self> {
         let settings = match open_folder(root, Path::new(".obsidian"))? {
             Some(fd) => read_file(&fd, "templates.json")?
                 .map(|text| {
@@ -108,7 +112,9 @@ impl Catalog {
             date_format: default_date(),
             time_format: default_time(),
         });
-        let folder = if settings.folder.is_empty() {
+        let folder = if let Some(folder) = override_folder {
+            PathBuf::from(folder)
+        } else if settings.folder.is_empty() {
             PathBuf::from(DEFAULT_FOLDER)
         } else {
             PathBuf::from(&settings.folder)
@@ -128,9 +134,10 @@ impl Catalog {
                         "Note.md must be a regular template file, not a symbolic link"
                     );
                 }
-                if Path::new(name)
-                    .extension()
-                    .is_some_and(|e| e.eq_ignore_ascii_case("md"))
+                if !name.starts_with("._")
+                    && Path::new(name)
+                        .extension()
+                        .is_some_and(|e| e.eq_ignore_ascii_case("md"))
                     && item.file_type() == rustix::fs::FileType::RegularFile
                 {
                     files.push(name.to_owned());
@@ -281,7 +288,17 @@ mod tests {
         let catalog = Catalog::load(root).unwrap();
         assert_eq!(catalog.default_file().as_deref(), Some("Note.md"));
         assert_eq!(catalog.files, ["Meeting.md", "Note.md"]);
+        std::fs::create_dir(root.join("Chosen Templates")).unwrap();
+        std::fs::write(root.join("Chosen Templates/Note.md"), "Chosen {{date}}").unwrap();
+        let chosen = Catalog::load_with_folder(root, Some("Chosen Templates")).unwrap();
+        assert_eq!(chosen.folder, Path::new("Chosen Templates"));
+        assert_eq!(chosen.files, ["Note.md"]);
+        assert!(Catalog::load_with_folder(root, Some("../outside")).is_err());
         let now = time::macros::datetime!(2026-10-05 09:07 UTC);
+        assert_eq!(
+            chosen.source(root, Some("Note.md"), "Title", now).unwrap(),
+            "Chosen 05/10/2026"
+        );
         assert_eq!(
             catalog.source(root, Some("Note.md"), "Title", now).unwrap(),
             "05/10/2026 09-07"

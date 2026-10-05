@@ -2206,7 +2206,8 @@ impl Reader {
             self.tree.refresh(&self.vault_root, &self.vault.entries);
             #[cfg(unix)]
             {
-                let folder = tessera_core::note_templates::Catalog::load(&self.vault_root)
+                let folder = self
+                    .creation_templates()
                     .map(|catalog| catalog.folder.to_string_lossy().into_owned())
                     .unwrap_or_else(|_| tessera_core::note_templates::DEFAULT_FOLDER.into());
                 self.tree.set_templates_folder(folder);

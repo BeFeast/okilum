@@ -166,6 +166,7 @@ impl Tree {
 
     fn template_branch(&self, path: &str) -> bool {
         !self.templates_folder.is_empty()
+            && self.kinds.get(&self.templates_folder) == Some(&EntryKind::Directory)
             && (path == self.templates_folder
                 || self.templates_folder.starts_with(&format!("{path}/"))
                 || path.starts_with(&format!("{}/", self.templates_folder)))

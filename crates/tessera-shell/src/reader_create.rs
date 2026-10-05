@@ -13,6 +13,18 @@ pub(super) struct Creation {
 }
 
 impl Reader {
+    pub(super) fn creation_templates(
+        &self,
+    ) -> anyhow::Result<tessera_core::note_templates::Catalog> {
+        let folder = self
+            .session_directory
+            .as_deref()
+            .map(|state| reader_templates::configured_folder(&self.vault_root, state))
+            .transpose()?
+            .flatten();
+        tessera_core::note_templates::Catalog::load_with_folder(&self.vault_root, folder.as_deref())
+    }
+
     pub(super) fn create_note_with_source(
         &mut self,
         path: &Path,
@@ -120,7 +132,7 @@ impl Reader {
                 .to_string_lossy()
                 .into_owned()
         });
-        let templates = tessera_core::note_templates::Catalog::load(&self.vault_root);
+        let templates = self.creation_templates();
         // A template opened for inspection must not turn Cmd-N into a write
         // inside the templates collection.
         if templates
@@ -250,7 +262,7 @@ impl Reader {
                 self.document_preparation_generation =
                     self.document_preparation_generation.wrapping_add(1);
                 let document =
-                    tessera_core::render::reader_document_from_source(&self.vault, &rel, source);
+                    tessera_core::render::reader_document_from_source(&self.vault, &rel, &source);
                 self.accept_prepared_document(
                     prepared_links::DocumentRequest {
                         rel,
@@ -260,10 +272,10 @@ impl Reader {
                         restore_position: None,
                     },
                     Ok(prepared_links::PreparedDocument {
-                        source: source.clone(),
-                        original: Some(source),
-                        identities: Vec::new(),
-                        frontmatter: None,
+                        source: document.rendered,
+                        original: Some(document.original_body),
+                        identities: document.links,
+                        frontmatter: document.frontmatter,
                     }),
                     window,
                     cx,
@@ -364,7 +376,9 @@ mod tests {
                 "Selected/Target/a"
             );
         });
+        visual.run_until_parked();
         visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
         reader.read_with(visual, |reader, _| {
             assert!(reader.creation.is_none());
             assert!(reader.editing.is_some());
