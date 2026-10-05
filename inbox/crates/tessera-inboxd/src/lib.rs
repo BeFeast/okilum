@@ -2,6 +2,7 @@
 pub mod auth;
 pub mod execution;
 pub mod http;
+pub mod questions;
 pub mod store;
 mod web;
 

@@ -213,3 +213,26 @@ question ingest or dispatch endpoints and makes no source requests. Configured
 source authorization and durable answer/launch operations follow separately.
 Schema 6 stores project state, immutable brief history and mutation replay results
 outside the vault/cache. Existing capture/discussion/publication data are retained.
+
+### Question/reply journal (slice 2, PR 1b)
+
+Trusted source adapters can observe a question with a monotonically increasing
+observation sequence; opaque source revisions are never treated as numeric cursors.
+The source identity and project cannot be rebound. Browser sessions can read
+`GET /projects/{id}/questions`, `GET /questions/{id}` and
+`GET /reply-operations/{id}` under `/api/v1`, and reserve an exact answer through
+`POST /questions/{id}/reply`. The request contains operation/question UUIDs,
+expected source revision, and answers keyed by the advertised field IDs. The
+same session/Origin guards apply as for capture. No browser ingest or delivery
+acknowledgement endpoint exists.
+
+A reply atomically stores the displayed question and source identity plus exact
+answers. A second operation cannot answer a reserved question; exact replay
+returns the saved operation even after source revision changes. Delivery states
+are queued, uncertain, accepted, delivered and rejected. Internal bridge code
+must persist uncertain before I/O and reconcile through source identity after
+restart; it cannot reset to queued. Only a definite source rejection releases a
+reservation. A delivered reply stays reserved and does not imply completed work.
+Question pages are a live owner/project-scoped view, not a source change feed;
+absence on a page is never a withdrawal. Adapter authentication, durable cursor
+integration, network dispatch and the web question UI are the next PR.

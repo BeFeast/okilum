@@ -53,6 +53,16 @@ pub fn router_with_services(
             get(execution_projects).post(save_execution_project),
         )
         .route("/api/v1/projects/{id}", get(execution_project))
+        .route("/api/v1/projects/{id}/questions", get(execution_questions))
+        .route("/api/v1/questions/{id}", get(execution_question))
+        .route(
+            "/api/v1/questions/{id}/reply",
+            post(reply_execution_question),
+        )
+        .route(
+            "/api/v1/reply-operations/{id}",
+            get(execution_reply_operation),
+        )
         .route("/api/v1/briefs", post(save_execution_brief))
         .route(
             "/api/v1/briefs/{id}/revisions/{revision}",
@@ -664,6 +674,92 @@ async fn save_execution_brief(
                 response
                     .extensions_mut()
                     .insert(SafeError("stale_revision"));
+                Ok(response)
+            }
+            Err(error) => Err(error.into()),
+        }
+    })
+    .await
+}
+
+async fn execution_questions(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    Path(project): Path<Uuid>,
+    Query(page): Query<ProjectPage>,
+) -> Result<Response, ApiError> {
+    let session = token(&headers, SESSION)?;
+    blocking(state, move |auth| {
+        let owner = auth.authenticate(&session, now())?;
+        let questions = auth
+            .store
+            .execution_questions(owner, project, &page.after, page.limit)?;
+        let next_after = questions.last().map(|q| q.question.id.to_string());
+        Ok(Json(json!({"questions":questions,"next_after":next_after})).into_response())
+    })
+    .await
+}
+async fn execution_question(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Response, ApiError> {
+    let session = token(&headers, SESSION)?;
+    blocking(state, move |auth| {
+        let owner = auth.authenticate(&session, now())?;
+        Ok(Json(
+            auth.store
+                .execution_question(owner, id)?
+                .ok_or(store::Error::MissingItem)?,
+        )
+        .into_response())
+    })
+    .await
+}
+async fn execution_reply_operation(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Response, ApiError> {
+    let session = token(&headers, SESSION)?;
+    blocking(state, move |auth| {
+        let owner = auth.authenticate(&session, now())?;
+        Ok(Json(
+            auth.store
+                .execution_reply(owner, id)?
+                .ok_or(store::Error::MissingItem)?,
+        )
+        .into_response())
+    })
+    .await
+}
+async fn reply_execution_question(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(body): Json<tessera_inbox_domain::execution::Reply>,
+) -> Result<Response, ApiError> {
+    let session = token(&headers, SESSION)?;
+    blocking(state, move |auth| {
+        let owner = auth.authenticate(&session, now())?;
+        if id != body.question_id {
+            return Err(ApiError(
+                StatusCode::BAD_REQUEST,
+                "question_identity_mismatch",
+            ));
+        }
+        match auth.store.prepare_execution_reply(owner, &body) {
+            Ok(operation) => Ok(Json(operation).into_response()),
+            Err(store::Error::ExecutionRevisionConflict) => {
+                let current = auth.store.execution_question(owner, id)?;
+                let mut response = (
+                    StatusCode::CONFLICT,
+                    Json(json!({"error":"question_conflict","current":current})),
+                )
+                    .into_response();
+                response
+                    .extensions_mut()
+                    .insert(SafeError("question_conflict"));
                 Ok(response)
             }
             Err(error) => Err(error.into()),

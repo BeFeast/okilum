@@ -6,7 +6,7 @@ use tessera_inbox_domain::{
 };
 use uuid::Uuid;
 
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 const SCHEMA: &str = "
 CREATE TABLE captures (
     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -29,6 +29,8 @@ PRAGMA user_version = 1;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("invalid execution delivery transition")]
+    InvalidExecutionTransition,
     #[error(transparent)]
     InvalidExecution(#[from] tessera_inbox_domain::execution::InvalidExecution),
     #[error("execution revision changed")]
@@ -94,7 +96,7 @@ impl Store {
                 }
                 tx.execute_batch(SCHEMA)?;
             }
-            1 | 2 | 3 | 4 | 5 | SCHEMA_VERSION => {}
+            1 | 2 | 3 | 4 | 5 | 6 | SCHEMA_VERSION => {}
             _ => return Err(Error::UnsupportedDatabase),
         }
         if version < 2 {
@@ -120,6 +122,9 @@ impl Store {
         }
         if version < 6 {
             tx.execute_batch(crate::execution::SCHEMA)?;
+        }
+        if version < 7 {
+            tx.execute_batch(crate::questions::SCHEMA)?;
         }
         tx.commit()?;
         connection.pragma_update(None, "journal_mode", "WAL")?;
