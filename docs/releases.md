@@ -50,7 +50,10 @@ Stable URLs stay fixed:
 Channels on separate systems cannot change atomically. A saved promotion manifest
 pins the exact source and platform builds. If a network/API failure interrupts
 publication, rerun the **same build**; do not select a different one until it
-finishes. The final `tessera/releases/stable.json` is written only after all feeds
+finishes. If that build is irrecoverable, the owner may select a **newer** build
+and explicitly enable `supersede_pending`. All artifact and channel rollback
+checks still run before replacing the saved selection; this never rolls back a
+partially promoted channel. The final `tessera/releases/stable.json` is written only after all feeds
 and GitHub assets succeed. Completed retries are no-ops; rollback is refused.
 
 The `github-mirror` job only pushes `main` and the selected reachable `v0.1.*` or

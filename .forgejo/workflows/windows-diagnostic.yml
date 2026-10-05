@@ -81,6 +81,8 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: |
+          portable=(target/windows-dist/tessera-*-x86_64.zip)
+          test "${#portable[@]}" -eq 1 && test -f "${portable[0]}"
           python3 scripts/windows/publish.py publish --directory target/windows-release \
             --build "$((5000 + GITHUB_RUN_NUMBER))" --source "$GITHUB_SHA" \
-            --portable target/windows-dist/tessera-*-x86_64.zip
+            --portable "${portable[0]}"

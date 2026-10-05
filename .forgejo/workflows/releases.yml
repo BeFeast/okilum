@@ -9,6 +9,11 @@ on:
         description: 'Owner-approved macOS beta build to promote on ALL OSes; empty refreshes Beta only'
         required: false
         default: ''
+      supersede_pending:
+        description: 'Owner-approved recovery only: supersede interrupted promotion with a NEWER build'
+        required: false
+        type: boolean
+        default: false
 
 # Explicit stable promotion shares the appcast lock with macos-release.
 # Scheduled Beta never edits the appcast or queues against the M4 release.
@@ -41,9 +46,15 @@ jobs:
           ARCH_GPG_PRIVATE_KEY: ${{ secrets.ARCH_GPG_PRIVATE_KEY }}
           ARCH_GPG_FINGERPRINT: ${{ vars.ARCH_GPG_FINGERPRINT }}
           PROMOTE_BUILD: ${{ inputs.build }}
+          SUPERSEDE_PENDING: ${{ inputs.supersede_pending }}
         run: |
+          args=()
+          if [ "$SUPERSEDE_PENDING" = true ]; then
+            test -n "$PROMOTE_BUILD"
+            args+=(--supersede-pending)
+          fi
           if [ -n "$PROMOTE_BUILD" ]; then
-            python scripts/releases/publish.py --build "$PROMOTE_BUILD"
+            python scripts/releases/publish.py --build "$PROMOTE_BUILD" "${args[@]}"
           else
             python scripts/releases/publish.py
           fi

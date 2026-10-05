@@ -111,7 +111,19 @@ def mirror_tag(release, stable):
 
 
 def github_release(github, tag, release, files, body, stable):
-    current = github.call('GET', f'/releases/tags/{tag}')
+    # List includes authenticated drafts, including an interrupted replacement.
+    current = None
+    page = 1
+    while True:
+        candidates = github.call('GET', f'/releases?per_page=100&page={page}')
+        matching = [r for r in candidates if r['tag_name'] == tag]
+        if matching:
+            if current is not None or len(matching) != 1:
+                raise ValueError('Duplicate releases for tag; reconcile drafts before retrying')
+            current = matching[0]
+        if len(candidates) < 100:
+            break
+        page += 1
     if current is None:
         current = github.call('POST', '/releases', {'tag_name': tag, 'draft': True,
                               'name': 'Beta' if not stable else f'Tessera 0.1.{release["build"]}',
@@ -125,8 +137,9 @@ def github_release(github, tag, release, files, body, stable):
         github.call('POST', f'/releases/{rid}/assets?name={urllib.parse.quote(name)}', data, binary=True)
     github.call('PATCH', f'/releases/{rid}', {
         'name': f'Tessera 0.1.{release["build"]}' if stable else 'Beta',
-        'body': body, 'draft': False, 'prerelease': not stable,
-        'make_latest': 'true' if stable else 'false'})
+        'body': body, 'draft': False, 'prerelease': not stable})
+    if stable:
+        github.call('PATCH', f'/releases/{rid}', {'make_latest': 'true'})
 
 
 def preflight_stable(store, release):
@@ -171,7 +184,7 @@ def preflight_stable(store, release):
         raise ValueError('Selected macOS build is absent from appcast')
 
 
-def execute(store, github, forgejo, build=None):
+def execute(store, github, forgejo, build=None, supersede_pending=False):
     stable = build is not None
     channel = 'stable' if stable else 'beta'
     key = f'{catalog.PREFIX}/{channel}.json'
@@ -184,7 +197,8 @@ def execute(store, github, forgejo, build=None):
     if pending:
         candidate = json.loads(pending)
         if candidate['build'] != build and (previous is None or previous['build'] != candidate['build']):
-            raise ValueError('Finish the interrupted promotion before selecting another build')
+            if not supersede_pending or build <= candidate['build']:
+                raise ValueError('Finish the interrupted promotion or explicitly supersede it with a newer build')
         release = candidate if candidate['build'] == build else choose(store, build)
     else:
         release = choose(store, build)
@@ -232,7 +246,11 @@ def execute(store, github, forgejo, build=None):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--build', type=int, help='Explicit stable promotion: accepted macOS build')
+    parser.add_argument('--supersede-pending', action='store_true',
+                        help='Owner-approved recovery: replace an interrupted promotion with a newer build')
     args = parser.parse_args()
+    if args.supersede_pending and args.build is None:
+        parser.error('--supersede-pending requires --build')
     if args.build is not None and args.build < 1:
         parser.error('Build must be positive')
-    execute(R2(), GitHub(), Forgejo(), args.build)
+    execute(R2(), GitHub(), Forgejo(), args.build, args.supersede_pending)

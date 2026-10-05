@@ -113,6 +113,21 @@ class CatalogTests(unittest.TestCase):
             p.execute(store, None, None, 701)
         self.assertEqual(store.writes, [])
 
+    def test_explicit_recovery_validates_newer_build_before_replacing_pending(self):
+        store = Store()
+        release = fixture(store)
+        pending = {**release, 'build': 699}
+        store.data[f'{catalog.PREFIX}/promoting.json'] = catalog.encode(pending)
+        with patch.object(p, 'notes', return_value='Notes'), \
+             patch.object(p, 'preflight_stable', side_effect=ValueError('bad archive')) as preflight:
+            with self.assertRaisesRegex(ValueError, 'bad archive'):
+                p.execute(store, None, None, 700, supersede_pending=True)
+            preflight.assert_called_once_with(store, release)
+        self.assertEqual(json.loads(store.data[f'{catalog.PREFIX}/promoting.json']), pending)
+        self.assertEqual(store.writes, [])
+        with self.assertRaisesRegex(ValueError, 'newer build'):
+            p.execute(store, None, None, 698, supersede_pending=True)
+
     def test_completed_stable_retry_is_noop(self):
         store = Store()
         release = fixture(store)
@@ -190,14 +205,28 @@ class GitHubTests(unittest.TestCase):
             def call(self, method, path, body=None, **kwargs):
                 calls.append((method, path, body))
                 if method == 'GET':
-                    return {'id': 42, 'assets': [{'id': 9, 'name': 'obsolete.zip'}]}
+                    return [{'id': 42, 'tag_name': 'beta', 'draft': True,
+                             'assets': [{'id': 9, 'name': 'obsolete.zip'}]}]
         p.github_release(API(), 'beta', {'build': 700}, {'x.zip': b'ZIP', 'SHA256SUMS': b'hash'}, 'notes', False)
         self.assertEqual(calls[1], ('PATCH', '/releases/42', {'draft': True}))
         self.assertEqual(calls[2][:2], ('DELETE', '/releases/42/assets/9'))
         self.assertFalse(calls[-1][2]['draft'])
         self.assertTrue(calls[-1][2]['prerelease'])
-        self.assertEqual(calls[-1][2]['make_latest'], 'false')
+        self.assertNotIn('make_latest', calls[-1][2])
         self.assertFalse(any(c[0] == 'POST' and c[1] == '/releases' for c in calls))
+    def test_draft_retry_reuses_release_and_sets_latest_after_publication(self):
+        calls = []
+        class API:
+            def call(self, method, path, body=None, **kwargs):
+                calls.append((method, path, body))
+                if method == 'GET':
+                    return [{'id': 7, 'tag_name': 'v0.1.700', 'draft': True, 'assets': []}]
+        p.github_release(API(), 'v0.1.700', {'build': 700}, {'x.zip': b'ZIP'}, 'notes', True)
+        self.assertFalse(any(c[0] == 'POST' and c[1] == '/releases' for c in calls))
+        self.assertEqual(calls[-1], ('PATCH', '/releases/7', {'make_latest': 'true'}))
+        self.assertFalse(calls[-2][2]['draft'])
+        self.assertNotIn('make_latest', calls[-2][2])
+
 
 
 if __name__ == '__main__':
