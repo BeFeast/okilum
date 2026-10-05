@@ -2961,7 +2961,9 @@ impl Reader {
     /// docs/design/reader.md §Sidebar: Recent, Pinned, Inbox and the real
     /// folder hierarchy (#335, #369), with a quick-open entry point (#433).
     fn render_tree(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        use gpui_component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem};
+        #[cfg(unix)]
+        use gpui_component::menu::DropdownMenu as _;
+        use gpui_component::menu::{ContextMenuExt as _, PopupMenuItem};
         use reader_sidebar::Section;
         use tessera_core::vault::EntryKind;
         let p = brand::palette(cx);
@@ -5228,11 +5230,13 @@ impl Render for Reader {
                 cx.listener(|this, _: &NewFolder, window, cx| this.new_folder(None, window, cx)),
             )
             .on_action(cx.listener(|this, _: &RenameNote, window, cx| this.rename_note(window, cx)))
-            .on_action(
-                cx.listener(|this, _: &RenameTreeNote, window, cx| {
+            .when(cfg!(unix), |view| {
+                #[cfg(unix)]
+                let view = view.on_action(cx.listener(|this, _: &RenameTreeNote, window, cx| {
                     this.rename_tree_note(window, cx)
-                }),
-            )
+                }));
+                view
+            })
             .on_action(cx.listener(|this, _: &HistoryVersionNext, window, cx| {
                 this.step_timeline(true, window, cx)
             }))
