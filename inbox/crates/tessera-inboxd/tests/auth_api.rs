@@ -84,6 +84,50 @@ async fn real_webauthn_session_capture_restart_login_and_lost_response_replay() 
     let mut backend = auth(&path);
     let bootstrap = backend.bootstrap(seconds()).unwrap();
     let owner = backend.owner;
+    use tessera_inbox_domain::execution::*;
+    let source_project = Uuid::new_v4();
+    backend
+        .store
+        .save_execution_project(
+            owner,
+            &SaveProject {
+                operation_id: Uuid::new_v4(),
+                project_id: source_project,
+                expected_revision: 0,
+                draft: ProjectDraft {
+                    title: "Questions pilot".into(),
+                    status: String::new(),
+                    next_step: String::new(),
+                },
+            },
+        )
+        .unwrap();
+    let source_question = Question {
+        id: Uuid::new_v4(),
+        project_id: source_project,
+        source: QuestionSource {
+            kind: SourceKind::T3,
+            instance_id: "test".into(),
+            project_id: "pilot".into(),
+            thread_id: "thread".into(),
+            question_id: "native".into(),
+            generation: "attempt".into(),
+        },
+        source_revision: "r1".into(),
+        state: QuestionState::Pending,
+        can_reply: true,
+        fields: vec![QuestionField {
+            id: "answer".into(),
+            prompt: "Reply?".into(),
+            options: vec![],
+            allow_text: true,
+            multiple: false,
+        }],
+    };
+    backend
+        .store
+        .observe_execution_question(owner, &source_question, 1)
+        .unwrap();
     let app = router(backend);
     let mut key = WebauthnAuthenticator::new(SoftPasskey::new(true));
     let (status, options, cookies) = call(
@@ -117,6 +161,66 @@ async fn real_webauthn_session_capture_restart_login_and_lost_response_replay() 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(identity["owner_id"], owner.0.to_string());
     let session = cookie(&cookies, "__Host-inbox-session=");
+    let reply_path = format!("/api/v1/questions/{}/reply", source_question.id);
+    let reply = json!({"operation_id":Uuid::new_v4(),"question_id":source_question.id,
+        "expected_revision":"r1","answers":[{"id":"answer","text":"Exact answer","option_ids":[]}]});
+    assert_eq!(
+        call(&app, "POST", &reply_path, reply.clone(), None, Some(ORIGIN))
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &reply_path,
+            reply.clone(),
+            Some(&session),
+            Some("https://wrong.example")
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    let (status, operation, _) = call(
+        &app,
+        "POST",
+        &reply_path,
+        reply.clone(),
+        Some(&session),
+        Some(ORIGIN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(operation["state"], "queued");
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &reply_path,
+            reply.clone(),
+            Some(&session),
+            Some(ORIGIN)
+        )
+        .await
+        .1,
+        operation
+    );
+    let mut duplicate = reply;
+    duplicate["operation_id"] = json!(Uuid::new_v4());
+    let (status, conflict, _) = call(
+        &app,
+        "POST",
+        &reply_path,
+        duplicate,
+        Some(&session),
+        Some(ORIGIN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(conflict["current"]["can_reply"], false);
+
     // Draft APIs share the actual passkey session and origin boundary. Saving a
     // brief does not grant authority to its opaque target or launch anything.
     let project_id = Uuid::new_v4();
