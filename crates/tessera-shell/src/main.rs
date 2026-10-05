@@ -121,6 +121,7 @@ actions!(
     [
         NewNote,
         CloseNote,
+        NewFolder,
         RenameNote,
         RecoverLinkMoves,
         NoteSourceHistory,
@@ -212,6 +213,7 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("down", PaletteNext, Some("Reader > QuickOpen > Input")),
         KeyBinding::new("up", PalettePrevious, Some("Reader > QuickOpen > Input")),
         KeyBinding::new("escape", Dismiss, Some("Reader > QuickOpen > Input")),
+        KeyBinding::new("escape", Dismiss, Some("InlineCreate > Input")),
         KeyBinding::new("secondary-n", NewNote, ctx),
         KeyBinding::new("secondary-w", CloseNote, ctx),
         KeyBinding::new("secondary-w", CloseNote, Some("Reader > Input")),
@@ -1035,6 +1037,8 @@ struct Reader {
     file_menu: Option<(Entity<gpui_component::menu::PopupMenu>, Point<Pixels>)>,
     editing: Option<reader_editor::Editing>,
     #[cfg(unix)]
+    creation: Option<reader_create::Creation>,
+    #[cfg(unix)]
     note_move_pending: bool,
     #[cfg(unix)]
     move_index: Option<Arc<tessera_core::link_rewrite::CandidateIndex>>,
@@ -1259,6 +1263,8 @@ impl Reader {
             quick_open,
             content,
             editing: None,
+            #[cfg(unix)]
+            creation: None,
             #[cfg(unix)]
             note_move_pending: false,
             #[cfg(unix)]
@@ -1758,6 +1764,11 @@ impl Reader {
     /// Escape clears or dismisses local transient UI; it never toggles panels (#483).
     /// A non-empty focused search field is cleared and keeps focus; an empty one closes.
     fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(unix)]
+        if self.creation.is_some() {
+            self.cancel_creation(window, cx);
+            return;
+        }
         if self.hover_preview.is_active() {
             self.clear_hover(cx);
             return;
@@ -2173,7 +2184,19 @@ impl Reader {
         }
         items.push(SideItem::Header(Section::Folders, None));
         if open(Section::Folders) {
-            items.extend(self.tree.rows.iter().cloned().map(SideItem::Tree));
+            #[cfg(unix)]
+            let creation = self.creation.as_ref();
+            #[cfg(unix)]
+            if let Some(create) = creation.filter(|c| c.folder.is_empty()) {
+                append_creation_rows(&mut items, create, 0);
+            }
+            for row in self.tree.rows.iter() {
+                items.push(SideItem::Tree(row.clone()));
+                #[cfg(unix)]
+                if let Some(create) = creation.filter(|c| c.folder == row.path) {
+                    append_creation_rows(&mut items, create, row.depth + 1);
+                }
+            }
         }
         items
     }
@@ -2203,6 +2226,14 @@ impl Reader {
                 .as_ref()
                 .is_some_and(|source| source.root == self.vault.root);
             self.tree.refresh(&self.vault_root, &self.vault.entries);
+            #[cfg(unix)]
+            {
+                let folder = self
+                    .creation_templates()
+                    .map(|catalog| catalog.folder.to_string_lossy().into_owned())
+                    .unwrap_or_else(|_| tessera_core::note_templates::DEFAULT_FOLDER.into());
+                self.tree.set_templates_folder(folder);
+            }
             self.tree_source = Some(self.vault.clone());
             // Reconciliation must not re-center a tree the user already scrolled.
             if !same_root || self.tree.cursor.is_none() {
@@ -2213,6 +2244,11 @@ impl Reader {
             self.backlinks_expanded.clear();
         }
         let selected = self.selected_file().to_owned();
+        #[cfg(unix)]
+        let selected = self
+            .creation
+            .as_ref()
+            .map_or(selected, |create| create.folder.clone());
         if self.tree_revealed != selected {
             self.tree_revealed = selected.clone();
             if let Some(ix) = self.tree.reveal(&selected) {
@@ -2877,7 +2913,7 @@ impl Reader {
     /// docs/design/reader.md §Sidebar: Recent, Pinned, Inbox and the real
     /// folder hierarchy (#335, #369), with a quick-open entry point (#433).
     fn render_tree(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        use gpui_component::menu::{ContextMenuExt as _, PopupMenuItem};
+        use gpui_component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem};
         use reader_sidebar::Section;
         use tessera_core::vault::EntryKind;
         let p = brand::palette(cx);
@@ -2962,6 +2998,85 @@ impl Reader {
                     })
             };
             match item {
+                #[cfg(unix)]
+                SideItem::Create(input, depth, directory, templates, selected) => {
+                    row_base("inline-create-row".into())
+                        .debug_selector(|| "inline-create-row".into())
+                        .key_context("InlineCreate")
+                        .pl(px(18. + depth as f32 * 14.))
+                        .child(
+                            Icon::new(if directory {
+                                IconName::Folder
+                            } else {
+                                IconName::FileText
+                            })
+                            .small(),
+                        )
+                        .child(div().flex_1().min_w_0().child(Input::new(&input).small()))
+                        .when(!directory, |row| {
+                            row.child(
+                                Button::new("create-template-picker")
+                                    .ghost()
+                                    .small()
+                                    .label(
+                                        selected
+                                            .as_deref()
+                                            .unwrap_or("Built-in")
+                                            .trim_end_matches(".md")
+                                            .chars()
+                                            .take(10)
+                                            .collect::<String>(),
+                                    )
+                                    .icon(IconName::ChevronDown)
+                                    .tooltip(format!(
+                                        "Template: {}",
+                                        selected.as_deref().unwrap_or("Built-in")
+                                    ))
+                                    .dropdown_menu_with_anchor(
+                                        Anchor::TopRight,
+                                        move |menu, _, _| {
+                                            let option = |label: String, value: Option<String>| {
+                                                let entity = entity.clone();
+                                                let act = act.clone();
+                                                PopupMenuItem::new(label)
+                                                    .checked(value == selected)
+                                                    .on_click(move |_, window, cx| {
+                                                        act(
+                                                            &entity,
+                                                            window,
+                                                            cx,
+                                                            &|this, window, cx| {
+                                                                this.choose_creation_template(
+                                                                    value.clone(),
+                                                                    window,
+                                                                    cx,
+                                                                );
+                                                            },
+                                                        )
+                                                    })
+                                            };
+                                            let mut menu =
+                                                menu.item(option("Built-in note".into(), None));
+                                            for name in &templates {
+                                                menu = menu
+                                                    .item(option(name.clone(), Some(name.clone())));
+                                            }
+                                            menu
+                                        },
+                                    ),
+                            )
+                        })
+                        .into_any_element()
+                }
+                #[cfg(unix)]
+                SideItem::CreateError(error) => row_base("inline-create-error".into())
+                    .text_color(p.danger)
+                    .text_xs()
+                    .child(error.clone())
+                    .tooltip(move |window, cx| {
+                        gpui_component::tooltip::Tooltip::new(error.clone()).build(window, cx)
+                    })
+                    .into_any_element(),
                 SideItem::Header(section, count) => {
                     let closed = collapsed.contains(&section);
                     let icon = match section {
@@ -3030,6 +3145,64 @@ impl Reader {
                                             })
                                     };
                         row.group(FOLDERS_HEADER_GROUP)
+                            .when(cfg!(unix), |row| {
+                                row.child(action(
+                                    "folders-new-note",
+                                    "icons/file-plus.svg",
+                                    "New File ⌘N",
+                                    |this, window, cx| {
+                                        let folder = this
+                                            .tree
+                                            .rows
+                                            .iter()
+                                            .find(|row| {
+                                                Some(&row.path) == this.tree.cursor.as_ref()
+                                            })
+                                            .map(|row| {
+                                                if row.kind
+                                                    == tessera_core::vault::EntryKind::Directory
+                                                {
+                                                    row.path.clone()
+                                                } else {
+                                                    Path::new(&row.path)
+                                                        .parent()
+                                                        .unwrap_or(Path::new(""))
+                                                        .to_string_lossy()
+                                                        .into_owned()
+                                                }
+                                            });
+                                        this.new_note(folder.as_deref(), window, cx);
+                                    },
+                                ))
+                                .child(action(
+                                    "folders-new-folder",
+                                    "icons/folder-plus.svg",
+                                    "New Folder",
+                                    |this, window, cx| {
+                                        let folder = this
+                                            .tree
+                                            .rows
+                                            .iter()
+                                            .find(|row| {
+                                                Some(&row.path) == this.tree.cursor.as_ref()
+                                            })
+                                            .map(|row| {
+                                                if row.kind
+                                                    == tessera_core::vault::EntryKind::Directory
+                                                {
+                                                    row.path.clone()
+                                                } else {
+                                                    Path::new(&row.path)
+                                                        .parent()
+                                                        .unwrap_or(Path::new(""))
+                                                        .to_string_lossy()
+                                                        .into_owned()
+                                                }
+                                            });
+                                        this.new_folder(folder.as_deref(), window, cx);
+                                    },
+                                ))
+                            })
                             .child(action(
                                 "folders-collapse-all",
                                 brand::READER_COLLAPSE_ICON,
@@ -3081,10 +3254,38 @@ impl Reader {
                                 .child(count.to_string()),
                         )
                     })
-                    .on_click(move |_, window, cx| {
-                        act(&entity, window, cx, &|this, _, cx| {
-                            this.toggle_section(section, cx)
-                        })
+                    .on_click({
+                        let entity = entity.clone();
+                        let act = act.clone();
+                        move |_, window, cx| {
+                            act(&entity, window, cx, &|this, _, cx| {
+                                this.toggle_section(section, cx)
+                            })
+                        }
+                    })
+                    .context_menu({
+                        let entity = entity.clone();
+                        let act = act.clone();
+                        move |menu, _, _| {
+                            if section != Section::Folders || !cfg!(unix) {
+                                return menu;
+                            }
+                            let item = |label: &'static str, directory: bool| {
+                                let entity = entity.clone();
+                                let act = act.clone();
+                                PopupMenuItem::new(label).on_click(move |_, window, cx| {
+                                    act(&entity, window, cx, &|this, window, cx| {
+                                        if directory {
+                                            this.new_folder(Some(""), window, cx);
+                                        } else {
+                                            this.new_note(Some(""), window, cx);
+                                        }
+                                    });
+                                })
+                            };
+                            menu.item(item("New File in vault root", false))
+                                .item(item("New Folder in vault root", true))
+                        }
                     })
                     .into_any_element()
                 }
@@ -3322,21 +3523,24 @@ impl Reader {
                                         })
                                     })
                                 };
-                                let create_entity = entity.clone();
-                                let create_act = act.clone();
-                                let create_folder = folder.clone();
-                                menu.item(PopupMenuItem::new("New note here…").on_click(
-                                    move |_, window, cx| {
-                                        create_act(
-                                            &create_entity,
-                                            window,
-                                            cx,
-                                            &|this, window, cx| {
-                                                this.new_note(Some(&create_folder), window, cx)
-                                            },
-                                        );
-                                    },
-                                ))
+                                let create = |label: &'static str, directory: bool| {
+                                    let entity = entity.clone();
+                                    let act = act.clone();
+                                    let folder = folder.clone();
+                                    PopupMenuItem::new(label).on_click(move |_, window, cx| {
+                                        act(&entity, window, cx, &|this, window, cx| {
+                                            if directory {
+                                                this.new_folder(Some(&folder), window, cx);
+                                            } else {
+                                                this.new_note(Some(&folder), window, cx);
+                                            }
+                                        });
+                                    })
+                                };
+                                menu.when(cfg!(unix), |menu| {
+                                    menu.item(create("New File", false))
+                                        .item(create("New Folder", true))
+                                })
                                 .separator()
                                 .item(subtree("Expand all subfolders", true))
                                 .item(subtree("Collapse all subfolders", false))
@@ -4622,6 +4826,27 @@ enum SideItem {
     More(usize),
     Empty(&'static str),
     Tree(reader_tree::Row),
+    #[cfg(unix)]
+    Create(Entity<InputState>, usize, bool, Vec<String>, Option<String>),
+    #[cfg(unix)]
+    CreateError(String),
+}
+
+#[cfg(unix)]
+fn append_creation_rows(items: &mut Vec<SideItem>, create: &reader_create::Creation, depth: usize) {
+    items.push(SideItem::Create(
+        create.input.clone(),
+        depth,
+        create.directory,
+        create
+            .templates
+            .as_ref()
+            .map_or_else(Vec::new, |c| c.files.clone()),
+        create.selected_template.clone(),
+    ));
+    if let Some(error) = &create.error {
+        items.push(SideItem::CreateError(error.clone()));
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -4736,6 +4961,7 @@ fn reader_more_menu(
             .separator()
             .when(cfg!(unix), |menu| {
                 menu.menu("New note…", Box::new(NewNote))
+                    .menu("New Folder", Box::new(NewFolder))
                     .menu("New note from template…", Box::new(NewFromTemplate))
                     .menu("Recover notes…", Box::new(RecoverUnsavedNotes))
                     .menu("Recover link moves…", Box::new(RecoverLinkMoves))
@@ -4949,6 +5175,9 @@ impl Render for Reader {
             .on_action(cx.listener(|this, _: &PaletteNext, _, cx| this.move_quick_open(1, cx)))
             .on_action(cx.listener(|this, _: &PalettePrevious, _, cx| this.move_quick_open(-1, cx)))
             .on_action(cx.listener(|this, _: &NewNote, window, cx| this.new_note(None, window, cx)))
+            .on_action(
+                cx.listener(|this, _: &NewFolder, window, cx| this.new_folder(None, window, cx)),
+            )
             .on_action(cx.listener(|this, _: &RenameNote, window, cx| this.rename_note(window, cx)))
             .on_action(cx.listener(|this, _: &HistoryVersionNext, window, cx| {
                 this.step_timeline(true, window, cx)

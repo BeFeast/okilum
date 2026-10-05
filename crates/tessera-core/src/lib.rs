@@ -26,6 +26,8 @@ pub mod maestro_observation;
 pub mod note_files;
 #[cfg(unix)]
 pub mod note_move;
+#[cfg(unix)]
+pub mod note_templates;
 pub mod properties;
 pub mod prose;
 pub mod quick_open;
