@@ -29,6 +29,7 @@ struct Cursor {
 pub struct Replay {
     pub force_all: bool,
     pub dirty: Vec<String>,
+    pub directories: Vec<String>,
     checkpoint: Option<(PathBuf, Cursor)>,
 }
 impl Replay {
@@ -94,6 +95,7 @@ pub fn prepare(root: &Path, state: Option<&Path>, snapshot: Option<&str>) -> Rep
     let mut result = Replay {
         force_all: true,
         dirty: Vec::new(),
+        directories: Vec::new(),
         checkpoint: None,
     };
     let attempt = (|| -> Result<()> {
@@ -143,7 +145,7 @@ pub fn prepare(root: &Path, state: Option<&Path>, snapshot: Option<&str>) -> Rep
                 && p.event <= event
                 && snapshot == Some(p.snapshot.as_str())
         }) {
-            result.dirty = replay(&root, old.event)?;
+            (result.dirty, result.directories) = replay(&root, old.event)?;
             result.force_all = false;
         }
         Ok(())
@@ -157,6 +159,7 @@ pub fn prepare(root: &Path, state: Option<&Path>, snapshot: Option<&str>) -> Rep
 struct Batch {
     root: PathBuf,
     dirty: Vec<String>,
+    directories: Vec<String>,
     done: bool,
     invalid: bool,
 }
@@ -192,18 +195,24 @@ extern "C" fn callback(
             let path =
                 CStr::from_ptr(*paths.cast::<*const std::ffi::c_char>().add(n)).to_string_lossy();
             match Path::new(path.as_ref()).strip_prefix(&batch.root) {
-                Ok(relative) => batch.dirty.push(tessera_core::vault::note_path(relative)),
+                Ok(relative) => super::record_path(
+                    relative,
+                    flag & fs::kFSEventStreamEventFlagItemIsDir != 0,
+                    &mut batch.dirty,
+                    &mut batch.directories,
+                ),
                 _ => batch.invalid = true,
             }
         }
     }
 }
 
-fn replay(root: &Path, since: u64) -> Result<Vec<String>> {
+fn replay(root: &Path, since: u64) -> Result<(Vec<String>, Vec<String>)> {
     let path = CString::new(root.to_str().context("Non-UTF8 root")?)?;
     let mut batch = Box::new(Batch {
         root: root.into(),
         dirty: Vec::new(),
+        directories: Vec::new(),
         done: false,
         invalid: false,
     });
@@ -261,12 +270,70 @@ fn replay(root: &Path, since: u64) -> Result<Vec<String>> {
     }
     batch.dirty.sort();
     batch.dirty.dedup();
-    Ok(batch.dirty)
+    batch.directories.sort();
+    batch.directories.dedup();
+    Ok((batch.dirty, batch.directories))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn callback_separates_directories_and_keeps_lost_history_invalid() {
+        let root = Path::new("/tmp/tessera-replay-callback");
+        let paths = [
+            CString::new(root.to_str().unwrap()).unwrap(),
+            CString::new(root.join("Changed.md").to_str().unwrap()).unwrap(),
+        ];
+        let mut pointers = paths.iter().map(|p| p.as_ptr()).collect::<Vec<_>>();
+        let flags = [
+            fs::kFSEventStreamEventFlagItemIsDir | fs::kFSEventStreamEventFlagItemInodeMetaMod,
+            fs::kFSEventStreamEventFlagItemIsFile | fs::kFSEventStreamEventFlagItemModified,
+        ];
+        let mut batch = Batch {
+            root: root.into(),
+            dirty: Vec::new(),
+            directories: Vec::new(),
+            done: false,
+            invalid: false,
+        };
+        callback(
+            std::ptr::null_mut(),
+            (&mut batch as *mut Batch).cast(),
+            2,
+            pointers.as_mut_ptr().cast(),
+            flags.as_ptr(),
+            std::ptr::null(),
+        );
+        assert_eq!(batch.directories, [""]);
+        assert_eq!(batch.dirty, ["Changed.md"]);
+        assert!(!batch.invalid);
+
+        for flag in [
+            fs::kFSEventStreamEventFlagMustScanSubDirs,
+            fs::kFSEventStreamEventFlagUserDropped,
+            fs::kFSEventStreamEventFlagKernelDropped,
+            fs::kFSEventStreamEventFlagEventIdsWrapped,
+            fs::kFSEventStreamEventFlagRootChanged,
+            fs::kFSEventStreamEventFlagMount,
+            fs::kFSEventStreamEventFlagUnmount,
+        ] {
+            batch.invalid = false;
+            callback(
+                std::ptr::null_mut(),
+                (&mut batch as *mut Batch).cast(),
+                1,
+                pointers.as_mut_ptr().cast(),
+                &flag,
+                std::ptr::null(),
+            );
+            assert!(
+                batch.invalid,
+                "uncertain history flag {flag:#x} must force reconciliation"
+            );
+        }
+    }
 
     #[test]
     fn native_replay_observes_between_launch_writes_and_rejects_mismatched_snapshot() {
@@ -310,6 +377,7 @@ mod tests {
             "native replay must finish, not silently fall back"
         );
         assert!(replay.dirty.iter().any(|p| p == "Changed.md"));
+        assert!(!replay.dirty.iter().any(String::is_empty));
         assert!(prepare(&root, Some(&state), Some("wrong-snapshot")).force_all);
         // Simulate replacement volume: never reuse its old event ID.
         let (path, _) = replay.checkpoint.as_ref().unwrap();

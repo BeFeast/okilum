@@ -44,3 +44,4 @@ for name in \
 done
 # The shell has a single binary target; avoid example/test harnesses with zero matches.
 run_tests tessera-shell --bins platform::exact_macos_clipboard::native_tests
+run_tests tessera-shell --bins reader_replay::
