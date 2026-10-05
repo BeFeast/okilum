@@ -242,6 +242,22 @@ impl Store {
         delivery_id: Option<&str>,
         error_code: Option<&str>,
     ) -> Result<ReplyOperation, Error> {
+        // Validate the requested edge even on replay: an untouched queued row
+        // is not evidence that a transition back to queued ever succeeded.
+        use DeliveryState::*;
+        if !matches!(
+            (expected, next),
+            (Queued, Uncertain)
+                | (Queued, Rejected)
+                | (Uncertain, Accepted)
+                | (Uncertain, Delivered)
+                | (Uncertain, Rejected)
+                | (Accepted, Delivered)
+                | (Accepted, Uncertain)
+                | (Accepted, Rejected)
+        ) {
+            return Err(Error::InvalidExecutionTransition);
+        }
         let who = owner(who)?;
         if delivery_id
             .is_some_and(|v| v.is_empty() || v.len() > 512 || v.chars().any(char::is_control))
@@ -265,20 +281,7 @@ impl Store {
         {
             return Ok(old);
         }
-        use DeliveryState::*;
-        if old.state != expected
-            || !matches!(
-                (expected, next),
-                (Queued, Uncertain)
-                    | (Queued, Rejected)
-                    | (Uncertain, Accepted)
-                    | (Uncertain, Delivered)
-                    | (Uncertain, Rejected)
-                    | (Accepted, Delivered)
-                    | (Accepted, Uncertain)
-                    | (Accepted, Rejected)
-            )
-        {
+        if old.state != expected {
             return Err(Error::InvalidExecutionTransition);
         }
         let state = encode(&next)?;

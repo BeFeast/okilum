@@ -21,7 +21,7 @@ use tessera_inbox_domain::Capture;
 use uuid::Uuid;
 use webauthn_rs::prelude::{PublicKeyCredential, RegisterPublicKeyCredential};
 
-type Shared = Arc<Mutex<Auth>>;
+pub(crate) type Shared = Arc<Mutex<Auth>>;
 const SESSION: &str = "__Host-inbox-session";
 const FLOW: &str = "__Host-inbox-flow";
 
@@ -38,8 +38,18 @@ pub fn router_with_services(
     provider: Option<Arc<crate::provider::Provider>>,
     vault: Option<Arc<crate::vault::Vault>>,
 ) -> Router {
-    let origin = auth.origin.clone();
-    Router::new()
+    router_with_bridge(auth, provider, vault, None)
+}
+
+pub fn router_with_bridge(
+    auth: Auth,
+    provider: Option<Arc<crate::provider::Provider>>,
+    vault: Option<Arc<crate::vault::Vault>>,
+    bridge: Option<crate::bridge::Bridge>,
+) -> Router {
+    let origin = Some(auth.origin.clone());
+    let shared = Arc::new(Mutex::new(auth));
+    let browser = Router::new()
         .merge(crate::web::routes())
         .route("/health", get(|| async { "ok" }))
         .route("/api/v1/auth/register/start", post(register_start))
@@ -83,7 +93,11 @@ pub fn router_with_services(
         .layer(Extension(provider))
         .layer(DefaultBodyLimit::max(128 * 1024))
         .layer(middleware::from_fn_with_state(origin, guard))
-        .with_state(Arc::new(Mutex::new(auth)))
+        .with_state(shared.clone());
+    match bridge {
+        Some(bridge) => browser.merge(crate::bridge::router(shared, bridge)),
+        None => browser,
+    }
 }
 
 #[derive(Clone)]
@@ -98,7 +112,11 @@ fn request_log(
 ) -> Value {
     json!({"event":"http_request", "request_id":request_id, "method":method, "route":route, "status":status, "duration_ms":duration_ms, "error":error})
 }
-async fn guard(State(origin): State<String>, request: Request, next: Next) -> Response {
+pub(crate) async fn guard(
+    State(origin): State<Option<String>>,
+    request: Request,
+    next: Next,
+) -> Response {
     let start = std::time::Instant::now();
     let request_id = Uuid::new_v4();
     let method = match request.method().as_str() {
@@ -113,14 +131,22 @@ async fn guard(State(origin): State<String>, request: Request, next: Next) -> Re
         .get::<MatchedPath>()
         .map(|v| v.as_str().to_owned())
         .unwrap_or_else(|| "<unmatched>".into());
-    let rejected = !matches!(
-        *request.method(),
-        axum::http::Method::GET | axum::http::Method::HEAD
-    ) && request
-        .headers()
-        .get(header::ORIGIN)
-        .and_then(|v| v.to_str().ok())
-        != Some(origin.as_str());
+    let rejected = match origin.as_deref() {
+        Some(origin) => {
+            !matches!(
+                *request.method(),
+                axum::http::Method::GET | axum::http::Method::HEAD
+            ) && request
+                .headers()
+                .get(header::ORIGIN)
+                .and_then(|v| v.to_str().ok())
+                != Some(origin)
+        }
+        None => {
+            request.headers().contains_key(header::ORIGIN)
+                || request.headers().contains_key(header::COOKIE)
+        }
+    };
     let mut response = if rejected {
         ApiError(StatusCode::FORBIDDEN, "origin_rejected").into_response()
     } else {
@@ -172,7 +198,7 @@ async fn guard(State(origin): State<String>, request: Request, next: Next) -> Re
 }
 
 #[derive(Debug)]
-pub struct ApiError(StatusCode, &'static str);
+pub struct ApiError(pub(crate) StatusCode, pub(crate) &'static str);
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let mut response = (self.0, Json(json!({"error":self.1}))).into_response();
@@ -203,6 +229,9 @@ impl From<store::Error> for ApiError {
             store::Error::OperationConflict | store::Error::ItemConflict => {
                 Self(StatusCode::CONFLICT, "identity_conflict")
             }
+            store::Error::InvalidExecutionTransition => {
+                Self(StatusCode::CONFLICT, "invalid_delivery_transition")
+            }
             store::Error::ExecutionRevisionConflict => Self(StatusCode::CONFLICT, "stale_revision"),
             store::Error::InvalidExecution(_) => Self(StatusCode::BAD_REQUEST, "invalid_execution"),
             store::Error::PublicationConflict => Self(StatusCode::CONFLICT, "publication_conflict"),
@@ -224,7 +253,7 @@ impl From<store::Error> for ApiError {
         }
     }
 }
-async fn blocking<F>(state: Shared, operation: F) -> Result<Response, ApiError>
+pub(crate) async fn blocking<F>(state: Shared, operation: F) -> Result<Response, ApiError>
 where
     F: FnOnce(&mut Auth) -> Result<Response, ApiError> + Send + 'static,
 {
