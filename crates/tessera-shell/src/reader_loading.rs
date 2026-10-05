@@ -140,6 +140,11 @@ fn prepare_first_with_last_document(
         root.or(reusable.map(PathBuf::as_path))
             .and_then(|root| root.canonicalize().ok())
     };
+    let mut scoped_opts = opts.clone();
+    if let (Some(trace), Some(root)) = (&opts.diagnostics, &candidate_root) {
+        scoped_opts.diagnostics = Some(trace.for_root(root.clone()));
+    }
+    let opts = &scoped_opts;
     let snapshot = candidate_root.as_ref().and_then(|root| {
         let base = opts
             .index_dir
@@ -178,6 +183,11 @@ fn prepare_first_with_last_document(
         reader_open::OpenIntent::validate(&canonical_path, root, reusable.map(PathBuf::as_path))?
     };
     drop(validation_phase);
+    let mut validated_opts = opts.clone();
+    if let Some(trace) = &opts.diagnostics {
+        validated_opts.diagnostics = Some(trace.for_root(intent.root.clone()));
+    }
+    let opts = &validated_opts;
     cancel.check()?;
     let selection_phase = opts
         .diagnostics
@@ -331,9 +341,15 @@ fn prepare_rest_with_snapshot(
         cancel,
         send,
         &mut |path| std::fs::read(path),
-        |root| VaultWatcher::new(root).map_err(anyhow::Error::new),
+        |root| {
+            if tessera_core::watch::is_network_root(root) {
+                bail!("Auto-refresh is limited on this network drive. Use Rescan to check changes made by other clients.");
+            }
+            VaultWatcher::new(root).map_err(anyhow::Error::new)
+        },
         MAX_MEMORY_SEARCH_BYTES,
         previous,
+        true,
     )
 }
 
@@ -375,6 +391,7 @@ fn prepare_rest_with_io(
         watch,
         memory_search_budget,
         None,
+        false,
     )
 }
 
@@ -389,6 +406,7 @@ fn prepare_rest_with_io_and_snapshot(
     watch: impl FnOnce(&Path) -> Result<VaultWatcher>,
     memory_search_budget: usize,
     previous: Option<tessera_core::vault::warm::Snapshot>,
+    parallel: bool,
 ) -> Result<Event> {
     cancel.check()?;
     send.send_blocking(Event::Progress("Watching for changes".into()))
@@ -477,6 +495,7 @@ fn prepare_rest_with_io_and_snapshot(
     if let Some(snapshot) = &mut previous {
         snapshot.invalidate_paths(&replay.dirty);
     }
+    let force_source_read = replay.force_all || opts.force_source_read;
     loop {
         cancel.check()?;
         let mut last = std::time::Instant::now();
@@ -486,28 +505,35 @@ fn prepare_rest_with_io_and_snapshot(
             .diagnostics
             .as_ref()
             .map(|trace| trace.phase("background_reconcile"));
-        let (vault, mut snapshot, stats) = warm::reconcile_with_reader(
-            root,
-            previous.as_ref(),
-            replay.force_all,
-            &mut |phase, count| {
-                if phase != measured_phase {
-                    if !measured_phase.is_empty() {
-                        if let Some(trace) = &opts.diagnostics { trace.event("reconcile_phase", serde_json::json!({ "name": measured_phase, "duration_ms": phase_started.elapsed().as_secs_f64() * 1000., "notes": count })); }
+        let mut report = |phase: &str, count| {
+            if phase != measured_phase {
+                if !measured_phase.is_empty() {
+                    if let Some(trace) = &opts.diagnostics {
+                        trace.event("reconcile_phase", serde_json::json!({ "name": measured_phase, "duration_ms": phase_started.elapsed().as_secs_f64() * 1000., "notes": count }));
                     }
-                    measured_phase = phase.to_owned();
-                    phase_started = std::time::Instant::now();
                 }
-                cancel.check()?;
-                if last.elapsed() >= Duration::from_millis(80) {
-                    progress(send, format!("{phase} · {count} notes"))?;
-                    last = std::time::Instant::now();
-                }
-                Ok(())
-            },
-            read,
-        )
-        .with_context(|| {
+                measured_phase = phase.to_owned();
+                phase_started = std::time::Instant::now();
+            }
+            cancel.check()?;
+            if last.elapsed() >= Duration::from_millis(80) {
+                progress(send, format!("{phase} · {count} notes"))?;
+                last = std::time::Instant::now();
+            }
+            Ok(())
+        };
+        let reconciled = if parallel {
+            warm::reconcile_parallel(root, previous.as_ref(), force_source_read, &mut report)
+        } else {
+            warm::reconcile_with_reader(
+                root,
+                previous.as_ref(),
+                force_source_read,
+                &mut report,
+                read,
+            )
+        };
+        let (vault, mut snapshot, stats) = reconciled.with_context(|| {
             format!(
                 "Scan vault inventory {}",
                 tessera_core::vault::display_path(root)
@@ -518,7 +544,7 @@ fn prepare_rest_with_io_and_snapshot(
         }
         drop(reconcile_phase);
         if let Some(trace) = &opts.diagnostics {
-            trace.event("reconcile_stats", serde_json::json!({ "notes": vault.notes.len(), "read": stats.read, "reused": stats.reused, "unreadable": vault.unreadable.len(), "replay_force_all": replay.force_all, "reuse": stats.reuse, "graph_reused": stats.graph_reused }));
+            trace.event("reconcile_stats", serde_json::json!({ "notes": vault.notes.len(), "read": stats.read, "reused": stats.reused, "unreadable": vault.unreadable.len(), "replay_force_all": replay.force_all, "manual_force_read": opts.force_source_read, "reuse": stats.reuse, "graph_reused": stats.graph_reused }));
         }
         let search_phase = opts
             .diagnostics
@@ -1320,8 +1346,19 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.refresh_inventory_with_read(changes, false, window, cx);
+    }
+
+    fn refresh_inventory_with_read(
+        &mut self,
+        changes: tessera_core::Changes,
+        force_source_read: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.invalidate_links();
         let opts = Opts {
+            force_source_read,
             vault: Some(self.vault_root.clone()),
             note: Some(self.current_rel.clone()),
             diagnostics: self
@@ -1411,6 +1448,9 @@ impl Reader {
                             unreachable!()
                         };
                         let root = intent.root.clone();
+                        if let Some(trace) = &opts.diagnostics {
+                            opts.diagnostics = Some(trace.for_root(root.clone()));
+                        }
                         let previous = snapshot.take().map(|snapshot| *snapshot);
                         let (ack, accepted) = async_channel::bounded(1);
                         *published = Some(ack);
@@ -1500,6 +1540,12 @@ impl Reader {
                             .is_some_and(|l| l.active && l.generation == generation)
                         {
                             return;
+                        }
+                        if let Event::First { intent, .. } = &event {
+                            let load = this.loading.as_mut().unwrap();
+                            if let Some(trace) = &load.opts.diagnostics {
+                                load.opts.diagnostics = Some(trace.for_root(intent.root.clone()));
+                            }
                         }
                         let event_phase = match &event {
                             Event::First { .. } => Some("first_ui_stage"),
@@ -1653,6 +1699,15 @@ impl Reader {
                         })),
                 )
             })
+            .when(self.loading.as_ref().is_some_and(|load| !load.active &&
+                load.warnings.iter().any(|warning| warning.operation.starts_with("watch vault"))), |view| {
+                view.child(div().text_color(muted).child("Auto-refresh limited"))
+                    .child(Button::new("rescan-network-vault").small().label("Rescan")
+                    .tooltip("Automatic refresh is unavailable here. Use Rescan to check changes made by other clients.")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.refresh_inventory_with_read(tessera_core::Changes::default(), true, window, cx);
+                    })))
+            })
             .when_some(
                 self.loading.as_ref().filter(|load| {
                     if load.active {
@@ -1743,6 +1798,62 @@ mod tests {
     impl Drop for TestDirectory {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[gpui::test]
+    fn folder_picker_open_binds_worker_and_ui_diagnostics_to_resolved_root(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(gpui_component::init);
+        let temp = TestDirectory::new();
+        let root = temp.path().join("source");
+        let state = temp.path().join("state");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("first.md"), "# Positive control").unwrap();
+        let trace = reader_diagnostics::Trace::new(Some(state.clone()), None);
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        open_path: Some(root.clone()),
+                        diagnostics: Some(trace),
+                        index_dir: Some(temp.path().join("cache")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            Root::new(view, window, cx)
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let expected = tessera_core::vault::display_path(&root.canonicalize().unwrap());
+        let mut events = Vec::new();
+        for _ in 0..100 {
+            let text =
+                std::fs::read_to_string(state.join("reader-diagnostic.log")).unwrap_or_default();
+            events = text
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .collect();
+            if events.iter().any(|event| event["phase"] == "vault_ready") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        for phase in [
+            "first_worker_ready",
+            "reconcile_stats",
+            "first_ui_stage",
+            "vault_ready",
+        ] {
+            let event = events
+                .iter()
+                .find(|event| event["phase"] == phase)
+                .unwrap_or_else(|| panic!("missing positive control phase {phase}"));
+            assert_eq!(event["vault"], expected, "resolved context for {phase}");
         }
     }
 
@@ -1948,6 +2059,56 @@ mod tests {
         );
         assert_eq!(active.search("positivecontrol", 10).unwrap().len(), 1);
         assert_eq!(reused.search("positivecontrol", 10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn manual_rescan_reads_unchanged_revisions_and_replaces_search_contents() {
+        let temp = TestDirectory::new();
+        let root = temp.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("note.md"), "# Note\noldword").unwrap();
+        let mut opts = Opts {
+            index_dir: Some(temp.path().join("cache")),
+            ..Default::default()
+        };
+        let (send, _receive) = async_channel::unbounded();
+        drop(prepare_rest(&root, &opts, &Cancellation::default(), &send).unwrap());
+        let mut reads = 0;
+        let Event::Ready {
+            searcher: Some(searcher),
+            ..
+        } = prepare_rest_with_reader(&root, &opts, &Cancellation::default(), &send, &mut |_| {
+            reads += 1;
+            Ok(b"# Note\nnewword".to_vec())
+        })
+        .unwrap()
+        else {
+            panic!("warm Ready")
+        };
+        assert_eq!(reads, 0, "precise unchanged revision positive control");
+        assert_eq!(searcher.search("oldword", 10).unwrap().len(), 1);
+        drop(searcher);
+        opts.force_source_read = true;
+        let Event::Ready {
+            searcher: Some(searcher),
+            sources,
+            ..
+        } = prepare_rest_with_reader(&root, &opts, &Cancellation::default(), &send, &mut |_| {
+            reads += 1;
+            Ok(b"# Note\nnewword".to_vec())
+        })
+        .unwrap()
+        else {
+            panic!("manual Rescan Ready")
+        };
+        assert_eq!(reads, 1, "manual refresh reads despite unchanged metadata");
+        assert!(sources["note.md"].contains("newword"));
+        assert_eq!(searcher.search("oldword", 10).unwrap().len(), 0);
+        assert_eq!(searcher.search("newword", 10).unwrap().len(), 1);
+        assert_eq!(
+            std::fs::read_to_string(root.join("note.md")).unwrap(),
+            "# Note\noldword"
+        );
     }
 
     #[test]

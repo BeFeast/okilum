@@ -420,6 +420,8 @@ struct Opts {
     session_directory: Option<PathBuf>,
     exact_restore: bool,
     diagnostics: Option<reader_diagnostics::Trace>,
+    /// Explicit manual refresh verifies canonical bytes even with unchanged revisions.
+    force_source_read: bool,
     #[cfg(test)]
     preparation_hold: Option<async_channel::Receiver<()>>,
     #[cfg(test)]

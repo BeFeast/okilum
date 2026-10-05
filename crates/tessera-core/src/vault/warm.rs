@@ -638,59 +638,226 @@ pub fn reconcile_with_reader(
     checkpoint: &mut impl FnMut(&str, usize) -> Result<()>,
     read: &mut impl FnMut(&Path) -> std::io::Result<Vec<u8>>,
 ) -> Result<(Vault, Snapshot, ReconcileStats)> {
+    let (canonical, previous, mut vault) = begin_reconcile(root, previous, checkpoint)?;
+    let mut bank = CheckedSources::default();
+    for (count, note) in vault.notes.iter().enumerate() {
+        checkpoint("Checking notes", count)?;
+        bank.insert(
+            &note.path,
+            check_source(root, &note.path, previous, force_read, read),
+        );
+    }
+    vault.unreadable.extend(bank.unreadable);
+    finish_reconcile(
+        canonical,
+        vault,
+        previous,
+        bank.sources,
+        bank.stats,
+        checkpoint,
+    )
+}
+
+/// Bound simultaneous metadata/source I/O without sharing mutable Reader state.
+pub const SOURCE_READ_WORKERS: usize = 8;
+
+pub fn reconcile_parallel(
+    root: &Path,
+    previous: Option<&Snapshot>,
+    force_read: bool,
+    checkpoint: &mut impl FnMut(&str, usize) -> Result<()>,
+) -> Result<(Vault, Snapshot, ReconcileStats)> {
+    reconcile_parallel_with_reader(root, previous, force_read, checkpoint, &|path| {
+        std::fs::read(path)
+    })
+}
+
+/// The coordinator alone calls progress/cancellation; at most eight files are
+/// checked concurrently and at most sixteen completed sources wait in memory.
+pub fn reconcile_parallel_with_reader(
+    root: &Path,
+    previous: Option<&Snapshot>,
+    force_read: bool,
+    checkpoint: &mut impl FnMut(&str, usize) -> Result<()>,
+    read: &(impl Fn(&Path) -> std::io::Result<Vec<u8>> + Sync),
+) -> Result<(Vault, Snapshot, ReconcileStats)> {
+    use std::sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        mpsc,
+    };
+    let (canonical, previous, mut vault) = begin_reconcile(root, previous, checkpoint)?;
+    let notes = &vault.notes;
+    let next = AtomicUsize::new(0);
+    let stopped = AtomicBool::new(false);
+    let mut bank = CheckedSources::default();
+    std::thread::scope(|scope| -> Result<()> {
+        let (send, receive) = mpsc::sync_channel(SOURCE_READ_WORKERS * 2);
+        for _ in 0..SOURCE_READ_WORKERS.min(notes.len()) {
+            let send = send.clone();
+            let next = &next;
+            let stopped = &stopped;
+            scope.spawn(move || {
+                while !stopped.load(Ordering::Acquire) {
+                    let Some(note) = notes.get(next.fetch_add(1, Ordering::Relaxed)) else {
+                        break;
+                    };
+                    let result =
+                        check_source(root, &note.path, previous, force_read, &mut |p| read(p));
+                    if send.send((note.path.clone(), result)).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        drop(send);
+        let result = (|| -> Result<()> {
+            let mut completed = 0;
+            while completed < notes.len() {
+                checkpoint("Checking notes", completed)?;
+                match receive.recv_timeout(std::time::Duration::from_millis(20)) {
+                    Ok((path, result)) => {
+                        bank.insert(&path, result);
+                        completed += 1;
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        bail!("Source workers stopped before reconciliation completed")
+                    }
+                }
+            }
+            checkpoint("Checking notes", completed)
+        })();
+        stopped.store(true, Ordering::Release);
+        // Drop the receiver before scope joins: workers cannot remain blocked
+        // on a full result queue when the coordinator cancels or fails.
+        drop(receive);
+        result
+    })?;
+    vault.unreadable.extend(bank.unreadable);
+    finish_reconcile(
+        canonical,
+        vault,
+        previous,
+        bank.sources,
+        bank.stats,
+        checkpoint,
+    )
+}
+
+fn begin_reconcile<'a>(
+    root: &Path,
+    previous: Option<&'a Snapshot>,
+    checkpoint: &mut impl FnMut(&str, usize) -> Result<()>,
+) -> Result<(PathBuf, Option<&'a Snapshot>, Vault)> {
     let canonical = root
         .canonicalize()
         .with_context(|| format!("Resolve vault directory {}", display_path(root)))?;
     let previous = previous.filter(|p| p.root == canonical && p.schema == SCHEMA);
-    let mut vault = Vault::scan_metadata_with(root, checkpoint)?;
-    let mut sources = BTreeMap::new();
-    let mut stats = ReconcileStats::default();
-    for (count, note) in vault.notes.iter().enumerate() {
-        checkpoint("Checking notes", count)?;
-        let path = root.join(&note.path);
-        if super::cloud_placeholder(&path) {
-            vault.unreadable.push(UnreadableEntry {
-                path,
-                operation: "read note",
-                error: "iCloud placeholder is not downloaded".into(),
-            });
-            continue;
-        }
-        let before = SourceRevision::read(&path).ok();
-        let old = previous.and_then(|p| p.sources.get(&note.path));
-        if !stats.reuse.needs_read(before.as_ref(), old, force_read) {
-            sources.insert(note.path.clone(), old.unwrap().clone());
-            stats.reused += 1;
-            continue;
-        }
-        stats.read += 1;
-        match read(&path) {
-            Ok(bytes) => {
-                if let Err(error) = std::str::from_utf8(&bytes) {
-                    vault.unreadable.push(UnreadableEntry {
-                        path,
-                        operation: "decode note",
-                        error: error.to_string(),
-                    });
-                    continue;
-                }
-                let after = SourceRevision::read(&path).ok();
-                let stamp = (before == after).then_some(after).flatten();
-                sources.insert(
-                    note.path.clone(),
-                    Source {
-                        stamp,
-                        bytes: STANDARD.encode(bytes),
-                    },
-                );
+    let vault = Vault::scan_metadata_with(root, checkpoint)?;
+    Ok((canonical, previous, vault))
+}
+
+#[derive(Default)]
+struct CheckedSource {
+    source: Option<Source>,
+    unreadable: Option<UnreadableEntry>,
+    stats: ReconcileStats,
+}
+
+fn check_source(
+    root: &Path,
+    relative: &str,
+    previous: Option<&Snapshot>,
+    force_read: bool,
+    read: &mut impl FnMut(&Path) -> std::io::Result<Vec<u8>>,
+) -> CheckedSource {
+    let mut result = CheckedSource::default();
+    let stats = &mut result.stats;
+    let path = root.join(relative);
+    if super::cloud_placeholder(&path) {
+        result.unreadable = Some(UnreadableEntry {
+            path,
+            operation: "read note",
+            error: "iCloud placeholder is not downloaded".into(),
+        });
+        return result;
+    }
+    let before = SourceRevision::read(&path).ok();
+    let old = previous.and_then(|p| p.sources.get(relative));
+    if !stats.reuse.needs_read(before.as_ref(), old, force_read) {
+        result.source = Some(old.unwrap().clone());
+        stats.reused += 1;
+        return result;
+    }
+    stats.read += 1;
+    match read(&path) {
+        Ok(bytes) => {
+            if let Err(error) = std::str::from_utf8(&bytes) {
+                result.unreadable = Some(UnreadableEntry {
+                    path,
+                    operation: "decode note",
+                    error: error.to_string(),
+                });
+                return result;
             }
-            Err(error) => vault.unreadable.push(UnreadableEntry {
+            let after = SourceRevision::read(&path).ok();
+            let stamp = (before == after).then_some(after).flatten();
+            result.source = Some(Source {
+                stamp,
+                bytes: STANDARD.encode(bytes),
+            });
+        }
+        Err(error) => {
+            result.unreadable = Some(UnreadableEntry {
+                error: super::read_error(&path, &error),
                 path,
                 operation: "read note",
-                error: error.to_string(),
-            }),
+            })
         }
     }
+    result
+}
+
+#[derive(Default)]
+struct CheckedSources {
+    sources: BTreeMap<String, Source>,
+    unreadable: Vec<UnreadableEntry>,
+    stats: ReconcileStats,
+}
+impl CheckedSources {
+    fn insert(&mut self, path: &str, checked: CheckedSource) {
+        if let Some(source) = checked.source {
+            self.sources.insert(path.into(), source);
+        }
+        self.unreadable.extend(checked.unreadable);
+        self.stats.read += checked.stats.read;
+        self.stats.reused += checked.stats.reused;
+        let other = checked.stats.reuse;
+        let counters = &mut self.stats.reuse;
+        counters.forced += other.forced;
+        counters.missing_source += other.missing_source;
+        counters.invalidated_revision += other.invalidated_revision;
+        counters.unavailable_metadata += other.unavailable_metadata;
+        counters.imprecise_revision += other.imprecise_revision;
+        counters.changed_revision += other.changed_revision;
+        counters.coarse_mtime += other.coarse_mtime;
+        counters.precise_ctime += other.precise_ctime;
+        counters.mismatch.size += other.mismatch.size;
+        counters.mismatch.modified += other.mismatch.modified;
+        counters.mismatch.device += other.mismatch.device;
+        counters.mismatch.inode += other.mismatch.inode;
+        counters.mismatch.changed += other.mismatch.changed;
+    }
+}
+
+fn finish_reconcile(
+    canonical: PathBuf,
+    mut vault: Vault,
+    previous: Option<&Snapshot>,
+    sources: BTreeMap<String, Source>,
+    mut stats: ReconcileStats,
+    checkpoint: &mut impl FnMut(&str, usize) -> Result<()>,
+) -> Result<(Vault, Snapshot, ReconcileStats)> {
     vault.finish_scan_report();
     let same = stats.read == 0
         && previous.is_some_and(|p| p.entries == vault.entries && p.sources.len() == sources.len());
@@ -779,6 +946,183 @@ pub fn save_provisional(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parallel_reconciliation_matches_serial_sources_graph_errors_and_counters() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        for n in 0..48 {
+            std::fs::write(
+                root.join(format!("note-{n}.md")),
+                format!("# Note {n}\n[[target]] [link](target.md)"),
+            )
+            .unwrap();
+        }
+        std::fs::write(root.join("target.md"), "target").unwrap();
+        std::fs::write(root.join("denied.md"), "inaccessible").unwrap();
+        std::fs::write(root.join("invalid.md"), [0xff]).unwrap();
+        let read = |p: &Path| {
+            if p.file_name().unwrap() == "denied.md" {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "read denial positive control",
+                ))
+            } else {
+                std::fs::read(p)
+            }
+        };
+        let (serial_vault, serial, serial_stats) =
+            reconcile_with_reader(&root, None, false, &mut |_, _| Ok(()), &mut |p| read(p))
+                .unwrap();
+        let active = AtomicUsize::new(0);
+        let peak = AtomicUsize::new(0);
+        let calls = AtomicUsize::new(0);
+        let (parallel_vault, parallel, parallel_stats) =
+            reconcile_parallel_with_reader(&root, None, false, &mut |_, _| Ok(()), &|p| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                let in_flight = active.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(in_flight, Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                let result = read(p);
+                active.fetch_sub(1, Ordering::SeqCst);
+                result
+            })
+            .unwrap();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            51,
+            "all actual source reads observed"
+        );
+        assert!(
+            peak.load(Ordering::SeqCst) > 1,
+            "parallel I/O positive control"
+        );
+        assert!(peak.load(Ordering::SeqCst) <= SOURCE_READ_WORKERS);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert_eq!(serial.sources().unwrap(), parallel.sources().unwrap());
+        for path in serial.source_paths() {
+            assert_eq!(serial.source_revision(path), parallel.source_revision(path));
+        }
+        assert_eq!(serial.entries, parallel.entries);
+        assert_eq!(
+            serde_json::to_value(serial_vault.backlink_map).unwrap(),
+            serde_json::to_value(parallel_vault.backlink_map).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(serial_vault.unreadable).unwrap(),
+            serde_json::to_value(parallel_vault.unreadable).unwrap()
+        );
+        assert_eq!(
+            (serial_stats.read, serial_stats.reused),
+            (parallel_stats.read, parallel_stats.reused)
+        );
+        assert_eq!(
+            serde_json::to_value(serial_stats.reuse).unwrap(),
+            serde_json::to_value(parallel_stats.reuse).unwrap()
+        );
+    }
+
+    #[test]
+    fn parallel_cancellation_drops_a_full_result_queue_before_joining() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            mpsc, Arc,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        for n in 0..200 {
+            std::fs::write(root.join(format!("note-{n}.md")), "source").unwrap();
+        }
+        let reads = Arc::new(AtomicUsize::new(0));
+        let worker_reads = reads.clone();
+        let (send, receive) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = reconcile_parallel_with_reader(
+                &root,
+                None,
+                false,
+                &mut |phase, _| {
+                    if phase == "Checking notes" {
+                        let until = std::time::Instant::now() + std::time::Duration::from_secs(1);
+                        while worker_reads.load(Ordering::SeqCst) < SOURCE_READ_WORKERS * 3
+                            && std::time::Instant::now() < until
+                        {
+                            std::thread::sleep(std::time::Duration::from_millis(1));
+                        }
+                        bail!("cancellation positive control");
+                    }
+                    Ok(())
+                },
+                &|p| {
+                    worker_reads.fetch_add(1, Ordering::SeqCst);
+                    std::fs::read(p)
+                },
+            );
+            send.send(result.map(|_| ())).unwrap();
+        });
+        let error = receive
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .expect("cancellation must not deadlock scoped workers")
+            .unwrap_err();
+        assert!(error.to_string().contains("cancellation positive control"));
+        worker.join().unwrap();
+        assert!(
+            reads.load(Ordering::SeqCst) >= SOURCE_READ_WORKERS * 2,
+            "full result queue positive control"
+        );
+        assert!(
+            reads.load(Ordering::SeqCst) <= SOURCE_READ_WORKERS * 3,
+            "cancellation leaves only queued or in-flight work"
+        );
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn parallel_warm_reuse_detects_same_size_restored_mtime_edits() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("source.md");
+        let modified = UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        std::fs::write(&path, "[[Old]]").unwrap();
+        std::fs::write(root.join("New.md"), "target").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        let stamp = SourceRevision::read(&path).unwrap();
+        assert!(
+            stamp.is_precise(),
+            "precise native change time positive control"
+        );
+        let (_, cold, _) = reconcile_parallel(&root, None, false, &mut |_, _| Ok(())).unwrap();
+        let (_, warm, stats) =
+            reconcile_parallel_with_reader(&root, Some(&cold), false, &mut |_, _| Ok(()), &|_| {
+                panic!("unchanged sources must not be read")
+            })
+            .unwrap();
+        assert_eq!((stats.read, stats.reused), (0, 2));
+        assert!(stats.graph_reused);
+        std::fs::write(&path, "[[New]]").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        let (vault, updated, stats) =
+            reconcile_parallel(&root, Some(&warm), false, &mut |_, _| Ok(())).unwrap();
+        assert_eq!((stats.read, stats.reused), (1, 1));
+        assert_eq!(stats.reuse.mismatch.modified, 0);
+        assert_eq!(stats.reuse.mismatch.changed, 1);
+        assert_eq!(updated.source("source.md").as_deref(), Some("[[New]]"));
+        assert_eq!(vault.backlinks("New.md").len(), 1);
+    }
 
     #[cfg(unix)]
     #[test]
@@ -890,6 +1234,157 @@ mod tests {
             vault.backlinks(&note_path(twin)).is_empty(),
             "outside file cannot redirect to vault-root namesake"
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "manual paired bounded source reading with actual filesystem latency"]
+    fn parallel_source_latency_profile() {
+        #[link(name = "dl")]
+        unsafe extern "C" {
+            fn dlsym(
+                handle: *mut std::ffi::c_void,
+                name: *const std::ffi::c_char,
+            ) -> *mut std::ffi::c_void;
+        }
+        let (phase, count): (
+            unsafe extern "C" fn(*const std::ffi::c_char),
+            unsafe extern "C" fn(i32) -> std::ffi::c_ulong,
+        ) = unsafe {
+            let set = dlsym(std::ptr::null_mut(), c"tessera_slow_fs_phase".as_ptr());
+            let count = dlsym(std::ptr::null_mut(), c"tessera_slow_fs_count".as_ptr());
+            assert!(
+                !set.is_null() && !count.is_null(),
+                "use the slow-vault-fs preload"
+            );
+            (
+                std::mem::transmute::<
+                    *mut std::ffi::c_void,
+                    unsafe extern "C" fn(*const std::ffi::c_char),
+                >(set),
+                std::mem::transmute::<
+                    *mut std::ffi::c_void,
+                    unsafe extern "C" fn(i32) -> std::ffi::c_ulong,
+                >(count),
+            )
+        };
+        let set = |name: &'static std::ffi::CStr| unsafe { phase(name.as_ptr()) };
+        let temp = tempfile::Builder::new()
+            .prefix("tessera-source-latency-")
+            .tempdir()
+            .unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir_all(root.join("notes")).unwrap();
+        std::fs::write(root.join("target.md"), "# Target").unwrap();
+        for n in 0..5000 {
+            std::fs::write(
+                root.join(format!("notes/note-{n}.md")),
+                format!(
+                    "# Note {n}\n\n[[target]]\n\n[Target](target.md)\n\n{}",
+                    "Source paragraph.\n\n".repeat(60)
+                ),
+            )
+            .unwrap();
+        }
+        let read_ms: u64 = std::env::var("TESSERA_SLOW_FS_MS")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let metadata_us: u64 = std::env::var("TESSERA_SLOW_FS_METADATA_US")
+            .unwrap()
+            .parse()
+            .unwrap();
+        set(c"positive_control");
+        let start = std::time::Instant::now();
+        SourceRevision::read(&root.join("target.md")).unwrap();
+        assert!(start.elapsed() >= std::time::Duration::from_micros(metadata_us));
+        let start = std::time::Instant::now();
+        assert_eq!(std::fs::read(root.join("target.md")).unwrap(), b"# Target");
+        assert!(start.elapsed() >= std::time::Duration::from_millis(read_ms));
+        set(c"setup");
+        let samples: usize = std::env::var("TESSERA_CLOUD_PROFILE_SAMPLES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(2);
+        for sample in 0..samples {
+            let mut serial: Option<(Vault, Snapshot)> = None;
+            for parallel in [false, true] {
+                set(if parallel {
+                    c"parallel_sources"
+                } else {
+                    c"serial_sources"
+                });
+                let before: Vec<_> = (0..4).map(|op| unsafe { count(op) }).collect();
+                let start = std::time::Instant::now();
+                let mut phase_name = String::new();
+                let mut phase_start = start;
+                let mut phases = BTreeMap::new();
+                let mut checkpoint = |name: &str, _: usize| {
+                    if phase_name != name {
+                        if !phase_name.is_empty() {
+                            phases.insert(
+                                phase_name.clone(),
+                                phase_start.elapsed().as_secs_f64() * 1000.,
+                            );
+                        }
+                        phase_name = name.to_owned();
+                        phase_start = std::time::Instant::now();
+                    }
+                    Ok(())
+                };
+                let (vault, snapshot, stats) = if parallel {
+                    reconcile_parallel(&root, None, false, &mut checkpoint)
+                } else {
+                    reconcile_with_reader(&root, None, false, &mut checkpoint, &mut |p| {
+                        std::fs::read(p)
+                    })
+                }
+                .unwrap();
+                let ms = start.elapsed().as_secs_f64() * 1000.;
+                phases.insert(phase_name, phase_start.elapsed().as_secs_f64() * 1000.);
+                let calls: Vec<_> = (0..4)
+                    .map(|op| unsafe { count(op) } - before[op as usize])
+                    .collect();
+                set(c"setup");
+                assert_eq!((stats.read, stats.reused), (5001, 0));
+                assert!(vault.inventory_complete && vault.unreadable.is_empty());
+                assert_eq!(vault.backlinks("target.md").len(), 10000);
+                assert!(
+                    calls[0] >= 5001 && calls[1] >= 5001 && calls[2] >= 10002,
+                    "actual worker open/read/stat injection positive control: {calls:?}"
+                );
+                if let Some((old_vault, old_snapshot)) = serial.take() {
+                    assert_eq!(old_snapshot.sources().unwrap(), snapshot.sources().unwrap());
+                    assert_eq!(old_snapshot.entries, snapshot.entries);
+                    assert_eq!(
+                        serde_json::to_value(old_vault.backlink_map).unwrap(),
+                        serde_json::to_value(&vault.backlink_map).unwrap()
+                    );
+                } else {
+                    serial = Some((vault.clone(), snapshot.clone()));
+                }
+                eprintln!("SOURCE_LATENCY_PROFILE sample={sample} parallel={parallel} notes=5001 read={} total_ms={ms:.2} phases={} actual_calls={calls:?}; open/read delay {read_ms}ms, stat delay {metadata_us}us; same host/session, search/persist/native SMB excluded", stats.read, serde_json::to_string(&phases).unwrap());
+                if parallel {
+                    set(c"parallel_sources");
+                    let before = unsafe { count(0) };
+                    let start = std::time::Instant::now();
+                    let (_, _, warm_stats) = reconcile_parallel_with_reader(
+                        &root,
+                        Some(&snapshot),
+                        false,
+                        &mut |_, _| Ok(()),
+                        &|_| panic!("unchanged warm source must not be read"),
+                    )
+                    .unwrap();
+                    let warm_ms = start.elapsed().as_secs_f64() * 1000.;
+                    assert_eq!(unsafe { count(0) }, before, "no hidden warm source opens");
+                    set(c"setup");
+                    assert_eq!((warm_stats.read, warm_stats.reused), (0, 5001));
+                    assert!(warm_stats.graph_reused);
+                    eprintln!("SOURCE_LATENCY_WARM sample={sample} read=0 reused=5001 graph_reused=true reconcile_ms={warm_ms:.2}");
+                }
+            }
+        }
     }
 
     #[cfg(target_os = "linux")]
