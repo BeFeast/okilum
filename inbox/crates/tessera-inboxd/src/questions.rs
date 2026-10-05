@@ -41,6 +41,19 @@ pub struct ObservedQuestion {
     #[serde(flatten)]
     pub question: Question,
     pub pending_operation_id: Option<Uuid>,
+    pub observed_at: i64,
+    pub source_fresh: bool,
+}
+pub const SOURCE_FRESH_SECONDS: i64 = 30;
+fn seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+fn fresh(observed: i64) -> bool {
+    let age = seconds().checked_sub(observed);
+    observed > 0 && age.is_some_and(|age| (0..=SOURCE_FRESH_SECONDS).contains(&age))
 }
 fn owner(who: OwnerId) -> Result<String, Error> {
     if who.0.is_nil() {
@@ -113,11 +126,12 @@ impl Store {
                 return Err(Error::OperationConflict);
             }
             if sequence == cursor {
-                return if body == prior {
-                    Ok(())
-                } else {
-                    Err(Error::OperationConflict)
-                };
+                if body != prior {
+                    return Err(Error::OperationConflict);
+                }
+                tx.execute("UPDATE execution_questions SET observed_at=?1 WHERE owner_id=?2 AND question_id=?3", params![seconds(),who,question.id.to_string()])?;
+                tx.commit()?;
+                return Ok(());
             }
         }
         let other: Option<String>=tx.query_row("SELECT question_id FROM execution_questions WHERE owner_id=?1 AND source_identity=?2",params![who,identity],|r|r.get(0)).optional()?;
@@ -125,6 +139,10 @@ impl Store {
             return Err(Error::OperationConflict);
         }
         tx.execute("INSERT INTO execution_questions(owner_id,question_id,project_id,source_identity,observed_sequence,body) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(owner_id,question_id) DO UPDATE SET observed_sequence=excluded.observed_sequence,body=excluded.body",params![who,question.id.to_string(),question.project_id.to_string(),identity,sequence,body])?;
+        tx.execute(
+            "UPDATE execution_questions SET observed_at=?1 WHERE owner_id=?2 AND question_id=?3",
+            params![seconds(), who, question.id.to_string()],
+        )?;
         tx.commit()?;
         Ok(())
     }
@@ -134,24 +152,27 @@ impl Store {
         id: Uuid,
     ) -> Result<Option<ObservedQuestion>, Error> {
         let who = owner(who)?;
-        let body: Option<String> = self
+        let body: Option<(String,i64)> = self
             .connection
             .query_row(
-                "SELECT body FROM execution_questions WHERE owner_id=?1 AND question_id=?2",
+                "SELECT body,observed_at FROM execution_questions WHERE owner_id=?1 AND question_id=?2",
                 params![who, id.to_string()],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?,r.get(1)?)),
             )
             .optional()?;
-        let Some(body) = body else {
+        let Some((body, observed_at)) = body else {
             return Ok(None);
         };
         let mut question: Question = decode(body)?;
         let pending: Option<String>=self.connection.query_row("SELECT operation_id FROM execution_replies WHERE owner_id=?1 AND question_id=?2 AND state!='rejected'",params![who,id.to_string()],|r|r.get(0)).optional()?;
-        if pending.is_some() {
+        let source_fresh = fresh(observed_at);
+        if pending.is_some() || !source_fresh {
             question.can_reply = false;
         }
         Ok(Some(ObservedQuestion {
             question,
+            observed_at,
+            source_fresh,
             pending_operation_id: pending
                 .map(|p| Uuid::parse_str(&p).map_err(|_| Error::InvalidStoredIdentity))
                 .transpose()?,
@@ -212,6 +233,14 @@ impl Store {
             )
             .optional()?;
         let question: Question = decode(body.ok_or(Error::MissingItem)?)?;
+        let observed_at: i64 = tx.query_row(
+            "SELECT observed_at FROM execution_questions WHERE owner_id=?1 AND question_id=?2",
+            params![who, request.question_id.to_string()],
+            |r| r.get(0),
+        )?;
+        if !fresh(observed_at) {
+            return Err(Error::ExecutionRevisionConflict);
+        }
         if question.source_revision != request.expected_revision {
             return Err(Error::ExecutionRevisionConflict);
         }

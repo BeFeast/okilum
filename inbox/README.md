@@ -287,3 +287,22 @@ Only definite source evidence may advance to accepted/delivered/rejected; an
 HTTP acknowledgement is not proof that the original executor consumed an answer.
 This PR adds no source adapter or dispatcher. Source reconciliation, local bridge
 recovery, question freshness and the web answer surface follow in PR 2b.
+
+## Web question answers (slice 2, PR 2c)
+
+Signed-in users see Questions for you, grouped by existing execution projects.
+Opening a question is read-only. Sending is explicit and online-only: source
+observations expire after 30 seconds on the server, and the open form requires a
+fresh check after 20 seconds. Schema 8 timestamps trusted observations; migrated
+questions start stale. Exact operation replay remains available after expiry.
+
+The web client saves the exact consent payload under the authenticated owner in
+local storage before sending. Reload/Check status reads that operation; an
+unconfirmed send may only retry its saved ID and payload. It never uses the offline
+capture outbox. Storage failure prevents sending. Refused requests can be cleared
+explicitly while keeping the answer text; accepted/uncertain operations cannot be
+cleared into a new send. Accepted is distinct from executor receipt.
+
+The source bridge remains opt-in. This PR adds the web surface and freshness gate;
+CT119 deployment and an actual T3 pilot must validate the combined flow before
+claiming slice-2 acceptance. Maestro stays disconnected.

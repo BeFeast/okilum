@@ -3,3 +3,14 @@
 #publish-form{display:grid;gap:12px;margin-top:16px}#publish-form input,#publish-form select{font:inherit;padding:12px;border:1px solid var(--line);border-radius:8px;min-width:0}#draft{min-height:180px}#publications{padding-left:20px;overflow-wrap:anywhere}
 
 #publish-form [aria-invalid="true"]{outline:2px solid #a43d32;outline-offset:2px;background:#fff7f5}.field-error{color:#9a3027;font-size:.85rem;margin:0 0 8px}#publish-form :focus-visible{outline:3px solid var(--focus);outline-offset:3px}
+
+.executor-panel { margin-top: 2rem; }
+#executor-questions { list-style: none; padding: 0; }
+#executor-dialog { max-width: min(680px, calc(100vw - 2rem)); }
+#executor-source { overflow-wrap: anywhere; }
+#executor-answer-fields fieldset { border: 1px solid #d6d6ce; border-radius: 10px; padding: 1rem; margin: 1rem 0; min-width: 0; }
+#executor-answer-fields legend { font-weight: 600; overflow-wrap: anywhere; }
+#executor-answer-fields .answer-option { display: flex; align-items: start; gap: .6rem; margin: .7rem 0; }
+#executor-answer-fields input { width: auto; margin: .2rem 0; flex-shrink: 0; }
+#executor-answer-fields textarea { width: 100%; box-sizing: border-box; }
+#executor-answer-fields span { overflow-wrap: anywhere; }
