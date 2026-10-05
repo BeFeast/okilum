@@ -7920,17 +7920,22 @@ fn reader_item_menu(
     let menu = {
         let rename_reader = reader.downgrade();
         let rename_path = relative.clone();
-        let menu = menu.when(relative.ends_with(".md"), |menu| {
-            menu.item(
-                gpui_component::menu::PopupMenuItem::new("Rename / move…").on_click(
-                    move |_, window, cx| {
-                        let _ = rename_reader.update(cx, |this, cx| {
-                            this.begin_rename(rename_path.clone(), window, cx)
-                        });
-                    },
-                ),
-            )
-        });
+        let menu = menu.when(
+            Path::new(&relative)
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("md")),
+            |menu| {
+                menu.item(
+                    gpui_component::menu::PopupMenuItem::new("Rename / move…").on_click(
+                        move |_, window, cx| {
+                            let _ = rename_reader.update(cx, |this, cx| {
+                                this.begin_rename(rename_path.clone(), window, cx)
+                            });
+                        },
+                    ),
+                )
+            },
+        );
         let reader = reader.downgrade();
         menu.separator().item(
             gpui_component::menu::PopupMenuItem::new("Move to Trash").on_click(

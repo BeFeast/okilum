@@ -30,6 +30,9 @@ pub(super) struct Renaming {
 
 impl Reader {
     pub(super) fn rename_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.file_preview.is_some() {
+            return;
+        }
         self.begin_rename(self.current_rel.clone(), window, cx);
     }
 
