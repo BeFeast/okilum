@@ -1,0 +1,28 @@
+# Mirror main (and release tags created from now on) to the public GitHub repository.
+# Forgejo stays primary; GitHub receives only main, so internal branches, PR refs
+# and pre-publication history never leave Forgejo.
+name: github-mirror
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: github-mirror
+  cancel-in-progress: false
+
+jobs:
+  push:
+    runs-on: light
+    timeout-minutes: 10
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Push main to GitHub
+        env:
+          MIRROR_TOKEN: ${{ secrets.TESSERA_GITHUB_MIRROR }}
+        run: |
+          set -euo pipefail
+          git push "https://x-access-token:${MIRROR_TOKEN}@github.com/BeFeast/tessera.git" "HEAD:refs/heads/main"
