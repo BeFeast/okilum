@@ -48,6 +48,16 @@ pub fn router_with_services(
         .route("/api/v1/auth/login/finish", post(login_finish))
         .route("/api/v1/auth/logout", post(logout))
         .route("/api/v1/session", get(session))
+        .route(
+            "/api/v1/projects",
+            get(execution_projects).post(save_execution_project),
+        )
+        .route("/api/v1/projects/{id}", get(execution_project))
+        .route("/api/v1/briefs", post(save_execution_brief))
+        .route(
+            "/api/v1/briefs/{id}/revisions/{revision}",
+            get(execution_brief),
+        )
         .route("/api/v1/items", get(items).post(capture))
         .route("/api/v1/items/{id}", get(item))
         .route(
@@ -183,6 +193,8 @@ impl From<store::Error> for ApiError {
             store::Error::OperationConflict | store::Error::ItemConflict => {
                 Self(StatusCode::CONFLICT, "identity_conflict")
             }
+            store::Error::ExecutionRevisionConflict => Self(StatusCode::CONFLICT, "stale_revision"),
+            store::Error::InvalidExecution(_) => Self(StatusCode::BAD_REQUEST, "invalid_execution"),
             store::Error::PublicationConflict => Self(StatusCode::CONFLICT, "publication_conflict"),
             store::Error::InvalidPublication => {
                 Self(StatusCode::BAD_REQUEST, "invalid_publication")
@@ -544,4 +556,118 @@ mod log_tests {
         assert_eq!(event["error"], "origin_rejected");
         assert!(!event.to_string().contains("not-for-logs"));
     }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectPage {
+    #[serde(default)]
+    after: String,
+    #[serde(default = "project_page_size")]
+    limit: u32,
+}
+fn project_page_size() -> u32 {
+    50
+}
+async fn execution_projects(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    Query(page): Query<ProjectPage>,
+) -> Result<Response, ApiError> {
+    let session = token(&headers, SESSION)?;
+    blocking(state, move |auth| {
+        let owner = auth.authenticate(&session, now())?;
+        let projects = auth
+            .store
+            .execution_projects(owner, &page.after, page.limit)?;
+        let next_after = projects.last().map(|p| p.id.to_string());
+        Ok(Json(json!({"projects": projects, "next_after": next_after})).into_response())
+    })
+    .await
+}
+async fn execution_project(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Response, ApiError> {
+    let session = token(&headers, SESSION)?;
+    blocking(state, move |auth| {
+        let owner = auth.authenticate(&session, now())?;
+        let project = auth
+            .store
+            .execution_project(owner, id)?
+            .ok_or(store::Error::MissingItem)?;
+        Ok(Json(project).into_response())
+    })
+    .await
+}
+async fn save_execution_project(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    Json(body): Json<tessera_inbox_domain::execution::SaveProject>,
+) -> Result<Response, ApiError> {
+    let session = token(&headers, SESSION)?;
+    blocking(state, move |auth| {
+        let owner = auth.authenticate(&session, now())?;
+        match auth.store.save_execution_project(owner, &body) {
+            Ok(project) => Ok(Json(project).into_response()),
+            Err(store::Error::ExecutionRevisionConflict) => {
+                let current = auth.store.execution_project(owner, body.project_id)?;
+                let mut response = (
+                    StatusCode::CONFLICT,
+                    Json(json!({"error":"stale_revision", "current":current})),
+                )
+                    .into_response();
+                response
+                    .extensions_mut()
+                    .insert(SafeError("stale_revision"));
+                Ok(response)
+            }
+            Err(error) => Err(error.into()),
+        }
+    })
+    .await
+}
+async fn execution_brief(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    Path((id, revision)): Path<(Uuid, u64)>,
+) -> Result<Response, ApiError> {
+    let session = token(&headers, SESSION)?;
+    blocking(state, move |auth| {
+        let owner = auth.authenticate(&session, now())?;
+        let brief = auth
+            .store
+            .execution_brief(owner, id, revision)?
+            .ok_or(store::Error::MissingItem)?;
+        Ok(Json(brief).into_response())
+    })
+    .await
+}
+async fn save_execution_brief(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    Json(body): Json<tessera_inbox_domain::execution::SaveBrief>,
+) -> Result<Response, ApiError> {
+    let session = token(&headers, SESSION)?;
+    blocking(state, move |auth| {
+        let owner = auth.authenticate(&session, now())?;
+        match auth.store.save_execution_brief(owner, &body) {
+            Ok(brief) => Ok(Json(brief).into_response()),
+            Err(store::Error::ExecutionRevisionConflict) => {
+                let current = auth.store.latest_execution_brief(owner, body.brief_id)?;
+                let mut response = (
+                    StatusCode::CONFLICT,
+                    Json(json!({"error":"stale_revision", "current":current})),
+                )
+                    .into_response();
+                response
+                    .extensions_mut()
+                    .insert(SafeError("stale_revision"));
+                Ok(response)
+            }
+            Err(error) => Err(error.into()),
+        }
+    })
+    .await
 }

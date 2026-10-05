@@ -1001,6 +1001,10 @@ impl Reader {
             return;
         }
         self.document_preparation_generation = self.document_preparation_generation.wrapping_add(1);
+        #[cfg(unix)]
+        {
+            self.creation = None;
+        }
         self.vault_root = pending.intent.root.clone();
         // No predecessor-root capability survives publication. Eligibility is
         // installed only by the matching background preference result.

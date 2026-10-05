@@ -275,3 +275,35 @@ reads. Snapshot reconciliation took 6,745 ms; candidate-index construction added
 1,490 ms when performed inline. It now runs after Ready, with a root/generation
 check before publishing, so that work does not extend the readiness dependency.
 These are core preparation timings, not an end-to-end macOS startup measurement.
+
+## Inline creation and vault templates (#466)
+
+New File / New Folder in the folder context menu or Folders header starts an
+editable tree row. ⌘N (Ctrl+N on Linux) uses the current note's folder and opens
+the sidebar. Enter creates; Esc cancels. Names may include nested folders;
+Markdown names imply `.md`. Invalid names and collisions remain inline.
+Intermediate folders created before a later failure are kept; no existing file
+is replaced. Windows remains read-only.
+
+New notes use `Note.md` from `_Assets/Templates/`, or the folder named in
+`.obsidian/templates.json`. If Note.md is absent, the built-in source has
+`type: Note`, `created: YYYY-MM-DD`, and an H1 matching the typed filename stem.
+The inline ⌄ picker chooses another template or the built-in note for this
+creation only; the next New File returns to Note.md. No per-folder overrides.
+
+Templates support `{{title}}`, `{{date}}`, `{{time}}`, `{{date:FORMAT}}`,
+and `{{time:FORMAT}}`. Formats support Moment tokens YYYY, MM, DD, HH, mm, ss
+and bracketed literals; bare date/time use Obsidian's dateFormat/timeFormat or
+YYYY-MM-DD / HH:mm. Unknown variables and unsupported formats remain literal.
+Substitution is one pass: inserted titles are never interpreted as templates.
+Other source bytes, including BOM and line endings, stay unchanged.
+
+The templates folder appears normally in the tree. New File from a template
+uses the vault root, and new-note destinations inside the template collection
+are rejected. Templates and settings must be regular UTF-8 files, at most 1 MiB;
+symlinks, invalid settings and unreadable selected templates abort with an error.
+Windows stays read-only. Orphan drafts and active writers block note creation.
+
+Inline creation uses an explicit Settings → Files template-folder preference when
+present, ahead of the Obsidian folder setting. Unrelated hidden `_Assets` branches
+stay hidden when no template collection exists.

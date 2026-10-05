@@ -11,8 +11,9 @@ Public installer URLs:
 - https://updates.befeast.com/tessera/windows/beta/Setup.exe
 - https://updates.befeast.com/tessera/windows/stable/Setup.exe
 
-Stable is the default update preference, including when installing a beta
-installer. To receive every main build, select **Settings → Updates → Beta**.
+Beta is the default update preference, matching the packaged beta channel and
+the first published feed. To receive only promoted releases, select
+**Settings → Updates → Stable** after a stable release is available.
 This explicit preference is retained outside the installation. Promotion uses
 identical installer/package bytes and serves `releases.stable.json`; the SDK's
 explicit channel setting selects the matching feed. Switching back to stable

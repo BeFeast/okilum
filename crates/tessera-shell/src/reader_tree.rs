@@ -49,6 +49,7 @@ pub struct Tree {
     /// A hidden path revealed for navigation; its branch is shown until the
     /// reveal moves elsewhere.
     revealed_hidden: Option<String>,
+    templates_folder: String,
 }
 
 impl Tree {
@@ -56,6 +57,7 @@ impl Tree {
         if self.root != root {
             *self = Self::default();
             self.root = root.to_path_buf();
+            self.templates_folder = "_Assets/Templates".into();
         }
         self.children.clear();
         self.kinds.clear();
@@ -118,7 +120,7 @@ impl Tree {
             if !path.is_empty() {
                 let kind = self.kinds[&path];
                 rows.push(Row {
-                    hidden: hidden(&path),
+                    hidden: hidden(&path) && !self.template_branch(&path),
                     label: path.rsplit('/').next().unwrap_or(&path).to_string(),
                     expanded: self.expanded.contains(&path),
                     kind,
@@ -154,11 +156,28 @@ impl Tree {
 
     fn visible(&self, path: &str) -> bool {
         self.show_hidden
+            || self.template_branch(path)
             || !hidden(path)
             || self
                 .revealed_hidden
                 .as_deref()
                 .is_some_and(|target| target == path || target.starts_with(&format!("{path}/")))
+    }
+
+    fn template_branch(&self, path: &str) -> bool {
+        !self.templates_folder.is_empty()
+            && self.kinds.get(&self.templates_folder) == Some(&EntryKind::Directory)
+            && (path == self.templates_folder
+                || self.templates_folder.starts_with(&format!("{path}/"))
+                || path.starts_with(&format!("{}/", self.templates_folder)))
+    }
+
+    #[cfg(unix)]
+    pub fn set_templates_folder(&mut self, folder: String) {
+        if self.templates_folder != folder {
+            self.templates_folder = folder;
+            self.flatten();
+        }
     }
 
     pub fn show_hidden(&self) -> bool {
@@ -320,6 +339,41 @@ mod tests {
             kind,
         }
     }
+    #[test]
+    fn templates_are_visible_without_revealing_other_hidden_branches() {
+        let entries: Vec<_> = [
+            "_Assets",
+            "_Assets/Templates",
+            "_Assets/Private",
+            "_Assets/Templates/Note.md",
+            "_Assets/Private/secret.md",
+        ]
+        .iter()
+        .map(|path| VaultEntry {
+            path: (*path).into(),
+            kind: if path.ends_with(".md") {
+                EntryKind::Markdown
+            } else {
+                EntryKind::Directory
+            },
+        })
+        .collect();
+        let mut tree = Tree::default();
+        tree.refresh(Path::new("/vault"), &entries);
+        assert!(tree.rows.iter().any(|r| r.path == "_Assets" && !r.hidden));
+        tree.toggle("_Assets");
+        assert!(tree
+            .rows
+            .iter()
+            .any(|r| r.path == "_Assets/Templates" && !r.hidden));
+        assert!(!tree.rows.iter().any(|r| r.path == "_Assets/Private"));
+        tree.toggle("_Assets/Templates");
+        assert!(tree
+            .rows
+            .iter()
+            .any(|r| r.path == "_Assets/Templates/Note.md" && !r.hidden));
+    }
+
     #[test]
     fn hierarchy_reveal_keyboard_refresh_and_root_isolation() {
         use EntryKind::*;

@@ -26,10 +26,13 @@ fn valid_folder(folder: &str) -> bool {
         })
 }
 pub fn load(root: &Path, state: &Path) -> Result<String> {
+    Ok(configured_folder(root, state)?.unwrap_or_else(|| DEFAULT_FOLDER.into()))
+}
+pub(super) fn configured_folder(root: &Path, state: &Path) -> Result<Option<String>> {
     let path = preferences_path(root, state)?;
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(DEFAULT_FOLDER.into()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e.into()),
     };
     let value: serde_json::Value = serde_json::from_slice(&bytes)?;
@@ -40,7 +43,7 @@ pub fn load(root: &Path, state: &Path) -> Result<String> {
         valid_folder(folder),
         "Choose a templates folder inside the vault"
     );
-    Ok(folder.into())
+    Ok(Some(folder.into()))
 }
 pub fn save(root: &Path, state: &Path, chosen: &Path) -> Result<String> {
     let root = root.canonicalize()?;

@@ -16,7 +16,10 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        if self.selected_file().is_empty() || self.file_preview.is_some() {
+        if self.active_timeline().is_some_and(|t| t.selected.is_some())
+            || self.selected_file().is_empty()
+            || self.file_preview.is_some()
+        {
             return self.render_main(window, cx);
         }
         let height = px(48.);
@@ -238,7 +241,7 @@ impl Reader {
                                     Box::new(ToggleSource),
                                 )
                                 .menu("Rename / move…", Box::new(RenameNote))
-                                .menu("Note history…", Box::new(NoteSourceHistory))
+                                .menu("Note history", Box::new(NoteSourceHistory))
                                 .separator();
                         }
                         for (label, action) in [
@@ -322,6 +325,7 @@ impl Reader {
         self.document_preparation_generation = self.document_preparation_generation.wrapping_add(1);
         self.navigation_generation = self.navigation_generation.wrapping_add(1);
         self.pending_open_document = None;
+        self.timeline = None;
         self.current_rel.clear();
         self.current_title.clear();
         self.note_source.clear();

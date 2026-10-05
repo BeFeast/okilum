@@ -117,6 +117,113 @@ async fn real_webauthn_session_capture_restart_login_and_lost_response_replay() 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(identity["owner_id"], owner.0.to_string());
     let session = cookie(&cookies, "__Host-inbox-session=");
+    // Draft APIs share the actual passkey session and origin boundary. Saving a
+    // brief does not grant authority to its opaque target or launch anything.
+    let project_id = Uuid::new_v4();
+    let project = json!({"operation_id":Uuid::new_v4(), "project_id":project_id,
+        "expected_revision":0, "draft":{"title":"Pilot","status":"Planning","next_step":"Review brief"}});
+    for (cookie, origin, expected) in [
+        (None, Some(ORIGIN), StatusCode::UNAUTHORIZED),
+        (
+            Some(session.as_str()),
+            Some("https://wrong.example"),
+            StatusCode::FORBIDDEN,
+        ),
+    ] {
+        assert_eq!(
+            call(
+                &app,
+                "POST",
+                "/api/v1/projects",
+                project.clone(),
+                cookie,
+                origin
+            )
+            .await
+            .0,
+            expected
+        );
+    }
+    let (status, first, _) = call(
+        &app,
+        "POST",
+        "/api/v1/projects",
+        project.clone(),
+        Some(&session),
+        Some(ORIGIN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(first["revision"], 1);
+    let mut edit = project.clone();
+    edit["operation_id"] = json!(Uuid::new_v4());
+    let (status, conflict, _) = call(
+        &app,
+        "POST",
+        "/api/v1/projects",
+        edit.clone(),
+        Some(&session),
+        Some(ORIGIN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(conflict["current"], first);
+    edit["expected_revision"] = json!(1);
+    edit["draft"]["status"] = json!("Doing");
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/v1/projects",
+            edit,
+            Some(&session),
+            Some(ORIGIN)
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/v1/projects",
+            project,
+            Some(&session),
+            Some(ORIGIN)
+        )
+        .await
+        .1,
+        first
+    );
+    let brief_id = Uuid::new_v4();
+    let brief = json!({"operation_id":Uuid::new_v4(),"project_id":project_id,"brief_id":brief_id,
+        "expected_revision":0,"title":"Pilot brief","text":"Exact draft","target_id":"unconfigured-pilot"});
+    let (status, stored, _) = call(
+        &app,
+        "POST",
+        "/api/v1/briefs",
+        brief,
+        Some(&session),
+        Some(ORIGIN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(stored["revision"], 1);
+    let brief_path = format!("/api/v1/briefs/{brief_id}/revisions/1");
+    assert_eq!(
+        call(&app, "GET", &brief_path, Value::Null, None, None)
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        call(&app, "GET", &brief_path, Value::Null, Some(&session), None)
+            .await
+            .1,
+        stored
+    );
+
     assert_eq!(
         call(
             &app,
