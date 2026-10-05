@@ -227,3 +227,53 @@ the next manifest/source bank for the following launch. Canonical notes are not
 modified. `IMPORTED_MTIME_RELAUNCH` reports cache loading, reconcile and persistence
 separately; the syscall counters for each child verify zero opens/reads inside
 reconcile rather than relying on inherited parent memory.
+
+## Directory replay amplification (#502/#487)
+
+The beta 6536 native log confirms source reuse on both the local copy and iCloud.
+The slow iCloud open receives 24 replay paths including the vault root: the old
+callback converts the root to an empty dirty path, and source invalidation clears
+all 5092 saved revisions. Three notes are new; all 5095 are read and reconciliation
+takes 26.24 seconds. The zero tuple-mismatch counters in that run do not establish
+stable metadata: invalidated revisions bypass tuple comparison.
+
+The following unchanged iCloud launch reads zero/reuses all 5095 sources, retains
+the graph, paints the tree/document at 0.444 seconds, reconciles in 278 ms, and
+publishes Ready at 1.274 seconds. No FileProvider content-version or ctime relaxation
+is required by this evidence.
+
+Root and known directory replay events now leave source revisions available for
+the complete startup metadata/revision walk. That walk discovers changed children,
+new/deleted paths, and replacements. Exact file and unknown non-root paths still
+invalidate sources; incomplete/dropped/coalesced history and root/volume replacement
+retain full fallback. `replay_invalidations` adds `directory_paths` and
+`root_directory_changed`, independently of explicit `dirty_paths`/`whole_root_dirty`.
+Directory events are not discarded from inventory reconciliation.
+
+Portable regressions cover unchanged root/subdirectory events, newly created notes,
+same-size child edits with restored mtime, backlinks and forced file invalidation.
+The native PR gate executes the real FSEvents replay test and callback tests for
+directory classification and invalid-history flags.
+
+Run the paired 5001-note root-event probe using the shell test executable:
+
+```sh
+TESSERA_SLOW_FS_PREFIX=/tmp/tessera-replay-directory- \
+TESSERA_SLOW_FS_MS=2 TESSERA_SLOW_FS_METADATA_US=100 \
+LD_PRELOAD="$PWD/target/slow-vault-fs.so" \
+  target/debug/deps/tessera-<hash> \
+  reader_replay::tests::directory_replay_cloud_profile \
+  --exact --ignored --nocapture --test-threads=1
+```
+
+The probe compares the previous empty-root invalidation with the production replay
+classifier on the same persisted source bank. Separate positive controls assert
+actual source and metadata syscall delays. It refuses any unchanged source read
+after directory classification and asserts preserved backlinks. Cache load/persist,
+search and native FileProvider behavior are outside the timed reconcile.
+
+Same Linux host/session with 2 ms source I/O and 100 microsecond metadata latency:
+legacy root invalidation takes 34493.30/34318.37 ms (5001 reads), compared with
+865.94/862.98 ms after classification (zero reads, graph reused). The fixture
+measures the replay-invalidation consequence, not native FSEvents delivery,
+cache load/persist, search, or final presentation.

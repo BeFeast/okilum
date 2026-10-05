@@ -467,6 +467,8 @@ fn prepare_rest_with_io_and_snapshot(
             serde_json::json!({
                 "dirty_paths": replay.dirty.len(),
                 "whole_root_dirty": replay.dirty.iter().any(String::is_empty),
+                "directory_paths": replay.directories.len(),
+                "root_directory_changed": replay.directories.iter().any(String::is_empty),
                 "force_all": replay.force_all,
             }),
         );
