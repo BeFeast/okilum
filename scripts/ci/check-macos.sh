@@ -45,3 +45,7 @@ done
 # The shell has a single binary target; avoid example/test harnesses with zero matches.
 run_tests tessera-shell --bins platform::exact_macos_clipboard::native_tests
 run_tests tessera-shell --bins reader_replay::
+
+# #477: real Quick Look providers, bounded Retina output and cancellation.
+export TESSERA_THUMBNAIL_EVIDENCE_DIR="${RUNNER_TEMP}/thumbnail-evidence"
+run_tests tessera-shell --bins reader_thumbnail::native_tests

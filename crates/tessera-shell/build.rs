@@ -6,7 +6,7 @@ fn run(command: &mut Command) {
             .status()
             .expect("cannot invoke macOS compiler")
             .success(),
-        "macOS updater bridge build failed"
+        "macOS bridge build failed"
     );
 }
 
@@ -70,6 +70,23 @@ fn main() {
     );
     println!("cargo:rerun-if-changed=../../vendor/sparkle/Sparkle.framework");
     let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
+    println!("cargo:rerun-if-changed=src/thumbnail/bridge.m");
+    let thumbnail = out.join("thumbnail.o");
+    run(Command::new("xcrun")
+        .args([
+            "clang",
+            "-fobjc-arc",
+            "-fblocks",
+            "-Wall",
+            "-Werror",
+            "-arch",
+            "arm64",
+            "-mmacosx-version-min=11.0",
+            "-c",
+            "src/thumbnail/bridge.m",
+            "-o",
+        ])
+        .arg(&thumbnail));
     let object = out.join("updater.o");
     run(Command::new("xcrun")
         .args([
@@ -87,11 +104,13 @@ fn main() {
     run(Command::new("xcrun")
         .args(["ar", "crs"])
         .arg(out.join("libtessera_updater.a"))
-        .arg(object));
+        .arg(object)
+        .arg(thumbnail));
     println!("cargo:rustc-link-search=native={}", out.display());
     println!("cargo:rustc-link-lib=static=tessera_updater");
     println!("cargo:rustc-link-search=framework={}", framework.display());
     println!("cargo:rustc-link-lib=framework=Sparkle");
     println!("cargo:rustc-link-lib=framework=AppKit");
+    println!("cargo:rustc-link-lib=framework=QuickLookThumbnailing");
     println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path/../Frameworks");
 }

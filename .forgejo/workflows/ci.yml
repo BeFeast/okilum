@@ -189,6 +189,12 @@ jobs:
       - name: Compile Reader and run quick native regressions
         shell: bash
         run: bash scripts/ci/check-macos.sh
+      - name: Save native thumbnail evidence
+        if: always()
+        uses: https://code.forgejo.org/actions/upload-artifact@v3
+        with:
+          name: native-thumbnail-evidence
+          path: ${{ runner.temp }}/thumbnail-evidence/
 
   # Keep the existing protected-branch context. Skipped/cancelled/failed native
   # jobs never pass a code PR; docs-only PRs and main retain Linux-only CI here.
