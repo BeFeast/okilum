@@ -188,6 +188,7 @@ jobs:
         shell: bash
         run: bash scripts/ci/check-macos.sh
       - name: Save native thumbnail evidence
+        if: always()
         uses: https://code.forgejo.org/actions/upload-artifact@v3
         with:
           name: native-thumbnail-evidence

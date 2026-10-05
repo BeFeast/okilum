@@ -347,6 +347,16 @@ mod native_tests {
             .unwrap();
         for path in [&pdf, &office, &photo] {
             let png = generate(path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            if let Ok(output) = std::env::var("TESSERA_THUMBNAIL_EVIDENCE_DIR") {
+                std::fs::create_dir_all(&output).unwrap();
+                std::fs::write(
+                    Path::new(&output)
+                        .join(path.file_name().unwrap())
+                        .with_extension("png"),
+                    &png,
+                )
+                .unwrap();
+            }
             let decoded = image::load_from_memory(&png).unwrap();
             assert!(
                 decoded.width() > 512 && decoded.height() > 512,
@@ -362,16 +372,6 @@ mod native_tests {
                     center[2] > center[0].saturating_add(40),
                     "PDF must show its blue first page, not its red second page: {center:?}"
                 );
-            }
-            if let Ok(output) = std::env::var("TESSERA_THUMBNAIL_EVIDENCE_DIR") {
-                std::fs::create_dir_all(&output).unwrap();
-                std::fs::write(
-                    Path::new(&output)
-                        .join(path.file_name().unwrap())
-                        .with_extension("png"),
-                    png,
-                )
-                .unwrap();
             }
         }
         // Cancellation must not leave a dangling Rust callback or prevent the
