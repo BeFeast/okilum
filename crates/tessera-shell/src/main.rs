@@ -220,6 +220,7 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("escape", Dismiss, Some("Reader > QuickOpen > Input")),
         KeyBinding::new("escape", Dismiss, Some("InlineCreate > Input")),
         KeyBinding::new("secondary-n", NewNote, ctx),
+        #[cfg(unix)]
         KeyBinding::new("secondary-backspace", DeleteNote, Some("Reader && !Input")),
         KeyBinding::new("secondary-w", CloseNote, ctx),
         KeyBinding::new("secondary-w", CloseNote, Some("Reader > Input")),
@@ -5186,7 +5187,6 @@ impl Render for Reader {
             .on_action(cx.listener(|this, _: &HistoryVersionPrevious, window, cx| {
                 this.step_timeline(false, window, cx)
             }))
-
             .when(cfg!(unix), |view| {
                 #[cfg(unix)]
                 let view = view.on_action(

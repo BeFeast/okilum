@@ -1,7 +1,32 @@
 //! Explicit system Trash with confirmation and a non-overwriting Undo action.
 use super::*;
 use gpui_component::{notification::Notification, WindowExt};
+use std::os::unix::fs::MetadataExt;
 use tessera_core::file_editor::FileEditor;
+
+type Inventory = Vec<(PathBuf, u64, u64, u64, i64, i64)>;
+fn inventory(path: &Path) -> anyhow::Result<Inventory> {
+    let mut pending = vec![path.to_owned()];
+    let mut entries = Vec::new();
+    while let Some(path) = pending.pop() {
+        let meta = std::fs::symlink_metadata(&path)?;
+        if meta.is_dir() {
+            for entry in std::fs::read_dir(&path)? {
+                pending.push(entry?.path());
+            }
+        }
+        entries.push((
+            path,
+            meta.dev(),
+            meta.ino(),
+            meta.len(),
+            meta.mtime(),
+            meta.mtime_nsec(),
+        ));
+    }
+    entries.sort();
+    Ok(entries)
+}
 
 fn under(path: &str, parent: &str) -> bool {
     Path::new(path).starts_with(parent)
@@ -55,17 +80,19 @@ impl Reader {
                     .count()
             })
             .sum();
-        // Release only this window's saved editor; other writers and orphaned
-        // drafts remain protected by the same locks as ordinary source saves.
-        if under(self.selected_file(), &relative) {
-            self.editing = None;
-        }
+        let own_path = self
+            .editing
+            .as_ref()
+            .filter(|_| under(self.selected_file(), &relative))
+            .map(|_| root.join(self.selected_file()));
         self.trash_pending = true;
         window.push_notification("Preparing to move to Trash…", cx);
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
             let scan_root = root.clone(); let scan_relative = relative.clone();
+            let scan_own = own_path.clone(); let scan_state = state.clone();
             let prepared = cx.background_executor().spawn(async move {
+                let before = inventory(&scan_root.join(&scan_relative))?;
                 let mut pending = vec![scan_root.join(&scan_relative)];
                 let mut count = 0usize; let mut locks = Vec::new();
                 while let Some(path) = pending.pop() {
@@ -74,14 +101,15 @@ impl Reader {
                         for entry in std::fs::read_dir(path)? { pending.push(entry?.path()); }
                     } else {
                         count += 1;
-                        if meta.is_file() && path.extension().is_some_and(|e| e.eq_ignore_ascii_case("md")) {
-                            locks.push(FileEditor::reserve_destination(&path, &state.join("editor-drafts"))?);
+                        if scan_own.as_ref() != Some(&path) && meta.is_file() && path.extension().is_some_and(|e| e.eq_ignore_ascii_case("md")) {
+                            locks.push(FileEditor::reserve_destination(&path, &scan_state.join("editor-drafts"))?);
                         }
                     }
                 }
-                Ok::<_, anyhow::Error>((count, locks))
+                anyhow::ensure!(inventory(&scan_root.join(&scan_relative))? == before, "The item changed while preparing Trash. Try again");
+                Ok::<_, anyhow::Error>((count, locks, before))
             }).await;
-            let (count, _locks) = match prepared {
+            let (count, _locks, before) = match prepared {
                 Ok(value) => value,
                 Err(error) => { let _ = this.update_in(cx, |this, window, cx| {
                     this.trash_pending = false;
@@ -92,7 +120,7 @@ impl Reader {
                 let (send, receive) = async_channel::bounded(1);
                 let shown = this.update_in(cx, |this, window, cx| {
                     if this.vault_root != root { this.trash_pending = false; return false; }
-                    let message = format!("Move {relative} to system Trash? {count} files; {incoming} incoming links. Links will remain unchanged. You can Undo from the notification.");
+                    let message = format!("Move {relative} to system Trash? {count} files; {incoming} incoming links in the current index. Links will remain unchanged. You can Undo from the notification.");
                     window.open_dialog(cx, move |dialog, _, _| {
                         let yes = send.clone(); let no = send.clone(); let close = send.clone();
                         dialog.title("Move to Trash").child(message.clone())
@@ -111,19 +139,34 @@ impl Reader {
                     let _ = this.update(cx, |this, cx| {this.trash_pending = false; cx.notify();}); return;
                 }
             }
-            let allowed = this.update_in(cx, |this, window, cx| {
-                if this.vault_root != root { this.trash_pending = false; return false; }
-                if under(this.selected_file(), &relative) { this.show_empty_vault(window, cx); }
-                true
-            }).unwrap_or(false);
-            if !allowed { return; }
+            let held_editor = match this.update_in(cx, |this, _, cx| {
+                if this.vault_root != root || !this.save_source(cx) {
+                    this.trash_pending = false; cx.notify(); return None;
+                }
+                let editor = if own_path.as_ref() == Some(&root.join(this.selected_file())) {
+                    this.editing.take()
+                } else { None };
+                Some(editor)
+            }) { Ok(Some(editor)) => editor, _ => return };
+            let held_path = own_path.clone();
+            let has_editor = held_editor.is_some();
+            let move_root = root.clone(); let move_relative = relative.clone();
             let result = cx.background_executor().spawn(async move {
-                reader_trash_fs::move_to_trash(&root, Path::new(&relative))
+                let _late_guard = match own_path.filter(|_| !has_editor) {
+                    Some(path) => Some(FileEditor::reserve_destination(&path, &state.join("editor-drafts"))?),
+                    None => None,
+                };
+                anyhow::ensure!(inventory(&move_root.join(&move_relative))? == before, "The item changed since confirmation. Nothing was moved; try again");
+                reader_trash_fs::move_to_trash(&move_root, Path::new(&move_relative))
             }).await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.trash_pending = false;
                 match result {
                     Ok(trashed) => {
+                        if this.vault_root == root && under(this.selected_file(), &relative) {
+                            this.editing = None;
+                            this.show_empty_vault(window, cx);
+                        }
                         let reader = cx.entity().downgrade();
                         window.push_notification(Notification::new().message("Moved to Trash").action(move |_, _, _| {
                             let trashed = trashed.clone(); let reader = reader.clone();
@@ -132,7 +175,12 @@ impl Reader {
                             })
                         }), cx);
                     }
-                    Err(error) => window.push_notification(format!("Cannot move to Trash: {error:#}"), cx),
+                    Err(error) => {
+                        if this.vault_root == root && held_path.as_ref() == Some(&root.join(this.selected_file())) && this.editing.is_none() {
+                            this.editing = held_editor;
+                        }
+                        window.push_notification(format!("Cannot move to Trash: {error:#}"), cx);
+                    }
                 }
                 cx.notify();
             });
@@ -225,6 +273,8 @@ mod tests {
         let reader = reader.unwrap();
         visual.run_until_parked();
         reader.update_in(visual, |reader, window, cx| {
+            reader.toggle_source(window, cx);
+            assert!(reader.editing.is_some());
             reader.delete_path("target.md".into(), window, cx)
         });
         visual.run_until_parked();
@@ -234,7 +284,10 @@ mod tests {
         assert!(root.join("target.md").exists());
         visual.simulate_click(cancel.center(), Modifiers::default());
         visual.run_until_parked();
-        reader.read_with(visual, |reader, _| assert!(!reader.trash_pending));
+        reader.read_with(visual, |reader, _| {
+            assert!(!reader.trash_pending);
+            assert!(reader.editing.is_some());
+        });
         assert_eq!(
             std::fs::read_to_string(root.join("target.md")).unwrap(),
             "# Target\n"
@@ -242,6 +295,31 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(root.join("source.md")).unwrap(),
             "[[target]]\n"
+        );
+        std::fs::create_dir(root.join("Folder")).unwrap();
+        std::fs::write(root.join("Folder/first.md"), "first").unwrap();
+        reader.update_in(visual, |reader, window, cx| {
+            reader.delete_path("Folder".into(), window, cx)
+        });
+        visual.run_until_parked();
+        let confirm = visual
+            .debug_bounds("confirm-trash")
+            .expect("folder confirmation");
+        // A new writer arrived after the displayed count and lock set were built.
+        std::fs::write(root.join("Folder/new.md"), "new arrival").unwrap();
+        visual.simulate_click(confirm.center(), Modifiers::default());
+        visual.run_until_parked();
+        reader.read_with(visual, |reader, _| {
+            assert!(!reader.trash_pending);
+            assert!(reader.editing.is_some());
+        });
+        assert_eq!(
+            std::fs::read_to_string(root.join("Folder/first.md")).unwrap(),
+            "first"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("Folder/new.md")).unwrap(),
+            "new arrival"
         );
     }
 }

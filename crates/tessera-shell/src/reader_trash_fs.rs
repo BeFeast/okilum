@@ -37,14 +37,14 @@ fn parent(root: &Path, relative: &Path) -> Result<(rustix::fd::OwnedFd, std::ffi
 
 pub fn move_to_trash(root: &Path, relative: &Path) -> Result<Trashed> {
     let root = root.canonicalize()?;
-    let _parent = parent(&root, relative)?;
+    let (source_parent, source_name) = parent(&root, relative)?;
     let source = root.join(relative);
     let metadata = fs::symlink_metadata(&source)?;
     ensure!(
         metadata.is_file() || metadata.is_dir(),
         "Choose a regular file or folder, not a symbolic link"
     );
-    let (location, info) = system_trash(&source)?;
+    let (location, info) = system_trash(&source, &source_parent, &source_name)?;
     let metadata = fs::symlink_metadata(&location)
         .context("The item reached Trash, but Undo is unavailable. Restore it from system Trash")?;
     Ok(Trashed {
@@ -80,7 +80,11 @@ impl Trashed {
 }
 
 #[cfg(target_os = "linux")]
-fn system_trash(source: &Path) -> Result<(PathBuf, Option<PathBuf>)> {
+fn system_trash(
+    source: &Path,
+    source_parent: &rustix::fd::OwnedFd,
+    source_name: &std::ffi::OsStr,
+) -> Result<(PathBuf, Option<PathBuf>)> {
     let data = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
@@ -105,11 +109,31 @@ fn system_trash(source: &Path) -> Result<(PathBuf, Option<PathBuf>)> {
         }
         mount.join(format!(".Trash-{}", rustix::process::getuid().as_raw()))
     };
-    freedesktop_trash(source, &trash)
+    freedesktop_trash_at(source, &trash, source_parent, source_name)
+}
+
+#[cfg(test)]
+fn freedesktop_trash(source: &Path, trash: &Path) -> Result<(PathBuf, Option<PathBuf>)> {
+    let source_parent = open(
+        source.parent().context("Missing parent")?,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    freedesktop_trash_at(
+        source,
+        trash,
+        &source_parent,
+        source.file_name().context("Missing filename")?,
+    )
 }
 
 #[cfg(any(target_os = "linux", test))]
-fn freedesktop_trash(source: &Path, trash: &Path) -> Result<(PathBuf, Option<PathBuf>)> {
+fn freedesktop_trash_at(
+    source: &Path,
+    trash: &Path,
+    source_parent: &rustix::fd::OwnedFd,
+    source_name: &std::ffi::OsStr,
+) -> Result<(PathBuf, Option<PathBuf>)> {
     use std::io::Write;
     use std::os::unix::fs::DirBuilderExt;
     let files = trash.join("files");
@@ -162,11 +186,16 @@ fn freedesktop_trash(source: &Path, trash: &Path) -> Result<(PathBuf, Option<Pat
             now.second()
         )?;
         file.sync_all()?;
+        let destination = open(
+            &files,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?;
         renameat_with(
-            rustix::fs::CWD,
-            source,
-            rustix::fs::CWD,
-            &location,
+            source_parent,
+            source_name,
+            &destination,
+            name.as_str(),
             RenameFlags::NOREPLACE,
         )
         .context("Cannot move to system Trash on this filesystem; the original item was kept")?;
@@ -180,10 +209,35 @@ fn freedesktop_trash(source: &Path, trash: &Path) -> Result<(PathBuf, Option<Pat
 }
 
 #[cfg(target_os = "macos")]
-fn system_trash(source: &Path) -> Result<(PathBuf, Option<PathBuf>)> {
+fn system_trash(
+    source: &Path,
+    source_parent: &rustix::fd::OwnedFd,
+    source_name: &std::ffi::OsStr,
+) -> Result<(PathBuf, Option<PathBuf>)> {
     use objc2_foundation::{NSFileManager, NSString, NSURL};
     let path = source.to_str().context("Use a UTF-8 path")?;
-    let url = NSURL::fileURLWithPath(&NSString::from_str(path));
+    // Cocoa's file-reference URL follows the verified object rather than a
+    // subsequently replaced pathname, while retaining native Trash metadata.
+    let object = openat(
+        source_parent,
+        source_name,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    let object_file = std::fs::File::from(object);
+    let object = object_file.metadata()?;
+    let url = NSURL::fileURLWithPath(&NSString::from_str(path))
+        .fileReferenceURL()
+        .context("Cannot identify this item for system Trash; the original was kept")?;
+    let resolved = url
+        .filePathURL()
+        .and_then(|url| url.path())
+        .context("The source moved before Trash")?;
+    let actual = fs::symlink_metadata(PathBuf::from(resolved.to_string()))?;
+    ensure!(
+        (actual.dev(), actual.ino()) == (object.dev(), object.ino()),
+        "The source changed before Trash; try again"
+    );
     let mut resulting = None;
     NSFileManager::defaultManager()
         .trashItemAtURL_resultingItemURL_error(&url, Some(&mut resulting))
@@ -280,5 +334,28 @@ mod tests {
         assert!(trashed.restore().is_err());
         assert!(!root.join("note.md").exists());
         assert_eq!(fs::read(root.join("kept")).unwrap(), b"original");
+    }
+    #[test]
+    fn trash_move_uses_the_verified_parent_after_path_replacement() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        fs::create_dir_all(root.join("Parent")).unwrap();
+        fs::write(root.join("Parent/note.md"), b"inside").unwrap();
+        let (fd, name) = parent(&root, Path::new("Parent/note.md")).unwrap();
+        fs::rename(root.join("Parent"), root.join("Original")).unwrap();
+        let outside = temp.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("note.md"), b"outside").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("Parent")).unwrap();
+        let (location, _) = freedesktop_trash_at(
+            &root.join("Parent/note.md"),
+            &temp.path().join("Trash"),
+            &fd,
+            &name,
+        )
+        .unwrap();
+        assert_eq!(fs::read(location).unwrap(), b"inside");
+        assert_eq!(fs::read(outside.join("note.md")).unwrap(), b"outside");
+        assert!(!root.join("Original/note.md").exists());
     }
 }
