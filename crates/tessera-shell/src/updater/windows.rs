@@ -7,14 +7,14 @@ use std::sync::{
 use velopack::{sources::HttpSource, HttpOptions, UpdateCheck, UpdateManager, UpdateOptions};
 
 static AVAILABLE: OnceLock<bool> = OnceLock::new();
-static BETA: AtomicBool = AtomicBool::new(false);
+static BETA: AtomicBool = AtomicBool::new(true);
 static BUSY: AtomicBool = AtomicBool::new(false);
 
 fn manager() -> Result<UpdateManager, velopack::Error> {
-    let channel = if beta() { "beta" } else { "stable" };
+    let (url, channel) = super::windows_feed::endpoint(beta());
     UpdateManager::new(
         HttpSource::new_with_options(
-            format!("https://updates.befeast.com/tessera/windows/{channel}/"),
+            url,
             HttpOptions {
                 TimeoutMilliseconds: 300_000,
                 ..Default::default()
@@ -30,6 +30,7 @@ fn manager() -> Result<UpdateManager, velopack::Error> {
 }
 
 pub(super) fn start() {
+    BETA.store(super::windows_feed::default_beta(), Ordering::Relaxed);
     let installed = manager().is_ok_and(|m| !m.get_is_portable());
     AVAILABLE.get_or_init(|| installed);
     if let Ok(root) = crate::reader_history::state_directory() {

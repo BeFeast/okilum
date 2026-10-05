@@ -5,6 +5,8 @@
 mod macos;
 #[cfg(windows)]
 mod windows;
+#[cfg(any(windows, test))]
+mod windows_feed;
 
 use gpui::{App, MenuItem};
 
