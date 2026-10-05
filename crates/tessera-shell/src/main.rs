@@ -58,6 +58,8 @@ mod reader_startup;
 mod reader_table_tests;
 #[cfg(unix)]
 mod reader_templates;
+#[cfg(any(target_os = "macos", all(test, unix)))]
+mod reader_thumbnail;
 #[cfg(unix)]
 mod reader_timeline;
 #[cfg(windows)]

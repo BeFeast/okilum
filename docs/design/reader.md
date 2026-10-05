@@ -479,3 +479,24 @@ history and offers Undo in a persistent toast. Both restore and undo retain the
 existing dirty-editor and exact-current-byte guards; a racing edit is never silently
 overwritten. Restore failures appear in the banner. Recovery of unsaved drafts
 continues to use its existing dialog.
+
+### macOS file previews (#477, step 1)
+
+Opening a non-Markdown file on macOS requests a Quick Look thumbnail in the
+existing document view. PDFs show a first-page preview; Office documents, still
+images and video posters depend on the installed system provider. The document
+header keeps its glyph actions. Space opens full Quick Look. This step does not
+add PDF page navigation, text selection or search.
+
+The bitmap fits the available column, with quiet file metadata and a Space hint
+below it. Loading and unavailable states retain the header actions. SVG and
+animated image formats keep the existing renderer. Linux/Windows retain their
+existing file view.
+
+Thumbnail requests use 1024 points at 2x, at most 2048 physical pixels per side,
+a 32 MiB encoded-byte limit and a ten-second wait. Each selected file owns one
+request; navigation cancels it and releases the bitmap. Requests and decoding are
+asynchronous. The file revision is checked before publishing the result; a changed
+or missing source yields the unavailable state. Reopening always requests a fresh
+preview. Thumbnails are memory-only derived data; they never write to the vault.
+The preview is a GPUI image, so palettes and menus retain normal overlay ordering.

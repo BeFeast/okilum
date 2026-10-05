@@ -108,6 +108,8 @@ pub(crate) struct FilePreview {
     pub path: PathBuf,
     pub details: String,
     pub image: bool,
+    #[cfg(any(target_os = "macos", all(test, unix)))]
+    pub thumbnail: Option<Entity<reader_thumbnail::Thumbnail>>,
 }
 impl FilePreview {
     pub fn load(root: &Path, rel: &str) -> anyhow::Result<Self> {
@@ -135,6 +137,8 @@ impl FilePreview {
             })
             .unwrap_or_else(|| "Unknown modified date".into());
         Ok(Self {
+            #[cfg(any(target_os = "macos", all(test, unix)))]
+            thumbnail: None,
             rel: rel.into(),
             path,
             details: format!("{} · {} bytes · {modified}", ext.to_uppercase(), meta.len()),
@@ -274,6 +278,20 @@ impl Reader {
                     self.history_ix = self.history.len() - 1;
                 }
                 self.document_header_hidden = px(0.);
+                #[cfg(target_os = "macos")]
+                let preview = {
+                    let mut preview = preview;
+                    if reader_thumbnail::eligible(rel) {
+                        preview.thumbnail = Some(cx.new(|cx| {
+                            reader_thumbnail::Thumbnail::new(
+                                self.vault_root.clone(),
+                                rel.into(),
+                                cx,
+                            )
+                        }));
+                    }
+                    preview
+                };
                 self.file_preview = Some(preview);
                 self.find_open = false;
                 self.link_notice = None;
@@ -306,6 +324,38 @@ impl Reader {
                     window,
                     cx,
                 ))
+                .into_any_element();
+        }
+        #[cfg(any(target_os = "macos", all(test, unix)))]
+        if let Some(thumbnail) = &preview.thumbnail {
+            return v_flex()
+                .id("reader-file-preview")
+                .key_context("ReaderFile")
+                .track_focus(&self.focus_handle)
+                .size_full()
+                .overflow_y_scroll()
+                .gap_3()
+                .child(self.render_document_header(cx))
+                .child(
+                    v_flex()
+                        .flex_none()
+                        .px_6()
+                        .pb_6()
+                        .gap_3()
+                        .child(thumbnail.clone())
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(preview.details.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("Quick Look preview · Space to open"),
+                        ),
+                )
                 .into_any_element();
         }
         let mut view = v_flex()

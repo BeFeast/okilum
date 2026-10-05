@@ -1,0 +1,1 @@
+Synthetic, original fixtures for macOS Quick Look tests. `page.pdf` is a blue first page and a red second page, both with white text; `document.docx` is one page with “Tessera Office preview”. No user data. MIT, like the repository.
