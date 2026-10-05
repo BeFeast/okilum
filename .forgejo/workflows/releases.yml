@@ -1,0 +1,49 @@
+# Beta is automatic; stable requires an explicit owner-approved build.
+name: releases
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    inputs:
+      build:
+        description: 'Owner-approved macOS beta build to promote on ALL OSes; empty refreshes Beta only'
+        required: false
+        default: ''
+
+# Explicit stable promotion shares the appcast lock with macos-release.
+# Scheduled Beta never edits the appcast or queues against the M4 release.
+# Platform beta publishers finish independently; only complete source sets qualify.
+concurrency:
+  group: ${{ inputs.build != '' && 'tessera-macos-release' || 'tessera-github-beta' }}
+  cancel-in-progress: false
+jobs:
+  github-mirror:
+    if: github.ref == 'refs/heads/main'
+    runs-on: light
+    container:
+      image: archlinux:base-devel@sha256:51dd3d24f7fba779e7c471caeee7804c50e8c134ad948e19685a1c83a42facc3
+    timeout-minutes: 20
+    steps:
+      - name: Install publication tools (no compiler work)
+        run: pacman -Syu --noconfirm --needed nodejs git python ca-certificates
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Mirror release tag and publish complete release
+        env:
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORGEJO_URL: ${{ github.server_url }}
+          MIRROR_TOKEN: ${{ secrets.TESSERA_GITHUB_MIRROR }}
+          R2_ENDPOINT: ${{ vars.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          ARCH_GPG_PRIVATE_KEY: ${{ secrets.ARCH_GPG_PRIVATE_KEY }}
+          ARCH_GPG_FINGERPRINT: ${{ vars.ARCH_GPG_FINGERPRINT }}
+          PROMOTE_BUILD: ${{ inputs.build }}
+        run: |
+          if [ -n "$PROMOTE_BUILD" ]; then
+            python scripts/releases/publish.py --build "$PROMOTE_BUILD"
+          else
+            python scripts/releases/publish.py
+          fi

@@ -52,11 +52,19 @@ no server, no import. Indexes and previews are rebuildable caches.
 
 ## Download
 
-| Platform | Status | How to install |
+| Platform | Download Beta | Stable (after first promotion) |
 |---|---|---|
-| macOS (Apple Silicon) | Beta, signed and notarized, auto-updates | [macOS installation and updates](docs/macos-auto-update.md) |
-| Arch Linux (x86_64) | Beta, signed pacman repository | [Arch Linux packages](docs/linux-releases.md) |
-| Windows (x64) | Preview, read-only | [Windows preview](docs/windows-diagnostic.md) |
+| macOS (Apple Silicon) | [Download ZIP](https://updates.befeast.com/tessera/macos/beta/latest.zip) · signed and notarized | [Download ZIP](https://updates.befeast.com/tessera/macos/latest.zip) |
+| Windows (x64) | [Download Setup.exe](https://updates.befeast.com/tessera/windows/beta/Setup.exe) · unsigned, read-only | [Download Setup.exe](https://updates.befeast.com/tessera/windows/stable/Setup.exe) |
+| Arch Linux (x86_64) | [Install beta repository](docs/linux-releases.md) | [Install stable repository](docs/linux-releases.md#stable-channel) |
+
+[GitHub Releases and checksums](https://github.com/BeFeast/tessera/releases) ·
+[macOS help](docs/macos-auto-update.md) · [Windows help](docs/windows-delivery.md)
+
+Beta is available now. Stable downloads become available after the first
+cross-platform performance approval; until then, use Beta.
+GitHub's rolling **Beta** groups completed builds from the same commit; individual
+platform update feeds can be newer while another platform is still building.
 
 Tessera is under active development. Keep normal backups of your notes.
 

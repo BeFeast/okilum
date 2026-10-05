@@ -36,6 +36,8 @@ FEED_TAG = 'macos-stable'
 BUCKET = 'befeast-updates'
 PUBLIC = 'https://updates.befeast.com'
 HERE = pathlib.Path(__file__).parent
+sys.path.insert(0, str(HERE.parent / 'releases'))
+import catalog
 
 
 class Forgejo:
@@ -167,6 +169,10 @@ def publish(a):
                              '--channel', a.channel, '--url', f'{PUBLIC}/{key}',
                              '--length', str(archive.stat().st_size), '--signature', a.signature,
                              '--source', a.source, '--tree', a.tree])
+    if a.app == 'tessera':
+        catalog.record(r2, 'macos', a.build, a.source,
+                       [catalog.asset(key, 'Tessera-macos.zip', data)])
+        r2.put('tessera/macos/beta/latest.zip', data, 'application/zip', 'no-cache')
 
 
 def promote(a):

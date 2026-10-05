@@ -5,11 +5,6 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      promote_build:
-        description: 'Existing beta build to promote unchanged to stable (empty builds beta)'
-        required: false
-        default: ''
 
 concurrency:
   group: windows-release-${{ github.event_name == 'pull_request' && github.ref || 'publish' }}
@@ -28,7 +23,6 @@ jobs:
         with:
           persist-credentials: false
       - name: Install cross-build tools
-        if: inputs.promote_build == ''
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends clang lld llvm curl git python3-venv libcairo2
@@ -41,7 +35,6 @@ jobs:
           echo "c492c6dfb7e5ac0eee586b796e0fc950ba13077e7f0bbb046f445d71790d5360  $RUNNER_TEMP/cargo-xwin.tgz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/cargo-xwin.tgz" -C "$HOME/.cargo/bin"
       - name: Restore cross-build downloads
-        if: inputs.promote_build == ''
         uses: https://code.forgejo.org/actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: |
@@ -50,12 +43,10 @@ jobs:
             target/xwin/
           key: tessera-windows-downloads-v1-${{ hashFiles('Cargo.lock', '.forgejo/workflows/windows-diagnostic.yml') }}
       - name: Prepare pinned vendor
-        if: inputs.promote_build == ''
         run: |
           scripts/vendor-setup.sh
           scripts/vendor-setup.sh --verify
       - name: Cross-compile Reader and install packager
-        if: inputs.promote_build == ''
         run: |
           export TESSERA_BUILD_VERSION="$((5000 + GITHUB_RUN_NUMBER))"
           export TESSERA_RELEASE_VERSION="0.1.$TESSERA_BUILD_VERSION"
@@ -63,7 +54,7 @@ jobs:
           bash scripts/windows/install-vpk.sh "$RUNNER_TEMP/velopack"
 
       - name: Restore previous beta package for delta
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && inputs.promote_build == ''
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         env:
           R2_ENDPOINT: ${{ vars.R2_ENDPOINT }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
@@ -71,31 +62,25 @@ jobs:
         run: python3 scripts/windows/publish.py prepare --directory target/windows-release
 
       - name: Package Windows installer and update feed on Linux
-        if: inputs.promote_build == ''
         run: |
           export TESSERA_RELEASE_VERSION="0.1.$((5000 + GITHUB_RUN_NUMBER))"
           bash scripts/windows/pack.sh "$RUNNER_TEMP/velopack" target/windows-dist target/windows-release
           python3 -m unittest discover -s scripts/windows -p 'test_*.py'
 
       - name: Upload unsigned installer for Windows QA
-        if: inputs.promote_build == ''
         uses: https://code.forgejo.org/actions/upload-artifact@v3
         with:
           name: tessera-windows-velopack
           path: target/windows-release/*
           retention-days: 30
 
-      - name: Publish beta or promote unchanged build to stable
+      - name: Publish beta
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         env:
           R2_ENDPOINT: ${{ vars.R2_ENDPOINT }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          PROMOTE_BUILD: ${{ inputs.promote_build }}
         run: |
-          if [ -n "$PROMOTE_BUILD" ]; then
-            python3 scripts/windows/publish.py promote --build "$PROMOTE_BUILD"
-          else
-            python3 scripts/windows/publish.py publish --directory target/windows-release \
-              --build "$((5000 + GITHUB_RUN_NUMBER))" --source "$GITHUB_SHA"
-          fi
+          python3 scripts/windows/publish.py publish --directory target/windows-release \
+            --build "$((5000 + GITHUB_RUN_NUMBER))" --source "$GITHUB_SHA" \
+            --portable target/windows-dist/tessera-*-x86_64.zip

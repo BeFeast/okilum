@@ -71,9 +71,9 @@ The package version is `0.1.<5000 + workflow run number>-1`. PRs touching packag
 build/install the package and test signing with a disposable key; they cannot
 publish. Main builds publish beta. Workflow concurrency serializes publication.
 
-To promote, dispatch **linux-release** on **main** with `promote_build` equal to
-an existing beta build number. This downloads the archived package, verifies its
-checksum and GPG signature, and publishes the identical package and signature
+To promote, use the [unified releases workflow](releases.md) with the accepted
+macOS build number; the Arch build is selected by the same source commit. It
+verifies the archived package and GPG signature and publishes the identical bytes
 to stable. There is no rebuild and no automatic stable promotion.
 
 Packages and repository databases are signed. Archives are retained under

@@ -4,8 +4,8 @@ Windows Reader uses Velopack 1.2.161. The Linux CI runner cross-compiles with
 cargo-xwin and packages unsigned Setup.exe/full/delta/feed artifacts with
 `vpk [win] pack`. No Windows runner, Wine or user-installed .NET is required.
 The existing Windows workflow performs one cross-build per PR/main event;
-PR artifacts never publish. Main publishes beta; manual `promote_build` copies
-an existing build to stable without rebuilding or signing it.
+PR artifacts never publish. Main publishes beta; the [unified releases workflow](releases.md)
+promotes the matching builds on all three platforms without rebuilding or signing them.
 
 Public installer URLs:
 - https://updates.befeast.com/tessera/windows/beta/Setup.exe

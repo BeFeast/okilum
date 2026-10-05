@@ -7,11 +7,7 @@ on:
       - scripts/arch/**
       - .forgejo/workflows/linux-release.yml
   workflow_dispatch:
-    inputs:
-      promote_build:
-        description: 'Existing beta build to promote unchanged to stable (empty builds beta)'
-        required: false
-        default: ''
+
 concurrency:
   # PR validation never publishes; serialize only production publications together.
   group: tessera-arch-${{ github.event_name == 'pull_request' && github.ref || 'release' }}
@@ -32,13 +28,11 @@ jobs:
         with:
           persist-credentials: false
       - name: Build package as an unprivileged user
-        if: inputs.promote_build == ''
         run: |
           useradd -m builder
           chown -R builder:builder "$GITHUB_WORKSPACE"
           runuser -u builder -- env TESSERA_BUILD_VERSION="$((5000 + GITHUB_RUN_NUMBER))" bash scripts/arch/build.sh
       - name: Validate package and install without changing MIME defaults
-        if: inputs.promote_build == ''
         run: |
           desktop-file-validate scripts/arch/tessera.desktop
           pacman -U --noconfirm dist/arch/tessera-*.pkg.tar.zst
@@ -46,7 +40,7 @@ jobs:
           if ldd /usr/bin/tessera | grep 'not found'; then exit 1; fi
           python -m unittest discover -s scripts/arch -p 'test_*.py'
           xvfb-run -a -s '-screen 0 1280x800x24' dbus-run-session -- bash scripts/arch/smoke-x11.sh
-      - name: Publish beta or promote an existing build to stable
+      - name: Publish beta
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         env:
           ARCH_GPG_PRIVATE_KEY: ${{ secrets.ARCH_GPG_PRIVATE_KEY }}
@@ -54,11 +48,6 @@ jobs:
           R2_ENDPOINT: ${{ vars.R2_ENDPOINT }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          PROMOTE_BUILD: ${{ inputs.promote_build }}
         run: |
-          if [ -n "$PROMOTE_BUILD" ]; then
-            python scripts/arch/publish.py promote --build "$PROMOTE_BUILD"
-          else
-            python scripts/arch/publish.py publish --build "$((5000 + GITHUB_RUN_NUMBER))" \
-              --source "$GITHUB_SHA" --package dist/arch/tessera-*.pkg.tar.zst
-          fi
+          python scripts/arch/publish.py publish --build "$((5000 + GITHUB_RUN_NUMBER))" \
+            --source "$GITHUB_SHA" --package dist/arch/tessera-*.pkg.tar.zst

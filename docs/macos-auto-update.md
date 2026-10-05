@@ -35,9 +35,9 @@ every appcast change is mirrored there, so at home they update onto the public f
 Every appcast item names a channel: `beta` or `stable`. The app always accepts
 `stable`; with **Receive Beta Builds** checked (the default) it also accepts `beta`.
 
-To promote a build to stable, run **macos-promote** (Actions → macos-promote →
-Run workflow) with the build number. Only the item's channel changes; the ZIP and
-its signature stay the same.
+To promote, use the [unified releases workflow](releases.md) with the accepted
+macOS build number. It promotes the matching Windows and Arch builds too. The ZIP
+and its signature stay the same.
 
 The hand-built 4791/4792 releases accept only Forgejo asset URLs and cannot use the
 public feed; install a current ZIP by hand once.
