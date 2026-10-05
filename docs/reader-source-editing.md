@@ -307,3 +307,24 @@ Windows stays read-only. Orphan drafts and active writers block note creation.
 Inline creation uses an explicit Settings → Files template-folder preference when
 present, ahead of the Obsidian folder setting. Unrelated hidden `_Assets` branches
 stay hidden when no template collection exists.
+
+## System Trash and Undo (#466)
+
+Move to Trash is an ordinary Reader action, available in the tree context menu
+and through ⌘⌫ (Ctrl+Backspace on Linux) outside text inputs. Files with incoming
+links and all folders require confirmation with file/link counts. Current edits
+must save successfully first; other source writers and orphaned drafts block the
+operation. Links are left unchanged. Preparation and filesystem work run off the
+UI thread. A deleted open selection closes to the empty vault view.
+
+macOS uses NSFileManager's system Trash API. Linux writes freedesktop Trash
+metadata and moves within the same filesystem (home Trash or a private per-user
+Trash at the filesystem root); an unavailable Trash leaves the original in place.
+The notification's Undo restores the exact returned Trash object. It refuses
+occupied original paths, replaced objects and symlink parents; it never overwrites
+another file. The notification lasts until dismissed; after restart, use Finder
+or the system file manager to restore items from Trash. Windows stays read-only.
+
+QA on copies: trash a note and Undo, then repeat after creating a replacement at
+the original path (Undo must refuse); cancel deletion of a linked note or folder
+and verify every source is unchanged; inspect the actual system Trash.

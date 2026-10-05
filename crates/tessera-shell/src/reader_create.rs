@@ -119,6 +119,9 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.trash_pending {
+            return;
+        }
         if self.loading.as_ref().is_some_and(|l| l.active) || self.session_directory.is_none() {
             self.link_notice =
                 Some("Wait for the vault and draft recovery storage before creating files.".into());

@@ -23,7 +23,7 @@ impl Reader {
         if self.file_preview.is_some() {
             return;
         }
-        if self.note_move_pending {
+        if self.note_move_pending || self.trash_pending {
             return;
         }
         if self.current_rel.is_empty() || self.loading.as_ref().is_some_and(|l| l.active) {

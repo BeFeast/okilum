@@ -66,7 +66,7 @@ const SKIP_DIRS: &[&str] = &[
 ];
 /// Service directories are excluded from every inventory consumer. Visibility
 /// of ordinary dot/underscore paths belongs only to the browsing tree.
-pub(crate) fn service_path(path: &Path) -> bool {
+pub fn service_path(path: &Path) -> bool {
     path.components().any(|component| {
         let name = component.as_os_str();
         name.as_encoded_bytes().starts_with(b"._")
