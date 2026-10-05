@@ -66,6 +66,12 @@ fn record(
     Ok(())
 }
 impl Store {
+    pub fn latest_execution_brief(&self, who: OwnerId, id: Uuid) -> Result<Option<Brief>, Error> {
+        let who = owner(who)?;
+        let body: Option<String> = self.connection.query_row("SELECT body FROM execution_briefs WHERE owner_id=?1 AND brief_id=?2 ORDER BY revision DESC LIMIT 1", params![who,id.to_string()], |r| r.get(0)).optional()?;
+        body.map(decode).transpose()
+    }
+
     pub fn execution_project(&self, who: OwnerId, id: Uuid) -> Result<Option<Project>, Error> {
         let who = owner(who)?;
         let body: Option<String> = self

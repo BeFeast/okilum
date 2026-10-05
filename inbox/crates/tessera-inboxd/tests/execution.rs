@@ -137,3 +137,25 @@ fn concurrent_edit_has_one_winner() {
         1
     );
 }
+
+#[test]
+fn schema_five_upgrade_preserves_capture_and_operation() {
+    use tessera_inbox_domain::Capture;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let who = OwnerId(Uuid::new_v4());
+    let request = Capture {
+        operation_id: Uuid::new_v4(),
+        item_id: Uuid::new_v4(),
+        text: "Original\n".into(),
+    };
+    let mut store = Store::open(&path).unwrap();
+    let original = store.capture(who, &request, 1).unwrap();
+    drop(store);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute_batch("DROP TABLE execution_mutations; DROP TABLE execution_briefs; DROP TABLE execution_projects; PRAGMA user_version=5;").unwrap();
+    drop(db);
+    let mut store = Store::open(&path).unwrap();
+    assert_eq!(store.capture(who, &request, 999).unwrap(), original);
+    store.save_execution_project(who, &project()).unwrap();
+}
