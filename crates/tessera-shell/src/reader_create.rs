@@ -25,77 +25,6 @@ impl Reader {
         tessera_core::note_templates::Catalog::load_with_folder(&self.vault_root, folder.as_deref())
     }
 
-    pub(super) fn create_note_with_source(
-        &mut self,
-        path: &Path,
-        source: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let result = (|| -> anyhow::Result<String> {
-            if self.loading.as_ref().is_some_and(|l| l.active) {
-                anyhow::bail!("Wait for the folder to finish opening and try again");
-            }
-            if self.session_directory.is_none() {
-                anyhow::bail!("No draft recovery storage is available");
-            }
-            let mut path = path.to_path_buf();
-            if path.extension().is_none() {
-                path.set_extension("md");
-            }
-            let relative = path
-                .strip_prefix(&self.vault_root)
-                .map_err(|_| anyhow::anyhow!("Choose a location inside the open folder"))?;
-            let rel = relative
-                .to_str()
-                .ok_or_else(|| anyhow::anyhow!("Use a UTF-8 filename"))?
-                .to_owned();
-            // Resolve/save the current draft before creating any new file.
-            if !self.save_source(cx) {
-                anyhow::bail!("Resolve the current note's save before creating another note");
-            }
-            tessera_core::note_files::create_with_source(
-                &self.vault_root,
-                relative,
-                source.as_bytes(),
-            )?;
-            Ok(rel)
-        })();
-        match result {
-            Ok(rel) => {
-                self.editing = None;
-                self.document_preparation_generation =
-                    self.document_preparation_generation.wrapping_add(1);
-                let document =
-                    tessera_core::render::reader_document_from_source(&self.vault, &rel, source);
-                self.accept_prepared_document(
-                    prepared_links::DocumentRequest {
-                        rel,
-                        jump: None,
-                        heading: None,
-                        history_index: None,
-                        restore_position: None,
-                    },
-                    Ok(prepared_links::PreparedDocument {
-                        source: document.rendered,
-                        original: Some(document.original_body),
-                        identities: document.links,
-                        frontmatter: document.frontmatter,
-                    }),
-                    window,
-                    cx,
-                );
-                self.toggle_source(window, cx);
-            }
-            Err(error) => {
-                self.link_notice = Some(format!(
-                    "Could not create note: {error:#}. The destination was not replaced."
-                ))
-            }
-        }
-        cx.notify();
-    }
-
     pub(super) fn new_note(
         &mut self,
         folder: Option<&str>,
@@ -119,7 +48,7 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.trash_pending {
+        if self.trash_pending || self.note_move_pending {
             return;
         }
         if self.loading.as_ref().is_some_and(|l| l.active) || self.session_directory.is_none() {
@@ -128,6 +57,7 @@ impl Reader {
             cx.notify();
             return;
         }
+        self.renaming = None;
         let mut folder = folder.map(str::to_owned).unwrap_or_else(|| {
             Path::new(&self.current_rel)
                 .parent()
@@ -264,12 +194,8 @@ impl Reader {
                 // Publish the successful create before the watcher catches up.
                 // Its ancestors must exist in the tree for an immediate Cmd-N
                 // in this new folder to render a focused, actionable input row.
-                let mut entries = self.vault.entries.clone();
-                entries.push(tessera_core::vault::VaultEntry {
-                    path: rel.clone(),
-                    kind: tessera_core::vault::EntryKind::Markdown,
-                });
-                self.tree.refresh(&root, &entries);
+                self.tree
+                    .entry_created(&rel, tessera_core::vault::EntryKind::Markdown);
                 self.editing = None;
                 self.document_preparation_generation =
                     self.document_preparation_generation.wrapping_add(1);
@@ -297,12 +223,8 @@ impl Reader {
             Ok((rel, None)) => {
                 self.creation = None;
                 // Watcher refreshes the inventory; reveal an empty new folder now.
-                let mut entries = self.vault.entries.clone();
-                entries.push(tessera_core::vault::VaultEntry {
-                    path: rel.clone(),
-                    kind: tessera_core::vault::EntryKind::Directory,
-                });
-                self.tree.refresh(&root, &entries);
+                self.tree
+                    .entry_created(&rel, tessera_core::vault::EntryKind::Directory);
                 self.reveal_in_tree(&rel, window, cx);
             }
             Err(error) => {
@@ -454,11 +376,15 @@ mod tests {
         assert_eq!(visual.debug_bounds("template-choice-0"), Some(choice));
         visual.simulate_click(choice.center(), Modifiers::default());
         visual.run_until_parked();
-        assert!(visual.did_prompt_for_new_path());
-        visual.simulate_new_path_selection(|_| Some(root.join("Selected/Meeting.md")));
+        assert!(!visual.did_prompt_for_new_path());
+        reader.update_in(visual, |reader, window, cx| {
+            let input = reader.creation.as_ref().unwrap().input.clone();
+            input.update(cx, |input, cx| input.set_value("Meeting", window, cx));
+        });
+        visual.simulate_keystrokes("enter");
         visual.run_until_parked();
         assert_eq!(
-            std::fs::read_to_string(root.join("Selected/Meeting.md")).unwrap(),
+            std::fs::read_to_string(root.join("Selected/Target/a/Meeting.md")).unwrap(),
             "# Meeting\n\nTemplate body"
         );
         assert_eq!(
@@ -466,7 +392,7 @@ mod tests {
             "# {{title}}\n\nTemplate body"
         );
         reader.read_with(visual, |reader, _| {
-            assert_eq!(reader.current_rel, "Selected/Meeting.md");
+            assert_eq!(reader.current_rel, "Selected/Target/a/Meeting.md");
             assert!(reader.editing.is_some());
         });
         std::fs::create_dir_all(root.join("_Assets/Templates")).unwrap();

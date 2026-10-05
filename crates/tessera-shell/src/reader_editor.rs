@@ -71,6 +71,43 @@ impl Editing {
             .update(cx, |input, cx| input.set_value(value, window, cx));
     }
 
+    // UI subscriptions stay on the foreground executor; only the locked file
+    // store crosses to the worker. Reassembly preserves undo/input state.
+    fn park(self, cx: &mut App) -> (FileEditor, impl FnOnce(FileEditor) -> Self) {
+        // A second window can still hold its painted input until the next frame.
+        // Freeze it synchronously, before moving the store off the UI thread.
+        self.input
+            .update(cx, |input, cx| input.set_disabled(true, cx));
+        let Self {
+            store,
+            input,
+            conflict,
+            conflict_detected,
+            compare,
+            save_failed,
+            protecting,
+            recovery_epoch,
+            save_pending,
+            saved_at,
+            current_input,
+            _subscriptions,
+        } = self;
+        (store, move |store| Self {
+            store,
+            input,
+            conflict,
+            conflict_detected,
+            compare,
+            save_failed,
+            protecting,
+            recovery_epoch,
+            save_pending,
+            saved_at,
+            current_input,
+            _subscriptions,
+        })
+    }
+
     fn status(&self) -> &'static str {
         if self.conflict_detected {
             "Conflict"
@@ -146,6 +183,9 @@ impl Reader {
     }
 
     pub(super) fn toggle_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.move_applying {
+            return;
+        }
         if self.active_timeline().is_some_and(|t| t.selected.is_some()) {
             self.toggle_timeline_source(window, cx);
             return;
@@ -434,6 +474,9 @@ impl Reader {
     }
 
     pub(super) fn save_source(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.move_applying {
+            return false;
+        }
         let Some(editing) = &mut self.editing else {
             return true;
         };
@@ -815,6 +858,10 @@ impl Reader {
         cx: &mut Context<Self>,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(
+            !self.move_applying,
+            "A move is already being applied in this window"
+        );
+        anyhow::ensure!(
             !paths.contains(&self.current_rel) || !self.source_is_dirty(cx),
             "Save or discard this note's unsaved edits before moving"
         );
@@ -828,7 +875,7 @@ impl Reader {
                 anyhow::ensure!(
                     !same_move_root(&reader.vault_root, &self.vault_root)
                         || !paths.contains(&reader.current_rel)
-                        || !reader.source_is_dirty(cx),
+                        || (!reader.source_is_dirty(cx) && !reader.move_applying),
                     "{} has unsaved edits in another window; save or discard them first",
                     reader.current_rel
                 );
@@ -836,11 +883,21 @@ impl Reader {
         }
         Ok(())
     }
+    pub(super) fn finish_move_editor(&mut self, cx: &mut Context<Self>) {
+        self.move_applying = false;
+        if let Some(editing) = &self.editing {
+            editing
+                .input
+                .update(cx, |input, cx| input.set_disabled(false, cx));
+        }
+    }
+
     pub(super) fn apply_link_move(
         &mut self,
         preview: &tessera_core::link_rewrite::Preview,
+        window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> anyhow::Result<tessera_core::link_rewrite::Applied> {
+    ) -> anyhow::Result<Task<anyhow::Result<tessera_core::link_rewrite::Applied>>> {
         let paths = preview.affected_paths();
         self.check_move_editors(&paths, cx)?;
         let state = self
@@ -853,9 +910,13 @@ impl Reader {
             if reader.entity_id() == cx.entity_id() {
                 continue;
             }
-            if let Ok(Some((path, editing))) = reader.update(cx, |r, _| {
+            if let Ok(Some((path, editing))) = reader.update(cx, |r, cx| {
                 if same_move_root(&r.vault_root, &self.vault_root) && paths.contains(&r.current_rel)
                 {
+                    r.move_applying = true;
+                    r.document_preparation_generation =
+                        r.document_preparation_generation.wrapping_add(1);
+                    cx.notify();
                     Some((r.current_rel.clone(), r.editing.take()))
                 } else {
                     None
@@ -864,56 +925,108 @@ impl Reader {
                 parked.push((reader, window, path, editing));
             }
         }
-        let result = (|| -> anyhow::Result<_> {
-            let mut stores = std::collections::BTreeMap::new();
-            if let Some(editing) = self.editing.as_mut() {
-                stores.insert(self.current_rel.clone(), &mut editing.store);
+        let root = self.vault_root.clone();
+        let preview = preview.clone();
+        let park_own = paths.contains(&self.current_rel);
+        let editing = if park_own { self.editing.take() } else { None };
+        let (own_store, own_ui) = match editing {
+            Some(editing) => {
+                let (store, ui) = editing.park(cx);
+                (Some(store), Some(ui))
             }
-            for (_, _, path, editing) in &mut parked {
-                if let Some(editing) = editing {
-                    anyhow::ensure!(stores.insert(path.clone(), &mut editing.store).is_none(),"{path} is open in multiple source editors; close duplicate editors before moving");
+            None => (None, None),
+        };
+        let mut stores = vec![(self.current_rel.clone(), own_store)];
+        let parked: Vec<_> = parked
+            .into_iter()
+            .map(|(reader, window, path, editing)| {
+                let ui = editing.map(|editing| {
+                    let (store, ui) = editing.park(cx);
+                    stores.push((path.clone(), Some(store)));
+                    ui
+                });
+                if ui.is_none() {
+                    stores.push((path.clone(), None));
                 }
-            }
-            let refreshed = stores
-                .values_mut()
-                .try_for_each(|store| store.refresh_from_disk().map(|_| ()));
-            refreshed.and_then(|()| preview.apply(&self.vault_root, &state, &mut stores))
-        })();
-        let moved = result.as_ref().is_ok_and(|a| a.moved);
-        for (reader, window, path, editing) in parked {
-            let _ = window.update(cx, |_, window, cx| {
-                reader.update(cx, |r, cx| {
-                    let was_editing = editing.is_some();
-                    r.editing = editing;
-                    if moved && path == preview.from {
-                        r.editing = None;
-                        r.current_rel = preview.to.clone();
-                        for p in &mut r.history {
-                            if *p == preview.from {
-                                *p = preview.to.clone();
+                (reader, window, path, ui)
+            })
+            .collect();
+        self.move_applying = true;
+        self.document_preparation_generation = self.document_preparation_generation.wrapping_add(1);
+        let worker_preview = preview.clone();
+        let worker = cx.background_executor().spawn(async move {
+            let result = (|| -> anyhow::Result<_> {
+                let mut open = std::collections::BTreeMap::new();
+                for (path, store) in &mut stores {
+                    if let Some(store) = store {
+                        anyhow::ensure!(open.insert(path.clone(), store).is_none(), "{path} is open in multiple source editors; close duplicate editors before moving");
+                    }
+                }
+                open.values_mut().try_for_each(|store| store.refresh_from_disk().map(|_| ()))?;
+                worker_preview.apply(&root, &state, &mut open)
+            })();
+            (result, stores)
+        });
+        Ok(cx.spawn_in(window, async move |this, cx| {
+            let (result, stores) = worker.await;
+            let mut stores = stores.into_iter();
+            let own_editing = own_ui
+                .zip(stores.next().and_then(|(_, s)| s))
+                .map(|(ui, store)| ui(store));
+            let moved = result.as_ref().is_ok_and(|a| a.moved);
+            let _ = this.update_in(cx, |this, _, cx| {
+                // Keep the initiating window frozen until complete_move has
+                // replaced the old source path and synchronized its input.
+                if park_own {
+                    this.editing = own_editing;
+                }
+                cx.notify();
+            });
+            for ((reader, window, path, ui), (_, store)) in parked.into_iter().zip(stores) {
+                let editing = ui.zip(store).map(|(ui, store)| ui(store));
+                let _ = window.update(cx, |_, window, cx| {
+                    reader.update(cx, |r, cx| {
+                        r.move_applying = false;
+                        let was_editing = editing.is_some();
+                        if let Some(editing) = &editing {
+                            editing
+                                .input
+                                .update(cx, |input, cx| input.set_disabled(false, cx));
+                        }
+                        r.editing = editing;
+                        if moved {
+                            r.tree.note_moved(&preview.from, &preview.to);
+                        }
+                        if moved && path == preview.from {
+                            r.editing = None;
+                            r.current_rel = preview.to.clone();
+                            for p in &mut r.history {
+                                if *p == preview.from {
+                                    *p = preview.to.clone();
+                                }
                             }
                         }
-                    }
-                    if let Some(e) = r.editing.as_mut() {
-                        e.input.update(cx, |input, cx| {
-                            input.set_value(e.store.text().to_owned(), window, cx)
-                        });
-                    } else {
-                        let rel = r.current_rel.clone();
-                        r.prepare_document(&rel, None, None, window, cx);
-                        if moved
-                            && path == preview.from
-                            && was_editing
-                            && result.as_ref().is_ok_and(|a| a.warning.is_none())
-                        {
-                            r.toggle_source(window, cx);
+                        if let Some(e) = r.editing.as_mut() {
+                            e.input.update(cx, |input, cx| {
+                                input.set_value(e.store.text().to_owned(), window, cx)
+                            });
+                        } else {
+                            let rel = r.current_rel.clone();
+                            r.prepare_document(&rel, None, None, window, cx);
+                            if moved
+                                && path == preview.from
+                                && was_editing
+                                && result.as_ref().is_ok_and(|a| a.warning.is_none())
+                            {
+                                r.toggle_source(window, cx);
+                            }
                         }
-                    }
-                    cx.notify();
-                })
-            });
-        }
-        result
+                        cx.notify();
+                    })
+                });
+            }
+            result
+        }))
     }
 }
 
@@ -1680,7 +1793,7 @@ mod tests {
         std::fs::remove_dir_all(directory).unwrap();
     }
     #[gpui::test]
-    fn move_blocks_dirty_other_window_and_reloads_clean_input(cx: &mut TestAppContext) {
+    async fn move_blocks_dirty_other_window_and_reloads_clean_input(cx: &mut TestAppContext) {
         cx.update(|cx| {
             gpui_component::init(cx);
             bind_keys(cx);
@@ -1745,9 +1858,9 @@ mod tests {
         let preview =
             tessera_core::link_rewrite::Preview::prepare(&root, "start.md", "New/renamed.md")
                 .unwrap();
-        source.update_in(source_visual, |r, _, cx| {
+        source.update_in(source_visual, |r, window, cx| {
             assert!(r
-                .apply_link_move(&preview, cx)
+                .apply_link_move(&preview, window, cx)
                 .err()
                 .unwrap()
                 .to_string()
@@ -1759,9 +1872,21 @@ mod tests {
         let preview =
             tessera_core::link_rewrite::Preview::prepare(&root, "start.md", "New/renamed.md")
                 .unwrap();
-        source.update_in(source_visual, |r, _, cx| {
-            assert!(r.apply_link_move(&preview, cx).unwrap().moved)
+        let task = source.update_in(source_visual, |r, window, cx| {
+            let task = r.apply_link_move(&preview, window, cx).unwrap();
+            assert!(r.move_applying);
+            assert!(
+                !input.read(cx).is_editable(),
+                "Parked windows must refuse input before the next paint"
+            );
+            assert!(
+                !r.save_source(cx),
+                "Navigation/quit must wait for the worker"
+            );
+            task
         });
+        assert!(task.await.unwrap().moved);
+        source.update_in(source_visual, |r, _, cx| r.finish_move_editor(cx));
         reference_visual.run_until_parked();
         reference.read_with(reference_visual, |r, cx| {
             let editing = r.editing.as_ref().unwrap();
@@ -1770,6 +1895,7 @@ mod tests {
                 "edited [[renamed]]"
             );
             assert!(!editing.store.dirty());
+            assert!(editing.input.read(cx).is_editable());
         });
         assert_eq!(
             std::fs::read_to_string(root.join("ref.md")).unwrap(),

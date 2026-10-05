@@ -42,6 +42,18 @@ pub(crate) fn routes<S: Clone + Send + Sync + 'static>() -> Router<S> {
         "text/javascript; charset=utf-8",
         "publication-form.js"
     );
+    let router = asset!(
+        router,
+        "/questions.js",
+        "text/javascript; charset=utf-8",
+        "questions.js"
+    );
+    let router = asset!(
+        router,
+        "/questions-view.js",
+        "text/javascript; charset=utf-8",
+        "questions-view.js"
+    );
     let router = asset!(router, "/sw.js", "text/javascript; charset=utf-8", "sw.js");
     let router = asset!(router, "/style.css", "text/css; charset=utf-8", "style.css");
     let router = asset!(router, "/icon.svg", "image/svg+xml", "icon.svg");

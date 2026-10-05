@@ -2,9 +2,11 @@
 use super::*;
 use anyhow::{Context as _, Result};
 use gpui_component::WindowExt as _;
+#[cfg(test)]
 use std::io::Read as _;
 
 pub const DEFAULT_FOLDER: &str = "_Assets/Templates";
+#[cfg(test)]
 const MAX_TEMPLATE_BYTES: u64 = 1024 * 1024;
 
 fn preferences_path(root: &Path, state: &Path) -> Result<PathBuf> {
@@ -97,6 +99,7 @@ fn list(root: &Path, folder: &str) -> Result<Vec<PathBuf>> {
     anyhow::ensure!(!templates.is_empty(), "No Markdown templates in this folder. Add a .md template or choose another folder in Settings → Files");
     Ok(templates)
 }
+#[cfg(test)]
 fn read_template(root: &Path, path: &Path) -> Result<String> {
     let root = root.canonicalize()?;
     let path = path.canonicalize()?;
@@ -114,6 +117,7 @@ fn read_template(root: &Path, path: &Path) -> Result<String> {
     );
     String::from_utf8(bytes).context("Template must be UTF-8 Markdown")
 }
+#[cfg(test)]
 fn expand(template: &str, title: &str, date: &str) -> String {
     regex::Regex::new(r"\{\{(title|date)\}\}")
         .unwrap()
@@ -205,49 +209,14 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let root = self.vault_root.clone();
-        let parent = root.join(
-            Path::new(&self.current_rel)
-                .parent()
-                .unwrap_or(Path::new("")),
-        );
-        cx.spawn_in(window, async move |this, cx| {
-            let read_root = root.clone();
-            let result = cx
-                .background_executor()
-                .spawn(async move { read_template(&read_root, &template) })
-                .await;
-            let source = match result {
-                Ok(source) => source,
-                Err(error) => {
-                    let _ = this.update_in(cx, |this, _, cx| {
-                        this.link_notice = Some(format!("Cannot read template: {error:#}"));
-                        cx.notify();
-                    });
-                    return;
-                }
-            };
-            let picker = match this.update_in(cx, |this, _, cx| {
-                (this.vault_root == root)
-                    .then(|| cx.prompt_for_new_path(&parent, Some("Untitled.md")))
-            }) {
-                Ok(Some(picker)) => picker,
-                _ => return,
-            };
-            if let Ok(Ok(Some(path))) = picker.await {
-                let _ = this.update_in(cx, |this, window, cx| {
-                    if this.vault_root != root {
-                        return;
-                    }
-                    let title = path.file_stem().unwrap_or_default().to_string_lossy();
-                    let date = time::OffsetDateTime::UNIX_EPOCH.date()
-                        + time::Duration::days(reader_properties::today());
-                    let source = expand(&source, &title, &date.to_string());
-                    this.create_note_with_source(&path, &source, window, cx);
-                });
-            }
-        })
-        .detach();
+        let name = template
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(str::to_owned);
+        self.new_note(None, window, cx);
+        if let Some(name) = name {
+            self.choose_creation_template(Some(name), window, cx);
+        }
     }
 }
 
