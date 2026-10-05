@@ -14,8 +14,8 @@
 #include <errno.h>
 
 static _Atomic int vault_fd[65536];
-static _Atomic unsigned long counts[5][4];
-static _Thread_local int phase;
+static _Atomic unsigned long counts[7][4];
+static _Atomic int phase;
 static _Thread_local int resolving;
 static const char *prefix;
 static long delay_ns;
@@ -30,14 +30,18 @@ __attribute__((constructor)) static void initialize(void) {
 }
 
 void tessera_slow_fs_phase(const char *name) {
-    phase = !strcmp(name, "positive_control") ? 1 : !strcmp(name, "warm_primary") ? 2 : !strcmp(name, "complete_graph") ? 3 : !strcmp(name, "warm_reconcile") ? 4 : 0;
+    atomic_store(&phase, !strcmp(name, "positive_control") ? 1 : !strcmp(name, "warm_primary") ? 2 : !strcmp(name, "complete_graph") ? 3 : !strcmp(name, "warm_reconcile") ? 4 : !strcmp(name, "serial_sources") ? 5 : !strcmp(name, "parallel_sources") ? 6 : 0);
+}
+unsigned long tessera_slow_fs_count(int operation) {
+    return atomic_load(&counts[atomic_load(&phase)][operation]);
 }
 static int matches(const char *path) {
     return !resolving && path && prefix && !strncmp(path, prefix, strlen(prefix)) && strstr(path, "/vault");
 }
 static void pause_call(int operation) {
-    if (!phase || !delay_ns || resolving) return;
-    atomic_fetch_add(&counts[phase][operation], 1);
+    int current_phase = atomic_load(&phase);
+    if (!current_phase || !delay_ns || resolving) return;
+    atomic_fetch_add(&counts[current_phase][operation], 1);
     long operation_delay_ns = operation >= 2 ? metadata_delay_ns : delay_ns;
     int saved = errno;
     struct timespec duration = {operation_delay_ns / 1000000000L, operation_delay_ns % 1000000000L};
@@ -97,8 +101,8 @@ char *realpath(const char *path, char *resolved) {
     return real(path, resolved);
 }
 __attribute__((destructor)) static void report(void) {
-    const char *names[] = {"setup", "positive_control", "warm_primary", "complete_graph", "warm_reconcile"};
-    for (int p = 1; p < 5; p++) {
+    const char *names[] = {"setup", "positive_control", "warm_primary", "complete_graph", "warm_reconcile", "serial_sources", "parallel_sources"};
+    for (int p = 1; p < 7; p++) {
         fprintf(stderr, "SLOW_VAULT_FS phase=%s delay_ms=%ld metadata_delay_us=%ld opens=%lu reads=%lu stats=%lu canonicalize=%lu\n", names[p], delay_ns / 1000000L, metadata_delay_ns / 1000L,
                 atomic_load(&counts[p][0]), atomic_load(&counts[p][1]), atomic_load(&counts[p][2]), atomic_load(&counts[p][3]));
     }

@@ -37,8 +37,59 @@ fn display_windows_error(message: &str) -> String {
     message.replace(r"\\?\UNC\", r"\\").replace(r"\\?\", "")
 }
 
+/// Keep the OS cause and explain names that Windows cannot open over SMB.
+pub fn read_error(path: &Path, error: &std::io::Error) -> String {
+    #[cfg(windows)]
+    if error.raw_os_error() == Some(123) {
+        return windows_name_error(&error.to_string(), long_windows_name(path).as_deref());
+    }
+    let _ = path;
+    error.to_string()
+}
+
+#[cfg(any(windows, test))]
+fn windows_name_error(cause: &str, original: Option<&Path>) -> String {
+    let original = original
+        .map(|path| format!(" Original name: {}.", display_path(path)))
+        .unwrap_or_default();
+    format!("{cause} Name not valid on Windows (possibly an SMB short alias).{original} Rename the original file on the server or another platform.")
+}
+
+#[cfg(windows)]
+fn long_windows_name(path: &Path) -> Option<PathBuf> {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use windows_sys::Win32::Storage::FileSystem::GetLongPathNameW;
+    let input: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    // Some SMB servers expose only the mangled alias. Recover a long name only
+    // when the OS actually supplies one; do not infer it from an 8.3 basename.
+    let needed = unsafe { GetLongPathNameW(input.as_ptr(), std::ptr::null_mut(), 0) };
+    if needed == 0 || needed > 32768 {
+        return None;
+    }
+    let mut output = vec![0; needed as usize];
+    let written = unsafe { GetLongPathNameW(input.as_ptr(), output.as_mut_ptr(), needed) };
+    if written == 0 || written >= needed {
+        return None;
+    }
+    let long = PathBuf::from(std::ffi::OsString::from_wide(&output[..written as usize]));
+    (long.file_name() != path.file_name()).then_some(long)
+}
+
 #[cfg(test)]
 mod display_tests {
+    #[test]
+    fn windows_invalid_name_explains_alias_and_only_reports_supplied_original() {
+        let cause = "The filename syntax is incorrect. (os error 123)";
+        let unknown = super::windows_name_error(cause, None);
+        assert!(unknown.contains("os error 123") && unknown.contains("Name not valid on Windows"));
+        assert!(unknown.contains("SMB short alias") && !unknown.contains("Original name:"));
+        let known = super::windows_name_error(
+            cause,
+            Some(std::path::Path::new("Эскалация переговоров?.md")),
+        );
+        assert!(known.contains("Original name: Эскалация переговоров?.md"));
+    }
+
     #[test]
     fn windows_error_paths_hide_prefixes_and_other_platforms_preserve_literal_names() {
         let error = r"Prepare \\?\C:\vault: Read \\?\UNC\server\share\note.md: Access is denied. (os error 5)";
@@ -334,9 +385,9 @@ impl Vault {
                     }),
                 },
                 Err(error) => vault.unreadable.push(UnreadableEntry {
+                    error: read_error(&path, &error),
                     path,
                     operation: "read note",
-                    error: error.to_string(),
                 }),
             }
         }

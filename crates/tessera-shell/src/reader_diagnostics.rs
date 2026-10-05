@@ -18,7 +18,7 @@ struct TraceInner {
     start: std::time::Instant,
     launch: String,
     send: std::sync::mpsc::Sender<(Option<PathBuf>, serde_json::Value)>,
-    seen: std::sync::Mutex<std::collections::HashSet<&'static str>>,
+    seen: std::sync::Mutex<std::collections::HashSet<(Option<PathBuf>, &'static str)>>,
 }
 
 pub(crate) struct LaunchTrace(pub Trace);
@@ -84,7 +84,7 @@ impl Trace {
             serde_json::json!({
                 "time": timestamp(), "launch": self.inner.launch, "phase": phase,
                 "elapsed_ms": self.inner.start.elapsed().as_secs_f64() * 1000.,
-                "vault": self.root, "details": details,
+                "vault": self.root.as_deref().map(tessera_core::vault::display_path), "details": details,
             }),
         ));
     }
@@ -95,7 +95,7 @@ impl Trace {
             .seen
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(phase)
+            .insert((self.root.clone(), phase))
         {
             self.event(phase, details);
         }
@@ -291,6 +291,56 @@ impl Reader {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn first_paint_markers_are_scoped_to_each_resolved_vault() {
+        let base =
+            std::env::temp_dir().join(format!("tessera-root-trace-{}", uuid::Uuid::new_v4()));
+        let first = base.join("first");
+        let second = base.join("second");
+        let state = base.join("state");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        let trace = Trace::new(Some(state.clone()), None);
+        trace
+            .for_root(first.clone())
+            .once("inventory_first_paint", serde_json::json!({"control": 1}));
+        trace
+            .for_root(first.clone())
+            .once("inventory_first_paint", serde_json::json!({"control": 2}));
+        trace
+            .for_root(second.clone())
+            .once("inventory_first_paint", serde_json::json!({"control": 3}));
+        let mut paints = Vec::new();
+        for _ in 0..100 {
+            let text = std::fs::read_to_string(state.join(LOG_FILE)).unwrap_or_default();
+            paints = text
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .filter(|event| event["phase"] == "inventory_first_paint")
+                .collect();
+            if paints.len() == 2 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_eq!(
+            paints.len(),
+            2,
+            "both root-specific markers actually reached the log"
+        );
+        assert_eq!(
+            paints[0]["vault"],
+            tessera_core::vault::display_path(&first)
+        );
+        assert_eq!(
+            paints[1]["vault"],
+            tessera_core::vault::display_path(&second)
+        );
+        assert_eq!(paints[1]["details"]["control"], 3);
+        drop(trace);
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
     use super::*;
     use ::core::prelude::v1::test;
 

@@ -55,6 +55,50 @@ pub const BULK_THRESHOLD: usize = 50;
 /// How long the vault must be quiet before a batch is released.
 pub const QUIET_WINDOW: Duration = Duration::from_millis(300);
 
+/// Native local watchers cannot promise visibility of another network client's
+/// writes. Probe on the preparation worker, never on the UI thread.
+pub fn is_network_root(root: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
+        match root.components().next() {
+            Some(Component::Prefix(prefix)) => match prefix.kind() {
+                Prefix::UNC(..) | Prefix::VerbatimUNC(..) => true,
+                Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => {
+                    let name = [u16::from(drive), b':' as u16, b'\\' as u16, 0];
+                    unsafe { GetDriveTypeW(name.as_ptr()) == 4 } // DRIVE_REMOTE
+                }
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        rustix::fs::statfs(root)
+            .is_ok_and(|stat| matches!(i128::from(stat.f_type), 0x6969 | 0xff53_4d42 | 0xfe53_4d42))
+        // NFS, CIFS, SMB2
+    }
+    #[cfg(target_os = "macos")]
+    {
+        rustix::fs::statfs(root).is_ok_and(|stat| {
+            let name: Vec<u8> = stat
+                .f_fstypename
+                .iter()
+                .take_while(|c| **c != 0)
+                .map(|c| *c as u8)
+                .collect();
+            matches!(name.as_slice(), b"smbfs" | b"nfs" | b"afpfs" | b"webdav")
+        })
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+    {
+        let _ = root;
+        false
+    }
+}
+
 pub struct VaultWatcher {
     root: PathBuf,
     rx: mpsc::Receiver<notify::Result<Event>>,

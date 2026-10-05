@@ -306,3 +306,55 @@ relaunch without edits. Expect `warm_cache.found:true`, immediate tree/last note
 `read` near zero, `reused` near the note count, and `graph_reused:true`, with no
 search publication Access denied. Inspect `reuse.imprecise_revision` and
 `reuse.unavailable_metadata` if a filesystem cannot supply a precise native stamp.
+
+## Bounded source reads on network vaults (#516)
+
+The native Windows SMB report contains 5096 notes: discovery 12.7 s,
+Checking notes 127.5 s, backlinks 0.6 s. Source/revision checks were serial;
+this slice bounds them to eight worker threads. The coordinator alone reports
+progress and checks cancellation, and drops the bounded result receiver before
+joining workers. Before/after revision safety, UTF-8 checks, per-entry failures,
+and the inventory-derived graph are unchanged. Existing blocking OS calls cannot
+be interrupted by cancelling a job; all this work remains off the UI thread.
+
+UNC and mapped network drives, macOS SMB/NFS mounts and Linux SMB/NFS mounts
+show `Auto-refresh limited` with `Rescan`. This intentionally does not promise
+that local watcher APIs observe another network client's writes. Manual Rescan
+rereads canonical bytes even when remote metadata appears unchanged. Safe-save
+transactions are unchanged and still require native network acceptance.
+
+Windows error 123 keeps the OS cause and explains invalid server names or SMB
+short aliases. An original name is shown only if `GetLongPathNameW` supplies it.
+Folder/file-picker preparation phases bind to the resolved vault, including UNC,
+and per-vault first-paint markers are no longer suppressed by another open root.
+
+Run a paired source-I/O comparison after building the core test executable,
+after builds and other tests in this worktree have finished:
+
+```sh
+/usr/bin/cc -shared -fPIC -O2 -Wall -Wextra -Werror \
+  scripts/probes/slow-vault-fs.c -ldl -o target/slow-vault-fs.so
+cargo test --locked -p tessera-core --lib parallel_source_latency_profile --no-run
+TESSERA_SLOW_FS_PREFIX=/tmp/tessera-source-latency- \
+TESSERA_SLOW_FS_MS=2 TESSERA_SLOW_FS_METADATA_US=100 \
+TESSERA_CLOUD_PROFILE_SAMPLES=2 LD_PRELOAD="$PWD/target/slow-vault-fs.so" \
+  target/debug/deps/tessera_core-<hash> \
+  vault::warm::tests::parallel_source_latency_profile \
+  --exact --ignored --nocapture --test-threads=1
+```
+
+The preload phase is process-wide so new source threads receive the same actual
+open/read/stat latency. Each timed serial/parallel run checks per-phase syscall
+counts, all 5001 reads, identical source bytes, inventory and 10000 backlinks.
+The follow-up warm run asserts zero source opens/reads and graph reuse.
+Same Linux host/session, two paired samples: Checking notes
+35001.31/34772.57 ms serial → 4253.98/4216.36 ms parallel (about 8.2×).
+Total reconcile 38443.73/37856.23 ms → 7609.72/7614.08 ms. Backlink parsing
+remains serial: 3.04–3.35 s in this debug fixture. Both modes perform exactly
+5001 opens, 10002 reads and 15004 stats per cold pass; the parallel counters
+prove injected delays reached worker threads. Warm: 160.56/161.80 ms,
+read=0, reused=5001, graph_reused=true, no source opens. Other host activity
+was not controlled; builds/tests in this executor worktree had finished.
+This measures core reconcile, excluding cache persistence/search construction,
+native SMB transport and native Windows/macOS GUI presentation. Native #516
+acceptance, including mapped paths, disconnect/reconnect and safe-save, remains open.
