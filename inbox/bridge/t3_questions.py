@@ -174,7 +174,9 @@ class Journal:
         binding = canonical({k: config[k] for k in ('instance_id','source_project_id','project_id','t3_url','inbox_url')})
         with self.db:
             self.db.execute('INSERT OR IGNORE INTO binding VALUES(1,?)', (binding,))
-        require(self.db.execute('SELECT value FROM binding').fetchone()[0] == binding, 'state_binding_changed')
+        if self.db.execute('SELECT value FROM binding').fetchone()[0] != binding:
+            self.db.close()
+            raise Unavailable('state_binding_changed')
 
     def observe(self, thread, sequence, records):
         body = canonical(records)
@@ -217,6 +219,9 @@ class Http:
                 data = response.read(LIMIT + 1)
             require(len(data) <= LIMIT, 'response_too_large')
             return json.loads(data) if data else None
+        except urllib.error.HTTPError as error:
+            error.close()
+            raise Unavailable('http_unavailable') from None
         except (OSError, ValueError):
             raise Unavailable('http_unavailable') from None
 
