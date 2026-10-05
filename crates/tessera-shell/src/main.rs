@@ -410,6 +410,8 @@ struct Opts {
     rest_snapshot_hook: Option<Arc<dyn Fn() + Send + Sync>>,
     #[cfg(test)]
     index_build_hook: Option<IndexBuildHook>,
+    #[cfg(test)]
+    search_publish_in_place: bool,
     /// Explicit search index override. Direct opens default to application cache.
     index_dir: Option<PathBuf>,
     use_html: bool,

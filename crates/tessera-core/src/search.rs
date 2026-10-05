@@ -140,6 +140,21 @@ fn path_terms(rel: &str) -> String {
 }
 
 impl Searcher {
+    /// Finish all indexing and merge work before publishing an immutable build.
+    /// Dropping an IndexWriter only joins indexing workers; merging can retain
+    /// directory/file handles after drop, which prevents Windows directory moves.
+    pub fn finish_build(mut self) -> Result<()> {
+        if let Some(writer) = self
+            .writer
+            .get_mut()
+            .map_err(|_| anyhow::anyhow!("index writer poisoned"))?
+            .take()
+        {
+            writer.wait_merging_threads()?;
+        }
+        Ok(())
+    }
+
     /// Build (or rebuild) the persistent index from the vault.
     pub fn build(vault: &Vault, index_dir: &Path) -> Result<Searcher> {
         Self::build_cancellable(vault, index_dir, &mut |_| Ok(()))

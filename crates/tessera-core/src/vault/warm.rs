@@ -4,6 +4,7 @@ use anyhow::{bail, ensure};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
+#[cfg(any(not(windows), test))]
 use std::time::UNIX_EPOCH;
 
 // v2 excludes service sidecars and invalid UTF-8 sources from derived data.
@@ -19,44 +20,97 @@ pub struct SourceRevision {
     changed: i128,
 }
 impl SourceRevision {
-    /// Imported mtime can be rounded even on a precise native filesystem. Unix
-    /// ctime also changes on same-size writes with a restored mtime. Reuse still
+    /// Imported mtime can be rounded even on a precise native filesystem. Native
+    /// change time also changes on same-size writes with a restored mtime. Reuse still
     /// requires equality of the entire revision, never just either timestamp.
     pub fn is_precise(&self) -> bool {
         !self.modified.is_multiple_of(1_000_000_000) || self.precise_change_time()
     }
 
     fn precise_change_time(&self) -> bool {
-        cfg!(unix) && self.changed.rem_euclid(1_000_000_000) != 0
+        cfg!(any(unix, windows)) && self.changed.rem_euclid(1_000_000_000) != 0
     }
 
     pub fn read(path: &Path) -> std::io::Result<Self> {
-        let meta = std::fs::symlink_metadata(path)?;
-        if !meta.is_file() {
+        #[cfg(windows)]
+        {
+            Self::read_windows(path)
+        }
+        #[cfg(not(windows))]
+        {
+            let meta = std::fs::symlink_metadata(path)?;
+            if !meta.is_file() {
+                return Err(std::io::Error::other("Not a regular Markdown file"));
+            }
+            let modified = meta
+                .modified()?
+                .duration_since(UNIX_EPOCH)
+                .map_err(std::io::Error::other)?
+                .as_nanos();
+            #[cfg(unix)]
+            let (device, inode, changed) = {
+                use std::os::unix::fs::MetadataExt;
+                (
+                    meta.dev(),
+                    meta.ino(),
+                    meta.ctime() as i128 * 1_000_000_000 + meta.ctime_nsec() as i128,
+                )
+            };
+            #[cfg(not(unix))]
+            let (device, inode, changed) = (0, 0, 0);
+            Ok(Self {
+                size: meta.len(),
+                modified,
+                device,
+                inode,
+                changed,
+            })
+        }
+    }
+
+    #[cfg(windows)]
+    fn read_windows(path: &Path) -> std::io::Result<Self> {
+        use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
+        use windows_sys::Win32::Storage::FileSystem::{
+            FileBasicInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
+            BY_HANDLE_FILE_INFORMATION, FILE_BASIC_INFO, FILE_FLAG_OPEN_REPARSE_POINT,
+            FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        };
+        let file = std::fs::File::options()
+            .access_mode(FILE_READ_ATTRIBUTES)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)?;
+        if !file.metadata()?.is_file() {
             return Err(std::io::Error::other("Not a regular Markdown file"));
         }
-        let modified = meta
-            .modified()?
-            .duration_since(UNIX_EPOCH)
-            .map_err(std::io::Error::other)?
-            .as_nanos();
-        #[cfg(unix)]
-        let (device, inode, changed) = {
-            use std::os::unix::fs::MetadataExt;
-            (
-                meta.dev(),
-                meta.ino(),
-                meta.ctime() as i128 * 1_000_000_000 + meta.ctime_nsec() as i128,
-            )
+        let handle = file.as_raw_handle();
+        let mut info = BY_HANDLE_FILE_INFORMATION::default();
+        let mut basic = FILE_BASIC_INFO::default();
+        // Both observations refer to this owned, metadata-only handle. Opening
+        // does not follow symlinks, read canonical bytes, or deny another writer.
+        let ok = unsafe {
+            GetFileInformationByHandle(handle, &mut info) != 0
+                && GetFileInformationByHandleEx(
+                    handle,
+                    FileBasicInfo,
+                    (&mut basic as *mut FILE_BASIC_INFO).cast(),
+                    std::mem::size_of::<FILE_BASIC_INFO>() as u32,
+                ) != 0
         };
-        #[cfg(not(unix))]
-        let (device, inode, changed) = (0, 0, 0);
+        if !ok {
+            // Unsupported/denied native metadata is uncertainty, never proof of
+            // reuse. Reconciliation still reads the source and leaves no stamp.
+            return Err(std::io::Error::last_os_error());
+        }
+        let modified = basic.LastWriteTime as i128 - 116_444_736_000_000_000;
+        let modified = u128::try_from(modified).map_err(std::io::Error::other)? * 100;
         Ok(Self {
-            size: meta.len(),
+            size: (u64::from(info.nFileSizeHigh) << 32) | u64::from(info.nFileSizeLow),
             modified,
-            device,
-            inode,
-            changed,
+            device: u64::from(info.dwVolumeSerialNumber),
+            inode: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+            changed: i128::from(basic.ChangeTime) * 100,
         })
     }
 }
@@ -1204,7 +1258,7 @@ mod tests {
         assert_eq!((stats.read, stats.reused), (2, 0));
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn coarse_mtime_with_precise_change_time_reuses_sources_and_detects_preserved_mtime_edits() {
         let temp = tempfile::tempdir().unwrap();
@@ -1216,6 +1270,7 @@ mod tests {
                 .set_modified(UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000)),
         )
         .unwrap();
+        drop(file);
         let cache = temp.path().join("external-cache");
         // Keep derived files outside the canonical root.
         let root = temp.path().join("vault");
@@ -1227,7 +1282,7 @@ mod tests {
         assert_ne!(
             stamp.changed.rem_euclid(1_000_000_000),
             0,
-            "precise ctime positive control"
+            "precise native change time positive control"
         );
         let (vault, cold, _) = reconcile(&root, None, false, &mut |_, _| Ok(())).unwrap();
         save_provisional(&cold, &vault, &cache, Some("Coarse.md")).unwrap();
@@ -1241,11 +1296,16 @@ mod tests {
         assert!(stats.graph_reused);
         assert_eq!(stats.reuse.coarse_mtime, 1);
         std::fs::write(&path_in_vault, "edit length").unwrap();
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path_in_vault)
+            .unwrap();
         file.set_times(
             std::fs::FileTimes::new()
                 .set_modified(UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000)),
         )
         .unwrap();
+        drop(file);
         let after = SourceRevision::read(&path_in_vault).unwrap();
         assert_eq!(
             (stamp.modified, stamp.size, stamp.inode),
@@ -1329,8 +1389,8 @@ mod tests {
         precise_ctime.changed += 123;
         assert_eq!(
             precise_ctime.is_precise(),
-            cfg!(unix),
-            "only native Unix change time can strengthen reuse"
+            cfg!(any(unix, windows)),
+            "only a native change time can strengthen reuse"
         );
     }
 

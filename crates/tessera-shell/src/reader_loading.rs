@@ -400,7 +400,7 @@ fn prepare_rest_with_io_and_snapshot(
         .unwrap_or_else(|| reader_open::cache_candidate_path(root))
         .context("Choose external Reader search cache")?;
     let mut warnings = Vec::new();
-    let mut disk_search = match validate_external_cache(&base, root) {
+    let disk_cache = match validate_external_cache(&base, root) {
         Ok(()) => true,
         Err(error) if error.chain().any(|cause| cause.is::<std::io::Error>()) => {
             warnings.push(preparation_warning(&base, "validate search cache", &error));
@@ -408,6 +408,7 @@ fn prepare_rest_with_io_and_snapshot(
         }
         Err(error) => return Err(error), // Unsafe cache locations remain a failed open.
     };
+    let mut disk_search = disk_cache;
     // Register before inventory so events during scan/index are retained.
     let watcher_phase = opts
         .diagnostics
@@ -534,9 +535,9 @@ fn prepare_rest_with_io_and_snapshot(
             .collect();
         send.send_blocking(Event::SearchInventory {
             notes: readable,
-            // Patch a warm tree as soon as enumeration finishes; its existing
-            // search generation stays available while the replacement is built.
-            reconciled: previous.as_ref().map(|_| Box::new(vault.clone())),
+            // Publish cold and warm trees before search preparation; a usable
+            // inventory does not depend on a writable search cache.
+            reconciled: Some(Box::new(vault.clone())),
         })
         .map_err(|_| anyhow::anyhow!("Reader closed"))?;
         progress(send, "Checking search data".into())?;
@@ -618,8 +619,8 @@ fn prepare_rest_with_io_and_snapshot(
             progress(send, "Updating changed notes".into())?;
             continue;
         }
-        snapshot.search_generation = Some(generation);
-        if disk_search && vault.inventory_scanned {
+        snapshot.search_generation = disk_search.then_some(generation);
+        if disk_cache && vault.inventory_scanned {
             let _phase = opts
                 .diagnostics
                 .as_ref()
@@ -705,7 +706,18 @@ fn prepare_search_generation(
     if let Some(searcher) = open_completed_generation(destination) {
         return Ok(searcher);
     }
-    let owned = Staging(base.join("attempts").join(uuid::Uuid::new_v4().to_string()));
+    // Windows does not permit moving directories with open descendant handles.
+    // Build an immutable UUID sibling in the existing repairs namespace instead.
+    // The completion marker publishes it; unfinished builds remain invisible.
+    let in_place = cfg!(windows);
+    #[cfg(test)]
+    let in_place = in_place || _opts.search_publish_in_place;
+    let directory = if in_place {
+        destination.with_extension("repairs")
+    } else {
+        base.join("attempts")
+    };
+    let mut owned = Staging(directory.join(uuid::Uuid::new_v4().to_string()), true);
     progress(send, "Preparing search".into())?;
     let mut last = std::time::Instant::now();
     let built = Searcher::build_snapshot(vault, documents, &owned.0, &mut |phase, count| {
@@ -726,12 +738,24 @@ fn prepare_search_generation(
             display_path(&owned.0)
         )
     })?;
-    // The writer owns open segment/lock handles; release it before moving staging.
-    drop(built);
+    built
+        .finish_build()
+        .context("Finish search indexing and merges")?;
     cancel.check()?;
     let marker = owned.0.join("complete");
     std::fs::write(&marker, b"1")
         .with_context(|| format!("Write search completion marker {}", display_path(&marker)))?;
+    if in_place {
+        // Publication transfers cleanup ownership before opening: another Reader
+        // can already use the completed generation even if our open fails.
+        owned.1 = false;
+        return Searcher::open(&owned.0).with_context(|| {
+            format!(
+                "Open published search generation {}",
+                display_path(&owned.0)
+            )
+        });
+    }
     let generations = destination.parent().unwrap();
     std::fs::create_dir_all(generations).with_context(|| {
         format!(
@@ -803,10 +827,12 @@ fn progress(send: &async_channel::Sender<Event>, phase: String) -> Result<()> {
         .map_err(|_| anyhow::anyhow!("Reader closed"))
 }
 
-struct Staging(PathBuf);
+struct Staging(PathBuf, bool);
 impl Drop for Staging {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        if self.1 {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
     }
 }
 
@@ -1717,6 +1743,210 @@ mod tests {
     }
 
     #[test]
+    fn search_publication_failure_still_persists_warm_inventory_and_sources() {
+        let temp = TestDirectory::new();
+        let root = temp.path().join("source");
+        let cache = temp.path().join("cache");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(root.join("last.md"), "# Last\n\npositivecontrol [[target]]").unwrap();
+        std::fs::write(root.join("target.md"), "# Target").unwrap();
+        // Deny only search publication; the source-bank directory is writable.
+        std::fs::write(cache.join("generations"), "search publication obstruction").unwrap();
+        let before = source_manifest(&root);
+        let opts = Opts {
+            vault: Some(root.clone()),
+            note: Some("last.md".into()),
+            index_dir: Some(cache.clone()),
+            ..Default::default()
+        };
+        let (send, _receive) = async_channel::unbounded();
+        let mut reads = 0;
+        let Event::Ready {
+            searcher: Some(searcher),
+            warnings,
+            ..
+        } = prepare_rest_with_io(
+            &root,
+            &opts,
+            &Cancellation::default(),
+            &send,
+            &mut |path| {
+                reads += 1;
+                std::fs::read(path)
+            },
+            |_| Err(anyhow::anyhow!("test watcher unavailable")),
+            MAX_MEMORY_SEARCH_BYTES,
+        )
+        .unwrap()
+        else {
+            panic!("Ready with memory search")
+        };
+        assert_eq!(reads, 2, "cold source-read positive control");
+        assert!(warnings
+            .iter()
+            .any(|w| w.operation == "persist search cache"));
+        assert_eq!(searcher.search("positivecontrol", 10).unwrap().len(), 1);
+        let saved = tessera_core::vault::warm::Snapshot::load_checked(&cache, &root).unwrap();
+        assert!(
+            saved.search_generation.is_none(),
+            "never persist a nonexistent disk generation"
+        );
+        assert_eq!(
+            saved.source("last.md").as_deref(),
+            Some("# Last\n\npositivecontrol [[target]]")
+        );
+        let Event::First {
+            vault,
+            document,
+            searcher,
+            ..
+        } = prepare_first(&opts, &Cancellation::default()).unwrap()
+        else {
+            panic!("warm First")
+        };
+        assert!(vault.inventory_scanned);
+        assert_eq!(vault.notes.len(), 2);
+        assert!(document.unwrap().1.source.contains("positivecontrol"));
+        assert!(searcher.is_none());
+        let Event::Ready { .. } = prepare_rest_with_io(
+            &root,
+            &opts,
+            &Cancellation::default(),
+            &send,
+            &mut |_| panic!("unchanged precise source must be reused despite search failure"),
+            |_| Err(anyhow::anyhow!("test watcher unavailable")),
+            MAX_MEMORY_SEARCH_BYTES,
+        )
+        .unwrap() else {
+            panic!("warm Ready")
+        };
+        assert_eq!(source_manifest(&root), before);
+    }
+
+    #[test]
+    fn cold_inventory_is_published_before_search_build() {
+        let temp = TestDirectory::new();
+        let root = temp.path().join("source");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("last.md"), "# Last [[target]]").unwrap();
+        std::fs::write(root.join("target.md"), "# Target").unwrap();
+        let (send, receive) = async_channel::unbounded();
+        let observed = Arc::new(AtomicBool::new(false));
+        let hook_observed = observed.clone();
+        let hook = Arc::new(move |_: &Path| {
+            while let Ok(event) = receive.try_recv() {
+                if let Event::SearchInventory {
+                    notes,
+                    reconciled: Some(vault),
+                } = event
+                {
+                    assert_eq!(notes.len(), 2);
+                    assert_eq!(vault.notes.len(), 2);
+                    assert!(vault.inventory_scanned);
+                    assert_eq!(vault.backlinks("target.md").len(), 1);
+                    hook_observed.store(true, Ordering::SeqCst);
+                }
+            }
+            assert!(
+                hook_observed.load(Ordering::SeqCst),
+                "tree inventory precedes any search work"
+            );
+        });
+        prepare_rest(
+            &root,
+            &Opts {
+                index_dir: Some(temp.path().join("cache")),
+                index_build_hook: Some(hook),
+                ..Default::default()
+            },
+            &Cancellation::default(),
+            &send,
+        )
+        .unwrap();
+        assert!(
+            observed.load(Ordering::SeqCst),
+            "build checkpoint positive control"
+        );
+    }
+
+    #[test]
+    fn in_place_search_publication_is_complete_immutable_and_reusable() {
+        let temp = TestDirectory::new();
+        let root = temp.path().join("source");
+        let base = temp.path().join("cache");
+        let destination = base.join("generations").join("a".repeat(64));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("last.md"), "positivecontrol").unwrap();
+        let vault = Vault::scan(&root).unwrap();
+        let documents = vec![tessera_core::search::SearchDocument {
+            path: "last.md".into(),
+            title: "Last".into(),
+            text: "positivecontrol".into(),
+        }];
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let builds = attempts.clone();
+        let hook_destination = destination.clone();
+        let hook = Arc::new(move |_: &Path| {
+            builds.fetch_add(1, Ordering::SeqCst);
+            assert!(
+                open_completed_generation(&hook_destination).is_none(),
+                "unfinished index must never be published"
+            );
+        });
+        let opts = Opts {
+            search_publish_in_place: true,
+            index_build_hook: Some(hook),
+            ..Default::default()
+        };
+        let cancel = Cancellation::default();
+        let (send, _receive) = async_channel::unbounded();
+        let active = prepare_search_generation(
+            &vault,
+            &documents,
+            &base,
+            &destination,
+            &opts,
+            &cancel,
+            &send,
+        )
+        .unwrap();
+        assert!(
+            attempts.load(Ordering::SeqCst) > 0,
+            "build positive control"
+        );
+        assert!(!base.join("attempts").exists());
+        assert!(
+            !destination.exists(),
+            "no directory move or mutable pointer"
+        );
+        let completed = std::fs::read_dir(destination.with_extension("repairs"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
+        assert_eq!(completed.len(), 1);
+        assert_eq!(std::fs::read(completed[0].join("complete")).unwrap(), b"1");
+        let count = attempts.load(Ordering::SeqCst);
+        let reused = prepare_search_generation(
+            &vault,
+            &documents,
+            &base,
+            &destination,
+            &opts,
+            &cancel,
+            &send,
+        )
+        .unwrap();
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            count,
+            "warm search never rebuilds"
+        );
+        assert_eq!(active.search("positivecontrol", 10).unwrap().len(), 1);
+        assert_eq!(reused.search("positivecontrol", 10).unwrap().len(), 1);
+    }
+
+    #[test]
     fn prepare_publishes_readable_inventory_when_an_entry_is_permission_denied() {
         let temp = TestDirectory::new();
         let root = temp.path().join("source");
@@ -2467,6 +2697,11 @@ mod tests {
 
     #[test]
     fn cancelled_staged_build_cannot_remove_concurrent_completed_generation() {
+        cancelled_search_build(false);
+        cancelled_search_build(true);
+    }
+
+    fn cancelled_search_build(in_place: bool) {
         let temp = TestDirectory::new();
         let root = temp.path().join("source");
         std::fs::create_dir(&root).unwrap();
@@ -2486,6 +2721,7 @@ mod tests {
         let opts = Opts {
             index_dir: Some(cache),
             index_build_hook: Some(hook),
+            search_publish_in_place: in_place,
             ..Default::default()
         };
         let cancellation = Cancellation::default();
