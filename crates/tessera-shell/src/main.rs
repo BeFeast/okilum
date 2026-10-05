@@ -2971,6 +2971,7 @@ impl Reader {
                 #[cfg(unix)]
                 SideItem::Create(input, depth, directory, templates, selected) => {
                     row_base("inline-create-row".into())
+                        .debug_selector(|| "inline-create-row".into())
                         .key_context("InlineCreate")
                         .pl(px(18. + depth as f32 * 14.))
                         .child(

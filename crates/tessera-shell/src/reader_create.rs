@@ -258,6 +258,15 @@ impl Reader {
         match result {
             Ok((rel, Some(source))) => {
                 self.creation = None;
+                // Publish the successful create before the watcher catches up.
+                // Its ancestors must exist in the tree for an immediate Cmd-N
+                // in this new folder to render a focused, actionable input row.
+                let mut entries = self.vault.entries.clone();
+                entries.push(tessera_core::vault::VaultEntry {
+                    path: rel.clone(),
+                    kind: tessera_core::vault::EntryKind::Markdown,
+                });
+                self.tree.refresh(&root, &entries);
                 self.editing = None;
                 self.document_preparation_generation =
                     self.document_preparation_generation.wrapping_add(1);
@@ -377,6 +386,17 @@ mod tests {
             );
         });
         visual.run_until_parked();
+        assert!(visual.debug_bounds("inline-create-row").is_some());
+        reader.update_in(visual, |reader, window, cx| {
+            assert!(reader
+                .creation
+                .as_ref()
+                .unwrap()
+                .input
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window));
+        });
         visual.simulate_keystrokes("escape");
         visual.run_until_parked();
         reader.read_with(visual, |reader, _| {
