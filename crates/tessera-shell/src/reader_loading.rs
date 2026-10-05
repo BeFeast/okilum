@@ -1667,11 +1667,12 @@ impl Reader {
                                 let index_root = this.vault_root.clone();
                                 let generation = this.loading.as_ref().map(|load| load.generation);
                                 let epoch = this.incremental_epoch;
-                                let state_vault = vault.clone();
+                                let ready_vault = Arc::new(vault);
+                                let state_vault = ready_vault.clone();
                                 #[cfg(unix)]
                                 { this.move_index = None; }
                                 let index_task = cx.background_executor().spawn(async move {
-                                    let state = tessera_core::vault::warm::incremental::State::new(state_vault, *move_snapshot);
+                                    let state = tessera_core::vault::warm::incremental::State::new((*state_vault).clone(), *move_snapshot);
                                     #[cfg(unix)]
                                     let candidates = state.candidates.clone();
                                     (state, { #[cfg(unix)] { Some(candidates) } #[cfg(not(unix))] { None::<()> } })
@@ -1691,7 +1692,7 @@ impl Reader {
                                         }
                                     });
                                 }).detach();
-                                this.vault = Arc::new(vault);
+                                this.vault = ready_vault;
                                 this.searcher = searcher.map(|searcher| Arc::new(*searcher));
                                 this.watcher = watcher;
                                 this.watcher_generation = this.watcher_generation.wrapping_add(1);
