@@ -326,6 +326,28 @@ async fn lost_transition_response_restart_and_terminal_replay_keep_exact_intent(
     assert_eq!(observe(&app, &q, 1).await, StatusCode::NO_CONTENT);
     let r = f.enqueue(&q, f.owner);
     let path = format!("/api/bridge/v1/replies/{}", r.operation_id);
+    // A pristine insert must not be mistaken for a successful transition replay.
+    for expected in ["queued", "uncertain", "delivered"] {
+        assert_eq!(
+            call(
+                &app,
+                "POST",
+                &path,
+                json!({"expected":expected,"next":"queued"}),
+                Some(KEY),
+                None
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+    }
+    assert_eq!(
+        call(&app, "GET", &path, Value::Null, Some(KEY), None)
+            .await
+            .1["state"],
+        "queued"
+    );
     let body = json!({"expected":"queued","next":"uncertain"});
     assert_eq!(
         call(&app, "POST", &path, body.clone(), Some(KEY), None)
