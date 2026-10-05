@@ -236,3 +236,54 @@ reservation. A delivered reply stays reserved and does not imply completed work.
 Question pages are a live owner/project-scoped view, not a source change feed;
 absence on a page is never a withdrawal. Adapter authentication, durable cursor
 integration, network dispatch and the web question UI are the next PR.
+
+## Scoped bridge transport (slice 2, PR 2a)
+
+The optional machine API is disabled unless `serve --bridge-credential-file PATH`
+is supplied. Provision a regular mode-0600 JSON file outside the repo/image; never
+put its contents in command arguments, logs or browser configuration:
+
+```json
+{
+  "token": "<64 hex characters from 32 random bytes>",
+  "scope": {
+    "owner_id": "<existing Inbox owner UUID>",
+    "project_id": "<existing Inbox project UUID>",
+    "instance_id": "<configured T3 instance identity>",
+    "source_project_id": "<isolated T3 project identity>",
+    "ingest": true,
+    "replies": true
+  }
+}
+```
+
+The owner must match this database. The configured project must already exist
+before ingest. Browser project edits do not create or extend this permission.
+This credential permits questions/reply reconciliation only, never executor
+launch, shell/workspace operations, ordinary session APIs or Maestro access.
+Rotate by replacing the external file and restarting; the old token stops working.
+The current Compose deployment does not enable this transport.
+
+Requests use `Authorization: Bearer …` over the LAN HTTPS endpoint, without
+Origin or Cookie headers. Browser session credentials are not accepted here;
+normal browser mutation routes continue to require session + matching Origin.
+Payloads cannot select owner, source instance or source project authority.
+
+- `POST /api/bridge/v1/questions`: `{question, sequence}`; scope checked before
+  ingest, monotonic source observations and immutable identity enforced by store.
+- `GET /api/bridge/v1/replies?after=0&limit=50`: scoped insertion-order pages,
+  `{operations, next_cursor, has_more}`; maximum 100. Includes terminal operations.
+- `GET /api/bridge/v1/replies/{operation_id}`: current exact intent and state;
+  out-of-scope operations return the same 404 as missing operations.
+- `POST /api/bridge/v1/replies/{operation_id}`:
+  `{expected, next, delivery_id?, error_code?}`; guarded delivery transition,
+  exact result replay and no transition back to queued. Invalid transitions: 409.
+
+The list cursor is **not** a change-feed cursor. Retain unresolved operation IDs
+and use individual lookups; replay a full scan after restart/restore. A missing
+page/record never authorizes another external command. Before source I/O, persist
+`queued → uncertain` and retain the original deterministic source command ID.
+Only definite source evidence may advance to accepted/delivered/rejected; an
+HTTP acknowledgement is not proof that the original executor consumed an answer.
+This PR adds no source adapter or dispatcher. Source reconciliation, local bridge
+recovery, question freshness and the web answer surface follow in PR 2b.

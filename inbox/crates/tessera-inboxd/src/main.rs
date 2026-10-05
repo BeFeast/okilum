@@ -31,6 +31,9 @@ struct Options {
     ai_credential_file: Option<PathBuf>,
     #[arg(long, requires = "vault_folder")]
     fixture_vault: Option<PathBuf>,
+    /// Private operator-provisioned T3 bridge credential and scope (disabled by default).
+    #[arg(long)]
+    bridge_credential_file: Option<PathBuf>,
     #[arg(long, requires = "fixture_vault")]
     vault_folder: Vec<String>,
 }
@@ -79,10 +82,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .map(|path| tessera_inboxd::vault::Vault::open(&path, options.vault_folder))
                 .transpose()?
                 .map(std::sync::Arc::new);
+            let bridge = options
+                .bridge_credential_file
+                .map(|path| tessera_inboxd::bridge::Bridge::from_credential(&path, auth.owner))
+                .transpose()?;
             let listener = tokio::net::TcpListener::bind(options.listen).await?;
             axum::serve(
                 listener,
-                tessera_inboxd::http::router_with_services(auth, provider, vault),
+                tessera_inboxd::http::router_with_bridge(auth, provider, vault, bridge),
             )
             .with_graceful_shutdown(async {
                 let _ = tokio::signal::ctrl_c().await;

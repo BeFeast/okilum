@@ -1,5 +1,6 @@
 //! Detached Inbox backend.
 pub mod auth;
+pub mod bridge;
 pub mod execution;
 pub mod http;
 pub mod questions;
