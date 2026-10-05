@@ -127,6 +127,7 @@ actions!(
         CloseNote,
         NewFolder,
         RenameNote,
+        RenameTreeNote,
         DeleteNote,
         RecoverLinkMoves,
         NoteSourceHistory,
@@ -219,6 +220,10 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("up", PalettePrevious, Some("Reader > QuickOpen > Input")),
         KeyBinding::new("escape", Dismiss, Some("Reader > QuickOpen > Input")),
         KeyBinding::new("escape", Dismiss, Some("InlineCreate > Input")),
+        #[cfg(unix)]
+        KeyBinding::new("escape", Dismiss, Some("InlineRename > Input")),
+        #[cfg(unix)]
+        KeyBinding::new("f2", RenameTreeNote, Some("ReaderTree && !Input")),
         KeyBinding::new("secondary-n", NewNote, ctx),
         #[cfg(unix)]
         KeyBinding::new("secondary-backspace", DeleteNote, Some("Reader && !Input")),
@@ -256,7 +261,11 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("up", TreeUp, Some("ReaderTree && !Input")),
         KeyBinding::new("right", TreeRight, Some("ReaderTree && !Input")),
         KeyBinding::new("left", TreeLeft, Some("ReaderTree && !Input")),
+        #[cfg(not(unix))]
         KeyBinding::new("enter", TreeOpen, Some("ReaderTree && !Input")),
+        #[cfg(unix)]
+        KeyBinding::new("enter", RenameTreeNote, Some("ReaderTree && !Input")),
+        KeyBinding::new("space", TreeOpen, Some("ReaderTree && !Input")),
         KeyBinding::new(TREE_EXPAND_SUBTREE_KEY, TreeExpandSubtree, Some(TREE_KEYS)),
         KeyBinding::new(
             TREE_COLLAPSE_SUBTREE_KEY,
@@ -1048,7 +1057,11 @@ struct Reader {
     #[cfg(unix)]
     creation: Option<reader_create::Creation>,
     #[cfg(unix)]
+    renaming: Option<reader_move::Renaming>,
+    #[cfg(unix)]
     note_move_pending: bool,
+    #[cfg(unix)]
+    move_applying: bool,
     #[cfg(unix)]
     trash_pending: bool,
     #[cfg(unix)]
@@ -1277,7 +1290,11 @@ impl Reader {
             #[cfg(unix)]
             creation: None,
             #[cfg(unix)]
+            renaming: None,
+            #[cfg(unix)]
             note_move_pending: false,
+            #[cfg(unix)]
+            move_applying: false,
             #[cfg(unix)]
             trash_pending: false,
             #[cfg(unix)]
@@ -1778,6 +1795,11 @@ impl Reader {
     /// A non-empty focused search field is cleared and keeps focus; an empty one closes.
     fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         #[cfg(unix)]
+        if self.renaming.is_some() {
+            self.cancel_rename(window, cx);
+            return;
+        }
+        #[cfg(unix)]
         if self.creation.is_some() {
             self.cancel_creation(window, cx);
             return;
@@ -2204,6 +2226,14 @@ impl Reader {
                 append_creation_rows(&mut items, create, 0);
             }
             for row in self.tree.rows.iter() {
+                #[cfg(unix)]
+                if let Some(rename) = self.renaming.as_ref().filter(|r| r.path == row.path) {
+                    items.push(SideItem::Rename(rename.input.clone(), row.depth));
+                    if let Some(error) = &rename.error {
+                        items.push(SideItem::CreateError(error.clone()));
+                    }
+                    continue;
+                }
                 items.push(SideItem::Tree(row.clone()));
                 #[cfg(unix)]
                 if let Some(create) = creation.filter(|c| c.folder == row.path) {
@@ -2262,6 +2292,11 @@ impl Reader {
             .creation
             .as_ref()
             .map_or(selected, |create| create.folder.clone());
+        #[cfg(unix)]
+        let selected = self
+            .renaming
+            .as_ref()
+            .map_or(selected, |rename| rename.path.clone());
         if self.tree_revealed != selected {
             self.tree_revealed = selected.clone();
             if let Some(ix) = self.tree.reveal(&selected) {
@@ -3011,6 +3046,14 @@ impl Reader {
                     })
             };
             match item {
+                #[cfg(unix)]
+                SideItem::Rename(input, depth) => row_base("inline-rename-row".into())
+                    .debug_selector(|| "inline-rename-row".into())
+                    .key_context("InlineRename")
+                    .pl(px(18. + depth as f32 * 14.))
+                    .child(Icon::new(IconName::FileText).small())
+                    .child(div().flex_1().min_w_0().child(Input::new(&input).small()))
+                    .into_any_element(),
                 #[cfg(unix)]
                 SideItem::Create(input, depth, directory, templates, selected) => {
                     row_base("inline-create-row".into())
@@ -4834,6 +4877,8 @@ enum SideItem {
     Create(Entity<InputState>, usize, bool, Vec<String>, Option<String>),
     #[cfg(unix)]
     CreateError(String),
+    #[cfg(unix)]
+    Rename(Entity<InputState>, usize),
 }
 
 #[cfg(unix)]
@@ -5183,6 +5228,11 @@ impl Render for Reader {
                 cx.listener(|this, _: &NewFolder, window, cx| this.new_folder(None, window, cx)),
             )
             .on_action(cx.listener(|this, _: &RenameNote, window, cx| this.rename_note(window, cx)))
+            .on_action(
+                cx.listener(|this, _: &RenameTreeNote, window, cx| {
+                    this.rename_tree_note(window, cx)
+                }),
+            )
             .on_action(cx.listener(|this, _: &HistoryVersionNext, window, cx| {
                 this.step_timeline(true, window, cx)
             }))
@@ -7868,6 +7918,19 @@ fn reader_item_menu(
     let menu = reader_files::menu(menu, reader.read(cx).vault_root.clone(), relative.clone());
     #[cfg(unix)]
     let menu = {
+        let rename_reader = reader.downgrade();
+        let rename_path = relative.clone();
+        let menu = menu.when(relative.ends_with(".md"), |menu| {
+            menu.item(
+                gpui_component::menu::PopupMenuItem::new("Rename / move…").on_click(
+                    move |_, window, cx| {
+                        let _ = rename_reader.update(cx, |this, cx| {
+                            this.begin_rename(rename_path.clone(), window, cx)
+                        });
+                    },
+                ),
+            )
+        });
         let reader = reader.downgrade();
         menu.separator().item(
             gpui_component::menu::PopupMenuItem::new("Move to Trash").on_click(

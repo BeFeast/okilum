@@ -13,66 +13,133 @@ struct PendingMove {
     from: String,
     to: String,
     was_editing: bool,
+    current: String,
     // In read mode hold the same path lock as source editing throughout preview.
     guard: Option<FileEditor>,
     destination_guard: Option<EditorLock>,
 }
 
+pub(super) struct Renaming {
+    pub path: String,
+    root: PathBuf,
+    pub input: Entity<InputState>,
+    pub error: Option<String>,
+    error_input: Option<String>,
+    _subscription: Subscription,
+}
+
 impl Reader {
     pub(super) fn rename_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.file_preview.is_some() {
-            return;
+        self.begin_rename(self.current_rel.clone(), window, cx);
+    }
+
+    pub(super) fn rename_tree_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(path) = self.tree.cursor.clone() {
+            if self.tree.cursor_folder().as_deref() == Some(path.as_str()) {
+                self.tree_key(TreeKey::Open, window, cx);
+            } else {
+                self.begin_rename(path, window, cx);
+            }
         }
+    }
+
+    pub(super) fn begin_rename(
+        &mut self,
+        path: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.note_move_pending || self.trash_pending {
             return;
         }
-        if self.current_rel.is_empty() || self.loading.as_ref().is_some_and(|l| l.active) {
+        if !Path::new(&path)
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("md"))
+            || self.loading.as_ref().is_some_and(|l| l.active)
+        {
             self.link_notice =
-                Some("Open a note and wait for the folder to finish loading.".into());
+                Some("Select a Markdown note and wait for loading to finish.".into());
             cx.notify();
             return;
         }
-        if let Err(error) = self.check_move_editors(std::slice::from_ref(&self.current_rel), cx) {
+        if let Err(error) = self.check_move_editors(std::slice::from_ref(&path), cx) {
             self.link_notice = Some(error.to_string());
             cx.notify();
             return;
         }
-        let root = self.vault_root.clone();
-        let from = self.current_rel.clone();
-        let path = root.join(&from);
-        let picker = cx.prompt_for_new_path(
-            path.parent().unwrap(),
-            path.file_name().and_then(|s| s.to_str()),
-        );
-        self.note_move_pending = true;
-        cx.spawn_in(window, async move |this, cx| {
-            let selection = picker.await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                let result = match selection {
-                    Ok(Ok(Some(path))) if this.vault_root == root && this.current_rel == from => {
-                        this.start_move_preview(&path, window, cx)
+        self.creation = None;
+        self.reveal_in_tree(&path, window, cx);
+        let input = cx.new(|cx| {
+            let mut input = InputState::new(window, cx).placeholder("Path inside vault");
+            input.set_value(path.clone(), window, cx);
+            input
+        });
+        let subscription =
+            cx.subscribe_in(&input, window, |this, _, event, window, cx| match event {
+                InputEvent::PressEnter { .. } => this.commit_rename(window, cx),
+                InputEvent::Change => {
+                    if let Some(rename) = this.renaming.as_mut() {
+                        // Input may emit Change on Enter without changing bytes.
+                        // Keep a rejected destination visible until it is edited.
+                        if rename.error_input.as_deref()
+                            != Some(rename.input.read(cx).value().as_ref())
+                        {
+                            rename.error = None;
+                            rename.error_input = None;
+                        }
                     }
-                    Ok(Ok(None)) => {
-                        this.note_move_pending = false;
-                        Ok(())
-                    }
-                    _ => Err(anyhow::anyhow!(
-                        "The note changed or the picker failed. Choose Rename / move again."
-                    )),
-                };
-                if let Err(error) = result {
-                    this.note_move_pending = false;
-                    this.link_notice = Some(format!("Cannot move: {error:#}"));
+                    cx.notify();
                 }
-                cx.notify();
+                _ => {}
             });
-        })
-        .detach();
+        input.update(cx, |input, cx| {
+            input.focus(window, cx);
+            input.select_all(window, cx);
+        });
+        self.renaming = Some(Renaming {
+            path,
+            root: self.vault_root.clone(),
+            input,
+            error: None,
+            error_input: None,
+            _subscription: subscription,
+        });
+        cx.notify();
+    }
+
+    pub(super) fn cancel_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.renaming = None;
+        self.tree_focus.focus(window, cx);
+        cx.notify();
+    }
+
+    fn commit_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(rename) = self.renaming.as_ref() else {
+            return;
+        };
+        let from = rename.path.clone();
+        let value = rename.input.read(cx).value().to_string();
+        let result = if rename.root != self.vault_root {
+            Err(anyhow::anyhow!("The open vault changed; start again"))
+        } else {
+            self.start_move_preview(&self.vault_root.join(&value), &from, window, cx)
+        };
+        match result {
+            Ok(()) => self.renaming = None,
+            Err(error) => {
+                if let Some(rename) = self.renaming.as_mut() {
+                    rename.error = Some(format!("{error:#}"));
+                    rename.error_input = Some(value);
+                }
+            }
+        }
+        cx.notify();
     }
 
     fn start_move_preview(
         &mut self,
         destination: &Path,
+        from: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> anyhow::Result<()> {
@@ -80,17 +147,16 @@ impl Reader {
             !self.loading.as_ref().is_some_and(|l| l.active),
             "Wait for loading to finish"
         );
-        self.check_move_editors(std::slice::from_ref(&self.current_rel), cx)?;
-        let other_source_editor = self.source_has_other_editor(cx);
+        self.check_move_editors(&[from.to_owned()], cx)?;
+        let other_source_editor = from == self.current_rel && self.source_has_other_editor(cx);
         let state = self
             .session_directory
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("No recovery storage is available"))?;
-        let guard = if self.editing.is_none() && !other_source_editor {
-            let editor = FileEditor::open(
-                &self.vault_root.join(&self.current_rel),
-                &state.join("editor-drafts"),
-            )?;
+        let guard = if (from != self.current_rel || self.editing.is_none()) && !other_source_editor
+        {
+            let editor =
+                FileEditor::open(&self.vault_root.join(from), &state.join("editor-drafts"))?;
             anyhow::ensure!(
                 !editor.dirty(),
                 "Restore and save this note's unsaved draft before moving it"
@@ -109,15 +175,12 @@ impl Reader {
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("Use a UTF-8 filename"))?
             .to_owned();
-        MovePlan::prepare(
-            &self.vault_root,
-            Path::new(&self.current_rel),
-            Path::new(&to),
-        )?;
+        MovePlan::prepare(&self.vault_root, Path::new(from), Path::new(&to))?;
         let destination_guard =
             FileEditor::reserve_destination(&path, &state.join("editor-drafts"))?;
         let root = self.vault_root.clone();
-        let from = self.current_rel.clone();
+        let from = from.to_owned();
+        let current = self.current_rel.clone();
         let was_editing = self.editing.is_some();
         let index = self.move_index.clone();
         let state = self.session_directory.clone();
@@ -210,7 +273,7 @@ impl Reader {
                     let result = result.and_then(|links| {
                         anyhow::ensure!(
                             this.vault_root == root
-                                && this.current_rel == from
+                                && this.current_rel == current
                                 && this.editing.is_some() == was_editing,
                             "The open note changed; preview again"
                         );
@@ -221,6 +284,7 @@ impl Reader {
                             from,
                             to,
                             was_editing,
+                            current,
                             guard,
                             destination_guard: Some(destination_guard),
                         })
@@ -351,28 +415,11 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if update && self.vault_root == pending.root && self.current_rel == pending.from {
-            if let Err(error) = pending.links.validate(&pending.root) {
-                let destination = pending.root.join(&pending.to);
-                drop(pending);
-                self.refresh_source_from_disk(window, cx);
-                self.link_notice = Some(format!(
-                    "Nothing was written: {error:#}. Review the refreshed preview."
-                ));
-                if let Err(error) = self.start_move_preview(&destination, window, cx) {
-                    self.link_notice = Some(format!(
-                        "Nothing was written. Could not refresh preview: {error:#}"
-                    ));
-                }
-                cx.notify();
-                return;
-            }
-        }
         let mut pending = pending;
         let result = (|| -> anyhow::Result<_> {
             anyhow::ensure!(
                 self.vault_root == pending.root
-                    && self.current_rel == pending.from
+                    && self.current_rel == pending.current
                     && self.editing.is_some() == pending.was_editing,
                 "The open note changed. Nothing was moved; preview again"
             );
@@ -387,25 +434,68 @@ impl Reader {
             if !update {
                 selected.changes.clear();
             }
-            let applied = self.apply_link_move(&selected, cx)?;
-            anyhow::ensure!(
-                applied.moved,
-                "{}",
-                applied
-                    .warning
-                    .unwrap_or_else(|| "Move interrupted; use Recover link moves".into())
-            );
-            Ok(tessera_core::note_move::Moved {
-                warning: applied.warning,
-            })
+            let task = self.apply_link_move(&selected, window, cx)?;
+            Ok(task)
         })();
+        let task = match result {
+            Ok(task) => task,
+            Err(error) => {
+                self.link_notice = Some(format!("Cannot move: {error:#}"));
+                cx.notify();
+                return;
+            }
+        };
+        self.note_move_pending = true;
+        window.open_dialog(cx, |dialog, _, _| {
+            dialog
+                .title("Moving note…")
+                .overlay_closable(false)
+                .close_button(false)
+                .keyboard(false)
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(gpui_component::spinner::Spinner::new())
+                        .child("Saving link updates and recovery copies. Please wait…"),
+                )
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await.and_then(|applied| {
+                anyhow::ensure!(
+                    applied.moved,
+                    "{}",
+                    applied
+                        .warning
+                        .unwrap_or_else(|| "Move interrupted; use Recover link moves".into())
+                );
+                Ok(tessera_core::note_move::Moved {
+                    warning: applied.warning,
+                })
+            });
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.note_move_pending = false;
+                window.close_dialog(cx);
+                this.complete_move(pending, update, result, window, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn complete_move(
+        &mut self,
+        pending: PendingMove,
+        update: bool,
+        result: anyhow::Result<tessera_core::note_move::Moved>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match result {
             Err(error) => {
                 self.sync_move_input(window, cx);
                 self.link_notice = Some(format!("Cannot move: {error:#}"));
             }
             Ok(moved) => {
-                self.editing = None;
+                self.tree.note_moved(&pending.from, &pending.to);
                 drop(pending.guard);
                 drop(pending.destination_guard);
                 for path in &mut self.history {
@@ -424,6 +514,13 @@ impl Reader {
                     }
                 }
                 self.save_sidebar(cx);
+                if self.current_rel != pending.from {
+                    self.sync_move_input(window, cx);
+                    self.link_notice = Some(moved.warning.unwrap_or_else(|| "Note moved.".into()));
+                    cx.notify();
+                    return;
+                }
+                self.editing = None;
                 self.document_preparation_generation =
                     self.document_preparation_generation.wrapping_add(1);
                 let document =
@@ -610,13 +707,64 @@ mod tests {
         });
         let reader = reader.unwrap();
         visual.run_until_parked();
+        reader.update_in(visual, |reader, window, cx| {
+            reader.reveal_in_tree("start.md", window, cx);
+            reader.tree_focus.focus(window, cx);
+        });
+        visual.simulate_keystrokes("f2");
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("inline-rename-row").is_some());
+        assert!(!visual.did_prompt_for_new_path());
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        reader.read_with(visual, |reader, _| assert!(reader.renaming.is_none()));
         reader.update_in(visual, |reader, window, cx| reader.rename_note(window, cx));
-        visual.simulate_new_path_selection(|_| Some(root.join("Folder/Новое 🧠.md")));
+        reader.update_in(visual, |reader, window, cx| {
+            let input = reader.renaming.as_ref().unwrap().input.clone();
+            input.update(cx, |input, cx| {
+                input.set_value("Folder/Новое 🧠.md", window, cx)
+            });
+        });
+        visual.run_until_parked();
+        reader.update_in(visual, |reader, window, cx| {
+            if let Some(rename) = &reader.renaming {
+                assert!(
+                    rename.input.read(cx).focus_handle(cx).is_focused(window),
+                    "rename input must receive Enter"
+                );
+            }
+        });
+        visual.simulate_keystrokes("enter");
         visual.run_until_parked();
         visual.simulate_keystrokes("escape");
         visual.run_until_parked();
         assert!(root.join("start.md").exists());
         assert!(!root.join("Folder/Новое 🧠.md").exists());
+        reader.update_in(visual, |reader, window, cx| {
+            reader.rename_note(window, cx);
+            let input = reader.renaming.as_ref().unwrap().input.clone();
+            input.update(cx, |input, cx| input.set_value("target.md", window, cx));
+        });
+        visual.run_until_parked();
+        reader.update_in(visual, |reader, window, cx| {
+            if let Some(rename) = &reader.renaming {
+                assert!(
+                    rename.input.read(cx).focus_handle(cx).is_focused(window),
+                    "rename input must receive Enter"
+                );
+            }
+        });
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        reader.read_with(visual, |reader, _| {
+            assert!(reader.renaming.as_ref().unwrap().error.is_some())
+        });
+        assert_eq!(
+            std::fs::read_to_string(root.join("target.md")).unwrap(),
+            "[[start]]"
+        );
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
         // Read-mode recovery must be resolved explicitly, never stranded by rename.
         {
             let mut draft =
@@ -624,11 +772,29 @@ mod tests {
             draft.set_text("durable draft".into()).unwrap();
         }
         reader.update_in(visual, |reader, window, cx| reader.rename_note(window, cx));
-        visual.simulate_new_path_selection(|_| Some(root.join("Folder/Новое 🧠.md")));
+        reader.update_in(visual, |reader, window, cx| {
+            let input = reader.renaming.as_ref().unwrap().input.clone();
+            input.update(cx, |input, cx| {
+                input.set_value("Folder/Новое 🧠.md", window, cx)
+            });
+        });
+        visual.run_until_parked();
+        reader.update_in(visual, |reader, window, cx| {
+            if let Some(rename) = &reader.renaming {
+                assert!(
+                    rename.input.read(cx).focus_handle(cx).is_focused(window),
+                    "rename input must receive Enter"
+                );
+            }
+        });
+        visual.simulate_keystrokes("enter");
         visual.run_until_parked();
         reader.read_with(visual, |reader, _| {
             assert!(reader
-                .link_notice
+                .renaming
+                .as_ref()
+                .unwrap()
+                .error
                 .as_ref()
                 .unwrap()
                 .contains("Restore and save"))
@@ -653,7 +819,22 @@ mod tests {
             assert!(reader.save_source(cx));
             reader.rename_note(window, cx);
         });
-        visual.simulate_new_path_selection(|_| Some(root.join("Folder/Новое 🧠.md")));
+        reader.update_in(visual, |reader, window, cx| {
+            let input = reader.renaming.as_ref().unwrap().input.clone();
+            input.update(cx, |input, cx| {
+                input.set_value("Folder/Новое 🧠.md", window, cx)
+            });
+        });
+        visual.run_until_parked();
+        reader.update_in(visual, |reader, window, cx| {
+            if let Some(rename) = &reader.renaming {
+                assert!(
+                    rename.input.read(cx).focus_handle(cx).is_focused(window),
+                    "rename input must receive Enter"
+                );
+            }
+        });
+        visual.simulate_keystrokes("enter");
         visual.run_until_parked();
         visual.update(|window, cx| window.draw(cx).clear(cx));
         let bounds = visual.debug_bounds("move-without").unwrap();
@@ -687,11 +868,41 @@ mod tests {
         });
         std::fs::write(root.join("target.md"), "[[Folder/Новое 🧠#Heading|alias]]").unwrap();
         reader.update_in(visual, |reader, window, cx| reader.rename_note(window, cx));
-        visual.simulate_new_path_selection(|_| Some(root.join("Final.md")));
+        reader.update_in(visual, |reader, window, cx| {
+            let input = reader.renaming.as_ref().unwrap().input.clone();
+            input.update(cx, |input, cx| input.set_value("Final.md", window, cx));
+        });
         visual.run_until_parked();
+        reader.update_in(visual, |reader, window, cx| {
+            if let Some(rename) = &reader.renaming {
+                assert!(
+                    rename.input.read(cx).focus_handle(cx).is_focused(window),
+                    "rename input must receive Enter"
+                );
+            }
+        });
         visual.simulate_keystrokes("enter");
         visual.run_until_parked();
-        assert!(root.join("Final.md").exists());
+        visual.run_until_parked();
+        reader.update_in(visual, |reader, window, cx| {
+            if let Some(rename) = &reader.renaming {
+                assert!(
+                    rename.input.read(cx).focus_handle(cx).is_focused(window),
+                    "rename input must receive Enter"
+                );
+            }
+        });
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        reader.read_with(visual, |reader, _| {
+            assert!(
+                root.join("Final.md").exists(),
+                "pending={} renaming={} notice={:?}",
+                reader.note_move_pending,
+                reader.renaming.is_some(),
+                reader.link_notice
+            );
+        });
         assert_eq!(
             std::fs::read_to_string(root.join("target.md")).unwrap(),
             "[[Final#Heading|alias]]"
@@ -700,12 +911,26 @@ mod tests {
             assert_eq!(reader.current_rel, "Final.md");
             assert!(reader.editing.is_some());
         });
+        let move_index = reader.read_with(visual, |reader, _| reader.move_index.clone());
         // A missing index never silently starts a full-vault source scan.
         reader.update_in(visual, |reader, window, cx| {
             reader.move_index = None;
             reader.rename_note(window, cx);
         });
-        visual.simulate_new_path_selection(|_| Some(root.join("Fallback.md")));
+        reader.update_in(visual, |reader, window, cx| {
+            let input = reader.renaming.as_ref().unwrap().input.clone();
+            input.update(cx, |input, cx| input.set_value("Fallback.md", window, cx));
+        });
+        visual.run_until_parked();
+        reader.update_in(visual, |reader, window, cx| {
+            if let Some(rename) = &reader.renaming {
+                assert!(
+                    rename.input.read(cx).focus_handle(cx).is_focused(window),
+                    "rename input must receive Enter"
+                );
+            }
+        });
+        visual.simulate_keystrokes("enter");
         visual.run_until_parked();
         visual.executor().advance_clock(Duration::from_millis(300));
         visual.run_until_parked();
@@ -718,6 +943,30 @@ mod tests {
         reader.read_with(visual, |reader, _| assert!(!reader.note_move_pending));
         assert!(root.join("Final.md").exists());
         assert!(!root.join("Fallback.md").exists());
+        // Rename a selected row without changing the open source editor.
+        reader.update_in(visual, |reader, window, cx| {
+            reader.move_index = move_index;
+            reader.reveal_in_tree("target.md", window, cx);
+            reader.tree_focus.focus(window, cx);
+        });
+        visual.simulate_keystrokes("f2");
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("inline-rename-row").is_some());
+        reader.update_in(visual, |reader, window, cx| {
+            let input = reader.renaming.as_ref().unwrap().input.clone();
+            input.update(cx, |input, cx| input.set_value("Reference.md", window, cx));
+        });
+        visual.run_until_parked();
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        assert!(root.join("Reference.md").exists());
+        assert!(!root.join("target.md").exists());
+        reader.read_with(visual, |reader, _| {
+            assert_eq!(reader.current_rel, "Final.md");
+            assert!(reader.editing.is_some());
+        });
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
