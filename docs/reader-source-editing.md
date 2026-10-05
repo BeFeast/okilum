@@ -275,3 +275,21 @@ reads. Snapshot reconciliation took 6,745 ms; candidate-index construction added
 1,490 ms when performed inline. It now runs after Ready, with a root/generation
 check before publishing, so that work does not extend the readiness dependency.
 These are core preparation timings, not an end-to-end macOS startup measurement.
+
+## Inline creation and folder templates (#466)
+
+New File / New Folder in the folder context menu or Folders header starts an
+editable tree row. ⌘N (Ctrl+N on Linux) uses the current note's folder and opens
+the sidebar. Enter creates; Esc cancels. Names may include nested folders;
+Markdown names imply `.md`. Invalid names and collisions remain inline.
+Intermediate folders created before a later failure are kept; no existing file
+is replaced. Windows remains read-only.
+
+New notes begin with `type: Note`, today's `created: YYYY-MM-DD`, and an H1
+matching the typed filename stem. The nearest regular UTF-8 `_template.md`
+from the destination folder up to the vault root overrides this source.
+`{{title}}` and `{{date}}` are substituted once; other bytes, including line
+endings and unknown placeholders, stay unchanged. Templates over 1 MiB and
+symbolic links abort creation with an error. `_template.md` is reserved, never a creation target.
+New folders and notes cannot traverse symlinks or overwrite an existing name;
+orphan drafts and active writers also block note creation.

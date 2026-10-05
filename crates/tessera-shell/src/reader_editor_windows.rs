@@ -25,6 +25,14 @@ impl Reader {
     pub(super) fn rename_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.toggle_source(window, cx);
     }
+    pub(super) fn new_folder(
+        &mut self,
+        _: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_source(window, cx);
+    }
     pub(super) fn new_note(
         &mut self,
         _: Option<&str>,
