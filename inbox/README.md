@@ -193,3 +193,23 @@ creates a fresh operation and preserves the draft. Legacy prepared operations
 with an unrelated target are shown as occupied with earlier delivery uncertain,
 not retroactively claimed to have failed. Forget hides a conflict on this device;
 it never deletes server history or vault files.
+
+## Execution foundation (slice 2, PR 1a)
+
+Authenticated same-origin draft endpoints:
+
+- `GET/POST /api/v1/projects`: list/save project metadata. Listing accepts `after`
+  (last UUID) and `limit` (1–100). Continue using `next_after` until an empty page;
+  this is a live metadata list, not the append-only capture change feed.
+- `GET /api/v1/projects/{id}`: current owner-scoped project.
+- `POST /api/v1/briefs`: save a new immutable brief revision.
+- `GET /api/v1/briefs/{id}/revisions/{revision}`: read exact saved draft bytes.
+
+Saves contain operation UUID and expected revision (zero for creation). A stale
+edit returns 409 with the current object; same-ID exact replay returns its original
+response even after later edits. Brief identity stays in its original project.
+An opaque `target_id` on a draft grants no authority: this foundation has no launch,
+question ingest or dispatch endpoints and makes no source requests. Configured
+source authorization and durable answer/launch operations follow separately.
+Schema 6 stores project state, immutable brief history and mutation replay results
+outside the vault/cache. Existing capture/discussion/publication data are retained.
