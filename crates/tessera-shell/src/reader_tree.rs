@@ -53,6 +53,49 @@ pub struct Tree {
 }
 
 impl Tree {
+    /// Keep consecutive local operations visible until the watcher catches up.
+    #[cfg(unix)]
+    pub fn entry_created(&mut self, path: &str, kind: EntryKind) {
+        let mut entries: Vec<_> = self
+            .kinds
+            .iter()
+            .filter(|(p, _)| p.as_str() != path)
+            .map(|(path, kind)| VaultEntry {
+                path: path.clone(),
+                kind: *kind,
+            })
+            .collect();
+        entries.push(VaultEntry {
+            path: path.to_owned(),
+            kind,
+        });
+        let root = self.root.clone();
+        self.refresh(&root, &entries);
+    }
+
+    /// Publish a completed local move before watcher inventory delivery.
+    #[cfg(unix)]
+    pub fn note_moved(&mut self, from: &str, to: &str) {
+        let mut entries: Vec<_> = self
+            .kinds
+            .iter()
+            .filter(|(path, _)| path.as_str() != from)
+            .map(|(path, kind)| VaultEntry {
+                path: path.clone(),
+                kind: *kind,
+            })
+            .collect();
+        entries.push(VaultEntry {
+            path: to.to_owned(),
+            kind: EntryKind::Markdown,
+        });
+        let root = self.root.clone();
+        self.refresh(&root, &entries);
+        if self.cursor.as_deref() == Some(from) {
+            self.cursor = Some(to.to_owned());
+        }
+    }
+
     pub fn refresh(&mut self, root: &Path, entries: &[VaultEntry]) {
         if self.root != root {
             *self = Self::default();

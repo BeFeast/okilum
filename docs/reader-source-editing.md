@@ -328,3 +328,20 @@ or the system file manager to restore items from Trash. Windows stays read-only.
 QA on copies: trash a note and Undo, then repeat after creating a replacement at
 the original path (Undo must refuse); cancel deletion of a linked note or folder
 and verify every source is unchanged; inspect the actual system Trash.
+
+### Inline rename and background application (#471)
+
+Rename / move focuses an input in the sidebar row, containing the vault-relative
+path. F2 or Enter on a selected note opens the same input; Space opens the note.
+Folder Enter still expands/collapses it. Enter submits a destination such as
+`Projects/Meeting.md`; Escape cancels without writing. Existing destinations and
+paths outside the vault remain errors shown beside the input. The explicit
+New note from template action also uses the inline creation row.
+
+The indexed, cancellable preview is unchanged. After confirmation, file revision
+checks, link writes, recovery copies and the move run on a background worker.
+A loading dialog remains visible until completion. Clean source editor locks are
+retained across the worker; affected windows cannot navigate/save or start another
+move during application. Dirty affected editors still block before application.
+Writes are not cancellable mid-transaction; interrupted operations retain their
+existing recovery journal and exact source preimages.
