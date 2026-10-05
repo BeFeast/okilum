@@ -63,6 +63,10 @@ mod reader_timeline;
 #[cfg(windows)]
 #[path = "reader_timeline_windows.rs"]
 mod reader_timeline;
+#[cfg(unix)]
+mod reader_trash;
+#[cfg(unix)]
+mod reader_trash_fs;
 mod reader_tree;
 mod text_ranges;
 mod updater;
@@ -123,6 +127,7 @@ actions!(
         CloseNote,
         NewFolder,
         RenameNote,
+        DeleteNote,
         RecoverLinkMoves,
         NoteSourceHistory,
         HistoryVersionNext,
@@ -215,6 +220,7 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("escape", Dismiss, Some("Reader > QuickOpen > Input")),
         KeyBinding::new("escape", Dismiss, Some("InlineCreate > Input")),
         KeyBinding::new("secondary-n", NewNote, ctx),
+        KeyBinding::new("secondary-backspace", DeleteNote, Some("Reader && !Input")),
         KeyBinding::new("secondary-w", CloseNote, ctx),
         KeyBinding::new("secondary-w", CloseNote, Some("Reader > Input")),
         KeyBinding::new("secondary-[", HistoryBack, ctx),
@@ -1041,6 +1047,8 @@ struct Reader {
     #[cfg(unix)]
     note_move_pending: bool,
     #[cfg(unix)]
+    trash_pending: bool,
+    #[cfg(unix)]
     move_index: Option<Arc<tessera_core::link_rewrite::CandidateIndex>>,
     recovery_offer: bool,
     recovery_checked: bool,
@@ -1267,6 +1275,8 @@ impl Reader {
             creation: None,
             #[cfg(unix)]
             note_move_pending: false,
+            #[cfg(unix)]
+            trash_pending: false,
             #[cfg(unix)]
             move_index: None,
             recovery_offer: false,
@@ -3489,11 +3499,7 @@ impl Reader {
                                 return d
                                     .context_menu(move |menu, _, cx| {
                                         if let Some(view) = file_entity.upgrade() {
-                                            reader_files::menu(
-                                                menu,
-                                                view.read(cx).vault_root.clone(),
-                                                file_rel.clone(),
-                                            )
+                                            reader_item_menu(menu, &view, file_rel.clone(), cx)
                                         } else {
                                             menu
                                         }
@@ -3503,12 +3509,7 @@ impl Reader {
                             let folder = row.path.clone();
                             d.context_menu(move |menu, _, cx| {
                                 let menu = if let Some(view) = entity.upgrade() {
-                                    reader_files::menu(
-                                        menu,
-                                        view.read(cx).vault_root.clone(),
-                                        folder.clone(),
-                                    )
-                                    .separator()
+                                    reader_item_menu(menu, &view, folder.clone(), cx).separator()
                                 } else {
                                     menu
                                 };
@@ -5185,6 +5186,14 @@ impl Render for Reader {
             .on_action(cx.listener(|this, _: &HistoryVersionPrevious, window, cx| {
                 this.step_timeline(false, window, cx)
             }))
+
+            .when(cfg!(unix), |view| {
+                #[cfg(unix)]
+                let view = view.on_action(
+                    cx.listener(|this, _: &DeleteNote, window, cx| this.delete_note(window, cx)),
+                );
+                view
+            })
             .on_action(cx.listener(|this, _: &NoteSourceHistory, window, cx| {
                 this.source_history(false, window, cx)
             }))
@@ -7846,4 +7855,27 @@ mod document_link_landing_tests {
         );
         std::fs::remove_dir_all(root).unwrap();
     }
+}
+
+fn reader_item_menu(
+    menu: gpui_component::menu::PopupMenu,
+    reader: &Entity<Reader>,
+    relative: String,
+    cx: &App,
+) -> gpui_component::menu::PopupMenu {
+    let menu = reader_files::menu(menu, reader.read(cx).vault_root.clone(), relative.clone());
+    #[cfg(unix)]
+    let menu = {
+        let reader = reader.downgrade();
+        menu.separator().item(
+            gpui_component::menu::PopupMenuItem::new("Move to Trash").on_click(
+                move |_, window, cx| {
+                    let _ = reader.update(cx, |this, cx| {
+                        this.delete_path(relative.clone(), window, cx)
+                    });
+                },
+            ),
+        )
+    };
+    menu
 }
