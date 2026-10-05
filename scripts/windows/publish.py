@@ -10,7 +10,9 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'updater'))
 from release import R2
 
-PREFIX = 'tessera/windows'
+CONTRACT = json.loads(Path(__file__).with_name('channel.json').read_text())
+PREFIX = CONTRACT['prefix']
+assert CONTRACT['default_channel'] == 'beta'
 
 
 def validate_feed(feed, read):

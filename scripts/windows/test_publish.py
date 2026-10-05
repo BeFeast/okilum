@@ -37,6 +37,23 @@ def fixture(root, build=7000):
 
 
 class PublicationTests(unittest.TestCase):
+    def test_client_contract_matches_published_channel_urls(self):
+        from urllib.parse import urlsplit
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture(root)
+            store = Store()
+            p.publish(root, 7000, 'source', store)
+            p.promote(7000, store)
+            self.assertEqual(p.CONTRACT['default_channel'], 'beta')
+            for channel in ['beta', 'stable']:
+                # windows_feed.rs embeds this same contract; its SDK test captures
+                # the real request and checks this path (including releases name).
+                url = f"{p.CONTRACT['public_root']}/{p.CONTRACT['prefix']}/{channel}/releases.{channel}.json"
+                key = urlsplit(url).path.lstrip('/')
+                self.assertIn(key, store.data)
+                self.assertEqual(json.loads(store.data[key])['Assets'][0]['Version'], '0.1.7000')
+
     def test_publish_prepare_promote_preserve_bytes_feed_last(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
