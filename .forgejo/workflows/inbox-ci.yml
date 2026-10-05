@@ -36,7 +36,7 @@ jobs:
       - name: Install compiler and pinned Rust
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends build-essential curl ca-certificates pkg-config libssl-dev
+          sudo apt-get install -y -qq --no-install-recommends build-essential curl ca-certificates pkg-config libssl-dev python3-venv
           curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - name: Format, lint and test isolated Inbox workspace
@@ -52,3 +52,8 @@ jobs:
         run: |
           npm ci --ignore-scripts
           npm test
+      - name: T3 bridge projection, transport and recovery tests
+        run: |
+          python3 -m venv /tmp/tessera-bridge-tests
+          /tmp/tessera-bridge-tests/bin/pip install --require-hashes --only-binary=:all: -r inbox/bridge/requirements.txt
+          /tmp/tessera-bridge-tests/bin/python -m unittest discover -s inbox/bridge -p 'test_*.py' -v
