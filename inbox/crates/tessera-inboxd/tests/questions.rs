@@ -264,3 +264,53 @@ fn only_definite_rejection_releases_reservation_and_v6_migrates() {
         .is_some());
     assert!(store.execution_question(who, q.id).unwrap().is_none());
 }
+
+#[test]
+fn stale_source_blocks_new_answers_but_exact_replay_survives_and_observation_refreshes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let mut store = Store::open(&path).unwrap();
+    let (who, q, r) = fixture(&mut store);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute("UPDATE execution_questions SET observed_at=1", [])
+        .unwrap();
+    let view = store.execution_question(who, q.id).unwrap().unwrap();
+    assert!(!view.source_fresh);
+    assert!(!view.question.can_reply);
+    assert!(matches!(
+        store.prepare_execution_reply(who, &r),
+        Err(Error::ExecutionRevisionConflict)
+    ));
+    // Same snapshot cursor is a fresh source check, not a new source revision.
+    store.observe_execution_question(who, &q, 1).unwrap();
+    assert!(
+        store
+            .execution_question(who, q.id)
+            .unwrap()
+            .unwrap()
+            .source_fresh
+    );
+    let original = store.prepare_execution_reply(who, &r).unwrap();
+    db.execute("UPDATE execution_questions SET observed_at=1", [])
+        .unwrap();
+    assert_eq!(store.prepare_execution_reply(who, &r).unwrap(), original);
+    drop(store);
+    // Schema 7 recovery never treats migrated observations as fresh.
+    db.execute_batch(
+        "ALTER TABLE execution_questions DROP COLUMN observed_at; PRAGMA user_version=7;",
+    )
+    .unwrap();
+    drop(db);
+    let store = Store::open(&path).unwrap();
+    assert!(
+        !store
+            .execution_question(who, q.id)
+            .unwrap()
+            .unwrap()
+            .source_fresh
+    );
+    assert_eq!(
+        store.execution_reply(who, r.operation_id).unwrap().unwrap(),
+        original
+    );
+}
