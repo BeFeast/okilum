@@ -12,6 +12,7 @@ import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'updater'))
 from release import R2  # noqa: E402
+import catalog
 
 PREFIX = 'tessera/arch'
 
@@ -129,6 +130,10 @@ def execute(args, r2, key, tmp):
         channel = 'stable'
     r2.put(f'{PREFIX}/tessera-signing-key.asc', key.public(), 'application/pgp-keys', 'no-cache')
     publish_channel(r2, key, tmp, channel, manifest, package, signature)
+    if args.command == 'publish':
+        catalog.record(r2, 'linux', args.build, args.source, [
+            catalog.asset(f'{archive}/{name}', name, package),
+            catalog.asset(f'{archive}/{name}.sig', name + '.sig', signature)])
     print(f'Published {name} to {channel}; source {manifest["source"]}')
 
 

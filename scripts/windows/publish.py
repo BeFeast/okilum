@@ -9,6 +9,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'updater'))
 from release import R2
+import catalog
 
 CONTRACT = json.loads(Path(__file__).with_name('channel.json').read_text())
 PREFIX = CONTRACT['prefix']
@@ -37,7 +38,8 @@ def version_key(value):
     return tuple(map(int, value.split('.')))
 
 
-def publish(root, build, source, store):
+def publish(root, build, source, store, portable=None):
+    portable_data = portable.read_bytes() if portable else None
     feed = json.loads((root / 'releases.beta.json').read_bytes())
     assets = validate_feed(feed, lambda name: (root / name).read_bytes())
     version = f'0.1.{build}'
@@ -63,6 +65,13 @@ def publish(root, build, source, store):
     store.put(f'{PREFIX}/builds/{build}/release.json', json.dumps(metadata).encode(), 'application/json')
     store.put(f'{base}/Setup.exe', setup, 'application/octet-stream', 'no-cache')
     store.put(f'{base}/releases.beta.json', json.dumps(feed).encode(), 'application/json', 'no-cache')
+
+    if portable_data is not None:
+        archive = f'{PREFIX}/builds/{build}'
+        store.put(f'{archive}/Tessera-windows-portable.zip', portable_data, 'application/zip')
+        catalog.record(store, 'windows', build, source, [
+            catalog.asset(f'{archive}/Setup.exe', 'Setup.exe', setup),
+            catalog.asset(f'{archive}/Tessera-windows-portable.zip', 'Tessera-windows-portable.zip', portable_data)])
 
 
 def prepare(root, store):
@@ -120,10 +129,11 @@ if __name__ == '__main__':
     p.add_argument('--directory', type=Path, required=True)
     p.add_argument('--build', type=int, required=True)
     p.add_argument('--source', required=True)
+    p.add_argument('--portable', type=Path, required=True)
     p = commands.add_parser('promote')
     p.add_argument('--build', type=int, required=True)
     a = parser.parse_args()
     store = R2()
     if a.command == 'prepare': prepare(a.directory, store)
-    elif a.command == 'publish': publish(a.directory, a.build, a.source, store)
+    elif a.command == 'publish': publish(a.directory, a.build, a.source, store, a.portable)
     else: promote(a.build, store)

@@ -6,6 +6,7 @@ name: github-mirror
 on:
   push:
     branches: [main]
+    tags: ["v0.1.*", "beta"]
 
 concurrency:
   group: github-mirror
@@ -20,9 +21,8 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Push main to GitHub
+      - name: Push main and the selected release tag to GitHub
         env:
           MIRROR_TOKEN: ${{ secrets.TESSERA_GITHUB_MIRROR }}
-        run: |
-          set -euo pipefail
-          git push "https://x-access-token:${MIRROR_TOKEN}@github.com/BeFeast/tessera.git" "HEAD:refs/heads/main"
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: bash scripts/releases/mirror.sh
