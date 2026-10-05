@@ -1,0 +1,27 @@
+# Built from a checked-out, pinned source revision by build.sh.
+pkgname=tessera
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Local-first Markdown reader and knowledge environment'
+arch=('x86_64')
+url='https://git.oklabs.uk/BeFeast/tessera'
+license=('MIT')
+depends=('gcc-libs' 'glibc' 'fontconfig' 'freetype2' 'libxcb' 'libxkbcommon' 'libxkbcommon-x11' 'wayland' 'vulkan-icd-loader')
+makedepends=('git' 'cmake' 'pkgconf' 'clang' 'mold')
+options=('!debug' '!lto')
+
+build() {
+    cd "$TESSERA_SOURCE"
+    scripts/vendor-setup.sh
+    scripts/vendor-setup.sh --verify
+    python3 scripts/brand-assets.py verify
+    cargo +1.96.1 build --release --locked -p tessera-shell
+}
+
+package() {
+    cd "$TESSERA_SOURCE"
+    install -Dm755 target/release/tessera "$pkgdir/usr/bin/tessera"
+    install -Dm644 scripts/arch/tessera.desktop "$pkgdir/usr/share/applications/tessera.desktop"
+    install -Dm644 crates/tessera-shell/assets/brand/app-icon-light.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/tessera.svg"
+    python3 scripts/third-party-notices.py --stage "$pkgdir/usr/share/licenses/tessera"
+}

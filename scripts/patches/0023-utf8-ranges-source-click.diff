@@ -1,0 +1,193 @@
+diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
+index 5d070365..217b5861 100644
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -1329,6 +1329,7 @@ impl<M: InputModeKind> TextElement<M> {
+         if is_single_line {
+             let text: SharedString = display_text.to_string().into();
+             let aligned_runs = align_runs_to_char_boundaries(&text, runs);
++            debug_assert!(aligned_runs.is_none(), "source runs must use UTF-8 byte boundaries of the shaped string");
+             let line_runs = aligned_runs.as_deref().unwrap_or(runs);
+             let shape_start = attribution::now();
+                 let shaped_line = window
+@@ -1401,8 +1402,9 @@ impl<M: InputModeKind> TextElement<M> {
+                 };
+
+                 let sub_line: SharedString = line_text[range.clone()].to_string().into();
+-                let line_runs =
+-                    align_runs_to_char_boundaries(&sub_line, &line_runs).unwrap_or(line_runs);
++                let aligned_runs = align_runs_to_char_boundaries(&sub_line, &line_runs);
++                debug_assert!(aligned_runs.is_none(), "source runs must use UTF-8 byte boundaries of the shaped string");
++                let line_runs = aligned_runs.unwrap_or(line_runs);
+                 let shape_start = attribution::now();
+                 let shaped_line = window
+                     .text_system()
+@@ -2609,9 +2611,9 @@ fn clip_styles_to_ranges(
+ ///
+ /// Returns `None` when the runs are already aligned (the common case).
+ pub(super) fn align_runs_to_char_boundaries(text: &str, runs: &[TextRun]) -> Option<Vec<TextRun>> {
+-    let mut end = 0;
++    let mut end: usize = 0;
+     let aligned = runs.iter().all(|run| {
+-        end += run.len;
++        end = end.saturating_add(run.len);
+         end <= text.len() && text.is_char_boundary(end)
+     });
+     if aligned {
+@@ -2620,9 +2622,9 @@ pub(super) fn align_runs_to_char_boundaries(text: &str, runs: &[TextRun]) -> Opt
+
+     let mut result = Vec::with_capacity(runs.len());
+     let mut cursor = 0;
+-    let mut raw_end = 0;
++    let mut raw_end: usize = 0;
+     for run in runs {
+-        raw_end = (raw_end + run.len).min(text.len());
++        raw_end = raw_end.saturating_add(run.len).min(text.len());
+         let mut end = raw_end;
+         while !text.is_char_boundary(end) {
+             end += 1;
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+index 7e35b6ab..5874f7e4 100644
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -498,6 +498,7 @@ impl InputPresentation {
+
+ impl<M: InputModeKind> EventEmitter<InputEvent> for InputBaseState<M> {}
+ impl<M: InputModeKind> EventEmitter<SourceMutation> for InputBaseState<M> {}
++impl<M: InputModeKind> EventEmitter<crate::input::projection::SourceClick> for InputBaseState<M> {}
+ impl<M: InputModeKind> EventEmitter<ClipboardPasteEvent> for InputBaseState<M> {}
+
+ impl<M: InputModeKind> InputBaseState<M> {
+@@ -1924,6 +1925,14 @@ impl<M: InputModeKind> InputBaseState<M> {
+             return;
+         };
+
++        if self.projection.enabled {
++            cx.emit(crate::input::projection::SourceClick {
++                stamp: self.source_stamp(),
++                offset: crate::input::projection::SourceByte(offset),
++                event: event.clone(),
++            });
++        }
++
+         if M::on_click(self, event, offset, window, cx) {
+             return;
+         }
+diff --git a/crates/base/src/input/projection.rs b/crates/base/src/input/projection.rs
+index 3b3ca671..371c7b50 100644
+--- a/crates/base/src/input/projection.rs
++++ b/crates/base/src/input/projection.rs
+@@ -69,6 +69,15 @@ pub struct SourceSnapshot {
+     pub text: Arc<str>,
+ }
+
++/// A native click resolved against the current source layout. Consumers must
++/// compare the stamp before using the byte offset; delivery may be deferred.
++#[derive(Clone, Debug)]
++pub struct SourceClick {
++    pub stamp: SourceStamp,
++    pub offset: SourceByte,
++    pub event: gpui::MouseDownEvent,
++}
++
+ /// Metric-changing styles supported by the first candidate. All runs share the
+ /// editor's font size and line height. Color-only decoration is intentionally
+ /// outside this metric contract.
+diff --git a/crates/base/src/text/inline.rs b/crates/base/src/text/inline.rs
+index 24c768b4..86b3bd06 100644
+--- a/crates/base/src/text/inline.rs
++++ b/crates/base/src/text/inline.rs
+@@ -108,17 +108,27 @@ pub(super) fn combine_highlights(
+     combined
+ }
+
+-/// Builds the [`TextRun`]s for `text_len` bytes of inline text: each
++/// Builds the [`TextRun`]s for this exact inline string: each
+ /// highlight refines `default_style` over its range, and a highlight that
+ /// names a font family shapes its run in that family.
+ pub(super) fn text_runs(
+-    text_len: usize,
++    text: &str,
+     default_style: &TextStyle,
+     highlights: &[(Range<usize>, InlineHighlight)],
+ ) -> Vec<TextRun> {
+     let mut runs = Vec::with_capacity(highlights.len() * 2 + 1);
+     let mut ix = 0;
+     for (range, highlight) in highlights {
++        debug_assert!(range.start <= range.end && range.start >= ix
++            && text.is_char_boundary(range.start) && text.is_char_boundary(range.end),
++            "inline highlight must refer to this exact UTF-8 string");
++        let floor = |offset: usize| {
++            let mut offset = offset.min(text.len());
++            while !text.is_char_boundary(offset) { offset -= 1; }
++            offset
++        };
++        let range = floor(range.start).max(ix)..floor(range.end).max(ix);
++        if range.is_empty() { continue; }
+         if ix < range.start {
+             runs.push(default_style.clone().to_run(range.start - ix));
+         }
+@@ -132,8 +142,8 @@ pub(super) fn text_runs(
+         runs.push(run);
+         ix = range.end;
+     }
+-    if ix < text_len {
+-        runs.push(default_style.to_run(text_len - ix));
++    if ix < text.len() {
++        runs.push(default_style.to_run(text.len() - ix));
+     }
+     runs
+ }
+@@ -515,7 +525,7 @@ impl Element for Inline {
+         cx: &mut App,
+     ) -> (LayoutId, Self::RequestLayoutState) {
+         let text_style = window.text_style();
+-        let runs = text_runs(self.text.len(), &text_style, &self.highlights);
++        let runs = text_runs(&self.text, &text_style, &self.highlights);
+
+         self.styled_text = StyledText::new(self.text.clone()).with_runs(runs);
+         let (layout_id, _) =
+@@ -1194,7 +1204,7 @@ mod tests {
+         };
+         let highlights = vec![(4..8, mono(HighlightStyle::default()))];
+
+-        let runs = text_runs(12, &style, &highlights);
++        let runs = text_runs("abcdefghijkl", &style, &highlights);
+
+         let families = runs
+             .iter()
+diff --git a/crates/base/src/text/inline_flow.rs b/crates/base/src/text/inline_flow.rs
+index 0e956be4..ba153c9e 100644
+--- a/crates/base/src/text/inline_flow.rs
++++ b/crates/base/src/text/inline_flow.rs
+@@ -456,7 +456,7 @@ fn layout_flow(
+                         let links = slice_ranges(links, local_start, local_end, |range, link| {
+                             (range, link.clone())
+                         });
+-                        let runs = text_runs(subtext.len(), text_style, &highlights);
++                        let runs = text_runs(&subtext, text_style, &highlights);
+                         let shaped_line = shape_line(subtext.clone(), font_size, &runs, window);
+                         let width = shaped_line.width();
+                         line_width += width;
+@@ -650,7 +650,7 @@ fn push_text_wrap_fragments<'a>(
+         }
+         let span = &text[start..end];
+         let runs = text_runs(
+-            span.len(),
++            span,
+             text_style,
+             &[(0..span.len(), highlight.clone())],
+         );
+diff --git a/crates/base/src/text/node.rs b/crates/base/src/text/node.rs
+index baf3d591..07502262 100644
+--- a/crates/base/src/text/node.rs
++++ b/crates/base/src/text/node.rs
+@@ -1863,7 +1863,7 @@ fn measure_table_columns(
+                         })
+                     })
+                     .collect::<Vec<_>>();
+-                let runs = text_runs(line.len(), &text_style, &line_highlights);
++                let runs = text_runs(line, &text_style, &line_highlights);
+                 let line_w = window
+                     .text_system()
+                     .layout_line(line, font_size, &runs, None)

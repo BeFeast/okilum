@@ -1,0 +1,308 @@
+diff --git a/crates/base/src/text/format/markdown.rs b/crates/base/src/text/format/markdown.rs
+index 8c7602e7..fb7dd07b 100644
+--- a/crates/base/src/text/format/markdown.rs
++++ b/crates/base/src/text/format/markdown.rs
+@@ -290,6 +290,7 @@ fn parse_paragraph(paragraph: &mut Paragraph, node: &mdast::Node, cx: &mut NodeC
+                 url: "".into(),
+                 title: link.label.clone().map(Into::into),
+                 identifier: Some(link.identifier.clone().into()),
++                ..Default::default()
+             };
+ 
+             text = merge_children_with_mark(
+@@ -507,6 +508,7 @@ fn ast_to_node(source: &str, value: mdast::Node, cx: &mut NodeContext) -> BlockN
+                     url: def.url.clone().into(),
+                     identifier: Some(def.identifier.clone().into()),
+                     title: def.title.clone().map(Into::into),
++                    ..Default::default()
+                 },
+             );
+ 
+diff --git a/crates/base/src/text/inline.rs b/crates/base/src/text/inline.rs
+index 0012921d..cd71247b 100644
+--- a/crates/base/src/text/inline.rs
++++ b/crates/base/src/text/inline.rs
+@@ -1,5 +1,19 @@
+ use super::inline_geometry::InlineGeometry;
+-use gpui::Corners;
++use gpui::{AppContext, Corners, ParentElement, Styled};
++
++struct LinkTooltip(SharedString);
++impl gpui::Render for LinkTooltip {
++    fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
++        crate::Tooltip::new("text-link-tooltip")
++            .px_2()
++            .py_1()
++            .rounded_md()
++            .bg(gpui::rgb(0x242424))
++            .text_color(gpui::rgb(0xffffff))
++            .max_w(gpui::px(420.))
++            .child(self.0.clone())
++    }
++}
+ use std::cell::OnceCell;
+ use std::{
+     ops::Range,
+@@ -535,6 +549,27 @@ impl Element for Inline {
+             }
+         }
+ 
++        if window
++            .content_mask()
++            .bounds
++            .contains(&window.mouse_position())
++            && let Some(link) =
++                Self::link_for_position(&text_layout, &self.links, window.mouse_position())
++        {
++            if let Some(text) = link.presentation.tooltip.clone().or(link.title) {
++                let links = self.links.clone();
++                let layout = text_layout.clone();
++                let url = link.url;
++                window.set_tooltip(gpui::AnyTooltip {
++                    view: cx.new(|_| LinkTooltip(text)).into(),
++                    mouse_position: window.mouse_position(),
++                    check_visible_and_update: Rc::new(move |_, window, _| {
++                        Self::link_for_position(&layout, &links, window.mouse_position())
++                            .is_some_and(|link| link.url == url)
++                    }),
++                });
++            }
++        }
+         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+         hitbox
+     }
+@@ -572,8 +607,15 @@ impl Element for Inline {
+ 
+         // link cursor pointer
+         let mouse_position = window.mouse_position();
+-        if let Some(_) = Self::link_for_position(&text_layout, &self.links, mouse_position) {
+-            window.set_cursor_style(CursorStyle::PointingHand, &hitbox);
++        if let Some(link) = Self::link_for_position(&text_layout, &self.links, mouse_position) {
++            window.set_cursor_style(
++                if link.presentation.inert {
++                    CursorStyle::Arrow
++                } else {
++                    CursorStyle::PointingHand
++                },
++                &hitbox,
++            );
+         }
+ 
+         if let Some(selection) = &state.selection {
+@@ -584,6 +626,22 @@ impl Element for Inline {
+             Self::paint_selection(selection, &text_layout, &bounds, window, color);
+         }
+ 
++        // Register before Root capture dispatch, independent of paint order.
++        // Reuse exact link geometry; nearby text and multi-clicks stay selectable.
++        if self.links.iter().any(|(_, link)| link.presentation.inert) {
++            let links = self.links.clone();
++            let layout = text_layout.clone();
++            let visible = bounds.intersect(&window.content_mask().bounds);
++            TextSelection::preserve_on_pointer_down_when(
++                move |event| event.click_count == 1
++                    && visible.contains(&event.position)
++                    && Self::link_for_position(&layout, &links, event.position)
++                        .is_some_and(|link| link.presentation.inert),
++                window,
++                cx,
++            );
++        }
++
+         if is_selectable {
+             if let Some(text_view_state) = GlobalState::global(cx).text_view_state().cloned() {
+                 let text_bounds = self.text_line_bounds(
+@@ -693,6 +751,10 @@ impl Element for Inline {
+                     if let Some(link) =
+                         Self::link_for_position(&text_layout, &links, event.position)
+                     {
++                        if link.presentation.inert {
++                            // Let the shared selection layer finish the gesture.
++                            return;
++                        }
+                         TextSelection::end(window, cx);
+                         cx.stop_propagation();
+                         let click = ClickEvent::Mouse(MouseClickEvent {
+diff --git a/crates/base/src/text/node.rs b/crates/base/src/text/node.rs
+index 791e400f..baf3d591 100644
+--- a/crates/base/src/text/node.rs
++++ b/crates/base/src/text/node.rs
+@@ -377,6 +377,7 @@ impl BlockNode {
+ #[allow(unused)]
+ #[derive(Debug, Default, Clone, PartialEq)]
+ pub struct LinkMark {
++    pub presentation: super::text_view::LinkPresentation,
+     pub url: SharedString,
+     /// Optional identifier for footnotes.
+     pub identifier: Option<SharedString>,
+@@ -1460,6 +1461,7 @@ pub(crate) struct NodeContext {
+     pub(crate) code_block_actions: Option<Arc<CodeBlockActionsFn>>,
+     pub(crate) code_block_highlighter: Option<Arc<CodeBlockHighlighterFn>>,
+     pub(crate) table_actions: Option<Arc<TableActionsFn>>,
++    pub(crate) link_presentation: Option<Arc<super::text_view::LinkPresentationFn>>,
+     pub(crate) link_click_handler: Option<Arc<LinkClickHandlerFn>>,
+     pub(crate) markdown_extensions: Arc<MarkdownExtensions>,
+ }
+@@ -1680,6 +1682,11 @@ impl Paragraph {
+                             }
+                         }
+ 
++                        if let Some(presentation) = &node_cx.link_presentation {
++                            link_mark.presentation = presentation(&link_mark.url);
++                            highlight.style =
++                                highlight.style.highlight(link_mark.presentation.style);
++                        }
+                         links.push((inner_range.clone(), link_mark));
+                     }
+ 
+@@ -1777,6 +1784,11 @@ impl Paragraph {
+                             link_mark = mark.clone();
+                         }
+ 
++                        if let Some(presentation) = &node_cx.link_presentation {
++                            link_mark.presentation = presentation(&link_mark.url);
++                            highlight.style =
++                                highlight.style.highlight(link_mark.presentation.style);
++                        }
+                         links.push((inner_range.clone(), link_mark));
+                     }
+ 
+diff --git a/crates/base/src/text/state.rs b/crates/base/src/text/state.rs
+index 18240cdb..6c1f11a5 100644
+--- a/crates/base/src/text/state.rs
++++ b/crates/base/src/text/state.rs
+@@ -110,6 +110,7 @@ pub struct TextViewState {
+     pub(super) code_block_actions: Option<std::sync::Arc<CodeBlockActionsFn>>,
+     pub(super) code_block_highlighter: Option<std::sync::Arc<CodeBlockHighlighterFn>>,
+     pub(super) table_actions: Option<std::sync::Arc<TableActionsFn>>,
++    pub(super) link_presentation: Option<std::sync::Arc<super::text_view::LinkPresentationFn>>,
+     pub(super) link_click_handler: Option<std::sync::Arc<LinkClickHandlerFn>>,
+     pub(super) markdown_extensions: Arc<MarkdownExtensions>,
+ 
+@@ -226,6 +227,7 @@ impl TextViewState {
+             code_block_highlighter: None,
+             table_actions: None,
+             link_click_handler: None,
++            link_presentation: None,
+             markdown_extensions: Arc::default(),
+             is_selecting: false,
+             auto_scroll: AutoScroll::default(),
+@@ -850,6 +852,7 @@ impl Render for TextViewState {
+         node_cx.code_block_highlighter = self.code_block_highlighter.clone();
+         node_cx.table_actions = self.table_actions.clone();
+         node_cx.link_click_handler = self.link_click_handler.clone();
++        node_cx.link_presentation = self.link_presentation.clone();
+         node_cx.markdown_extensions = self.markdown_extensions.clone();
+         node_cx.style = self.text_view_style.clone();
+         node_cx.search = self.search_matches.clone();
+diff --git a/crates/base/src/text/text_view.rs b/crates/base/src/text/text_view.rs
+index c77d8d9a..f95855af 100644
+--- a/crates/base/src/text/text_view.rs
++++ b/crates/base/src/text/text_view.rs
+@@ -15,6 +15,15 @@ use crate::text::node::{CodeBlock, TableData};
+ use crate::text::state::{LineSpan, SelectionFormat, TextViewState};
+ use crate::{GlobalState, TextSelection, text::TextViewStyle};
+ 
++/// Per-link application presentation, inherited by nested Markdown parts.
++#[derive(Clone, Debug, Default, PartialEq)]
++pub struct LinkPresentation {
++    pub style: gpui::HighlightStyle,
++    pub tooltip: Option<SharedString>,
++    pub inert: bool,
++}
++pub(crate) type LinkPresentationFn = dyn Fn(&str) -> LinkPresentation + Send + Sync;
++
+ /// Type for code block actions generator function.
+ pub(crate) type CodeBlockActionsFn =
+     dyn Fn(&CodeBlock, &mut Window, &mut App) -> AnyElement + Send + Sync;
+@@ -128,6 +137,7 @@ pub struct TextView {
+     code_block_highlighter: Option<Arc<CodeBlockHighlighterFn>>,
+     table_actions: Option<Arc<TableActionsFn>>,
+     link_click_handler: Option<Arc<LinkClickHandlerFn>>,
++    link_presentation: Option<Arc<LinkPresentationFn>>,
+     markdown_extensions: Arc<MarkdownExtensions>,
+ }
+ 
+@@ -172,6 +182,7 @@ impl TextView {
+             code_block_highlighter: None,
+             table_actions: None,
+             link_click_handler: None,
++            link_presentation: None,
+             markdown_extensions: Arc::default(),
+         }
+     }
+@@ -193,6 +204,7 @@ impl TextView {
+             code_block_highlighter: None,
+             table_actions: None,
+             link_click_handler: None,
++            link_presentation: None,
+             markdown_extensions: Arc::default(),
+         }
+     }
+@@ -214,6 +226,7 @@ impl TextView {
+             code_block_highlighter: None,
+             table_actions: None,
+             link_click_handler: None,
++            link_presentation: None,
+             markdown_extensions: Arc::default(),
+         }
+     }
+@@ -321,6 +334,15 @@ impl TextView {
+         self
+     }
+ 
++    /// Style and explain links without replacing their text or selection runs.
++    pub fn link_presentation<F>(mut self, presentation: F) -> Self
++    where
++        F: Fn(&str) -> LinkPresentation + Send + Sync + 'static,
++    {
++        self.link_presentation = Some(Arc::new(presentation));
++        self
++    }
++
+     /// Handle pointer events on rendered links.
+     ///
+     /// The handler receives the resolved URL and the original GPUI click event.
+@@ -554,6 +576,7 @@ impl Element for TextView {
+             state.code_block_highlighter = code_block_highlighter.clone();
+             state.table_actions = self.table_actions.clone();
+             state.link_click_handler = self.link_click_handler.clone();
++            state.link_presentation = self.link_presentation.clone();
+             state.set_markdown_extensions(self.markdown_extensions.clone(), cx);
+             state.selectable = self.selectable;
+             state.selection_format = self.selection_format;
+diff --git a/crates/component/src/text/compat.rs b/crates/component/src/text/compat.rs
+index 165c1595..aeead21b 100644
+--- a/crates/component/src/text/compat.rs
++++ b/crates/component/src/text/compat.rs
+@@ -100,6 +100,14 @@ impl TextView {
+         self
+     }
+     /// Handles link clicks instead of opening the URL.
++    pub fn link_presentation<F>(mut self, f: F) -> Self
++    where
++        F: Fn(&str) -> gpui_base::text::LinkPresentation + Send + Sync + 'static,
++    {
++        self.inner = self.inner.link_presentation(f);
++        self
++    }
++
+     pub fn on_link_click<F>(mut self, f: F) -> Self
+     where
+         F: Fn(&SharedString, &ClickEvent, &mut Window, &mut App) + Send + Sync + 'static,
+diff --git a/crates/component/src/text/mod.rs b/crates/component/src/text/mod.rs
+index d3935ab1..4e5d266b 100644
+--- a/crates/component/src/text/mod.rs
++++ b/crates/component/src/text/mod.rs
+@@ -7,8 +7,9 @@ pub use compat::{
+     Text, TextView, TextViewLayoutState, TextViewPlugin, TextViewPrepaintState, html, markdown,
+ };
+ pub use gpui_base::text::{
+-    MarkdownBlockParserFn, MarkdownBlockRenderFn, MarkdownExtensions, MarkdownNode,
+-    MarkdownParseContext, MarkdownPlugin, SelectionFormat, TableData, TextViewState, markdown_ast,
++    LinkPresentation, MarkdownBlockParserFn, MarkdownBlockRenderFn, MarkdownExtensions,
++    MarkdownNode, MarkdownParseContext, MarkdownPlugin, SelectionFormat, TableData, TextViewState,
++    markdown_ast,
+ };
+ pub use style::TextViewStyle;
+ 

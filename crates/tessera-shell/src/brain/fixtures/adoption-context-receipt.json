@@ -1,0 +1,94 @@
+{
+  "at": "2026-09-07T15:46:37.405415945Z",
+  "replayed": true,
+  "request": {
+    "citations": [
+      {
+        "citation_id": "c_711ae3f91e8f0ffdab77e55006fc672b70735f84c81450c5f8c1fc492faac429",
+        "end_line": 3,
+        "excerpt": "# Workshop evidence\n\nOriginal source for pinned context.\n",
+        "locator": "L1-L3",
+        "metadata": {
+          "observed_at": null,
+          "owner_goal_id": null,
+          "record_type": null,
+          "status": null,
+          "verification": null
+        },
+        "path": "evidence.md",
+        "revision": "sha256:d58e31bdea996e33f3b17016979f4fef6d15b58011482892a38c3d19ea080464",
+        "start_line": 1
+      }
+    ],
+    "destination": "context",
+    "expected_base_packet": "0327c4ef-d8bb-4e1c-a778-e839576c791c",
+    "expected_base_revision": "sha256:835364f8b297e50c658d5ba587eafc17137f6ac0ba2f8a16ac24fa175a69cc35",
+    "expected_goal_revision": "sha256:d7f14c14a1d39d8837b682a2db990d02501290a7d3154f564484af08e16edeb6",
+    "expected_revision": "sha256:b03e604762cb93767b5dcef21b8704c8b013fdfe92db018c441ffc021b5637cd",
+    "goal_id": "97407c1d-9e05-4b40-9abe-625b138f9a3a",
+    "guidance": "Manual compatibility guidance \u2014 \u96ea. Keep exact pins.\n\nAdditional inspected proposal guidance.",
+    "operation_id": "4786e814-a75f-401c-bc2d-ac5ed567bd53",
+    "pinned_citation_ids": [
+      "c_711ae3f91e8f0ffdab77e55006fc672b70735f84c81450c5f8c1fc492faac429"
+    ],
+    "proposal_id": "7c484446fc5d73ae3a463ff3666d1cc899e9ce2f0eff61784870181655269b57",
+    "query": "workshop preparation",
+    "scope": {
+      "exclude_paths": [],
+      "goal_id": "97407c1d-9e05-4b40-9abe-625b138f9a3a",
+      "include_paths": [],
+      "mode": "project",
+      "path_prefix": null
+    },
+    "source": {
+      "account_id": "local",
+      "actor_id": "operator",
+      "channel": "native",
+      "chat_id": null,
+      "instance_id": "e32514f7-0bb1-41c7-8465-c0e4e1505e01",
+      "message_id": "4786e814-a75f-401c-bc2d-ac5ed567bd53",
+      "topic_id": null,
+      "update_id": "4786e814-a75f-401c-bc2d-ac5ed567bd53",
+      "uri": null
+    }
+  },
+  "result": {
+    "outcome": "committed_context",
+    "receipt": {
+      "actor": "operator",
+      "at": "2026-09-07T15:46:37.405415945Z",
+      "goal_id": "97407c1d-9e05-4b40-9abe-625b138f9a3a",
+      "operation_id": "4786e814-a75f-401c-bc2d-ac5ed567bd53",
+      "pointer": "updated",
+      "projection_receipt": {
+        "operation_id": "aad72089-17b7-4f09-a86c-630c4bcf9e8b",
+        "outcome": "written",
+        "path": "records/proposal-7c484446fc5d73ae3a463ff3666d1cc899e9ce2f0eff61784870181655269b57.md",
+        "previous_revision": "sha256:b03e604762cb93767b5dcef21b8704c8b013fdfe92db018c441ffc021b5637cd",
+        "revision": "sha256:68880d0271750655b05e800d3d364dadc067a8352cf17522b92e55dbce960e80"
+      },
+      "proposal_id": "7c484446fc5d73ae3a463ff3666d1cc899e9ce2f0eff61784870181655269b57",
+      "replayed": true,
+      "target": {
+        "goal_id": "97407c1d-9e05-4b40-9abe-625b138f9a3a",
+        "packet_id": "ecc1cf12-95dd-4ee0-822b-8652a2dd7669",
+        "path": "records/reviewed-context-ecc1cf12-95dd-4ee0-822b-8652a2dd7669.md",
+        "revision": "sha256:afac76fc5a26f7ed1c98673d7be0273cc1b80b2c1d481395b1dfe7a5f4f9b4b5"
+      },
+      "target_receipt": {
+        "operation_id": "ed82c4d2-2e0f-44da-9a93-6363f281c4ce",
+        "outcome": "written",
+        "path": "records/reviewed-context-ecc1cf12-95dd-4ee0-822b-8652a2dd7669.md",
+        "previous_revision": null,
+        "revision": "sha256:afac76fc5a26f7ed1c98673d7be0273cc1b80b2c1d481395b1dfe7a5f4f9b4b5"
+      }
+    }
+  },
+  "schema": "tessera-proposal-adopt/v1",
+  "workspace": {
+    "brain_id": "1c682895-34c3-4491-a7eb-f58d7efa5d94",
+    "managed": true,
+    "records_dir": "records",
+    "root": "/synthetic/adoption-controls"
+  }
+}

@@ -1,0 +1,214 @@
+# fmt, clippy and tests on pull requests and pushes to main.
+#
+# `ubuntu-latest` is the label the BeFeast org runner (linux-ci-host) maps to
+# ghcr.io/catthehacker/ubuntu:act-24.04 — the same label maestro, pomoi and
+# ok-gobot use. It is a plain Ubuntu image with sudo/apt and node (checkout is a
+# JS action, so a bare `container: rust` would not work — see halenote's ci.yml
+# for the post-mortem). Rust is installed with rustup rather than an action
+# because no pinned toolchain action is mirrored on code.forgejo.org.
+#
+# The shell crate links against wayland/xkbcommon/fontconfig/freetype/xcb (see
+# README "Building"), and vendor/gpui-component (longbridge/gpui-kit) is not committed:
+# scripts/vendor-setup.sh clones the pinned revision and applies the patch set.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Supersede stale PR runs, but let every main run finish.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      macos: ${{ steps.native-scope.outputs.macos }}
+    # Shared sccache on the LAN S3 backend (private runner operations runbook,
+    # "CI pool expansion 2026-10-04"). The secrets are BeFeast org secrets; when
+    # they are absent (fork PRs) the build simply runs without the wrapper.
+    env:
+      CARGO_INCREMENTAL: "0"
+      # CI-only: retain backtrace lines; local and macOS profiles are unchanged.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+      SCCACHE_BUCKET: ${{ vars.SCCACHE_BUCKET }}
+      SCCACHE_ENDPOINT: ${{ vars.SCCACHE_ENDPOINT }}
+      SCCACHE_REGION: ${{ vars.SCCACHE_REGION }}
+      SCCACHE_S3_USE_SSL: "false"
+      SCCACHE_S3_KEY_PREFIX: rust
+      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Select native PR check
+        id: native-scope
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          needed=$(git diff --name-only -z "$BASE_SHA" HEAD | python3 scripts/ci/macos-scope.py)
+          echo "macos=$needed" >> "$GITHUB_OUTPUT"
+
+      - name: Install system libraries (README "Building")
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            build-essential cmake pkg-config curl git mold \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libfontconfig-dev libfreetype-dev libxcb1-dev
+
+      - name: Install Rust (stable, with rustfmt and clippy)
+        run: |
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal \
+            --component rustfmt,clippy
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          "$HOME/.cargo/bin/cargo" --version
+
+      - name: Vendor gpui-component (pinned revision + patches)
+        run: |
+          scripts/vendor-setup.sh
+          scripts/vendor-setup.sh --verify
+
+      - name: Enable sccache
+        run: |
+          set -euo pipefail
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${SCCACHE_ENDPOINT:-}" ]; then
+            echo "sccache credentials not available; building without it"
+            exit 0
+          fi
+          curl -sSfL https://github.com/mozilla/sccache/releases/download/v0.18.0/sccache-v0.18.0-x86_64-unknown-linux-musl.tar.gz -o "$RUNNER_TEMP/sccache.tgz"
+          echo "45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89  $RUNNER_TEMP/sccache.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/sccache.tgz" -C "$RUNNER_TEMP"
+          sudo install "$RUNNER_TEMP"/sccache-v0.18.0-x86_64-unknown-linux-musl/sccache /usr/local/bin/sccache
+          if sccache --start-server; then
+            echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          else
+            echo "sccache server did not start; building without it"
+          fi
+
+      - name: Identify compatible Cargo cache
+        id: cargo-cache-key
+        run: |
+          set -euo pipefail
+          compatibility=$({
+            rustc -vV
+            cargo -V
+            cargo clippy -V
+            uname -m
+            cat /etc/os-release
+            cc --version
+            ld --version
+            mold --version
+            dpkg-query -W -f='${Package}=${Version}\n' \
+              libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+              libfontconfig-dev libfreetype-dev libxcb1-dev
+            python3 -c 'import json, os; print(json.dumps({k: v for k, v in os.environ.items() if k.startswith(("CARGO_", "RUST")) or k in ("CC", "CXX", "CFLAGS", "CXXFLAGS", "LDFLAGS")}, sort_keys=True))'
+          } | sha256sum | cut -d ' ' -f 1)
+          echo "compatibility=$compatibility" >> "$GITHUB_OUTPUT"
+
+      # Runner cache: Cargo downloads only, saved once per dependency set.
+      # Compiled output comes from sccache. Per-commit target/debug entries
+      # (~2.5 GB each) filled the runner disks within two days (2026-10-04).
+      - name: Restore Cargo downloads cache
+        uses: https://code.forgejo.org/actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+          key: tessera-cargo-v2-${{ runner.os }}-${{ steps.cargo-cache-key.outputs.compatibility }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff', '.cargo/**', '.forgejo/workflows/ci.yml') }}
+
+      - name: rustfmt
+        # No --all: it reaches into the vendored path deps and fails on
+        # upstream's own formatting (crates/story/src/gallery.rs at 1f7f8c6),
+        # which is upstream's business. In a virtual workspace the plain form
+        # already covers every member crate and nothing in vendor/.
+        run: cargo fmt --check
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: macOS release script checks
+        run: |
+          python3 -m unittest discover -s scripts/updater -p 'test_*.py'
+          python3 -m unittest discover -s scripts/arch -p 'test_*.py'
+          python3 -m unittest discover -s scripts/windows -p 'test_*.py'
+          # The release build refuses unlisted files under assets/brand.
+          python3 scripts/brand-assets.py verify
+          python3 scripts/test-third-party-notices.py
+          bash -n scripts/build-macos-ci.sh scripts/updater/sign-bundle.sh scripts/ci/check-macos.sh
+          python3 -m unittest discover -s scripts/ci -p 'test_*.py'
+
+      - name: Maintenance matrix script guards
+        run: python3 scripts/test-maintenance-matrix.py
+
+      - name: Reader tests (required)
+        # The Reader's workspace crates are core and shell; all workspace code
+        # still passes fmt and clippy above. Brain is frozen under #380.
+        run: cargo test -p tessera-core -p tessera-shell
+
+      - name: Reader-only feature boundary
+        run: |
+          cargo check -p tessera-shell --no-default-features
+          cargo test -p tessera-core --no-default-features --test portable_reader
+
+      - name: sccache stats
+        if: always()
+        run: if [ -n "${RUSTC_WRAPPER:-}" ]; then sccache --show-stats; fi
+
+  macos:
+    needs: linux
+    # The host runner has a signing keychain. Fork code must first be reviewed
+    # and moved to a trusted same-repository branch; the final gate fails closed.
+    if: >-
+      github.event_name == 'pull_request' &&
+      needs.linux.outputs.macos == 'true' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: macos
+    timeout-minutes: 20
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          persist-credentials: false
+          github-server-url: ${{ vars.FORGEJO_CHECKOUT_URL || github.server_url }}
+      - name: Compile Reader and run quick native regressions
+        shell: bash
+        run: bash scripts/ci/check-macos.sh
+
+  # Keep the existing protected-branch context. Skipped/cancelled/failed native
+  # jobs never pass a code PR; docs-only PRs and main retain Linux-only CI here.
+  check:
+    needs: [linux, macos]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require Linux and applicable macOS checks
+        env:
+          EVENT: ${{ github.event_name }}
+          LINUX_RESULT: ${{ needs.linux.result }}
+          MACOS_REQUIRED: ${{ needs.linux.outputs.macos }}
+          MACOS_RESULT: ${{ needs.macos.result }}
+        run: |
+          set -euo pipefail
+          test "$LINUX_RESULT" = success
+          if [ "$EVENT" = pull_request ]; then
+            case "$MACOS_REQUIRED" in
+              true) test "$MACOS_RESULT" = success ;;
+              false) echo "Documentation-only PR: native runner not needed" ;;
+              *) echo "Missing native scope result" >&2; exit 1 ;;
+            esac
+          fi

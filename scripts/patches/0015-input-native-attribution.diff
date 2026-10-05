@@ -1,0 +1,529 @@
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -1,3 +1,4 @@
++use crate::input::attribution::{self, Identity as TraceIdentity, Span as TraceSpan};
+ use super::projection::ConcealBias;
+ use crate::input::{InputExtras as _, InputModeKind};
+ use gpui::Corners;
+@@ -1321,15 +1322,19 @@
+         whitespace_indicators: Option<WhitespaceIndicators>,
+         window: &mut Window,
+     ) -> Vec<LineLayout> {
++        let mut trace = TraceSpan::new("layout_lines", TraceIdentity::new(last_layout.source_stamp, last_layout.presentation_epoch, last_layout.projection.is_some()));
++        trace.counts([display_text.len() as u64, last_layout.visible_buffer_lines.len() as u64, runs.len() as u64, 0]);
+         let is_single_line = state.is_single_line();
+ 
+         if is_single_line {
+             let text: SharedString = display_text.to_string().into();
+             let aligned_runs = align_runs_to_char_boundaries(&text, runs);
+             let line_runs = aligned_runs.as_deref().unwrap_or(runs);
+-            let shaped_line = window
++            let shape_start = attribution::now();
++                let shaped_line = window
+                 .text_system()
+                 .shape_line(text, font_size, line_runs, None);
++            trace.shape_finished(shape_start);
+ 
+             let line_layout = LineLayout::new()
+                 .lines(smallvec::smallvec![shaped_line])
+@@ -1345,12 +1350,14 @@
+             let mut line_has_background = false;
+ 
+             for (line, line_runs) in placeholder_line_runs(&placeholder_text, runs) {
++                let shape_start = attribution::now();
+                 let shaped_line = window.text_system().shape_line(
+                     line.to_string().into(),
+                     font_size,
+                     &line_runs,
+                     None,
+                 );
++                trace.shape_finished(shape_start);
+                 line_has_background |= has_background(&line_runs);
+                 placeholder_lines.push(shaped_line);
+             }
+@@ -1396,9 +1403,11 @@
+                 let sub_line: SharedString = line_text[range.clone()].to_string().into();
+                 let line_runs =
+                     align_runs_to_char_boundaries(&sub_line, &line_runs).unwrap_or(line_runs);
++                let shape_start = attribution::now();
+                 let shaped_line = window
+                     .text_system()
+                     .shape_line(sub_line, font_size, &line_runs, None);
++                trace.shape_finished(shape_start);
+ 
+                 line_has_background |= has_background(&line_runs);
+                 wrapped_lines.push(shaped_line);
+@@ -1713,6 +1722,8 @@
+         window: &mut Window,
+         cx: &mut App,
+     ) -> Self::PrepaintState {
++        let initial = self.state.read(cx);
++        let mut trace = TraceSpan::new("editor_prepaint", TraceIdentity::new(initial.source_stamp(), initial.presentation_epoch(), initial.projection.current.is_some()));
+         let style = window.text_style();
+         let font = style.font();
+         let text_size = style.font_size.to_pixels(window.rem_size());
+@@ -2139,6 +2150,8 @@
+         let fold_icon_layout =
+             self.layout_fold_icons(original_x, &bounds, &last_layout, window, cx);
+ 
++        trace.current(TraceIdentity::new(last_layout.source_stamp, last_layout.presentation_epoch, last_layout.projection.is_some()));
++        trace.counts([last_layout.visible_buffer_lines.len() as u64, last_layout.lines.len() as u64, 0, 0]);
+         PrepaintState {
+             bounds,
+             last_layout,
+@@ -2170,6 +2183,11 @@
+         window: &mut Window,
+         cx: &mut App,
+     ) {
++        let layout = &prepaint.last_layout;
++        let mut trace = TraceSpan::new("editor_paint", TraceIdentity::new(layout.source_stamp, layout.presentation_epoch, layout.projection.is_some()));
++        let current = self.state.read(cx);
++        trace.current(TraceIdentity::new(current.source_stamp(), current.presentation_epoch(), current.projection.current.is_some()));
++        trace.counts([layout.visible_buffer_lines.len() as u64, layout.lines.len() as u64, 0, 0]);
+         let (focus_handle, show_cursor, disabled, selected_range, editor_style, editor_paddings) = {
+             let state = self.state.read(cx);
+             (
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -2,6 +2,7 @@
+ //!
+ //! Based on the `Input` example from the `gpui` crate.
+ //! https://github.com/zed-industries/zed/blob/main/crates/gpui/examples/input.rs
++use crate::input::attribution::{Identity as TraceIdentity, Span as TraceSpan};
+ use super::clipboard::{
+     ClipboardPasteEvent, ClipboardReadError, ClipboardSession, ExactClipboardProvider,
+ };
+@@ -907,6 +908,7 @@
+     }
+ 
+     pub(super) fn refresh_projection(&mut self) {
++        let _trace = TraceSpan::new("refresh_projection", TraceIdentity::new(self.source_stamp(), self.presentation_epoch(), self.projection.current.is_some()));
+         self.sync_projection_active();
+         if self.projection.current.is_some() {
+             return;
+@@ -933,6 +935,8 @@
+     }
+ 
+     fn reveal_replacement(&mut self, range: &Range<usize>) {
++        let mut trace = TraceSpan::new("reveal_replacement", TraceIdentity::new(self.source_stamp(), self.presentation_epoch(), self.projection.current.is_some()));
++        trace.counts([range.start as u64, range.end as u64, self.text.len() as u64, 0]);
+         self.sync_projection_active();
+         if self.projection.provider.is_some() {
+             let mut active = self.projection.active.clone();
+@@ -947,6 +951,14 @@
+     fn record_source_mutation(&mut self, reason: SourceMutationReason, cx: &mut Context<Self>) {
+         self.exact_clipboard.invalidate();
+         let event = self.projection.mutation(reason);
++        let mut trace = TraceSpan::new("source_mutation", TraceIdentity::new(self.source_stamp(), self.presentation_epoch(), self.projection.current.is_some()));
++        trace.outcome(match reason {
++            SourceMutationReason::Edit => "edit",
++            SourceMutationReason::Preedit => "preedit",
++            SourceMutationReason::Silent => "silent",
++            SourceMutationReason::Reset => "reset",
++        });
++        drop(trace);
+         if self.projection.enabled {
+             self.last_layout = None;
+         }
+@@ -6553,6 +6565,7 @@
+         provider: Option<Arc<dyn ProjectionProvider>>,
+         cx: &mut Context<Self>,
+     ) {
++        let _trace = TraceSpan::new("provider_adoption", TraceIdentity::new(self.source_stamp(), self.presentation_epoch(), self.projection.current.is_some()));
+         if provider.is_some() {
+             self.projection.enabled = true;
+             if let LayoutMode::CodeEditor { indent_guides, .. } = &mut self.mode {
+--- a/crates/base/src/input/editor/display_map/display_map.rs
++++ b/crates/base/src/input/editor/display_map/display_map.rs
+@@ -306,7 +306,7 @@
+         match projection {
+             Some(pinned) => {
+                 self.wrap_map
+-                    .set_projected(pinned.projection.as_ref(), window);
++                    .set_projected(pinned.projection.as_ref(), pinned.stamp.presentation, window);
+                 self.projection = Some(pinned);
+             }
+             None if self.projection.take().is_some() => self.wrap_map.restore_source(source, cx),
+--- a/crates/base/src/input/editor/display_map/text_wrapper.rs
++++ b/crates/base/src/input/editor/display_map/text_wrapper.rs
+@@ -1,3 +1,4 @@
++use crate::input::attribution::{self, Identity as TraceIdentity, Span as TraceSpan};
+ use gpui::Half;
+ use std::borrow::Cow;
+ use std::ops::Range;
+@@ -409,9 +410,12 @@
+     pub(crate) fn set_projected(
+         &mut self,
+         projection: &dyn crate::input::projection::SourceProjection,
++        epoch: u64,
+         window: &gpui::Window,
+     ) {
++        let mut trace = TraceSpan::new("set_projected", TraceIdentity::new(projection.source().stamp, epoch, true));
+         let text = Rope::from(projection.text());
++        trace.counts([text.len() as u64, text.lines_len() as u64, projection.styles().len() as u64, 0]);
+         let mut items = Vec::new();
+         for row in 0..text.lines_len() {
+             let line = text.slice_line(row).to_string();
+@@ -422,6 +426,7 @@
+                 &self.font,
+                 gpui::black(),
+             );
++            let shape_start = attribution::now();
+             let shaped = window
+                 .text_system()
+                 .shape_text(
+@@ -432,6 +437,7 @@
+                     None,
+                 )
+                 .expect("valid projected text");
++            trace.shape_finished(shape_start);
+             let mut ranges = SmallVec::new();
+             let mut previous = 0;
+             if let Some(shaped) = shaped.first() {
+--- a/crates/base/src/input/editor/display_map/wrap_map.rs
++++ b/crates/base/src/input/editor/display_map/wrap_map.rs
+@@ -139,9 +139,10 @@
+     pub(super) fn set_projected(
+         &mut self,
+         projection: &dyn crate::input::projection::SourceProjection,
++        epoch: u64,
+         window: &gpui::Window,
+     ) {
+-        self.wrapper.set_projected(projection, window);
++        self.wrapper.set_projected(projection, epoch, window);
+     }
+ 
+     pub(super) fn restore_source(&mut self, text: &Rope, cx: &mut App) {
+--- a/crates/base/src/input/mod.rs
++++ b/crates/base/src/input/mod.rs
+@@ -10,6 +10,7 @@
+ /// Character used by masked editor modes.
+ pub(crate) const MASK_CHAR: char = '•';
+ 
++pub mod attribution;
+ mod base;
+ #[path = "base/blink_cursor.rs"]
+ pub(crate) mod blink_cursor;
+--- a/crates/base/src/input/projection.rs
++++ b/crates/base/src/input/projection.rs
+@@ -3,6 +3,7 @@
+ //! Providers recompose previously classified data; they must not parse in an input
+ //! handler. The editor owns text, selection, composition and history. A provider
+ //! owns no mutable editor state. Returning `None` requests exact Source display.
++use crate::input::attribution::{Identity as TraceIdentity, Span as TraceSpan};
+ use std::{
+     ops::Range,
+     sync::{
+@@ -205,8 +206,11 @@
+         }
+     }
+     pub(crate) fn compose(&mut self, source: Arc<str>) {
++        let mut trace = TraceSpan::new("provider_compose", TraceIdentity::new(self.stamp.source, self.stamp.presentation, self.current.is_some()));
++        trace.counts([self.active.anchor.0 as u64, self.active.head.0 as u64, self.active.composition.is_some() as u64, self.active.replacement.is_some() as u64]);
+         self.current = None;
+         let Some(provider) = &self.provider else {
++            trace.outcome("no_provider");
+             return;
+         };
+         let snapshot = SourceSnapshot {
+@@ -214,14 +218,18 @@
+             text: source,
+         };
+         let Some(projection) = provider.compose(&snapshot, &self.active) else {
++            trace.outcome("provider_rejected");
+             return;
+         };
+         // A provider cannot publish a mapping for a different document or bytes.
+         if projection.source().stamp != snapshot.stamp || projection.source().text != snapshot.text
+         {
++            trace.outcome("source_mismatch");
+             return;
+         }
++        trace.outcome("accepted");
+         self.current = Some(projection);
++        trace.current(TraceIdentity::new(self.stamp.source, self.stamp.presentation, true));
+     }
+     pub(crate) fn pin(&self) -> Option<PinnedProjection> {
+         Some(PinnedProjection {
+--- /dev/null
++++ b/crates/base/src/input/attribution.rs
+@@ -0,0 +1,268 @@
++//! Opt-in, bounded native attribution. No event formatting or I/O in measured paths.
++use std::{
++    cell::Cell,
++    sync::{
++        Mutex, OnceLock,
++        atomic::{AtomicBool, AtomicU64, Ordering},
++    },
++};
++
++use super::projection::SourceStamp;
++use serde::Serialize;
++
++pub const CAPACITY: usize = 65_536;
++static ENABLED: AtomicBool = AtomicBool::new(false);
++static BUFFER: OnceLock<Mutex<Buffer>> = OnceLock::new();
++static NEXT_ID: AtomicU64 = AtomicU64::new(1);
++static NEXT_THREAD: AtomicU64 = AtomicU64::new(1);
++thread_local! {
++    static PARENT: Cell<u64> = const { Cell::new(0) };
++    static THREAD: u64 = NEXT_THREAD.fetch_add(1, Ordering::Relaxed);
++}
++
++#[derive(Clone, Copy, Default, Serialize)]
++pub struct Identity {
++    pub document: u64,
++    pub generation: u64,
++    pub epoch: u64,
++    pub projected: Option<bool>,
++}
++impl Identity {
++    /// Fixture scheduling knows source authority, but does not inspect component projection state.
++    pub fn source(stamp: SourceStamp, epoch: u64) -> Self {
++        Self {
++            document: stamp.document,
++            generation: stamp.generation,
++            epoch,
++            projected: None,
++        }
++    }
++    pub fn new(stamp: SourceStamp, epoch: u64, projected: bool) -> Self {
++        Self {
++            document: stamp.document,
++            generation: stamp.generation,
++            epoch,
++            projected: Some(projected),
++        }
++    }
++}
++
++#[derive(Serialize)]
++pub struct Event {
++    pub name: &'static str,
++    pub id: u64,
++    pub parent: u64,
++    pub thread: u64,
++    pub start_ns: u64,
++    pub end_ns: u64,
++    pub identity: Identity,
++    pub current: Option<Identity>,
++    pub outcome: Option<&'static str>,
++    pub counts: [u64; 4],
++    pub shape_calls: u64,
++    pub shape_ns: u64,
++}
++struct Buffer {
++    events: Vec<Event>,
++    overflow: u64,
++    overflow_first_ns: Option<u64>,
++    overflow_last_ns: Option<u64>,
++}
++
++/// Call before constructing the editor. Each disabled span reads one relaxed atomic;
++/// they do not call a clock, acquire the buffer lock, initialize TLS, or allocate.
++pub fn init(enabled: bool) {
++    if enabled {
++        BUFFER.get_or_init(|| {
++            Mutex::new(Buffer {
++                events: Vec::with_capacity(CAPACITY),
++                overflow: 0,
++                overflow_first_ns: None,
++                overflow_last_ns: None,
++            })
++        });
++        raw_now().expect("native attribution needs Linux 64-bit CLOCK_MONOTONIC");
++    }
++    ENABLED.store(enabled, Ordering::Relaxed);
++}
++
++pub fn now() -> u64 {
++    if !ENABLED.load(Ordering::Relaxed) {
++        return 0;
++    }
++    raw_now().expect("CLOCK_MONOTONIC failed")
++}
++
++#[cfg(all(target_os = "linux", target_pointer_width = "64"))]
++fn raw_now() -> Option<u64> {
++    #[repr(C)]
++    struct Timespec {
++        seconds: std::ffi::c_long,
++        nanos: std::ffi::c_long,
++    }
++    unsafe extern "C" {
++        fn clock_gettime(clock: std::ffi::c_int, time: *mut Timespec) -> std::ffi::c_int;
++    }
++    let mut time = Timespec {
++        seconds: 0,
++        nanos: 0,
++    };
++    // SAFETY: Linux 64-bit timespec is two C longs. This writable value outlives
++    // clock_gettime and its pointer does not escape; CLOCK_MONOTONIC is 1.
++    if unsafe { clock_gettime(1, &mut time) } != 0
++        || time.seconds < 0
++        || !(0..1_000_000_000).contains(&time.nanos)
++    {
++        return None;
++    }
++    (time.seconds as u64)
++        .checked_mul(1_000_000_000)?
++        .checked_add(time.nanos as u64)
++}
++#[cfg(not(all(target_os = "linux", target_pointer_width = "64")))]
++fn raw_now() -> Option<u64> {
++    None
++}
++
++pub struct Span {
++    event: Option<Event>,
++    // Nesting is thread-local: a live span must never cross threads or await.
++    _not_send: std::marker::PhantomData<std::rc::Rc<()>>,
++}
++impl Span {
++    pub fn new(name: &'static str, identity: Identity) -> Self {
++        let start_ns = now();
++        if start_ns == 0 {
++            return Self {
++                event: None,
++                _not_send: std::marker::PhantomData,
++            };
++        }
++        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
++        Self {
++            _not_send: std::marker::PhantomData,
++            event: Some(Event {
++                name,
++                id,
++                parent: PARENT.with(|p| p.replace(id)),
++                thread: THREAD.with(|t| *t),
++                start_ns,
++                end_ns: 0,
++                identity,
++                current: None,
++                outcome: None,
++                counts: [0; 4],
++                shape_calls: 0,
++                shape_ns: 0,
++            }),
++        }
++    }
++    pub fn id(&self) -> u64 {
++        self.event.as_ref().map_or(0, |event| event.id)
++    }
++    pub fn outcome(&mut self, outcome: &'static str) {
++        if let Some(event) = self.event.as_mut() {
++            event.outcome = Some(outcome);
++        }
++    }
++    pub fn counts(&mut self, counts: [u64; 4]) {
++        if let Some(event) = self.event.as_mut() {
++            event.counts = counts;
++        }
++    }
++    pub fn current(&mut self, identity: Identity) {
++        if let Some(event) = self.event.as_mut() {
++            event.current = Some(identity);
++        }
++    }
++    pub fn shape_finished(&mut self, start: u64) {
++        if let Some(event) = self.event.as_mut() {
++            event.shape_calls += 1;
++            event.shape_ns += now().saturating_sub(start);
++        }
++    }
++}
++impl Drop for Span {
++    fn drop(&mut self) {
++        let Some(mut event) = self.event.take() else {
++            return;
++        };
++        event.end_ns = now();
++        PARENT.with(|p| p.set(event.parent));
++        let mut buffer = BUFFER
++            .get()
++            .expect("enabled buffer")
++            .lock()
++            .expect("attribution buffer");
++        if buffer.events.len() < CAPACITY {
++            buffer.events.push(event);
++        } else {
++            buffer.overflow += 1;
++            buffer.overflow_first_ns.get_or_insert(event.start_ns);
++            buffer.overflow_last_ns = Some(event.end_ns);
++        }
++    }
++}
++
++/// Serialize/print only from an explicit untimed fixture action. Any overflow
++/// invalidates this entire dump interval; never silently retain partial samples.
++pub fn dump() -> serde_json::Value {
++    let dump_start_ns = now();
++    let Some(buffer) = BUFFER.get() else {
++        return serde_json::json!({"enabled": false, "capacity": CAPACITY, "events": []});
++    };
++    let mut buffer = buffer.lock().expect("attribution buffer");
++    let mut result = serde_json::json!({
++        "dump_start_ns": dump_start_ns,
++        "enabled": ENABLED.load(Ordering::Relaxed), "capacity": CAPACITY,
++        "overflow": buffer.overflow, "overflow_first_ns": buffer.overflow_first_ns,
++        "overflow_last_ns": buffer.overflow_last_ns, "events": buffer.events,
++    });
++    buffer.events.clear();
++    buffer.overflow = 0;
++    buffer.overflow_first_ns = None;
++    buffer.overflow_last_ns = None;
++    result["dump_end_ns"] = serde_json::json!(now());
++    result
++}
++
++#[cfg(all(test, target_os = "linux", target_pointer_width = "64"))]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn disabled_nested_and_overflow_controls() {
++        init(false);
++        assert_eq!(now(), 0);
++        assert_eq!(Span::new("off", Identity::default()).id(), 0);
++        init(true);
++        let identity = Identity {
++            document: 7,
++            generation: 3,
++            epoch: 11,
++            projected: Some(true),
++        };
++        let outer = Span::new("outer", identity);
++        let outer_id = outer.id();
++        drop(Span::new("inner", identity));
++        drop(outer);
++        let dump = dump();
++        let events = dump["events"].as_array().unwrap();
++        assert_eq!(events.len(), 2);
++        assert_eq!(events[0]["parent"], outer_id);
++        assert_eq!(events[0]["thread"], events[1]["thread"]);
++        assert_eq!(events[1]["parent"], 0);
++        assert!(events[0]["start_ns"].as_u64().unwrap() >= events[1]["start_ns"].as_u64().unwrap());
++        assert!(events[0]["end_ns"].as_u64().unwrap() <= events[1]["end_ns"].as_u64().unwrap());
++        assert_eq!(events[0]["identity"]["epoch"], 11);
++        for _ in 0..=CAPACITY {
++            drop(Span::new("fill", identity));
++        }
++        let full = super::dump();
++        assert_eq!(full["events"].as_array().unwrap().len(), CAPACITY);
++        assert_eq!(full["overflow"], 1);
++        assert!(full["overflow_first_ns"].as_u64().unwrap() > 0);
++        assert_eq!(super::dump()["overflow"], 0);
++        init(false);
++    }
++}
+--- a/crates/component/src/input/mod.rs
++++ b/crates/component/src/input/mod.rs
+@@ -9,7 +9,7 @@
+ 
+ pub(crate) use clear_button::*;
+ pub use content_type::*;
+-pub use gpui_base::input::{clipboard, projection};
++pub use gpui_base::input::{attribution, clipboard, projection};
+ #[cfg(not(feature = "tree-sitter"))]
+ pub struct Tree;
+ /// The shared editing engine. Internal to the framework: components reach it

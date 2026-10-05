@@ -1,0 +1,344 @@
+diff --git a/crates/base/src/text/state.rs b/crates/base/src/text/state.rs
+index 8b6dcfa7..18240cdb 100644
+--- a/crates/base/src/text/state.rs
++++ b/crates/base/src/text/state.rs
+@@ -132,6 +132,10 @@ pub struct TextViewState {
+     /// of small full-replace updates.
+     format: TextViewFormat,
+     text: String,
++    // Pending metadata belongs to `revision`; displayed metadata changes only
++    // when that revision's parsed tree is accepted.
++    pending_source_copy: Option<SharedString>,
++    displayed_source_copy: Option<SharedString>,
+     revision: usize,
+     pub(super) selection_revision: usize,
+     compatible_layout_update: bool,
+@@ -174,6 +178,7 @@ impl TextViewState {
+                         match parsed_update.result {
+                             Ok(content) => {
+                                 state.parsed_content = content;
++                                state.displayed_source_copy = state.pending_source_copy.clone();
+                                 state.refresh_search();
+                                 state.parsed_error = None;
+                                 state.compatible_layout_update = parsed_update.selection_compatible;
+@@ -236,6 +241,8 @@ impl TextViewState {
+             format,
+             parsed_error: None,
+             text: text.to_string(),
++            pending_source_copy: None,
++            displayed_source_copy: None,
+             revision: 0,
+             selection_revision: 0,
+             compatible_layout_update: false,
+@@ -441,7 +448,29 @@ impl TextViewState {
+ 
+     /// Set the text content.
+     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
++        self.set_text_with_source(text, None, cx);
++    }
++
++    /// Replace rendered input and its optional exact select-all Source payload.
++    /// The payload is published with the accepted parsed revision, so an old
++    /// displayed tree keeps its own source while a replacement parses.
++    pub fn set_text_with_source(
++        &mut self,
++        text: &str,
++        source: Option<SharedString>,
++        cx: &mut Context<Self>,
++    ) {
++        let source_changed = self.pending_source_copy != source;
++        self.pending_source_copy = source;
+         if self.text.as_str() == text {
++            // Different authored spellings can render identically. Do not
++            // retain the old spelling merely because parsing is unnecessary.
++            if self.source().as_str() == text {
++                self.displayed_source_copy = self.pending_source_copy.clone();
++            }
++            if source_changed {
++                cx.notify();
++            }
+             return;
+         }
+ 
+@@ -456,6 +485,7 @@ impl TextViewState {
+         if new_text.is_empty() {
+             return;
+         }
++        self.pending_source_copy = None;
+         self.text.push_str(new_text);
+         self.increment_update(new_text, true, cx);
+     }
+@@ -484,6 +514,16 @@ impl TextViewState {
+         self.selected_text_in(None)
+     }
+ 
++    /// The owning view's exact Source selection, before shared-copy trimming.
++    pub(super) fn exact_source_selection(&self) -> Option<SharedString> {
++        (self.parsed_error.is_none()
++            && self.selectable
++            && self.select_all
++            && self.effective_format() == SelectionFormat::Source)
++            .then(|| self.displayed_source_copy.clone())
++            .flatten()
++    }
++
+     /// The format to copy in, which is [`SelectionFormat::Plain`] whenever the
+     /// requested one cannot be produced.
+     ///
+@@ -507,11 +547,20 @@ impl TextViewState {
+     /// even after it scrolls out of view; see
+     /// [`ParsedDocument::selected_text`](crate::text::document::ParsedDocument).
+     pub(super) fn selected_text_in(&self, blocks: Option<RangeInclusive<usize>>) -> String {
++        // Parse errors replace the old tree with an error view. Its retained
++        // document must not expose the previous note through a new selection.
++        if self.parsed_error.is_some() {
++            return String::new();
++        }
+         let format = self.effective_format();
+ 
+         if self.select_all {
+             if format == SelectionFormat::Source {
+-                return self.source().to_string();
++                return self
++                    .displayed_source_copy
++                    .as_ref()
++                    .unwrap_or(&self.source())
++                    .to_string();
+             }
+ 
+             return self.parsed_content.document.text();
+@@ -579,6 +628,7 @@ impl TextViewState {
+             match parse_content(self.format, ParsedContent::default(), &update_options) {
+                 Ok(content) => {
+                     self.parsed_content = content;
++                    self.displayed_source_copy = self.pending_source_copy.clone();
+                     self.refresh_search();
+                     self.parsed_error = None;
+                     self.invalidate_measured_heights();
+@@ -1052,6 +1102,143 @@ mod tests {
+     use crate::text::MarkdownNode;
+     use gpui::TestAppContext;
+ 
++    #[gpui::test]
++    fn exact_source_tracks_displayed_async_revision_and_discards_late_results(
++        cx: &mut TestAppContext,
++    ) {
++        cx.update(crate::init);
++        let state = cx.update(|cx| {
++            cx.new(|cx| {
++                TextViewState::markdown("", cx)
++                    .selectable(true)
++                    .selection_format(SelectionFormat::Source)
++            })
++        });
++        let large = "large replacement\n\n".repeat(MAX_SYNC_FULL_REPLACE_BYTES / 10);
++        state.update(cx, |state, cx| {
++            state.set_text_with_source("old", Some("  original A\r\n".into()), cx);
++            state.select_all(cx);
++            state.set_text_with_source(&large, Some("original B".into()), cx);
++            assert_eq!(state.source().as_str(), "old");
++            assert_eq!(
++                state.exact_source_selection().unwrap().as_str(),
++                "  original A\r\n"
++            );
++        });
++        cx.run_until_parked();
++        state.update(cx, |state, cx| {
++            state.select_all(cx);
++            assert_eq!(state.source().as_str(), large.as_str());
++            assert_eq!(state.selected_text(), "original B");
++            state.set_text_with_source(&(large.clone() + " superseded"), Some("stale".into()), cx);
++            state.set_text_with_source("latest", Some("original C".into()), cx);
++        });
++        cx.run_until_parked();
++        state.update(cx, |state, cx| {
++            state.select_all(cx);
++            assert_eq!(state.source().as_str(), "latest");
++            assert_eq!(state.selected_text(), "original C");
++        });
++    }
++
++    #[gpui::test]
++    fn exact_source_same_input_refreshes_and_unpaired_updates_invalidate(cx: &mut TestAppContext) {
++        cx.update(crate::init);
++        let state = cx.update(|cx| {
++            cx.new(|cx| {
++                TextViewState::markdown("", cx)
++                    .selectable(true)
++                    .selection_format(SelectionFormat::Source)
++            })
++        });
++        state.update(cx, |state, cx| {
++            state.set_text_with_source("<mark>x</mark>", Some("==x==".into()), cx);
++            state.select_all(cx);
++            state.set_text_with_source("<mark>x</mark>", Some("<mark>x</mark>".into()), cx);
++            assert_eq!(state.selected_text(), "<mark>x</mark>");
++            state.set_text("<mark>x</mark>", cx);
++            assert!(state.exact_source_selection().is_none());
++            state.set_text_with_source("x", Some("canonical x".into()), cx);
++            state.select_all(cx);
++            state.push_str(" appended", cx);
++            assert_eq!(state.selected_text(), "canonical x");
++        });
++        cx.run_until_parked();
++        state.update(cx, |state, cx| {
++            state.select_all(cx);
++            assert!(state.exact_source_selection().is_none());
++            assert_eq!(state.selected_text(), "x appended");
++        });
++    }
++
++    #[gpui::test]
++    fn exact_source_is_unavailable_when_parse_error_replaces_the_document(cx: &mut TestAppContext) {
++        cx.update(crate::init);
++        let state = cx.update(|cx| {
++            cx.new(|cx| {
++                TextViewState::markdown("", cx)
++                    .selectable(true)
++                    .selection_format(SelectionFormat::Source)
++            })
++        });
++        state.update(cx, |state, cx| {
++            state.set_text_with_source("old rendered", Some("old original".into()), cx);
++            state.select_all(cx);
++            assert_eq!(state.selected_text(), "old original");
++            // Both parser error paths keep this tree but render an error view.
++            state.parsed_error = Some("replacement failed".into());
++            state.select_all(cx);
++            assert!(state.exact_source_selection().is_none());
++            assert!(state.selected_text().is_empty());
++            state.set_text_with_source("recovered", Some("current original".into()), cx);
++            state.select_all(cx);
++            assert_eq!(state.selected_text(), "current original");
++        });
++    }
++
++    #[gpui::test]
++    fn exact_source_survives_extensions_and_find_but_does_not_change_plain_or_html(
++        cx: &mut TestAppContext,
++    ) {
++        cx.update(crate::init);
++        let state = cx.update(|cx| {
++            cx.new(|cx| {
++                TextViewState::markdown("", cx)
++                    .selectable(true)
++                    .selection_format(SelectionFormat::Source)
++            })
++        });
++        state.update(cx, |state, cx| {
++            state.set_text_with_source("**visible**", Some(" \r\noriginal\r\n".into()), cx);
++            state.set_markdown_extensions(
++                Arc::new(MarkdownExtensions::default().block_parser(|_, _| None)),
++                cx,
++            );
++            state.select_all(cx);
++            state.set_search_query("visible", cx);
++            state.step_search_match(1, cx);
++            state.step_search_match(-1, cx);
++            state.set_search_query("", cx);
++            assert_eq!(state.selected_text(), " \r\noriginal\r\n");
++            state.set_selection_format(SelectionFormat::Plain, cx);
++            assert!(state.exact_source_selection().is_none());
++            assert_eq!(state.selected_text().trim(), "visible");
++        });
++        let html = cx.update(|cx| {
++            cx.new(|cx| {
++                TextViewState::html("", cx)
++                    .selectable(true)
++                    .selection_format(SelectionFormat::Source)
++            })
++        });
++        html.update(cx, |state, cx| {
++            state.set_text_with_source("<b>visible</b>", Some("never copied".into()), cx);
++            state.select_all(cx);
++            assert!(state.exact_source_selection().is_none());
++            assert_eq!(state.selected_text().trim(), "visible");
++        });
++    }
++
+     #[gpui::test]
+     fn search_custom_parts_share_render_nodes_and_selection(cx: &mut TestAppContext) {
+         cx.update(crate::init);
+diff --git a/crates/base/src/text/text_view.rs b/crates/base/src/text/text_view.rs
+index 53908256..c77d8d9a 100644
+--- a/crates/base/src/text/text_view.rs
++++ b/crates/base/src/text/text_view.rs
+@@ -580,6 +580,7 @@ impl Element for TextView {
+             text_style.line_height_in_pixels(window.rem_size()) * max_lines as f32
+         });
+ 
++        let copy_state = state.clone();
+         let mut el = div()
+             .id(("text-view-scroll", state.entity_id()))
+             .key_context("TextView")
+@@ -589,6 +590,11 @@ impl Element for TextView {
+             .relative()
+             .text_color(text_view_style.foreground())
+             .on_action(move |_: &crate::input::Copy, window, cx| {
++                let exact_source = copy_state.read(cx).exact_source_selection();
++                if let Some(source) = exact_source {
++                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(source.to_string()));
++                    return;
++                }
+                 let text = TextSelection::selected_text(window, cx).trim().to_string();
+                 if text.is_empty() {
+                     cx.propagate();
+@@ -751,6 +757,58 @@ mod tests {
+         text_view: Entity<TextViewState>,
+     }
+ 
++    struct SourceCopyTestRoot {
++        text_view: Entity<TextViewState>,
++    }
++
++    impl Render for SourceCopyTestRoot {
++        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
++            div().w(px(400.)).h(px(200.)).child(
++                TextView::new(&self.text_view)
++                    .selectable(true)
++                    .selection_format(crate::text::SelectionFormat::Source),
++            )
++        }
++    }
++
++    #[gpui::test]
++    fn exact_source_copy_action_preserves_clipboard_whitespace(cx: &mut TestAppContext) {
++        cx.update(crate::init);
++        let (root, cx) = cx.add_window_view(|_, cx| SourceCopyTestRoot {
++            text_view: cx.new(|cx| TextViewState::markdown("", cx)),
++        });
++        let cx: &mut VisualTestContext = cx;
++        let state = root.read_with(cx, |root, _| root.text_view.clone());
++        for original in [
++            "\n==highlight== <mark>authored</mark> 雪\r\n\r\n",
++            " \r\n\t\r\n",
++            "",
++        ] {
++            state.update(cx, |state, cx| {
++                state.set_text_with_source("visible", Some(original.to_string().into()), cx);
++            });
++            cx.run_until_parked();
++            cx.update(|window, cx| {
++                let focus = state.read(cx).focus_handle.clone();
++                focus.focus(window, cx);
++                window.draw(cx).clear(cx);
++                cx.write_to_clipboard(gpui::ClipboardItem::new_string("positive-control".into()));
++            });
++            cx.simulate_keystrokes("ctrl-a ctrl-c");
++            cx.run_until_parked();
++            cx.update(|_, cx| {
++                // GPUI represents an empty clipboard's text as None. The
++                // seeded sentinel still proves Copy replaced its contents.
++                assert_eq!(
++                    cx.read_from_clipboard()
++                        .and_then(|item| item.text())
++                        .unwrap_or_default(),
++                    original
++                );
++            });
++        }
++    }
++
+     /// A scrollable viewport, so the list has a bounded height to measure
+     /// against and `max_offset_for_scrollbar` reports a real scroll extent.
+     struct ScrollExtentTestRoot {

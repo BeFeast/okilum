@@ -1,0 +1,108 @@
+{
+  "at": "2026-09-07T15:46:45.535151518Z",
+  "replayed": true,
+  "request": {
+    "capture_id": "196e3970-3a9e-4d4e-8f65-c5d60ec63713",
+    "criteria": [
+      {
+        "description": "Manual criteria retained",
+        "id": "C1",
+        "requires_human": true
+      }
+    ],
+    "destination": "inbox",
+    "expected_capture_revision": "sha256:8a9b613cb26cd47abff54cd0921a2857d3c07f14a68549fcdaff5b934f6f6c8b",
+    "expected_revision": "sha256:91bbc7b7aebe68ebb6b7c23db46dabb9a765f6c5a498732bc07c64f7fdc1e6d9",
+    "operation_id": "d4336746-f061-405a-899d-f2dd266b06b5",
+    "proposal_id": "8d4168f95be33419c140aeeae61b9af833c42492dd8e4e234f464f2df1852c42",
+    "source": {
+      "account_id": "local",
+      "actor_id": "operator",
+      "channel": "native",
+      "chat_id": null,
+      "instance_id": "20c72224-880d-4917-96b1-21816e5b1acb",
+      "message_id": "d4336746-f061-405a-899d-f2dd266b06b5",
+      "topic_id": null,
+      "update_id": "d4336746-f061-405a-899d-f2dd266b06b5",
+      "uri": null
+    },
+    "title": "Inspected workshop goal"
+  },
+  "result": {
+    "outcome": "committed_inbox",
+    "receipt": {
+      "actor": "operator",
+      "at": "2026-09-07T15:46:45.535151518Z",
+      "child": {
+        "outcome": {
+          "goal_id": "30a21664-00ea-4f3c-a390-312a8713964d",
+          "origin": {
+            "brain_id": "50b592af-4f92-494d-9dd9-a0af8f81e029",
+            "capture_id": "196e3970-3a9e-4d4e-8f65-c5d60ec63713",
+            "operation_id": "09561758-a539-4369-82f2-02e4d3e1e052",
+            "path": "records/inbox-196e3970-3a9e-4d4e-8f65-c5d60ec63713.md",
+            "planned_at": "2026-09-07T15:46:45.53026335Z",
+            "planned_by": {
+              "account_id": "local",
+              "actor_id": "operator",
+              "channel": "native",
+              "chat_id": null,
+              "instance_id": "20c72224-880d-4917-96b1-21816e5b1acb",
+              "message_id": "d4336746-f061-405a-899d-f2dd266b06b5",
+              "topic_id": null,
+              "update_id": "d4336746-f061-405a-899d-f2dd266b06b5",
+              "uri": null
+            },
+            "revision": "sha256:8a9b613cb26cd47abff54cd0921a2857d3c07f14a68549fcdaff5b934f6f6c8b",
+            "schema": "ai-brain/inbox-origin-v1",
+            "source_snapshot": {
+              "brain_id": "50b592af-4f92-494d-9dd9-a0af8f81e029",
+              "content_base64": "LS0tCnNjaGVtYTogYWktYnJhaW4vdjEKcmVjb3JkX3R5cGU6IGluYm94CmJyYWluX2lkOiA1MGI1OTJhZi00ZjkyLTQ5NGQtOWRkOS1hMGFmOGY4MWUwMjkKaWQ6IDE5NmUzOTcwLTNhOWUtNGQ0ZS04ZjY1LWM1ZDYwZWM2MzcxMwpzdGF0dXM6IGNhcHR1cmVkCnJlY2VpdmVkX2F0OiAyMDI2LTA5LTA3VDE1OjQ2OjQ1LjMwMDI5NTU2Wgpzb3VyY2U6CiAgY2hhbm5lbDogbmF0aXZlCiAgaW5zdGFuY2VfaWQ6IDZhNjZiNTliLTgzMTMtNDgwNi05NzZlLTI5ZTBlNTY1ZmJlZgogIGFjY291bnRfaWQ6IGxvY2FsCiAgYWN0b3JfaWQ6IG9wZXJhdG9yCiAgY2hhdF9pZDogbnVsbAogIHRvcGljX2lkOiBudWxsCiAgbWVzc2FnZV9pZDogZjMwZGEwNjEtZmUyYS00MDcxLWI1NGEtMWFkNWRiNTBjZjFkCiAgdXBkYXRlX2lkOiBmMzBkYTA2MS1mZTJhLTQwNzEtYjU0YS0xYWQ1ZGI1MGNmMWQKICB1cmk6IG51bGwKLS0tClByZXBhcmUgdGhlIHdvcmtzaG9wIHZpc2l0",
+              "media_type": "text/markdown",
+              "path": "records/inbox-196e3970-3a9e-4d4e-8f65-c5d60ec63713.md",
+              "revision": "sha256:8a9b613cb26cd47abff54cd0921a2857d3c07f14a68549fcdaff5b934f6f6c8b",
+              "schema": "ai-brain/v1"
+            },
+            "text": "Prepare the workshop visit"
+          },
+          "receipt": {
+            "operation_id": "09561758-a539-4369-82f2-02e4d3e1e052",
+            "replayed": false,
+            "request_sha256": "bc72641ea2c540eafa403caeacb551b40a2b8b827a77ce7b4aeb5f833345321c",
+            "status": "committed"
+          }
+        },
+        "source": {
+          "operation_id": "62164f55-f808-4b50-bf51-8a40946877f4",
+          "outcome": "written",
+          "path": "records/goal-30a21664-00ea-4f3c-a390-312a8713964d.md",
+          "previous_revision": null,
+          "revision": "sha256:7e87878fb509ecf98aba8322ea29dd3f4237fea1e0fe6d62f5fec64ab9ba1ad7"
+        }
+      },
+      "operation_id": "d4336746-f061-405a-899d-f2dd266b06b5",
+      "projection": {
+        "operation_id": "bc073f2d-3486-476e-9546-0610b66d4812",
+        "outcome": "written",
+        "path": "records/proposal-8d4168f95be33419c140aeeae61b9af833c42492dd8e4e234f464f2df1852c42.md",
+        "previous_revision": "sha256:91bbc7b7aebe68ebb6b7c23db46dabb9a765f6c5a498732bc07c64f7fdc1e6d9",
+        "revision": "sha256:da13a993c690a73a88b14c06111b7e6462dbe6dc29cb5d1c28d4434b3e6bb96c"
+      },
+      "proposal_id": "8d4168f95be33419c140aeeae61b9af833c42492dd8e4e234f464f2df1852c42",
+      "replayed": true,
+      "target": {
+        "child_operation_id": "09561758-a539-4369-82f2-02e4d3e1e052",
+        "goal_id": "30a21664-00ea-4f3c-a390-312a8713964d",
+        "path": "records/goal-30a21664-00ea-4f3c-a390-312a8713964d.md",
+        "revision": "sha256:7e87878fb509ecf98aba8322ea29dd3f4237fea1e0fe6d62f5fec64ab9ba1ad7"
+      }
+    }
+  },
+  "schema": "tessera-proposal-adopt/v1",
+  "workspace": {
+    "brain_id": "50b592af-4f92-494d-9dd9-a0af8f81e029",
+    "managed": true,
+    "records_dir": "records",
+    "root": "/synthetic/adoption-controls"
+  }
+}

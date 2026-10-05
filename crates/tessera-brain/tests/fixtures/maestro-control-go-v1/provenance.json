@@ -1,0 +1,14 @@
+{
+  "provider_runtime_source": "d40b2ad0c0dddfae4056fc3c8c78610972a765c1",
+  "fixture_source": "temporary exporter test invoking actual Fleet GET and guarded POST handlers over temporary JSON state",
+  "executor_calls": 0,
+  "live_state_used": false,
+  "files": {
+    "fleet-pending.json": "d9910f2fa422560db60cc85efe987b284c91a984745183c861684c45f0a0235b",
+    "approve-replay-response.json": "d999ab9933c594610b537203e08d456121fca6285e530213f618546474158b03",
+    "exporter-test.go.txt": "095ec657d11733215cbf5b9ca1df918386ac7f27f53e360b1b7dbc59363a1379",
+    "opposite-conflict.json": "fb21c607713606ccead144a8bae8be078cb6bfd6f6f6da09a801fb268d67549c",
+    "approve-response.json": "dc6118dd4209be1a3d3e9c49c97256a12d8f3886e79bdb1522f87604646d3539",
+    "fleet-receipt-readonly.json": "57f7c993317ff5a40c2102634e613ab0503434ad5dd85232af02c84788025c9c"
+  }
+}

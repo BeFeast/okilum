@@ -1,0 +1,93 @@
+{
+  "snapshotSequence": 742902,
+  "thread": {
+    "id": "fixture-thread",
+    "projectId": "fixture-project",
+    "title": "Sanitized planning fixture",
+    "modelSelection": {
+      "instanceId": "fixture-provider",
+      "model": "fixture-model"
+    },
+    "runtimeMode": "approval-required",
+    "interactionMode": "default",
+    "branch": null,
+    "worktreePath": null,
+    "latestTurn": {
+      "turnId": "01a0727b-1ae5-7e13-81b3-0436223e40b4",
+      "state": "completed",
+      "requestedAt": "2026-09-05T16:51:04.930Z",
+      "startedAt": "2026-09-05T16:51:04.930Z",
+      "completedAt": "2026-09-05T16:51:18.449Z",
+      "assistantMessageId": "fixture-assistant"
+    },
+    "createdAt": "2026-09-05T16:51:04.930Z",
+    "updatedAt": "2026-09-05T16:51:18.449Z",
+    "archivedAt": null,
+    "settledOverride": null,
+    "settledAt": null,
+    "unsettledAt": null,
+    "snoozedUntil": null,
+    "snoozedAt": null,
+    "pinnedAt": null,
+    "pinOrderKey": null,
+    "titleRegeneration": null,
+    "deletedAt": null,
+    "messages": [
+      {
+        "id": "fixture-user",
+        "role": "user",
+        "text": "REPLACED_WITH_EXACT_PERSISTED_PROMPT",
+        "attachments": [],
+        "turnId": null,
+        "streaming": false,
+        "createdAt": "2026-09-05T16:51:04.930Z",
+        "updatedAt": "2026-09-05T16:51:04.930Z"
+      },
+      {
+        "id": "fixture-assistant",
+        "role": "assistant",
+        "text": "# Workshop checklist\n\nPack four batteries, two markers and one tape roll. Buy one marker and one tape roll for four credits. Planning only; nothing has been purchased.",
+        "turnId": "01a0727b-1ae5-7e13-81b3-0436223e40b4",
+        "streaming": false,
+        "createdAt": "2026-09-05T16:51:18.403Z",
+        "updatedAt": "2026-09-05T16:51:18.403Z"
+      }
+    ],
+    "proposedPlans": [],
+    "activities": [
+      {
+        "id": "5f35c00a-72ca-4e0f-81a1-8dc4de86068c",
+        "tone": "info",
+        "kind": "context-window.updated",
+        "summary": "Context window updated",
+        "payload": {
+          "usedTokens": 16944,
+          "maxTokens": 258400,
+          "inputTokens": 16248,
+          "cachedInputTokens": 0,
+          "outputTokens": 696,
+          "reasoningOutputTokens": 93,
+          "lastUsedTokens": 16944,
+          "lastInputTokens": 16248,
+          "lastCachedInputTokens": 0,
+          "lastOutputTokens": 696,
+          "lastReasoningOutputTokens": 93,
+          "compactsAutomatically": true
+        },
+        "turnId": null,
+        "createdAt": "2026-09-05T16:51:18.439Z"
+      }
+    ],
+    "checkpoints": [],
+    "session": {
+      "threadId": "fb3820fe-d237-5a22-98e3-054b82072b00",
+      "status": "ready",
+      "providerName": "codex",
+      "providerInstanceId": "codex",
+      "runtimeMode": "approval-required",
+      "activeTurnId": null,
+      "lastError": null,
+      "updatedAt": "2026-09-05T16:51:18.449Z"
+    }
+  }
+}

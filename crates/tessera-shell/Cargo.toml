@@ -1,0 +1,70 @@
+[package]
+name = "tessera-shell"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "tessera"
+path = "src/main.rs"
+
+[features]
+default = ["brain"]
+brain = ["tessera-core/brain"]
+
+[dependencies]
+tessera-core = { workspace = true, default-features = false }
+gpui.workspace = true
+gpui_platform.workspace = true
+gpui-base = { path = "../../vendor/gpui-component/crates/base" }
+gpui-component = { workspace = true, features = ["tree-sitter-languages"] }
+gpui-kit-assets.workspace = true
+# The Windows HLSL profile uses debug assertions; icons must still be portable.
+rust-embed = { version = "8.12.0", features = ["debug-embed"] }
+anyhow = "1"
+async-channel = "2"
+url = "2"
+regex = "1"
+resvg = "=0.45.1"
+image = { version = "0.25", default-features = false }
+serde_json = "1"
+serde_yaml = "0.9"
+serde.workspace = true
+sha2 = "0.10"
+similar = { version = "=2.7.0", default-features = false }
+uuid = { version = "1", features = ["v4"] }
+base64 = "0.22"
+time = { version = "0.3", features = ["formatting", "parsing", "local-offset"] }
+
+[dev-dependencies]
+tempfile = "3"
+unicode-linebreak = "0.1.5"
+unicode-segmentation = "1.12.0"
+gpui = { workspace = true, features = ["test-support"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+wayland-client = "=0.31.15"
+wayland-protocols-wlr = { version = "=0.3.12", features = ["client"] }
+rustix = { version = "=1.1.4", features = ["event", "net", "pipe", "fs"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+tempfile = "3"
+objc2 = "=0.6.4"
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSPasteboard"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSData", "NSString"] }
+rustix = { version = "=1.1.4", features = ["fs"] }
+
+[target.'cfg(windows)'.dependencies]
+dirs = "6"
+velopack = "=1.2.161"
+windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging"] }
+
+[build-dependencies]
+embed-resource = "=3.0.11"
+
+[target.'cfg(target_os = "macos")'.dependencies.fsevent-sys]
+version = "4.1"
+
+[target.'cfg(target_os = "macos")'.dependencies.core-foundation-sys]
+version = "0.8"

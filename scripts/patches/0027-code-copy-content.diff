@@ -1,0 +1,181 @@
+--- a/crates/base/src/text/node.rs
++++ b/crates/base/src/text/node.rs
+@@ -1156,6 +1156,7 @@
+ 
+ #[derive(Debug, Clone)]
+ pub struct CodeBlock {
++    copy_code: Option<SharedString>,
+     lang: Option<SharedString>,
+     state: Arc<Mutex<InlineState>>,
+     highlight_cache: Arc<Mutex<Option<CachedCodeBlockHighlights>>>,
+@@ -1177,7 +1178,10 @@
+ 
+ impl PartialEq for CodeBlock {
+     fn eq(&self, other: &Self) -> bool {
+-        self.lang == other.lang && self.code() == other.code() && self.span == other.span
++        self.lang == other.lang
++            && self.code() == other.code()
++            && self.span == other.span
++            && self.copy_code == other.copy_code
+     }
+ }
+ 
+@@ -1195,13 +1199,25 @@
+             .unwrap_or_default()
+     }
+ 
++    /// Exact code content for block-level Copy, without Markdown delimiters.
++    /// None for non-code constructs represented by this renderer (e.g. math).
++    pub fn copy_code(&self) -> Option<SharedString> {
++        self.copy_code.clone()
++    }
++
++    pub(crate) fn with_copy_code(mut self, code: SharedString) -> Self {
++        self.copy_code = Some(code);
++        self
++    }
++
+     /// Builds a code block that is not tied to a parsed document.
+     ///
+     /// [`crate::TextView::code_block_highlighter`] hands a `&CodeBlock` to the
+     /// highlighter it is given, so anyone writing one needs a way to build a
+     /// block to exercise it against.
+     pub fn from_code(code: impl Into<SharedString>, lang: Option<impl Into<SharedString>>) -> Self {
+-        Self::new(code.into(), lang.map(Into::into), None::<Span>)
++        let code = code.into();
++        Self::new(code.clone(), lang.map(Into::into), None::<Span>).with_copy_code(code)
+     }
+ 
+     pub(crate) fn new(
+@@ -1218,6 +1234,7 @@
+             lang,
+             state,
+             highlight_cache: Arc::new(Mutex::new(None)),
++            copy_code: None,
+             span: span.map(|s| s.into()),
+         }
+     }
+@@ -1313,6 +1330,7 @@
+             .child(
+                 div()
+                     .id(("codeblock", options.ix))
++                    .group("code-block")
+                     .w_full()
+                     .min_w_0()
+                     .p_3()
+@@ -1348,7 +1366,6 @@
+                                 .absolute()
+                                 .top_2()
+                                 .right_2()
+-                                .bg(style.code_background())
+                                 .rounded(cx.theme().tokens.radius.md)
+                                 .child(actions(&self, window, cx)),
+                         )
+--- a/crates/base/src/text/format/markdown.rs
++++ b/crates/base/src/text/format/markdown.rs
+@@ -12,6 +12,82 @@
+     },
+ };
+ 
++/// mdast preserves content bytes (including CRLF and code indentation), but
++/// removes one terminal line ending. Restore that ending from the parsed span;
++/// Markdown container indentation is already excluded by the parser.
++fn exact_code_content(source: &str, code: &mdast::Code) -> String {
++    let mut value = code.value.clone();
++    let Some(position) = &code.position else {
++        return value;
++    };
++    let start = position.start.offset;
++    let end = position.end.offset;
++    let Some(raw) = source.get(start..end) else {
++        return value;
++    };
++    let first = raw.trim_start_matches(' ');
++    let fenced =
++        raw.len() - first.len() < 4 && (first.starts_with("```") || first.starts_with("~~~"));
++    let suffix_eol = |text: &str| {
++        if text.ends_with("\r\n") {
++            "\r\n"
++        } else if text.ends_with('\n') {
++            "\n"
++        } else if text.ends_with('\r') {
++            "\r"
++        } else {
++            ""
++        }
++    };
++    let after = &source[end..];
++    let following_eol = if after.starts_with("\r\n") {
++        "\r\n"
++    } else if after.starts_with('\n') {
++        "\n"
++    } else if after.starts_with('\r') {
++        "\r"
++    } else {
++        ""
++    };
++    let ending = if fenced {
++        let lines = position.end.line - position.start.line;
++        // An empty fence or an opener alone has no content line ending.
++        if value.is_empty() && lines <= 1 {
++            return value;
++        }
++        let terminal = suffix_eol(raw);
++        if !terminal.is_empty() {
++            // Unclosed fence reaching EOF, including its final newline.
++            terminal
++        } else {
++            let breaks = value.bytes().filter(|b| *b == b'\n').count()
++                + value
++                    .as_bytes()
++                    .iter()
++                    .enumerate()
++                    .filter(|(i, b)| **b == b'\r' && value.as_bytes().get(i + 1) != Some(&b'\n'))
++                    .count();
++            if lines >= breaks + 2 {
++                // Closed fence: restore the ending immediately before its line,
++                // never the ending after the closing delimiter.
++                let boundary = raw.rfind(['\r', '\n']).map(|i| i + 1).unwrap_or(0);
++                suffix_eol(&raw[..boundary])
++            } else {
++                following_eol
++            }
++        }
++    } else {
++        let terminal = suffix_eol(raw);
++        if terminal.is_empty() {
++            following_eol
++        } else {
++            terminal
++        }
++    };
++    value.push_str(ending);
++    value
++}
++
+ /// Parse Markdown into a tree of nodes.
+ pub(crate) fn parse(source: &str, cx: &mut NodeContext) -> Result<ParsedDocument, SharedString> {
+     let options = cx.markdown_extensions.parse_options();
+@@ -402,11 +478,17 @@
+             html: false,
+             span: new_span(val.position, cx),
+         },
+-        Node::Code(raw) => BlockNode::CodeBlock(CodeBlock::new(
+-            raw.value.into(),
+-            raw.lang.map(|s| s.into()),
+-            new_span(raw.position, cx),
+-        )),
++        Node::Code(raw) => {
++            let copy_code = exact_code_content(source, &raw);
++            BlockNode::CodeBlock(
++                CodeBlock::new(
++                    raw.value.into(),
++                    raw.lang.map(|s| s.into()),
++                    new_span(raw.position, cx),
++                )
++                .with_copy_code(copy_code.into()),
++            )
++        }
+         Node::Heading(val) => {
+             let mut paragraph = Paragraph::default();
+             val.children.iter().for_each(|c| {

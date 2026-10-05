@@ -1,0 +1,48 @@
+[workspace]
+resolver = "2"
+members = ["crates/tessera-core", "crates/tessera-cored", "crates/tessera-shell", "crates/tessera-brain"]
+# The vendored gpui-kit clone is its own Cargo workspace. Excluding it
+# keeps its members inheriting from their own root while we path-depend into it.
+exclude = ["vendor", "inbox"]
+
+[workspace.dependencies]
+tessera-core = { path = "crates/tessera-core", default-features = false }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+# Canonical YAML embeds JSON objects; retain their key order in standalone backends too.
+serde_json = { version = "1", features = ["preserve_order"] }
+
+# gpui-kit consumes GPUI from crates.io as the `gpui-pre-*` family (it no
+# longer names a zed git rev), so the pin is the version requirement gpui-kit's
+# own Cargo.toml states plus the exact version held in our committed
+# Cargo.lock. Keep the requirement identical to the vendor's or the two
+# resolve to different gpui builds.
+gpui = { package = "gpui-pre", version = "0.3.1" }
+gpui_platform = { package = "gpui-pre-platform", version = "0.3.1", features = [
+    "font-kit",
+    "x11",
+    "wayland",
+    "runtime_shaders",
+] }
+
+# Path deps into the vendored clone. scripts/vendor-setup.sh creates it.
+gpui-component = { path = "vendor/gpui-component/crates/component" }
+gpui-kit-assets = { path = "vendor/gpui-component/crates/assets" }
+
+[profile.release]
+debug = false
+
+# gpui is unusably slow in a debug profile; keep it optimised even there.
+[profile.dev.package]
+gpui-pre = { opt-level = 3 }
+gpui-pre-platform = { opt-level = 3 }
+gpui-pre-macros = { opt-level = 3 }
+tree-sitter = { opt-level = 3 }
+gpui-pre-sum-tree = { opt-level = 3 }
+ropey = { opt-level = 3 }
+
+# Diagnostic cross-build: GPUI compiles HLSL at runtime on Windows.
+# Its offline shader build requires a Windows-hosted fxc.exe build script.
+[profile.windows-diagnostic]
+inherits = "release"
+debug-assertions = true

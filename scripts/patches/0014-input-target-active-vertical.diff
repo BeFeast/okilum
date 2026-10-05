@@ -1,0 +1,563 @@
+diff --git a/crates/base/src/input/base/movement.rs b/crates/base/src/input/base/movement.rs
+index 59d6ecc8..67aef7c1 100644
+--- a/crates/base/src/input/base/movement.rs
++++ b/crates/base/src/input/base/movement.rs
+@@ -169,6 +169,214 @@ impl<M: InputModeKind> InputBaseState<M> {
+         cx.notify()
+     }
+ 
++    /// Resolve projected vertical movement against hypothetical target-active
++    /// geometry before publishing any selection. Native edits arriving next can
++    /// therefore never observe an intermediate concealed-layout caret.
++    fn projected_vertical_target(
++        &self,
++        move_lines: isize,
++        window: &Window,
++        cx: &mut Context<Self>,
++    ) -> Option<(usize, bool, gpui::Pixels)> {
++        use super::projection::{
++            LayoutStamp, PinnedProjection, SourceByte, SourceSnapshot, WrapAffinity,
++        };
++        let last = self.last_layout.as_ref()?;
++        let provider = self.projection.provider.as_ref()?;
++        if last.source_stamp != self.source_stamp()
++            || !M::projection_compatible(self)
++            || self.masked
++            || !self.soft_wrap
++            || self.searchable
++            || self.mode.is_folding()
++            || self.wrapping_indent != super::WrappingIndent::None
++        {
++            return None;
++        }
++        let source = SourceSnapshot {
++            stamp: self.source_stamp(),
++            text: std::sync::Arc::from(self.text.to_string()),
++        };
++        let compose = |active: &super::projection::ActiveSource| {
++            let projection = provider.compose(&source, active)?;
++            (projection.source().stamp == source.stamp && projection.source().text == source.text)
++                .then_some(projection)
++        };
++        let map = |projection: std::sync::Arc<dyn super::projection::SourceProjection>,
++                   cx: &mut Context<Self>| {
++            let mut map = super::display_map::DisplayMap::new(
++                last.font.clone(),
++                last.font_size,
++                last.wrap_width,
++            );
++            map.install_projection(
++                Some(PinnedProjection {
++                    stamp: LayoutStamp {
++                        source: source.stamp,
++                        presentation: last.presentation_epoch,
++                    },
++                    projection,
++                }),
++                &self.text,
++                window,
++                cx,
++            );
++            map
++        };
++        let current = compose(&self.projection.active)?;
++        let current_map = map(current.clone(), cx);
++        let preferred = if let Some((x, _)) = self.preferred_column {
++            x
++        } else {
++            let row = self.text.offset_to_point(self.cursor()).row;
++            let (start, line) =
++                Self::projected_line_layout(current.as_ref(), &current_map, last, row, window)?;
++            let offset = current
++                .to_projected(SourceByte(self.cursor()), ConcealBias::Right)?
++                .0;
++            line.position_for_index(
++                offset.checked_sub(start)?,
++                last,
++                self.cursor_line_end_affinity,
++            )?
++            .x
++        };
++        let origin = current_map.offset_to_wrap_display_point_with_affinity(
++            self.cursor(),
++            self.cursor_line_end_affinity,
++        );
++        let target_row = origin
++            .row
++            .saturating_add_signed(move_lines)
++            .min(current_map.wrap_row_count().saturating_sub(1));
++        let (provisional, provisional_affinity) = Self::projected_row_hit(
++            current.as_ref(),
++            &current_map,
++            last,
++            target_row,
++            preferred,
++            window,
++        )?;
++        let mut active = self.projection.active.clone();
++        active.anchor = SourceByte(provisional);
++        active.head = SourceByte(provisional);
++        active.affinity = if provisional_affinity {
++            WrapAffinity::End
++        } else {
++            WrapAffinity::Start
++        };
++        let revealed = compose(&active)?;
++        let revealed_map = map(revealed.clone(), cx);
++        let mut target = revealed_map
++            .offset_to_wrap_display_point_with_affinity(provisional, provisional_affinity);
++        let row = self.text.offset_to_point(provisional).row;
++        if move_lines.unsigned_abs() == 1 && row != self.text.offset_to_point(self.cursor()).row {
++            let first = revealed_map.offset_to_wrap_display_point(self.text.line_start_offset(row));
++            target.row = first.row
++                + if move_lines < 0 {
++                    revealed_map
++                        .line(row)?
++                        .wrapped_lines
++                        .len()
++                        .saturating_sub(1)
++                } else {
++                    0
++                };
++        }
++        let resolved = Self::projected_row_hit(
++            revealed.as_ref(),
++            &revealed_map,
++            last,
++            target.row,
++            preferred,
++            window,
++        )?;
++        active.anchor = SourceByte(resolved.0);
++        active.head = SourceByte(resolved.0);
++        active.affinity = if resolved.1 {
++            WrapAffinity::End
++        } else {
++            WrapAffinity::Start
++        };
++        let final_projection = compose(&active)?;
++        // An arbitrary provider may change more than block reveal. Never accept
++        // a hit if its final active state would use different bytes or metrics.
++        if final_projection.text() != revealed.text()
++            || final_projection.styles() != revealed.styles()
++        {
++            return None;
++        }
++        let hit = revealed.to_projected(SourceByte(resolved.0), ConcealBias::Right)?;
++        if final_projection.to_projected(SourceByte(resolved.0), ConcealBias::Right) != Some(hit)
++            || final_projection.to_source(hit, ConcealBias::Right) != Some(SourceByte(resolved.0))
++        {
++            return None;
++        }
++        Some((resolved.0, resolved.1, preferred))
++    }
++
++    fn projected_row_hit(
++        projection: &dyn super::projection::SourceProjection,
++        map: &super::display_map::DisplayMap,
++        last: &super::layout::LastLayout,
++        wrap_row: usize,
++        preferred: gpui::Pixels,
++        window: &Window,
++    ) -> Option<(usize, bool)> {
++        let row = map.display_row_to_buffer_line(wrap_row);
++        let (start, line) = Self::projected_line_layout(projection, map, last, row, window)?;
++        let first_source =
++            projection.to_source(super::projection::ProjectedByte(start), ConcealBias::Right)?;
++        let first = map.offset_to_wrap_display_point(first_source.0);
++        let (index, affinity) = line.closest_index_for_position(
++            Point {
++                x: preferred,
++                y: wrap_row.saturating_sub(first.row) * last.line_height,
++            },
++            last,
++        )?;
++        let displayed = super::projection_layout::clip_hit_offset(
++            projection.text(),
++            start + index,
++            ConcealBias::Right,
++        )?;
++        let source = projection.to_source(
++            super::projection::ProjectedByte(displayed),
++            ConcealBias::Right,
++        )?;
++        Some((source.0, affinity))
++    }
++
++    fn projected_line_layout(
++        projection: &dyn super::projection::SourceProjection,
++        map: &super::display_map::DisplayMap,
++        last: &super::layout::LastLayout,
++        row: usize,
++        window: &Window,
++    ) -> Option<(usize, super::display_map::LineLayout)> {
++        let displayed = ropey::Rope::from(projection.text());
++        let start = displayed.line_start_offset(row);
++        let text = displayed.slice_line(row).to_string();
++        let item = map.line(row)?;
++        let mut shaped = smallvec::SmallVec::new();
++        for range in &item.wrapped_lines {
++            let runs = super::projection_layout::projected_runs(
++                projection,
++                start + range.start..start + range.end,
++                &last.font,
++                gpui::black(),
++            );
++            shaped.push(window.text_system().shape_line(
++                text[range.clone()].to_string().into(),
++                last.font_size,
++                &runs,
++                None,
++            ));
++        }
++        let line = super::display_map::LineLayout::new().lines(shaped);
++        Some((start, line))
++    }
++
+     /// Move the cursor vertically by one line (up or down) while preserving the column if possible.
+     ///
+     /// move_lines: Number of lines to move vertically (positive for down, negative for up).
+@@ -185,6 +393,17 @@ impl<M: InputModeKind> InputBaseState<M> {
+             return;
+         };
+ 
++        if self.projection.enabled && last_layout.projection.is_some() {
++            let original_column = self.preferred_column.map(|(_, column)| column)
++                .unwrap_or_else(|| self.text.offset_to_point(self.cursor()).column);
++            if let Some((target, affinity, preferred_x)) = self.projected_vertical_target(move_lines, window, cx) {
++                let direction = if move_lines < 0 { MoveDirection::Up } else { MoveDirection::Down };
++                self.move_to_with_affinity(target, Some(direction), affinity, cx);
++                self.preferred_column = Some((preferred_x, original_column));
++            }
++            return;
++        }
++
+         let pending = self.projection_pending_vertical.take().filter(|pending| {
+             pending.stamp == self.source_stamp() && pending.active == self.projection.active
+         });
+@@ -287,74 +506,6 @@ impl<M: InputModeKind> InputBaseState<M> {
+                 });
+                 cx.notify();
+                 return;
+-            } else if self.projection.enabled {
+-                // The target is not painted yet. Measure its exact wrapped rows
+-                // from the same projection, font and wrap ranges as LastLayout.
+-                // Source columns cannot preserve a visual x across concealment.
+-                let displayed = last_layout
+-                    .projection
+-                    .as_ref()
+-                    .map(|p| ropey::Rope::from(p.projection.text()));
+-                let displayed = displayed.as_ref().unwrap_or(&self.text);
+-                let start = displayed.line_start_offset(next_point.row);
+-                let text = displayed.slice_line(next_point.row).to_string();
+-                let Some(item) = self.display_map.line(next_point.row) else {
+-                    return;
+-                };
+-                let mut shaped: smallvec::SmallVec<[gpui::ShapedLine; 1]> =
+-                    smallvec::SmallVec::new();
+-                for range in &item.wrapped_lines {
+-                    let runs = if let Some(pin) = &last_layout.projection {
+-                        super::projection_layout::projected_runs(
+-                            pin.projection.as_ref(),
+-                            start + range.start..start + range.end,
+-                            &last_layout.font,
+-                            gpui::black(),
+-                        )
+-                    } else {
+-                        vec![gpui::TextRun {
+-                            len: range.len(),
+-                            font: last_layout.font.clone(),
+-                            color: gpui::black(),
+-                            background_color: None,
+-                            underline: None,
+-                            strikethrough: None,
+-                        }]
+-                    };
+-                    shaped.push(window.text_system().shape_line(
+-                        text[range.clone()].to_string().into(),
+-                        last_layout.font_size,
+-                        &runs,
+-                        None,
+-                    ));
+-                }
+-                let indent = if item.indent > 0 && shaped.len() > 1 {
+-                    let bytes = text
+-                        .char_indices()
+-                        .nth(item.indent as usize)
+-                        .map(|(i, _)| i)
+-                        .unwrap_or(text.len());
+-                    shaped[0].x_for_index(bytes)
+-                } else {
+-                    gpui::px(0.)
+-                };
+-                let line = super::display_map::LineLayout::new()
+-                    .lines(shaped)
+-                    .wrap_indent(indent);
+-                let Some((index, affinity)) = line.closest_index_for_position(
+-                    Point {
+-                        x: preferred_x,
+-                        y: next_display_point.local_row * last_layout.line_height,
+-                    },
+-                    last_layout,
+-                ) else {
+-                    return;
+-                };
+-                let Some(source) = last_layout.source(start + index, ConcealBias::Right) else {
+-                    return;
+-                };
+-                new_offset = source;
+-                new_affinity = affinity;
+             } else {
+                 // Legacy editors retain their source-column fallback.
+                 let max_line_len = self.text.slice_line(next_point.row).len();
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+index 96a644fd..5c802c37 100644
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -3889,6 +3889,246 @@ mod tests {
+         }
+     }
+ 
++    struct PrefixRevealProvider;
++    struct PrefixRevealProjection {
++        source: super::super::projection::SourceSnapshot,
++        text: String,
++        hidden: Option<Range<usize>>,
++    }
++    impl ProjectionProvider for PrefixRevealProvider {
++        fn compose(
++            &self,
++            source: &super::super::projection::SourceSnapshot,
++            active: &ActiveSource,
++        ) -> Option<Arc<dyn super::super::projection::SourceProjection>> {
++            let marker = source.text.find("**")?;
++            let end = source.text[marker..]
++                .find('\n')
++                .map_or(source.text.len(), |i| marker + i);
++            let hidden = (!(marker..=end).contains(&active.head.0)).then_some(marker..marker + 2);
++            let mut text = source.text.to_string();
++            if let Some(range) = &hidden {
++                text.replace_range(range.clone(), "");
++            }
++            Some(Arc::new(PrefixRevealProjection {
++                source: source.clone(),
++                text,
++                hidden,
++            }))
++        }
++    }
++    impl super::super::projection::SourceProjection for PrefixRevealProjection {
++        fn source(&self) -> &super::super::projection::SourceSnapshot {
++            &self.source
++        }
++        fn text(&self) -> &str {
++            &self.text
++        }
++        fn styles(&self) -> &[super::super::projection::ProjectionStyle] {
++            &[]
++        }
++        fn to_projected(
++            &self,
++            source: SourceByte,
++            _: ConcealBias,
++        ) -> Option<super::super::projection::ProjectedByte> {
++            let index = match &self.hidden {
++                Some(range) if source.0 > range.start => {
++                    source.0 - (source.0 - range.start).min(range.len())
++                }
++                _ => source.0,
++            };
++            (source.0 <= self.source.text.len())
++                .then_some(super::super::projection::ProjectedByte(index))
++        }
++        fn to_source(
++            &self,
++            display: super::super::projection::ProjectedByte,
++            bias: ConcealBias,
++        ) -> Option<SourceByte> {
++            let index = match &self.hidden {
++                Some(range)
++                    if display.0 > range.start
++                        || (display.0 == range.start && bias == ConcealBias::Right) =>
++                {
++                    display.0 + range.len()
++                }
++                _ => display.0,
++            };
++            (display.0 <= self.text.len()).then_some(SourceByte(index))
++        }
++    }
++
++    #[gpui::test]
++    fn projection_first_vertical_key_derives_preferred_x_after_initial_paint(
++        cx: &mut TestAppContext,
++    ) {
++        cx.update(crate::init);
++        let view = InputView::build_editor(cx, |state| {
++            state
++                .folding(false)
++                .searchable(false)
++                .wrapping_indent(super::super::WrappingIndent::None)
++        });
++        let mut v = VisualTestContext::from_window(view.window_handle.into(), cx);
++        v.update(|window, cx| {
++            view.input.update(cx, |state, cx| {
++                state.set_value(
++                    "abcdefghijklmnop\n**abcdefghijklmnop\nabcdefghijklmnop",
++                    window,
++                    cx,
++                );
++                state.set_projection_provider(Some(Arc::new(PrefixRevealProvider)), cx);
++                window.activate_window();
++                state.focus(window, cx);
++            })
++        });
++        v.run_until_parked();
++        v.update(|window, cx| {
++            view.input.update(cx, |state, cx| {
++                assert!(state.last_layout.as_ref().unwrap().projection.is_some());
++                assert!(state.preferred_column.is_none());
++                assert_eq!(state.cursor(), 0);
++                state.move_vertical(1, window, cx);
++                assert_eq!(state.cursor(), state.value().find("**").unwrap());
++                assert_eq!(state.preferred_column.unwrap().0, px(0.));
++            })
++        });
++    }
++
++    #[gpui::test]
++    fn projection_vertical_reveal_is_synchronous_before_rapid_keys_and_edits(
++        cx: &mut TestAppContext,
++    ) {
++        cx.update(crate::init);
++        let text = "abcdefghijklmnop\n**abcdefghijklmnop\nabcdefghijklmnop";
++        for edit in ["type", "delete", "paste", "rewrap"] {
++            let start = if edit == "rewrap" {
++                text.rfind('\n').unwrap() + 2
++            } else {
++                text.find("**").unwrap() + 6
++            };
++            let view = InputView::build_editor(cx, |state| {
++                state
++                    .folding(false)
++                    .searchable(false)
++                    .wrapping_indent(super::super::WrappingIndent::None)
++            });
++            let mut v = VisualTestContext::from_window(view.window_handle.into(), cx);
++            v.update(|window, cx| {
++                view.input.update(cx, |state, cx| {
++                    window.activate_window();
++                    state.focus(window, cx);
++                })
++            });
++            v.run_until_parked();
++            let (sender, receiver) = futures::channel::oneshot::channel();
++            v.update(|window, cx| {
++                view.input.update(cx, |state, cx| {
++                    state.set_value(text, window, cx);
++                    state.set_projection_provider(Some(Arc::new(PrefixRevealProvider)), cx);
++                    state.set_exact_clipboard_provider(
++                        Some(Arc::new(DelayedClipboardProvider {
++                            receiver: std::sync::Mutex::new(Some(receiver)),
++                            calls: std::sync::atomic::AtomicUsize::new(0),
++                        })),
++                        cx,
++                    );
++                    state.move_to(start, None, cx);
++                    state.refresh_projection();
++                    let font = gpui::font("monospace");
++                    let run = gpui::TextRun {
++                        len: 18,
++                        font: font.clone(),
++                        color: gpui::black(),
++                        background_color: None,
++                        underline: None,
++                        strikethrough: None,
++                    };
++                    let shaped = window.text_system().shape_line(
++                        "**abcdefghijklmnop".into(),
++                        px(16.),
++                        &[run],
++                        None,
++                    );
++                    let preferred = shaped.x_for_index(if edit == "rewrap" { 1 } else { 6 });
++                    let mut last = state.last_layout.as_ref().unwrap().clone();
++                    last.projection = state.projection.pin();
++                    last.source_stamp = state.source_stamp();
++                    last.presentation_epoch = state.presentation_epoch();
++                    last.font = font;
++                    last.font_size = px(16.);
++                    last.wrap_width = Some(if edit == "rewrap" {
++                        shaped.x_for_index(16) + px(1.)
++                    } else {
++                        px(500.)
++                    });
++                    last.wrapping_indent = super::super::WrappingIndent::None;
++                    last.text_align = TextAlign::Left;
++                    state.last_layout = Some(last);
++                    state.preferred_column = Some((preferred, 6));
++                    let stamp = state.source_stamp();
++                    // No paint is allowed between these native movement handlers.
++                    if edit == "rewrap" {
++                        state.move_vertical(-1, window, cx);
++                        assert!(
++                            state.cursor() >= text.find("**").unwrap() + 16,
++                            "entering from below uses the new final wrapped row"
++                        );
++                        state.move_vertical(1, window, cx);
++                        assert_eq!(state.cursor(), start);
++                        assert_eq!(state.source_stamp(), stamp);
++                        return;
++                    }
++                    state.move_vertical(-1, window, cx);
++                    assert_ne!(state.cursor(), start, "positive control: Up moved");
++                    state.move_vertical(1, window, cx);
++                    assert_eq!(
++                        state.cursor(),
++                        start,
++                        "target-active x must survive conceal/reveal"
++                    );
++                    state.move_vertical(1, window, cx);
++                    state.move_vertical(1, window, cx); // clamp at final row
++                    state.move_vertical(-1, window, cx);
++                    assert_eq!(
++                        state.cursor(),
++                        start,
++                        "ordered rapid keys retain the EOF clamp"
++                    );
++                    assert_eq!(state.source_stamp(), stamp);
++                    assert_eq!(state.preferred_column, Some((preferred, 6)));
++                    assert!(state.projection_pending_vertical.is_none());
++                    match edit {
++                        "type" => state.replace_text_in_range(None, "X", window, cx),
++                        "delete" => state.delete(&Delete, window, cx),
++                        "paste" => state.paste(&Paste, window, cx),
++                        _ => unreachable!(),
++                    }
++                    if edit != "paste" {
++                        let mut expected = text.to_string();
++                        expected.replace_range(
++                            start..if edit == "delete" { start + 1 } else { start },
++                            if edit == "delete" { "" } else { "X" },
++                        );
++                        assert_eq!(state.value().as_ref(), expected);
++                    }
++                })
++            });
++            if edit == "paste" {
++                sender.send(Ok(Some("X".into()))).unwrap();
++                v.run_until_parked();
++                v.update(|_, cx| {
++                    view.input.update(cx, |state, _| {
++                        let mut expected = text.to_string();
++                        expected.insert(start, 'X');
++                        assert_eq!(state.value().as_ref(), expected);
++                    })
++                });
++            }
++        }
++    }
++
+     struct ExactSourceProvider;
+     impl ProjectionProvider for ExactSourceProvider {
+         fn compose(

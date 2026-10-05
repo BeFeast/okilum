@@ -1,0 +1,261 @@
+diff --git a/crates/base/src/input/editor/display_map/text_wrapper.rs b/crates/base/src/input/editor/display_map/text_wrapper.rs
+index abce3562..ead22df8 100644
+--- a/crates/base/src/input/editor/display_map/text_wrapper.rs
++++ b/crates/base/src/input/editor/display_map/text_wrapper.rs
+@@ -438,37 +438,14 @@ impl TextWrapper {
+                 )
+                 .expect("valid projected text");
+             trace.shape_finished(shape_start);
+-            let mut ranges = SmallVec::new();
+-            let mut previous = 0;
+-            if let Some(shaped) = shaped.first() {
+-                for boundary in &shaped.wrap_boundaries {
+-                    let index = shaped.unwrapped_layout.runs[boundary.run_ix].glyphs
+-                        [boundary.glyph_ix]
+-                        .index;
+-                    let mut index = crate::input::projection_layout::clip_hit_offset(
+-                        &line,
+-                        index,
+-                        crate::input::projection::ConcealBias::Left,
+-                    )
+-                    .expect("shaped boundary is inside its text");
+-                    if index <= previous {
+-                        index = crate::input::projection_layout::clip_hit_offset(
+-                            &line,
+-                            shaped.unwrapped_layout.runs[boundary.run_ix].glyphs[boundary.glyph_ix]
+-                                .index,
+-                            crate::input::projection::ConcealBias::Right,
+-                        )
+-                        .expect("shaped boundary is inside its text");
+-                    }
+-                    if index > previous {
+-                        ranges.push(previous..index);
+-                        previous = index;
+-                    }
+-                }
+-            }
+-            if previous < line.len() || ranges.is_empty() {
+-                ranges.push(previous..line.len());
+-            }
++            let ranges = crate::input::projection_layout::projected_wrap_ranges(
++                &line,
++                shaped.first().into_iter().flat_map(|shaped| {
++                    shaped.wrap_boundaries.iter().map(move |boundary| {
++                        shaped.unwrapped_layout.runs[boundary.run_ix].glyphs[boundary.glyph_ix].index
++                    })
++                }),
++            );
+             items.push(LineItem {
+                 len: line.len(),
+                 indent: 0,
+diff --git a/crates/base/src/input/projection_layout.rs b/crates/base/src/input/projection_layout.rs
+index 925bf03d..d6659ed2 100644
+--- a/crates/base/src/input/projection_layout.rs
++++ b/crates/base/src/input/projection_layout.rs
+@@ -94,10 +94,206 @@ pub(super) fn clip_hit_offset(
+     None
+ }
+ 
++/// One logical line's grapheme boundaries, owned only during projected wrapping.
++/// Keep single hit tests on clip_hit_offset; this table serves repeated queries.
++struct GraphemeBoundaryTable<'a> {
++    text: &'a str,
++    boundaries: Vec<usize>,
++    #[cfg(test)]
++    work: std::cell::Cell<usize>,
++}
++
++impl<'a> GraphemeBoundaryTable<'a> {
++    fn new(text: &'a str) -> Self {
++        use unicode_segmentation::UnicodeSegmentation;
++        #[cfg(test)]
++        let mut work = 0;
++        let boundaries = text
++            .grapheme_indices(true)
++            .map(|(offset, _)| {
++                #[cfg(test)]
++                {
++                    work += 1;
++                }
++                offset
++            })
++            .chain(std::iter::once(text.len()))
++            .collect();
++        Self {
++            text,
++            boundaries,
++            #[cfg(test)]
++            work: std::cell::Cell::new(work),
++        }
++    }
++
++    fn clip(&self, offset: usize, bias: super::projection::ConcealBias) -> Option<usize> {
++        use super::projection::ConcealBias;
++        if offset > self.text.len() {
++            return None;
++        }
++        if offset > 0
++            && self.text.as_bytes().get(offset - 1) == Some(&b'\r')
++            && self.text.as_bytes().get(offset) == Some(&b'\n')
++        {
++            return Some(offset - 1);
++        }
++        let next = self.boundaries.partition_point(|boundary| {
++            #[cfg(test)]
++            self.work.set(self.work.get() + 1);
++            *boundary < offset
++        });
++        let boundary = *self.boundaries.get(next)?;
++        if boundary == offset || bias == ConcealBias::Right {
++            Some(boundary)
++        } else {
++            self.boundaries.get(next.checked_sub(1)?).copied()
++        }
++    }
++}
++
++pub(super) fn projected_wrap_ranges(
++    line: &str,
++    boundaries: impl IntoIterator<Item = usize>,
++) -> smallvec::SmallVec<[Range<usize>; 1]> {
++    use super::projection::ConcealBias;
++    let mut boundaries = boundaries.into_iter().peekable();
++    // No segmentation/allocation is needed when shape_text did not wrap.
++    if boundaries.peek().is_none() {
++        return smallvec::smallvec![0..line.len()];
++    }
++    let table = GraphemeBoundaryTable::new(line);
++    let mut ranges = smallvec::SmallVec::new();
++    let mut previous = 0;
++    for raw_index in boundaries {
++        let mut index = table
++            .clip(raw_index, ConcealBias::Left)
++            .expect("shaped boundary is inside its text");
++        if index <= previous {
++            index = table
++                .clip(raw_index, ConcealBias::Right)
++                .expect("shaped boundary is inside its text");
++        }
++        if index > previous {
++            ranges.push(previous..index);
++            previous = index;
++        }
++    }
++    if previous < line.len() || ranges.is_empty() {
++        ranges.push(previous..line.len());
++    }
++    ranges
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+     use crate::input::projection::ConcealBias;
++
++    #[test]
++    fn grapheme_table_matches_original_at_every_byte_and_both_biases() {
++        for text in [
++            "",
++            "ascii",
++            "\r",
++            "\n",
++            "\r\n",
++            "a\r\nb\n",
++            "e\u{301}",
++            "אבג عربي",
++            "👩\u{200d}💻🇮🇱\u{200b}",
++            "\u{feff}\tक्\u{200d}ष\r\n",
++        ] {
++            let table = GraphemeBoundaryTable::new(text);
++            // Includes offsets inside UTF-8 scalars, not only char boundaries.
++            for offset in (0..=text.len() + 2).chain([usize::MAX]) {
++                for bias in [ConcealBias::Left, ConcealBias::Right] {
++                    assert_eq!(
++                        table.clip(offset, bias),
++                        clip_hit_offset(text, offset, bias),
++                        "text={text:?}, offset={offset}, bias={bias:?}"
++                    );
++                }
++            }
++        }
++    }
++
++    fn original_ranges(line: &str, boundaries: &[usize]) -> Vec<Range<usize>> {
++        let mut ranges = Vec::new();
++        let mut previous = 0;
++        for &raw in boundaries {
++            let mut index = clip_hit_offset(line, raw, ConcealBias::Left).unwrap();
++            if index <= previous {
++                index = clip_hit_offset(line, raw, ConcealBias::Right).unwrap();
++            }
++            if index > previous {
++                ranges.push(previous..index);
++                previous = index;
++            }
++        }
++        if previous < line.len() || ranges.is_empty() {
++            ranges.push(previous..line.len());
++        }
++        ranges
++    }
++
++    #[test]
++    fn projected_ranges_match_original_for_repeated_reversed_and_empty_boundaries() {
++        for line in [
++            "",
++            "plain text",
++            "a\r\nb",
++            "e\u{301}👩\u{200d}💻אבג",
++            "\u{feff}\t🇮🇱\r\n",
++        ] {
++            let increasing: Vec<_> = (0..=line.len()).collect();
++            let reversed: Vec<_> = increasing.iter().copied().rev().collect();
++            let duplicate: Vec<_> = increasing
++                .iter()
++                .flat_map(|offset| [*offset, *offset])
++                .collect();
++            for boundaries in [
++                vec![],
++                vec![0],
++                vec![line.len()],
++                increasing,
++                reversed,
++                duplicate,
++            ] {
++                assert_eq!(
++                    projected_wrap_ranges(line, boundaries.iter().copied()).as_slice(),
++                    original_ranges(line, &boundaries),
++                    "line={line:?}, boundaries={boundaries:?}"
++                );
++            }
++        }
++        // Retain the invariant failure for impossible shaped byte offsets.
++        assert!(std::panic::catch_unwind(|| projected_wrap_ranges("x", [2])).is_err());
++    }
++
++    #[test]
++    fn grapheme_table_work_does_not_rescan_prefixes_for_each_wrap() {
++        let work = |len: usize| {
++            let text = "x".repeat(len);
++            let table = GraphemeBoundaryTable::new(&text);
++            for offset in (0..=len).step_by(64) {
++                for bias in [ConcealBias::Left, ConcealBias::Right] {
++                    assert_eq!(table.clip(offset, bias), Some(offset));
++                }
++            }
++            table.work.get()
++        };
++        let small = work(4096);
++        let large = work(16384);
++        assert!(
++            large < small * 5,
++            "four times the line must not cause sixteen times the work: {small} -> {large}"
++        );
++        assert!(
++            large < 16384 * 2,
++            "count segmentation yields and actual lookup comparisons: {large}"
++        );
++    }
+     #[test]
+     fn hit_clipping_retains_crlf_row_and_whole_emoji() {
+         let text = "a\r\n👩\u{200d}💻";

@@ -1,0 +1,8 @@
+{
+  "archive_sha256": "e9cf7af429ffca2a25154aeae1ded8c1154e39a8d92c992264b6344565fe2034",
+  "verified_files": 8,
+  "total_verified_bytes": 1135,
+  "execution_restored": false,
+  "prototype": true,
+  "method": "Python tarfile reads each standard tar entry; original lengths and SHA-256 compared with manifest."
+}

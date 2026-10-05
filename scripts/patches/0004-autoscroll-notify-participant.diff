@@ -1,0 +1,438 @@
+diff --git a/crates/base/src/text/selection_adapter.rs b/crates/base/src/text/selection_adapter.rs
+index d1b2df7e..dbe9c307 100644
+--- a/crates/base/src/text/selection_adapter.rs
++++ b/crates/base/src/text/selection_adapter.rs
+@@ -190,12 +190,14 @@ impl TextViewSelectionAdapter {
+         self.text_bounds.extend(bounds);
+     }
+ 
++    #[allow(clippy::too_many_arguments)]
+     pub(super) fn register(
+         &self,
+         hitbox: Hitbox,
+         bounds: Bounds<Pixels>,
+         scroll_offset: Point<Pixels>,
+         document_order: u64,
++        self_scroll: bool,
+         window: &mut Window,
+         cx: &mut App,
+     ) {
+@@ -203,7 +205,8 @@ impl TextViewSelectionAdapter {
+             TextSelectionRegistration::new(hitbox, bounds)
+                 .with_scroll_offset(scroll_offset)
+                 .with_document_order(document_order)
+-                .with_text_bounds(self.text_bounds.clone()),
++                .with_text_bounds(self.text_bounds.clone())
++                .with_self_scroll(self_scroll),
+             window,
+             cx,
+         );
+diff --git a/crates/base/src/text/text_view.rs b/crates/base/src/text/text_view.rs
+index caed75b4..496884c9 100644
+--- a/crates/base/src/text/text_view.rs
++++ b/crates/base/src/text/text_view.rs
+@@ -710,12 +710,13 @@ impl Element for TextView {
+         GlobalState::global_mut(cx).text_view_state_stack.pop();
+ 
+         if self.selectable {
+-            let (adapter, scroll_offset, content_bounds) = {
++            let (adapter, scroll_offset, content_bounds, self_scroll) = {
+                 let state = state.read(cx);
+                 (
+                     state.selection_adapter.clone(),
+                     state.scroll_offset(),
+                     state.bounds(),
++                    state.scrollable,
+                 )
+             };
+             let document_order = GlobalState::global_mut(cx).next_selection_document_order();
+@@ -724,6 +725,7 @@ impl Element for TextView {
+                 content_bounds,
+                 scroll_offset,
+                 document_order,
++                self_scroll,
+                 window,
+                 cx,
+             );
+diff --git a/crates/base/src/text_selection.rs b/crates/base/src/text_selection.rs
+index 180812e8..f0373461 100644
+--- a/crates/base/src/text_selection.rs
++++ b/crates/base/src/text_selection.rs
+@@ -208,6 +208,7 @@ pub struct TextSelectionRegistration {
+     scope: TextSelectionScopeId,
+     document_order: u64,
+     text_bounds: Vec<Bounds<Pixels>>,
++    self_scroll: bool,
+ }
+ 
+ impl TextSelectionRegistration {
+@@ -220,9 +221,19 @@ impl TextSelectionRegistration {
+             scope: TextSelectionScopeId::default(),
+             document_order: 0,
+             text_bounds: Vec::new(),
++            self_scroll: false,
+         }
+     }
+ 
++    /// Marks a participant that scrolls its own content in response to
++    /// [`TextSelectionEvent::AutoScroll`]. Drag auto-scroll then drives it
++    /// directly, measured against its own bounds, instead of synthesizing a
++    /// wheel event for the nearest scrollable ancestor.
++    pub fn with_self_scroll(mut self, self_scroll: bool) -> Self {
++        self.self_scroll = self_scroll;
++        self
++    }
++
+     /// Sets the participant's content scroll offset.
+     pub fn with_scroll_offset(mut self, scroll_offset: Point<Pixels>) -> Self {
+         self.scroll_offset = scroll_offset;
+@@ -272,6 +283,11 @@ impl TextSelectionRegistration {
+         self.document_order
+     }
+ 
++    /// Returns whether the participant scrolls its own content on auto-scroll.
++    pub const fn self_scroll(&self) -> bool {
++        self.self_scroll
++    }
++
+     /// Returns the glyph-bearing bounds used to reject blank-only gestures.
+     pub fn text_bounds(&self) -> &[Bounds<Pixels>] {
+         &self.text_bounds
+@@ -1142,7 +1158,7 @@ impl WindowSelectionState {
+     ) {
+         if !cx.has_active_drag() {
+             self.update_impl(position, Some(window), cx);
+-            self.update_auto_scroll(position, Some(window), cx);
++            self.update_auto_scroll(position, window, cx);
+         }
+     }
+ 
+@@ -1455,7 +1471,7 @@ impl WindowSelectionState {
+     fn update_auto_scroll(
+         &mut self,
+         position: Point<Pixels>,
+-        window: Option<&Window>,
++        window: &Window,
+         cx: &mut Context<Self>,
+     ) {
+         // A finished gesture keeps its anchor for shift-click extension; only
+@@ -1463,20 +1479,21 @@ impl WindowSelectionState {
+         if !self.is_selecting {
+             return;
+         }
+-        let Some(anchor) = self.anchor.as_ref().filter(|anchor| anchor.inside) else {
+-            return;
+-        };
+-        let Some(participant) = anchor.participant.as_ref().and_then(WeakEntity::upgrade) else {
++        let Some((_, registration)) = self.anchor_registration() else {
+             return;
+         };
+-        let Some(registration) = self.participants.get(&participant.entity_id()) else {
++        // Exactly one writer per drag: a participant that scrolls its own
++        // content is notified directly; anything else gets a synthetic wheel.
++        if registration.self_scroll {
++            self.auto_scroll.stop();
++            self.update_participant_auto_scroll(position, cx);
+             return;
+-        };
++        }
+         // The content mask is the nearest clipping viewport established by a
+         // scrollable ancestor. It remains stable as the participant itself
+         // moves, so selection keeps scrolling the same related region even
+         // after the anchor text has moved out of view.
+-        let visible_bounds = registration.registration.hitbox.content_mask.bounds;
++        let visible_bounds = registration.hitbox.content_mask.bounds;
+         // Keeps the synthesized wheel event hit-testing inside the mask.
+         const HIT_TEST_INSET: Pixels = px(1.);
+         // A collapsed mask leaves an empty clamp range below — stop.
+@@ -1487,11 +1504,6 @@ impl WindowSelectionState {
+             return;
+         }
+         let delta = AutoScroll::compute_delta(position.y, visible_bounds);
+-        let Some(window) = window else {
+-            participant.update(cx, |state, cx| state.set_auto_scroll(delta, cx));
+-            return;
+-        };
+-
+         let event_position = point(
+             position.x.clamp(
+                 visible_bounds.left() + HIT_TEST_INSET,
+@@ -1525,34 +1537,43 @@ impl WindowSelectionState {
+         });
+     }
+ 
++    /// Drives the anchor participant's own scrolling, measured against the
++    /// participant's element bounds rather than any ancestor viewport.
+     fn update_participant_auto_scroll(&self, position: Point<Pixels>, cx: &mut App) {
+-        let Some(anchor) = self.anchor.as_ref().filter(|anchor| anchor.inside) else {
++        let Some((participant, registration)) = self.anchor_registration() else {
+             return;
+         };
+-        let Some(participant) = anchor.participant.as_ref().and_then(WeakEntity::upgrade) else {
+-            return;
+-        };
+-        let Some(registration) = self.participants.get(&participant.entity_id()) else {
+-            return;
+-        };
+-        let delta = AutoScroll::compute_delta(position.y, registration.registration.bounds);
++        let delta = AutoScroll::compute_delta(position.y, registration.bounds);
+         participant.update(cx, |state, cx| state.set_auto_scroll(delta, cx));
+     }
+ 
+     fn stop_anchor_auto_scroll(&mut self, cx: &mut App) {
+         self.auto_scroll.stop();
+-        let Some(participant) = self
+-            .anchor
+-            .as_ref()
+-            .filter(|anchor| anchor.inside)
+-            .and_then(|anchor| anchor.participant.as_ref())
+-            .and_then(WeakEntity::upgrade)
+-        else {
++        let Some(participant) = self.anchor_participant() else {
+             return;
+         };
+         participant.update(cx, |state, cx| state.set_auto_scroll(None, cx));
+     }
+ 
++    /// The live participant owning the anchor of the current gesture.
++    fn anchor_participant(&self) -> Option<Entity<SelectableTextState>> {
++        self.anchor
++            .as_ref()
++            .filter(|anchor| anchor.inside)?
++            .participant
++            .as_ref()?
++            .upgrade()
++    }
++
++    /// The anchor participant together with its current frame registration.
++    fn anchor_registration(
++        &self,
++    ) -> Option<(Entity<SelectableTextState>, Rc<TextSelectionRegistration>)> {
++        let participant = self.anchor_participant()?;
++        let registration = self.participants.get(&participant.entity_id())?;
++        Some((participant, registration.registration.clone()))
++    }
++
+     fn prune_dead_participants(&mut self) {
+         self.participants
+             .retain(|_, registration| registration.participant.upgrade().is_some());
+diff --git a/crates/component/src/text/window_selection.rs b/crates/component/src/text/window_selection.rs
+index 84a1994e..30839746 100644
+--- a/crates/component/src/text/window_selection.rs
++++ b/crates/component/src/text/window_selection.rs
+@@ -11,11 +11,11 @@ mod tests {
+         GlobalElementId, Hitbox, InspectorElementId, InteractiveElement as _, IntoElement,
+         LayoutId, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, ParentElement as _, Pixels,
+         Render, SharedString, Styled as _, StyledText, TestAppContext, VisualTestContext, Window,
+-        div, point, px,
++        div, point, px, relative,
+     };
+     use gpui_base::{
+-        TextSelection, TextSelectionHandle, TextSelectionRegistration, TextSelectionRun,
+-        TextSelectionScopeId,
++        AutoScroll, TextSelection, TextSelectionHandle, TextSelectionRegistration,
++        TextSelectionRun, TextSelectionScopeId,
+     };
+     use std::cell::Cell;
+     use std::rc::Rc;
+@@ -704,6 +704,10 @@ mod tests {
+         text_view: Entity<TextViewState>,
+     }
+ 
++    struct PaddedReaderAutoScrollTest {
++        text_view: Entity<TextViewState>,
++    }
++
+     struct PaddedScrollableTextViewTest {
+         text_view: Entity<TextViewState>,
+     }
+@@ -756,6 +760,50 @@ mod tests {
+         }
+     }
+ 
++    /// Scroll offset in pixels from the top of the list (positive = scrolled down).
++    fn list_scroll_px(text_view: &Entity<TextViewState>, cx: &mut VisualTestContext) -> Pixels {
++        text_view.read_with(cx, |state, _| {
++            -state.list_state().scroll_px_offset_for_scrollbar().y
++        })
++    }
++
++    /// Drags from `start` to `edge`, holds for `ticks` auto-scroll frames, and
++    /// returns how far the list moved. One 16 ms timer drives the list, so the
++    /// distance is bounded by `ticks` times the per-frame delta; a second
++    /// writer shows up as an overshoot.
++    fn drag_and_hold(
++        text_view: &Entity<TextViewState>,
++        start: gpui::Point<Pixels>,
++        edge: gpui::Point<Pixels>,
++        ticks: u32,
++        cx: &mut VisualTestContext,
++    ) -> Pixels {
++        let before = list_scroll_px(text_view, cx);
++        cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
++        cx.simulate_mouse_move(edge, Some(MouseButton::Left), Modifiers::default());
++        cx.executor()
++            .advance_clock(Duration::from_millis(16 * u64::from(ticks)));
++        cx.run_until_parked();
++        let after = list_scroll_px(text_view, cx);
++        cx.simulate_mouse_up(edge, MouseButton::Left, Modifiers::default());
++        after - before
++    }
++
++    fn assert_auto_scroll_magnitude(moved: Pixels, per_tick: Pixels, ticks: u32, label: &str) {
++        let max = per_tick * ticks as f32;
++        if per_tick > px(0.) {
++            assert!(
++                moved > px(0.) && moved <= max,
++                "{label}: moved {moved:?}, expected within (0, {max:?}] for {ticks} ticks of {per_tick:?}"
++            );
++        } else {
++            assert!(
++                moved < px(0.) && moved >= max,
++                "{label}: moved {moved:?}, expected within [{max:?}, 0) for {ticks} ticks of {per_tick:?}"
++            );
++        }
++    }
++
+     #[gpui::test]
+     fn compatibility_text_view_drag_selection_auto_scrolls_both_directions(
+         cx: &mut TestAppContext,
+@@ -788,30 +836,17 @@ mod tests {
+         let bounds = cx
+             .debug_bounds("scrollable-text-view")
+             .expect("scrollable TextView bounds");
+-        let before = view.read_with(cx, |view, cx| {
+-            let state = view.text_view.read(cx);
+-            let offset = state.list_state().logical_scroll_top();
+-            (offset.item_ix, offset.offset_in_item)
+-        });
++        // The TextView fills the viewport, so the per-frame delta the drag
++        // requests is the one measured against the viewport edge.
++        const TICKS: u32 = 4;
+         let start = point(bounds.left() + px(30.), bounds.top() + px(30.));
+         let edge = point(bounds.left() + px(60.), bounds.bottom() - px(2.));
+-        cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+-        cx.simulate_mouse_move(edge, Some(MouseButton::Left), Modifiers::default());
+-        cx.executor().advance_clock(Duration::from_millis(64));
+-        cx.run_until_parked();
++        let per_tick = AutoScroll::compute_delta(edge.y, bounds).expect("edge zone");
++        let text_view = view.read_with(cx, |view, _| view.text_view.clone());
++        let moved = drag_and_hold(&text_view, start, edge, TICKS, cx);
++        assert_auto_scroll_magnitude(moved, per_tick, TICKS, "downward");
+ 
+-        let after = view.read_with(cx, |view, cx| {
+-            let offset = view.text_view.read(cx).list_state().logical_scroll_top();
+-            (offset.item_ix, offset.offset_in_item)
+-        });
+-        cx.simulate_mouse_up(edge, MouseButton::Left, Modifiers::default());
+-        assert_ne!(
+-            before, after,
+-            "dragging at the viewport edge must auto-scroll"
+-        );
+-
+-        let list_state =
+-            view.read_with(cx, |view, cx| view.text_view.read(cx).list_state().clone());
++        let list_state = text_view.read_with(cx, |state, _| state.list_state().clone());
+         list_state.scroll_to(ListOffset {
+             item_ix: 99,
+             offset_in_item: px(0.),
+@@ -819,24 +854,85 @@ mod tests {
+         cx.update(|window, cx| {
+             let _ = window.draw(cx);
+         });
+-        let before_up = view.read_with(cx, |view, cx| {
+-            let offset = view.text_view.read(cx).list_state().logical_scroll_top();
+-            (offset.item_ix, offset.offset_in_item)
+-        });
+         let start = point(bounds.left() + px(30.), bounds.bottom() - px(30.));
+         let edge = point(bounds.left() + px(60.), bounds.top() + px(2.));
+-        cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+-        cx.simulate_mouse_move(edge, Some(MouseButton::Left), Modifiers::default());
+-        cx.executor().advance_clock(Duration::from_millis(64));
++        let per_tick = AutoScroll::compute_delta(edge.y, bounds).expect("edge zone");
++        let moved = drag_and_hold(&text_view, start, edge, TICKS, cx);
++        assert_auto_scroll_magnitude(moved, per_tick, TICKS, "upward");
++    }
++
++    /// The reader layout from the field report: a clipping row that centers a
++    /// vertically padded, full-height scrollable TextView. The list's edges
++    /// sit inside the padding, so a wheel event synthesized at the clipping
++    /// ancestor's edge misses the list hitbox; only the participant path
++    /// scrolls it.
++    impl Render for PaddedReaderAutoScrollTest {
++        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
++            div().size_full().child(
++                div()
++                    .debug_selector(|| "reader".into())
++                    .flex()
++                    .flex_row()
++                    .h(px(300.))
++                    .min_w(px(0.))
++                    .overflow_hidden()
++                    .justify_center()
++                    .child(
++                        TextView::new(&self.text_view)
++                            .scrollable(true)
++                            .selectable(true)
++                            .px_5()
++                            .py_3()
++                            .h_full()
++                            .w_full()
++                            .max_w(relative(0.85))
++                            .mx_auto(),
++                    ),
++            )
++        }
++    }
++
++    #[gpui::test]
++    fn padded_reader_text_view_auto_scrolls_at_the_clipping_edge(cx: &mut TestAppContext) {
++        let source = (0..100)
++            .map(|ix| format!("Paragraph {ix} with enough text to select"))
++            .collect::<Vec<_>>()
++            .join("\n\n");
++        cx.update(crate::init);
++        let (root, cx) = cx.add_window_view(|window, cx| {
++            let view = cx.new(|cx| PaddedReaderAutoScrollTest {
++                text_view: cx.new(|cx| TextViewState::markdown(&source, cx)),
++            });
++            Root::new(view, window, cx)
++        });
++        let view = root.read_with(cx, |root, _| {
++            root.view()
++                .clone()
++                .downcast::<PaddedReaderAutoScrollTest>()
++                .unwrap()
++        });
++        let cx: &mut VisualTestContext = cx;
+         cx.run_until_parked();
+-        let after_up = view.read_with(cx, |view, cx| {
+-            let offset = view.text_view.read(cx).list_state().logical_scroll_top();
+-            (offset.item_ix, offset.offset_in_item)
++        cx.update(|window, cx| {
++            let _ = window.draw(cx);
+         });
+-        cx.simulate_mouse_up(edge, MouseButton::Left, Modifiers::default());
+-        assert_ne!(
+-            before_up, after_up,
+-            "dragging at the top viewport edge must auto-scroll upward"
++
++        let reader = cx.debug_bounds("reader").expect("reader bounds");
++        let text_view = view.read_with(cx, |view, _| view.text_view.clone());
++        let list_bounds = text_view.read_with(cx, |state, _| state.list_state().viewport_bounds());
++        assert!(
++            list_bounds.bottom() < reader.bottom() - px(2.),
++            "the list must end inside the padding: list {list_bounds:?}, reader {reader:?}"
++        );
++
++        // Below the list but inside the clipping ancestor: the synthetic wheel
++        // is clamped to this band and misses the list hitbox.
++        let start = point(reader.center().x, reader.top() + px(40.));
++        let edge = point(reader.center().x, reader.bottom() - px(2.));
++        let moved = drag_and_hold(&text_view, start, edge, 4, cx);
++        assert!(
++            moved > px(0.),
++            "dragging to the clipping edge must scroll the padded list, moved {moved:?}"
+         );
+     }
+ 

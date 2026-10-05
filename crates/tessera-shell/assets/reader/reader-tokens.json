@@ -1,0 +1,25 @@
+{
+  "schema": "tessera-reader-tokens/v1",
+  "version": "1.0.0",
+  "basis": "docs/design/reader.md, direction A (#348). Reader-only roles layered on interface-tokens.json.",
+  "themes": {
+    "light": {
+      "textFaint": "#8d929a",
+      "hover": "#eff0f2",
+      "missingLink": "#9a5b00",
+      "codeBg": "#f6f7f8",
+      "codeBorder": "#eceef0",
+      "calloutQuestion": "#d97706",
+      "notice": "#eef4fc"
+    },
+    "dark": {
+      "textFaint": "#7c818a",
+      "hover": "#2a2d33",
+      "missingLink": "#e2b25c",
+      "codeBg": "#26292e",
+      "codeBorder": "#30333a",
+      "calloutQuestion": "#f59e0b",
+      "notice": "#303b4c"
+    }
+  }
+}

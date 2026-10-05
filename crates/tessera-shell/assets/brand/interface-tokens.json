@@ -1,0 +1,49 @@
+{
+  "schema": "tessera-gui-interface/v1",
+  "version": "2.0.0",
+  "basis": "User-requested 1Password reference; neutral desktop surfaces override brand surface aliases without editing brand tokens",
+  "themes": {
+    "light": {
+      "canvas": "#ffffff",
+      "surface": "#ffffff",
+      "surfaceRaised": "#f7f7f8",
+      "sidebar": "#f1f2f3",
+      "text": "#24262b",
+      "textMuted": "#656b74",
+      "border": "#c4c7cc",
+      "borderSubtle": "#e3e4e7",
+      "selected": "#edf0f3",
+      "accent": "#0969e8",
+      "onAccent": "#ffffff",
+      "focus": "#0969e8",
+      "link": "#0969e8",
+      "tile": "#eef4fc"
+    },
+    "dark": {
+      "canvas": "#202226",
+      "surface": "#202226",
+      "surfaceRaised": "#292c31",
+      "sidebar": "#292b30",
+      "text": "#eceef1",
+      "textMuted": "#a4a8b0",
+      "border": "#60646e",
+      "borderSubtle": "#383b42",
+      "selected": "#353a43",
+      "accent": "#176bdb",
+      "link": "#71acff",
+      "onAccent": "#ffffff",
+      "focus": "#6badff",
+      "tile": "#303b4c"
+    }
+  },
+  "typography": "Brand1.1.0 Noto Sans / Cascadia Code retained; app chrome13-14, detail heading24, reading14-15",
+  "icons": "Consistent inline SVG outline UI icons, not a logo",
+  "control": {
+    "comfortableMinHeight": 36,
+    "primaryHeight": 38,
+    "radius": 8,
+    "secondary": "surfaceRaised fill, no border",
+    "toolbar": "quiet, no border",
+    "focus": "2px brand-blue outline with3px offset"
+  }
+}

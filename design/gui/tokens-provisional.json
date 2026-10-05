@@ -1,0 +1,50 @@
+{
+  "schema": "tessera-design-tokens/v1",
+  "version": "0.0.0-gui-provisional",
+  "status": "neutral provisional; brand lane owns final colors and typography",
+  "themes": {
+    "light": {
+      "canvas": "#f7f7f5",
+      "surface": "#ffffff",
+      "surfaceRaised": "#ffffff",
+      "text": "#222522",
+      "textMuted": "#626860",
+      "border": "#d9ddd6",
+      "accent": "#3e514b",
+      "onAccent": "#ffffff",
+      "selected": "#e7eeea",
+      "focus": "#315fc4",
+      "success": "#286342",
+      "warning": "#845516",
+      "danger": "#a33132",
+      "info": "#365d84"
+    },
+    "dark": {
+      "canvas": "#171b19",
+      "surface": "#202622",
+      "surfaceRaised": "#29302b",
+      "text": "#edf0e9",
+      "textMuted": "#b0b8ae",
+      "border": "#424b43",
+      "accent": "#bad3c5",
+      "onAccent": "#18241c",
+      "selected": "#34473b",
+      "focus": "#adc9ff",
+      "success": "#9ad4ab",
+      "warning": "#e8c086",
+      "danger": "#f3aaaa",
+      "info": "#adcaee"
+    }
+  },
+  "typography": {
+    "fontFamilySans": "Inter, ui-sans-serif, system-ui, sans-serif",
+    "fontFamilyMono": "ui-monospace, SFMono-Regular, monospace",
+    "sizeBody": 14,
+    "lineHeightBody": 1.55
+  },
+  "shape": {
+    "radiusSmall": 6,
+    "radiusMedium": 10,
+    "radiusLarge": 16
+  }
+}

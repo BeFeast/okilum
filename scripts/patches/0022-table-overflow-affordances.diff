@@ -1,0 +1,142 @@
+diff --git a/crates/base/src/text/node.rs b/crates/base/src/text/node.rs
+--- a/crates/base/src/text/node.rs
++++ b/crates/base/src/text/node.rs
+@@ -8,7 +8,7 @@
+     AnyElement, App, DefiniteLength, Div, ElementId, FontStyle, FontWeight, HighlightStyle, Hsla,
+     Image, ImageFormat, InteractiveElement as _, IntoElement, Length, ObjectFit, Overflow,
+     ParentElement, Pixels, ScrollHandle, SharedString, SharedUri, StatefulInteractiveElement,
+-    StyleRefinement, Styled, StyledImage as _, WhiteSpace, Window, div, img,
++    StyleRefinement, Styled, StyledImage as _, WhiteSpace, Window, canvas, div, img,
+     prelude::FluentBuilder as _, px, relative, rems,
+ };
+ use markdown::mdast;
+@@ -995,6 +995,9 @@
+     /// own identified element, so plain ids like `"copy"` are already scoped
+     /// per table.
+     pub span: Option<Range<usize>>,
++    /// The table is wider than its frame (scroll layout), as of the last
++    /// layout. Callers can offer a wider view only when it helps.
++    pub overflows: bool,
+ }
+ 
+ impl Table {
+@@ -1060,6 +1063,7 @@
+             rows: self.children.iter().skip(1).map(row_text).collect(),
+             markdown: self.to_markdown(),
+             span: self.span.map(|span| span.start..span.end),
++            overflows: false,
+         }
+     }
+ }
+@@ -2402,6 +2406,46 @@
+                 // gesture is locked to its starting axis and a horizontal swipe
+                 // is consumed before an ancestor scroller (`gpui::list` under
+                 // `TextView::scrollable`) can take its vertical component.
++                {
++                    // An overflowing table is never clipped silently: the
++                    // side that has more content fades, and the actions row
++                    // is revealed on hover. Overflow is known after layout;
++                    // a changed state re-renders once.
++                    let max_x = scroll_handle.max_offset().x;
++                    let scrolled = -scroll_handle.offset().x;
++                    let overflows = max_x > px(0.5);
++                    let more_left = overflows && scrolled > px(0.5);
++                    let more_right = overflows && scrolled < max_x - px(0.5);
++                    let probe = scroll_handle.clone();
++                    // Rows of a list are cached; notify the owning view so
++                    // this table renders again with the measured overflow.
++                    let owner = window.current_view();
++                    let surface = cx.theme().tokens.colors.surface;
++                    // Stepped rather than a gradient: it renders the same on
++                    // every backend and needs no colour-space interpolation.
++                    let fade = |left: bool| {
++                        const STEPS: usize = 7;
++                        div()
++                            .absolute()
++                            .top(px(1.))
++                            .bottom(px(1.))
++                            .w(px(28.))
++                            .flex()
++                            .when(left, |d| d.left(px(1.)).flex_row_reverse())
++                            .when(!left, |d| d.right(px(1.)))
++                            .children((0..STEPS).map(|step| {
++                                div()
++                                    .flex_1()
++                                    .h_full()
++                                    .bg(surface.opacity((step + 1) as f32 / (STEPS + 1) as f32))
++                            }))
++                    };
++                    let group = SharedString::from(format!("table-frame-{}", options.ix));
++                    let mut data = table.table_data();
++                    data.overflows = overflows;
++                    let frame = div()
++                        .relative()
++                        .child(
+                 horizontal_scroll_area(
+                     ("table", options.ix),
+                     &scroll_handle,
+@@ -2417,20 +2461,51 @@
+                     // letting the track exceed the viewport and scroll.
+                     div().min_w_full().w(px(min_total_w)).children(rows),
+                 ),
++                        )
++                        .when(more_left, |d| d.child(fade(true)))
++                        .when(more_right, |d| d.child(fade(false)))
++                        .child(
++                            canvas(
++                                |_, _, _| (),
++                                move |_, _, window, _| {
++                                    let max_x = probe.max_offset().x;
++                                    let scrolled = -probe.offset().x;
++                                    let over = max_x > px(0.5);
++                                    let now = (
++                                        over,
++                                        over && scrolled > px(0.5),
++                                        over && scrolled < max_x - px(0.5),
++                                    );
++                                    // Paint cannot invalidate itself; ask
++                                    // for the frame after this one.
++                                    if now != (overflows, more_left, more_right) {
++                                        window.on_next_frame(move |window, cx| {
++                                            cx.notify(owner);
++                                            window.refresh();
++                                        });
++                                    }
++                                },
++                            )
++                            .absolute()
++                            .size_0(),
++                        );
++                    // The fades cover only the table frame, never the
++                    // actions row below it.
++                    div()
++                        .group(group.clone())
++                        .child(frame)
++                        .children(node_cx.table_actions.clone().map(|f| {
++                            // Same place as before (below the table), shown
++                            // while the table or the row itself is hovered.
++                            div()
++                                .id(("table-actions", options.ix))
++                                .mt_1()
++                                .opacity(0.)
++                                .group_hover(group.clone(), |s| s.opacity(1.))
++                                .child(f(&data, window, cx))
++                        }))
++                }
+             )
+-            // Custom actions row (e.g. copy / download) rendered below the
+-            // table. The hook's element spans full width; alignment is up to
+-            // the caller (e.g. `h_flex().justify_end()`). The gap keeps hover
+-            // backgrounds of the action buttons off the table border, and the
+-            // id scopes the caller's element ids per table, so plain ids like
+-            // `"copy"` don't collide across tables (same as code blocks).
+-            .children(node_cx.table_actions.clone().map(|f| {
+-                div().id(("table-actions", options.ix)).mt_1().child(f(
+-                    &table.table_data(),
+-                    window,
+-                    cx,
+-                ))
+-            }))
+             .into_any_element()
+     }
+ 

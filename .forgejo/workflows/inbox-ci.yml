@@ -1,0 +1,54 @@
+name: inbox-ci
+
+on:
+  pull_request:
+    paths:
+      - 'inbox/**'
+      - 'web/inbox/**'
+      - '.forgejo/workflows/inbox-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'inbox/**'
+      - 'web/inbox/**'
+      - '.forgejo/workflows/inbox-ci.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: inbox-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  inbox-tests:
+    runs-on: light
+    timeout-minutes: 20
+    # Not a required branch check; failures remain visible instead of being masked.
+    # Inbox PRs must pass this job before their executor merges them.
+    env:
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install compiler and pinned Rust
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends build-essential curl ca-certificates pkg-config libssl-dev
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Format, lint and test isolated Inbox workspace
+        working-directory: inbox
+        run: |
+          cargo fmt --all --check
+          cargo clippy --locked --workspace --all-targets -- -D warnings
+          cargo test --locked --workspace
+      - name: Consistent SQLite backup and restore
+        run: python3 inbox/deploy/test_backup.py
+      - name: Web outbox and WebAuthn encoding tests
+        working-directory: web/inbox
+        run: |
+          npm ci --ignore-scripts
+          npm test

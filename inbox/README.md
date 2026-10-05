@@ -1,0 +1,195 @@
+# Optional Inbox — slice 1 (#465)
+
+This is an independent Cargo workspace so the Inbox server does not expand the
+Reader dependency graph, root lockfile, or required workspace lint/test job.
+It does not depend on `tessera-brain`, GPUI, or the Reader. The existing Reader
+build and startup behavior are unchanged. Run commands from this directory:
+
+```sh
+cargo fmt --all --check
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace
+```
+
+The API/auth step adds a loopback-only HTTP listener for the LAN TLS proxy.
+The embedded mobile web shell supports passkey sign-in, capture and readback.
+There is no AI provider call or vault write yet. Public exposure and
+connection to a real vault remain owner-gated.
+
+## Local administration and LAN deployment boundary
+
+```sh
+mkdir -m 700 /path/to/private-inbox-data
+cargo run --locked -p tessera-inboxd -- bootstrap \
+  --data-dir /path/to/private-inbox-data --origin https://inbox-qa.example.test
+cargo run --locked -p tessera-inboxd -- serve \
+  --data-dir /path/to/private-inbox-data --origin https://inbox-qa.example.test
+```
+
+`bootstrap` prints a one-time enrollment URL with a secret in its **fragment**.
+Treat that output as a credential; do not pipe it into logs. The digest expires
+in ten minutes and is consumed atomically when a verified passkey is saved.
+Rotating bootstrap invalidates unfinished enrollments. Once enrolled, this command
+refuses to replace the owner. No public signup, reset endpoint or password exists.
+The web shell clears the fragment immediately and performs the WebAuthn browser ceremony.
+
+The stable HTTPS origin and owner ID persist in SQLite. Changing the origin fails
+explicitly; it cannot silently rebind a passkey to another RP. One server process
+owns the directory lock. WebAuthn challenges last five minutes, are single-use and
+remain only in memory. Sessions last seven days and are also memory-only; logout
+revokes one session, and server restart revokes all sessions and pending challenges.
+Captures and public passkey credentials survive restart. No private key or raw
+bootstrap/session token is stored in SQLite. Only one initial passkey is supported
+in this step; additional enrollment and operator-assisted recovery are deferred.
+
+Deployment for this slice is **LAN QA only** in a dedicated development LXC on
+DevBox, using Docker Compose; the proposed hostname is `inbox-qa.oklabs.uk`.
+The backend must not be deployed on maestro. Production on Mimir is a later step.
+The server-side connector will use a small fixture vault on the same dev server;
+real-vault replication belongs to the separate sync track. NPM requires a separately
+prepared restricted route to the loopback service; this PR provisions no LXC,
+proxy, DNS, tunnel, fixture vault or firewall. Compose networking must retain the
+loopback-only daemon boundary (for example, a proxy sharing its network namespace),
+not change its listener to `0.0.0.0` as a shortcut. Use private persistent storage
+outside the fixture vault for the database; no Reader dependency on this service.
+
+## HTTP contract
+
+All `/api/v1` reads require a session except WebAuthn ceremony endpoints. Every
+POST also requires the exact configured `Origin`; JSON endpoints require JSON.
+Cookies use `__Host-` names, Secure, HttpOnly, SameSite=Strict, Path=/ and no Domain.
+Responses are no-store; no CORS permissions, token URL parameters or body logging.
+Ceremony starts are limited globally to 30/minute with bounded in-memory flows.
+The worker validates user verification, RP/origin and challenge through pinned
+`webauthn-rs`, not a custom signature/login implementation.
+
+- `POST auth/register/start {token}` → WebAuthn creation options + flow cookie;
+  `POST auth/register/finish` takes the browser registration credential.
+- `POST auth/login/start` → WebAuthn request options + flow cookie;
+  `POST auth/login/finish` takes the browser assertion; success sets session cookie.
+- `GET session` returns the authenticated owner; `POST auth/logout` revokes it.
+- `POST items {operation_id,item_id,text}` captures exact text. The session supplies
+  owner identity, and unknown body fields are rejected. Changed replay → 409.
+- `GET items?after=0&limit=50` returns capture rows and a fixed `through` boundary;
+  use `after=next_after&through=…` for subsequent pages, then omit `through` to
+  catch new arrivals. `GET items/{id}` returns one item or 404.
+
+HTTP middleware and SQLite calls run with a bounded body limit; blocking database
+and WebAuthn work runs off the async reactor. Server errors never return provider,
+credential or SQL details. There are no mutable-item or provider-action routes yet.
+
+## Storage contract
+
+`Store` is canonical Inbox data, not a search cache. The caller must provide a
+private durable directory outside any vault. SQLite uses WAL, FULL synchronous
+commits, foreign keys and a bounded busy timeout. Unknown schemas and corrupt
+files fail explicitly; they are never reset to an empty Inbox.
+
+The transport supplies the authenticated `OwnerId`; capture bodies do not choose
+an owner. Within that owner, an operation UUID binds an item UUID and the exact
+UTF-8 capture text. Replaying the same request returns the original timestamp and
+item; changed content or identity conflicts. Item identity cannot be reused under
+a different operation. Capture and operation are one transaction; there are no
+external effects. Whitespace is validated but never normalized in stored text.
+
+A paginated capture feed fixes an upper sequence boundary so captures arriving
+during pagination can be read by the next request without skipping earlier rows.
+This is append-only **capture** pagination, not a mutable item/change-log API.
+Before adding edits or deletions, introduce transactional change events and
+snapshot semantics. Goals, stages and execution orchestration are out of scope.
+
+## Checks
+
+Tests cover a lost response followed by process/store reopen, concurrent replay
+on independent SQLite connections, same-key/different-content conflicts, owner
+isolation, injected failure between the two inserts, stable pagination while new
+captures arrive, invalid input and non-destructive schema/corruption errors.
+The dedicated path-filtered `inbox-ci` job is non-blocking for Reader development;
+Inbox PRs must pass it before merge.
+
+## Mobile web and offline capture
+
+`web/inbox` is a dependency-free runtime shell embedded in the daemon. After the
+first verified sign-in, IndexedDB retains unsent captures and the last verified
+owner. A capture is acknowledged locally only after its transaction commits.
+Reconnect retries preserve operation/item IDs; only an exact server acknowledgement
+removes the row. Auth errors and lost responses keep it; conflicts retain the text
+for export without automatic retry. Multiple tabs reuse server idempotency.
+
+The service worker caches an explicit shell allowlist, never API/session replies.
+Previously synced items are fetched after sign-in, not retained for offline reading.
+Browser data clearing can destroy unsent captures: export is available, including
+before sign-out, and the UI states this limitation. Signing out clears remembered
+identity, while retaining unsent rows for the same owner after the next sign-in.
+No authentication secret is placed in local storage. Text is rendered literally.
+
+Run `npm ci --ignore-scripts && npm test` in `web/inbox` for outbox persistence,
+replay/conflict/ownership, WebAuthn encoding and service-worker boundary tests.
+Static desktop/mobile preview checks layout only. Real phone/Mac passkey login,
+installed-PWA offline capture and reconnect remain LAN HTTPS acceptance checks;
+this intermediate PR is not the complete slice-1 demo.
+
+## AI discussion (CLIProxyAPI)
+
+Optional server flags: `--ai-endpoint https://proxy.example.test/v1/chat/completions
+--ai-model MODEL --ai-credential-file /run/credentials/cliproxy-key`. The credential
+file must be private and regular; provision through Infisical/systemd credentials,
+not a repository file, DB setting or command-line key value. Without these flags,
+capture/readback works and discussion returns an explicit unavailable response.
+
+`GET/POST items/{id}/discussion` uses the same session/Origin boundary. POST accepts
+`{operation_id,text}`; a transaction binds it to the selected item before any call.
+An exact replay returns the existing turn without another provider request; changed
+content conflicts. Only the original thought, completed exchanges and this question
+are sent. No tools or vault data. The context is bounded to 100 turns /128 KiB;
+limits fail explicitly instead of silently dropping history. One running call per
+item and four globally; transport timeout 90 seconds, bounded response, no redirects
+or application retries. Provider errors expose no raw body, endpoint or credential.
+
+A background task saves the answer even if the browser closes. A server restart,
+truncated reply or unknown provider outcome leaves `uncertain`; asking again is an
+explicit new operation, never a hidden resend. The browser persists an unacknowledged
+question identity before POST and can check/retry that same operation after reconnect.
+An explicit Forget local retry action releases a rejected/stuck local intent while
+keeping its text in the editor; it warns that server work is not cancelled and a
+subsequent send creates a new request.
+AI output remains a draft: this PR adds no publication authority or vault writes.
+Deployment/backup constraints are in [deploy/PLAN.md](deploy/PLAN.md).
+
+## Fixture publication and LAN Compose
+
+With `--fixture-vault /path --vault-folder Projects ...`, the Linux daemon exposes
+`GET destinations` and `GET/POST items/{id}/publications`. Each allowed folder is one
+explicit direct child of the configured root. POST contains
+`{operation_id,folder,filename,content}`; exact payload is durable before disk effects.
+The web editor previews those bytes and asks before creating the Markdown file.
+No original capture is changed or deleted. AI output alone cannot invoke publication.
+
+The connector pins directories with no-follow descriptors, rejects traversal,
+symlink directories/files and non-Markdown destinations, and never overwrites.
+A hidden staging file is fully written/fsynced, journalled, then hard-linked
+exclusively to the destination. After a lost acknowledgement, staging inode plus
+exact bytes distinguish this operation from an unrelated file; identical content
+under a different operation still conflicts. Published replay verifies bytes and
+never recreates a deleted/edited file. A partial private stage is recreated only while its intent is still queued and it
+has no other hard links. Missing/prepared stages or changed destinations conflict
+explicitly; they never authorize an overwrite.
+The retained publication record binds item, chosen destination and exact draft.
+
+[Deployment plan](deploy/PLAN.md) describes the dedicated DevBox LXC, Compose,
+fixture volumes, enrollment and consistent SQLite pre-PBS backup. Reader remains
+local-only; real vault and public access require separate approval.
+
+HTTP diagnostics emit one JSON line per request: generated request ID, normalized
+method, static matched route template, status, duration and a fixed error code.
+The same ID is returned as `X-Request-ID`. Bodies, query strings, raw paths/IDs,
+headers, cookies, Origin values and provider credentials are never logged.
+
+Publication names may include up to ten relative components within the selected
+PARA root. Missing intermediate folders are created with no-follow traversal.
+The editor suggests a name from the draft heading and adds `.md` when omitted.
+Known first-attempt collisions are durable and terminal; choosing another name
+creates a fresh operation and preserves the draft. Legacy prepared operations
+with an unrelated target are shown as occupied with earlier delivery uncertain,
+not retroactively claimed to have failed. Forget hides a conflict on this device;
+it never deletes server history or vault files.

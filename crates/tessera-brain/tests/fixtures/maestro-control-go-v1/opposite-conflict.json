@@ -1,0 +1,7 @@
+{
+  "ok": false,
+  "error": {
+    "code": "decision_conflict",
+    "message": "opposite decision is already committed"
+  }
+}

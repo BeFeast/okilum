@@ -1,0 +1,547 @@
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+index 5c618ec9..96a644fd 100644
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -2,6 +2,9 @@
+ //!
+ //! Based on the `Input` example from the `gpui` crate.
+ //! https://github.com/zed-industries/zed/blob/main/crates/gpui/examples/input.rs
++use super::clipboard::{
++    ClipboardPasteEvent, ClipboardReadError, ClipboardSession, ExactClipboardProvider,
++};
+ use super::projection::{
+     ActiveSource, ProjectionProvider, ProjectionSession, SourceByte, SourceMutation,
+     SourceMutationReason, SourceStamp, WrapAffinity,
+@@ -300,6 +303,7 @@ pub struct InputBaseState<M: InputModeKind> {
+     pub(super) mode: LayoutMode,
+     pub(super) text: Rope,
+     pub(super) projection: ProjectionSession,
++    exact_clipboard: ClipboardSession,
+     pub(super) projection_pending_click: Option<(MouseDownEvent, bool)>,
+     pub(super) projection_pending_vertical: Option<super::movement::PendingVertical>,
+     pub(super) projection_ime_bounds: Option<Bounds<Pixels>>,
+@@ -493,6 +497,7 @@ impl InputPresentation {
+ 
+ impl<M: InputModeKind> EventEmitter<InputEvent> for InputBaseState<M> {}
+ impl<M: InputModeKind> EventEmitter<SourceMutation> for InputBaseState<M> {}
++impl<M: InputModeKind> EventEmitter<ClipboardPasteEvent> for InputBaseState<M> {}
+ 
+ impl<M: InputModeKind> InputBaseState<M> {
+     #[doc(hidden)]
+@@ -618,6 +623,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+             cx.observe(&blink_cursor, |_, _, cx| cx.notify()),
+             // Blink the cursor when the window is active, pause when it's not.
+             cx.observe_window_activation(window, |input, window, cx| {
++                input.exact_clipboard.invalidate();
+                 if window.is_window_active() {
+                     let focus_handle = input.focus_handle.clone();
+                     if focus_handle.is_focused(window) {
+@@ -638,6 +644,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+             focus_handle: focus_handle.clone(),
+             text: "".into(),
+             projection: ProjectionSession::default(),
++            exact_clipboard: ClipboardSession::default(),
+             projection_pending_click: None,
+             projection_pending_vertical: None,
+             projection_ime_bounds: None,
+@@ -893,6 +900,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+             },
+         };
+         if active != self.projection.active {
++            self.exact_clipboard.invalidate();
+             self.projection_pending_vertical = None;
+         }
+         self.projection.set_active(active);
+@@ -937,6 +945,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+     }
+ 
+     fn record_source_mutation(&mut self, reason: SourceMutationReason, cx: &mut Context<Self>) {
++        self.exact_clipboard.invalidate();
+         let event = self.projection.mutation(reason);
+         if self.projection.enabled {
+             self.last_layout = None;
+@@ -1091,6 +1100,9 @@ impl<M: InputModeKind> InputBaseState<M> {
+     /// See also: [`Self::set_disabled`].
+     #[allow(unused)]
+     pub(crate) fn disabled(mut self, disabled: bool) -> Self {
++        if self.disabled != disabled {
++            self.exact_clipboard.invalidate();
++        }
+         self.disabled = disabled;
+         self
+     }
+@@ -1100,6 +1112,9 @@ impl<M: InputModeKind> InputBaseState<M> {
+             return;
+         }
+ 
++        if self.disabled != disabled {
++            self.exact_clipboard.invalidate();
++        }
+         self.disabled = disabled;
+         cx.notify();
+     }
+@@ -1113,6 +1128,9 @@ impl<M: InputModeKind> InputBaseState<M> {
+     /// See also: [`Self::set_readonly`].
+     #[allow(unused)]
+     pub(crate) fn readonly(mut self, readonly: bool) -> Self {
++        if self.readonly != readonly {
++            self.exact_clipboard.invalidate();
++        }
+         self.readonly = readonly;
+         self
+     }
+@@ -1122,6 +1140,9 @@ impl<M: InputModeKind> InputBaseState<M> {
+             return;
+         }
+ 
++        if self.readonly != readonly {
++            self.exact_clipboard.invalidate();
++        }
+         self.readonly = readonly;
+         if readonly {
+             self.search_session.replace_mode = false;
+@@ -1236,6 +1257,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+     pub fn default_value(mut self, value: impl Into<SharedString>) -> Self {
+         let text: SharedString = value.into();
+         self.text = Rope::from(self.normalize_input(&text).as_ref());
++        self.exact_clipboard.invalidate();
+         self.projection.mutation(SourceMutationReason::Reset);
+         if let Some(diagnostics) = self.mode.diagnostics_mut() {
+             diagnostics.reset(&self.text)
+@@ -2170,6 +2192,10 @@ impl<M: InputModeKind> InputBaseState<M> {
+     }
+ 
+     pub(super) fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
++        if self.exact_clipboard.enabled || self.projection.enabled {
++            self.paste_exact(window, cx);
++            return;
++        }
+         if let Some(clipboard) = cx.read_from_clipboard() {
+             let new_text = clipboard.text().unwrap_or_default();
+             self.undo_manager.pending_intent = Some(EditIntent::Atomic);
+@@ -2178,6 +2204,62 @@ impl<M: InputModeKind> InputBaseState<M> {
+         }
+     }
+ 
++    fn paste_exact(&mut self, window: &mut Window, cx: &mut Context<Self>) {
++        if !self.is_editable()
++            || !self.focus_handle.is_focused(window)
++            || !window.is_window_active()
++        {
++            cx.emit(ClipboardPasteEvent::Failed(ClipboardReadError::Cancelled));
++            return;
++        }
++        let Some(provider) = self.exact_clipboard.provider.clone() else {
++            cx.emit(ClipboardPasteEvent::Failed(ClipboardReadError::Unsupported));
++            return;
++        };
++        self.sync_projection_active();
++        let (nonce, revision, request) = match self.exact_clipboard.begin() {
++            Ok(request) => request,
++            Err(error) => {
++                cx.emit(ClipboardPasteEvent::Failed(error));
++                return;
++            }
++        };
++        let source = self.source_stamp();
++        let active = self.projection.active.clone();
++        let task = provider.read_text(request, cx);
++        cx.spawn_in(window, async move |this, cx| {
++            let result = task.await;
++            let _ = this.update_in(cx, |state, window, cx| {
++                let valid = state.exact_clipboard.complete(nonce, revision)
++                    && source == state.source_stamp()
++                    && active == state.projection.active
++                    && state.is_editable()
++                    && state.focus_handle.is_focused(window)
++                    && window.is_window_active();
++                if !valid {
++                    cx.emit(ClipboardPasteEvent::Failed(ClipboardReadError::Cancelled));
++                    return;
++                }
++                match result {
++                    Ok(Some(text)) => {
++                        state.undo_manager.pending_intent = Some(EditIntent::Atomic);
++                        state.replace_text_in_range_silent(None, &text, window, cx);
++                        state.scroll_to(state.cursor(), None, cx);
++                        cx.emit(ClipboardPasteEvent::Applied {
++                            request: nonce,
++                            bytes: text.len(),
++                        });
++                    }
++                    Ok(None) => {
++                        cx.emit(ClipboardPasteEvent::Failed(ClipboardReadError::Unavailable))
++                    }
++                    Err(error) => cx.emit(ClipboardPasteEvent::Failed(error)),
++                }
++            });
++        })
++        .detach();
++    }
++
+     fn push_history(
+         &mut self,
+         text: &Rope,
+@@ -2633,6 +2715,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+     }
+ 
+     fn on_focus(&mut self, _: &mut Window, cx: &mut Context<Self>) {
++        self.exact_clipboard.invalidate();
+         self.blink_cursor.update(cx, |cursor, cx| {
+             cursor.start(cx);
+         });
+@@ -2640,6 +2723,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+     }
+ 
+     fn on_blur(&mut self, window: &mut Window, cx: &mut Context<Self>) {
++        self.exact_clipboard.invalidate();
+         if M::is_context_menu_open(self, cx) {
+             return;
+         }
+@@ -3638,6 +3722,173 @@ mod tests {
+         }
+     }
+ 
++    struct DelayedClipboardProvider {
++        receiver: std::sync::Mutex<
++            Option<futures::channel::oneshot::Receiver<Result<Option<String>, ClipboardReadError>>>,
++        >,
++        calls: std::sync::atomic::AtomicUsize,
++    }
++    impl ExactClipboardProvider for DelayedClipboardProvider {
++        fn read_text(
++            &self,
++            _: super::super::clipboard::ClipboardReadRequest,
++            cx: &App,
++        ) -> gpui::Task<Result<Option<String>, ClipboardReadError>> {
++            self.calls
++                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
++            let receiver = self
++                .receiver
++                .lock()
++                .unwrap()
++                .take()
++                .expect("Busy must not start another read");
++            cx.background_executor()
++                .spawn(async move { receiver.await.unwrap() })
++        }
++    }
++    #[gpui::test]
++    fn projection_exact_async_paste_preserves_text_and_rejects_aba(cx: &mut TestAppContext) {
++        cx.update(crate::init);
++        for scenario in [
++            "exact",
++            "empty",
++            "no_offer",
++            "error",
++            "selection",
++            "direction",
++            "affinity",
++            "composition",
++            "source",
++            "readonly",
++            "disabled",
++            "focus",
++            "window",
++            "provider",
++            "removed",
++        ] {
++            let view = InputView::new(cx);
++            let mut v = VisualTestContext::from_window(view.window_handle.into(), cx);
++            let (sender, receiver) = futures::channel::oneshot::channel();
++            let provider = Arc::new(DelayedClipboardProvider {
++                receiver: std::sync::Mutex::new(Some(receiver)),
++                calls: std::sync::atomic::AtomicUsize::new(0),
++            });
++            let outcomes = Rc::new(std::cell::RefCell::new(Vec::new()));
++            let _subscription = v.update(|window, cx| {
++                let captured = outcomes.clone();
++                let subscription =
++                    cx.subscribe(&view.input, move |_, event: &ClipboardPasteEvent, _| {
++                        captured.borrow_mut().push(event.clone())
++                    });
++                view.input.update(cx, |state, cx| {
++                    state.set_value("abc", window, cx);
++                    state.set_selected_range(1..2, cx);
++                    state.set_exact_clipboard_provider(Some(provider.clone()), cx);
++                    // No projection was installed: exact paste is independently enabled.
++                    assert!(!state.projection.enabled);
++                    window.activate_window();
++                    state.focus(window, cx);
++                });
++                subscription
++            });
++            v.run_until_parked();
++            v.update(|window, cx| {
++                view.input.update(cx, |state, cx| {
++                    state.paste(&Paste, window, cx);
++                    state.paste(&Paste, window, cx);
++                    assert_eq!(provider.calls.load(std::sync::atomic::Ordering::Relaxed), 1);
++                    match scenario {
++                        "selection" => {
++                            state.set_selected_range(0..0, cx);
++                            state.set_selected_range(1..2, cx);
++                        }
++                        "direction" => {
++                            state.selection_reversed = true;
++                            state.sync_projection_active();
++                            state.selection_reversed = false;
++                            state.sync_projection_active();
++                        }
++                        "affinity" => {
++                            state.cursor_line_end_affinity = true;
++                            state.sync_projection_active();
++                            state.cursor_line_end_affinity = false;
++                            state.sync_projection_active();
++                        }
++                        "composition" => {
++                            state.ime_marked_range = Some((1..2).into());
++                            state.sync_projection_active();
++                            state.ime_marked_range = None;
++                            state.sync_projection_active();
++                        }
++                        "source" => {
++                            state.set_value("abc", window, cx);
++                            state.set_selected_range(1..2, cx);
++                        }
++                        "readonly" => {
++                            state.set_readonly(true, cx);
++                            state.set_readonly(false, cx);
++                        }
++                        "disabled" => {
++                            state.set_disabled(true, cx);
++                            state.set_disabled(false, cx);
++                        }
++                        "focus" => {
++                            state.on_blur(window, cx);
++                            state.on_focus(window, cx);
++                        }
++                        "provider" => {
++                            state.set_exact_clipboard_provider(None, cx);
++                            state.set_exact_clipboard_provider(Some(provider.clone()), cx);
++                        }
++                        "removed" => state.set_exact_clipboard_provider(None, cx),
++                        _ => {}
++                    }
++                })
++            });
++            if scenario == "window" {
++                v.deactivate_window();
++                v.update(|window, _| window.activate_window());
++            }
++            let corpus = "\u{feff}A e\u{301} 👩\u{200d}💻 🇮🇱\r\nB";
++            let response = match scenario {
++                "empty" => Ok(Some(String::new())),
++                "no_offer" => Ok(None),
++                "error" => Err(ClipboardReadError::Timeout),
++                _ => Ok(Some(corpus.to_string())),
++            };
++            sender.send(response).unwrap();
++            v.run_until_parked();
++            v.update(|_, cx| {
++                view.input.update(cx, |state, _| {
++                    let expected = match scenario {
++                        "exact" => format!("a{corpus}c"),
++                        "empty" => "ac".into(),
++                        _ => "abc".into(),
++                    };
++                    assert_eq!(state.value().as_ref(), expected, "scenario {scenario}");
++                    // Completion, failure and cancellation all release the busy slot.
++                    let (id, revision, _) = state.exact_clipboard.begin().unwrap();
++                    assert!(state.exact_clipboard.complete(id, revision));
++                })
++            });
++            assert!(
++                outcomes
++                    .borrow()
++                    .contains(&ClipboardPasteEvent::Failed(ClipboardReadError::Busy))
++            );
++            if scenario == "removed" {
++                v.update(|window, cx| {
++                    view.input
++                        .update(cx, |state, cx| state.paste(&Paste, window, cx))
++                });
++                v.run_until_parked();
++                assert!(outcomes.borrow().contains(&ClipboardPasteEvent::Failed(
++                    ClipboardReadError::Unsupported
++                )));
++            }
++        }
++    }
++
+     struct ExactSourceProvider;
+     impl ProjectionProvider for ExactSourceProvider {
+         fn compose(
+@@ -6040,6 +6291,21 @@ impl InputBaseState<crate::input::EditorMode> {
+ }
+ 
+ impl InputBaseState<super::EditorMode> {
++    /// Install an exact clipboard source. Opt-in survives provider removal,
++    /// which reports Unsupported instead of falling back to normalized text.
++    pub fn set_exact_clipboard_provider(
++        &mut self,
++        provider: Option<Arc<dyn ExactClipboardProvider>>,
++        cx: &mut Context<Self>,
++    ) {
++        self.exact_clipboard.invalidate();
++        if provider.is_some() {
++            self.exact_clipboard.enabled = true;
++        }
++        self.exact_clipboard.provider = provider;
++        cx.notify();
++    }
++
+     /// Install already classified presentation. This never edits canonical text,
+     /// emits InputEvent::Change, or touches undo/coalescing state.
+     pub fn set_projection_provider(
+diff --git a/crates/base/src/input/clipboard.rs b/crates/base/src/input/clipboard.rs
+new file mode 100644
+index 00000000..114e2797
+--- /dev/null
++++ b/crates/base/src/input/clipboard.rs
+@@ -0,0 +1,102 @@
++//! Optional exact-text clipboard input for the native projection candidate.
++use gpui::{App, Task};
++use std::sync::{
++    Arc,
++    atomic::{AtomicBool, Ordering},
++};
++
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub enum ClipboardReadError {
++    Unsupported,
++    Unavailable,
++    Busy,
++    Cancelled,
++    Timeout,
++    TooLarge,
++    InvalidUtf8,
++    ChangedOffer,
++    AmbiguousSeat,
++    Io,
++}
++
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub enum ClipboardPasteEvent {
++    Applied { request: u64, bytes: usize },
++    Failed(ClipboardReadError),
++}
++
++/// Cooperative cancellation; providers must also enforce their own finite deadline.
++#[derive(Clone, Default)]
++pub struct ClipboardReadRequest(Arc<AtomicBool>);
++impl ClipboardReadRequest {
++    pub fn is_cancelled(&self) -> bool {
++        self.0.load(Ordering::Acquire)
++    }
++    pub(super) fn cancel(&self) {
++        self.0.store(true, Ordering::Release);
++    }
++}
++
++pub trait ExactClipboardProvider: Send + Sync {
++    /// Construct a task immediately. All transport work belongs on a background
++    /// executor. Some("") is valid text; None means no available selection.
++    fn read_text(
++        &self,
++        request: ClipboardReadRequest,
++        cx: &App,
++    ) -> Task<Result<Option<String>, ClipboardReadError>>;
++}
++
++#[derive(Default)]
++pub(super) struct ClipboardSession {
++    pub enabled: bool,
++    pub provider: Option<Arc<dyn ExactClipboardProvider>>,
++    revision: u64,
++    nonce: u64,
++    pending: Option<(u64, ClipboardReadRequest)>,
++}
++impl ClipboardSession {
++    pub(super) fn invalidate(&mut self) {
++        self.revision = self.revision.wrapping_add(1);
++        // Keep the slot occupied while the cancelled physical read drains.
++        // Providers must poll cancellation and finish within their deadline.
++        if let Some((_, request)) = &self.pending {
++            request.cancel();
++        }
++    }
++    pub(super) fn begin(&mut self) -> Result<(u64, u64, ClipboardReadRequest), ClipboardReadError> {
++        if self.pending.is_some() {
++            return Err(ClipboardReadError::Busy);
++        }
++        self.nonce = self.nonce.wrapping_add(1);
++        let request = ClipboardReadRequest::default();
++        self.pending = Some((self.nonce, request.clone()));
++        Ok((self.nonce, self.revision, request))
++    }
++    pub(super) fn complete(&mut self, nonce: u64, revision: u64) -> bool {
++        if self.pending.as_ref().is_none_or(|(id, _)| *id != nonce) {
++            return false;
++        }
++        let (_, request) = self.pending.take().unwrap();
++        revision == self.revision && !request.is_cancelled()
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    #[test]
++    fn projection_clipboard_busy_preserves_first_and_aba_cancels() {
++        let mut session = ClipboardSession::default();
++        let (id, revision, request) = session.begin().unwrap();
++        assert!(matches!(session.begin(), Err(ClipboardReadError::Busy)));
++        assert!(!request.is_cancelled());
++        assert!(session.complete(id, revision));
++        let (id, revision, request) = session.begin().unwrap();
++        session.invalidate();
++        session.invalidate();
++        assert!(request.is_cancelled());
++        assert!(!session.complete(id, revision));
++        assert!(session.begin().is_ok());
++    }
++}
+diff --git a/crates/base/src/input/mod.rs b/crates/base/src/input/mod.rs
+index b338fc3f..71d78a31 100644
+--- a/crates/base/src/input/mod.rs
++++ b/crates/base/src/input/mod.rs
+@@ -15,6 +15,7 @@ mod base;
+ pub(crate) mod blink_cursor;
+ #[path = "base/change.rs"]
+ mod change;
++pub mod clipboard;
+ #[path = "base/cursor.rs"]
+ mod cursor;
+ #[path = "editor/decorations.rs"]
+@@ -31,8 +32,6 @@ mod highlighting;
+ #[path = "editor/indent.rs"]
+ mod indent;
+ mod input;
+-pub mod projection;
+-mod projection_layout;
+ #[path = "base/kind.rs"]
+ mod kind;
+ #[path = "base/layout.rs"]
+@@ -47,6 +46,8 @@ mod mode;
+ mod movement;
+ #[path = "base/native.rs"]
+ mod native;
++pub mod projection;
++mod projection_layout;
+ #[path = "base/rope_ext.rs"]
+ mod rope_ext;
+ #[path = "editor/search.rs"]
+diff --git a/crates/component/src/input/mod.rs b/crates/component/src/input/mod.rs
+index fd49121d..570b3bd6 100644
+--- a/crates/component/src/input/mod.rs
++++ b/crates/component/src/input/mod.rs
+@@ -9,7 +9,7 @@ mod search;
+ 
+ pub(crate) use clear_button::*;
+ pub use content_type::*;
+-pub use gpui_base::input::projection;
++pub use gpui_base::input::{clipboard, projection};
+ #[cfg(not(feature = "tree-sitter"))]
+ pub struct Tree;
+ /// The shared editing engine. Internal to the framework: components reach it

@@ -1,0 +1,327 @@
+{
+  "date": "2026-09-06T10:41:47.844Z",
+  "browser": "151.0.7922.34",
+  "results": [
+    {
+      "name": "capture, task, stage, review, retained prior, separate goal",
+      "pass": true
+    },
+    {
+      "name": "dirty guard, conflict, renewed comparison, resolution",
+      "pass": true
+    },
+    {
+      "name": "search shortcut, focus restore, tab trapped, typing n",
+      "pass": true
+    },
+    {
+      "name": "interruption remains attached to originating goal",
+      "pass": true
+    },
+    {
+      "name": "export failure then verified fixture download",
+      "pass": true
+    },
+    {
+      "name": "review corrections: secondary navigation, offline truth, source return",
+      "pass": true
+    },
+    {
+      "name": "saved-reference selection is read-only and tools dismiss",
+      "pass": true
+    }
+  ],
+  "errors": [],
+  "layouts": [
+    {
+      "w": 1600,
+      "h": 1000,
+      "view": "attention",
+      "navVisible": true,
+      "scrollWidth": 1600,
+      "clientWidth": 1600
+    },
+    {
+      "w": 1600,
+      "h": 1000,
+      "view": "brain",
+      "navVisible": true,
+      "scrollWidth": 1600,
+      "clientWidth": 1600
+    },
+    {
+      "w": 1600,
+      "h": 1000,
+      "view": "goals",
+      "navVisible": true,
+      "scrollWidth": 1600,
+      "clientWidth": 1600
+    },
+    {
+      "w": 1600,
+      "h": 1000,
+      "view": "connections",
+      "navVisible": true,
+      "scrollWidth": 1600,
+      "clientWidth": 1600
+    },
+    {
+      "w": 1600,
+      "h": 1000,
+      "view": "export",
+      "navVisible": true,
+      "scrollWidth": 1600,
+      "clientWidth": 1600
+    },
+    {
+      "w": 1600,
+      "h": 1000,
+      "view": "library",
+      "navVisible": false,
+      "scrollWidth": 1600,
+      "clientWidth": 1600
+    },
+    {
+      "w": 1600,
+      "h": 1000,
+      "view": "mobile",
+      "navVisible": false,
+      "scrollWidth": 1600,
+      "clientWidth": 1600
+    },
+    {
+      "w": 1280,
+      "h": 800,
+      "view": "attention",
+      "navVisible": true,
+      "scrollWidth": 1280,
+      "clientWidth": 1280
+    },
+    {
+      "w": 1280,
+      "h": 800,
+      "view": "brain",
+      "navVisible": true,
+      "scrollWidth": 1280,
+      "clientWidth": 1280
+    },
+    {
+      "w": 1280,
+      "h": 800,
+      "view": "goals",
+      "navVisible": true,
+      "scrollWidth": 1280,
+      "clientWidth": 1280
+    },
+    {
+      "w": 1280,
+      "h": 800,
+      "view": "connections",
+      "navVisible": true,
+      "scrollWidth": 1280,
+      "clientWidth": 1280
+    },
+    {
+      "w": 1280,
+      "h": 800,
+      "view": "export",
+      "navVisible": true,
+      "scrollWidth": 1280,
+      "clientWidth": 1280
+    },
+    {
+      "w": 1280,
+      "h": 800,
+      "view": "library",
+      "navVisible": false,
+      "scrollWidth": 1280,
+      "clientWidth": 1280
+    },
+    {
+      "w": 1280,
+      "h": 800,
+      "view": "mobile",
+      "navVisible": false,
+      "scrollWidth": 1280,
+      "clientWidth": 1280
+    },
+    {
+      "w": 1024,
+      "h": 768,
+      "view": "attention",
+      "navVisible": true,
+      "scrollWidth": 1024,
+      "clientWidth": 1024
+    },
+    {
+      "w": 1024,
+      "h": 768,
+      "view": "brain",
+      "navVisible": true,
+      "scrollWidth": 1024,
+      "clientWidth": 1024
+    },
+    {
+      "w": 1024,
+      "h": 768,
+      "view": "goals",
+      "navVisible": true,
+      "scrollWidth": 1024,
+      "clientWidth": 1024
+    },
+    {
+      "w": 1024,
+      "h": 768,
+      "view": "connections",
+      "navVisible": true,
+      "scrollWidth": 1024,
+      "clientWidth": 1024
+    },
+    {
+      "w": 1024,
+      "h": 768,
+      "view": "export",
+      "navVisible": true,
+      "scrollWidth": 1024,
+      "clientWidth": 1024
+    },
+    {
+      "w": 1024,
+      "h": 768,
+      "view": "library",
+      "navVisible": false,
+      "scrollWidth": 1024,
+      "clientWidth": 1024
+    },
+    {
+      "w": 1024,
+      "h": 768,
+      "view": "mobile",
+      "navVisible": false,
+      "scrollWidth": 1024,
+      "clientWidth": 1024
+    },
+    {
+      "w": 640,
+      "h": 400,
+      "view": "attention",
+      "navVisible": true,
+      "scrollWidth": 640,
+      "clientWidth": 640
+    },
+    {
+      "w": 640,
+      "h": 400,
+      "view": "brain",
+      "navVisible": true,
+      "scrollWidth": 640,
+      "clientWidth": 640
+    },
+    {
+      "w": 640,
+      "h": 400,
+      "view": "goals",
+      "navVisible": true,
+      "scrollWidth": 640,
+      "clientWidth": 640
+    },
+    {
+      "w": 640,
+      "h": 400,
+      "view": "connections",
+      "navVisible": true,
+      "scrollWidth": 640,
+      "clientWidth": 640
+    },
+    {
+      "w": 640,
+      "h": 400,
+      "view": "export",
+      "navVisible": true,
+      "scrollWidth": 640,
+      "clientWidth": 640
+    },
+    {
+      "w": 640,
+      "h": 400,
+      "view": "library",
+      "navVisible": false,
+      "scrollWidth": 640,
+      "clientWidth": 640
+    },
+    {
+      "w": 640,
+      "h": 400,
+      "view": "mobile",
+      "navVisible": false,
+      "scrollWidth": 640,
+      "clientWidth": 640
+    },
+    {
+      "w": 390,
+      "h": 844,
+      "view": "attention",
+      "navVisible": true,
+      "scrollWidth": 390,
+      "clientWidth": 390
+    },
+    {
+      "w": 390,
+      "h": 844,
+      "view": "brain",
+      "navVisible": true,
+      "scrollWidth": 390,
+      "clientWidth": 390
+    },
+    {
+      "w": 390,
+      "h": 844,
+      "view": "goals",
+      "navVisible": true,
+      "scrollWidth": 390,
+      "clientWidth": 390
+    },
+    {
+      "w": 390,
+      "h": 844,
+      "view": "connections",
+      "navVisible": true,
+      "scrollWidth": 390,
+      "clientWidth": 390
+    },
+    {
+      "w": 390,
+      "h": 844,
+      "view": "export",
+      "navVisible": true,
+      "scrollWidth": 390,
+      "clientWidth": 390
+    },
+    {
+      "w": 390,
+      "h": 844,
+      "view": "library",
+      "navVisible": true,
+      "scrollWidth": 390,
+      "clientWidth": 390
+    },
+    {
+      "w": 390,
+      "h": 844,
+      "view": "mobile",
+      "navVisible": true,
+      "scrollWidth": 390,
+      "clientWidth": 390
+    }
+  ],
+  "fonts": {
+    "fonts": [
+      {
+        "familyName": "Noto Sans",
+        "postScriptName": "NotoSans-Regular",
+        "isCustomFont": true,
+        "glyphCount": 38
+      }
+    ]
+  }
+}

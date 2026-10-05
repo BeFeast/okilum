@@ -1,0 +1,323 @@
+--- a/crates/base/src/text/text_view.rs
++++ b/crates/base/src/text/text_view.rs
+@@ -33,6 +33,9 @@
+ pub(crate) type CodeBlockHighlighterFn =
+     dyn Fn(&CodeBlock) -> Vec<(Range<usize>, gpui::HighlightStyle)> + Send + Sync;
+ 
++/// Lazy display-only language resolver. Source and selection remain unchanged.
++pub type CodeBlockLanguageFn = dyn Fn(&CodeBlock) -> Option<SharedString> + Send + Sync;
++
+ /// Application-wide defaults for TextViews that do not provide explicit
+ /// presentation or syntax-highlighting overrides.
+ #[derive(Clone, Default)]
+@@ -136,6 +139,7 @@
+     scrollable: bool,
+     max_lines: Option<usize>,
+     code_block_actions: Option<Arc<CodeBlockActionsFn>>,
++    code_block_language: Option<Arc<CodeBlockLanguageFn>>,
+     code_block_highlighter: Option<Arc<CodeBlockHighlighterFn>>,
+     table_actions: Option<Arc<TableActionsFn>>,
+     link_click_handler: Option<Arc<LinkClickHandlerFn>>,
+@@ -181,6 +185,7 @@
+             scrollable: false,
+             max_lines: None,
+             code_block_actions: None,
++            code_block_language: None,
+             code_block_highlighter: None,
+             table_actions: None,
+             link_click_handler: None,
+@@ -203,6 +208,7 @@
+             scrollable: false,
+             max_lines: None,
+             code_block_actions: None,
++            code_block_language: None,
+             code_block_highlighter: None,
+             table_actions: None,
+             link_click_handler: None,
+@@ -225,6 +231,7 @@
+             scrollable: false,
+             max_lines: None,
+             code_block_actions: None,
++            code_block_language: None,
+             code_block_highlighter: None,
+             table_actions: None,
+             link_click_handler: None,
+@@ -294,6 +301,13 @@
+         self
+     }
+ 
++    /// Resolve a display language lazily for visible code blocks. Reuse the
++    /// same Arc to retain cached results. Source/selection language is unchanged.
++    pub fn code_block_language(mut self, resolver: Arc<CodeBlockLanguageFn>) -> Self {
++        self.code_block_language = Some(resolver);
++        self
++    }
++
+     /// Set custom block actions for code blocks.
+     ///
+     /// The closure receives the [`CodeBlock`],
+@@ -580,6 +594,7 @@
+ 
+         state.update(cx, |state, cx| {
+             state.code_block_actions = self.code_block_actions.clone();
++            state.code_block_language = self.code_block_language.clone();
+             state.code_block_highlighter = code_block_highlighter.clone();
+             state.table_actions = self.table_actions.clone();
+             state.link_click_handler = self.link_click_handler.clone();
+--- a/crates/base/src/text/state.rs
++++ b/crates/base/src/text/state.rs
+@@ -17,8 +17,8 @@
+     async_util::{Receiver, Sender, unbounded},
+     input::{self, SelectAll},
+     text::{
+-        CodeBlockActionsFn, CodeBlockHighlighterFn, LinkClickHandlerFn, MarkdownExtensions,
+-        TableActionsFn, TextViewStyle,
++        CodeBlockActionsFn, CodeBlockHighlighterFn, CodeBlockLanguageFn, LinkClickHandlerFn,
++        MarkdownExtensions, TableActionsFn, TextViewStyle,
+         document::ParsedDocument,
+         format,
+         node::{self, NodeContext},
+@@ -107,6 +107,7 @@
+     /// Whether the last painted frame clipped content due to `max_lines`.
+     pub(super) clamped: bool,
+     pub(super) text_view_style: TextViewStyle,
++    pub(super) code_block_language: Option<Arc<CodeBlockLanguageFn>>,
+     pub(super) code_block_actions: Option<std::sync::Arc<CodeBlockActionsFn>>,
+     pub(super) code_block_highlighter: Option<std::sync::Arc<CodeBlockHighlighterFn>>,
+     pub(super) table_actions: Option<std::sync::Arc<TableActionsFn>>,
+@@ -227,6 +228,7 @@
+             list_state: ListState::new(0, gpui::ListAlignment::Top, px(1000.)).measure_all(),
+             text_view_style: TextViewStyle::default(),
+             code_block_actions: None,
++            code_block_language: None,
+             code_block_highlighter: None,
+             table_actions: None,
+             link_click_handler: None,
+@@ -911,6 +913,7 @@
+         let mut node_cx = self.parsed_content.node_cx.clone();
+ 
+         node_cx.code_block_actions = self.code_block_actions.clone();
++        node_cx.code_block_language = self.code_block_language.clone();
+         node_cx.code_block_highlighter = self.code_block_highlighter.clone();
+         node_cx.table_actions = self.table_actions.clone();
+         node_cx.link_click_handler = self.link_click_handler.clone();
+--- a/crates/base/src/text/node.rs
++++ b/crates/base/src/text/node.rs
+@@ -14,11 +14,11 @@
+ use markdown::mdast;
+ 
+ use crate::{
+-    StyledExt, h_flex,
++    ElementExt as _, StyledExt, h_flex,
+     scrollable_mask::horizontal_scroll_area,
+     text::{
+-        CodeBlockActionsFn, CodeBlockHighlighterFn, LinkClickHandlerFn, MarkdownExtensions,
+-        MarkdownNode, TableActionsFn,
++        CodeBlockActionsFn, CodeBlockHighlighterFn, CodeBlockLanguageFn, LinkClickHandlerFn,
++        MarkdownExtensions, MarkdownNode, TableActionsFn,
+         document::NodeRenderOptions,
+         inline::{Inline, InlineHighlight, InlineState, combine_highlights, text_runs},
+         inline_flow::{InlineFlow, InlineFlowItem},
+@@ -1157,13 +1157,28 @@
+ #[derive(Debug, Clone)]
+ pub struct CodeBlock {
+     copy_code: Option<SharedString>,
++    fenced: bool,
++    language_cache: Arc<Mutex<Option<CachedCodeLanguage>>>,
+     lang: Option<SharedString>,
+     state: Arc<Mutex<InlineState>>,
+     highlight_cache: Arc<Mutex<Option<CachedCodeBlockHighlights>>>,
+     pub span: Option<Span>,
+ }
+ 
++struct CachedCodeLanguage {
++    resolver: Arc<CodeBlockLanguageFn>,
++    language: Option<SharedString>,
++}
++impl std::fmt::Debug for CachedCodeLanguage {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.debug_tuple("CachedCodeLanguage")
++            .field(&self.language)
++            .finish()
++    }
++}
++
+ struct CachedCodeBlockHighlights {
++    language: Option<SharedString>,
+     highlighter: Arc<CodeBlockHighlighterFn>,
+     styles: Vec<(Range<usize>, HighlightStyle)>,
+ }
+@@ -1182,10 +1197,19 @@
+             && self.code() == other.code()
+             && self.span == other.span
+             && self.copy_code == other.copy_code
++            && self.fenced == other.fenced
+     }
+ }
+ 
+ impl CodeBlock {
++    pub fn is_fenced(&self) -> bool {
++        self.fenced
++    }
++    pub(crate) fn with_fenced(mut self, fenced: bool) -> Self {
++        self.fenced = fenced;
++        self
++    }
++
+     /// Get the language of the code block.
+     pub fn lang(&self) -> Option<SharedString> {
+         self.lang.clone()
+@@ -1235,6 +1259,8 @@
+             state,
+             highlight_cache: Arc::new(Mutex::new(None)),
+             copy_code: None,
++            fenced: false,
++            language_cache: Arc::new(Mutex::new(None)),
+             span: span.map(|s| s.into()),
+         }
+     }
+@@ -1246,6 +1272,7 @@
+         if let Ok(cache) = self.highlight_cache.lock()
+             && let Some(cache) = cache.as_ref()
+             && Arc::ptr_eq(&cache.highlighter, highlighter)
++            && cache.language == self.lang
+         {
+             return cache.styles.clone();
+         }
+@@ -1258,6 +1285,7 @@
+         if let Ok(mut cache) = self.highlight_cache.lock() {
+             *cache = Some(CachedCodeBlockHighlights {
+                 highlighter: highlighter.clone(),
++                language: self.lang.clone(),
+                 styles: styles.clone(),
+             });
+         }
+@@ -1322,6 +1350,20 @@
+         cx: &mut App,
+     ) -> AnyElement {
+         let style = &node_cx.style;
++        let resolver = node_cx
++            .code_block_language
++            .clone()
++            .filter(|_| self.copy_code.is_some());
++        let mut display = self.clone();
++        if let Some(resolver) = &resolver {
++            display.lang = self.language_cache.lock().ok().and_then(|cache| {
++                cache
++                    .as_ref()
++                    .filter(|c| Arc::ptr_eq(&c.resolver, resolver))
++                    .and_then(|c| c.language.clone())
++            });
++        }
++        let block = self.clone();
+ 
+         div()
+             .w_full()
+@@ -1334,6 +1376,32 @@
+                     .w_full()
+                     .min_w_0()
+                     .p_3()
++                    // Reserve header space before lazy inference: no layout jump.
++                    .when(resolver.is_some(), |el| el.pt(px(36.)))
++                    .on_prepaint(move |bounds, window, cx| {
++                        let Some(resolver) = &resolver else {
++                            return;
++                        };
++                        let visible = bounds.intersect(&window.content_mask().bounds);
++                        if visible.size.width <= px(0.) || visible.size.height <= px(0.) {
++                            return;
++                        }
++                        let cached = block.language_cache.lock().is_ok_and(|cache| {
++                            cache
++                                .as_ref()
++                                .is_some_and(|c| Arc::ptr_eq(&c.resolver, resolver))
++                        });
++                        if !cached {
++                            let language = resolver(&block);
++                            if let Ok(mut cache) = block.language_cache.lock() {
++                                *cache = Some(CachedCodeLanguage {
++                                    resolver: resolver.clone(),
++                                    language,
++                                });
++                            }
++                            window.defer(cx, |window, _| window.refresh());
++                        }
++                    })
+                     .bg(style.code_background())
+                     .font_family(cx.theme().tokens.typography.mono.clone())
+                     .text_size(cx.theme().tokens.typography.mono_md.size)
+@@ -1349,7 +1417,7 @@
+                                 node_cx
+                                     .code_block_highlighter
+                                     .as_ref()
+-                                    .map(|highlighter| self.highlighted_styles(highlighter))
++                                    .map(|highlighter| display.highlighted_styles(highlighter))
+                                     .unwrap_or_default()
+                                     .into_iter()
+                                     .map(|(range, style)| (range, InlineHighlight::from(style)))
+@@ -1367,7 +1435,7 @@
+                                 .top_2()
+                                 .right_2()
+                                 .rounded(cx.theme().tokens.radius.md)
+-                                .child(actions(&self, window, cx)),
++                                .child(actions(&display, window, cx)),
+                         )
+                     }),
+             )
+@@ -1480,6 +1548,7 @@
+     pub(super) search_scroll: Option<gpui::Entity<ScrollHandle>>,
+     pub(crate) link_refs: HashMap<SharedString, LinkMark>,
+     pub(crate) style: TextViewStyle,
++    pub(crate) code_block_language: Option<Arc<CodeBlockLanguageFn>>,
+     pub(crate) code_block_actions: Option<Arc<CodeBlockActionsFn>>,
+     pub(crate) code_block_highlighter: Option<Arc<CodeBlockHighlighterFn>>,
+     pub(crate) table_actions: Option<Arc<TableActionsFn>>,
+@@ -2550,7 +2619,7 @@
+                                     if now != measured {
+                                         window.on_next_frame(move |window, cx| {
+                                             cx.notify(owner);
+-                                            window.refresh();
++                                            window.defer(cx, |window, _| window.refresh());
+                                         });
+                                     }
+                                 },
+--- a/crates/base/src/text/format/markdown.rs
++++ b/crates/base/src/text/format/markdown.rs
+@@ -480,13 +480,19 @@
+         },
+         Node::Code(raw) => {
+             let copy_code = exact_code_content(source, &raw);
++            let fenced = raw
++                .position
++                .as_ref()
++                .and_then(|p| source.get(p.start.offset..p.end.offset))
++                .is_some_and(|s| s.starts_with("```") || s.starts_with("~~~"));
+             BlockNode::CodeBlock(
+                 CodeBlock::new(
+                     raw.value.into(),
+                     raw.lang.map(|s| s.into()),
+                     new_span(raw.position, cx),
+                 )
+-                .with_copy_code(copy_code.into()),
++                .with_copy_code(copy_code.into())
++                .with_fenced(fenced),
+             )
+         }
+         Node::Heading(val) => {
+--- a/crates/component/src/text/compat.rs
++++ b/crates/component/src/text/compat.rs
+@@ -81,6 +81,14 @@
+         self.inner = self.inner.max_lines(value);
+         self
+     }
++    /// Resolves display language once a code block enters the viewport.
++    pub fn code_block_language(
++        mut self,
++        resolver: std::sync::Arc<gpui_base::text::CodeBlockLanguageFn>,
++    ) -> Self {
++        self.inner = self.inner.code_block_language(resolver);
++        self
++    }
+     /// Renders an element in the corner of every fenced code block.
+     pub fn code_block_actions<F, E>(mut self, f: F) -> Self
+     where

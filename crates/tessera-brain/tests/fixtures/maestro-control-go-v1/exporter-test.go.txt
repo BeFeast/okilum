@@ -1,0 +1,23 @@
+package server
+import (
+ "net/http"
+ "net/http/httptest"
+ "os"
+ "path/filepath"
+ "testing"
+ "github.com/befeast/maestro/internal/state"
+)
+func TestExportGuardedWireFixture(t *testing.T) {
+ out:=os.Getenv("MAESTRO_GUARDED_FIXTURE_DIR");if out=="" {t.Skip("fixture export not requested")}
+ if err:=os.MkdirAll(out,0700);err!=nil {t.Fatal(err)}
+ srv,dir,e,_:=guardedServerFixture(t)
+ save:=func(name string,w *httptest.ResponseRecorder,want int){t.Helper();if w.Code!=want {t.Fatalf("%s status=%d body=%s",name,w.Code,w.Body.String())};if err:=os.WriteFile(filepath.Join(out,name),w.Body.Bytes(),0600);err!=nil {t.Fatal(err)}}
+ get:=func()*httptest.ResponseRecorder {w:=httptest.NewRecorder();srv.handleFleet(w,httptest.NewRequest(http.MethodGet,"/api/v1/fleet",nil));return w}
+ save("fleet-pending.json",get(),200)
+ save("approve-response.json",guardedPost(t,srv,e,"approve","original reason"),200)
+ save("approve-replay-response.json",guardedPost(t,srv,e,"approve","different retry reason"),200)
+ save("opposite-conflict.json",guardedPost(t,srv,e,"reject","opposite"),409)
+ if err:=state.Update(dir,func(st *state.State)error {st.Approvals[0].Status=state.ApprovalStatusExecutionSkipped;return nil});err!=nil {t.Fatal(err)}
+ srv.readOnly=true
+ save("fleet-receipt-readonly.json",get(),200)
+}

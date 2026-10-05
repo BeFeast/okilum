@@ -1,0 +1,1278 @@
+{
+  "schema": "tessera-experiment204-corpus/v1",
+  "synthetic": true,
+  "cases": [
+    {
+      "case_id": "c01",
+      "goal_id": "c378dec4-8b3b-5cb2-86ba-4687890c8104",
+      "topic": "lease",
+      "title": "Release the synthetic Cedar build workspace for a new job.",
+      "facts": {
+        "adapter": "cedar-v1",
+        "lease_scope": "workspace"
+      },
+      "manual_pin": "Synthetic local runbook: the ordinary documented action is release-direct. Apply a different action only when current verified local evidence establishes a matching exception. Absent such evidence, perform the documented action; speculative constraints delay this goal.\nAlready reviewed incident: A verified replay on cedar-v1 with workspace lease scope left the workspace busy after process release. Release the workspace lease before the new job.\nEvidence ID: manual-pin. Constraint ID: workspace-release-required.",
+      "incident_initial": {
+        "incident_id": "I01",
+        "topic": "lease",
+        "verification": "verified",
+        "applies_when": {
+          "adapter": "cedar-v1",
+          "lease_scope": "workspace"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified replay on cedar-v1 with workspace lease scope left the workspace busy after process release. Release the workspace lease before the new job.",
+        "recommended_action": "release-workspace",
+        "constraint_id": "workspace-release-required"
+      },
+      "incident_current": {
+        "incident_id": "I01",
+        "topic": "lease",
+        "verification": "verified",
+        "applies_when": {
+          "adapter": "cedar-v1",
+          "lease_scope": "workspace"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified replay on cedar-v1 with workspace lease scope left the workspace busy after process release. Release the workspace lease before the new job.",
+        "recommended_action": "release-workspace",
+        "constraint_id": "workspace-release-required"
+      },
+      "actions": {
+        "release-direct": "Release the job process lease, then start the new job.",
+        "release-workspace": "Release the workspace lease, then start the new job.",
+        "request-clarification": "Request clarification instead of choosing an executable next action."
+      },
+      "constraint_catalog": {
+        "workspace-release-required": "Release the workspace lease, then start the new job."
+      },
+      "source_path": "incidents/c01.md",
+      "manual_path": "manual/c01.md"
+    },
+    {
+      "case_id": "c02",
+      "goal_id": "495f0214-5c21-51a2-8881-dc4f87b123dd",
+      "topic": "lease",
+      "title": "Release the synthetic Cedar build workspace for a new job.",
+      "facts": {
+        "adapter": "cedar-v1",
+        "lease_scope": "process"
+      },
+      "manual_pin": "Synthetic local runbook: the ordinary documented action is release-direct. Apply a different action only when current verified local evidence establishes a matching exception. Absent such evidence, perform the documented action; speculative constraints delay this goal.",
+      "incident_initial": {
+        "incident_id": "I02",
+        "topic": "lease",
+        "verification": "verified",
+        "applies_when": {
+          "adapter": "cedar-v1",
+          "lease_scope": "workspace"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified replay on cedar-v1 with workspace lease scope left the workspace busy after process release. Release the workspace lease before the new job.",
+        "recommended_action": "release-workspace",
+        "constraint_id": "workspace-release-required"
+      },
+      "incident_current": {
+        "incident_id": "I02",
+        "topic": "lease",
+        "verification": "verified",
+        "applies_when": {
+          "adapter": "cedar-v1",
+          "lease_scope": "workspace"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified replay on cedar-v1 with workspace lease scope left the workspace busy after process release. Release the workspace lease before the new job.",
+        "recommended_action": "release-workspace",
+        "constraint_id": "workspace-release-required"
+      },
+      "actions": {
+        "release-direct": "Release the job process lease, then start the new job.",
+        "release-workspace": "Release the workspace lease, then start the new job.",
+        "request-clarification": "Request clarification instead of choosing an executable next action."
+      },
+      "constraint_catalog": {
+        "workspace-release-required": "Release the workspace lease, then start the new job."
+      },
+      "source_path": "incidents/c02.md",
+      "manual_path": "manual/c02.md"
+    },
+    {
+      "case_id": "c03",
+      "goal_id": "8a0931fe-fc80-5348-a067-0159ef5ce668",
+      "topic": "lease",
+      "title": "Release the synthetic Cedar build workspace for a new job.",
+      "facts": {
+        "adapter": "cedar-v1",
+        "lease_scope": "workspace"
+      },
+      "manual_pin": "Synthetic local runbook: the ordinary documented action is release-direct. Apply a different action only when current verified local evidence establishes a matching exception. Absent such evidence, perform the documented action; speculative constraints delay this goal.",
+      "incident_initial": {
+        "incident_id": "I03",
+        "topic": "lease",
+        "verification": "verified",
+        "applies_when": {
+          "adapter": "cedar-v1",
+          "lease_scope": "workspace"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified replay on cedar-v1 with workspace lease scope left the workspace busy after process release. Release the workspace lease before the new job.",
+        "recommended_action": "release-workspace",
+        "constraint_id": "workspace-release-required"
+      },
+      "incident_current": {
+        "incident_id": "I03",
+        "topic": "lease",
+        "verification": "verified",
+        "applies_when": {
+          "adapter": "cedar-v1",
+          "lease_scope": "workspace"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": true,
+        "finding": "A verified replay on cedar-v1 with workspace lease scope left the workspace busy after process release. Release the workspace lease before the new job.",
+        "recommended_action": "release-workspace",
+        "constraint_id": "workspace-release-required"
+      },
+      "actions": {
+        "release-direct": "Release the job process lease, then start the new job.",
+        "release-workspace": "Release the workspace lease, then start the new job.",
+        "request-clarification": "Request clarification instead of choosing an executable next action."
+      },
+      "constraint_catalog": {
+        "workspace-release-required": "Release the workspace lease, then start the new job."
+      },
+      "source_path": "incidents/c03.md",
+      "manual_path": "manual/c03.md"
+    },
+    {
+      "case_id": "c04",
+      "goal_id": "f1088a79-f3f0-5cc0-a95b-58aeb4b61b6b",
+      "topic": "archive",
+      "title": "Export the synthetic Amber project with its linked drawings.",
+      "facts": {
+        "exporter": "amber-v2",
+        "attachment_mode": "external"
+      },
+      "manual_pin": "Synthetic local runbook: the ordinary documented action is export-default. Apply a different action only when current verified local evidence establishes a matching exception. Absent such evidence, perform the documented action; speculative constraints delay this goal.",
+      "incident_initial": {
+        "incident_id": "I04",
+        "topic": "archive",
+        "verification": "verified",
+        "applies_when": {
+          "exporter": "amber-v2",
+          "attachment_mode": "external"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified restore on amber-v2 with external attachments lost linked drawings in the default export. Include the external attachment inventory.",
+        "recommended_action": "export-linked",
+        "constraint_id": "attachment-inventory-required"
+      },
+      "incident_current": {
+        "incident_id": "I04",
+        "topic": "archive",
+        "verification": "verified",
+        "applies_when": {
+          "exporter": "amber-v2",
+          "attachment_mode": "external"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified restore on amber-v2 with external attachments lost linked drawings in the default export. Include the external attachment inventory.",
+        "recommended_action": "export-linked",
+        "constraint_id": "attachment-inventory-required"
+      },
+      "actions": {
+        "export-default": "Run the default archive export.",
+        "export-linked": "Include the external attachment inventory in the archive export.",
+        "request-clarification": "Request clarification instead of choosing an executable next action."
+      },
+      "constraint_catalog": {
+        "attachment-inventory-required": "Include the external attachment inventory in the archive export."
+      },
+      "source_path": "incidents/c04.md",
+      "manual_path": "manual/c04.md"
+    },
+    {
+      "case_id": "c05",
+      "goal_id": "bb0b2935-6cab-5b29-9634-46e3bdf7a7ed",
+      "topic": "archive",
+      "title": "Export the synthetic Amber project with its linked drawings.",
+      "facts": {
+        "exporter": "amber-v2",
+        "attachment_mode": "embedded"
+      },
+      "manual_pin": "Synthetic local runbook: the ordinary documented action is export-default. Apply a different action only when current verified local evidence establishes a matching exception. Absent such evidence, perform the documented action; speculative constraints delay this goal.",
+      "incident_initial": {
+        "incident_id": "I05",
+        "topic": "archive",
+        "verification": "verified",
+        "applies_when": {
+          "exporter": "amber-v2",
+          "attachment_mode": "external"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified restore on amber-v2 with external attachments lost linked drawings in the default export. Include the external attachment inventory.",
+        "recommended_action": "export-linked",
+        "constraint_id": "attachment-inventory-required"
+      },
+      "incident_current": {
+        "incident_id": "I05",
+        "topic": "archive",
+        "verification": "verified",
+        "applies_when": {
+          "exporter": "amber-v2",
+          "attachment_mode": "external"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified restore on amber-v2 with external attachments lost linked drawings in the default export. Include the external attachment inventory.",
+        "recommended_action": "export-linked",
+        "constraint_id": "attachment-inventory-required"
+      },
+      "actions": {
+        "export-default": "Run the default archive export.",
+        "export-linked": "Include the external attachment inventory in the archive export.",
+        "request-clarification": "Request clarification instead of choosing an executable next action."
+      },
+      "constraint_catalog": {
+        "attachment-inventory-required": "Include the external attachment inventory in the archive export."
+      },
+      "source_path": "incidents/c05.md",
+      "manual_path": "manual/c05.md"
+    },
+    {
+      "case_id": "c06",
+      "goal_id": "79b578f0-9916-50e4-982d-a225af6cb762",
+      "topic": "archive",
+      "title": "Export the synthetic Amber project with its linked drawings.",
+      "facts": {
+        "exporter": "amber-v2",
+        "attachment_mode": "external"
+      },
+      "manual_pin": "Synthetic local runbook: the ordinary documented action is export-default. Apply a different action only when current verified local evidence establishes a matching exception. Absent such evidence, perform the documented action; speculative constraints delay this goal.",
+      "incident_initial": {
+        "incident_id": "I06",
+        "topic": "archive",
+        "verification": "verified",
+        "applies_when": {
+          "exporter": "amber-v2",
+          "attachment_mode": "external"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified restore on amber-v2 with external attachments lost linked drawings in the default export. Include the external attachment inventory.",
+        "recommended_action": "export-linked",
+        "constraint_id": "attachment-inventory-required"
+      },
+      "incident_current": {
+        "incident_id": "I06",
+        "topic": "archive",
+        "verification": "verified",
+        "applies_when": {
+          "exporter": "amber-v2",
+          "attachment_mode": "external"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": true,
+        "finding": "A verified restore on amber-v2 with external attachments lost linked drawings in the default export. Include the external attachment inventory.",
+        "recommended_action": "export-linked",
+        "constraint_id": "attachment-inventory-required"
+      },
+      "actions": {
+        "export-default": "Run the default archive export.",
+        "export-linked": "Include the external attachment inventory in the archive export.",
+        "request-clarification": "Request clarification instead of choosing an executable next action."
+      },
+      "constraint_catalog": {
+        "attachment-inventory-required": "Include the external attachment inventory in the archive export."
+      },
+      "source_path": "incidents/c06.md",
+      "manual_path": "manual/c06.md"
+    },
+    {
+      "case_id": "c07",
+      "goal_id": "2d965112-db29-57f4-a435-b8262e3ec989",
+      "topic": "calendar",
+      "title": "Schedule the next synthetic Lumen recurring appointment.",
+      "facts": {
+        "scheduler": "lumen-v1",
+        "clock_mode": "wall"
+      },
+      "manual_pin": "Synthetic local runbook: the ordinary documented action is repeat-interval. Apply a different action only when current verified local evidence establishes a matching exception. Absent such evidence, perform the documented action; speculative constraints delay this goal.",
+      "incident_initial": {
+        "incident_id": "I07",
+        "topic": "calendar",
+        "verification": "verified",
+        "applies_when": {
+          "scheduler": "lumen-v1",
+          "clock_mode": "wall"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified replay on lumen-v1 in wall clock mode shifted the appointment after the offset change when fixed intervals were used. Use the local wall-clock recurrence rule.",
+        "recommended_action": "repeat-wall",
+        "constraint_id": "wall-clock-rule-required"
+      },
+      "incident_current": {
+        "incident_id": "I07",
+        "topic": "calendar",
+        "verification": "verified",
+        "applies_when": {
+          "scheduler": "lumen-v1",
+          "clock_mode": "wall"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified replay on lumen-v1 in wall clock mode shifted the appointment after the offset change when fixed intervals were used. Use the local wall-clock recurrence rule.",
+        "recommended_action": "repeat-wall",
+        "constraint_id": "wall-clock-rule-required"
+      },
+      "actions": {
+        "repeat-interval": "Use the ordinary fixed interval recurrence.",
+        "repeat-wall": "Use the local wall-clock recurrence rule.",
+        "request-clarification": "Request clarification instead of choosing an executable next action."
+      },
+      "constraint_catalog": {
+        "wall-clock-rule-required": "Use the local wall-clock recurrence rule."
+      },
+      "source_path": "incidents/c07.md",
+      "manual_path": "manual/c07.md"
+    },
+    {
+      "case_id": "c08",
+      "goal_id": "6f25e57a-d98b-5a90-944d-3998584c3da2",
+      "topic": "calendar",
+      "title": "Schedule the next synthetic Lumen recurring appointment.",
+      "facts": {
+        "scheduler": "lumen-v1",
+        "clock_mode": "absolute"
+      },
+      "manual_pin": "Synthetic local runbook: the ordinary documented action is repeat-interval. Apply a different action only when current verified local evidence establishes a matching exception. Absent such evidence, perform the documented action; speculative constraints delay this goal.",
+      "incident_initial": {
+        "incident_id": "I08",
+        "topic": "calendar",
+        "verification": "verified",
+        "applies_when": {
+          "scheduler": "lumen-v1",
+          "clock_mode": "wall"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified replay on lumen-v1 in wall clock mode shifted the appointment after the offset change when fixed intervals were used. Use the local wall-clock recurrence rule.",
+        "recommended_action": "repeat-wall",
+        "constraint_id": "wall-clock-rule-required"
+      },
+      "incident_current": {
+        "incident_id": "I08",
+        "topic": "calendar",
+        "verification": "verified",
+        "applies_when": {
+          "scheduler": "lumen-v1",
+          "clock_mode": "wall"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified replay on lumen-v1 in wall clock mode shifted the appointment after the offset change when fixed intervals were used. Use the local wall-clock recurrence rule.",
+        "recommended_action": "repeat-wall",
+        "constraint_id": "wall-clock-rule-required"
+      },
+      "actions": {
+        "repeat-interval": "Use the ordinary fixed interval recurrence.",
+        "repeat-wall": "Use the local wall-clock recurrence rule.",
+        "request-clarification": "Request clarification instead of choosing an executable next action."
+      },
+      "constraint_catalog": {
+        "wall-clock-rule-required": "Use the local wall-clock recurrence rule."
+      },
+      "source_path": "incidents/c08.md",
+      "manual_path": "manual/c08.md"
+    },
+    {
+      "case_id": "c09",
+      "goal_id": "a564683c-e753-5ad1-93f4-ad3e865edfa5",
+      "topic": "calendar",
+      "title": "Schedule the next synthetic Lumen recurring appointment.",
+      "facts": {
+        "scheduler": "lumen-v1",
+        "clock_mode": "wall"
+      },
+      "manual_pin": "Synthetic local runbook: the ordinary documented action is repeat-interval. Apply a different action only when current verified local evidence establishes a matching exception. Absent such evidence, perform the documented action; speculative constraints delay this goal.",
+      "incident_initial": {
+        "incident_id": "I09",
+        "topic": "calendar",
+        "verification": "verified",
+        "applies_when": {
+          "scheduler": "lumen-v1",
+          "clock_mode": "wall"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified replay on lumen-v1 in wall clock mode shifted the appointment after the offset change when fixed intervals were used. Use the local wall-clock recurrence rule.",
+        "recommended_action": "repeat-wall",
+        "constraint_id": "wall-clock-rule-required"
+      },
+      "incident_current": {
+        "incident_id": "I09",
+        "topic": "calendar",
+        "verification": "verified",
+        "applies_when": {
+          "scheduler": "lumen-v1",
+          "clock_mode": "wall"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": true,
+        "finding": "A verified replay on lumen-v1 in wall clock mode shifted the appointment after the offset change when fixed intervals were used. Use the local wall-clock recurrence rule.",
+        "recommended_action": "repeat-wall",
+        "constraint_id": "wall-clock-rule-required"
+      },
+      "actions": {
+        "repeat-interval": "Use the ordinary fixed interval recurrence.",
+        "repeat-wall": "Use the local wall-clock recurrence rule.",
+        "request-clarification": "Request clarification instead of choosing an executable next action."
+      },
+      "constraint_catalog": {
+        "wall-clock-rule-required": "Use the local wall-clock recurrence rule."
+      },
+      "source_path": "incidents/c09.md",
+      "manual_path": "manual/c09.md"
+    },
+    {
+      "case_id": "c10",
+      "goal_id": "bb2a5860-476e-5c15-a796-91cbf022ea32",
+      "topic": "supplier",
+      "title": "Book a synthetic Harbor equipment collection.",
+      "facts": {
+        "supplier": "harbor-north",
+        "item_class": "oversize"
+      },
+      "manual_pin": "Synthetic local runbook: the ordinary documented action is book-default. Apply a different action only when current verified local evidence establishes a matching exception. Absent such evidence, perform the documented action; speculative constraints delay this goal.",
+      "incident_initial": {
+        "incident_id": "I10",
+        "topic": "supplier",
+        "verification": "verified",
+        "applies_when": {
+          "supplier": "harbor-north",
+          "item_class": "oversize"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified Harbor north oversize pickup failed despite a confirmed ordinary form because no loading bay was allocated. Reserve the loading bay before confirming pickup.",
+        "recommended_action": "book-reserved",
+        "constraint_id": "loading-bay-reservation-required"
+      },
+      "incident_current": {
+        "incident_id": "I10",
+        "topic": "supplier",
+        "verification": "verified",
+        "applies_when": {
+          "supplier": "harbor-north",
+          "item_class": "oversize"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified Harbor north oversize pickup failed despite a confirmed ordinary form because no loading bay was allocated. Reserve the loading bay before confirming pickup.",
+        "recommended_action": "book-reserved",
+        "constraint_id": "loading-bay-reservation-required"
+      },
+      "actions": {
+        "book-default": "Book using the ordinary pickup form.",
+        "book-reserved": "Reserve the loading bay before confirming pickup.",
+        "request-clarification": "Request clarification instead of choosing an executable next action."
+      },
+      "constraint_catalog": {
+        "loading-bay-reservation-required": "Reserve the loading bay before confirming pickup."
+      },
+      "source_path": "incidents/c10.md",
+      "manual_path": "manual/c10.md"
+    },
+    {
+      "case_id": "c11",
+      "goal_id": "cbb0f3a1-20c4-5c3a-9a00-e6e55105eba0",
+      "topic": "supplier",
+      "title": "Book a synthetic Harbor equipment collection.",
+      "facts": {
+        "supplier": "harbor-north",
+        "item_class": "standard"
+      },
+      "manual_pin": "Synthetic local runbook: the ordinary documented action is book-default. Apply a different action only when current verified local evidence establishes a matching exception. Absent such evidence, perform the documented action; speculative constraints delay this goal.",
+      "incident_initial": {
+        "incident_id": "I11",
+        "topic": "supplier",
+        "verification": "verified",
+        "applies_when": {
+          "supplier": "harbor-north",
+          "item_class": "oversize"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified Harbor north oversize pickup failed despite a confirmed ordinary form because no loading bay was allocated. Reserve the loading bay before confirming pickup.",
+        "recommended_action": "book-reserved",
+        "constraint_id": "loading-bay-reservation-required"
+      },
+      "incident_current": {
+        "incident_id": "I11",
+        "topic": "supplier",
+        "verification": "verified",
+        "applies_when": {
+          "supplier": "harbor-north",
+          "item_class": "oversize"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified Harbor north oversize pickup failed despite a confirmed ordinary form because no loading bay was allocated. Reserve the loading bay before confirming pickup.",
+        "recommended_action": "book-reserved",
+        "constraint_id": "loading-bay-reservation-required"
+      },
+      "actions": {
+        "book-default": "Book using the ordinary pickup form.",
+        "book-reserved": "Reserve the loading bay before confirming pickup.",
+        "request-clarification": "Request clarification instead of choosing an executable next action."
+      },
+      "constraint_catalog": {
+        "loading-bay-reservation-required": "Reserve the loading bay before confirming pickup."
+      },
+      "source_path": "incidents/c11.md",
+      "manual_path": "manual/c11.md"
+    },
+    {
+      "case_id": "c12",
+      "goal_id": "115d26c6-b867-52f5-bbab-31c33e76269d",
+      "topic": "supplier",
+      "title": "Book a synthetic Harbor equipment collection.",
+      "facts": {
+        "supplier": "harbor-north",
+        "item_class": "oversize"
+      },
+      "manual_pin": "Synthetic local runbook: the ordinary documented action is book-default. Apply a different action only when current verified local evidence establishes a matching exception. Absent such evidence, perform the documented action; speculative constraints delay this goal.",
+      "incident_initial": {
+        "incident_id": "I12",
+        "topic": "supplier",
+        "verification": "verified",
+        "applies_when": {
+          "supplier": "harbor-north",
+          "item_class": "oversize"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified Harbor north oversize pickup failed despite a confirmed ordinary form because no loading bay was allocated. Reserve the loading bay before confirming pickup.",
+        "recommended_action": "book-reserved",
+        "constraint_id": "loading-bay-reservation-required"
+      },
+      "incident_current": {
+        "incident_id": "I12",
+        "topic": "supplier",
+        "verification": "verified",
+        "applies_when": {
+          "supplier": "harbor-north",
+          "item_class": "oversize"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": true,
+        "finding": "A verified Harbor north oversize pickup failed despite a confirmed ordinary form because no loading bay was allocated. Reserve the loading bay before confirming pickup.",
+        "recommended_action": "book-reserved",
+        "constraint_id": "loading-bay-reservation-required"
+      },
+      "actions": {
+        "book-default": "Book using the ordinary pickup form.",
+        "book-reserved": "Reserve the loading bay before confirming pickup.",
+        "request-clarification": "Request clarification instead of choosing an executable next action."
+      },
+      "constraint_catalog": {
+        "loading-bay-reservation-required": "Reserve the loading bay before confirming pickup."
+      },
+      "source_path": "incidents/c12.md",
+      "manual_path": "manual/c12.md"
+    },
+    {
+      "case_id": "c13",
+      "goal_id": "42f4c6ca-508c-521f-a741-2b5a4a2ffd79",
+      "topic": "callback",
+      "title": "Recover a synthetic Flint remote job after a missing callback.",
+      "facts": {
+        "engine": "flint-v1",
+        "callback_contract": "best-effort"
+      },
+      "manual_pin": "Synthetic local runbook: the ordinary documented action is retry-submit. Apply a different action only when current verified local evidence establishes a matching exception. Absent such evidence, perform the documented action; speculative constraints delay this goal.",
+      "incident_initial": {
+        "incident_id": "I13",
+        "topic": "callback",
+        "verification": "verified",
+        "applies_when": {
+          "engine": "flint-v1",
+          "callback_contract": "best-effort"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified replay on flint-v1 with best-effort callbacks created duplicate jobs after resubmission. Query the original saved job identity before resubmission.",
+        "recommended_action": "lookup-job",
+        "constraint_id": "original-status-check-required"
+      },
+      "incident_current": {
+        "incident_id": "I13",
+        "topic": "callback",
+        "verification": "verified",
+        "applies_when": {
+          "engine": "flint-v1",
+          "callback_contract": "best-effort"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified replay on flint-v1 with best-effort callbacks created duplicate jobs after resubmission. Query the original saved job identity before resubmission.",
+        "recommended_action": "lookup-job",
+        "constraint_id": "original-status-check-required"
+      },
+      "actions": {
+        "retry-submit": "Use the ordinary recovery action: submit a replacement job.",
+        "lookup-job": "Read the original job status by its saved identity before any resubmission.",
+        "request-clarification": "Request clarification instead of choosing an executable next action."
+      },
+      "constraint_catalog": {
+        "original-status-check-required": "Read the original job status by its saved identity before any resubmission."
+      },
+      "source_path": "incidents/c13.md",
+      "manual_path": "manual/c13.md"
+    },
+    {
+      "case_id": "c14",
+      "goal_id": "e4b58abb-8a60-5c2c-b79c-db1c045357a7",
+      "topic": "callback",
+      "title": "Recover a synthetic Flint remote job after a missing callback.",
+      "facts": {
+        "engine": "flint-v1",
+        "callback_contract": "durable"
+      },
+      "manual_pin": "Synthetic local runbook: the ordinary documented action is retry-submit. Apply a different action only when current verified local evidence establishes a matching exception. Absent such evidence, perform the documented action; speculative constraints delay this goal.",
+      "incident_initial": {
+        "incident_id": "I14",
+        "topic": "callback",
+        "verification": "verified",
+        "applies_when": {
+          "engine": "flint-v1",
+          "callback_contract": "best-effort"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified replay on flint-v1 with best-effort callbacks created duplicate jobs after resubmission. Query the original saved job identity before resubmission.",
+        "recommended_action": "lookup-job",
+        "constraint_id": "original-status-check-required"
+      },
+      "incident_current": {
+        "incident_id": "I14",
+        "topic": "callback",
+        "verification": "verified",
+        "applies_when": {
+          "engine": "flint-v1",
+          "callback_contract": "best-effort"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified replay on flint-v1 with best-effort callbacks created duplicate jobs after resubmission. Query the original saved job identity before resubmission.",
+        "recommended_action": "lookup-job",
+        "constraint_id": "original-status-check-required"
+      },
+      "actions": {
+        "retry-submit": "Use the ordinary recovery action: submit a replacement job.",
+        "lookup-job": "Read the original job status by its saved identity before any resubmission.",
+        "request-clarification": "Request clarification instead of choosing an executable next action."
+      },
+      "constraint_catalog": {
+        "original-status-check-required": "Read the original job status by its saved identity before any resubmission."
+      },
+      "source_path": "incidents/c14.md",
+      "manual_path": "manual/c14.md"
+    },
+    {
+      "case_id": "c15",
+      "goal_id": "948e3fc7-faf7-52bd-a3ff-29858aa74038",
+      "topic": "callback",
+      "title": "Recover a synthetic Flint remote job after a missing callback.",
+      "facts": {
+        "engine": "flint-v1",
+        "callback_contract": "best-effort"
+      },
+      "manual_pin": "Synthetic local runbook: the ordinary documented action is retry-submit. Apply a different action only when current verified local evidence establishes a matching exception. Absent such evidence, perform the documented action; speculative constraints delay this goal.",
+      "incident_initial": {
+        "incident_id": "I15",
+        "topic": "callback",
+        "verification": "verified",
+        "applies_when": {
+          "engine": "flint-v1",
+          "callback_contract": "best-effort"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified replay on flint-v1 with best-effort callbacks created duplicate jobs after resubmission. Query the original saved job identity before resubmission.",
+        "recommended_action": "lookup-job",
+        "constraint_id": "original-status-check-required"
+      },
+      "incident_current": {
+        "incident_id": "I15",
+        "topic": "callback",
+        "verification": "verified",
+        "applies_when": {
+          "engine": "flint-v1",
+          "callback_contract": "best-effort"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": true,
+        "finding": "A verified replay on flint-v1 with best-effort callbacks created duplicate jobs after resubmission. Query the original saved job identity before resubmission.",
+        "recommended_action": "lookup-job",
+        "constraint_id": "original-status-check-required"
+      },
+      "actions": {
+        "retry-submit": "Use the ordinary recovery action: submit a replacement job.",
+        "lookup-job": "Read the original job status by its saved identity before any resubmission.",
+        "request-clarification": "Request clarification instead of choosing an executable next action."
+      },
+      "constraint_catalog": {
+        "original-status-check-required": "Read the original job status by its saved identity before any resubmission."
+      },
+      "source_path": "incidents/c15.md",
+      "manual_path": "manual/c15.md"
+    },
+    {
+      "case_id": "c16",
+      "goal_id": "318f16d5-4f8d-546c-ae68-f8b149ba5c79",
+      "topic": "migration",
+      "title": "Apply the synthetic Quartz schema update.",
+      "facts": {
+        "migrator": "quartz-v3",
+        "writer_mode": "continuous"
+      },
+      "manual_pin": "Synthetic local runbook: the ordinary documented action is migrate-online. Apply a different action only when current verified local evidence establishes a matching exception. Absent such evidence, perform the documented action; speculative constraints delay this goal.",
+      "incident_initial": {
+        "incident_id": "I16",
+        "topic": "migration",
+        "verification": "verified",
+        "applies_when": {
+          "migrator": "quartz-v3",
+          "writer_mode": "continuous"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified quartz-v3 continuous-writer replay left mixed schema rows during online migration. Pause the continuous writer during the migration.",
+        "recommended_action": "pause-writer",
+        "constraint_id": "writer-pause-required"
+      },
+      "incident_current": {
+        "incident_id": "I16",
+        "topic": "migration",
+        "verification": "verified",
+        "applies_when": {
+          "migrator": "quartz-v3",
+          "writer_mode": "continuous"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified quartz-v3 continuous-writer replay left mixed schema rows during online migration. Pause the continuous writer during the migration.",
+        "recommended_action": "pause-writer",
+        "constraint_id": "writer-pause-required"
+      },
+      "actions": {
+        "migrate-online": "Run the ordinary online migration.",
+        "pause-writer": "Pause the continuous writer while applying the migration.",
+        "request-clarification": "Request clarification instead of choosing an executable next action."
+      },
+      "constraint_catalog": {
+        "writer-pause-required": "Pause the continuous writer while applying the migration."
+      },
+      "source_path": "incidents/c16.md",
+      "manual_path": "manual/c16.md"
+    },
+    {
+      "case_id": "c17",
+      "goal_id": "2b083155-c661-5770-ac2e-5ef91c61a92c",
+      "topic": "migration",
+      "title": "Apply the synthetic Quartz schema update.",
+      "facts": {
+        "migrator": "quartz-v3",
+        "writer_mode": "snapshot"
+      },
+      "manual_pin": "Synthetic local runbook: the ordinary documented action is migrate-online. Apply a different action only when current verified local evidence establishes a matching exception. Absent such evidence, perform the documented action; speculative constraints delay this goal.",
+      "incident_initial": {
+        "incident_id": "I17",
+        "topic": "migration",
+        "verification": "verified",
+        "applies_when": {
+          "migrator": "quartz-v3",
+          "writer_mode": "continuous"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified quartz-v3 continuous-writer replay left mixed schema rows during online migration. Pause the continuous writer during the migration.",
+        "recommended_action": "pause-writer",
+        "constraint_id": "writer-pause-required"
+      },
+      "incident_current": {
+        "incident_id": "I17",
+        "topic": "migration",
+        "verification": "verified",
+        "applies_when": {
+          "migrator": "quartz-v3",
+          "writer_mode": "continuous"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified quartz-v3 continuous-writer replay left mixed schema rows during online migration. Pause the continuous writer during the migration.",
+        "recommended_action": "pause-writer",
+        "constraint_id": "writer-pause-required"
+      },
+      "actions": {
+        "migrate-online": "Run the ordinary online migration.",
+        "pause-writer": "Pause the continuous writer while applying the migration.",
+        "request-clarification": "Request clarification instead of choosing an executable next action."
+      },
+      "constraint_catalog": {
+        "writer-pause-required": "Pause the continuous writer while applying the migration."
+      },
+      "source_path": "incidents/c17.md",
+      "manual_path": "manual/c17.md"
+    },
+    {
+      "case_id": "c18",
+      "goal_id": "03ac2298-9e5f-5f28-8f21-9365a06d15dc",
+      "topic": "migration",
+      "title": "Apply the synthetic Quartz schema update.",
+      "facts": {
+        "migrator": "quartz-v3",
+        "writer_mode": "continuous"
+      },
+      "manual_pin": "Synthetic local runbook: the ordinary documented action is migrate-online. Apply a different action only when current verified local evidence establishes a matching exception. Absent such evidence, perform the documented action; speculative constraints delay this goal.",
+      "incident_initial": {
+        "incident_id": "I18",
+        "topic": "migration",
+        "verification": "verified",
+        "applies_when": {
+          "migrator": "quartz-v3",
+          "writer_mode": "continuous"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified quartz-v3 continuous-writer replay left mixed schema rows during online migration. Pause the continuous writer during the migration.",
+        "recommended_action": "pause-writer",
+        "constraint_id": "writer-pause-required"
+      },
+      "incident_current": {
+        "incident_id": "I18",
+        "topic": "migration",
+        "verification": "verified",
+        "applies_when": {
+          "migrator": "quartz-v3",
+          "writer_mode": "continuous"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": true,
+        "finding": "A verified quartz-v3 continuous-writer replay left mixed schema rows during online migration. Pause the continuous writer during the migration.",
+        "recommended_action": "pause-writer",
+        "constraint_id": "writer-pause-required"
+      },
+      "actions": {
+        "migrate-online": "Run the ordinary online migration.",
+        "pause-writer": "Pause the continuous writer while applying the migration.",
+        "request-clarification": "Request clarification instead of choosing an executable next action."
+      },
+      "constraint_catalog": {
+        "writer-pause-required": "Pause the continuous writer while applying the migration."
+      },
+      "source_path": "incidents/c18.md",
+      "manual_path": "manual/c18.md"
+    },
+    {
+      "case_id": "c19",
+      "goal_id": "b71366d4-43a8-5c62-b5f1-fd846d225b95",
+      "topic": "embedding",
+      "title": "Refresh the synthetic Iris semantic index after a model switch.",
+      "facts": {
+        "indexer": "iris-v2",
+        "cache_key": "text-only"
+      },
+      "manual_pin": "Synthetic local runbook: the ordinary documented action is refresh-incremental. Apply a different action only when current verified local evidence establishes a matching exception. Absent such evidence, perform the documented action; speculative constraints delay this goal.",
+      "incident_initial": {
+        "incident_id": "I19",
+        "topic": "embedding",
+        "verification": "verified",
+        "applies_when": {
+          "indexer": "iris-v2",
+          "cache_key": "text-only"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified iris-v2 replay with text-only cache keys reused old model vectors during incremental refresh. Rebuild vectors for the new model before publishing.",
+        "recommended_action": "rebuild-vectors",
+        "constraint_id": "vector-rebuild-required"
+      },
+      "incident_current": {
+        "incident_id": "I19",
+        "topic": "embedding",
+        "verification": "verified",
+        "applies_when": {
+          "indexer": "iris-v2",
+          "cache_key": "text-only"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified iris-v2 replay with text-only cache keys reused old model vectors during incremental refresh. Rebuild vectors for the new model before publishing.",
+        "recommended_action": "rebuild-vectors",
+        "constraint_id": "vector-rebuild-required"
+      },
+      "actions": {
+        "refresh-incremental": "Use the ordinary incremental index refresh.",
+        "rebuild-vectors": "Rebuild vectors for the new model before publishing the index.",
+        "request-clarification": "Request clarification instead of choosing an executable next action."
+      },
+      "constraint_catalog": {
+        "vector-rebuild-required": "Rebuild vectors for the new model before publishing the index."
+      },
+      "source_path": "incidents/c19.md",
+      "manual_path": "manual/c19.md"
+    },
+    {
+      "case_id": "c20",
+      "goal_id": "251553ec-f253-50b8-a08b-495f687c235d",
+      "topic": "embedding",
+      "title": "Refresh the synthetic Iris semantic index after a model switch.",
+      "facts": {
+        "indexer": "iris-v2",
+        "cache_key": "model-and-text"
+      },
+      "manual_pin": "Synthetic local runbook: the ordinary documented action is refresh-incremental. Apply a different action only when current verified local evidence establishes a matching exception. Absent such evidence, perform the documented action; speculative constraints delay this goal.",
+      "incident_initial": {
+        "incident_id": "I20",
+        "topic": "embedding",
+        "verification": "verified",
+        "applies_when": {
+          "indexer": "iris-v2",
+          "cache_key": "text-only"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified iris-v2 replay with text-only cache keys reused old model vectors during incremental refresh. Rebuild vectors for the new model before publishing.",
+        "recommended_action": "rebuild-vectors",
+        "constraint_id": "vector-rebuild-required"
+      },
+      "incident_current": {
+        "incident_id": "I20",
+        "topic": "embedding",
+        "verification": "verified",
+        "applies_when": {
+          "indexer": "iris-v2",
+          "cache_key": "text-only"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified iris-v2 replay with text-only cache keys reused old model vectors during incremental refresh. Rebuild vectors for the new model before publishing.",
+        "recommended_action": "rebuild-vectors",
+        "constraint_id": "vector-rebuild-required"
+      },
+      "actions": {
+        "refresh-incremental": "Use the ordinary incremental index refresh.",
+        "rebuild-vectors": "Rebuild vectors for the new model before publishing the index.",
+        "request-clarification": "Request clarification instead of choosing an executable next action."
+      },
+      "constraint_catalog": {
+        "vector-rebuild-required": "Rebuild vectors for the new model before publishing the index."
+      },
+      "source_path": "incidents/c20.md",
+      "manual_path": "manual/c20.md"
+    },
+    {
+      "case_id": "c21",
+      "goal_id": "897ea37a-19ba-57a6-b9bc-84e421ee8b8b",
+      "topic": "embedding",
+      "title": "Refresh the synthetic Iris semantic index after a model switch.",
+      "facts": {
+        "indexer": "iris-v2",
+        "cache_key": "text-only"
+      },
+      "manual_pin": "Synthetic local runbook: the ordinary documented action is refresh-incremental. Apply a different action only when current verified local evidence establishes a matching exception. Absent such evidence, perform the documented action; speculative constraints delay this goal.",
+      "incident_initial": {
+        "incident_id": "I21",
+        "topic": "embedding",
+        "verification": "verified",
+        "applies_when": {
+          "indexer": "iris-v2",
+          "cache_key": "text-only"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified iris-v2 replay with text-only cache keys reused old model vectors during incremental refresh. Rebuild vectors for the new model before publishing.",
+        "recommended_action": "rebuild-vectors",
+        "constraint_id": "vector-rebuild-required"
+      },
+      "incident_current": {
+        "incident_id": "I21",
+        "topic": "embedding",
+        "verification": "verified",
+        "applies_when": {
+          "indexer": "iris-v2",
+          "cache_key": "text-only"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": true,
+        "finding": "A verified iris-v2 replay with text-only cache keys reused old model vectors during incremental refresh. Rebuild vectors for the new model before publishing.",
+        "recommended_action": "rebuild-vectors",
+        "constraint_id": "vector-rebuild-required"
+      },
+      "actions": {
+        "refresh-incremental": "Use the ordinary incremental index refresh.",
+        "rebuild-vectors": "Rebuild vectors for the new model before publishing the index.",
+        "request-clarification": "Request clarification instead of choosing an executable next action."
+      },
+      "constraint_catalog": {
+        "vector-rebuild-required": "Rebuild vectors for the new model before publishing the index."
+      },
+      "source_path": "incidents/c21.md",
+      "manual_path": "manual/c21.md"
+    },
+    {
+      "case_id": "c22",
+      "goal_id": "0adaee89-9ab3-53b9-a300-ac7deba5698b",
+      "topic": "attention",
+      "title": "Finish a synthetic Vale attention request after a mobile answer.",
+      "facts": {
+        "channel": "vale-v1",
+        "ack_scope": "delivery"
+      },
+      "manual_pin": "Synthetic local runbook: the ordinary documented action is close-on-ack. Apply a different action only when current verified local evidence establishes a matching exception. Absent such evidence, perform the documented action; speculative constraints delay this goal.",
+      "incident_initial": {
+        "incident_id": "I22",
+        "topic": "attention",
+        "verification": "verified",
+        "applies_when": {
+          "channel": "vale-v1",
+          "ack_scope": "delivery"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified vale-v1 replay with delivery-scope acknowledgements closed a request without saving a decision. Read the persisted decision before closure.",
+        "recommended_action": "read-decision",
+        "constraint_id": "persisted-decision-required"
+      },
+      "incident_current": {
+        "incident_id": "I22",
+        "topic": "attention",
+        "verification": "verified",
+        "applies_when": {
+          "channel": "vale-v1",
+          "ack_scope": "delivery"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified vale-v1 replay with delivery-scope acknowledgements closed a request without saving a decision. Read the persisted decision before closure.",
+        "recommended_action": "read-decision",
+        "constraint_id": "persisted-decision-required"
+      },
+      "actions": {
+        "close-on-ack": "Use the ordinary completion action after the mobile acknowledgement.",
+        "read-decision": "Read the persisted decision before closing the request.",
+        "request-clarification": "Request clarification instead of choosing an executable next action."
+      },
+      "constraint_catalog": {
+        "persisted-decision-required": "Read the persisted decision before closing the request."
+      },
+      "source_path": "incidents/c22.md",
+      "manual_path": "manual/c22.md"
+    },
+    {
+      "case_id": "c23",
+      "goal_id": "31dd4fb5-8755-55aa-a897-0133cf3e79fc",
+      "topic": "attention",
+      "title": "Finish a synthetic Vale attention request after a mobile answer.",
+      "facts": {
+        "channel": "vale-v1",
+        "ack_scope": "decision"
+      },
+      "manual_pin": "Synthetic local runbook: the ordinary documented action is close-on-ack. Apply a different action only when current verified local evidence establishes a matching exception. Absent such evidence, perform the documented action; speculative constraints delay this goal.",
+      "incident_initial": {
+        "incident_id": "I23",
+        "topic": "attention",
+        "verification": "verified",
+        "applies_when": {
+          "channel": "vale-v1",
+          "ack_scope": "delivery"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified vale-v1 replay with delivery-scope acknowledgements closed a request without saving a decision. Read the persisted decision before closure.",
+        "recommended_action": "read-decision",
+        "constraint_id": "persisted-decision-required"
+      },
+      "incident_current": {
+        "incident_id": "I23",
+        "topic": "attention",
+        "verification": "verified",
+        "applies_when": {
+          "channel": "vale-v1",
+          "ack_scope": "delivery"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified vale-v1 replay with delivery-scope acknowledgements closed a request without saving a decision. Read the persisted decision before closure.",
+        "recommended_action": "read-decision",
+        "constraint_id": "persisted-decision-required"
+      },
+      "actions": {
+        "close-on-ack": "Use the ordinary completion action after the mobile acknowledgement.",
+        "read-decision": "Read the persisted decision before closing the request.",
+        "request-clarification": "Request clarification instead of choosing an executable next action."
+      },
+      "constraint_catalog": {
+        "persisted-decision-required": "Read the persisted decision before closing the request."
+      },
+      "source_path": "incidents/c23.md",
+      "manual_path": "manual/c23.md"
+    },
+    {
+      "case_id": "c24",
+      "goal_id": "bcaaef64-3215-58b0-804b-bf4a0931192a",
+      "topic": "attention",
+      "title": "Finish a synthetic Vale attention request after a mobile answer.",
+      "facts": {
+        "channel": "vale-v1",
+        "ack_scope": "delivery"
+      },
+      "manual_pin": "Synthetic local runbook: the ordinary documented action is close-on-ack. Apply a different action only when current verified local evidence establishes a matching exception. Absent such evidence, perform the documented action; speculative constraints delay this goal.",
+      "incident_initial": {
+        "incident_id": "I24",
+        "topic": "attention",
+        "verification": "verified",
+        "applies_when": {
+          "channel": "vale-v1",
+          "ack_scope": "delivery"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": false,
+        "finding": "A verified vale-v1 replay with delivery-scope acknowledgements closed a request without saving a decision. Read the persisted decision before closure.",
+        "recommended_action": "read-decision",
+        "constraint_id": "persisted-decision-required"
+      },
+      "incident_current": {
+        "incident_id": "I24",
+        "topic": "attention",
+        "verification": "verified",
+        "applies_when": {
+          "channel": "vale-v1",
+          "ack_scope": "delivery"
+        },
+        "obsolete_when": {
+          "retired": true
+        },
+        "retired": true,
+        "finding": "A verified vale-v1 replay with delivery-scope acknowledgements closed a request without saving a decision. Read the persisted decision before closure.",
+        "recommended_action": "read-decision",
+        "constraint_id": "persisted-decision-required"
+      },
+      "actions": {
+        "close-on-ack": "Use the ordinary completion action after the mobile acknowledgement.",
+        "read-decision": "Read the persisted decision before closing the request.",
+        "request-clarification": "Request clarification instead of choosing an executable next action."
+      },
+      "constraint_catalog": {
+        "persisted-decision-required": "Read the persisted decision before closing the request."
+      },
+      "source_path": "incidents/c24.md",
+      "manual_path": "manual/c24.md"
+    }
+  ]
+}

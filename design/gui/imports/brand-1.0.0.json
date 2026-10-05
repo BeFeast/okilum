@@ -1,0 +1,55 @@
+{
+  "schema": "tessera-design-tokens/v1",
+  "version": "1.0.0",
+  "status": "recommended",
+  "themes": {
+    "light": {
+      "canvas": "#F2F6FC",
+      "surface": "#FFFFFF",
+      "surfaceRaised": "#E9F0FC",
+      "text": "#102344",
+      "textMuted": "#4D6384",
+      "border": "#6C80A0",
+      "accent": "#2563EB",
+      "onAccent": "#FFFFFF",
+      "selected": "#DCEBFC",
+      "focus": "#086C97",
+      "success": "#197446",
+      "warning": "#855700",
+      "danger": "#B52D48",
+      "info": "#086C97",
+      "link": "#1753BF",
+      "borderSubtle": "#CDD9EA"
+    },
+    "dark": {
+      "canvas": "#060F25",
+      "surface": "#091633",
+      "surfaceRaised": "#0E2148",
+      "text": "#E9F0FC",
+      "textMuted": "#98AECF",
+      "border": "#607FA8",
+      "accent": "#2563EB",
+      "onAccent": "#FFFFFF",
+      "selected": "#163065",
+      "focus": "#38BDF8",
+      "success": "#4ADE80",
+      "warning": "#FBBF24",
+      "danger": "#FB7185",
+      "info": "#38BDF8",
+      "link": "#38BDF8",
+      "borderSubtle": "#21395C"
+    }
+  },
+  "typography": {
+    "fontFamilySans": "Inter, \"Instrument Sans\", \"DejaVu Sans\", sans-serif",
+    "fontFamilyMono": "\"JetBrains Mono\", \"DejaVu Sans Mono\", \"Noto Sans Mono\", monospace",
+    "sizeBody": 16,
+    "lineHeightBody": 1.5,
+    "fontFamilyDisplay": "\"Space Grotesk\", Inter, \"DejaVu Sans\", sans-serif"
+  },
+  "shape": {
+    "radiusSmall": 3,
+    "radiusMedium": 6,
+    "radiusLarge": 8
+  }
+}

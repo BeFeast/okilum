@@ -1,0 +1,469 @@
+diff --git a/crates/base/src/text/inline.rs b/crates/base/src/text/inline.rs
+index 83c5b146..0012921d 100644
+--- a/crates/base/src/text/inline.rs
++++ b/crates/base/src/text/inline.rs
+@@ -1,4 +1,6 @@
++use super::inline_geometry::InlineGeometry;
+ use gpui::Corners;
++use std::cell::OnceCell;
+ use std::{
+     ops::Range,
+     rc::Rc,
+@@ -228,6 +230,7 @@ impl Inline {
+     fn layout_selections(
+         &self,
+         text_layout: &TextLayout,
++        geometry: &OnceCell<InlineGeometry>,
+         bounds: &Bounds<Pixels>,
+         window: &mut Window,
+         cx: &mut App,
+@@ -264,6 +267,7 @@ impl Inline {
+         let Some((selection_start, selection_end)) = text_view_state.selection_points(cx) else {
+             return (is_selectable, false, None);
+         };
++        let positions = geometry.get_or_init(|| InlineGeometry::new(text_layout));
+         let line_height = window.line_height();
+ 
+         // Use for debug selection bounds
+@@ -292,14 +296,14 @@ impl Inline {
+         let mut offset = 0;
+         let mut chars = self.text.chars().peekable();
+         while let Some(c) = chars.next() {
+-            let Some(pos) = text_layout.position_for_index(offset) else {
++            let Some(pos) = positions.position_for_index(offset) else {
+                 offset += c.len_utf8();
+                 continue;
+             };
+ 
+             let next_offset = offset + c.len_utf8();
+             let mut char_width = line_height.half();
+-            if let Some(next_pos) = text_layout.position_for_index(next_offset) {
++            if let Some(next_pos) = positions.position_for_index(next_offset) {
+                 if next_pos.y == pos.y {
+                     char_width = next_pos.x - pos.x;
+                 }
+@@ -324,7 +328,7 @@ impl Inline {
+ 
+     fn text_line_bounds(
+         &self,
+-        text_layout: &TextLayout,
++        text_layout: &InlineGeometry,
+         line_height: Pixels,
+         mask_bounds: Bounds<Pixels>,
+     ) -> Vec<Bounds<Pixels>> {
+@@ -555,9 +559,10 @@ impl Element for Inline {
+         self.styled_text
+             .paint(global_id, None, bounds, &mut (), &mut (), window, cx);
+ 
+-        // layout selections
++        // One transient index serves selection and hit geometry for this paint.
++        let geometry = OnceCell::new();
+         let (is_selectable, is_selection, selection) =
+-            self.layout_selections(&text_layout, &bounds, window, cx);
++            self.layout_selections(&text_layout, &geometry, &bounds, window, cx);
+ 
+         state.selection = selection;
+ 
+@@ -582,7 +587,7 @@ impl Element for Inline {
+         if is_selectable {
+             if let Some(text_view_state) = GlobalState::global(cx).text_view_state().cloned() {
+                 let text_bounds = self.text_line_bounds(
+-                    &text_layout,
++                    geometry.get_or_init(|| InlineGeometry::new(&text_layout)),
+                     text_layout.line_height(),
+                     window.content_mask().bounds,
+                 );
+@@ -923,6 +928,129 @@ mod tests {
+     use super::{InlineHighlight, combine_highlights, point_in_text_selection, text_runs};
+     use gpui::{FontWeight, HighlightStyle, SharedString, TextStyle, point, px};
+ 
++    #[test]
++    fn indexed_geometry_preserves_masked_bounds_and_offscreen_drag() {
++        use super::{Inline, InlineGeometry, InlineState};
++        use gpui::{Bounds, Half, Pixels, Point, TextSystem, WindowTextSystem, size};
++        use std::sync::{Arc, Mutex};
++
++        let system = WindowTextSystem::new(Arc::new(TextSystem::new(Arc::new(
++            super::test_fonts::WideMonoTextSystem,
++        ))));
++        let height = px(18.);
++        let origin = point(px(-7.), px(-36.));
++        for text in [
++            "abc def ghi jkl mno",
++            "a\r\nb\tc\n",
++            "אבג e\u{301}👩\u{200d}💻\u{200b}",
++            "",
++        ] {
++            let style = TextStyle {
++                font_family: "Body".into(),
++                ..Default::default()
++            };
++            let shaped = system
++                .shape_text(
++                    text.into(),
++                    px(14.),
++                    &[style.to_run(text.len())],
++                    Some(px(28.)),
++                    None,
++                )
++                .unwrap();
++            let geometry = InlineGeometry::from_lines(
++                shaped.iter().map(|l| l.as_ref()),
++                origin,
++                height,
++            );
++            let oracle = |index: usize| {
++                let mut start = 0;
++                let mut offset = origin;
++                for line in &shaped {
++                    if index < start {
++                        break;
++                    }
++                    if index <= start + line.len() {
++                        return line
++                            .position_for_index(index - start, height)
++                            .map(|p| offset + p);
++                    }
++                    start += line.len() + 1;
++                    offset.y += line.size(height).height;
++                }
++                None
++            };
++            let inline = Inline::new(
++                "geometry-oracle",
++                Arc::new(Mutex::new(InlineState {
++                    text: text.into(),
++                    ..Default::default()
++                })),
++                vec![],
++                vec![],
++                None,
++            );
++            for mask in [
++                Bounds::new(point(px(0.), px(0.)), size(px(21.), px(36.))),
++                Bounds::new(point(px(-100.), px(-100.)), size(px(300.), px(400.))),
++            ] {
++                // Original per-character GPUI algorithm, retained only as a small oracle.
++                let mut expected: Vec<Bounds<Pixels>> = Vec::new();
++                let mut current_y = None;
++                for (index, ch) in text.char_indices() {
++                    let Some(pos) = oracle(index) else {
++                        continue;
++                    };
++                    let width = oracle(index + ch.len_utf8())
++                        .filter(|next| next.y == pos.y)
++                        .map(|next| next.x - pos.x)
++                        .unwrap_or(height.half());
++                    let bounds = Bounds::from_corners(pos, point(pos.x + width, pos.y + height))
++                        .intersect(&mask);
++                    if bounds.size.width <= px(0.) || bounds.size.height <= px(0.) {
++                        continue;
++                    }
++                    if current_y == Some(pos.y) {
++                        let last = expected.last_mut().unwrap();
++                        *last = last.union(&bounds);
++                    } else {
++                        expected.push(bounds);
++                        current_y = Some(pos.y);
++                    }
++                }
++                assert_eq!(
++                    inline.text_line_bounds(&geometry, height, mask),
++                    expected,
++                    "text={text:?}"
++                );
++            }
++            // Selection uses window height, which may differ from layout height;
++            // anchors extend beyond the mask and reverse drag direction as before.
++            for (start, end) in [
++                (point(px(0.), px(-100.)), point(px(20.), px(100.))),
++                (point(px(20.), px(100.)), point(px(0.), px(-100.))),
++            ] {
++                let selected = |position: &dyn Fn(usize) -> Option<Point<Pixels>>| {
++                    text.char_indices()
++                        .filter_map(|(index, ch)| {
++                            let pos = position(index)?;
++                            let width = position(index + ch.len_utf8())
++                                .filter(|next| next.y == pos.y)
++                                .map(|next| next.x - pos.x)
++                                .unwrap_or(px(25.).half());
++                            point_in_text_selection(pos, width, start, end, px(25.))
++                                .then_some(index..index + ch.len_utf8())
++                        })
++                        .collect::<Vec<_>>()
++                };
++                assert_eq!(
++                    selected(&|index| geometry.position_for_index(index)),
++                    selected(&oracle)
++                );
++            }
++        }
++    }
++
+     fn mono(style: HighlightStyle) -> InlineHighlight {
+         InlineHighlight {
+             style,
+diff --git a/crates/base/src/text/inline_geometry.rs b/crates/base/src/text/inline_geometry.rs
+new file mode 100644
+index 00000000..c5bdf476
+--- /dev/null
++++ b/crates/base/src/text/inline_geometry.rs
+@@ -0,0 +1,246 @@
++//! Per-paint lookup of GPUI's existing geometry, without repeated glyph-prefix scans.
++use gpui::{Pixels, Point, TextLayout, WrappedLineLayout, point};
++
++/// GPUI returns the first glyph whose byte index is >= the requested index.
++/// Keeping only strict prefix maxima preserves that rule even for bidi glyphs
++/// whose byte indices are not sorted. Equal indices keep their first position.
++struct FirstAtOrAfter<T> {
++    entries: Vec<(usize, T)>,
++    #[cfg(test)]
++    comparisons: std::cell::Cell<usize>,
++}
++
++impl<T> FirstAtOrAfter<T> {
++    fn new() -> Self {
++        Self {
++            entries: Vec::new(),
++            #[cfg(test)]
++            comparisons: std::cell::Cell::new(0),
++        }
++    }
++
++    fn push(&mut self, index: usize, value: T) {
++        if self.entries.last().is_none_or(|(last, _)| index > *last) {
++            self.entries.push((index, value));
++        }
++    }
++
++    fn get(&self, index: usize) -> Option<&T> {
++        let offset = self.entries.partition_point(|(end, _)| {
++            #[cfg(test)]
++            self.comparisons.set(self.comparisons.get() + 1);
++            *end < index
++        });
++        self.entries.get(offset).map(|(_, value)| value)
++    }
++}
++
++struct IndexedLine {
++    start: usize,
++    origin: Point<Pixels>,
++    width: Pixels,
++    glyph_x: FirstAtOrAfter<Pixels>,
++    // x is the unwrapped start x; y is the original visual row's offset.
++    rows: FirstAtOrAfter<Point<Pixels>>,
++}
++
++/// Built lazily for selectable Inline geometry and dropped at the end of paint.
++/// It owns no font, shaping cache, source mapping, or state across frames.
++pub(super) struct InlineGeometry {
++    lines: FirstAtOrAfter<IndexedLine>,
++}
++
++impl InlineGeometry {
++    pub(super) fn new(layout: &TextLayout) -> Self {
++        Self::from_lines(
++            layout.line_layouts().iter().map(|line| line.as_ref()),
++            layout.bounds().origin,
++            layout.line_height(),
++        )
++    }
++
++    pub(super) fn from_lines<'a>(
++        layouts: impl IntoIterator<Item = &'a WrappedLineLayout>,
++        mut origin: Point<Pixels>,
++        line_height: Pixels,
++    ) -> Self {
++        let mut lines = FirstAtOrAfter::new();
++        let mut start = 0;
++        for layout in layouts {
++            let mut glyph_x = FirstAtOrAfter::new();
++            for run in &layout.unwrapped_layout.runs {
++                for glyph in &run.glyphs {
++                    glyph_x.push(glyph.index, glyph.position.x);
++                }
++            }
++            let width = layout.unwrapped_layout.width;
++            let mut rows = FirstAtOrAfter::new();
++            let mut row_start = 0;
++            for (row, end) in layout
++                .wrap_boundaries
++                .iter()
++                .map(|boundary| {
++                    layout.unwrapped_layout.runs[boundary.run_ix].glyphs[boundary.glyph_ix].index
++                })
++                .chain([layout.len()])
++                .enumerate()
++            {
++                let x = glyph_x.get(row_start).copied().unwrap_or(width);
++                rows.push(end, point(x, line_height * row));
++                // Preserve the preceding raw boundary, not just retained maxima.
++                row_start = end;
++            }
++            lines.push(
++                start + layout.len(),
++                IndexedLine {
++                    start,
++                    origin,
++                    width,
++                    glyph_x,
++                    rows,
++                },
++            );
++            start += layout.len() + 1;
++            origin.y += layout.size(line_height).height;
++        }
++        Self { lines }
++    }
++
++    pub(super) fn position_for_index(&self, index: usize) -> Option<Point<Pixels>> {
++        let line = self.lines.get(index)?;
++        let local = index.checked_sub(line.start)?;
++        let row = line.rows.get(local)?;
++        let x = line.glyph_x.get(local).copied().unwrap_or(line.width);
++        Some(line.origin + point(x - row.x, row.y))
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use gpui::px;
++    use gpui::{FontId, GlyphId, LineLayout, ShapedGlyph, ShapedRun, WrapBoundary};
++    use std::sync::Arc;
++
++    fn line(len: usize, indices: &[usize], wraps: &[usize]) -> WrappedLineLayout {
++        WrappedLineLayout {
++            unwrapped_layout: Arc::new(LineLayout {
++                len,
++                width: px(indices.len() as f32 * 7.),
++                runs: vec![ShapedRun {
++                    font_id: FontId(0),
++                    glyphs: indices
++                        .iter()
++                        .enumerate()
++                        .map(|(i, index)| ShapedGlyph {
++                            id: GlyphId(i as u32),
++                            index: *index,
++                            // Include zero-width advances as well as reordered indices.
++                            position: point(px((i / 2) as f32 * 7.), px(0.)),
++                            is_emoji: false,
++                        })
++                        .collect(),
++                }],
++                ..Default::default()
++            }),
++            wrap_boundaries: wraps
++                .iter()
++                .map(|i| WrapBoundary {
++                    run_ix: 0,
++                    glyph_ix: *i,
++                })
++                .collect(),
++            wrap_width: Some(px(21.)),
++        }
++    }
++
++    // The original public GPUI lookup is the oracle, including its inclusive
++    // wrap-end affinity. Do not substitute an idealized bidi interpretation.
++    fn oracle(
++        lines: &[WrappedLineLayout],
++        mut origin: Point<Pixels>,
++        height: Pixels,
++        index: usize,
++    ) -> Option<Point<Pixels>> {
++        let mut start = 0;
++        for line in lines {
++            let end = start + line.len();
++            if index < start {
++                break;
++            }
++            if index <= end {
++                return line
++                    .position_for_index(index - start, height)
++                    .map(|p| origin + p);
++            }
++            start = end + 1;
++            origin.y += line.size(height).height;
++        }
++        None
++    }
++
++    #[test]
++    fn positions_match_gpui_for_wrapping_unicode_bidi_and_glyphless_lines() {
++        let samples = [
++            "ascii\r\n",
++            "אבג عربي",
++            "e\u{301}👩\u{200d}💻\u{200b}",
++            "\t\r",
++            "",
++        ];
++        for text in samples {
++            let indices: Vec<_> = text.char_indices().map(|(i, _)| i).collect();
++            let mut backwards = indices.clone();
++            backwards.reverse();
++            for glyphs in [indices, backwards, vec![0, 4, 2, 2, 1, 9, 5, 11], vec![]] {
++                let wraps: Vec<_> = (1..glyphs.len()).step_by(2).collect();
++                let lines = vec![
++                    line(text.len(), &glyphs, &wraps),
++                    line(0, &[], &[]),
++                    line(5, &[0, 2, 2, 4], &[1, 2]),
++                ];
++                let origin = point(px(-5.), px(-30.));
++                let height = px(18.);
++                let geometry = InlineGeometry::from_lines(lines.iter(), origin, height);
++                let len: usize = lines.iter().map(|l| l.len() + 1).sum();
++                for index in 0..=len + 1 {
++                    assert_eq!(
++                        geometry.position_for_index(index),
++                        oracle(&lines, origin, height, index),
++                        "text={text:?}, glyphs={glyphs:?}, index={index}"
++                    );
++                }
++            }
++        }
++    }
++
++    #[test]
++    fn long_line_lookup_work_grows_below_quadratic() {
++        let comparisons = |len: usize| {
++            let indices: Vec<_> = (0..len).collect();
++            let wraps: Vec<_> = (64..len).step_by(64).collect();
++            let lines = [line(len, &indices, &wraps)];
++            let geometry = InlineGeometry::from_lines(lines.iter(), point(px(0.), px(0.)), px(18.));
++            for index in 0..=len {
++                assert!(geometry.position_for_index(index).is_some());
++            }
++            geometry.lines.comparisons.get()
++                + geometry
++                    .lines
++                    .entries
++                    .iter()
++                    .map(|(_, l)| l.glyph_x.comparisons.get() + l.rows.comparisons.get())
++                    .sum::<usize>()
++        };
++        let small = comparisons(4096);
++        let large = comparisons(16384);
++        assert!(
++            large < small * 6,
++            "four times the text must not cause sixteen times the work: {small} -> {large}"
++        );
++        assert!(
++            large < 16385 * 40,
++            "bound actual binary-search comparisons: {large}"
++        );
++    }
++}
+diff --git a/crates/base/src/text/mod.rs b/crates/base/src/text/mod.rs
+index 4828f53d..dededf71 100644
+--- a/crates/base/src/text/mod.rs
++++ b/crates/base/src/text/mod.rs
+@@ -2,6 +2,7 @@ mod document;
+ mod format;
+ mod inline;
+ mod inline_flow;
++mod inline_geometry;
+ mod markdown_ext;
+ mod node;
+ pub(crate) mod selection;

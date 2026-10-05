@@ -1,0 +1,505 @@
+--- a/crates/base/src/text_selection.rs
++++ b/crates/base/src/text_selection.rs
+@@ -495,6 +495,7 @@
+ }
+ 
+ type FocusCallback = Rc<dyn Fn(&mut Window, &mut App)>;
++type PreservePointerPredicate = Rc<dyn Fn(&MouseDownEvent) -> bool>;
+ type ClearHandler = Rc<dyn Fn(&mut App)>;
+ type CopyCallback = Rc<dyn Fn(&mut App) -> String>;
+ type ContentKeyResolver = Rc<dyn Fn(Point<Pixels>, &App) -> Option<TextSelectionContentKey>>;
+@@ -849,6 +850,10 @@
+     frame_generation: u64,
+     finish_frame_scheduled: bool,
+     mouse_down_prepared: bool,
++    // Opt-in control geometry is rebuilt each frame, independently of paint order.
++    pending_preserve_regions: Vec<PreservePointerPredicate>,
++    preserve_regions: Vec<PreservePointerPredicate>,
++    preserving_pointer_gesture: bool,
+     auto_scroll: AutoScroll,
+ }
+ 
+@@ -974,6 +979,7 @@
+     /// whether a participant or the lifecycle element paints first.
+     pub fn finish_frame(&mut self, cx: &mut App) -> Vec<ClearHandler> {
+         self.finish_frame_scheduled = false;
++        self.preserve_regions = std::mem::take(&mut self.pending_preserve_regions);
+         let stale = self
+             .participants
+             .iter()
+@@ -1652,6 +1658,32 @@
+ pub struct TextSelection;
+ 
+ impl TextSelection {
++    /// Opt a painted control into preserving the current selection while its
++    /// pointer gesture runs. Register only the control's visible hit area on
++    /// every frame. This does not consume input or affect ordinary text clicks.
++    /// Useful for splitters and presentation controls outside the document.
++    pub fn preserve_on_pointer_down(bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
++        Self::preserve_on_pointer_down_when(
++            move |event| bounds.contains(&event.position),
++            window,
++            cx,
++        );
++    }
++
++    /// Preserve selection for an exact, host-defined pointer hit test. Register
++    /// each frame; predicates must use that frame's clipped geometry.
++    pub fn preserve_on_pointer_down_when(
++        predicate: impl Fn(&MouseDownEvent) -> bool + 'static,
++        window: &mut Window,
++        cx: &mut App,
++    ) {
++        if let Some(state) = live_text_selection_state(window, cx) {
++            state.update(cx, |state, _| {
++                state.pending_preserve_regions.push(Rc::new(predicate))
++            });
++        }
++    }
++
+     /// Returns the currently selected text in logical document order.
+     pub fn selected_text(window: &mut Window, cx: &mut App) -> String {
+         let Some(state) = live_text_selection_state(window, cx) else {
+@@ -1917,9 +1949,26 @@
+                     return Vec::new();
+                 }
+                 state.mouse_down_prepared = true;
++                state.preserving_pointer_gesture = state
++                    .preserve_regions
++                    .iter()
++                    .any(|predicate| predicate(event));
++                if state.preserving_pointer_gesture {
++                    return Vec::new();
++                }
+                 state.prepare_for_mouse_down(event.click_count == 1 && event.modifiers.shift, cx)
+             });
+             dispatch_clear_handlers(handlers, cx);
++            // Deduplicate layers within this event, not across gestures. A lost
++            // MouseUp must not exempt the next ordinary document press.
++            let prepared = state.downgrade();
++            cx.defer(move |cx| {
++                if let Some(state) = prepared.upgrade() {
++                    state.update(cx, |state, _| state.mouse_down_prepared = false);
++                }
++            });
++        } else if state.read(cx).preserving_pointer_gesture {
++            return;
+         } else if event.click_count == 1 {
+             if GlobalState::is_text_selection_suppressed(cx) {
+                 state.update(cx, |state, _| state.pending_extension_anchor = None);
+@@ -1948,7 +1997,9 @@
+             && let Some(state) = mouse_move_state.upgrade()
+         {
+             state.update(cx, |state, cx| {
+-                state.update_in_window(event.position, window, cx)
++                if !state.preserving_pointer_gesture {
++                    state.update_in_window(event.position, window, cx);
++                }
+             });
+             WindowSelectionState::resolve_content_keys(&state, cx);
+         }
+@@ -1961,6 +2012,9 @@
+         {
+             state.update(cx, |state, cx| {
+                 state.mouse_down_prepared = false;
++                if std::mem::take(&mut state.preserving_pointer_gesture) {
++                    return;
++                }
+                 state.end(cx)
+             });
+         }
+--- a/crates/base/src/text/state.rs
++++ b/crates/base/src/text/state.rs
+@@ -22,7 +22,7 @@
+         document::ParsedDocument,
+         format,
+         node::{self, NodeContext},
+-        selection_adapter::TextViewSelectionAdapter,
++        selection_adapter::{SelectionIdentity, TextViewSelectionAdapter},
+     },
+     v_flex,
+ };
+@@ -139,6 +139,7 @@
+     revision: usize,
+     pub(super) selection_revision: usize,
+     compatible_layout_update: bool,
++    pub(super) retain_selection_on_layout: bool,
+     parsed_error: Option<SharedString>,
+     tx: Sender<UpdateOptions>,
+     _parse_task: Task<()>,
+@@ -246,6 +247,7 @@
+             revision: 0,
+             selection_revision: 0,
+             compatible_layout_update: false,
++            retain_selection_on_layout: false,
+             tx,
+             _parse_task,
+             _receive_task,
+@@ -423,6 +425,46 @@
+     ) {
+         self.selection_format = selection_format;
+         cx.notify();
++    }
++
++    /// Keep settled inline ranges through layout changes. Content revisions and
++    /// ordinary selection-clearing clicks still clear them. Hosts opt in only
++    /// when their layout controls preserve the corresponding pointer gesture.
++    pub fn retain_selection_on_layout(mut self, retain: bool) -> Self {
++        self.retain_selection_on_layout = retain;
++        self
++    }
++
++    pub(super) fn retained_inline_selection(
++        &self,
++        y: Pixels,
++        materialized_selection: Option<SelectionIdentity>,
++        cx: &App,
++    ) -> Option<bool> {
++        if !self.retain_selection_on_layout
++            || !self.selectable
++            || self.select_all
++            || self.is_selecting
++            || (!self.selection_adapter.has_selection_snapshot(cx)
++                && self.multi_click_selection.is_none())
++        {
++            return None;
++        }
++        let full = self
++            .selection_adapter
++            .block_range(
++                self.parsed_content.document.blocks.len().saturating_sub(1),
++                cx,
++            )
++            .zip(self.block_ix_at(y - self.bounds.origin.y - self.scroll_offset().y))
++            .is_some_and(|(range, block)| block > *range.start() && block < *range.end());
++        if !full
++            && self.multi_click_selection.is_none()
++            && self.selection_identity(cx) != materialized_selection
++        {
++            return None;
++        }
++        Some(full)
+     }
+ 
+     /// Set whether the text view scrolls internally, default false.
+@@ -778,6 +820,12 @@
+             state.list_state.scroll_by(delta);
+             cx.notify();
+         });
++    }
++
++    /// Captured selection identity; presentation translation is not a new gesture.
++    pub(super) fn selection_identity(&self, cx: &App) -> Option<SelectionIdentity> {
++        self.selection_adapter
++            .selection_identity(self.selection_revision, cx)
+     }
+ 
+     /// Return the window selection (anchor, cursor) in window coordinates if
+@@ -915,7 +963,10 @@
+                     state.compatible_layout_update = false;
+                 });
+                 if !is_selecting
+-                    && ((size_changed && selection_involves_view && !compatible_layout_update)
++                    && ((size_changed
++                        && selection_involves_view
++                        && !compatible_layout_update
++                        && !state.read(cx).retain_selection_on_layout)
+                         || (revision_changed && has_selection_snapshot))
+                 {
+                     TextSelection::clear(window, cx);
+--- a/crates/base/src/text/inline.rs
++++ b/crates/base/src/text/inline.rs
+@@ -148,6 +148,7 @@
+     /// The text that actually rendering, matched with selection.
+     pub(super) text: SharedString,
+     pub(super) selection: Option<Selection>,
++    materialized_selection: Option<super::selection_adapter::SelectionIdentity>,
+ }
+ 
+ impl InlineState {
+@@ -292,9 +293,29 @@
+         // (not scrolled) lies outside that band and is still excluded, while
+         // the highlight quads painted for off-screen glyphs are clipped away by
+         // GPUI's content mask as before.
++        (
++            true,
++            true,
++            Self::project_selection(
++                &self.text,
++                positions,
++                selection_start,
++                selection_end,
++                line_height,
++            ),
++        )
++    }
++
++    fn project_selection(
++        text: &str,
++        positions: &InlineGeometry,
++        selection_start: Point<Pixels>,
++        selection_end: Point<Pixels>,
++        line_height: Pixels,
++    ) -> Option<Selection> {
+         let mut selection: Option<Selection> = None;
+         let mut offset = 0;
+-        let mut chars = self.text.chars().peekable();
++        let mut chars = text.chars().peekable();
+         while let Some(c) = chars.next() {
+             let Some(pos) = positions.position_for_index(offset) else {
+                 offset += c.len_utf8();
+@@ -323,7 +344,7 @@
+             offset = next_offset;
+         }
+ 
+-        (true, true, selection)
++        selection
+     }
+ 
+     fn text_line_bounds(
+@@ -561,10 +582,27 @@
+ 
+         // One transient index serves selection and hit geometry for this paint.
+         let geometry = OnceCell::new();
+-        let (is_selectable, is_selection, selection) =
+-            self.layout_selections(&text_layout, &geometry, &bounds, window, cx);
++        let retained = GlobalState::global(cx).text_view_state().and_then(|view| {
++            view.read(cx)
++                .retained_inline_selection(bounds.top(), state.materialized_selection, cx)
++        });
++        let (is_selectable, is_selection, selection) = if let Some(full) = retained {
++            // Stable byte ranges belong to parsed inline text, not its old
++            // pixel position. Fully enclosed virtual blocks remain selected.
++            let selection = if full {
++                Some((0..self.text.len()).into())
++            } else {
++                state.selection.clone()
++            };
++            (true, true, selection)
++        } else {
++            self.layout_selections(&text_layout, &geometry, &bounds, window, cx)
++        };
+ 
+         state.selection = selection;
++        state.materialized_selection = GlobalState::global(cx)
++            .text_view_state()
++            .and_then(|view| view.read(cx).selection_identity(cx));
+ 
+         if is_selection || is_selectable {
+             window.set_cursor_style(CursorStyle::IBeam, &hitbox);
+@@ -585,6 +623,37 @@
+         }
+ 
+         if is_selectable {
++            // Native input can deliver the final Move and Up before a draw.
++            // Materialize against the layout that received that gesture before
++            // the window layer settles it; later presentation reflow can then
++            // retain byte ranges, never the preceding frame's stale range.
++            if let Some(view) = GlobalState::global(cx).text_view_state().cloned()
++                && view.read(cx).retain_selection_on_layout
++            {
++                let layout = text_layout.clone();
++                let text = self.text.clone();
++                let inline = self.state.clone();
++                window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
++                    if !phase.capture() || event.button != MouseButton::Left {
++                        return;
++                    }
++                    let Some((anchor, cursor)) =
++                        view.read(cx).selection_adapter.selecting_points(cx)
++                    else {
++                        return;
++                    };
++                    if let Ok(mut state) = inline.lock() {
++                        state.selection = Self::project_selection(
++                            &text,
++                            &InlineGeometry::new(&layout),
++                            anchor,
++                            cursor,
++                            layout.line_height(),
++                        );
++                        state.materialized_selection = view.read(cx).selection_identity(cx);
++                    }
++                });
++            }
+             if let Some(text_view_state) = GlobalState::global(cx).text_view_state().cloned() {
+                 let text_bounds = self.text_line_bounds(
+                     geometry.get_or_init(|| InlineGeometry::new(&text_layout)),
+@@ -958,11 +1027,8 @@
+                     None,
+                 )
+                 .unwrap();
+-            let geometry = InlineGeometry::from_lines(
+-                shaped.iter().map(|l| l.as_ref()),
+-                origin,
+-                height,
+-            );
++            let geometry =
++                InlineGeometry::from_lines(shaped.iter().map(|l| l.as_ref()), origin, height);
+             let oracle = |index: usize| {
+                 let mut start = 0;
+                 let mut offset = origin;
+--- a/crates/base/src/text/selection_adapter.rs
++++ b/crates/base/src/text/selection_adapter.rs
+@@ -7,6 +7,15 @@
+ use gpui::{App, Bounds, EntityId, Hitbox, Pixels, Point, WeakEntity, Window};
+ 
+ use super::TextViewState;
++
++/// Identity captured from an actual selection, independent of its per-frame
++/// window projection. The revision identifies the parsed content generation.
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub(super) struct SelectionIdentity {
++    anchor: TextSelectionEndpoint,
++    cursor: TextSelectionEndpoint,
++    revision: usize,
++}
+ 
+ #[derive(Clone, Copy, Debug, PartialEq)]
+ struct CachedBlockEndpoint {
+@@ -212,6 +221,34 @@
+         );
+     }
+ 
++    pub(super) fn block_range(&self, last: usize, cx: &App) -> Option<RangeInclusive<usize>> {
++        let mut blocks = VirtualBlockSelection::default();
++        blocks.update(self.selection.snapshot(cx), self.selection.entity_id());
++        blocks.block_range(self.selection.entity_id(), last)
++    }
++
++    pub(super) fn selection_identity(
++        &self,
++        revision: usize,
++        cx: &App,
++    ) -> Option<SelectionIdentity> {
++        let snapshot = self.selection.snapshot(cx)?;
++        Some(SelectionIdentity {
++            anchor: snapshot.anchor(),
++            cursor: snapshot.cursor(),
++            revision,
++        })
++    }
++
++    pub(super) fn selecting_points(&self, cx: &App) -> Option<(Point<Pixels>, Point<Pixels>)> {
++        let snapshot = self.selection.snapshot(cx)?;
++        if !snapshot.is_selecting() {
++            return None;
++        }
++        let points = snapshot.window_points()?;
++        Some((points.anchor(), points.cursor()))
++    }
++
+     pub(super) fn selection_points(&self, cx: &App) -> Option<(Point<Pixels>, Point<Pixels>)> {
+         let points = self.selection.snapshot(cx)?.window_points()?;
+         Some((points.anchor(), points.cursor()))
+--- a/crates/base/src/text/text_view.rs
++++ b/crates/base/src/text/text_view.rs
+@@ -1002,6 +1002,108 @@
+     }
+ 
+     #[gpui::test]
++    fn retained_selection_materializes_release_before_draw_and_select_all(cx: &mut TestAppContext) {
++        use gpui::{InputEvent, MouseDownEvent, MouseMoveEvent, MouseUpEvent};
++        cx.update(crate::init);
++        let source = "0123456789 abcdefghijklmnopqrstuvwxyz";
++        let (root, cx) = cx.add_window_view(|_, cx| TableSelectionTestRoot {
++            text_view: cx
++                .new(|cx| TextViewState::markdown(source, cx).retain_selection_on_layout(true)),
++        });
++        let cx: &mut VisualTestContext = cx;
++        cx.run_until_parked();
++        let start = point(px(10.), px(10.));
++        let finish = point(px(90.), px(10.));
++        cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
++        cx.simulate_mouse_move(finish, MouseButton::Left, Modifiers::default());
++        cx.simulate_mouse_up(finish, MouseButton::Left, Modifiers::default());
++        let expected = root.read_with(cx, |root, cx| root.text_view.read(cx).selected_text());
++        assert!(!expected.is_empty() && expected.trim().len() < source.len());
++        assert_eq!(source.matches(expected.trim()).count(), 1);
++        for first_fast_drag in [false, true] {
++            cx.simulate_click(point(px(400.), px(10.)), Modifiers::default());
++            if !first_fast_drag {
++                cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
++                cx.simulate_mouse_move(
++                    point(px(40.), px(10.)),
++                    MouseButton::Left,
++                    Modifiers::default(),
++                );
++                let previous =
++                    root.read_with(cx, |root, cx| root.text_view.read(cx).selected_text());
++                assert_ne!(
++                    previous, expected,
++                    "previous painted range A differs from B"
++                );
++            }
++            // One App update: dispatch input directly, so effects/test-support
++            // cannot draw between the final Move and Up (or the first Down).
++            cx.update(|window, cx| {
++                if first_fast_drag {
++                    window.dispatch_event(
++                        MouseDownEvent {
++                            position: start,
++                            button: MouseButton::Left,
++                            modifiers: Modifiers::default(),
++                            click_count: 1,
++                            first_mouse: false,
++                        }
++                        .to_platform_input(),
++                        cx,
++                    );
++                }
++                window.dispatch_event(
++                    MouseMoveEvent {
++                        position: finish,
++                        pressed_button: Some(MouseButton::Left),
++                        modifiers: Modifiers::default(),
++                    }
++                    .to_platform_input(),
++                    cx,
++                );
++                window.dispatch_event(
++                    MouseUpEvent {
++                        position: finish,
++                        button: MouseButton::Left,
++                        modifiers: Modifiers::default(),
++                        click_count: 1,
++                    }
++                    .to_platform_input(),
++                    cx,
++                );
++                assert_eq!(
++                    root.read(cx).text_view.read(cx).selected_text(),
++                    expected,
++                    "final range materialized at release, before any draw"
++                );
++            });
++            cx.run_until_parked();
++            root.read_with(cx, |root, cx| {
++                assert_eq!(root.text_view.read(cx).selected_text(), expected)
++            });
++        }
++        root.update(cx, |root, cx| {
++            root.text_view.update(cx, |state, cx| state.select_all(cx))
++        });
++        cx.run_until_parked();
++        root.read_with(cx, |root, cx| {
++            let state = root.text_view.read(cx);
++            assert_eq!(state.selected_text().trim(), source, "copy covers all");
++            // Inspect materialized inline ranges used by paint_selection, not
++            // the select_all copy shortcut, which masked the stale highlight.
++            assert_eq!(
++                state
++                    .parsed_content
++                    .document
++                    .selected_text(crate::text::SelectionFormat::Plain, None)
++                    .trim(),
++                source,
++                "rendered highlight covers all"
++            );
++        });
++    }
++
++    #[gpui::test]
+     fn table_drag_selection_settles_without_requesting_idle_frames(cx: &mut TestAppContext) {
+         cx.update(crate::init);
+         let (_, cx) = cx.add_window_view(|_, cx| TableSelectionTestRoot {

@@ -1,0 +1,1004 @@
+diff --git a/crates/base/src/text/format/markdown.rs b/crates/base/src/text/format/markdown.rs
+index 1bccbdff..8c7602e7 100644
+--- a/crates/base/src/text/format/markdown.rs
++++ b/crates/base/src/text/format/markdown.rs
+@@ -343,6 +343,7 @@ fn ast_to_node(source: &str, value: mdast::Node, cx: &mut NodeContext) -> BlockN
+     let parse_cx = MarkdownParseContext::new(source, cx.offset);
+     if let Some(mut node) = cx.markdown_extensions.parse_block(&value, &parse_cx) {
+         node.set_span(span);
++        node.prepare_parts(cx);
+         return BlockNode::Custom(node);
+     }
+ 
+diff --git a/crates/base/src/text/inline.rs b/crates/base/src/text/inline.rs
+index 7b579c19..83c5b146 100644
+--- a/crates/base/src/text/inline.rs
++++ b/crates/base/src/text/inline.rs
+@@ -126,6 +126,9 @@ pub(super) fn text_runs(
+ ///
+ /// All text in TextView (including the CodeBlock) used this for text rendering.
+ pub(super) struct Inline {
++    search_segment: usize,
++    search_offset: usize,
++    search_scroll: Option<gpui::Entity<gpui::ScrollHandle>>,
+     id: ElementId,
+     text: SharedString,
+     links: Rc<Vec<(Range<usize>, LinkMark)>>,
+@@ -167,6 +170,9 @@ impl Inline {
+ 
+         Self {
+             id: id.into(),
++            search_segment: Arc::as_ptr(&state) as usize,
++            search_offset: 0,
++            search_scroll: None,
+             links: Rc::new(links),
+             highlights,
+             text: text.clone(),
+@@ -176,6 +182,20 @@ impl Inline {
+         }
+     }
+ 
++    pub(super) fn search_source(mut self, state: &Arc<Mutex<InlineState>>, offset: usize) -> Self {
++        self.search_segment = Arc::as_ptr(state) as usize;
++        self.search_offset = offset;
++        self
++    }
++
++    pub(super) fn search_scroll(
++        mut self,
++        scroll: Option<gpui::Entity<gpui::ScrollHandle>>,
++    ) -> Self {
++        self.search_scroll = scroll;
++        self
++    }
++
+     /// Get link at given mouse position.
+     fn link_for_position(
+         layout: &TextLayout,
+@@ -478,10 +498,26 @@ impl Element for Inline {
+         self.styled_text
+             .prepaint(id, inspector_id, bounds, &mut (), window, cx);
+ 
++        let text_layout = self.styled_text.layout().clone();
++        if let Some(view) = GlobalState::global(cx).text_view_state().cloned() {
++            let horizontal = self
++                .search_scroll
++                .as_ref()
++                .map(|handle| handle.read(cx).clone());
++            view.update(cx, |view, _| {
++                view.record_search_geometry(
++                    self.search_segment,
++                    self.search_offset,
++                    self.text.len(),
++                    &text_layout,
++                    horizontal.as_ref(),
++                )
++            });
++        }
++
+         // Report this element's laid-out extent so an ancestor TextView with
+         // `max_lines` can snap its clip to a whole-line boundary. The state
+-        // stack only holds an entry during prepaint when that view set
+-        // `max_lines`, so this is a no-op otherwise.
++        // stack is also available before clipping for search target geometry.
+         if let Some(text_view_state) = GlobalState::global(cx).text_view_state().cloned() {
+             let state = text_view_state.read(cx);
+             if state.max_lines.is_some()
+diff --git a/crates/base/src/text/inline_flow.rs b/crates/base/src/text/inline_flow.rs
+index 8558f7ac..0e956be4 100644
+--- a/crates/base/src/text/inline_flow.rs
++++ b/crates/base/src/text/inline_flow.rs
+@@ -22,6 +22,7 @@ use super::{
+ const IMAGE_LEN: usize = 1;
+ 
+ pub(super) struct InlineFlow {
++    search_scroll: Option<gpui::Entity<gpui::ScrollHandle>>,
+     id: ElementId,
+     items: Vec<InlineFlowItem>,
+     link_click_handler: Option<Arc<LinkClickHandlerFn>>,
+@@ -102,12 +103,21 @@ enum LineFragmentKind {
+ }
+ 
+ impl InlineFlow {
++    pub(super) fn search_scroll(
++        mut self,
++        scroll: Option<gpui::Entity<gpui::ScrollHandle>>,
++    ) -> Self {
++        self.search_scroll = scroll;
++        self
++    }
++
+     pub(super) fn new(
+         id: impl Into<ElementId>,
+         items: Vec<InlineFlowItem>,
+         link_click_handler: Option<Arc<LinkClickHandlerFn>>,
+     ) -> Self {
+         Self {
++            search_scroll: None,
+             id: id.into(),
+             items,
+             link_click_handler,
+@@ -279,6 +289,13 @@ impl Element for InlineFlow {
+                         state.set_text(text);
+                     }
+ 
++                    let InlineFlowItem::Text {
++                        state: source_state,
++                        ..
++                    } = &self.items[item_ix]
++                    else {
++                        unreachable!()
++                    };
+                     let mut element = Inline::new(
+                         elements.len(),
+                         state,
+@@ -286,6 +303,8 @@ impl Element for InlineFlow {
+                         highlights,
+                         self.link_click_handler.clone(),
+                     )
++                    .search_source(source_state, source_range.start)
++                    .search_scroll(self.search_scroll.clone())
+                     .into_any_element();
+                     element.prepaint_as_root(
+                         bounds.origin + origin,
+diff --git a/crates/base/src/text/markdown_ext.rs b/crates/base/src/text/markdown_ext.rs
+index b2e8f9bb..c6a3c913 100644
+--- a/crates/base/src/text/markdown_ext.rs
++++ b/crates/base/src/text/markdown_ext.rs
+@@ -8,7 +8,16 @@ use std::{
+     },
+ };
+ 
+-use gpui::{AnyElement, App, IntoElement, SharedString, Window};
++use super::{
++    TextViewStyle,
++    document::ParsedDocument,
++    format,
++    node::{BlockNode, NodeContext, Paragraph},
++};
++use gpui::{
++    AnyElement, App, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
++    Window, div,
++};
+ use markdown::{ParseOptions, mdast};
+ 
+ use crate::text::node::Span;
+@@ -87,6 +96,17 @@ pub struct MarkdownNode {
+     markdown: SharedString,
+     data: Arc<dyn Any + Send + Sync>,
+     pub(crate) span: Option<Span>,
++    pub(crate) parts: Vec<MarkdownPart>,
++    pub(crate) render_context: Option<Box<NodeContext>>,
++}
++
++#[derive(Clone, PartialEq)]
++pub(crate) struct MarkdownPart {
++    key: SharedString,
++    format: u8,
++    source: SharedString,
++    pub(crate) document: ParsedDocument,
++    context: NodeContext,
+ }
+ 
+ impl MarkdownNode {
+@@ -101,9 +121,85 @@ impl MarkdownNode {
+             markdown: SharedString::default(),
+             data: Arc::new(data),
+             span: None,
++            parts: Vec::new(),
++            render_context: None,
+         }
+     }
+ 
++    /// Declare visible child content in the same order the renderer draws it.
++    /// These parts are parsed once and shared by rendering, find and selection.
++    pub fn markdown_part(
++        self,
++        key: impl Into<SharedString>,
++        source: impl Into<SharedString>,
++    ) -> Self {
++        self.part(key.into(), source.into(), 0)
++    }
++
++    /// Declare visible HTML child content.
++    pub fn html_part(self, key: impl Into<SharedString>, source: impl Into<SharedString>) -> Self {
++        self.part(key.into(), source.into(), 1)
++    }
++
++    /// Declare exact visible label text, without interpreting markup.
++    pub fn plain_part(self, key: impl Into<SharedString>, text: impl Into<SharedString>) -> Self {
++        self.part(key.into(), text.into(), 2)
++    }
++
++    fn part(mut self, key: SharedString, source: SharedString, format: u8) -> Self {
++        self.parts.push(MarkdownPart {
++            key,
++            format,
++            source,
++            document: ParsedDocument::default(),
++            context: NodeContext::default(),
++        });
++        self
++    }
++
++    pub(crate) fn prepare_parts(&mut self, parent: &NodeContext) {
++        for part in &mut self.parts {
++            part.context.markdown_extensions = parent.markdown_extensions.clone();
++            part.document = match part.format {
++                0 => format::markdown::parse(&part.source, &mut part.context),
++                1 => format::html::parse(&part.source, &mut part.context),
++                _ => Ok(ParsedDocument {
++                    source: part.source.clone(),
++                    blocks: Arc::new(vec![BlockNode::Paragraph(Paragraph::new(
++                        part.source.to_string(),
++                    ))]),
++                }),
++            }
++            .unwrap_or_else(|error| ParsedDocument {
++                source: part.source.clone(),
++                blocks: Arc::new(vec![BlockNode::Paragraph(Paragraph::new(
++                    error.to_string(),
++                ))]),
++            });
++        }
++    }
++
++    /// Render a declared part using its shared parsed nodes and this custom
++    /// block's selection/search/link context. Call only from the block renderer.
++    pub fn render_part(
++        &self,
++        key: &str,
++        style: impl FnOnce(TextViewStyle) -> TextViewStyle,
++        window: &mut Window,
++        cx: &mut App,
++    ) -> AnyElement {
++        let Some(part) = self.parts.iter().find(|part| part.key.as_ref() == key) else {
++            return div().into_any_element();
++        };
++        let mut context = self.render_context.as_deref().cloned().unwrap_or_default();
++        context.style = style(context.style);
++        context.link_refs.extend(part.context.link_refs.clone());
++        div()
++            .id(part.key.clone())
++            .child(part.document.render_root(None, &context, window, cx))
++            .into_any_element()
++    }
++
+     /// Stable name for this custom node.
+     pub fn name(&self) -> &str {
+         &self.name
+@@ -169,6 +265,7 @@ impl PartialEq for MarkdownNode {
+             && self.text == other.text
+             && self.markdown == other.markdown
+             && self.span == other.span
++            && self.parts == other.parts
+     }
+ }
+ 
+diff --git a/crates/base/src/text/node.rs b/crates/base/src/text/node.rs
+index 30a19b55..791e400f 100644
+--- a/crates/base/src/text/node.rs
++++ b/crates/base/src/text/node.rs
+@@ -266,7 +266,19 @@ impl BlockNode {
+                 }
+             }
+             BlockNode::Custom(node) => {
+-                if let BlockTextKind::All = kind {
++                if !node.parts.is_empty() {
++                    for part in &node.parts {
++                        match kind {
++                            BlockTextKind::All => text.push_str(&part.document.text()),
++                            BlockTextKind::Selected => text.push_str(
++                                &part.document.selected_text(SelectionFormat::Plain, None),
++                            ),
++                            BlockTextKind::SelectedSource => text.push_str(
++                                &part.document.selected_text(SelectionFormat::Source, None),
++                            ),
++                        }
++                    }
++                } else if let BlockTextKind::All = kind {
+                     let content = node.as_text();
+                     if !content.is_empty() {
+                         text.push_str(content);
+@@ -318,8 +330,11 @@ impl BlockNode {
+                     .any(|cell| cell.children.has_selection())
+             }),
+             BlockNode::CodeBlock(code_block) => code_block.has_selection(),
+-            BlockNode::Custom { .. }
+-            | BlockNode::Definition { .. }
++            BlockNode::Custom(node) => node
++                .parts
++                .iter()
++                .any(|part| part.document.blocks.iter().any(BlockNode::has_selection)),
++            BlockNode::Definition { .. }
+             | BlockNode::Break { .. }
+             | BlockNode::HorizontalRule { .. }
+             | BlockNode::Unknown { .. } => false,
+@@ -346,8 +361,12 @@ impl BlockNode {
+                 }
+             }
+             BlockNode::CodeBlock(code_block) => code_block.clear_selection(),
+-            BlockNode::Custom { .. }
+-            | BlockNode::Definition { .. }
++            BlockNode::Custom(node) => {
++                for part in &node.parts {
++                    part.document.clear_selection();
++                }
++            }
++            BlockNode::Definition { .. }
+             | BlockNode::Break { .. }
+             | BlockNode::HorizontalRule { .. }
+             | BlockNode::Unknown { .. } => {}
+@@ -1297,20 +1316,26 @@ impl CodeBlock {
+                     .text_size(cx.theme().tokens.typography.mono_md.size)
+                     .relative()
+                     .refine_style(&style.code_block())
+-                    .child(Inline::new(
+-                        "code",
+-                        self.state.clone(),
+-                        vec![],
+-                        node_cx
+-                            .code_block_highlighter
+-                            .as_ref()
+-                            .map(|highlighter| self.highlighted_styles(highlighter))
+-                            .unwrap_or_default()
+-                            .into_iter()
+-                            .map(|(range, style)| (range, InlineHighlight::from(style)))
+-                            .collect(),
+-                        node_cx.link_click_handler.clone(),
+-                    ))
++                    .child(
++                        Inline::new(
++                            "code",
++                            self.state.clone(),
++                            vec![],
++                            node_cx.search_styles(
++                                &self.state,
++                                node_cx
++                                    .code_block_highlighter
++                                    .as_ref()
++                                    .map(|highlighter| self.highlighted_styles(highlighter))
++                                    .unwrap_or_default()
++                                    .into_iter()
++                                    .map(|(range, style)| (range, InlineHighlight::from(style)))
++                                    .collect(),
++                            ),
++                            node_cx.link_click_handler.clone(),
++                        )
++                        .search_scroll(node_cx.search_scroll.clone()),
++                    )
+                     .when_some(node_cx.code_block_actions.clone(), |this, actions| {
+                         this.child(
+                             div()
+@@ -1328,12 +1353,108 @@ impl CodeBlock {
+     }
+ }
+ 
++/// A match indexes rendered bytes in one text segment, never Markdown/HTML
++/// source. Segment identity follows the same Arc used by selection/rendering.
++#[derive(Clone, Debug, PartialEq)]
++pub(super) struct SearchMatch {
++    pub(super) segment: usize,
++    pub(super) range: Range<usize>,
++    pub(super) block: usize,
++}
++
++pub(super) fn search_matches(blocks: &[BlockNode], query: &str) -> Vec<SearchMatch> {
++    if query.is_empty() {
++        return Vec::new();
++    }
++    fn segment(
++        text: &str,
++        state: &Arc<Mutex<InlineState>>,
++        query: &str,
++        block: usize,
++        out: &mut Vec<SearchMatch>,
++    ) {
++        if query.is_empty() {
++            return;
++        }
++        let mut start = 0;
++        while start + query.len() <= text.len() {
++            let Some(relative) = text.as_bytes()[start..]
++                .windows(query.len())
++                .position(|candidate| candidate.eq_ignore_ascii_case(query.as_bytes()))
++            else {
++                break;
++            };
++            let position = start + relative;
++            let end = position + query.len();
++            if text.is_char_boundary(position) && text.is_char_boundary(end) {
++                out.push(SearchMatch {
++                    segment: Arc::as_ptr(state) as usize,
++                    range: position..end,
++                    block,
++                });
++            }
++            start = end;
++        }
++    }
++    fn paragraph(p: &Paragraph, query: &str, block: usize, out: &mut Vec<SearchMatch>) {
++        let mut text = String::new();
++        for child in &p.children {
++            text.push_str(&child.text);
++            if child.image.is_some() {
++                segment(&text, &child.state, query, block, out);
++                text.clear();
++            }
++        }
++        segment(&text, &p.state, query, block, out);
++    }
++    fn visit(node: &BlockNode, query: &str, block: usize, out: &mut Vec<SearchMatch>) {
++        match node {
++            BlockNode::Paragraph(p) | BlockNode::Heading { children: p, .. } => {
++                paragraph(p, query, block, out)
++            }
++            BlockNode::Root { children, .. }
++            | BlockNode::Blockquote { children, .. }
++            | BlockNode::List { children, .. }
++            | BlockNode::ListItem { children, .. } => {
++                for child in children {
++                    visit(child, query, block, out);
++                }
++            }
++            BlockNode::CodeBlock(code) => segment(&code.code(), &code.state, query, block, out),
++            BlockNode::Custom(node) => {
++                for part in &node.parts {
++                    for child in part.document.blocks.iter() {
++                        visit(child, query, block, out);
++                    }
++                }
++            }
++            BlockNode::Table(table) => {
++                for row in &table.children {
++                    for cell in &row.children {
++                        paragraph(&cell.children, query, block, out);
++                    }
++                }
++            }
++            _ => {}
++        }
++    }
++    let mut out = Vec::new();
++    for (block, node) in blocks.iter().enumerate() {
++        visit(node, query, block, &mut out);
++    }
++    out
++}
++
+ /// A context for rendering nodes, contains link references.
+ #[derive(Default, Clone)]
+ pub(crate) struct NodeContext {
+     /// The byte offset of the node in the original markdown text.
+     /// Used for incremental updates.
+     pub(crate) offset: usize,
++    pub(super) search: Arc<Vec<SearchMatch>>,
++    pub(super) search_segments: Arc<HashMap<usize, Vec<usize>>>,
++    pub(super) search_current: usize,
++    pub(super) search_scroll: Option<gpui::Entity<ScrollHandle>>,
+     pub(crate) link_refs: HashMap<SharedString, LinkMark>,
+     pub(crate) style: TextViewStyle,
+     pub(crate) code_block_actions: Option<Arc<CodeBlockActionsFn>>,
+@@ -1344,6 +1465,43 @@ pub(crate) struct NodeContext {
+ }
+ 
+ impl NodeContext {
++    /// Layer only backgrounds over the existing glyph runs. Font family,
++    /// weight, syntax styles, links and copied source remain untouched.
++    fn search_styles(
++        &self,
++        state: &Arc<Mutex<InlineState>>,
++        styles: Vec<(Range<usize>, InlineHighlight)>,
++    ) -> Vec<(Range<usize>, InlineHighlight)> {
++        let key = Arc::as_ptr(state) as usize;
++        combine_highlights(
++            styles,
++            self.search_segments
++                .get(&key)
++                .into_iter()
++                .flatten()
++                .map(|&index| {
++                    let hit = &self.search[index];
++                    (
++                        hit.range.clone(),
++                        HighlightStyle {
++                            background_color: Some(gpui::hsla(
++                                0.13,
++                                0.9,
++                                0.5,
++                                if index == self.search_current {
++                                    0.65
++                                } else {
++                                    0.28
++                                },
++                            )),
++                            ..Default::default()
++                        }
++                        .into(),
++                    )
++                }),
++        )
++    }
++
+     pub(super) fn add_ref(&mut self, identifier: SharedString, link: LinkMark) {
+         self.link_refs.insert(identifier, link);
+     }
+@@ -1427,6 +1585,7 @@ impl Paragraph {
+                 self.inline_flow_items(node_cx, cx),
+                 node_cx.link_click_handler.clone(),
+             )
++            .search_scroll(node_cx.search_scroll.clone())
+             .into_any_element();
+         }
+ 
+@@ -1452,9 +1611,10 @@ impl Paragraph {
+                             ix,
+                             inline_node.state.clone(),
+                             links.clone(),
+-                            highlights.clone(),
++                            node_cx.search_styles(&inline_node.state, highlights.clone()),
+                             node_cx.link_click_handler.clone(),
+                         )
++                        .search_scroll(node_cx.search_scroll.clone())
+                         .into_any_element(),
+                     );
+                 }
+@@ -1542,9 +1702,10 @@ impl Paragraph {
+                     ix,
+                     self.state.clone(),
+                     links,
+-                    highlights,
++                    node_cx.search_styles(&self.state, highlights),
+                     node_cx.link_click_handler.clone(),
+                 )
++                .search_scroll(node_cx.search_scroll.clone())
+                 .into_any_element(),
+             );
+         }
+@@ -1581,7 +1742,7 @@ impl Paragraph {
+                         state: inline_node.state.clone(),
+                         text: text.clone().into(),
+                         links: links.clone(),
+-                        highlights: highlights.clone(),
++                        highlights: node_cx.search_styles(&inline_node.state, highlights.clone()),
+                     });
+                 }
+ 
+@@ -1635,7 +1796,7 @@ impl Paragraph {
+                 state: self.state.clone(),
+                 text: text.into(),
+                 links,
+-                highlights,
++                highlights: node_cx.search_styles(&self.state, highlights),
+             });
+         }
+ 
+@@ -2157,10 +2318,11 @@ impl BlockNode {
+                 options.ix
+             ))
+         };
+-        let scroll_handle = window
+-            .use_keyed_state(table_scroll_key, cx, |_, _| ScrollHandle::default())
+-            .read(cx)
+-            .clone();
++        let scroll_entity =
++            window.use_keyed_state(table_scroll_key, cx, |_, _| ScrollHandle::default());
++        let scroll_handle = scroll_entity.read(cx).clone();
++        let mut cell_context = node_cx.clone();
++        cell_context.search_scroll = Some(scroll_entity);
+         let row_count = table.children.len();
+         let mut rows = Vec::with_capacity(row_count);
+         for (row_ix, row) in table.children.iter().enumerate() {
+@@ -2192,7 +2354,7 @@ impl BlockNode {
+                             this.border_r_1().border_color(style.border())
+                         })
+                         .refine_style(&style.table_cell())
+-                        .child(cell.children.render(node_cx, window, cx)),
++                        .child(cell.children.render(&cell_context, window, cx)),
+                 );
+             }
+             rows.push(
+@@ -2462,7 +2624,9 @@ impl BlockNode {
+                 .into_any_element(),
+             BlockNode::CodeBlock(code_block) => code_block.render(&options, node_cx, window, cx),
+             BlockNode::Custom(node) => {
+-                let inner = match node_cx.markdown_extensions.render_block(node, window, cx) {
++                let mut node = node.clone();
++                node.render_context = Some(Box::new(node_cx.clone()));
++                let inner = match node_cx.markdown_extensions.render_block(&node, window, cx) {
+                     Some(rendered) => rendered,
+                     None => div().child(node.as_text().to_string()).into_any_element(),
+                 };
+diff --git a/crates/base/src/text/state.rs b/crates/base/src/text/state.rs
+index 7ad21f4a..8b6dcfa7 100644
+--- a/crates/base/src/text/state.rs
++++ b/crates/base/src/text/state.rs
+@@ -82,6 +82,13 @@ pub(super) struct LineSpan {
+     pub(super) line_height: Pixels,
+ }
+ 
++struct SearchGeometry {
++    start: Point<Pixels>,
++    bottom: Pixels,
++    right: Pixels,
++    horizontal: Option<gpui::ScrollHandle>,
++}
++
+ /// The state of a TextView.
+ pub struct TextViewState {
+     pub(super) focus_handle: FocusHandle,
+@@ -113,6 +120,13 @@ pub struct TextViewState {
+     pub(super) auto_scroll: AutoScroll,
+     pub(super) selection_adapter: TextViewSelectionAdapter,
+ 
++    search_query: String,
++    search_matches: Arc<Vec<node::SearchMatch>>,
++    search_segments: Arc<std::collections::HashMap<usize, Vec<usize>>>,
++    search_current: usize,
++    search_reveal_pending: bool,
++    search_geometry_pending: bool,
++    search_geometry: Option<SearchGeometry>,
+     pub(super) parsed_content: ParsedContent,
+     /// Content format (markdown / html), used for bounded synchronous parsing
+     /// of small full-replace updates.
+@@ -160,6 +174,7 @@ impl TextViewState {
+                         match parsed_update.result {
+                             Ok(content) => {
+                                 state.parsed_content = content;
++                                state.refresh_search();
+                                 state.parsed_error = None;
+                                 state.compatible_layout_update = parsed_update.selection_compatible;
+                                 if parsed_update.full_parse {
+@@ -210,6 +225,13 @@ impl TextViewState {
+             is_selecting: false,
+             auto_scroll: AutoScroll::default(),
+             selection_adapter,
++            search_query: String::new(),
++            search_matches: Arc::default(),
++            search_segments: Arc::default(),
++            search_current: 0,
++            search_reveal_pending: false,
++            search_geometry_pending: false,
++            search_geometry: None,
+             parsed_content: Default::default(),
+             format,
+             parsed_error: None,
+@@ -225,6 +247,144 @@ impl TextViewState {
+         this
+     }
+ 
++    /// Search visible text in Markdown and HTML without rewriting source.
++    /// Matches are ASCII-case-insensitive and never span separate text blocks
++    /// or an inline image. An empty query clears only search decoration.
++    pub fn set_search_query(&mut self, query: impl Into<String>, cx: &mut Context<Self>) {
++        let query = query.into();
++        if self.search_query == query {
++            return;
++        }
++        self.search_query = query;
++        self.search_current = 0;
++        self.refresh_search();
++        self.search_reveal_pending = true;
++        self.search_geometry_pending = true;
++        self.search_geometry = None;
++        cx.notify();
++    }
++
++    /// Zero-based current match and total; current is zero when none match.
++    pub fn search_status(&self) -> (usize, usize) {
++        (self.search_current, self.search_matches.len())
++    }
++
++    /// Cycle through retained matches and reveal the containing rendered block.
++    pub fn step_search_match(&mut self, delta: isize, cx: &mut Context<Self>) {
++        if self.search_matches.is_empty() {
++            return;
++        }
++        self.search_current = (self.search_current as isize + delta)
++            .rem_euclid(self.search_matches.len() as isize) as usize;
++        self.search_reveal_pending = true;
++        self.search_geometry_pending = true;
++        self.search_geometry = None;
++        cx.notify();
++    }
++
++    fn refresh_search(&mut self) {
++        self.search_reveal_pending = !self.search_query.is_empty();
++        self.search_geometry_pending = self.search_reveal_pending;
++        self.search_geometry = None;
++        self.search_matches = Arc::new(node::search_matches(
++            &self.parsed_content.document.blocks,
++            &self.search_query,
++        ));
++        let mut segments = std::collections::HashMap::<usize, Vec<usize>>::new();
++        for (index, hit) in self.search_matches.iter().enumerate() {
++            segments.entry(hit.segment).or_default().push(index);
++        }
++        self.search_segments = Arc::new(segments);
++        self.search_current = self
++            .search_current
++            .min(self.search_matches.len().saturating_sub(1));
++    }
++
++    fn reveal_search_match(&self) {
++        if let Some(hit) = self.search_matches.get(self.search_current)
++            && hit.block < self.list_state.item_count()
++        {
++            self.list_state.scroll_to(gpui::ListOffset {
++                item_ix: hit.block,
++                offset_in_item: px(0.),
++            });
++        }
++    }
++
++    pub(super) fn record_search_geometry(
++        &mut self,
++        segment: usize,
++        source_offset: usize,
++        text_len: usize,
++        layout: &gpui::TextLayout,
++        horizontal: Option<&gpui::ScrollHandle>,
++    ) {
++        if !self.search_geometry_pending || self.search_reveal_pending {
++            return;
++        }
++        let Some(hit) = self.search_matches.get(self.search_current) else {
++            return;
++        };
++        if hit.segment != segment
++            || !(source_offset..source_offset + text_len).contains(&hit.range.start)
++        {
++            return;
++        }
++        let Some(start) = layout.position_for_index(hit.range.start - source_offset) else {
++            return;
++        };
++        let end = layout
++            .position_for_index((hit.range.end - source_offset).min(text_len))
++            .unwrap_or(start);
++        self.search_geometry = Some(SearchGeometry {
++            start,
++            bottom: start.y + layout.line_height(),
++            right: if end.y == start.y {
++                end.x
++            } else {
++                start.x + px(8.)
++            },
++            horizontal: horizontal.cloned(),
++        });
++    }
++
++    fn apply_search_geometry(&mut self, cx: &mut Context<Self>) {
++        let Some(SearchGeometry {
++            start,
++            bottom,
++            right,
++            horizontal,
++        }) = self.search_geometry.take()
++        else {
++            return;
++        };
++        let delta = if start.y < self.bounds.top() {
++            start.y - self.bounds.top()
++        } else if bottom > self.bounds.bottom() {
++            bottom - self.bounds.bottom()
++        } else {
++            px(0.)
++        };
++        if self.scrollable {
++            self.list_state.scroll_by(delta);
++        }
++        if let Some(handle) = horizontal {
++            let bounds = handle.bounds();
++            let dx = if start.x < bounds.left() {
++                bounds.left() - start.x
++            } else if right > bounds.right() {
++                bounds.right() - right
++            } else {
++                px(0.)
++            };
++            let mut offset = handle.offset();
++            offset.x += dx;
++            handle.set_offset(offset);
++        }
++        self.search_geometry_pending = false;
++        cx.notify();
++    }
++
+     /// Get the text content.
+     pub(crate) fn source(&self) -> SharedString {
+         self.parsed_content.document.source.clone()
+@@ -419,6 +579,7 @@ impl TextViewState {
+             match parse_content(self.format, ParsedContent::default(), &update_options) {
+                 Ok(content) => {
+                     self.parsed_content = content;
++                    self.refresh_search();
+                     self.parsed_error = None;
+                     self.invalidate_measured_heights();
+                     if !self.is_selecting {
+@@ -641,6 +802,18 @@ impl Render for TextViewState {
+         node_cx.link_click_handler = self.link_click_handler.clone();
+         node_cx.markdown_extensions = self.markdown_extensions.clone();
+         node_cx.style = self.text_view_style.clone();
++        node_cx.search = self.search_matches.clone();
++        node_cx.search_segments = self.search_segments.clone();
++        node_cx.search_current = self.search_current;
++        // Align the containing block before its layout; glyph geometry from
++        // this frame must describe the scroll position used in that frame.
++        if self.search_reveal_pending {
++            if self.list_state.item_count() != document.blocks.len() {
++                self.list_state.reset(document.blocks.len());
++            }
++            self.reveal_search_match();
++            self.search_reveal_pending = false;
++        }
+ 
+         v_flex()
+             .w_full()
+@@ -688,6 +861,7 @@ impl Render for TextViewState {
+                         .selection_adapter
+                         .update_layout_revision(state.selection_revision, state.is_selecting);
+                     state.update_bounds(bounds, cx);
++                    state.apply_search_geometry(cx);
+                     state.compatible_layout_update = false;
+                 });
+                 if !is_selecting
+@@ -878,6 +1052,131 @@ mod tests {
+     use crate::text::MarkdownNode;
+     use gpui::TestAppContext;
+ 
++    #[gpui::test]
++    fn search_custom_parts_share_render_nodes_and_selection(cx: &mut TestAppContext) {
++        cx.update(crate::init);
++        let source = "~~~~card\nCANARY [CANARY][ref]\n\n[ref]: https://hidden-CANARY.test\n\n```card\nCANARY nested\n```\n~~~~";
++        let state = cx.update(|cx| cx.new(|cx| TextViewState::markdown(source, cx)));
++        let extensions = MarkdownExtensions::default().block_parser(|node, _| {
++            let markdown::mdast::Node::Code(code) = node else {
++                return None;
++            };
++            if code.lang.as_deref() != Some("card") {
++                return None;
++            }
++            Some(
++                MarkdownNode::new("card", ())
++                    .plain_part("title", "CANARY **literal**")
++                    .markdown_part("body", code.value.clone()),
++            )
++        });
++        state.update(cx, |state, cx| {
++            state.set_markdown_extensions(Arc::new(extensions), cx);
++            state.set_search_query("canary", cx);
++            assert_eq!(state.search_status(), (0, 5));
++            let node::BlockNode::Custom(custom) = &state.parsed_content.document.blocks[0] else {
++                panic!("custom missing");
++            };
++            let node::BlockNode::Paragraph(title) = &custom.parts[0].document.blocks[0] else {
++                panic!("title missing");
++            };
++            assert_eq!(
++                state.search_matches[0].segment,
++                Arc::as_ptr(&title.state) as usize
++            );
++            title
++                .state
++                .lock()
++                .unwrap()
++                .set_text("CANARY **literal**".into());
++            title.state.lock().unwrap().selection = Some((0..6).into());
++            assert!(state.parsed_content.document.blocks[0].has_selection());
++            assert_eq!(state.selected_text().trim(), "CANARY");
++            state.set_selection_format(SelectionFormat::Source, cx);
++            assert_eq!(state.selected_text().trim(), "CANARY");
++            state.parsed_content.document.clear_selection();
++            assert!(!state.parsed_content.document.blocks[0].has_selection());
++            state.select_all(cx);
++            assert_eq!(state.selected_text(), source);
++        });
++    }
++
++    #[gpui::test]
++    fn search_preserves_source_selection_and_wraps(cx: &mut TestAppContext) {
++        cx.update(crate::init);
++        let source = "# CANARY\n\nCAN**ARY** `CANARY` [CANARY](https://CANARY.test)\n\n```text\nCANARY\n```\n\n| column |\n| --- |\n| CANARY |\n";
++        let state = cx.update(|cx| cx.new(|cx| TextViewState::markdown(source, cx)));
++        state.update(cx, |state, cx| {
++            state.select_all(cx);
++            let plain = state.selected_text();
++            state.set_search_query("canary", cx);
++            assert_eq!(state.search_status(), (0, 6));
++            assert_eq!(state.selected_text(), plain);
++            assert_eq!(state.source().as_str(), source);
++            state.set_selection_format(SelectionFormat::Source, cx);
++            assert_eq!(state.selected_text(), source);
++            state.step_search_match(-1, cx);
++            assert_eq!(state.search_status(), (5, 6));
++            state.step_search_match(1, cx);
++            assert_eq!(state.search_status(), (0, 6));
++            state.set_search_query("missing", cx);
++            assert_eq!(state.search_status(), (0, 0));
++            state.set_search_query("", cx);
++            assert_eq!(state.search_status(), (0, 0));
++            assert_eq!(state.selected_text(), source);
++        });
++    }
++
++    #[gpui::test]
++    fn search_uses_decoded_html_text_and_unicode_byte_boundaries(cx: &mut TestAppContext) {
++        cx.update(crate::init);
++        let source = "<h1>é猫 CANARY</h1><p>CAN<strong>ARY</strong> &amp; <a href='CANARY'>CANARY</a></p><pre><code>CANARY</code></pre><table><tr><td>CANARY</td></tr></table>";
++        let state = cx.update(|cx| cx.new(|cx| TextViewState::html(source, cx)));
++        state.update(cx, |state, cx| {
++            state.set_search_query("canary", cx);
++            assert_eq!(state.search_status(), (0, 5));
++            assert_eq!(state.search_matches[0].range, 6..12);
++            state.set_search_query("&", cx);
++            assert_eq!(state.search_status(), (0, 1));
++            state.set_search_query("猫", cx);
++            assert_eq!(state.search_matches[0].range, 2..5);
++            assert_eq!(state.source().as_str(), source);
++        });
++    }
++
++    #[gpui::test]
++    fn search_refreshes_after_async_replace_and_append(cx: &mut TestAppContext) {
++        cx.update(crate::init);
++        let state = cx.update(|cx| cx.new(|cx| TextViewState::markdown("old", cx)));
++        let source = format!("{}\n\nCANARY", "filler\n\n".repeat(600));
++        state.update(cx, |state, cx| {
++            state.set_text(&source, cx);
++            state.set_search_query("canary", cx);
++        });
++        cx.run_until_parked();
++        state.update(cx, |state, cx| {
++            assert_eq!(state.search_status(), (0, 1));
++            assert_eq!(state.search_matches[0].block, 600);
++            assert!(state.search_reveal_pending);
++            // Fresh virtualized blocks have no measured heights. A reveal
++            // must still retain the target block as its layout anchor.
++            state
++                .list_state
++                .reset(state.parsed_content.document.blocks.len());
++            state.reveal_search_match();
++            assert_eq!(state.list_state.logical_scroll_top().item_ix, 600);
++            state.push_str("\n\nCANARY", cx);
++        });
++        cx.run_until_parked();
++        state.update(cx, |state, cx| {
++            assert_eq!(state.search_status(), (0, 2));
++            state.step_search_match(1, cx);
++            state.set_text("replacement CANARY", cx);
++            assert_eq!(state.search_status(), (0, 1));
++            assert_eq!(state.search_matches[0].block, 0);
++        });
++    }
++
+     #[gpui::test]
+     fn small_full_replace_parses_before_background_executor_runs(cx: &mut TestAppContext) {
+         cx.update(crate::init);
+diff --git a/crates/base/src/text/text_view.rs b/crates/base/src/text/text_view.rs
+index 496884c9..53908256 100644
+--- a/crates/base/src/text/text_view.rs
++++ b/crates/base/src/text/text_view.rs
+@@ -630,16 +630,14 @@ impl Element for TextView {
+             if let Ok(mut line_spans) = state.read(cx).line_spans.lock() {
+                 line_spans.clear();
+             }
+-            // Descendant `Inline`s report their line spans through the state
+-            // stack during prepaint (in addition to the paint-time push below).
+-            GlobalState::global_mut(cx)
+-                .text_view_state_stack
+-                .push(state.clone());
+         }
++        // Search needs geometry for clipped table cells too: all descendants
++        // prepaint, while clipped descendants need not paint.
++        GlobalState::global_mut(cx)
++            .text_view_state_stack
++            .push(state.clone());
+         request_layout.element.prepaint(window, cx);
+-        if max_lines_active {
+-            GlobalState::global_mut(cx).text_view_state_stack.pop();
+-        }
++        GlobalState::global_mut(cx).text_view_state_stack.pop();
+ 
+         let mut clip_bottom = None;
+         if max_lines_active {

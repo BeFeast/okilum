@@ -1,0 +1,106 @@
+--- a/crates/base/src/text/document.rs
++++ b/crates/base/src/text/document.rs
+@@ -231,7 +231,8 @@
+                         .into_any_element()
+                 }
+             })
+-            .size_full(),
++            .size_full()
++            .pb(node_cx.style.bottom_padding()),
+         )
+     }
+ }
+--- a/crates/base/src/text/style.rs
++++ b/crates/base/src/text/style.rs
+@@ -19,6 +19,8 @@
+     code_background: Hsla,
+     border: Hsla,
+     paragraph_gap: Rems,
++    /// Scrollable space after the final document block.
++    bottom_padding: Pixels,
+     heading_base_font_size: Pixels,
+     heading_font_size: Option<Arc<dyn Fn(u8, Pixels) -> Pixels + Send + Sync + 'static>>,
+     code_block: StyleRefinement,
+@@ -33,6 +35,7 @@
+ impl PartialEq for TextViewStyle {
+     fn eq(&self, other: &Self) -> bool {
+         self.paragraph_gap == other.paragraph_gap
++            && self.bottom_padding == other.bottom_padding
+             && self.foreground == other.foreground
+             && self.muted_foreground == other.muted_foreground
+             && self.link == other.link
+@@ -88,6 +91,7 @@
+             code_background: colors.accent,
+             border: colors.border,
+             paragraph_gap: rems(1.),
++            bottom_padding: px(0.),
+             heading_base_font_size: px(14.),
+             heading_font_size: None,
+             code_block: StyleRefinement::default(),
+@@ -103,6 +107,16 @@
+         }
+     }
+ 
++    /// Sets scrollable space after the final document block.
++    pub fn with_bottom_padding(mut self, padding: Pixels) -> Self {
++        self.bottom_padding = padding.max(px(0.));
++        self
++    }
++
++    pub fn bottom_padding(&self) -> Pixels {
++        self.bottom_padding
++    }
++
+     /// Sets the default body-text color.
+     pub fn with_foreground(mut self, color: Hsla) -> Self {
+         self.foreground = color;
+--- a/crates/base/src/text/text_view.rs
++++ b/crates/base/src/text/text_view.rs
+@@ -587,7 +587,9 @@
+             state.selection_format = self.selection_format;
+             state.scrollable = self.scrollable;
+             state.max_lines = max_lines;
+-            if state.text_view_style != text_view_style {
++            // End-space changes move no glyphs within their blocks and must
++            // not invalidate an existing selection during window resizing.
++            if state.text_view_style.clone().with_bottom_padding(text_view_style.bottom_padding()) != text_view_style {
+                 state.selection_revision = state.selection_revision.wrapping_add(1);
+             }
+             state.text_view_style = text_view_style.clone();
+--- a/crates/component/src/text/compat.rs
++++ b/crates/component/src/text/compat.rs
+@@ -285,6 +285,7 @@
+ 
+     let mut style = themed
+         .with_paragraph_gap(legacy.paragraph_gap)
++        .with_bottom_padding(legacy.bottom_padding)
+         .with_heading_base_font_size(legacy.heading_base_font_size)
+         .with_code_block(code_block)
+         .with_table(table)
+--- a/crates/component/src/text/style.rs
++++ b/crates/component/src/text/style.rs
+@@ -13,6 +13,8 @@
+ pub struct TextViewStyle {
+     /// Gap of each paragraphs, default is 1 rem.
+     pub paragraph_gap: Rems,
++    /// Scrollable space after the final document block.
++    pub bottom_padding: Pixels,
+     /// Base font size for headings, default is 14px.
+     pub heading_base_font_size: Pixels,
+     /// Function to calculate heading font size based on heading level (1-6).
+@@ -60,6 +62,7 @@
+     fn default() -> Self {
+         Self {
+             paragraph_gap: rems(1.),
++            bottom_padding: px(0.),
+             heading_base_font_size: px(14.),
+             heading_font_size: None,
+             highlight_theme: HighlightTheme::default_light().clone(),
+@@ -77,6 +80,7 @@
+ impl PartialEq for TextViewStyle {
+     fn eq(&self, other: &Self) -> bool {
+         self.paragraph_gap == other.paragraph_gap
++            && self.bottom_padding == other.bottom_padding
+             && self.heading_base_font_size == other.heading_base_font_size
+             && match (&self.heading_font_size, &other.heading_font_size) {
+                 (Some(left), Some(right)) => (1..=6).all(|level| {

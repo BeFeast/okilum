@@ -1,0 +1,10 @@
+[package]
+name = "tessera-inbox-domain"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+uuid.workspace = true
+thiserror.workspace = true

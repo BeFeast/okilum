@@ -1,0 +1,385 @@
+{
+  "method": "WCAG relative luminance, unrounded sRGB calculations; displayed ratios rounded to 2 decimals",
+  "token_version": "1.0.0",
+  "pairs": [
+    {
+      "theme": "light",
+      "foreground": "text",
+      "background": "canvas",
+      "ratio": 14.39,
+      "minimum": 4.5
+    },
+    {
+      "theme": "light",
+      "foreground": "text",
+      "background": "surface",
+      "ratio": 15.6,
+      "minimum": 4.5
+    },
+    {
+      "theme": "light",
+      "foreground": "text",
+      "background": "surfaceRaised",
+      "ratio": 13.62,
+      "minimum": 4.5
+    },
+    {
+      "theme": "light",
+      "foreground": "textMuted",
+      "background": "canvas",
+      "ratio": 5.64,
+      "minimum": 4.5
+    },
+    {
+      "theme": "light",
+      "foreground": "textMuted",
+      "background": "surface",
+      "ratio": 6.12,
+      "minimum": 4.5
+    },
+    {
+      "theme": "light",
+      "foreground": "textMuted",
+      "background": "surfaceRaised",
+      "ratio": 5.34,
+      "minimum": 4.5
+    },
+    {
+      "theme": "light",
+      "foreground": "success",
+      "background": "canvas",
+      "ratio": 5.34,
+      "minimum": 4.5
+    },
+    {
+      "theme": "light",
+      "foreground": "success",
+      "background": "surface",
+      "ratio": 5.79,
+      "minimum": 4.5
+    },
+    {
+      "theme": "light",
+      "foreground": "success",
+      "background": "surfaceRaised",
+      "ratio": 5.05,
+      "minimum": 4.5
+    },
+    {
+      "theme": "light",
+      "foreground": "warning",
+      "background": "canvas",
+      "ratio": 5.76,
+      "minimum": 4.5
+    },
+    {
+      "theme": "light",
+      "foreground": "warning",
+      "background": "surface",
+      "ratio": 6.25,
+      "minimum": 4.5
+    },
+    {
+      "theme": "light",
+      "foreground": "warning",
+      "background": "surfaceRaised",
+      "ratio": 5.46,
+      "minimum": 4.5
+    },
+    {
+      "theme": "light",
+      "foreground": "danger",
+      "background": "canvas",
+      "ratio": 5.64,
+      "minimum": 4.5
+    },
+    {
+      "theme": "light",
+      "foreground": "danger",
+      "background": "surface",
+      "ratio": 6.12,
+      "minimum": 4.5
+    },
+    {
+      "theme": "light",
+      "foreground": "danger",
+      "background": "surfaceRaised",
+      "ratio": 5.34,
+      "minimum": 4.5
+    },
+    {
+      "theme": "light",
+      "foreground": "info",
+      "background": "canvas",
+      "ratio": 5.38,
+      "minimum": 4.5
+    },
+    {
+      "theme": "light",
+      "foreground": "info",
+      "background": "surface",
+      "ratio": 5.83,
+      "minimum": 4.5
+    },
+    {
+      "theme": "light",
+      "foreground": "info",
+      "background": "surfaceRaised",
+      "ratio": 5.09,
+      "minimum": 4.5
+    },
+    {
+      "theme": "light",
+      "foreground": "link",
+      "background": "canvas",
+      "ratio": 6.4,
+      "minimum": 4.5
+    },
+    {
+      "theme": "light",
+      "foreground": "link",
+      "background": "surface",
+      "ratio": 6.94,
+      "minimum": 4.5
+    },
+    {
+      "theme": "light",
+      "foreground": "link",
+      "background": "surfaceRaised",
+      "ratio": 6.06,
+      "minimum": 4.5
+    },
+    {
+      "theme": "light",
+      "foreground": "text",
+      "background": "selected",
+      "ratio": 12.88,
+      "minimum": 4.5
+    },
+    {
+      "theme": "light",
+      "foreground": "onAccent",
+      "background": "accent",
+      "ratio": 5.17,
+      "minimum": 4.5
+    },
+    {
+      "theme": "light",
+      "foreground": "focus",
+      "background": "canvas",
+      "ratio": 5.38,
+      "minimum": 3
+    },
+    {
+      "theme": "light",
+      "foreground": "focus",
+      "background": "surface",
+      "ratio": 5.83,
+      "minimum": 3
+    },
+    {
+      "theme": "light",
+      "foreground": "focus",
+      "background": "selected",
+      "ratio": 4.81,
+      "minimum": 3
+    },
+    {
+      "theme": "light",
+      "foreground": "border",
+      "background": "surface",
+      "ratio": 4.01,
+      "minimum": 3
+    },
+    {
+      "theme": "dark",
+      "foreground": "text",
+      "background": "canvas",
+      "ratio": 16.63,
+      "minimum": 4.5
+    },
+    {
+      "theme": "dark",
+      "foreground": "text",
+      "background": "surface",
+      "ratio": 15.61,
+      "minimum": 4.5
+    },
+    {
+      "theme": "dark",
+      "foreground": "text",
+      "background": "surfaceRaised",
+      "ratio": 13.79,
+      "minimum": 4.5
+    },
+    {
+      "theme": "dark",
+      "foreground": "textMuted",
+      "background": "canvas",
+      "ratio": 8.42,
+      "minimum": 4.5
+    },
+    {
+      "theme": "dark",
+      "foreground": "textMuted",
+      "background": "surface",
+      "ratio": 7.91,
+      "minimum": 4.5
+    },
+    {
+      "theme": "dark",
+      "foreground": "textMuted",
+      "background": "surfaceRaised",
+      "ratio": 6.99,
+      "minimum": 4.5
+    },
+    {
+      "theme": "dark",
+      "foreground": "success",
+      "background": "canvas",
+      "ratio": 10.93,
+      "minimum": 4.5
+    },
+    {
+      "theme": "dark",
+      "foreground": "success",
+      "background": "surface",
+      "ratio": 10.26,
+      "minimum": 4.5
+    },
+    {
+      "theme": "dark",
+      "foreground": "success",
+      "background": "surfaceRaised",
+      "ratio": 9.06,
+      "minimum": 4.5
+    },
+    {
+      "theme": "dark",
+      "foreground": "warning",
+      "background": "canvas",
+      "ratio": 11.41,
+      "minimum": 4.5
+    },
+    {
+      "theme": "dark",
+      "foreground": "warning",
+      "background": "surface",
+      "ratio": 10.71,
+      "minimum": 4.5
+    },
+    {
+      "theme": "dark",
+      "foreground": "warning",
+      "background": "surfaceRaised",
+      "ratio": 9.46,
+      "minimum": 4.5
+    },
+    {
+      "theme": "dark",
+      "foreground": "danger",
+      "background": "canvas",
+      "ratio": 7.08,
+      "minimum": 4.5
+    },
+    {
+      "theme": "dark",
+      "foreground": "danger",
+      "background": "surface",
+      "ratio": 6.65,
+      "minimum": 4.5
+    },
+    {
+      "theme": "dark",
+      "foreground": "danger",
+      "background": "surfaceRaised",
+      "ratio": 5.87,
+      "minimum": 4.5
+    },
+    {
+      "theme": "dark",
+      "foreground": "info",
+      "background": "canvas",
+      "ratio": 8.89,
+      "minimum": 4.5
+    },
+    {
+      "theme": "dark",
+      "foreground": "info",
+      "background": "surface",
+      "ratio": 8.35,
+      "minimum": 4.5
+    },
+    {
+      "theme": "dark",
+      "foreground": "info",
+      "background": "surfaceRaised",
+      "ratio": 7.37,
+      "minimum": 4.5
+    },
+    {
+      "theme": "dark",
+      "foreground": "link",
+      "background": "canvas",
+      "ratio": 8.89,
+      "minimum": 4.5
+    },
+    {
+      "theme": "dark",
+      "foreground": "link",
+      "background": "surface",
+      "ratio": 8.35,
+      "minimum": 4.5
+    },
+    {
+      "theme": "dark",
+      "foreground": "link",
+      "background": "surfaceRaised",
+      "ratio": 7.37,
+      "minimum": 4.5
+    },
+    {
+      "theme": "dark",
+      "foreground": "text",
+      "background": "selected",
+      "ratio": 11.15,
+      "minimum": 4.5
+    },
+    {
+      "theme": "dark",
+      "foreground": "onAccent",
+      "background": "accent",
+      "ratio": 5.17,
+      "minimum": 4.5
+    },
+    {
+      "theme": "dark",
+      "foreground": "focus",
+      "background": "canvas",
+      "ratio": 8.89,
+      "minimum": 3
+    },
+    {
+      "theme": "dark",
+      "foreground": "focus",
+      "background": "surface",
+      "ratio": 8.35,
+      "minimum": 3
+    },
+    {
+      "theme": "dark",
+      "foreground": "focus",
+      "background": "selected",
+      "ratio": 5.96,
+      "minimum": 3
+    },
+    {
+      "theme": "dark",
+      "foreground": "border",
+      "background": "surface",
+      "ratio": 4.34,
+      "minimum": 3
+    }
+  ],
+  "note": "Recommended 1.0.0 colors/typography/shape equal 0.2.0; only status/version changed."
+}

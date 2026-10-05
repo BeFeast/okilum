@@ -1,0 +1,156 @@
+diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
+index e7c34d16..72f10b92 100644
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -1857,6 +1857,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+         let mut last_layout = LastLayout {
+             projection: state.projection.pin(),
+             source_stamp: state.source_stamp(),
++            presentation_epoch: state.presentation_epoch(),
+             font: font.clone(),
+             font_size: text_size,
+             scale_factor: window.scale_factor(),
+@@ -2462,6 +2463,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+                     state.selecting = false;
+                 }
+             }
++            state.refresh_native_candidate_geometry(window, cx);
+ 
+             cx.notify();
+         });
+diff --git a/crates/base/src/input/base/layout.rs b/crates/base/src/input/base/layout.rs
+index 8ccbd960..5a0c8fc8 100644
+--- a/crates/base/src/input/base/layout.rs
++++ b/crates/base/src/input/base/layout.rs
+@@ -15,6 +15,7 @@ pub(crate) struct WhitespaceIndicators {
+ pub(super) struct LastLayout {
+     pub(super) projection: Option<PinnedProjection>,
+     pub(super) source_stamp: SourceStamp,
++    pub(super) presentation_epoch: u64,
+     pub(super) font: gpui::Font,
+     pub(super) font_size: Pixels,
+     pub(super) scale_factor: f32,
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+index a7b9efe3..5c618ec9 100644
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -302,6 +302,7 @@ pub struct InputBaseState<M: InputModeKind> {
+     pub(super) projection: ProjectionSession,
+     pub(super) projection_pending_click: Option<(MouseDownEvent, bool)>,
+     pub(super) projection_pending_vertical: Option<super::movement::PendingVertical>,
++    pub(super) projection_ime_bounds: Option<Bounds<Pixels>>,
+     pub(super) display_map: DisplayMap,
+     pub(super) undo_manager: UndoManager,
+     pub(super) search_session: super::SearchSession,
+@@ -639,6 +640,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+             projection: ProjectionSession::default(),
+             projection_pending_click: None,
+             projection_pending_vertical: None,
++            projection_ime_bounds: None,
+             display_map: DisplayMap::new(text_style.font(), window.rem_size(), None),
+             search_session: super::SearchSession::default(),
+             search_activation_revision: 0,
+@@ -2959,6 +2961,49 @@ impl<M: InputModeKind> InputBaseState<M> {
+     }
+ }
+ 
++impl<M: InputModeKind> InputBaseState<M> {
++    /// Refresh the platform only after coherent geometry is installed. The same
++    /// public candidate-bounds policy is used by the deferred platform query;
++    /// cache actual bounds so idle paints never schedule an IME feedback loop.
++    pub(super) fn refresh_native_candidate_geometry(
++        &mut self,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) {
++        if !self.projection.enabled || !self.focus_handle.is_focused(window) {
++            self.projection_ime_bounds = None;
++            return;
++        }
++        let Some(layout) = &self.last_layout else {
++            return;
++        };
++        if layout.source_stamp != self.source_stamp()
++            || layout.presentation_epoch != self.presentation_epoch()
++        {
++            return;
++        }
++        let Some(bounds) = self.last_bounds else {
++            return;
++        };
++        let marked = self.marked_text_range(window, cx);
++        let Some(selection) = self.selected_text_range(true, window, cx) else {
++            return;
++        };
++        let candidate =
++            gpui::PlatformInputHandler::compute_ime_candidate_bounds(marked, &selection, |range| {
++                self.bounds_for_range(range, bounds, window, cx)
++            });
++        if candidate != self.projection_ime_bounds {
++            self.projection_ime_bounds = candidate;
++            if candidate.is_some() {
++                // GPUI queries the current input handler on its next frame; no
++                // captured source or projected indices escape this paint.
++                window.invalidate_character_coordinates();
++            }
++        }
++    }
++}
++
+ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
+     fn text_for_range(
+         &mut self,
+@@ -3698,6 +3743,7 @@ mod tests {
+                 state.last_layout = Some(LastLayout {
+                     projection: None,
+                     source_stamp: state.source_stamp(),
++                    presentation_epoch: state.presentation_epoch(),
+                     font: font.clone(),
+                     font_size: px(16.),
+                     scale_factor: 1.,
+@@ -3747,6 +3793,25 @@ mod tests {
+                 assert_eq!(state.cursor(), expected);
+                 assert!(state.projection_pending_vertical.is_none());
+                 assert_eq!(state.preferred_column, Some((px(10.), 0)));
++                state.focus(window, cx);
++                state.last_layout.as_mut().unwrap().presentation_epoch = state.presentation_epoch();
++                state.refresh_native_candidate_geometry(window, cx);
++                let candidate = state
++                    .projection_ime_bounds
++                    .expect("coherent selected bounds");
++                state.refresh_native_candidate_geometry(window, cx);
++                assert_eq!(state.projection_ime_bounds, Some(candidate));
++                state.last_bounds.as_mut().unwrap().origin.y += px(5.);
++                state.refresh_native_candidate_geometry(window, cx);
++                assert_ne!(state.projection_ime_bounds, Some(candidate));
++                let moved = state.projection_ime_bounds;
++                state.projection.presentation_changed();
++                state.last_bounds.as_mut().unwrap().origin.y += px(5.);
++                state.refresh_native_candidate_geometry(window, cx);
++                assert_eq!(
++                    state.projection_ime_bounds, moved,
++                    "stale layout cannot advance IME geometry"
++                );
+                 state.move_to(0, None, cx);
+                 state.preferred_column = Some((px(10.), 0));
+                 state.move_vertical(1, window, cx);
+diff --git a/crates/base/src/input/editor/display_map/text_wrapper.rs b/crates/base/src/input/editor/display_map/text_wrapper.rs
+index 46a443ec..c2382cb7 100644
+--- a/crates/base/src/input/editor/display_map/text_wrapper.rs
++++ b/crates/base/src/input/editor/display_map/text_wrapper.rs
+@@ -1266,6 +1266,7 @@ mod tests {
+                 document: 0,
+                 generation: 0,
+             },
++            presentation_epoch: 0,
+             font: gpui::font(".SystemUIFont"),
+             font_size: px(16.),
+             scale_factor: 1.,
+@@ -1574,6 +1575,7 @@ mod tests {
+                 document: 0,
+                 generation: 0,
+             },
++            presentation_epoch: 0,
+             font: gpui::font(".SystemUIFont"),
+             font_size: px(16.),
+             scale_factor: 1.,

@@ -1,0 +1,293 @@
+{
+  "schema": "tessera-experiment204-labels/v1",
+  "cases": {
+    "c01": {
+      "group": "applicable",
+      "expected_action": "release-workspace",
+      "required_constraint": "workspace-release-required",
+      "forbidden_constraints": [],
+      "expected_selection": [
+        "I01"
+      ],
+      "baseline_positive_control": true,
+      "prevention": "Correct executable next action and exactly the justified constraint, supported by current evidence; no unknown actions or evidence.",
+      "false_constraint": "Any constraint or exceptional action in a control; an unexecutable/ambiguous answer is separately unsuccessful."
+    },
+    "c02": {
+      "group": "inapplicable",
+      "expected_action": "release-direct",
+      "required_constraint": null,
+      "forbidden_constraints": [
+        "workspace-release-required"
+      ],
+      "expected_selection": [],
+      "baseline_positive_control": false,
+      "prevention": "Correct executable next action and exactly the justified constraint, supported by current evidence; no unknown actions or evidence.",
+      "false_constraint": "Any constraint or exceptional action in a control; an unexecutable/ambiguous answer is separately unsuccessful."
+    },
+    "c03": {
+      "group": "obsolete",
+      "expected_action": "release-direct",
+      "required_constraint": null,
+      "forbidden_constraints": [
+        "workspace-release-required"
+      ],
+      "expected_selection": [],
+      "baseline_positive_control": false,
+      "prevention": "Correct executable next action and exactly the justified constraint, supported by current evidence; no unknown actions or evidence.",
+      "false_constraint": "Any constraint or exceptional action in a control; an unexecutable/ambiguous answer is separately unsuccessful."
+    },
+    "c04": {
+      "group": "applicable",
+      "expected_action": "export-linked",
+      "required_constraint": "attachment-inventory-required",
+      "forbidden_constraints": [],
+      "expected_selection": [
+        "I04"
+      ],
+      "baseline_positive_control": false,
+      "prevention": "Correct executable next action and exactly the justified constraint, supported by current evidence; no unknown actions or evidence.",
+      "false_constraint": "Any constraint or exceptional action in a control; an unexecutable/ambiguous answer is separately unsuccessful."
+    },
+    "c05": {
+      "group": "inapplicable",
+      "expected_action": "export-default",
+      "required_constraint": null,
+      "forbidden_constraints": [
+        "attachment-inventory-required"
+      ],
+      "expected_selection": [],
+      "baseline_positive_control": false,
+      "prevention": "Correct executable next action and exactly the justified constraint, supported by current evidence; no unknown actions or evidence.",
+      "false_constraint": "Any constraint or exceptional action in a control; an unexecutable/ambiguous answer is separately unsuccessful."
+    },
+    "c06": {
+      "group": "obsolete",
+      "expected_action": "export-default",
+      "required_constraint": null,
+      "forbidden_constraints": [
+        "attachment-inventory-required"
+      ],
+      "expected_selection": [],
+      "baseline_positive_control": false,
+      "prevention": "Correct executable next action and exactly the justified constraint, supported by current evidence; no unknown actions or evidence.",
+      "false_constraint": "Any constraint or exceptional action in a control; an unexecutable/ambiguous answer is separately unsuccessful."
+    },
+    "c07": {
+      "group": "applicable",
+      "expected_action": "repeat-wall",
+      "required_constraint": "wall-clock-rule-required",
+      "forbidden_constraints": [],
+      "expected_selection": [
+        "I07"
+      ],
+      "baseline_positive_control": false,
+      "prevention": "Correct executable next action and exactly the justified constraint, supported by current evidence; no unknown actions or evidence.",
+      "false_constraint": "Any constraint or exceptional action in a control; an unexecutable/ambiguous answer is separately unsuccessful."
+    },
+    "c08": {
+      "group": "inapplicable",
+      "expected_action": "repeat-interval",
+      "required_constraint": null,
+      "forbidden_constraints": [
+        "wall-clock-rule-required"
+      ],
+      "expected_selection": [],
+      "baseline_positive_control": false,
+      "prevention": "Correct executable next action and exactly the justified constraint, supported by current evidence; no unknown actions or evidence.",
+      "false_constraint": "Any constraint or exceptional action in a control; an unexecutable/ambiguous answer is separately unsuccessful."
+    },
+    "c09": {
+      "group": "obsolete",
+      "expected_action": "repeat-interval",
+      "required_constraint": null,
+      "forbidden_constraints": [
+        "wall-clock-rule-required"
+      ],
+      "expected_selection": [],
+      "baseline_positive_control": false,
+      "prevention": "Correct executable next action and exactly the justified constraint, supported by current evidence; no unknown actions or evidence.",
+      "false_constraint": "Any constraint or exceptional action in a control; an unexecutable/ambiguous answer is separately unsuccessful."
+    },
+    "c10": {
+      "group": "applicable",
+      "expected_action": "book-reserved",
+      "required_constraint": "loading-bay-reservation-required",
+      "forbidden_constraints": [],
+      "expected_selection": [
+        "I10"
+      ],
+      "baseline_positive_control": false,
+      "prevention": "Correct executable next action and exactly the justified constraint, supported by current evidence; no unknown actions or evidence.",
+      "false_constraint": "Any constraint or exceptional action in a control; an unexecutable/ambiguous answer is separately unsuccessful."
+    },
+    "c11": {
+      "group": "inapplicable",
+      "expected_action": "book-default",
+      "required_constraint": null,
+      "forbidden_constraints": [
+        "loading-bay-reservation-required"
+      ],
+      "expected_selection": [],
+      "baseline_positive_control": false,
+      "prevention": "Correct executable next action and exactly the justified constraint, supported by current evidence; no unknown actions or evidence.",
+      "false_constraint": "Any constraint or exceptional action in a control; an unexecutable/ambiguous answer is separately unsuccessful."
+    },
+    "c12": {
+      "group": "obsolete",
+      "expected_action": "book-default",
+      "required_constraint": null,
+      "forbidden_constraints": [
+        "loading-bay-reservation-required"
+      ],
+      "expected_selection": [],
+      "baseline_positive_control": false,
+      "prevention": "Correct executable next action and exactly the justified constraint, supported by current evidence; no unknown actions or evidence.",
+      "false_constraint": "Any constraint or exceptional action in a control; an unexecutable/ambiguous answer is separately unsuccessful."
+    },
+    "c13": {
+      "group": "applicable",
+      "expected_action": "lookup-job",
+      "required_constraint": "original-status-check-required",
+      "forbidden_constraints": [],
+      "expected_selection": [
+        "I13"
+      ],
+      "baseline_positive_control": false,
+      "prevention": "Correct executable next action and exactly the justified constraint, supported by current evidence; no unknown actions or evidence.",
+      "false_constraint": "Any constraint or exceptional action in a control; an unexecutable/ambiguous answer is separately unsuccessful."
+    },
+    "c14": {
+      "group": "inapplicable",
+      "expected_action": "retry-submit",
+      "required_constraint": null,
+      "forbidden_constraints": [
+        "original-status-check-required"
+      ],
+      "expected_selection": [],
+      "baseline_positive_control": false,
+      "prevention": "Correct executable next action and exactly the justified constraint, supported by current evidence; no unknown actions or evidence.",
+      "false_constraint": "Any constraint or exceptional action in a control; an unexecutable/ambiguous answer is separately unsuccessful."
+    },
+    "c15": {
+      "group": "obsolete",
+      "expected_action": "retry-submit",
+      "required_constraint": null,
+      "forbidden_constraints": [
+        "original-status-check-required"
+      ],
+      "expected_selection": [],
+      "baseline_positive_control": false,
+      "prevention": "Correct executable next action and exactly the justified constraint, supported by current evidence; no unknown actions or evidence.",
+      "false_constraint": "Any constraint or exceptional action in a control; an unexecutable/ambiguous answer is separately unsuccessful."
+    },
+    "c16": {
+      "group": "applicable",
+      "expected_action": "pause-writer",
+      "required_constraint": "writer-pause-required",
+      "forbidden_constraints": [],
+      "expected_selection": [
+        "I16"
+      ],
+      "baseline_positive_control": false,
+      "prevention": "Correct executable next action and exactly the justified constraint, supported by current evidence; no unknown actions or evidence.",
+      "false_constraint": "Any constraint or exceptional action in a control; an unexecutable/ambiguous answer is separately unsuccessful."
+    },
+    "c17": {
+      "group": "inapplicable",
+      "expected_action": "migrate-online",
+      "required_constraint": null,
+      "forbidden_constraints": [
+        "writer-pause-required"
+      ],
+      "expected_selection": [],
+      "baseline_positive_control": false,
+      "prevention": "Correct executable next action and exactly the justified constraint, supported by current evidence; no unknown actions or evidence.",
+      "false_constraint": "Any constraint or exceptional action in a control; an unexecutable/ambiguous answer is separately unsuccessful."
+    },
+    "c18": {
+      "group": "obsolete",
+      "expected_action": "migrate-online",
+      "required_constraint": null,
+      "forbidden_constraints": [
+        "writer-pause-required"
+      ],
+      "expected_selection": [],
+      "baseline_positive_control": false,
+      "prevention": "Correct executable next action and exactly the justified constraint, supported by current evidence; no unknown actions or evidence.",
+      "false_constraint": "Any constraint or exceptional action in a control; an unexecutable/ambiguous answer is separately unsuccessful."
+    },
+    "c19": {
+      "group": "applicable",
+      "expected_action": "rebuild-vectors",
+      "required_constraint": "vector-rebuild-required",
+      "forbidden_constraints": [],
+      "expected_selection": [
+        "I19"
+      ],
+      "baseline_positive_control": false,
+      "prevention": "Correct executable next action and exactly the justified constraint, supported by current evidence; no unknown actions or evidence.",
+      "false_constraint": "Any constraint or exceptional action in a control; an unexecutable/ambiguous answer is separately unsuccessful."
+    },
+    "c20": {
+      "group": "inapplicable",
+      "expected_action": "refresh-incremental",
+      "required_constraint": null,
+      "forbidden_constraints": [
+        "vector-rebuild-required"
+      ],
+      "expected_selection": [],
+      "baseline_positive_control": false,
+      "prevention": "Correct executable next action and exactly the justified constraint, supported by current evidence; no unknown actions or evidence.",
+      "false_constraint": "Any constraint or exceptional action in a control; an unexecutable/ambiguous answer is separately unsuccessful."
+    },
+    "c21": {
+      "group": "obsolete",
+      "expected_action": "refresh-incremental",
+      "required_constraint": null,
+      "forbidden_constraints": [
+        "vector-rebuild-required"
+      ],
+      "expected_selection": [],
+      "baseline_positive_control": false,
+      "prevention": "Correct executable next action and exactly the justified constraint, supported by current evidence; no unknown actions or evidence.",
+      "false_constraint": "Any constraint or exceptional action in a control; an unexecutable/ambiguous answer is separately unsuccessful."
+    },
+    "c22": {
+      "group": "applicable",
+      "expected_action": "read-decision",
+      "required_constraint": "persisted-decision-required",
+      "forbidden_constraints": [],
+      "expected_selection": [
+        "I22"
+      ],
+      "baseline_positive_control": false,
+      "prevention": "Correct executable next action and exactly the justified constraint, supported by current evidence; no unknown actions or evidence.",
+      "false_constraint": "Any constraint or exceptional action in a control; an unexecutable/ambiguous answer is separately unsuccessful."
+    },
+    "c23": {
+      "group": "inapplicable",
+      "expected_action": "close-on-ack",
+      "required_constraint": null,
+      "forbidden_constraints": [
+        "persisted-decision-required"
+      ],
+      "expected_selection": [],
+      "baseline_positive_control": false,
+      "prevention": "Correct executable next action and exactly the justified constraint, supported by current evidence; no unknown actions or evidence.",
+      "false_constraint": "Any constraint or exceptional action in a control; an unexecutable/ambiguous answer is separately unsuccessful."
+    },
+    "c24": {
+      "group": "obsolete",
+      "expected_action": "close-on-ack",
+      "required_constraint": null,
+      "forbidden_constraints": [
+        "persisted-decision-required"
+      ],
+      "expected_selection": [],
+      "baseline_positive_control": false,
+      "prevention": "Correct executable next action and exactly the justified constraint, supported by current evidence; no unknown actions or evidence.",
+      "false_constraint": "Any constraint or exceptional action in a control; an unexecutable/ambiguous answer is separately unsuccessful."
+    }
+  }
+}

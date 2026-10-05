@@ -1,0 +1,13 @@
+# Existing Maestro work in the native application
+
+Issue152 adds an explicit existing-issue picker in a goal’s Execution view. Connections retains optional Maestro settings, including a separate desktop-reachable UI origin. Discovery never links implicitly. The selected project identity, repository, issue number and fresh selection guard are retained with an explicit goal UUID.
+
+The native client uses a workspace-bound immutable local outbox for link and unlink requests. It fsyncs the exact request before delivery, preserves its operation ID across restart and uncertain replies, and never automatically replays it. The recovery actions query the original operation, retry the same request, or explicitly abandon that local operation. Only an exact matching committed receipt or durable rejected disposition from the backend retires the pending request. Unknown or mismatched replies do not establish non-execution. Original requests remain in the local recovery archive. Query and abandonment require the operation disposition API in issue156.
+
+The panel shows connection state, last successful observation, paused state at the last observation, worker attempts, PR links, read-only approval summaries and saved source/history links. A retained attempt is labelled live only when both backend transport and the matching provider projection are current. Provider/desktop disconnection keeps previous evidence visible. Missing UI links are unavailable; the client never rewrites backend loopback origins into desktop URLs.
+
+Stopping observation keeps Maestro work running and preserves saved history. This view has no worker start, pause, cancellation, approval or completion controls. An observed result is unverified evidence; it does not pass a goal criterion. Actual engine dispatch remains separate work.
+
+An active Maestro link on the selected goal participates in the existing background snapshot loop even when no T3 stage is running. The idle observation interval is five seconds. Provider/backend disconnection retains that enrollment so reconnection becomes visible; unlinking or selecting a different goal ends the old enrollment. Background reads keep the existing request-generation fence and do not replay local pending operations or replace Markdown drafts.
+
+Native acceptance uses a generated brain and GET-only local Maestro fixture, outside the ordinary alpha workspace. Required cases include explicit linking, a lost link reply with exact-ID restart recovery, observation while the desktop is closed, provider disconnection with previous evidence retained, explicit unlink, and unchanged goal criteria/stages and control goal. No real provider command or real brain mutation is needed for acceptance.

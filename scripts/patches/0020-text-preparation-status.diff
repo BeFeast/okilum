@@ -1,0 +1,92 @@
+diff --git a/crates/base/src/text/state.rs b/crates/base/src/text/state.rs
+index f767f1e9..44eb4994 100644
+--- a/crates/base/src/text/state.rs
++++ b/crates/base/src/text/state.rs
+@@ -138,6 +138,7 @@ pub struct TextViewState {
+     pending_source_copy: Option<SharedString>,
+     displayed_source_copy: Option<SharedString>,
+     revision: usize,
++    prepared_revision: usize,
+     pub(super) selection_revision: usize,
+     compatible_layout_update: bool,
+     pub(super) retain_selection_on_layout: bool,
+@@ -177,6 +178,7 @@ impl TextViewState {
+                             return;
+                         }
+
++                        state.prepared_revision = parsed_update.revision;
+                         match parsed_update.result {
+                             Ok(content) => {
+                                 state.parsed_content = content;
+@@ -247,6 +249,7 @@ impl TextViewState {
+             pending_source_copy: None,
+             displayed_source_copy: None,
+             revision: 0,
++            prepared_revision: 0,
+             selection_revision: 0,
+             compatible_layout_update: false,
+             retain_selection_on_layout: false,
+@@ -396,6 +399,15 @@ impl TextViewState {
+         cx.notify();
+     }
+
++    /// Completion of the current full input, for hosts that keep their old
++    /// document visible until a prepared replacement can be published.
++    pub fn preparation_status(&self) -> Option<Result<(), String>> {
++        if self.prepared_revision != self.revision {
++            return None;
++        }
++        Some(self.parsed_error.as_ref().map_or(Ok(()), |error| Err(error.to_string())))
++    }
++
+     /// Get the text content.
+     pub(crate) fn source(&self) -> SharedString {
+         self.parsed_content.document.source.clone()
+@@ -671,6 +683,7 @@ impl TextViewState {
+         if parse_synchronously {
+             match parse_content(self.format, ParsedContent::default(), &update_options) {
+                 Ok(content) => {
++                    self.prepared_revision = self.revision;
+                     self.parsed_content = content;
+                     self.displayed_source_copy = self.pending_source_copy.clone();
+                     self.refresh_search();
+@@ -681,6 +694,7 @@ impl TextViewState {
+                     }
+                 }
+                 Err(err) => {
++                    self.prepared_revision = self.revision;
+                     self.parsed_error = Some(err);
+                 }
+             }
+diff --git a/crates/base/src/text/text_view.rs b/crates/base/src/text/text_view.rs
+index 6d834a7a..4bb9e24e 100644
+--- a/crates/base/src/text/text_view.rs
++++ b/crates/base/src/text/text_view.rs
+@@ -355,6 +355,11 @@ impl TextView {
+         self
+     }
+
++    /// Install this view's parser configuration before staging text off-screen.
++    pub fn prepare_state(&self, state: &mut TextViewState, cx: &mut gpui::Context<TextViewState>) {
++        state.set_markdown_extensions(self.markdown_extensions.clone(), cx);
++    }
++
+     /// Replace the Markdown extension registry.
+     pub fn markdown_extensions(mut self, extensions: MarkdownExtensions) -> Self {
+         self.markdown_extensions = Arc::new(extensions);
+diff --git a/crates/component/src/text/compat.rs b/crates/component/src/text/compat.rs
+index aeead21b..aabf9541 100644
+--- a/crates/component/src/text/compat.rs
++++ b/crates/component/src/text/compat.rs
+@@ -115,6 +115,11 @@ impl TextView {
+         self.inner = self.inner.on_link_click(f);
+         self
+     }
++    /// Install this view's parser configuration before staging text off-screen.
++    pub fn prepare_state(&self, state: &mut TextViewState, cx: &mut gpui::Context<TextViewState>) {
++        self.inner.prepare_state(state, cx);
++    }
++
+     /// Sets which Markdown extensions the parser accepts.
+     pub fn markdown_extensions(mut self, value: MarkdownExtensions) -> Self {
+         self.inner = self.inner.markdown_extensions(value);

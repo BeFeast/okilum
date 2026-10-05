@@ -1,0 +1,267 @@
+{
+  "version": "2.0.0",
+  "method": "WCAG sRGB relative luminance; actual GUI alias pairs, brand1.1.0 only supplies roles not overridden",
+  "scope": "Named text/selection/button/focus pairs only. Decorative hairlines are not claimed as interactive boundaries. Native accessibility and disabled controls are outside this check.",
+  "pairs": [
+    {
+      "theme": "light",
+      "foreground": "text",
+      "background": "surface",
+      "foregroundHex": "#24262b",
+      "backgroundHex": "#ffffff",
+      "ratio": 15.14,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "theme": "light",
+      "foreground": "text",
+      "background": "sidebar",
+      "foregroundHex": "#24262b",
+      "backgroundHex": "#f1f2f3",
+      "ratio": 13.51,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "theme": "light",
+      "foreground": "text",
+      "background": "selected",
+      "foregroundHex": "#24262b",
+      "backgroundHex": "#edf0f3",
+      "ratio": 13.24,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "theme": "light",
+      "foreground": "text",
+      "background": "surfaceRaised",
+      "foregroundHex": "#24262b",
+      "backgroundHex": "#f7f7f8",
+      "ratio": 14.14,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "theme": "light",
+      "foreground": "textMuted",
+      "background": "surface",
+      "foregroundHex": "#656b74",
+      "backgroundHex": "#ffffff",
+      "ratio": 5.37,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "theme": "light",
+      "foreground": "textMuted",
+      "background": "sidebar",
+      "foregroundHex": "#656b74",
+      "backgroundHex": "#f1f2f3",
+      "ratio": 4.79,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "theme": "light",
+      "foreground": "textMuted",
+      "background": "selected",
+      "foregroundHex": "#656b74",
+      "backgroundHex": "#edf0f3",
+      "ratio": 4.7,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "theme": "light",
+      "foreground": "textMuted",
+      "background": "surfaceRaised",
+      "foregroundHex": "#656b74",
+      "backgroundHex": "#f7f7f8",
+      "ratio": 5.02,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "theme": "light",
+      "foreground": "onAccent",
+      "background": "accent",
+      "foregroundHex": "#ffffff",
+      "backgroundHex": "#0969e8",
+      "ratio": 5.0,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "theme": "light",
+      "foreground": "focus",
+      "background": "surface",
+      "foregroundHex": "#0969e8",
+      "backgroundHex": "#ffffff",
+      "ratio": 5.0,
+      "minimum": 3,
+      "pass": true
+    },
+    {
+      "theme": "light",
+      "foreground": "focus",
+      "background": "sidebar",
+      "foregroundHex": "#0969e8",
+      "backgroundHex": "#f1f2f3",
+      "ratio": 4.46,
+      "minimum": 3,
+      "pass": true
+    },
+    {
+      "theme": "light",
+      "foreground": "focus",
+      "background": "selected",
+      "foregroundHex": "#0969e8",
+      "backgroundHex": "#edf0f3",
+      "ratio": 4.37,
+      "minimum": 3,
+      "pass": true
+    },
+    {
+      "theme": "light",
+      "foreground": "link",
+      "background": "surface",
+      "foregroundHex": "#0969e8",
+      "backgroundHex": "#ffffff",
+      "ratio": 5.0,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "theme": "dark",
+      "foreground": "text",
+      "background": "surface",
+      "foregroundHex": "#eceef1",
+      "backgroundHex": "#202226",
+      "ratio": 13.71,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "theme": "dark",
+      "foreground": "text",
+      "background": "sidebar",
+      "foregroundHex": "#eceef1",
+      "backgroundHex": "#292b30",
+      "ratio": 12.19,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "theme": "dark",
+      "foreground": "text",
+      "background": "selected",
+      "foregroundHex": "#eceef1",
+      "backgroundHex": "#353a43",
+      "ratio": 9.83,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "theme": "dark",
+      "foreground": "text",
+      "background": "surfaceRaised",
+      "foregroundHex": "#eceef1",
+      "backgroundHex": "#292c31",
+      "ratio": 12.05,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "theme": "dark",
+      "foreground": "textMuted",
+      "background": "surface",
+      "foregroundHex": "#a4a8b0",
+      "backgroundHex": "#202226",
+      "ratio": 6.68,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "theme": "dark",
+      "foreground": "textMuted",
+      "background": "sidebar",
+      "foregroundHex": "#a4a8b0",
+      "backgroundHex": "#292b30",
+      "ratio": 5.94,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "theme": "dark",
+      "foreground": "textMuted",
+      "background": "selected",
+      "foregroundHex": "#a4a8b0",
+      "backgroundHex": "#353a43",
+      "ratio": 4.79,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "theme": "dark",
+      "foreground": "textMuted",
+      "background": "surfaceRaised",
+      "foregroundHex": "#a4a8b0",
+      "backgroundHex": "#292c31",
+      "ratio": 5.88,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "theme": "dark",
+      "foreground": "onAccent",
+      "background": "accent",
+      "foregroundHex": "#ffffff",
+      "backgroundHex": "#176bdb",
+      "ratio": 5.05,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "theme": "dark",
+      "foreground": "focus",
+      "background": "surface",
+      "foregroundHex": "#6badff",
+      "backgroundHex": "#202226",
+      "ratio": 6.86,
+      "minimum": 3,
+      "pass": true
+    },
+    {
+      "theme": "dark",
+      "foreground": "focus",
+      "background": "sidebar",
+      "foregroundHex": "#6badff",
+      "backgroundHex": "#292b30",
+      "ratio": 6.1,
+      "minimum": 3,
+      "pass": true
+    },
+    {
+      "theme": "dark",
+      "foreground": "focus",
+      "background": "selected",
+      "foregroundHex": "#6badff",
+      "backgroundHex": "#353a43",
+      "ratio": 4.92,
+      "minimum": 3,
+      "pass": true
+    },
+    {
+      "theme": "dark",
+      "foreground": "link",
+      "background": "surface",
+      "foregroundHex": "#71acff",
+      "backgroundHex": "#202226",
+      "ratio": 6.86,
+      "minimum": 4.5,
+      "pass": true
+    }
+  ]
+}

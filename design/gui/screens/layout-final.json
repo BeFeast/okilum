@@ -1,0 +1,250 @@
+{
+  "brand": "1.1.0",
+  "rows": [
+    {
+      "width": 1440,
+      "height": 900,
+      "view": "attention",
+      "scrollWidth": 1440,
+      "clientWidth": 1440
+    },
+    {
+      "width": 1440,
+      "height": 900,
+      "view": "brain",
+      "scrollWidth": 1440,
+      "clientWidth": 1440
+    },
+    {
+      "width": 1440,
+      "height": 900,
+      "view": "goals",
+      "scrollWidth": 1440,
+      "clientWidth": 1440
+    },
+    {
+      "width": 1440,
+      "height": 900,
+      "view": "connections",
+      "scrollWidth": 1440,
+      "clientWidth": 1440
+    },
+    {
+      "width": 1440,
+      "height": 900,
+      "view": "export",
+      "scrollWidth": 1440,
+      "clientWidth": 1440
+    },
+    {
+      "width": 1440,
+      "height": 900,
+      "view": "library",
+      "scrollWidth": 1440,
+      "clientWidth": 1440
+    },
+    {
+      "width": 1440,
+      "height": 900,
+      "view": "mobile",
+      "scrollWidth": 1440,
+      "clientWidth": 1440
+    },
+    {
+      "width": 1280,
+      "height": 800,
+      "view": "attention",
+      "scrollWidth": 1280,
+      "clientWidth": 1280
+    },
+    {
+      "width": 1280,
+      "height": 800,
+      "view": "brain",
+      "scrollWidth": 1280,
+      "clientWidth": 1280
+    },
+    {
+      "width": 1280,
+      "height": 800,
+      "view": "goals",
+      "scrollWidth": 1280,
+      "clientWidth": 1280
+    },
+    {
+      "width": 1280,
+      "height": 800,
+      "view": "connections",
+      "scrollWidth": 1280,
+      "clientWidth": 1280
+    },
+    {
+      "width": 1280,
+      "height": 800,
+      "view": "export",
+      "scrollWidth": 1280,
+      "clientWidth": 1280
+    },
+    {
+      "width": 1280,
+      "height": 800,
+      "view": "library",
+      "scrollWidth": 1280,
+      "clientWidth": 1280
+    },
+    {
+      "width": 1280,
+      "height": 800,
+      "view": "mobile",
+      "scrollWidth": 1280,
+      "clientWidth": 1280
+    },
+    {
+      "width": 1024,
+      "height": 768,
+      "view": "attention",
+      "scrollWidth": 1024,
+      "clientWidth": 1024
+    },
+    {
+      "width": 1024,
+      "height": 768,
+      "view": "brain",
+      "scrollWidth": 1024,
+      "clientWidth": 1024
+    },
+    {
+      "width": 1024,
+      "height": 768,
+      "view": "goals",
+      "scrollWidth": 1024,
+      "clientWidth": 1024
+    },
+    {
+      "width": 1024,
+      "height": 768,
+      "view": "connections",
+      "scrollWidth": 1024,
+      "clientWidth": 1024
+    },
+    {
+      "width": 1024,
+      "height": 768,
+      "view": "export",
+      "scrollWidth": 1024,
+      "clientWidth": 1024
+    },
+    {
+      "width": 1024,
+      "height": 768,
+      "view": "library",
+      "scrollWidth": 1024,
+      "clientWidth": 1024
+    },
+    {
+      "width": 1024,
+      "height": 768,
+      "view": "mobile",
+      "scrollWidth": 1024,
+      "clientWidth": 1024
+    },
+    {
+      "width": 640,
+      "height": 400,
+      "view": "attention",
+      "scrollWidth": 640,
+      "clientWidth": 640
+    },
+    {
+      "width": 640,
+      "height": 400,
+      "view": "brain",
+      "scrollWidth": 640,
+      "clientWidth": 640
+    },
+    {
+      "width": 640,
+      "height": 400,
+      "view": "goals",
+      "scrollWidth": 640,
+      "clientWidth": 640
+    },
+    {
+      "width": 640,
+      "height": 400,
+      "view": "connections",
+      "scrollWidth": 640,
+      "clientWidth": 640
+    },
+    {
+      "width": 640,
+      "height": 400,
+      "view": "export",
+      "scrollWidth": 640,
+      "clientWidth": 640
+    },
+    {
+      "width": 640,
+      "height": 400,
+      "view": "library",
+      "scrollWidth": 640,
+      "clientWidth": 640
+    },
+    {
+      "width": 640,
+      "height": 400,
+      "view": "mobile",
+      "scrollWidth": 640,
+      "clientWidth": 640
+    },
+    {
+      "width": 390,
+      "height": 844,
+      "view": "attention",
+      "scrollWidth": 390,
+      "clientWidth": 390
+    },
+    {
+      "width": 390,
+      "height": 844,
+      "view": "brain",
+      "scrollWidth": 390,
+      "clientWidth": 390
+    },
+    {
+      "width": 390,
+      "height": 844,
+      "view": "goals",
+      "scrollWidth": 390,
+      "clientWidth": 390
+    },
+    {
+      "width": 390,
+      "height": 844,
+      "view": "connections",
+      "scrollWidth": 390,
+      "clientWidth": 390
+    },
+    {
+      "width": 390,
+      "height": 844,
+      "view": "export",
+      "scrollWidth": 390,
+      "clientWidth": 390
+    },
+    {
+      "width": 390,
+      "height": 844,
+      "view": "library",
+      "scrollWidth": 390,
+      "clientWidth": 390
+    },
+    {
+      "width": 390,
+      "height": 844,
+      "view": "mobile",
+      "scrollWidth": 390,
+      "clientWidth": 390
+    }
+  ]
+}

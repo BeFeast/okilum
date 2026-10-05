@@ -1,0 +1,46 @@
+--- a/crates/base/src/tooltip.rs
++++ b/crates/base/src/tooltip.rs
+@@ -6,7 +6,7 @@
+     Task, Window, deferred, div, prelude::FluentBuilder as _, px,
+ };
+ 
+-use crate::{Placement, Positioner};
++use crate::{GlobalState, Placement, Positioner};
+ 
+ const TOOLTIP_PRIORITY: usize = 200;
+ const WINDOW_MARGIN: Pixels = px(4.);
+@@ -137,6 +137,10 @@
+         window: &mut Window,
+         cx: &mut Context<Self>,
+     ) {
++        if cx.has_global::<GlobalState>() && GlobalState::is_in_deferred_context(cx) {
++            self.hide(cx);
++            return;
++        }
+         self.hide_task = None;
+         let was_visible = self.content.is_some();
+         if was_visible || self.had_recent_tooltip {
+@@ -153,7 +157,9 @@
+         self.show_task = Some(cx.spawn_in(window, async move |this, cx| {
+             cx.background_executor().timer(SHOW_DELAY).await;
+             let _ = this.update_in(cx, |this, _, cx| {
+-                if this.epoch == epoch {
++                if this.epoch == epoch
++                    && !(cx.has_global::<GlobalState>() && GlobalState::is_in_deferred_context(cx))
++                {
+                     this.content = Some(content);
+                     this.previous_bounds = None;
+                     this.is_switching = false;
+@@ -210,6 +216,12 @@
+ 
+ impl Render for TooltipOverlay {
+     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
++        // Popups own the interaction surface, including previously visible or
++        // delayed tooltips that would otherwise paint above their menu items.
++        if cx.has_global::<GlobalState>() && GlobalState::is_in_deferred_context(cx) {
++            self.hide(cx);
++            return div().into_any_element();
++        }
+         let Some(content) = self.content.as_ref() else {
+             return div().into_any_element();
+         };

@@ -1,0 +1,274 @@
+{
+  "proposal": "V2 three-pane redesign following supplied 1Password reference",
+  "date": "2026-09-06T10:46:20.485Z",
+  "sourceHash": "f587f50711ede3aede84e0dd5e7db431217abb60aa1afb95a6c5f88d8b9628e0",
+  "browser": "151.0.7922.34",
+  "captures": [
+    {
+      "id": "01-attention-light",
+      "label": "Attention · light desktop",
+      "width": 1440,
+      "height": 900,
+      "scrollWidth": 1440,
+      "documentHeight": 900,
+      "theme": "light",
+      "density": "comfortable"
+    },
+    {
+      "id": "02-attention-dark",
+      "label": "Attention · dark desktop",
+      "width": 1440,
+      "height": 900,
+      "scrollWidth": 1440,
+      "documentHeight": 900,
+      "theme": "dark",
+      "density": "comfortable"
+    },
+    {
+      "id": "03-discussion",
+      "label": "Goal discussion · sources and next action",
+      "width": 1440,
+      "height": 900,
+      "scrollWidth": 1440,
+      "documentHeight": 900,
+      "theme": "light",
+      "density": "comfortable"
+    },
+    {
+      "id": "04-execution",
+      "label": "Execution · running stage",
+      "width": 1440,
+      "height": 900,
+      "scrollWidth": 1440,
+      "documentHeight": 900,
+      "theme": "light",
+      "density": "comfortable"
+    },
+    {
+      "id": "05-blocker",
+      "label": "Execution · decision blocker",
+      "width": 1440,
+      "height": 900,
+      "scrollWidth": 1440,
+      "documentHeight": 900,
+      "theme": "light",
+      "density": "comfortable"
+    },
+    {
+      "id": "06-outcome-review",
+      "label": "Engine succeeded · goal awaiting review",
+      "width": 1440,
+      "height": 900,
+      "scrollWidth": 1440,
+      "documentHeight": 900,
+      "theme": "light",
+      "density": "comfortable"
+    },
+    {
+      "id": "07-completed",
+      "label": "Completed goal · recorded review",
+      "width": 1440,
+      "height": 900,
+      "scrollWidth": 1440,
+      "documentHeight": 900,
+      "theme": "light",
+      "density": "comfortable"
+    },
+    {
+      "id": "08-prior-stage",
+      "label": "Follow-up · retained prior stage",
+      "width": 1440,
+      "height": 900,
+      "scrollWidth": 1440,
+      "documentHeight": 900,
+      "theme": "light",
+      "density": "comfortable"
+    },
+    {
+      "id": "09-source-preview",
+      "label": "Project brain · exact source and mock preview",
+      "width": 1440,
+      "height": 900,
+      "scrollWidth": 1440,
+      "documentHeight": 900,
+      "theme": "light",
+      "density": "comfortable"
+    },
+    {
+      "id": "10-dirty-navigation",
+      "label": "Dirty source · safe navigation dialog",
+      "width": 1440,
+      "height": 900,
+      "scrollWidth": 1440,
+      "documentHeight": 900,
+      "theme": "light",
+      "density": "comfortable"
+    },
+    {
+      "id": "11-newer-conflict",
+      "label": "Conflict · newer incoming version, draft retained",
+      "width": 1440,
+      "height": 900,
+      "scrollWidth": 1440,
+      "documentHeight": 900,
+      "theme": "light",
+      "density": "comfortable"
+    },
+    {
+      "id": "12-conflict-reviewed",
+      "label": "Conflict · latest comparison reviewed",
+      "width": 1440,
+      "height": 900,
+      "scrollWidth": 1440,
+      "documentHeight": 900,
+      "theme": "light",
+      "density": "comfortable"
+    },
+    {
+      "id": "13-connections",
+      "label": "Connections · missing Todoist credentials",
+      "width": 1440,
+      "height": 900,
+      "scrollWidth": 1440,
+      "documentHeight": 900,
+      "theme": "light",
+      "density": "comfortable"
+    },
+    {
+      "id": "14-export-success",
+      "label": "Export · verified synthetic archive ready",
+      "width": 1440,
+      "height": 900,
+      "scrollWidth": 1440,
+      "documentHeight": 900,
+      "theme": "light",
+      "density": "comfortable"
+    },
+    {
+      "id": "15-export-failure",
+      "label": "Export · changed-file failure",
+      "width": 1440,
+      "height": 900,
+      "scrollWidth": 1440,
+      "documentHeight": 900,
+      "theme": "light",
+      "density": "comfortable"
+    },
+    {
+      "id": "16-state-library",
+      "label": "Trust states and reusable components",
+      "width": 1440,
+      "height": 900,
+      "scrollWidth": 1440,
+      "documentHeight": 900,
+      "theme": "light",
+      "density": "comfortable"
+    },
+    {
+      "id": "17-offline",
+      "label": "Backend unavailable · stale status",
+      "width": 1440,
+      "height": 900,
+      "scrollWidth": 1440,
+      "documentHeight": 900,
+      "theme": "light",
+      "density": "comfortable"
+    },
+    {
+      "id": "18-laptop-compact",
+      "label": "Laptop 1280×800 · compact discussion",
+      "width": 1280,
+      "height": 800,
+      "scrollWidth": 1280,
+      "documentHeight": 800,
+      "theme": "light",
+      "density": "compact"
+    },
+    {
+      "id": "19-laptop-dark",
+      "label": "Laptop 1280×800 · compact dark discussion",
+      "width": 1280,
+      "height": 800,
+      "scrollWidth": 1280,
+      "documentHeight": 800,
+      "theme": "dark",
+      "density": "compact"
+    },
+    {
+      "id": "20-source-laptop",
+      "label": "Laptop 1024×768 · source and preview",
+      "width": 1024,
+      "height": 768,
+      "scrollWidth": 1024,
+      "documentHeight": 768,
+      "theme": "light",
+      "density": "comfortable"
+    },
+    {
+      "id": "21-zoom-equivalent",
+      "label": "640×400 CSS viewport · 200% layout equivalent",
+      "width": 640,
+      "height": 400,
+      "scrollWidth": 640,
+      "documentHeight": 400,
+      "theme": "light",
+      "density": "comfortable"
+    },
+    {
+      "id": "22-mobile-future",
+      "label": "Future mobile · capture and attention concept",
+      "width": 390,
+      "height": 844,
+      "scrollWidth": 390,
+      "documentHeight": 844,
+      "theme": "light",
+      "density": "comfortable"
+    }
+  ],
+  "fonts": {
+    "h1": {
+      "fonts": [
+        {
+          "familyName": "Noto Sans",
+          "postScriptName": "NotoSans-Regular",
+          "isCustomFont": true,
+          "glyphCount": 38
+        }
+      ]
+    },
+    ".subtitle": {
+      "fonts": [
+        {
+          "familyName": "Noto Sans",
+          "postScriptName": "NotoSans-Regular",
+          "isCustomFont": true,
+          "glyphCount": 30
+        }
+      ]
+    },
+    "#source-editor": {
+      "fonts": []
+    },
+    ".prose": {
+      "fonts": [
+        {
+          "familyName": "Noto Sans",
+          "postScriptName": "NotoSans-Regular",
+          "isCustomFont": true,
+          "glyphCount": 347
+        }
+      ]
+    },
+    ".conflict-grid pre": {
+      "fonts": [
+        {
+          "familyName": "Cascadia Code",
+          "postScriptName": "CascadiaCode-Regular",
+          "isCustomFont": true,
+          "glyphCount": 396
+        }
+      ]
+    }
+  },
+  "errors": []
+}

@@ -1,0 +1,52 @@
+{
+  "source_branch": "design/tessera-brand-identity",
+  "source_worktree": "/home/example/src/tessera-brand-identity",
+  "source_HEAD_at_import": "a68a7d15fa435a06445641d4aabb6d96994fc112",
+  "note": "Snapshots copied read-only from uncommitted brand lane files; HEAD is base, not a commit containing these token files. Content hashes identify the exact imports.",
+  "imports": [
+    {
+      "file": "brand-0.1.0.json",
+      "sha256": "e8a4731d9956ee68d2f6561542f376ede9d1f4d4d26f0495614003e2fb494e13",
+      "status": "provisional"
+    },
+    {
+      "file": "brand-0.2.0.json",
+      "sha256": "a30a715a0fdc126bec3fb031c467a9a4f65de8b3ee5c6a22e5e1d55358b5e2f5",
+      "status": "provisional"
+    },
+    {
+      "file": "brand-1.0.0.json",
+      "sha256": "c3519e16d591ce28f0e0ac684f111bc4b3b1f5387b63b5f2882411c1ca09fbcc",
+      "status": "recommended"
+    },
+    {
+      "file": "brand-1.1.0.json",
+      "sha256": "30695163008319c101007248dc8501c768dbabdeac0480110ee17744c066b27b",
+      "status": "recommended"
+    }
+  ],
+  "font_sources": [
+    {
+      "file": "cascadia-code-cyrillic.woff2",
+      "sha256": "2b5394007fc6896185de6c6bc0ceac0440409eb47a76c51aa9ca5a620dce755b"
+    },
+    {
+      "file": "cascadia-code-latin.woff2",
+      "sha256": "a3018c0c6b4ed21b123349cc6c8d4d35d32cb11f91fe5e960aa4886eb27a9209"
+    },
+    {
+      "file": "noto-sans-cyrillic.woff2",
+      "sha256": "6ab64433de6077ca5ad31b05420450ce986a616a4ea47b6ad16f3217055dafc3"
+    },
+    {
+      "file": "noto-sans-latin.woff2",
+      "sha256": "51ca196f49a33e79e7870ff88ebd2829a3f627a51e7d690986618f0e7ad2b52d"
+    }
+  ],
+  "verified_committed_source": {
+    "commit": "ee6a73ffa6852e7d12dcc4e536dbc51b04f63bb7",
+    "path": "design/brand/versions/tokens-1.1.0.json",
+    "sha256": "30695163008319c101007248dc8501c768dbabdeac0480110ee17744c066b27b",
+    "verification": "git show bytes equal immutable GUI import"
+  }
+}

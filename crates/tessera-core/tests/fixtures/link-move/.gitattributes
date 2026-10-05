@@ -1,0 +1,2 @@
+# Canonical byte fixtures: preserve their authored BOM and CRLF on every host.
+*.md -text whitespace=cr-at-eol

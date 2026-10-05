@@ -1,0 +1,212 @@
+{
+  "schema": "tessera-native-brand/v1",
+  "brand_delivery": "B1.2.0",
+  "brand_tokens": "1.1.0",
+  "interface_tokens": "2.0.0",
+  "brand_commit": "7bf512a0041b51b90b88652aae12bef6ead17b83",
+  "gui_commit": "3ba23948adbabb4288bb3bc6fa0d3e4e074861e2",
+  "transform": "fontTools4.64.0: instantiate wght400/500/600/700, merge Latin+Cyrillic, emit native TTF; SVG bytes unchanged",
+  "font_scope": "Embedded upright Latin and Cyrillic. Other scripts use platform fallback; italic may be synthesized.",
+  "inputs": [
+    {
+      "commit": "7bf512a0041b51b90b88652aae12bef6ead17b83",
+      "path": "design/brand/recommended/symbol-primary.svg",
+      "sha256": "2c9e2f569e1ca931ffd07e21a8f1aed0b7e5857d437697ab311638bdfdb7e5de"
+    },
+    {
+      "commit": "7bf512a0041b51b90b88652aae12bef6ead17b83",
+      "path": "design/brand/recommended/symbol-reversed.svg",
+      "sha256": "2d3c5bb46581f7ed7105bca8c95abc9018e10541597a724e2af83a772cccf869"
+    },
+    {
+      "commit": "7bf512a0041b51b90b88652aae12bef6ead17b83",
+      "path": "design/brand/recommended/app-icon-light.svg",
+      "sha256": "cd76f874a40336abd71ae16ffa569f91a6febfa1c518197015aeb561164fa58e"
+    },
+    {
+      "commit": "7bf512a0041b51b90b88652aae12bef6ead17b83",
+      "path": "design/brand/recommended/app-icon-dark.svg",
+      "sha256": "f84276520ff797318f7aadb8a15408d69d764f5e9f41f6e307024a920f1b58d6"
+    },
+    {
+      "commit": "7bf512a0041b51b90b88652aae12bef6ead17b83",
+      "path": "design/brand/versions/tokens-1.1.0.json",
+      "sha256": "30695163008319c101007248dc8501c768dbabdeac0480110ee17744c066b27b"
+    },
+    {
+      "commit": "3ba23948adbabb4288bb3bc6fa0d3e4e074861e2",
+      "path": "design/gui/interface-tokens.json",
+      "sha256": "132abd63ef60579cc79540352f41c752328d470dfc379511150421dcbe6abbad"
+    },
+    {
+      "commit": "7bf512a0041b51b90b88652aae12bef6ead17b83",
+      "path": "design/brand/fonts/notosans-OFL.txt",
+      "sha256": "cee9892f9f0cc8fe882c9e9537ee6a89621d86ee7ceaf70b02e2b2b1c25c061a"
+    },
+    {
+      "commit": "7bf512a0041b51b90b88652aae12bef6ead17b83",
+      "path": "design/brand/fonts/noto-sans-latin.woff2",
+      "sha256": "51ca196f49a33e79e7870ff88ebd2829a3f627a51e7d690986618f0e7ad2b52d"
+    },
+    {
+      "commit": "7bf512a0041b51b90b88652aae12bef6ead17b83",
+      "path": "design/brand/fonts/noto-sans-cyrillic.woff2",
+      "sha256": "6ab64433de6077ca5ad31b05420450ce986a616a4ea47b6ad16f3217055dafc3"
+    },
+    {
+      "commit": "7bf512a0041b51b90b88652aae12bef6ead17b83",
+      "path": "design/brand/fonts/cascadiacode-OFL.txt",
+      "sha256": "82c05d6c53dfa0c9025985c19e371810020b74ed2c61d51d370f2a8ab2506d52"
+    },
+    {
+      "commit": "7bf512a0041b51b90b88652aae12bef6ead17b83",
+      "path": "design/brand/fonts/cascadia-code-latin.woff2",
+      "sha256": "a3018c0c6b4ed21b123349cc6c8d4d35d32cb11f91fe5e960aa4886eb27a9209"
+    },
+    {
+      "commit": "7bf512a0041b51b90b88652aae12bef6ead17b83",
+      "path": "design/brand/fonts/cascadia-code-cyrillic.woff2",
+      "sha256": "2b5394007fc6896185de6c6bc0ceac0440409eb47a76c51aa9ca5a620dce755b"
+    }
+  ],
+  "fonts": [
+    {
+      "path": "fonts/noto-sans-400.ttf",
+      "family": "Noto Sans",
+      "weight": 400,
+      "format": "TrueType",
+      "codepoints": 333
+    },
+    {
+      "path": "fonts/noto-sans-500.ttf",
+      "family": "Noto Sans",
+      "weight": 500,
+      "format": "TrueType",
+      "codepoints": 333
+    },
+    {
+      "path": "fonts/noto-sans-600.ttf",
+      "family": "Noto Sans",
+      "weight": 600,
+      "format": "TrueType",
+      "codepoints": 333
+    },
+    {
+      "path": "fonts/noto-sans-700.ttf",
+      "family": "Noto Sans",
+      "weight": 700,
+      "format": "TrueType",
+      "codepoints": 333
+    },
+    {
+      "path": "fonts/cascadia-code-400.ttf",
+      "family": "Cascadia Code",
+      "weight": 400,
+      "format": "TrueType",
+      "codepoints": 331
+    },
+    {
+      "path": "fonts/cascadia-code-500.ttf",
+      "family": "Cascadia Code",
+      "weight": 500,
+      "format": "TrueType",
+      "codepoints": 331
+    },
+    {
+      "path": "fonts/cascadia-code-600.ttf",
+      "family": "Cascadia Code",
+      "weight": 600,
+      "format": "TrueType",
+      "codepoints": 331
+    },
+    {
+      "path": "fonts/cascadia-code-700.ttf",
+      "family": "Cascadia Code",
+      "weight": 700,
+      "format": "TrueType",
+      "codepoints": 331
+    }
+  ],
+  "files": [
+    {
+      "path": "app-icon-dark.svg",
+      "bytes": 441,
+      "sha256": "f84276520ff797318f7aadb8a15408d69d764f5e9f41f6e307024a920f1b58d6"
+    },
+    {
+      "path": "app-icon-light.svg",
+      "bytes": 443,
+      "sha256": "cd76f874a40336abd71ae16ffa569f91a6febfa1c518197015aeb561164fa58e"
+    },
+    {
+      "path": "brand-tokens.json",
+      "bytes": 1488,
+      "sha256": "30695163008319c101007248dc8501c768dbabdeac0480110ee17744c066b27b"
+    },
+    {
+      "path": "fonts/cascadia-code-400.ttf",
+      "bytes": 90820,
+      "sha256": "569c8d0ca66228c14365a76150d0227daf8971a0d7c8879e8d5af92bc5073df5"
+    },
+    {
+      "path": "fonts/cascadia-code-500.ttf",
+      "bytes": 90900,
+      "sha256": "65ac89ee29d29e8bf256c5d11451c5bd8a204a7502416a6ad15ad0e4cd1fe01b"
+    },
+    {
+      "path": "fonts/cascadia-code-600.ttf",
+      "bytes": 90964,
+      "sha256": "4aecd0a8410185b97b62de8675c49bf0042a2133345bfdcbd727bbb39c04d3f1"
+    },
+    {
+      "path": "fonts/cascadia-code-700.ttf",
+      "bytes": 91288,
+      "sha256": "da5001e7338a9a9934ffb48da3c598b75aafdf7fe9794a732e168144c6204314"
+    },
+    {
+      "path": "fonts/cascadiacode-OFL.txt",
+      "bytes": 4395,
+      "sha256": "82c05d6c53dfa0c9025985c19e371810020b74ed2c61d51d370f2a8ab2506d52"
+    },
+    {
+      "path": "fonts/noto-sans-400.ttf",
+      "bytes": 42344,
+      "sha256": "301e77577c26344702888f8484caefcebe4061e1094bd93f8f22bd2c14f0a4bd"
+    },
+    {
+      "path": "fonts/noto-sans-500.ttf",
+      "bytes": 42512,
+      "sha256": "5953d7c187148b3bed543f1db4aa29cd5545f3513375c7ffb172dfe2aa9ac299"
+    },
+    {
+      "path": "fonts/noto-sans-600.ttf",
+      "bytes": 42500,
+      "sha256": "c61086e699c1d63393c6fb3f92af31a1d230af8999fe0e57071070ae8319c79e"
+    },
+    {
+      "path": "fonts/noto-sans-700.ttf",
+      "bytes": 42432,
+      "sha256": "46e934ac63477c9c4660887ee14c9b871f5dd24b6069b951cb09390750a8ca4f"
+    },
+    {
+      "path": "fonts/notosans-OFL.txt",
+      "bytes": 4396,
+      "sha256": "cee9892f9f0cc8fe882c9e9537ee6a89621d86ee7ceaf70b02e2b2b1c25c061a"
+    },
+    {
+      "path": "interface-tokens.json",
+      "bytes": 1456,
+      "sha256": "132abd63ef60579cc79540352f41c752328d470dfc379511150421dcbe6abbad"
+    },
+    {
+      "path": "symbol-primary.svg",
+      "bytes": 395,
+      "sha256": "2c9e2f569e1ca931ffd07e21a8f1aed0b7e5857d437697ab311638bdfdb7e5de"
+    },
+    {
+      "path": "symbol-reversed.svg",
+      "bytes": 395,
+      "sha256": "2d3c5bb46581f7ed7105bca8c95abc9018e10541597a724e2af83a772cccf869"
+    }
+  ]
+}

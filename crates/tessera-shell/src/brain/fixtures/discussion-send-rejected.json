@@ -1,0 +1,29 @@
+{
+  "error": {
+    "brain_id": "19de02b2-a7d4-4b52-ac3b-350d2c113495",
+    "code": "discussion_send_rejected",
+    "goal_id": "269abbef-98d4-4772-8a72-46b02b62e04c",
+    "message": "chat is not configured",
+    "operation_id": "968b81b7-7288-499a-9569-605dbf878bf8",
+    "recorded": false,
+    "request_sha256": "ab1f0a1dc26e86269cd225684d100fac9cb03e7794003d6fa4fc5519f468244e"
+  },
+  "request": {
+    "conversation_id": null,
+    "expected_actor_id": "local operator",
+    "expected_workspace": {
+      "brain_id": "19de02b2-a7d4-4b52-ac3b-350d2c113495",
+      "managed": true,
+      "records_dir": "records",
+      "root": "/tmp/.tmpxpIkhl/brain"
+    },
+    "goal_id": "269abbef-98d4-4772-8a72-46b02b62e04c",
+    "id": "9f7bddf3-0215-414c-9497-5302cdf6b6e3",
+    "message": "Question",
+    "op": "chat_send",
+    "operation_id": "968b81b7-7288-499a-9569-605dbf878bf8",
+    "request_sha256": "ab1f0a1dc26e86269cd225684d100fac9cb03e7794003d6fa4fc5519f468244e",
+    "schema": "ai-brain/workspace-v1",
+    "source_paths": []
+  }
+}

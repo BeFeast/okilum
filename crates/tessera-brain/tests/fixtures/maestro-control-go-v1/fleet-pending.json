@@ -1,0 +1,553 @@
+{
+  "read_only": false,
+  "refreshed_at": "2026-09-08T06:23:18Z",
+  "next_action": {
+    "project": "example",
+    "kind": "approval_pending",
+    "target_url": "/approvals?id=approval-8cfa30356312134d",
+    "reason": "raw summary Approve or reject the pending supervisor approval after checking the target state.",
+    "priority": "P1",
+    "picked_at": "2026-09-08T06:00:00Z",
+    "cta_label": "Approve PR #34",
+    "pr_number": 34,
+    "issue_number": 12
+  },
+  "verdict": {
+    "tone": "daemon-down",
+    "sentence": "Supervisor heartbeat unavailable. No worker is running. 1 item needs attention.",
+    "headline": "Daemon offline.",
+    "detail": "No supervisor heartbeat."
+  },
+  "operator_brief": {
+    "tone": "attention",
+    "sentence": "Global brief: action required in example on issue #12, PR #34: Merge requested. Reason: raw summary",
+    "project": "example",
+    "kind": "approval_pending",
+    "reason": "raw summary",
+    "next_action": "Approve or reject the pending supervisor approval after checking the target state.",
+    "action_required": true,
+    "issue_number": 12,
+    "issue_url": "https://github.com/owner/repo/issues/12",
+    "pr_number": 34,
+    "pr_url": "https://github.com/owner/repo/pull/34"
+  },
+  "projects": [
+    {
+      "guarded_approvals": {
+        "version": "v1",
+        "supported": true,
+        "actions": [
+          "merge_pr"
+        ]
+      },
+      "name": "example",
+      "repo": "owner/repo",
+      "forge": "github",
+      "webhooks_applicable": true,
+      "project_id": "11111111-1111-4111-8111-111111111111",
+      "config_path": "test.yaml",
+      "dashboard_url": "/project/example",
+      "state_dir": "/home/example/worktrees/maestro/guarded-approval-validation/tmp/TestExportGuardedWireFixture3192716726/001",
+      "max_parallel": 0,
+      "read_only": false,
+      "paused": false,
+      "paused_at": "0001-01-01T00:00:00Z",
+      "operator_state": {
+        "kind": "outcome_missing",
+        "tone": "warn",
+        "label": "Outcome missing",
+        "summary": "No outcome brief is configured, so Maestro cannot prove hands-off success.",
+        "next_action": "Add an outcome brief for this project before expecting reliable unattended development."
+      },
+      "outcome": {
+        "configured": false,
+        "health_state": "not_configured",
+        "next_action": "Define an outcome brief so Maestro can judge progress by runtime health instead of issue throughput."
+      },
+      "summary": {},
+      "running": 0,
+      "pr_open": 0,
+      "prs_open": 0,
+      "workers_running": 0,
+      "live_workers": 0,
+      "pr_gates": 0,
+      "capacity_used": 0,
+      "capacity_blocked_by_gates": 0,
+      "activity": "blocked_by_approvals",
+      "activity_reason": "Blocked by approvals: 1 decision(s) awaiting an operator.",
+      "failed": 0,
+      "sessions": 0,
+      "needs_attention": 0,
+      "approvals": [
+        {
+          "guarded_review": {
+            "expected": {
+              "version": "v1",
+              "project_id": "11111111-1111-4111-8111-111111111111",
+              "project_name": "example",
+              "project_repo": "owner/repo",
+              "approval_id": "approval-8cfa30356312134d",
+              "created_at": "2026-09-08T06:00:00.123456789Z",
+              "decision_revision": "v1:52d20dd2a96c8ab39ea7ce78a8f0904643579f06bd4c2f343020167fdf334898"
+            },
+            "decision_id": "decision",
+            "action": "merge_pr",
+            "target": {
+              "issue": 12,
+              "pr": 34,
+              "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "summary": "raw summary",
+            "risk": "low",
+            "evidence": [
+              "full evidence"
+            ]
+          },
+          "project_name": "example",
+          "project_repo": "owner/repo",
+          "dashboard_url": "/approvals?id=approval-8cfa30356312134d",
+          "id": "approval-8cfa30356312134d",
+          "decision_id": "decision",
+          "action": "merge_pr",
+          "target": {
+            "issue": 12,
+            "pr": 34,
+            "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "target_links": [
+            {
+              "kind": "issue",
+              "label": "Issue #12",
+              "url": "https://github.com/owner/repo/issues/12"
+            },
+            {
+              "kind": "pr",
+              "label": "PR #34",
+              "url": "https://github.com/owner/repo/pull/34"
+            }
+          ],
+          "issue_number": 12,
+          "issue_url": "https://github.com/owner/repo/issues/12",
+          "pr_number": 34,
+          "pr_url": "https://github.com/owner/repo/pull/34",
+          "status": "pending",
+          "created_at": "2026-09-08T06:00:00Z",
+          "updated_at": "2026-09-08T06:00:00Z",
+          "created_age": "23m19s",
+          "updated_age": "23m19s",
+          "created_age_seconds": 1399,
+          "updated_age_seconds": 1399,
+          "risk": "low",
+          "summary": "raw summary"
+        }
+      ],
+      "approval_summary": {
+        "pending": 1
+      },
+      "actions": [
+        {
+          "id": "mark_issue_ready",
+          "label": "Mark ready",
+          "description": "Add the maestro-ready label so the supervisor picks the issue up.",
+          "scope": "project",
+          "target": "example",
+          "mutating": true,
+          "requires_approval": false,
+          "approval_policy": "safe_direct",
+          "disabled": false,
+          "method": "POST",
+          "endpoint": "/api/v1/fleet/actions"
+        },
+        {
+          "id": "mark_issue_blocked",
+          "label": "Mark blocked",
+          "description": "Add the blocked label so the supervisor holds the issue.",
+          "scope": "project",
+          "target": "example",
+          "mutating": true,
+          "requires_approval": false,
+          "approval_policy": "safe_direct",
+          "disabled": false,
+          "method": "POST",
+          "endpoint": "/api/v1/fleet/actions"
+        }
+      ],
+      "supervisor": {
+        "has_run": false,
+        "empty_state": "No Supervisor has run yet. Run the supervisor to record orchestration rationale."
+      },
+      "dispatch_hold": {
+        "active": false
+      },
+      "freshness": {
+        "state_updated_at": "2026-09-08T06:23:18Z",
+        "snapshot_at": "2026-09-08T06:23:18Z",
+        "snapshot_age": "0s",
+        "stale_after_seconds": 900
+      },
+      "supervisor_pulse": {
+        "stalled_progress_watchdog": {
+          "enabled": false,
+          "mode": "multi-signal-progress-v1"
+        }
+      },
+      "cost_observability": {
+        "window_today": {
+          "tokens": 0,
+          "priced_tokens": 0,
+          "unpriced_tokens": 0,
+          "usd": 0,
+          "sessions": 0
+        },
+        "window_7d": {
+          "tokens": 0,
+          "priced_tokens": 0,
+          "unpriced_tokens": 0,
+          "usd": 0,
+          "sessions": 0
+        },
+        "lifetime": {
+          "tokens": 0,
+          "priced_tokens": 0,
+          "unpriced_tokens": 0,
+          "usd": 0,
+          "sessions": 0
+        },
+        "per_backend": []
+      },
+      "epic_summary": {
+        "tracked": 0,
+        "complete": 0,
+        "in_progress": 0,
+        "children_total": 0,
+        "children_merged": 0,
+        "children_open": 0,
+        "awaiting_approval": 0
+      },
+      "effective_config": {
+        "project_id": "11111111-1111-4111-8111-111111111111",
+        "model_policy": {
+          "default": "",
+          "provider_lanes": [
+            {
+              "provider": "unspecified",
+              "default": ""
+            }
+          ],
+          "resolved_route": null,
+          "selection_reason": "model_default_only",
+          "backends": [],
+          "routing": {}
+        },
+        "pipeline": {
+          "planner": {},
+          "advisor": {},
+          "implementer": {},
+          "validator": {},
+          "advisor_review_rounds": 2
+        },
+        "worker_runtime": {
+          "mode": "legacy",
+          "scope": "system",
+          "scratch_configured": false
+        },
+        "max_parallel": 0,
+        "review_gate": "",
+        "labels": {},
+        "retention": {
+          "enabled": true,
+          "keep_last": 20,
+          "min_age": "168h0m0s",
+          "archive_enabled": true,
+          "archive_file_present": false
+        },
+        "cost_caps": {
+          "backend_pricing_configured": 0,
+          "backend_pricing_total": 0
+        },
+        "supervisor_gate": {
+          "dispatch_sla_seconds": 300,
+          "completion_gates_active": false,
+          "handoff_planner_active": false,
+          "review_repair_active": true,
+          "review_repair_backend": "claude",
+          "allow_metered_backend": false
+        },
+        "approval_action": "change_global_config",
+        "settings": [
+          {
+            "key": "model.provider_lanes",
+            "value": "null",
+            "source": "builtin",
+            "is_default": true
+          },
+          {
+            "key": "supervisor.enabled",
+            "value": "false",
+            "source": "builtin",
+            "is_default": true
+          },
+          {
+            "key": "supervisor.backend",
+            "value": "",
+            "source": "builtin",
+            "is_default": true
+          },
+          {
+            "key": "supervisor.model",
+            "value": "",
+            "source": "builtin",
+            "is_default": true
+          },
+          {
+            "key": "supervisor.effort",
+            "value": "",
+            "source": "builtin",
+            "is_default": true
+          },
+          {
+            "key": "supervisor.allow_metered_backend",
+            "value": "false",
+            "source": "builtin",
+            "is_default": true
+          },
+          {
+            "key": "supervisor.always_consult_llm",
+            "value": "false",
+            "source": "builtin",
+            "is_default": true
+          },
+          {
+            "key": "supervisor.unchanged_decision_window_seconds",
+            "value": "3600",
+            "source": "builtin",
+            "is_default": true
+          },
+          {
+            "key": "supervisor.recommendation_ttl_seconds",
+            "value": "86400",
+            "source": "builtin",
+            "is_default": true
+          },
+          {
+            "key": "supervisor.spec_groom.enabled",
+            "value": "false",
+            "source": "builtin",
+            "is_default": true
+          },
+          {
+            "key": "supervisor.spec_groom.require_lint_pass",
+            "value": "false",
+            "source": "builtin",
+            "is_default": true
+          },
+          {
+            "key": "poll_interval_seconds",
+            "value": "0",
+            "source": "builtin",
+            "is_default": true
+          },
+          {
+            "key": "worker_max_tokens",
+            "value": "0",
+            "source": "builtin",
+            "is_default": true
+          },
+          {
+            "key": "fleet.min_live_workers",
+            "value": "5",
+            "source": "builtin",
+            "is_default": true
+          },
+          {
+            "key": "fleet.max_live_workers",
+            "value": "10",
+            "source": "builtin",
+            "is_default": true
+          },
+          {
+            "key": "stalled_progress_watchdog.enabled",
+            "value": "false",
+            "source": "builtin",
+            "is_default": true
+          },
+          {
+            "key": "stalled_progress_watchdog.max_silence_minutes",
+            "value": "0",
+            "source": "builtin",
+            "is_default": true
+          },
+          {
+            "key": "stalled_progress_watchdog.eval_interval_seconds",
+            "value": "0",
+            "source": "builtin",
+            "is_default": true
+          }
+        ]
+      }
+    }
+  ],
+  "summary": {
+    "projects": 1,
+    "stale": 0,
+    "errors": 0,
+    "active": 0,
+    "monitoring_pr": 0,
+    "dispatch_pending": 0,
+    "dispatch_failures": 0,
+    "queue_blocked": 0,
+    "no_eligible_issues": 0,
+    "outcome_missing": 1,
+    "outcome_drift": 0,
+    "stale_workers": 0,
+    "metered_backend": 0,
+    "running": 0,
+    "pr_open": 0,
+    "prs_open": 0,
+    "workers_running": 0,
+    "live_workers": 0,
+    "pr_gates": 0,
+    "capacity_blocked_by_gates": 0,
+    "failed": 0,
+    "sessions": 0,
+    "needs_attention": 0,
+    "approvals": 1,
+    "approvals_pending": 1,
+    "approvals_actionable": 1,
+    "approvals_historical": 0,
+    "approvals_stale": 0,
+    "approvals_superseded": 0,
+    "approvals_approved": 0,
+    "approvals_rejected": 0,
+    "throughput_merged_7d": 0,
+    "throughput_daily_7d": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ]
+  },
+  "workers": [],
+  "attention": [],
+  "approvals": [
+    {
+      "guarded_review": {
+        "expected": {
+          "version": "v1",
+          "project_id": "11111111-1111-4111-8111-111111111111",
+          "project_name": "example",
+          "project_repo": "owner/repo",
+          "approval_id": "approval-8cfa30356312134d",
+          "created_at": "2026-09-08T06:00:00.123456789Z",
+          "decision_revision": "v1:52d20dd2a96c8ab39ea7ce78a8f0904643579f06bd4c2f343020167fdf334898"
+        },
+        "decision_id": "decision",
+        "action": "merge_pr",
+        "target": {
+          "issue": 12,
+          "pr": 34,
+          "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "summary": "raw summary",
+        "risk": "low",
+        "evidence": [
+          "full evidence"
+        ]
+      },
+      "project_name": "example",
+      "project_repo": "owner/repo",
+      "dashboard_url": "/approvals?id=approval-8cfa30356312134d",
+      "id": "approval-8cfa30356312134d",
+      "decision_id": "decision",
+      "action": "merge_pr",
+      "target": {
+        "issue": 12,
+        "pr": 34,
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "target_links": [
+        {
+          "kind": "issue",
+          "label": "Issue #12",
+          "url": "https://github.com/owner/repo/issues/12"
+        },
+        {
+          "kind": "pr",
+          "label": "PR #34",
+          "url": "https://github.com/owner/repo/pull/34"
+        }
+      ],
+      "issue_number": 12,
+      "issue_url": "https://github.com/owner/repo/issues/12",
+      "pr_number": 34,
+      "pr_url": "https://github.com/owner/repo/pull/34",
+      "status": "pending",
+      "created_at": "2026-09-08T06:00:00Z",
+      "updated_at": "2026-09-08T06:00:00Z",
+      "created_age": "23m19s",
+      "updated_age": "23m19s",
+      "created_age_seconds": 1399,
+      "updated_age_seconds": 1399,
+      "risk": "low",
+      "summary": "raw summary"
+    }
+  ],
+  "cost_observability": {
+    "window_today": {
+      "tokens": 0,
+      "priced_tokens": 0,
+      "unpriced_tokens": 0,
+      "usd": 0,
+      "sessions": 0
+    },
+    "window_7d": {
+      "tokens": 0,
+      "priced_tokens": 0,
+      "unpriced_tokens": 0,
+      "usd": 0,
+      "sessions": 0
+    },
+    "lifetime": {
+      "tokens": 0,
+      "priced_tokens": 0,
+      "unpriced_tokens": 0,
+      "usd": 0,
+      "sessions": 0
+    },
+    "per_backend": [],
+    "per_project": [
+      {
+        "project": "example",
+        "repo": "owner/repo",
+        "today": {
+          "tokens": 0,
+          "priced_tokens": 0,
+          "unpriced_tokens": 0,
+          "usd": 0,
+          "sessions": 0
+        },
+        "week": {
+          "tokens": 0,
+          "priced_tokens": 0,
+          "unpriced_tokens": 0,
+          "usd": 0,
+          "sessions": 0
+        },
+        "lifetime": {
+          "tokens": 0,
+          "priced_tokens": 0,
+          "unpriced_tokens": 0,
+          "usd": 0,
+          "sessions": 0
+        }
+      }
+    ]
+  },
+  "emergency": {
+    "active": false,
+    "level": "none"
+  }
+}

@@ -1,0 +1,104 @@
+{
+  "schema": "tessera-proposal-adoption-outbox/v1",
+  "workspace": {
+    "brain_id": "1c682895-34c3-4491-a7eb-f58d7efa5d94",
+    "managed": true,
+    "records_dir": "records",
+    "root": "/synthetic/adoption-controls"
+  },
+  "path": "records/proposal-7c484446fc5d73ae3a463ff3666d1cc899e9ce2f0eff61784870181655269b57.md",
+  "detail": {
+    "current_revision": "sha256:b03e604762cb93767b5dcef21b8704c8b013fdfe92db018c441ffc021b5637cd",
+    "projection_pending": false,
+    "record": {
+      "schema": "tessera-proposal/v1",
+      "record_type": "proposal",
+      "id": "7c484446fc5d73ae3a463ff3666d1cc899e9ce2f0eff61784870181655269b57",
+      "brain_id": "1c682895-34c3-4491-a7eb-f58d7efa5d94",
+      "goal_id": "97407c1d-9e05-4b40-9abe-625b138f9a3a",
+      "trigger": {
+        "identity": {
+          "brain_id": "1c682895-34c3-4491-a7eb-f58d7efa5d94",
+          "kind": "decision_saved",
+          "record_id": "837f7fe5-3193-4dae-a4da-e4889f6fcef6",
+          "source_revision": "sha256:8c6e7781eef579ae48a5c6f45aa90eff4412c75b07fb3f28a30521546ee9b762",
+          "policy_version": 1
+        },
+        "goal_id": "97407c1d-9e05-4b40-9abe-625b138f9a3a",
+        "source_path": "records/decision-837f7fe5-3193-4dae-a4da-e4889f6fcef6.md",
+        "received_at": "2026-09-07T15:46:37.284068437Z"
+      },
+      "captured": {
+        "trigger_source": {
+          "schema": "ai-brain/v1",
+          "brain_id": "1c682895-34c3-4491-a7eb-f58d7efa5d94",
+          "path": "records/decision-837f7fe5-3193-4dae-a4da-e4889f6fcef6.md",
+          "revision": "sha256:8c6e7781eef579ae48a5c6f45aa90eff4412c75b07fb3f28a30521546ee9b762",
+          "content_base64": "LS0tCmFjdG9yX2lkOiBvcGVyYXRvcgphdHRlbnRpb25faWQ6IGE3NjU4YzdkLTcyM2QtNDk3Zi05OWQxLTcyMDNjYzAyZDAwMQphdHRlbnRpb25fcmV2aXNpb246IHNoYTI1Njo0MTUyZDNjMGZhYzMwZGMyMTk0MWExNDJmMjcxZDQ4N2RjYTUwNDA4OTNjNDg0YTI0ZWQzZDViN2E2MzUzYzQyCmJyYWluX2lkOiAxYzY4Mjg5NS0zNGMzLTQ0OTEtYTdlYi1mNThkN2VmYTVkOTQKZ29hbF9pZDogOTc0MDdjMWQtOWUwNS00YjQwLTlhYmUtNjI1YjEzOGY5YTNhCmlkOiA4MzdmN2ZlNS0zMTkzLTRkYWUtYTRkYS1lNDg4OWY2ZmNlZjYKcmVjZWl2ZWRfYXQ6IDIwMjYtMDktMDdUMTU6NDY6MzcuMjg0MDY4NDM3WgpyZWNvcmRfdHlwZTogZGVjaXNpb24Kc2NoZW1hOiBhaS1icmFpbi92MQpzb3VyY2U6CiAgYWNjb3VudF9pZDogbG9jYWwKICBhY3Rvcl9pZDogb3BlcmF0b3IKICBjaGFubmVsOiBuYXRpdmUKICBjaGF0X2lkOiBudWxsCiAgaW5zdGFuY2VfaWQ6IGQ2YmI4Njk1LTM0NTAtNGY4OS1hNzYwLTdjOTBlN2ZmMzEzNQogIG1lc3NhZ2VfaWQ6IDE1N2RjNzRjLTQyOWYtNDBlMi05ZmU0LTUzZGU4ODRhMzBkYQogIHRvcGljX2lkOiBudWxsCiAgdXBkYXRlX2lkOiAxNTdkYzc0Yy00MjlmLTQwZTItOWZlNC01M2RlODg0YTMwZGEKICB1cmk6IG51bGwKc3RhZ2VfaWQ6IG51bGwKdmVyaWZpY2F0aW9uOiB1bnZlcmlmaWVkCi0tLQpUdWVzZGF5IGlzIHN1aXRhYmxl",
+          "media_type": "text/markdown"
+        }
+      }
+    },
+    "source": {
+      "brain_id": "1c682895-34c3-4491-a7eb-f58d7efa5d94",
+      "content_base64": "LS0tCnNjaGVtYTogdGVzc2VyYS1wcm9wb3NhbC92MQpyZWNvcmRfdHlwZTogcHJvcG9zYWwKaWQ6IDdjNDg0NDQ2ZmM1ZDczYWUzYTQ2M2ZmMzY2NmQxY2M4OTllOWNlMmYwZWZmNjE3ODQ4NzAxODE2NTUyNjliNTcKYnJhaW5faWQ6IDFjNjgyODk1LTM0YzMtNDQ5MS1hN2ViLWY1OGQ3ZWZhNWQ5NApnb2FsX2lkOiA5NzQwN2MxZC05ZTA1LTRiNDAtOWFiZS02MjViMTM4ZjlhM2EKdHJpZ2dlcjoKICBpZGVudGl0eToKICAgIGJyYWluX2lkOiAxYzY4Mjg5NS0zNGMzLTQ0OTEtYTdlYi1mNThkN2VmYTVkOTQKICAgIGtpbmQ6IGRlY2lzaW9uX3NhdmVkCiAgICByZWNvcmRfaWQ6IDgzN2Y3ZmU1LTMxOTMtNGRhZS1hNGRhLWU0ODg5ZjZmY2VmNgogICAgc291cmNlX3JldmlzaW9uOiBzaGEyNTY6OGM2ZTc3ODFlZWY1NzlhZTQ4YTVjNmY0NWFhOTBlZmY0NDEyYzc1YjA3ZmIzZjI4YTMwNTIxNTQ2ZWU5Yjc2MgogICAgcG9saWN5X3ZlcnNpb246IDEKICBnb2FsX2lkOiA5NzQwN2MxZC05ZTA1LTRiNDAtOWFiZS02MjViMTM4ZjlhM2EKICBzb3VyY2VfcGF0aDogcmVjb3Jkcy9kZWNpc2lvbi04MzdmN2ZlNS0zMTkzLTRkYWUtYTRkYS1lNDg4OWY2ZmNlZjYubWQKICByZWNlaXZlZF9hdDogMjAyNi0wOS0wN1QxNTo0NjozNy4yODQwNjg0MzdaCmF0dGVtcHQ6CiAgaWQ6IGJjNGYyMjViLTRkMmEtNDU0Mi05MWJlLTdkNGZhNzM3NmRkNwogIHN0YXRlOiBkcmFmdAogIGlucHV0OgogICAgcHJvdmlkZXJfaWRlbnRpdHk6IGZpeHR1cmUtcHJvdmlkZXIKICAgIG1vZGVsOiBkZXRlcm1pbmlzdGljLXYxCiAgICBpbnB1dF9zaGEyNTY6IDg5MzI5YzgyNmE3NTc5YmMwNjlmZDAzOGU1MGI5ZTJhZDcyMzI3YjAzOGI5ODA0ZmVlOTNiOTdkMjE5YTRlNmQKY2FwdHVyZWQ6CiAgdHJpZ2dlcl9zb3VyY2U6CiAgICBzY2hlbWE6IGFpLWJyYWluL3YxCiAgICBicmFpbl9pZDogMWM2ODI4OTUtMzRjMy00NDkxLWE3ZWItZjU4ZDdlZmE1ZDk0CiAgICBwYXRoOiByZWNvcmRzL2RlY2lzaW9uLTgzN2Y3ZmU1LTMxOTMtNGRhZS1hNGRhLWU0ODg5ZjZmY2VmNi5tZAogICAgcmV2aXNpb246IHNoYTI1Njo4YzZlNzc4MWVlZjU3OWFlNDhhNWM2ZjQ1YWE5MGVmZjQ0MTJjNzViMDdmYjNmMjhhMzA1MjE1NDZlZTliNzYyCiAgICBjb250ZW50X2Jhc2U2NDogTFMwdENtRmpkRzl5WDJsa09pQnZjR1Z5WVhSdmNncGhkSFJsYm5ScGIyNWZhV1E2SUdFM05qVTRZemRrTFRjeU0yUXRORGszWmkwNU9XUXhMVGN5TUROall6QXlaREF3TVFwaGRIUmxiblJwYjI1ZmNtVjJhWE5wYjI0NklITm9ZVEkxTmpvME1UVXlaRE5qTUdaaFl6TXdaR015TVRrME1XRXhOREptTWpjeFpEUTROMlJqWVRVd05EQTRPVE5qTkRnMFlUSTBaV1F6WkRWaU4yRTJNelV6WXpReUNtSnlZV2x1WDJsa09pQXhZelk0TWpnNU5TMHpOR016TFRRME9URXRZVGRsWWkxbU5UaGtOMlZtWVRWa09UUUtaMjloYkY5cFpEb2dPVGMwTURkak1XUXRPV1V3TlMwMFlqUXdMVGxoWW1VdE5qSTFZakV6T0dZNVlUTmhDbWxrT2lBNE16ZG1OMlpsTlMwek1Ua3pMVFJrWVdVdFlUUmtZUzFsTkRnNE9XWTJabU5sWmpZS2NtVmpaV2wyWldSZllYUTZJREl3TWpZdE1Ea3RNRGRVTVRVNk5EWTZNemN1TWpnME1EWTRORE0zV2dweVpXTnZjbVJmZEhsd1pUb2daR1ZqYVhOcGIyNEtjMk5vWlcxaE9pQmhhUzFpY21GcGJpOTJNUXB6YjNWeVkyVTZDaUFnWVdOamIzVnVkRjlwWkRvZ2JHOWpZV3dLSUNCaFkzUnZjbDlwWkRvZ2IzQmxjbUYwYjNJS0lDQmphR0Z1Ym1Wc09pQnVZWFJwZG1VS0lDQmphR0YwWDJsa09pQnVkV3hzQ2lBZ2FXNXpkR0Z1WTJWZmFXUTZJR1EyWW1JNE5qazFMVE0wTlRBdE5HWTRPUzFoTnpZd0xUZGpPVEJsTjJabU16RXpOUW9nSUcxbGMzTmhaMlZmYVdRNklERTFOMlJqTnpSakxUUXlPV1l0TkRCbE1pMDVabVUwTFRVelpHVTRPRFJoTXpCa1lRb2dJSFJ2Y0dsalgybGtPaUJ1ZFd4c0NpQWdkWEJrWVhSbFgybGtPaUF4TlRka1l6YzBZeTAwTWpsbUxUUXdaVEl0T1dabE5DMDFNMlJsT0RnMFlUTXdaR0VLSUNCMWNtazZJRzUxYkd3S2MzUmhaMlZmYVdRNklHNTFiR3dLZG1WeWFXWnBZMkYwYVc5dU9pQjFiblpsY21sbWFXVmtDaTB0TFFwVWRXVnpaR0Y1SUdseklITjFhWFJoWW14bAogICAgbWVkaWFfdHlwZTogdGV4dC9tYXJrZG93bgogIGNpdGF0aW9uczogW10KICBnb2FsX3JldmlzaW9uOiBzaGEyNTY6ZDdmMTRjMTRhMWQzOWQ4ODM3YjY4MmEyZGI5OTBkMDI1MDEyOTBhN2QzMTU0ZjU2NDQ4NGFmMDhlMTZlZGViNgogIG9taXNzaW9uczoKICAtIEZpeHR1cmUgaGFzIG5vIGFkZGl0aW9uYWwgY2l0YXRpb25zCmNyZWF0ZWRfYXQ6IDIwMjYtMDktMDdUMTU6NDY6MzcuMzE3NzEwOTQ1WgpnZW5lcmF0aW9uX2FjdG9yOiBmaXh0dXJlLXByb3ZpZGVyCmdlbmVyYXRlZF9hdDogMjAyNi0wOS0wN1QxNTo0NjozNy4zMzQ2NTY0NjVaCnZlcmlmaWNhdGlvbjogdW52ZXJpZmllZApnZW5lcmF0ZWQ6CiAgdGl0bGU6IFByZXBhcmUgdmlzaXQga2l0CiAgY3JpdGVyaWE6CiAgLSBLaXQgY29udGFpbnMgdGhlIGFwcG9pbnRtZW50IGRldGFpbHMKICByYXRpb25hbGU6IFRoZSBjYXB0dXJlZCB0aG91Z2h0IG5lZWRzIHByZXBhcmF0aW9uCiAgb3Blbl9xdWVzdGlvbnM6CiAgLSBXaGljaCBkYXRlPwogIGNpdGF0aW9uX2lkczogW10KZmFpbHVyZTogbnVsbApkaXNwb3NpdGlvbjoKICBraW5kOiB1bnJldmlld2VkCmhpc3Rvcnk6IFtdCi0tLQojIFByZXBhcmUgdmlzaXQga2l0CgpVbnZlcmlmaWVkIEFJIHByb3Bvc2FsLgoKVGhlIGNhcHR1cmVkIHRob3VnaHQgbmVlZHMgcHJlcGFyYXRpb24KCiMjIFByb3Bvc2VkIGNyaXRlcmlhCgotIEtpdCBjb250YWlucyB0aGUgYXBwb2ludG1lbnQgZGV0YWlscwo=",
+      "media_type": "text/markdown",
+      "path": "records/proposal-7c484446fc5d73ae3a463ff3666d1cc899e9ce2f0eff61784870181655269b57.md",
+      "revision": "sha256:b03e604762cb93767b5dcef21b8704c8b013fdfe92db018c441ffc021b5637cd",
+      "schema": "ai-brain/v1"
+    },
+    "stale_reasons": []
+  },
+  "goal_at_submit": "97407c1d-9e05-4b40-9abe-625b138f9a3a",
+  "request": {
+    "destination": "context",
+    "citations": [
+      {
+        "citation_id": "c_711ae3f91e8f0ffdab77e55006fc672b70735f84c81450c5f8c1fc492faac429",
+        "end_line": 3,
+        "excerpt": "# Workshop evidence\n\nOriginal source for pinned context.\n",
+        "locator": "L1-L3",
+        "metadata": {
+          "observed_at": null,
+          "owner_goal_id": null,
+          "record_type": null,
+          "status": null,
+          "verification": null
+        },
+        "path": "evidence.md",
+        "revision": "sha256:d58e31bdea996e33f3b17016979f4fef6d15b58011482892a38c3d19ea080464",
+        "start_line": 1
+      }
+    ],
+    "expected_base_packet": "0327c4ef-d8bb-4e1c-a778-e839576c791c",
+    "expected_base_revision": "sha256:835364f8b297e50c658d5ba587eafc17137f6ac0ba2f8a16ac24fa175a69cc35",
+    "expected_goal_revision": "sha256:d7f14c14a1d39d8837b682a2db990d02501290a7d3154f564484af08e16edeb6",
+    "expected_revision": "sha256:b03e604762cb93767b5dcef21b8704c8b013fdfe92db018c441ffc021b5637cd",
+    "goal_id": "97407c1d-9e05-4b40-9abe-625b138f9a3a",
+    "guidance": "Manual compatibility guidance \u2014 \u96ea. Keep exact pins.\n\nAdditional inspected proposal guidance.",
+    "operation_id": "4786e814-a75f-401c-bc2d-ac5ed567bd53",
+    "pinned_citation_ids": [
+      "c_711ae3f91e8f0ffdab77e55006fc672b70735f84c81450c5f8c1fc492faac429"
+    ],
+    "proposal_id": "7c484446fc5d73ae3a463ff3666d1cc899e9ce2f0eff61784870181655269b57",
+    "query": "workshop preparation",
+    "scope": {
+      "exclude_paths": [],
+      "goal_id": "97407c1d-9e05-4b40-9abe-625b138f9a3a",
+      "include_paths": [],
+      "mode": "project",
+      "path_prefix": null
+    },
+    "source": {
+      "account_id": "local",
+      "actor_id": "operator",
+      "channel": "native",
+      "chat_id": null,
+      "instance_id": "e32514f7-0bb1-41c7-8465-c0e4e1505e01",
+      "message_id": "4786e814-a75f-401c-bc2d-ac5ed567bd53",
+      "topic_id": null,
+      "update_id": "4786e814-a75f-401c-bc2d-ac5ed567bd53",
+      "uri": null
+    }
+  }
+}

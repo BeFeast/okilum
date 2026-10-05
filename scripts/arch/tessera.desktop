@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Tessera
+Comment=Read and search your Markdown vault
+Exec=tessera %f
+Icon=tessera
+Terminal=false
+Categories=Office;Utility;
+MimeType=text/markdown;
+StartupNotify=true

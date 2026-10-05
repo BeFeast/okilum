@@ -1,0 +1,15 @@
+# Independent workspace: the optional server never expands Reader's dependency
+# graph, lockfile or required workspace-wide lint/test job.
+[workspace]
+resolver = "2"
+members = ["crates/tessera-inbox-domain", "crates/tessera-inboxd"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+thiserror = "2"

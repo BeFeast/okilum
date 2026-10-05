@@ -1,0 +1,229 @@
+# Reader startup diagnostics
+
+Every ordinary desktop launch records phase timings, including successful opens.
+The UI only queues events; a diagnostic thread appends JSON lines outside notes.
+The current log rotates at 4 MiB and retains one previous file. Warning/failure
+reports append without replacing startup timings. No note content is logged.
+
+On macOS, send the latest launch timings with one Terminal command:
+
+```sh
+tail -n 250 "$HOME/Library/Application Support/uk.oklabs.tessera/reader-diagnostic.log"
+```
+
+On Linux the file is `$XDG_STATE_HOME/tessera/reader-diagnostic.log`, or
+`~/.local/state/tessera/reader-diagnostic.log` when that variable is unset.
+Windows retains `%LOCALAPPDATA%\tessera\reader-diagnostic.log`.
+
+`elapsed_ms` uses the process startup clock; `details.duration_ms` measures a
+single operation. `launch`, `build`, and `version` distinguish runs. The clock
+does not measure LaunchServices before `main`, or final GPU presentation.
+
+- `platform_application`, `app_run_callback`, `components_init`, `fonts_load`,
+  `recovery_and_window_state`, `appearance_load`: before Reader creation.
+- `startup_history_and_root_validation`, `window_key_and_geometry`,
+  `native_window_open`, `reader_constructor`: history and window startup.
+- `requested_path_resolve`, `startup_snapshot_load`, `warm_cache`: cache size,
+  presence, or rejection reason. A missing cache means the launch is cold.
+- `history_and_primary_discovery`, `primary_selection`,
+  `cached_inventory_construct`, `primary_source_and_render`,
+  `saved_search_index_open`: first-document worker preparation.
+- `first_worker_ready`, `first_event_received`, `text_state_stage`,
+  `document_published`: event delivery and asynchronous document parsing.
+- `first_ui_stage`, `inventory_ui_publish`, `ready_ui_publish`: time spent
+  handling each publication on the UI thread, including synchronous cleanup.
+- `ready_worker_send`, `ready_event_received`: distinguish event queue delay
+  from the Ready callback and the subsequent publication-to-paint gap.
+- `reader_first_paint`, `document_first_paint`, `inventory_first_paint`: actual
+  Reader paint callbacks; the latter includes the usable document and inventory.
+  The publication-to-paint gap includes layout, font shaping and paint work.
+- `watcher_registration`, `reconcile_source_bank_load`, `reconcile_source_cache`, `replay_cursor_load`,
+  `reconcile_phase`, `reconcile_stats`, `background_search_prepare`,
+  `snapshot_persist`, `vault_ready`: background work after first publication.
+- `cached_backlink_titles`: builds labels from already reconciled source text;
+  it does not open linking notes a second time.
+- `last_document_cache`: the existing history worker caches the latest opened
+  source separately, so a late reconcile cannot replace it with the initial note.
+
+A partial inventory persists a provisional cache with unreadable paths. Startup
+loads only the small inventory/graph/primary manifest and latest-document cache. The complete source
+bank is loaded after document publication and reconciled in the background.
+Older caches migrate through the complete bank once. Full scans and incremental
+watcher/save handling remain the scope of issue #487.
+
+## Cloud-latency reproduction (#502)
+
+The Linux-only probe injects latency into actual vault `open`, `read`, `stat`
+and canonicalization calls. Cache files stay local. Positive controls perform
+both metadata and source reads and assert the injected delay. Setup and cache
+creation are excluded. Build and run from the repository root:
+
+```sh
+/usr/bin/cc -shared -fPIC -O2 -Wall -Wextra -Werror \
+  scripts/probes/slow-vault-fs.c -ldl -o target/slow-vault-fs.so
+cargo test --locked -p tessera-core --lib \
+  warm_primary_five_thousand_links_cloud_profile --no-run
+# Use the tessera_core executable printed by cargo, not cargo itself:
+TESSERA_SLOW_FS_PREFIX=/tmp/tessera-cloud-link- \
+TESSERA_SLOW_FS_MS=2 TESSERA_CLOUD_PROFILE_SAMPLES=3 \
+LD_PRELOAD="$PWD/target/slow-vault-fs.so" \
+  target/debug/deps/tessera_core-<hash> \
+  warm_primary_five_thousand_links_cloud_profile \
+  --ignored --nocapture --test-threads=1
+```
+
+The fixture contains 5001 notes (~35 MiB), with 5000 Markdown basename links
+in the cached primary note. It measures `primary_source_and_render`, before
+the First event, rather than native window/GPU presentation or a full reconcile.
+On the same Linux host/session, 2 ms latency produced 21869.70/21854.14/21771.44 ms
+before the fix (10000 metadata probes per sample), and 640.67/649.79/701.94 ms
+after it (zero vault calls in that phase). Provisional identities defer unknown
+occupancy and attachment verification to background reconciliation. Complete
+resolution retains source-relative precedence and filesystem validation.
+The counters and delays are active only around the timed render call, using
+the `warm_primary` phase; setup, cache loading and later reconciliation are
+outside that counted window. The separate `positive_control` phase proves
+that both metadata and source-read instrumentation fired.
+
+This establishes a first-publication delay. Native build 6453 diagnostics then
+identified rejected caches and complete backlink resolution as separate gates,
+described below.
+
+To include startup cache loading, text preparation and the first GPUI test-renderer
+draw, build the shell test executable and run the publication probe:
+
+```sh
+cargo test --locked -p tessera-shell warm_first_tree_frame_profile --no-run
+TESSERA_SLOW_FS_PREFIX=/tmp/tessera-warm-frame- TESSERA_SLOW_FS_MS=2 \
+TESSERA_WARM_PROFILE_PARAGRAPHS=350 TESSERA_WARM_PROFILE_LINKS=100 \
+LD_PRELOAD="$PWD/target/slow-vault-fs.so" \
+  target/debug/deps/tessera-<hash> warm_first_tree_frame_profile \
+  --ignored --nocapture --test-threads=1
+```
+
+This 5001-note fixture (~54 MiB canonical sources) publishes the cached tree and
+last note with 100 Markdown links in 139.90/150.24/184.14 ms on the same Linux
+host. All samples assert usable parsed text/search input and a complete cached
+tree while reconciliation is still held. Before-publication filesystem calls
+are actually delayed: four stats and six canonicalizations per sample, with
+zero vault source opens/reads. The preferences hold isolates the first frame
+from the deterministic executor's serial background execution; it is not the
+latency injection. The probe cancels that reconcile after measurement. Existing
+warm UI regressions cover completion, input, selection and position retention.
+These test-renderer numbers exclude native window/GPU presentation.
+With `TESSERA_WARM_PROFILE_LINKS=5000`, three clean stress samples were
+1848.39/1797.36/1926.43 ms, still before reconciliation. The extra time is text
+preparation/layout, not per-link vault I/O; filesystem counts stayed identical.
+
+## Native evidence and complete backlink reproduction
+
+The M4/iCloud 5082-note logs from build 6453 show no usable warm cache on any
+of three launches. The two later launches reject an existing 6.37 MB manifest
+with `Invalid Reader startup inventory`; both also reject the source bank,
+read every note, and rebuild the graph. A POSIX fixture reproduces that exact
+manifest rejection with legal `:` and literal backslash filenames, which the
+scanner admitted but the cache validator rejected. Native cache filenames were
+not supplied, so the specific offending path is not established. Validation now
+matches native path components and logs the rejected identity and cause chain;
+parent traversal, absolute identities and Windows drive/ADS paths remain refused.
+
+The two completed native runs spend 24.82/44.40 seconds in Preparing backlinks
+and 5.71/5.70 seconds persisting the cache. The process sample places 14688 of
+14955 worker samples under backlink Markdown resolution, `canonicalize`, and
+iCloud `__getattrlist`. Graph construction now uses enumeration metadata for
+source-relative occupancy and known in-vault absolute paths, preserving dangling
+symlink and non-directory-parent shadows. Live UI actions still verify files.
+Absolute paths outside known roots or across observed aliases/parent components
+retain one verification per distinct destination to preserve outside-file/alias
+identity; repeated occurrences share that result. They are not represented as
+purely in-memory resolutions.
+
+Run the complete-graph probe with the same test executable and preload:
+
+```sh
+TESSERA_SLOW_FS_PREFIX=/tmp/tessera-cloud-graph- \
+TESSERA_SLOW_FS_MS=2 TESSERA_CLOUD_PROFILE_SAMPLES=2 \
+LD_PRELOAD="$PWD/target/slow-vault-fs.so" \
+  target/debug/deps/tessera_core-<hash> complete_backlinks_cloud_profile \
+  --ignored --nocapture --test-threads=1
+```
+
+This fixture has 5001 notes and 10000 incoming references (absolute in-vault and
+suffix links). On the same Linux host/session with 2 ms per filesystem call,
+Preparing backlinks changed from 74953.46/74864.99 ms to 483.63/455.21 ms.
+Before: 30000 canonicalizations and 5000 stats per sample; after: zero vault calls
+in the timed `complete_graph` loop. Both runs have separate source-read and stat
+positive controls. Enumeration, source loading and the one root normalization
+are outside this counted phase; this is not a full-reconcile measurement.
+
+JSON cache writes now use a 64 KiB buffer and propagate final flush errors.
+The primary probe also compares identical 50.91 MB JSON bytes: 1897.54 ms
+unbuffered versus 1542.92 ms buffered on this host, not a predicted Mac speedup.
+The cache-name regression includes source reuse on the following reconcile.
+With a legal colon attachment included, the delayed GPUI publication probe
+still publishes the 5001-note tree before reconciliation in 162.21/176.01/168.05 ms.
+
+The second native launch has an additional 30.98-second gap between `vault_ready`
+and inventory render; the supplied sample covers the third launch's backlinks,
+so it does not identify that gap. New Ready queue/callback timings locate it if
+it recurs. Native warm-tree <1 second and background reconcile around <5 seconds
+remain owner acceptance checks on the published replacement build.
+
+## Imported timestamps and source reuse (#487)
+
+The next owner log (`reader-diagnostic-6503.txt`, whose new launch records say
+build 6517) confirms cached document/tree paint at 0.51–0.55 seconds and short
+Ready callbacks. Background reconciliation still takes 11–14 seconds: 5026
+sources read and only 66 reused among 5092 notes, with `replay_force_all=false`.
+The previous reuse guard required fractional mtime even when the full saved
+revision matched. Imported whole-second mtime therefore forced a read and full
+backlink parse each launch, despite precise native Unix ctime.
+
+Reuse now accepts fractional mtime **or native Unix ctime**, while still requiring
+exact equality of size, mtime, device, inode and ctime. A changed tuple, replay
+invalidation, unavailable metadata or genuinely coarse timestamps still forces
+a read. No byte hashing or extra filesystem calls were introduced. The shared
+CandidateIndex uses the same revision precision helper and equality check.
+Regressions cover cache reload, zero-read unchanged sources, same-size writes
+with preserved mtime, atomic inode replacement, dirty/forced reads, genuinely
+coarse metadata, and a new incoming link in a previously unselected move source.
+
+`reconcile_stats.details.reuse` separates the read rejection reasons (`forced`,
+`missing_source`, `invalidated_revision`, `unavailable_metadata`,
+`imprecise_revision`, `changed_revision`). These counts sum to `read`. Its
+`mismatch` counts identify changed revision fields; several fields can change
+in one revision. `coarse_mtime` and `precise_ctime` count all inspected notes.
+`graph_reused` reports whether graph parsing was skipped. `replay_invalidations`
+reports dirty-path count and whole-root invalidation without logging source text.
+The owner snapshot/revisions were not supplied: the fixture establishes a
+matching defect, and these native counters distinguish any remaining cause.
+
+Run the imported-time fixture using the core test executable and the same preload:
+
+```sh
+TESSERA_SLOW_FS_PREFIX=/tmp/tessera-coarse-reconcile- \
+TESSERA_SLOW_FS_MS=2 TESSERA_SLOW_FS_METADATA_US=100 \
+TESSERA_CLOUD_PROFILE_SAMPLES=2 LD_PRELOAD="$PWD/target/slow-vault-fs.so" \
+  target/debug/deps/tessera_core-<hash> imported_mtime_warm_reconcile_profile \
+  --ignored --nocapture --test-threads=1
+```
+
+This 5092-note fixture (~50 MiB), 5026 imported mtimes and 66 ordinary mtimes,
+reproduces the exact native read/reuse counts before the fix. Actual source opens
+and reads each incur 2 ms, while each metadata/canonicalization call incurs
+100 microseconds. The split is explicit: uniform 2 ms stats alone would impose
+over 10 seconds on the remaining metadata walk and cannot establish a 2–3 second
+total target. Separate positive controls assert both syscall delays.
+Same Linux host/session: 37469.92/37032.03 ms before → 919.62/869.29 ms after.
+Across two samples source opens drop 10052→0, reads 20104→0, stats 30290→10186;
+backlink graph parsing is skipped, preserved links are asserted. Cache loading,
+persistence and search are outside this timed reconcile. Native timings remain
+owner QA; incremental save/watcher indexing is the remaining #487 scope.
+
+The probe also launches two fresh child processes sequentially on that same
+persisted cache. Each reloads both startup manifest and full source bank, asserts
+`read=0/reused=5092` and graph reuse, refuses any canonical source read, then saves
+the next manifest/source bank for the following launch. Canonical notes are not
+modified. `IMPORTED_MTIME_RELAUNCH` reports cache loading, reconcile and persistence
+separately; the syscall counters for each child verify zero opens/reads inside
+reconcile rather than relying on inherited parent memory.

@@ -1,0 +1,50 @@
+{
+  "schema": "tessera-design-tokens/v1",
+  "version": "0.1.0",
+  "status": "provisional",
+  "themes": {
+    "light": {
+      "canvas": "#F5F3EC",
+      "surface": "#FFFEFA",
+      "surfaceRaised": "#FFFFFF",
+      "text": "#202B28",
+      "textMuted": "#58655F",
+      "border": "#7B8780",
+      "accent": "#245C48",
+      "onAccent": "#FFFFFF",
+      "selected": "#DDE9DE",
+      "focus": "#845326",
+      "success": "#27613C",
+      "warning": "#85521F",
+      "danger": "#A23532",
+      "info": "#315F87"
+    },
+    "dark": {
+      "canvas": "#18211E",
+      "surface": "#202C26",
+      "surfaceRaised": "#29372F",
+      "text": "#F1F3E9",
+      "textMuted": "#B8C4B8",
+      "border": "#83978A",
+      "accent": "#ACCEAA",
+      "onAccent": "#18211E",
+      "selected": "#354D3C",
+      "focus": "#E9BD7A",
+      "success": "#A6CDA8",
+      "warning": "#E9BD7A",
+      "danger": "#F1ABA0",
+      "info": "#A7C9E7"
+    }
+  },
+  "typography": {
+    "fontFamilySans": "\"DejaVu Sans\", \"Noto Sans\", sans-serif",
+    "fontFamilyMono": "\"DejaVu Sans Mono\", \"Noto Sans Mono\", monospace",
+    "sizeBody": 16,
+    "lineHeightBody": 1.5
+  },
+  "shape": {
+    "radiusSmall": 4,
+    "radiusMedium": 8,
+    "radiusLarge": 16
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "schema": "tessera-maintenance-test-posture/v1",
+  "classification": "The exact 15 enabled-link setup tests classified in historical CI312; that run remains failed. These run unfiltered on enabled main. Maintenance replacements require actual binary matrix success.",
+  "tests": [
+    "runtime::maestro_links::tests::changed_approval_summary_updates_live_projection_without_claiming_payload_revision",
+    "runtime::maestro_links::tests::committed_receipt_wins_abandonment_and_operation_identity_is_immutable",
+    "runtime::maestro_links::tests::journal_loss_after_enrollment_is_visible_and_never_recreates_link",
+    "runtime::maestro_links::tests::new_generation_retains_old_evidence_and_old_poll_cannot_regress_it",
+    "runtime::maestro_links::tests::recurring_blocker_after_ack_and_recovery_has_new_durable_transition",
+    "runtime::maestro_links::tests::recurring_connection_failure_is_new_but_consecutive_failures_dedup",
+    "runtime::maestro_links::tests::restart_replay_and_duplicate_polls_preserve_one_link_and_no_stage",
+    "runtime::maestro_links::tests::source_projection_failure_reports_committed_and_restart_recovers_receipt",
+    "runtime::maestro_links::tests::unchanged_snapshot_still_ages_and_recovers_connectivity_without_new_evidence",
+    "runtime::maestro_links::tests::unlink_canonical_receipt_excludes_live_provider_prose_and_polling_bookkeeping",
+    "runtime::maestro_links::tests::unlink_discards_late_observation_and_settings_cannot_reroute_active_work",
+    "service::maestro_network_tests::delayed_link_get_cannot_resurrect_work_after_concurrent_link_and_unlink",
+    "service::maestro_network_tests::failed_link_get_stays_pending_and_query_abandon_work_offline",
+    "service::maestro_network_tests::held_link_get_configuration_refusal_is_durably_rejected",
+    "service::maestro_network_tests::held_link_get_is_pending_then_abandoned_before_response"
+  ]
+}

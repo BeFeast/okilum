@@ -1,0 +1,36 @@
+{
+  "schema": "tessera-gui-layout/v1",
+  "density": {
+    "comfortable": {
+      "rowMinHeight": 44,
+      "controlMinHeight": 36,
+      "panelPadding": 28,
+      "gap": 16
+    },
+    "compact": {
+      "rowMinHeight": 36,
+      "controlMinHeight": 32,
+      "panelPadding": 20,
+      "gap": 12
+    }
+  },
+  "shell": {
+    "railWidth": 220,
+    "contextListWidth": 286,
+    "contextListWideWidth": 300,
+    "detailPadding": 34,
+    "toolbarHeight": 66,
+    "listDetailToolbarHeight": 58,
+    "laptopBreakpoint": 1100,
+    "listToggleBreakpoint": 900,
+    "mobileConceptBreakpoint": 600
+  },
+  "focus": {
+    "outlineWidth": 2,
+    "outlineOffset": 3
+  },
+  "motion": {
+    "durationMs": 140,
+    "reducedMotion": "disable transitions"
+  }
+}

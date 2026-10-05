@@ -1,0 +1,460 @@
+# Reader design spec — direction A «Calm»
+
+Tracking: [#348](https://git.oklabs.uk/BeFeast/tessera/issues/348). Approved by Oleg on
+2026-10-04 from the interactive mockup (direction A):
+[html.me.uk/t/tessera-reader-348/reader.html](https://html.me.uk/t/tessera-reader-348/reader.html?dir=A).
+The mockup is the visual reference; this file is the contract. Where they
+disagree, this file wins.
+
+The reference mood is T3 Code: neutral palette, thin dividers, icon controls,
+breadcrumbs, a folder tree, well-set Markdown in a readable column.
+
+## Scope and delivery
+
+| Release | Contents |
+| --- | --- |
+| R1 — shell | Icon toolbar, no idle status text, find bar only on ⌘F, panel headers, Reader tokens, Light/Dark/System, document typography and column width |
+| R2 — sidebar | Folder tree (domains → PARA → notes) from #335, compact Search in the header |
+| R3 — right panel | Table of contents above «Linked from» (#337) |
+
+User-selectable themes beyond Light/Dark/System and a theme picker belong to
+[#349](https://git.oklabs.uk/BeFeast/tessera/issues/349).
+
+UI strings stay in English. The mockup's Russian strings show content, not
+localisation.
+
+## Layout
+
+```
+┌ sidebar 264 ┬──────────── document ────────────┬ right 256 ┐
+│ ● ● ●  vault ⌄ ⧉ │ ◧ ← →  Work › Projects › Note   ⌕ ◨ ⋯ │ On this page   │  header 46
+│ Vault  ⌕ ⌘K  │                                  │ Contents        │
+│ tree         │        column ≤ 740 (text 660)   │ Linked from · 3 │
+│ …            │                                  │                 │
+└──────────────┴──────────────────────────────────┴─────────────────┘
+```
+
+- **Window chrome.** Native traffic lights sit at the top-left of the sidebar.
+  When the sidebar is closed, they sit at the start of the document header. There is no
+  separate «Tessera» title row in the Reader; the document header *is* the title
+  bar (`TitleBar` hosts it, so window dragging and double-click still work).
+- **Document header (46 px).** From the left: sidebar toggle (shown selected while
+  the sidebar is open), Back, Forward, breadcrumbs, loading status, flexible space, Find,
+  right-panel toggle, More (⋯). The breadcrumbs show the root-relative folders of the current
+  note, then its title in `text` weight 500. Folder crumbs are `text-muted`.
+  The last crumb's tooltip shows the full root path (replaces the old
+  «reader-document-root» button tooltip).
+- **More menu (⋯).** Open file…, Open folder…, Appearance (System / Light / Dark).
+  The standalone toolbar no longer has text «Open file…/Open folder…» buttons.
+  The onboarding screen keeps them as real buttons.
+- **Panels** are separated from the document by one 1 px `border-subtle` line. Panel
+  headers are titles (vault name, «On this page»), never «Close panel». Closing
+  uses the title-bar toggle or panel shortcut; overlay panels also close on
+  an outside click. Esc only dismisses local transient UI (#483). Neither panel header has a close button.
+- **Panel defaults.** Each panel's open/closed state is remembered next to its width
+  (`reader-layout.json`). Until R2/R3 ship useful panel content, R1 keeps the
+  current defaults (both closed). From R2 the sidebar defaults to open on docked
+  widths; from R3 the right panel does too.
+
+### Compact window (< 1000 px document area, reference 900 px)
+
+The accepted #321 rules stay: below the dock threshold panels overlay the
+document (shadow `shadow-lg`, 48 px of document stays exposed), at most one
+panel at a time; an outside click closes it and returns focus to the document. Both panels start
+closed. The header then shows: traffic lights, sidebar toggle, Back,
+Forward, breadcrumbs (they shrink first; leading folders collapse to «…»),
+Find, right-panel toggle, More.
+
+## Find in note
+
+- Hidden by default. ⌘F / Ctrl+F opens it; ✕ closes it and clears marks.
+  Opening it keeps docked panels; only a compact overlay closes.
+- Every search field (find, quick open and full-text palette) has a clear
+  button (×) inside while it has text; clicking it clears and keeps focus.
+  Esc in a non-empty field clears it; Esc in an empty field closes find or
+  the palette (#378).
+- It floats at the top-right of the document area, 10 px from the header and
+  18 px from the right edge, over the document. The document does not reflow
+  when it opens. The bar uses the `popover` surface, `border`, radius 8 and `shadow-sm`.
+- Contents: search icon, input (220 px), «2 of 5» count (`text-muted`, tabular
+  figures; «No matches» when empty), Previous (⇧⏎), Next (⏎), Close (Esc).
+- Marks: every match `find-match`, the current one `find-current` with a 1.5 px
+  `find-current-ring` outline. The marks are painted inside the vendored text
+  view (`scripts/patches/0008-text-view-search-highlights.diff`), which still uses a fixed amber; moving it onto
+  these tokens is a small follow-up patch, not part of R1.
+
+## Status text
+
+Idle status is never shown. «Ready» and «Document not yet available» labels
+disappear. While loading is active, the header shows a 14 px spinner and the
+phase text (`text-muted`, 12 px) after the breadcrumbs, plus Cancel. A failed
+load shows the phase text in `danger` plus Retry. Link notices and ambiguous
+link choices render as a dismissible strip under the header using the `notice`
+surface, not as bare text rows.
+
+## Typography
+
+Fonts stay the brand pair: Noto Sans (UI and text) and Cascadia Code (code).
+
+| Role | Size / line height | Weight | Notes |
+| --- | --- | --- | --- |
+| Chrome (buttons, tree, panels) | 13 / 18 | 400, 500 for current item | was 14 |
+| Panel section label | 11.5 / 16 | 600, `text-faint` | sentence case |
+| Body | 15.5 / 25 (toolkit default 1.618) | 400 | was 15 |
+| H1 | 30 / 36 | 600 | tracking −0.012 em, margin-bottom 0.5 em |
+| H2 | 21 / 27 | 600 | margin-top 1.9 em, bottom 0.55 em |
+| H3 | 17 / 23 | 600 | margin-top 1.5 em, bottom 0.4 em |
+| H4–H6 | 15.5 | 600 | |
+| Inline code | 0.86 em | 400 | `code-bg`, 1 px `code-border`, radius 4 |
+| Code block | 13 / 21 | 400 | `code-bg`, 1 px `code-border`, radius 8, padding 14×16 |
+| Table | 0.92 em | header 600 `text-muted` | row rule `border-subtle` |
+
+The document column has a maximum width of 740 px including 40 px of horizontal padding, so lines are at most 660 px, about 75
+characters. The column is centred in the available document area. The
+padding is 44 px at the top. The `document-end-space` token is
+`max(120px, 0.30 × window viewport height)` (#419), inside the scrollable
+content after the last block. Reader and source editing use it; the editor
+rounds up to a whole text row. It updates when the window resizes, allowing
+the last line to scroll to a comfortable reading position.
+
+## Spacing and shape
+
+4 px base grid. Common steps: 4, 6, 8, 10, 12, 16, 24, 40.
+
+| Element | Value |
+| --- | --- |
+| Header / panel header height | 46 |
+| Tree / list row height | 28, radius 6, indent 14 per level |
+| Icon button | 28 × 28, icon 16, radius 6 |
+| Sidebar / right panel default width | 264 / 256 (resizable, persisted, min 200) |
+| Sidebar header Search | 28 high, icon 16, radius 6; hint hidden below 260 px panel width |
+| Callout | padding 12×16, radius 8, 1 px border |
+| Popover / palette | radius 8 / 12 |
+
+## Color tokens
+
+**Rule:** components read colors only through semantic tokens:
+`brand::Palette` for interface surfaces and `brand::ReaderPalette` for
+Reader-specific roles. A literal color (`rgb(…)`, `hsla(…)`, `0x…`) in a Reader
+component is a review failure. New roles become new tokens first.
+
+Interface tokens (existing `interface-tokens.json` 2.0.0, unchanged):
+
+| Token | Light | Dark | Use |
+| --- | --- | --- | --- |
+| `canvas` / `surface` | `#ffffff` | `#202226` | document, header, panels |
+| `surface-raised` | `#f7f7f8` | `#292c31` | secondary fills |
+| `sidebar` | `#f1f2f3` | `#292b30` | left sidebar |
+| `text` | `#24262b` | `#eceef1` | primary text |
+| `text-muted` | `#656b74` | `#a4a8b0` | secondary text, crumbs |
+| `border` | `#c4c7cc` | `#60646e` | inputs, popovers |
+| `border-subtle` | `#e3e4e7` | `#383b42` | dividers, panel edges |
+| `selected` | `#edf0f3` | `#353a43` | current row, hover |
+| `accent` | `#0969e8` | `#176bdb` | focus, current-section bar, checkboxes |
+| `link` | `#0969e8` | `#71acff` | resolved wikilinks |
+
+Reader tokens (new `reader-tokens.json`, loaded the same way):
+
+| Token | Light | Dark | Use |
+| --- | --- | --- | --- |
+| `text-faint` | `#8d929a` | `#7c818a` | section labels, counts, kbd hints |
+| `link-underline` | `#0969e8` @ 28 % | `#71acff` @ 30 % | resting underline |
+| `missing-link` | `#9a5b00` | `#e2b25c` | unresolved wikilink text, dashed underline @ 50 % |
+| `code-bg` | `#f6f7f8` | `#26292e` | inline code, code blocks |
+| `code-border` | `#eceef0` | `#30333a` | |
+| `callout-bg` | `#fffaeb` | `#2a2720` | warning callout fill |
+| `callout-border` | `#f3e3b5` | `#4a3f2a` | |
+| `find-match` | `#fde68a` | `#5c4f1c` | find marks |
+| `find-current` | `#fbbf24` | `#8a7420` | current find mark |
+| `find-current-ring` | `#d97706` | `#facc15` | |
+| `notice` | `#eef4fc` | `#303b4c` | notice strip |
+| `hover` | `#eff0f2` | `#2a2d33` | row and icon-button hover |
+| `selection` | `accent` @ 22 % | `accent` @ 35 % | text selection |
+
+Status colors (`success`, `warning`, `danger`, `info`) come from the brand
+tokens, unchanged.
+
+## Appearance
+
+The Reader ships **System** (default, follows macOS), **Light** and **Dark**. The
+existing `AppearancePreference` already models this; R1 exposes it in the More
+menu and persists the choice in app config (not in notes). Theme flips are live:
+every Reader color is read from the palette on render, so nothing needs
+restarting.
+
+## Icons
+
+Lucide outline icons at 16 px, stroke 1.75, `text-muted` at rest and `text` on
+hover. Toolkit names come from `gpui-component`'s `IconName`; the four missing
+glyphs are added as Tessera assets under `icons/` and loaded with `Icon::path`.
+
+| Action | Icon | Shortcut / tooltip |
+| --- | --- | --- |
+| Toggle sidebar | `PanelLeft` | «Notes ⌘\\» |
+| Back / Forward | `ArrowLeft` / `ArrowRight` | «Back ⌥←», «Forward ⌥→», disabled at the ends |
+| Find in note | `Search` | «Find in note ⌘F» |
+| Toggle right panel | `PanelRight` | «On this page ⌥⌘\\» |
+| More | `Ellipsis` | menu |
+| Close find | `Close` | «Close Esc» |
+| Find previous / next | `ChevronUp` / `ChevronDown` | «⇧⏎» / «⏎» |
+| Case sensitive | `CaseSensitive` | toggle |
+| Folder / open folder | `Folder` / `FolderOpen` | tree |
+| Note | `FileText` | tree, quick open |
+| Tree disclosure | `ChevronRight` / `ChevronDown` | |
+| Callout warning | `TriangleAlert` | also ambiguous backlink |
+| Contents | `list` (asset) | right-panel label |
+| Linked from | `link` (asset) | right-panel label |
+| Recent | `clock` (asset) | quick open |
+| Command | `command` (asset) | reserved |
+
+Every icon-only button has a tooltip naming the action and shortcut.
+
+## Sidebar (R2)
+
+The panel header shows the vault directory name, with its full path in a tooltip.
+The title truncates when needed; the total note count sits in small `text-faint`
+text at the right, followed by a compact Search icon and quiet shortcut hint
+(⌘K on macOS, Ctrl+K elsewhere). The search control is 28 px high; below 260 px
+panel width its shortcut text hides while the icon stays visible. Its tooltip is
+«Search notes (⌘K)» with the platform shortcut. There is no separate Search row.
+
+The control opens the existing quick-open palette, as does the shortcut; Enter
+or Space activates it when focused. Opening the sidebar focuses the control
+without opening the palette. Neither panel header has a close (×) button (#442).
+Title-bar toggles and ⌘\ / ⌥⌘\ (Ctrl outside macOS) control panel visibility.
+Esc in preview or source leaves panel visibility unchanged (#483).
+In compact overlay mode, a click outside closes the panel; the outside
+click is consumed before reaching the document. While an overlay panel is open,
+scrolling over the exposed document is blocked so the background stays in place.
+The sidebar has no tree-filter
+mode or query state. Beneath the header is the tree of real folders and notes
+(#335 rules: real directories only, root-relative identity, no inferred
+grouping). Top-level folders are labelled in weight 600 without a folder icon;
+deeper folders have `Folder`/`FolderOpen`; notes have `FileText`. The current note
+is highlighted with `selected` and weight 500, and its ancestors are expanded.
+There is no flat note-list mode in the sidebar and no item cap (#369). Folders whose name starts with `_` or `.` are
+not shown; their notes stay reachable through links and search. Archive folders
+(`Archive`, `4 Archive`, `Архив`) are muted and open only on request or to reveal
+the current note. Navigating to a hidden note shows its branch muted with a
+«hidden» marker until the next note; the tree never highlights a neighbour
+instead. «Show hidden files» (eye button on the Folders header, … menu, ⇧⌘. — bound as `cmd->`, the way macOS reports it) lists
+them all and is remembered per vault (#395). Hovering the Folders header
+shows «Collapse all» and «Focus current» (only the path to the open note stays
+expanded; ⇧⌘← while browsing). ⌥-click on a folder, ⌥→/⌥← on the selected folder and the
+folder context menu («Expand/Collapse all subfolders») act on the folder and
+everything below it, as in Finder. There is no global «Expand all» (#410).
+
+### Sections (#369, variant A «Sections», chosen by Oleg 2026-10-04)
+
+Mockup: [sidebar.html](https://html.me.uk/t/tessera-reader-348/sidebar.html?v=A).
+Under the panel header, top to bottom, each section collapsible (state remembered):
+
+- **Recent** — the last opened notes, 5 shown, «N more» up to 10, with a
+  relative age.
+- **Pinned** — notes and folders pinned with the pin that appears on hover
+  (filled `accent` when pinned). A pinned folder reveals itself in the tree.
+- **Inbox** — computed, never configured or stored: notes created in the last
+  14 days (platform birth time; fallback: first seen by the app after its
+  baseline) that are not yet built into the structure — directly in the vault
+  or a domain root, or without incoming links. Archived and `_` notes never
+  qualify. A note leaves on its own once it is moved into a PARA folder and
+  linked. Each row shows the reason («at root», «in Work», «no links») and age;
+  the header shows the count.
+- **Folders** — the tree above.
+
+All four section headers remain visible outside the scrolling bodies (#434).
+Scrolling down in Folders folds Recent/Pinned/Inbox to counted header rows;
+returning to the top restores the user's expanded sections. Clicking a folded
+header expands it in place without resetting the tree position. Automatic folding
+is transient and never overwrites the saved collapse preference. Large upper
+sections have bounded body viewports, sharing the space above a reserved 140px
+minimum tree viewport; their headers do not scroll with their contents.
+
+Recent, Pinned and collapsed sections are app state per root in the Reader
+state directory; nothing is written into notes. Searching in the palette leaves
+the sidebar sections and tree expansion unchanged.
+
+## Right panel (R3)
+
+Header «On this page», without a close button. Until R3 the right panel keeps its current
+backlinks content under the title «Backlinks» with a quiet «N notes · M links» count. Two sections with independent scrolling:
+
+- **Contents** — the outline of the current document. Each item is indented 12 px per level. The current
+  section has a 2 px `accent` bar on the left and `text` weight 500, and the rest are
+  `text-muted`. Rows retain their natural text height; long outlines scroll
+  within the section's height limit instead of compressing their rows (#417).
+- **Linked from · N notes · M places** (#394, variant A «Source and quotes»,
+  chosen by Oleg 2026-10-04; [mockup](https://html.me.uk/t/tessera-reader-348/linked-from.html?v=A)).
+  The card header is the *source* note: file icon, bold title, its folder
+  right beside it (two notes with one name stay distinguishable), relation
+  field pill for frontmatter links, place count, ↗ on hover; clicking it
+  opens the note («Open note»). Below it, indented under a 2 px rule, are the
+  *places* inside that note: muted text, this note's name bold on a light
+  `accent` mark — never link-blue; each opens the source at that line («Open
+  at this place»). More than 3 places collapse behind «Show N more». An
+  ambiguous link gets `TriangleAlert` and an «ambiguous» pill, never a
+  silent pick.
+
+## Properties (#386, approved by Oleg 2026-10-04)
+
+Mockup: [properties.html](https://html.me.uk/t/tessera-reader-348/properties.html).
+Read-only view of the note's leading YAML frontmatter; nothing is edited or
+normalized.
+
+- **Right panel open:** a «Properties» section above Contents, collapsible
+  (state remembered); collapsed it shows the one-line summary.
+- **Right panel closed or compact:** one line above the document —
+  «Note · Active · updated 3 Oct · 3 relations · #a #b» — that expands the
+  properties in place.
+- **Values:** wikilinks open through the same resolver as body links
+  (ambiguous → choices, missing → `missing-link` colour and a notice); URLs
+  open in the browser with ↗; dates read «3 Oct 2026, 18:40 · yesterday»;
+  tags, type and lists are chips, status is an accent chip; `_` keys are
+  hidden behind «Show system properties». Invalid YAML says so.
+- **Relations:** this note's frontmatter wikilinks count in the summary. A
+  note that links here from its frontmatter appears in «Linked from» with
+  the field as a pill and the row «field: Target».
+
+## Link destinations (#428)
+
+Internal note, heading and attachment links use the accent colour without an
+external marker. Existing missing/ambiguous presentation remains authoritative.
+External HTTP(S), mail, telephone and FTP links use the same accent plus a small
+trailing ↗. Hovering their text or marker shows the destination domain and URL
+(or the full URI for mail/telephone). The marker is presentation only: it must
+not enter copied document text or shift source/search byte ranges.
+
+The same distinction applies in tables, Properties and Linked from snippets.
+A snippet's highlighted destination retains its existing muted mark; other
+external links have their own action/tooltip, without opening the source note.
+
+## Wide tables (#368)
+
+A table wider than the reading column scrolls horizontally and has persistent
+cues, including when the clipped cells are empty (#418):
+
+- A 28 px inner shadow at each edge with hidden content (foreground, maximum
+  18% opacity). The right shadow disappears at the end; the left appears after
+  scrolling. The outer border and corner radius are omitted at clipped edges.
+- A quiet **⤢ N columns** Expand badge at the top right, just above the header
+  so it never obscures cell content. Always visible, with a stronger hover
+  background; N is the total column count.
+- A 3 px horizontal track below the table, separated by 4 px. Foreground at
+  8% opacity for the track and 28% for its thumb; thumb width and position show
+  the visible fraction and scroll position. It remains visible without hover.
+
+The badge opens the table in an overlay over the document at window width with
+24 px margins: the same renderer, links and inline code; columns at natural
+width, long cells wrap, horizontal scroll only when it still does not fit.
+Esc, ✕ or a click outside close it; the document underneath does not move.
+Following a link from the overlay closes it. Tables that fit get none of these
+cues. There is no separate Expand button below the table.
+
+## Onboarding / empty
+
+No root selected: centred card, 440 px wide. It holds the Tessera mark (52 px), the title «Open your
+notes», one sentence saying files are read-only, a primary **Open folder…** and a
+secondary **Open file…** button, and recent folders below a divider.
+
+## Code block Copy (#429)
+
+Fenced and indented code blocks have a small **Copy** action in the top-right
+corner, visible on block hover and on keyboard focus. Tab reaches the action;
+Enter/Space activate it. After activation the label reads **Copied** for two
+seconds, including after the pointer leaves the block. Repeated copies renew
+that interval; changing the block clears the feedback.
+
+Copy writes code content only: no fences or info string, no Markdown container
+indentation, while code indentation, blank lines and original line endings
+(including a final LF/CRLF/CR when present) are preserved. Inline code has no
+Copy action. This does not change the document's selection-copy format.
+
+
+## Code block language (#430)
+
+Code blocks reserve a 24 px header above the code; a quiet language label sits
+next to Copy. Explicit fence languages win, with aliases normalised (sh/shell →
+bash, yml → yaml, js → javascript, ts → typescript, py → python, rs → rust).
+Unknown explicit languages retain their label and the highlighter's plain fallback.
+
+Unlabelled fences use conservative signatures: supported shebangs, nonempty valid
+JSON objects/arrays, typed multi-key YAML mappings, a narrow TOML table shape,
+distinctive Rust/Python/JavaScript combinations, or multiple known shell prompts.
+Rule confidence must reach 95/100 and have a unique winner; these scores describe
+signature strength, not calibrated probabilities. Ambiguous text has no label and
+no syntax highlighting. Indented blocks are never inferred. Detection skips blocks
+larger than 8 KiB or 128 lines, runs only on entering the viewport, and caches both
+matches and abstentions per block/resolver. Label and highlighting share the result.
+No source bytes, explicit fence language, selection export or Copy payload change.
+
+Existing highlighter assessment: keep the vendored tree-sitter adapter and its
+language/highlight caches. A small bounded heuristic set is preferable here to a
+broad classifier dependency: predictable abstention matters more than coverage.
+
+### Linked-note hover preview (#446)
+
+Hovering a resolved internal note link, a Linked from entry, or a quick-open
+result opens a bounded preview after 350 ms. Holding ⌘ (Ctrl outside macOS)
+opens it immediately, including when the modifier is pressed while stationary.
+External, missing, ambiguous, unsupported and unverified links do not open a
+preview. Ordinary click navigation is unchanged.
+
+The preview uses the Reader Markdown renderer, including local images, tables,
+code, callouts and supported diagrams. It is at most 520 × 420 px, stays inside
+the window, and scrolls independently. A heading link lands at its heading;
+a missing or ambiguous heading displays an unavailable message. The header's
+↗ button opens that exact note and heading. Hover leaves the current document,
+reading history and keyboard focus untouched.
+
+The cursor can move from the link into the preview (220 ms dismissal grace).
+Escape, an outside click, background scroll, navigation or a changed quick-open
+query dismisses it. Preview links can be opened, but do not spawn nested previews.
+Target preparation runs off the UI thread; stale results are discarded.
+
+### About Tessera (#464)
+
+All desktop platforms share the same About dialog: app icon, name, tagline,
+short product introduction, four capabilities, version/build/update channel,
+and repository, release notes, MIT License and third-party notices links.
+macOS opens it from Tessera → About Tessera, replacing the standard system panel;
+All platforms also expose About in the app More menu (#484). Check for Updates appears only when
+Sparkle is available. Linux identifies system-managed updates; Windows identifies
+its diagnostic channel and read-only scope. The repository URL has one source of
+truth in `about.rs`. Local builds report development metadata explicitly.
+
+### Document actions and empty vault (#474)
+
+The 48 px document header contains breadcrumbs on the left and source/preview
+and document More glyphs on the right. It scrolls away with the document in
+Reader and source mode. Source mode adds a Save glyph (⌘S / Ctrl+S tooltip)
+and a quiet unsaved dot; conflict recovery actions remain explicit glyphs with
+tooltips. Attachment headers use the same language: Quick Look (macOS), Open,
+Reveal and Copy path glyphs alongside More.
+
+Document More contains Edit/Preview, Rename/move, Note history, Reveal,
+Copy path and Close note. Delete joins this menu when its action is available.
+The app More menu contains New note, Open file/folder, recovery, appearance,
+hidden files, About and Quit. Editing actions are absent in Windows diagnostic.
+
+⌘W (Ctrl+W elsewhere) closes the selection to an empty vault screen with Recent
+notes and search/new-note hints, retaining the sidebar. Back returns to the
+closed document. The empty selection survives restart; another Close closes the
+window. Conflicted or failed saves prevent closing and retain the source text.
+
+## Settings (#479)
+
+A separate Settings window opens from the application/More menu or ⌘, / Ctrl+,.
+A left list selects Appearance, Files, Updates and Inbox. Changes apply immediately
+through the existing user appearance, per-vault sidebar and Sparkle preferences.
+Files identifies the originating vault; opening Settings from another Reader
+retargets that section. Without a vault it explains that a vault must be opened.
+Updates offers Beta/Stable and Check for Updates when Sparkle is available;
+Linux explains system-package updates and Windows links to releases.
+Inbox shows “Not connected”; no connection controls are enabled in this slice.
+The deferred local Excalidraw editor needs no editor-URL setting.
+
+Files also selects a templates folder per vault (default `_Assets/Templates`).
+“New note from template…” in the document menu lists Markdown files directly in
+that folder, substitutes `{{title}}` and local `{{date}}`, and creates a new note
+without modifying the template or overwriting an existing destination. Folder
+preferences and template contents are read only for these explicit user actions.

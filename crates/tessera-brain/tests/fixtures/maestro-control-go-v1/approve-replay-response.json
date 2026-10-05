@@ -1,0 +1,20 @@
+{
+  "ok": true,
+  "replayed": true,
+  "receipt": {
+    "expected": {
+      "version": "v1",
+      "project_id": "11111111-1111-4111-8111-111111111111",
+      "project_name": "example",
+      "project_repo": "owner/repo",
+      "approval_id": "approval-8cfa30356312134d",
+      "created_at": "2026-09-08T06:00:00.123456789Z",
+      "decision_revision": "v1:52d20dd2a96c8ab39ea7ce78a8f0904643579f06bd4c2f343020167fdf334898"
+    },
+    "decision": "approved",
+    "actor": "supplied",
+    "reason": "original reason",
+    "at": "2026-09-08T06:23:18.724243343Z"
+  },
+  "execution_status": "approved"
+}

@@ -1,0 +1,190 @@
+--- a/crates/base/src/text/node.rs
++++ b/crates/base/src/text/node.rs
+@@ -2408,19 +2408,27 @@
+                 // `TextView::scrollable`) can take its vertical component.
+                 {
+                     // An overflowing table is never clipped silently: the
+-                    // side that has more content fades, and the actions row
+-                    // is revealed on hover. Overflow is known after layout;
++                    // clipped edges have persistent shadows and a position indicator. Overflow is known after layout;
+                     // a changed state re-renders once.
+                     let max_x = scroll_handle.max_offset().x;
+                     let scrolled = -scroll_handle.offset().x;
+                     let overflows = max_x > px(0.5);
+                     let more_left = overflows && scrolled > px(0.5);
+                     let more_right = overflows && scrolled < max_x - px(0.5);
++                    let measured = (
++                        overflows,
++                        more_left,
++                        more_right,
++                        scrolled,
++                        max_x,
++                        scroll_handle.bounds().size.width,
++                    );
+                     let probe = scroll_handle.clone();
+                     // Rows of a list are cached; notify the owning view so
+                     // this table renders again with the measured overflow.
+                     let owner = window.current_view();
+-                    let surface = cx.theme().tokens.colors.surface;
++                    let shadow = style.foreground();
++                    let viewport = scroll_handle.bounds().size.width;
+                     // Stepped rather than a gradient: it renders the same on
+                     // every backend and needs no colour-space interpolation.
+                     let fade = |left: bool| {
+@@ -2431,37 +2439,49 @@
+                             .bottom(px(1.))
+                             .w(px(28.))
+                             .flex()
+-                            .when(left, |d| d.left(px(1.)).flex_row_reverse())
+-                            .when(!left, |d| d.right(px(1.)))
++                            .debug_selector(move || {
++                                if left {
++                                    "table-shadow-left"
++                                } else {
++                                    "table-shadow-right"
++                                }
++                                .into()
++                            })
++                            .when(left, |d| d.left(px(0.)).flex_row_reverse())
++                            .when(!left, |d| d.right(px(0.)))
+                             .children((0..STEPS).map(|step| {
+-                                div()
+-                                    .flex_1()
+-                                    .h_full()
+-                                    .bg(surface.opacity((step + 1) as f32 / (STEPS + 1) as f32))
++                                div().flex_1().h_full().bg(shadow
++                                    .opacity(0.18 * ((step + 1) as f32 / STEPS as f32).powi(2)))
+                             }))
+                     };
+-                    let group = SharedString::from(format!("table-frame-{}", options.ix));
++
+                     let mut data = table.table_data();
+                     data.overflows = overflows;
+-                    let frame = div()
+-                        .relative()
+-                        .child(
+-                horizontal_scroll_area(
+-                    ("table", options.ix),
+-                    &scroll_handle,
+-                    &StyleRefinement::default()
++                    let mut frame_style = StyleRefinement::default()
+                         .bg(cx.theme().tokens.colors.surface)
+                         .border_1()
+                         .border_color(style.border())
+-                        .refine_style(style.table()),
+-                    // Row track sized to `max(viewport, column floors)`:
+-                    // `min_w_full` fills the frame while the columns can still
+-                    // shrink-to-fit (their text wrapping), the definite
+-                    // `w(min_total_w)` keeps the floors once they are reached,
+-                    // letting the track exceed the viewport and scroll.
+-                    div().min_w_full().w(px(min_total_w)).children(rows),
+-                ),
+-                        )
++                        .refine_style(style.table());
++                    if more_left {
++                        frame_style = frame_style.border_l_0().rounded_tl_none().rounded_bl_none();
++                    }
++                    if more_right {
++                        frame_style = frame_style.border_r_0().rounded_tr_none().rounded_br_none();
++                    }
++                    let frame = div()
++                        .debug_selector(|| "table-content-frame".into())
++                        .relative()
++                        .child(horizontal_scroll_area(
++                            ("table", options.ix),
++                            &scroll_handle,
++                            &frame_style,
++                            // Row track sized to `max(viewport, column floors)`:
++                            // `min_w_full` fills the frame while the columns can still
++                            // shrink-to-fit (their text wrapping), the definite
++                            // `w(min_total_w)` keeps the floors once they are reached,
++                            // letting the track exceed the viewport and scroll.
++                            div().min_w_full().w(px(min_total_w)).children(rows),
++                        ))
+                         .when(more_left, |d| d.child(fade(true)))
+                         .when(more_right, |d| d.child(fade(false)))
+                         .child(
+@@ -2471,14 +2491,18 @@
+                                     let max_x = probe.max_offset().x;
+                                     let scrolled = -probe.offset().x;
+                                     let over = max_x > px(0.5);
++                                    let width = probe.bounds().size.width;
+                                     let now = (
+                                         over,
+                                         over && scrolled > px(0.5),
+                                         over && scrolled < max_x - px(0.5),
++                                        scrolled,
++                                        max_x,
++                                        width,
+                                     );
+                                     // Paint cannot invalidate itself; ask
+                                     // for the frame after this one.
+-                                    if now != (overflows, more_left, more_right) {
++                                    if now != measured {
+                                         window.on_next_frame(move |window, cx| {
+                                             cx.notify(owner);
+                                             window.refresh();
+@@ -2489,22 +2513,49 @@
+                             .absolute()
+                             .size_0(),
+                         );
+-                    // The fades cover only the table frame, never the
+-                    // actions row below it.
++                    let actions = node_cx.table_actions.clone().map(|f| {
++                        div()
++                            .id(("table-actions", options.ix))
++                            .child(f(&data, window, cx))
++                    });
+                     div()
+-                        .group(group.clone())
++                        // Keep controls outside cell content: the top-right badge
++                        // must not hide a header or intercept its links/selection.
++                        .when(overflows, |d| d.children(actions).child(div().h(px(4.))))
+                         .child(frame)
+-                        .children(node_cx.table_actions.clone().map(|f| {
+-                            // Same place as before (below the table), shown
+-                            // while the table or the row itself is hovered.
+-                            div()
+-                                .id(("table-actions", options.ix))
+-                                .mt_1()
+-                                .opacity(0.)
+-                                .group_hover(group.clone(), |s| s.opacity(1.))
+-                                .child(f(&data, window, cx))
+-                        }))
+-                }
++                        .when(overflows, |d| {
++                            let total = viewport + max_x;
++                            let fraction = if total > px(0.) { viewport / total } else { 1. };
++                            let position = if total > px(0.) { scrolled / total } else { 0. };
++                            d.child(
++                                div()
++                                    .mt(px(4.))
++                                    .relative()
++                                    .h(px(3.))
++                                    .w_full()
++                                    .debug_selector(|| "table-scroll-track".into())
++                                    .rounded_full()
++                                    .bg(shadow.opacity(0.08))
++                                    .child(
++                                        div()
++                                            .absolute()
++                                            .h_full()
++                                            .rounded_full()
++                                            .debug_selector(|| "table-scroll-thumb".into())
++                                            .left(relative(position))
++                                            .w(relative(fraction))
++                                            .bg(shadow.opacity(0.28)),
++                                    ),
++                            )
++                        })
++                        .when(!overflows, |d| {
++                            d.children(node_cx.table_actions.clone().map(|f| {
++                                div()
++                                    .id(("table-actions", options.ix))
++                                    .child(f(&data, window, cx))
++                            }))
++                        })
++                },
+             )
+             .into_any_element()
+     }

@@ -1,0 +1,180 @@
+{
+  "schema": "ai-brain/connector-policy-fixtures/v1",
+  "fixtures": [
+    {
+      "name": "ascii",
+      "config": {
+        "schema": "ai-brain/connector-config-v1",
+        "listen": "127.0.0.1:0",
+        "connector_id": "fixture-connector",
+        "token_file": "/operational/example-token",
+        "workspace": {
+          "brain_id": "00000000-0000-4000-8000-000000000134",
+          "root": "/example/brain",
+          "records_dir": "records",
+          "managed": true
+        },
+        "instance_id": "fixture-instance",
+        "account_id": "fixture-bot",
+        "actor_id": "operator",
+        "sender_id": "123",
+        "routes": [
+          {
+            "chat_id": "123",
+            "topic_id": null
+          },
+          {
+            "chat_id": "-456",
+            "topic_id": "7"
+          },
+          {
+            "chat_id": "-456",
+            "topic_id": null
+          }
+        ]
+      },
+      "encoded_hex": "7332383a61692d627261696e2f636f6e6e6563746f722d706f6c6963792f76313b7331373a666978747572652d636f6e6e6563746f723b7333363a30303030303030302d303030302d343030302d383030302d3030303030303030303133343b7331343a2f6578616d706c652f627261696e3b73373a7265636f7264733b73343a747275653b7331363a666978747572652d696e7374616e63653b7331313a666978747572652d626f743b73383a6f70657261746f723b73333a3132333b73313a333b73343a2d3435363b6e3b73343a2d3435363b73313a373b73333a3132333b6e3b",
+      "policy_fingerprint": "24ca3805f0f90b360abc4193f1e6ca6d2d90b5445c64c9ad3ed74575e46f309b"
+    },
+    {
+      "name": "reordered-routes",
+      "config": {
+        "schema": "ai-brain/connector-config-v1",
+        "listen": "127.0.0.1:0",
+        "connector_id": "fixture-connector",
+        "token_file": "/operational/example-token",
+        "workspace": {
+          "brain_id": "00000000-0000-4000-8000-000000000134",
+          "root": "/example/brain",
+          "records_dir": "records",
+          "managed": true
+        },
+        "instance_id": "fixture-instance",
+        "account_id": "fixture-bot",
+        "actor_id": "operator",
+        "sender_id": "123",
+        "routes": [
+          {
+            "chat_id": "-456",
+            "topic_id": null
+          },
+          {
+            "chat_id": "-456",
+            "topic_id": "7"
+          },
+          {
+            "chat_id": "123",
+            "topic_id": null
+          }
+        ]
+      },
+      "encoded_hex": "7332383a61692d627261696e2f636f6e6e6563746f722d706f6c6963792f76313b7331373a666978747572652d636f6e6e6563746f723b7333363a30303030303030302d303030302d343030302d383030302d3030303030303030303133343b7331343a2f6578616d706c652f627261696e3b73373a7265636f7264733b73343a747275653b7331363a666978747572652d696e7374616e63653b7331313a666978747572652d626f743b73383a6f70657261746f723b73333a3132333b73313a333b73343a2d3435363b6e3b73343a2d3435363b73313a373b73333a3132333b6e3b",
+      "policy_fingerprint": "24ca3805f0f90b360abc4193f1e6ca6d2d90b5445c64c9ad3ed74575e46f309b"
+    },
+    {
+      "name": "rotated-transport-path",
+      "config": {
+        "schema": "ai-brain/connector-config-v1",
+        "listen": "127.0.0.1:9999",
+        "connector_id": "fixture-connector",
+        "token_file": "/different/credential-file",
+        "workspace": {
+          "brain_id": "00000000-0000-4000-8000-000000000134",
+          "root": "/example/brain",
+          "records_dir": "records",
+          "managed": true
+        },
+        "instance_id": "fixture-instance",
+        "account_id": "fixture-bot",
+        "actor_id": "operator",
+        "sender_id": "123",
+        "routes": [
+          {
+            "chat_id": "123",
+            "topic_id": null
+          },
+          {
+            "chat_id": "-456",
+            "topic_id": "7"
+          },
+          {
+            "chat_id": "-456",
+            "topic_id": null
+          }
+        ]
+      },
+      "encoded_hex": "7332383a61692d627261696e2f636f6e6e6563746f722d706f6c6963792f76313b7331373a666978747572652d636f6e6e6563746f723b7333363a30303030303030302d303030302d343030302d383030302d3030303030303030303133343b7331343a2f6578616d706c652f627261696e3b73373a7265636f7264733b73343a747275653b7331363a666978747572652d696e7374616e63653b7331313a666978747572652d626f743b73383a6f70657261746f723b73333a3132333b73313a333b73343a2d3435363b6e3b73343a2d3435363b73313a373b73333a3132333b6e3b",
+      "policy_fingerprint": "24ca3805f0f90b360abc4193f1e6ca6d2d90b5445c64c9ad3ed74575e46f309b"
+    },
+    {
+      "name": "unicode",
+      "config": {
+        "schema": "ai-brain/connector-config-v1",
+        "listen": "127.0.0.1:0",
+        "connector_id": "Связь <&> 🧠",
+        "token_file": "/operational/example-token",
+        "workspace": {
+          "brain_id": "00000000-0000-4000-8000-000000000134",
+          "root": "/example/мозг/知識",
+          "records_dir": "заметки",
+          "managed": true
+        },
+        "instance_id": "装置",
+        "account_id": "בוט",
+        "actor_id": "Олег",
+        "sender_id": "123",
+        "routes": [
+          {
+            "chat_id": "123",
+            "topic_id": null
+          },
+          {
+            "chat_id": "-456",
+            "topic_id": "7"
+          },
+          {
+            "chat_id": "-456",
+            "topic_id": null
+          }
+        ]
+      },
+      "encoded_hex": "7332383a61692d627261696e2f636f6e6e6563746f722d706f6c6963792f76313b7331393ad0a1d0b2d18fd0b7d18c203c263e20f09fa7a03b7333363a30303030303030302d303030302d343030302d383030302d3030303030303030303133343b7332343a2f6578616d706c652fd0bcd0bed0b7d0b32fe79fa5e8ad983b7331343ad0b7d0b0d0bcd0b5d182d0bad0b83b73343a747275653b73363ae8a385e7bdae3b73363ad791d795d7983b73383ad09ed0bbd0b5d0b33b73333a3132333b73313a333b73343a2d3435363b6e3b73343a2d3435363b73313a373b73333a3132333b6e3b",
+      "policy_fingerprint": "937957a103851c22c9645196fc91c8571df473ac1fdf82879eeedf9053fd3ff2"
+    },
+    {
+      "name": "changed-account",
+      "config": {
+        "schema": "ai-brain/connector-config-v1",
+        "listen": "127.0.0.1:0",
+        "connector_id": "fixture-connector",
+        "token_file": "/operational/example-token",
+        "workspace": {
+          "brain_id": "00000000-0000-4000-8000-000000000134",
+          "root": "/example/brain",
+          "records_dir": "records",
+          "managed": true
+        },
+        "instance_id": "fixture-instance",
+        "account_id": "another-bot",
+        "actor_id": "operator",
+        "sender_id": "123",
+        "routes": [
+          {
+            "chat_id": "123",
+            "topic_id": null
+          },
+          {
+            "chat_id": "-456",
+            "topic_id": "7"
+          },
+          {
+            "chat_id": "-456",
+            "topic_id": null
+          }
+        ]
+      },
+      "encoded_hex": "7332383a61692d627261696e2f636f6e6e6563746f722d706f6c6963792f76313b7331373a666978747572652d636f6e6e6563746f723b7333363a30303030303030302d303030302d343030302d383030302d3030303030303030303133343b7331343a2f6578616d706c652f627261696e3b73373a7265636f7264733b73343a747275653b7331363a666978747572652d696e7374616e63653b7331313a616e6f746865722d626f743b73383a6f70657261746f723b73333a3132333b73313a333b73343a2d3435363b6e3b73343a2d3435363b73313a373b73333a3132333b6e3b",
+      "policy_fingerprint": "3830f0dad08b206ddaf55f9d8165fc69f06328ac10d0429dff792464aed0d37a"
+    }
+  ]
+}

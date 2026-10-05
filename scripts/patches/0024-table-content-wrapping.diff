@@ -1,0 +1,514 @@
+--- a/crates/base/Cargo.toml
++++ b/crates/base/Cargo.toml
+@@ -43,6 +43,7 @@
+ smallvec.workspace = true
+ sum-tree.workspace = true
+ tracing.workspace = true
++unicode-linebreak = "0.1.5"
+ unicode-segmentation = "1.12.0"
+ web-time = "1"
+ syntect.workspace = true
+--- a/crates/base/src/text/mod.rs
++++ b/crates/base/src/text/mod.rs
+@@ -9,6 +9,7 @@
+ mod selection_adapter;
+ mod state;
+ mod style;
++mod table_wrap;
+ mod text_view;
+ mod utils;
+ 
+--- a/crates/base/src/text/node.rs
++++ b/crates/base/src/text/node.rs
+@@ -7,9 +7,9 @@
+ use gpui::{
+     AnyElement, App, DefiniteLength, Div, ElementId, FontStyle, FontWeight, HighlightStyle, Hsla,
+     Image, ImageFormat, InteractiveElement as _, IntoElement, Length, ObjectFit, Overflow,
+-    ParentElement, Pixels, ScrollHandle, SharedString, SharedUri, StatefulInteractiveElement,
+-    StyleRefinement, Styled, StyledImage as _, WhiteSpace, Window, canvas, div, img,
+-    prelude::FluentBuilder as _, px, relative, rems,
++    ParentElement, Pixels, Refineable as _, ScrollHandle, SharedString, SharedUri,
++    StatefulInteractiveElement, StyleRefinement, Styled, StyledImage as _, WhiteSpace, Window,
++    canvas, div, img, prelude::FluentBuilder as _, px, relative, rems,
+ };
+ use markdown::mdast;
+ 
+@@ -1456,6 +1456,7 @@
+     /// The byte offset of the node in the original markdown text.
+     /// Used for incremental updates.
+     pub(crate) offset: usize,
++    pub(super) table_wrap: bool,
+     pub(super) search: Arc<Vec<SearchMatch>>,
+     pub(super) search_segments: Arc<HashMap<usize, Vec<usize>>>,
+     pub(super) search_current: usize,
+@@ -1585,13 +1586,14 @@
+         let span = self.span;
+         let children = &self.children;
+ 
+-        if self.should_render_inline_flow() {
++        if node_cx.table_wrap || self.should_render_inline_flow() {
+             return InlineFlow::new(
+                 span.unwrap_or_default(),
+                 self.inline_flow_items(node_cx, cx),
+                 node_cx.link_click_handler.clone(),
+             )
+             .search_scroll(node_cx.search_scroll.clone())
++            .table_wrap(node_cx.table_wrap)
+             .into_any_element();
+         }
+ 
+@@ -1834,10 +1836,24 @@
+     node_cx: &NodeContext,
+     window: &mut Window,
+ ) -> Vec<f32> {
+-    let text_style = window.text_style();
+-    let font_size = text_style.font_size.to_pixels(window.rem_size());
+-    let mut col_w = vec![CELL_MIN_PX; col_count];
+-    for row in table.children.iter() {
++    measure_table_widths(table, col_count, node_cx, window, false)
++}
++
++fn measure_table_widths(
++    table: &Table,
++    col_count: usize,
++    node_cx: &NodeContext,
++    window: &mut Window,
++    minimum: bool,
++) -> Vec<f32> {
++    let mut col_w = vec![0.0_f32; col_count];
++    for (row_ix, row) in table.children.iter().enumerate() {
++        let mut text_style = window.text_style();
++        if row_ix == 0 {
++            text_style.refine(&node_cx.style.table_head().text);
++        }
++        text_style.refine(&node_cx.style.table_cell().text);
++        let font_size = text_style.font_size.to_pixels(window.rem_size());
+         for (ix, cell) in row.children.iter().enumerate() {
+             let Some(slot) = col_w.get_mut(ix) else {
+                 continue;
+@@ -1845,11 +1861,22 @@
+             let text = cell.children.text();
+             let highlights = cell.children.inline_highlights(node_cx);
+             let mut w = 0.0_f32;
+-            let mut line_start = 0;
+-            for line in text.split('\n') {
++            let ranges = if minimum {
++                super::table_wrap::segments(&text)
++            } else {
++                let mut offset = 0;
++                text.split('\n')
++                    .map(|line| {
++                        let range = offset..offset + line.len();
++                        offset += line.len() + 1;
++                        range
++                    })
++                    .collect()
++            };
++            for range in ranges {
++                let line = &text[range.clone()];
++                let line_start = range.start;
+                 let start = line_start + (line.len() - line.trim_start().len());
+-                let line_end = line_start + line.len();
+-                line_start = line_end + 1;
+                 let line = line.trim();
+                 if line.is_empty() {
+                     continue;
+@@ -2290,33 +2317,14 @@
+         window: &mut Window,
+         cx: &mut App,
+     ) -> AnyElement {
+-        // Shrinking columns stop (and the table starts to scroll) at a floor
+-        // scaled to their content: roughly the width at which the text wraps
+-        // to `CELL_WRAP_MAX_LINES` lines, clamped between the two bounds so
+-        // moderate columns can still wrap meaningfully while one huge column
+-        // cannot push the scroll threshold arbitrarily high.
+-        const CELL_WRAP_MAX_LINES: f32 = 2.0;
+-        const CELL_WRAP_MIN_PX: f32 = 160.0;
+-        const CELL_WRAP_MAX_PX: f32 = 480.0;
+-        const TABLE_BORDER_PX: f32 = 2.0; // the track's border_1, left + right
+-
++        const TABLE_BORDER_PX: f32 = 2.0;
+         let col_w = measure_table_columns(table, col_count, node_cx, window);
+         let style = &node_cx.style;
+-        // Nowrap cells (via the `table_cell` refinement, which cascades to
+-        // the cell text) must never shrink below their single-line content,
+-        // so their floor is the content width itself.
+         let nowrap = style.table_cell().text.white_space == Some(WhiteSpace::Nowrap);
+-        let col_min_w: Vec<f32> = if nowrap {
++        let col_min_w = if nowrap {
+             col_w.clone()
+         } else {
+-            col_w
+-                .iter()
+-                .map(|w| {
+-                    (w / CELL_WRAP_MAX_LINES)
+-                        .clamp(CELL_WRAP_MIN_PX, CELL_WRAP_MAX_PX)
+-                        .min(*w)
+-                })
+-                .collect()
++            measure_table_widths(table, col_count, node_cx, window, true)
+         };
+         let min_total_w: f32 = col_min_w.iter().sum::<f32>() + TABLE_BORDER_PX;
+ 
+@@ -2339,6 +2347,7 @@
+         let scroll_handle = scroll_entity.read(cx).clone();
+         let mut cell_context = node_cx.clone();
+         cell_context.search_scroll = Some(scroll_entity);
++        cell_context.table_wrap = true;
+         let row_count = table.children.len();
+         let mut rows = Vec::with_capacity(row_count);
+         for (row_ix, row) in table.children.iter().enumerate() {
+@@ -2351,6 +2360,7 @@
+                 cells.push(
+                     div()
+                         .id(("cell", ix))
++                        .debug_selector(move || format!("table-cell-{row_ix}-{ix}"))
+                         // Measured max-content width is the flex-basis;
+                         // `flex_grow` (proportional to it) distributes extra
+                         // space so a narrow table still fills the frame, while
+--- a/crates/base/src/text/inline_flow.rs
++++ b/crates/base/src/text/inline_flow.rs
+@@ -22,6 +22,7 @@
+ const IMAGE_LEN: usize = 1;
+ 
+ pub(super) struct InlineFlow {
++    table_wrap: bool,
+     search_scroll: Option<gpui::Entity<gpui::ScrollHandle>>,
+     id: ElementId,
+     items: Vec<InlineFlowItem>,
+@@ -103,6 +104,10 @@
+ }
+ 
+ impl InlineFlow {
++    pub(super) fn table_wrap(mut self, enabled: bool) -> Self {
++        self.table_wrap = enabled;
++        self
++    }
+     pub(super) fn search_scroll(
+         mut self,
+         scroll: Option<gpui::Entity<gpui::ScrollHandle>>,
+@@ -117,6 +122,7 @@
+         link_click_handler: Option<Arc<LinkClickHandlerFn>>,
+     ) -> Self {
+         Self {
++            table_wrap: false,
+             search_scroll: None,
+             id: id.into(),
+             items,
+@@ -219,9 +225,10 @@
+         let layout_state = InlineFlowLayoutState::default();
+         let layout_ref = layout_state.layout.clone();
+ 
++        let text_style = window.text_style();
++        let table_wrap = self.table_wrap;
+         let layout_id = window.request_measured_layout(Default::default(), {
+             move |known_dimensions, available_space, window, _cx| {
+-                let text_style = window.text_style();
+                 let wrap_width = if text_style.white_space == WhiteSpace::Normal {
+                     known_dimensions.width.or(match available_space.width {
+                         AvailableSpace::Definite(width) => Some(width),
+@@ -230,11 +237,12 @@
+                 } else {
+                     None
+                 };
+-                let layout = layout_flow(
++                let layout = layout_flow_with_rules(
+                     &measure_items,
+                     &image_sizes,
+                     &text_style,
+                     wrap_width,
++                    table_wrap,
+                     window,
+                 );
+                 let size = layout.size;
+@@ -306,14 +314,24 @@
+                     .search_source(source_state, source_range.start)
+                     .search_scroll(self.search_scroll.clone())
+                     .into_any_element();
+-                    element.prepaint_as_root(
+-                        bounds.origin + origin,
+-                        size(
+-                            AvailableSpace::Definite(fragment_size.width),
+-                            AvailableSpace::Definite(fragment_size.height),
+-                        ),
+-                        window,
+-                        cx,
++                    // Each fragment already is a complete measured line. Do not
++                    // run the generic glyph-fallback wrapper a second time.
++                    window.with_text_style(
++                        Some(gpui::TextStyleRefinement {
++                            white_space: Some(WhiteSpace::Nowrap),
++                            ..Default::default()
++                        }),
++                        |window| {
++                            element.prepaint_as_root(
++                                bounds.origin + origin,
++                                size(
++                                    AvailableSpace::Definite(fragment_size.width),
++                                    AvailableSpace::Definite(fragment_size.height),
++                                ),
++                                window,
++                                cx,
++                            );
++                        },
+                     );
+                     elements.push(element);
+                 }
+@@ -403,6 +421,7 @@
+     }
+ }
+ 
++#[cfg(test)]
+ fn layout_flow(
+     items: &[MeasureItem],
+     image_sizes: &[Option<Size<Pixels>>],
+@@ -410,14 +429,29 @@
+     wrap_width: Option<Pixels>,
+     window: &mut Window,
+ ) -> InlineFlowLayout {
+-    let line_height = window.line_height();
++    layout_flow_with_rules(items, image_sizes, text_style, wrap_width, false, window)
++}
++
++fn layout_flow_with_rules(
++    items: &[MeasureItem],
++    image_sizes: &[Option<Size<Pixels>>],
++    text_style: &TextStyle,
++    wrap_width: Option<Pixels>,
++    table_wrap: bool,
++    window: &mut Window,
++) -> InlineFlowLayout {
++    let line_height = text_style.line_height_in_pixels(window.rem_size());
+     let rem_size = window.rem_size();
+     let total_len = items.iter().map(MeasureItem::len).sum::<usize>();
+     if total_len == 0 {
+         return InlineFlowLayout::default();
+     }
+ 
+-    let line_ranges = line_ranges(items, image_sizes, text_style, wrap_width, window);
++    let line_ranges = if table_wrap {
++        table_line_ranges(items, image_sizes, text_style, wrap_width, window)
++    } else {
++        line_ranges(items, image_sizes, text_style, wrap_width, window)
++    };
+     let font_size = text_style.font_size.to_pixels(rem_size);
+     let mut fragments = Vec::new();
+     let mut max_width = Pixels::ZERO;
+@@ -528,6 +562,100 @@
+     }
+ }
+ 
++/// Shape the same unbreakable segments used by min-content measurement.
++/// Unlike the general GPUI wrapper, this never falls back to a glyph boundary.
++fn table_line_ranges(
++    items: &[MeasureItem],
++    image_sizes: &[Option<Size<Pixels>>],
++    style: &TextStyle,
++    wrap_width: Option<Pixels>,
++    window: &mut Window,
++) -> Vec<Range<usize>> {
++    let mut text = String::new();
++    for item in items {
++        match item {
++            MeasureItem::Text { text: value, .. } => text.push_str(value),
++            MeasureItem::Image { .. } => text.push('\u{1}'),
++        }
++    }
++    let Some(limit) = wrap_width else {
++        return line_ranges(items, image_sizes, style, None, window);
++    };
++    let mut ends: Vec<_> = super::table_wrap::segments(&text)
++        .into_iter()
++        .map(|r| r.end)
++        .collect();
++    for (i, _) in text.match_indices('\u{1}') {
++        ends.extend([i, i + IMAGE_LEN]);
++    }
++    ends.sort_unstable();
++    ends.dedup();
++    let font_size = style.font_size.to_pixels(window.rem_size());
++    let measure = |range: Range<usize>| {
++        let mut width = px(0.);
++        let mut offset = 0;
++        for (ix, item) in items.iter().enumerate() {
++            let start = range.start.max(offset);
++            let end = range.end.min(offset + item.len());
++            if start < end {
++                match item {
++                    MeasureItem::Image { .. } => width += image_sizes[ix].unwrap_or_default().width,
++                    MeasureItem::Text {
++                        text, highlights, ..
++                    } => {
++                        let local = start - offset..end - offset;
++                        let clipped: Vec<_> = highlights
++                            .iter()
++                            .filter_map(|(r, h)| {
++                                let a = r.start.max(local.start);
++                                let b = r.end.min(local.end);
++                                (a < b).then(|| (a - local.start..b - local.start, h.clone()))
++                            })
++                            .collect();
++                        let part = &text[local];
++                        let runs = text_runs(part, style, &clipped);
++                        width += window
++                            .text_system()
++                            .layout_line(part, font_size, &runs, None)
++                            .width;
++                    }
++                }
++            }
++            offset += item.len();
++        }
++        width
++    };
++    let mut result = Vec::new();
++    let mut line_start = 0;
++    let mut segment_start = 0;
++    let mut line_width = px(0.);
++    for end in ends {
++        if end == segment_start {
++            continue;
++        }
++        let segment = &text[segment_start..end];
++        let visible_end = end - (segment.len() - segment.trim_end_matches(['\r', '\n']).len());
++        let trimmed_end = segment_start + segment.trim_end().len();
++        let visible_width = measure(segment_start..trimmed_end);
++        if line_start < segment_start && line_width + visible_width > limit {
++            result.push(line_start..segment_start);
++            line_start = segment_start;
++            line_width = px(0.);
++        }
++        line_width += measure(segment_start..visible_end);
++        if segment.ends_with('\n') || segment.ends_with('\r') {
++            result.push(line_start..visible_end);
++            line_start = end;
++            line_width = px(0.);
++        }
++        segment_start = end;
++    }
++    if line_start < text.len() || result.is_empty() {
++        result.push(line_start..text.len());
++    }
++    result
++}
++
+ fn line_ranges(
+     items: &[MeasureItem],
+     image_sizes: &[Option<Size<Pixels>>],
+@@ -649,11 +777,7 @@
+             fragments.push(WrapLineFragment::text(&text[cursor..start]));
+         }
+         let span = &text[start..end];
+-        let runs = text_runs(
+-            span,
+-            text_style,
+-            &[(0..span.len(), highlight.clone())],
+-        );
++        let runs = text_runs(span, text_style, &[(0..span.len(), highlight.clone())]);
+         let width = window
+             .text_system()
+             .layout_line(span, font_size, &runs, None)
+--- /dev/null
++++ b/crates/base/src/text/table_wrap.rs
+@@ -0,0 +1,101 @@
++//! Shared break opportunities for table min-content measurement and layout.
++//! Byte ranges refer to the original text: selection, links and copying keep
++//! their source offsets; no zero-width characters are inserted into the text.
++use std::ops::Range;
++use unicode_segmentation::UnicodeSegmentation;
++
++pub(super) fn segments(text: &str) -> Vec<Range<usize>> {
++    // Symbol tailoring must never suppress a mandatory UAX #14 break.
++    let mut ends: Vec<usize> = unicode_linebreak::linebreaks(text)
++        .filter_map(|(i, kind)| {
++            (kind == unicode_linebreak::BreakOpportunity::Mandatory
++                || !text[i..].starts_with(['♯', '♭', '″', '′']))
++            .then_some(i)
++        })
++        .collect();
++    let mut start = 0;
++    for token in text.split_inclusive(char::is_whitespace) {
++        let word = token.trim_end();
++        let chars: Vec<usize> = word
++            .grapheme_indices(true)
++            .map(|(i, _)| i)
++            .chain(std::iter::once(word.len()))
++            .collect();
++        let n = chars.len().saturating_sub(1);
++        let technical = word.contains(['/', '_'])
++            || (word.contains(['-', '.']) && word.chars().any(|c| c.is_ascii_digit()))
++            || (word.chars().all(|c| c.is_ascii_hexdigit())
++                && word.chars().any(|c| c.is_ascii_digit()));
++        if n > 24 && technical {
++            ends.retain(|&i| i <= start || i >= start + word.len());
++            let mut previous = 0;
++            while n - previous > 24 {
++                let limit = (previous + 24).min(n - 4);
++                let split = (previous + 4..=limit)
++                    .rev()
++                    .find(|&i| word[..chars[i]].ends_with(['/', '-', '_', '.']))
++                    .unwrap_or(limit);
++                ends.push(start + chars[split]);
++                previous = split;
++            }
++        }
++        start += token.len();
++    }
++    ends.push(text.len());
++    ends.sort_unstable();
++    ends.dedup();
++    let mut start = 0;
++    ends.into_iter()
++        .filter_map(|end| {
++            let range = start..end;
++            start = end;
++            (!range.is_empty()).then_some(range)
++        })
++        .collect()
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    #[test]
++    fn keeps_words_pitch_and_measurements_intact() {
++        let text =
++            "25.5″ Floyd / Drop C♯ B♭ Кириллица mixedЯзык supercalifragilisticexpialidocious";
++        let parts: Vec<_> = segments(text).into_iter().map(|r| &text[r]).collect();
++        for word in [
++            "25.5″",
++            "C♯",
++            "B♭",
++            "Кириллица",
++            "mixedЯзык",
++            "supercalifragilisticexpialidocious",
++        ] {
++            assert!(parts.iter().any(|p| p.contains(word)), "{word}: {parts:?}");
++        }
++        assert_eq!(parts.concat(), text);
++    }
++    #[test]
++    fn mandatory_breaks_before_symbols_survive_tailoring() {
++        for symbol in ["♯", "♭", "″", "′"] {
++            for newline in ["\n", "\r\n"] {
++                let text = format!("first{newline}{symbol}second");
++                let parts: Vec<_> = segments(&text).into_iter().map(|r| &text[r]).collect();
++                assert_eq!(parts[0], format!("first{newline}"));
++                assert_eq!(parts.concat(), text);
++            }
++        }
++    }
++    #[test]
++    fn technical_fragments_have_no_tiny_tails() {
++        for text in [
++            "https://example.com/very_long_directory/another_document.md",
++            "/Users/example/attachments/long_file_name_2026.png",
++            "0123456789abcdef0123456789abcdef0123456789abcdef",
++        ] {
++            let parts: Vec<_> = segments(text).into_iter().map(|r| &text[r]).collect();
++            assert!(parts.len() > 1);
++            assert!(parts.iter().all(|p| p.chars().count() >= 4), "{parts:?}");
++            assert_eq!(parts.concat(), text);
++        }
++    }
++}

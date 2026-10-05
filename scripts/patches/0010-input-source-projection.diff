@@ -1,0 +1,2001 @@
+diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
+index 5165817f..8394a57e 100644
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -1,3 +1,4 @@
++use super::projection::ConcealBias;
+ use crate::input::{InputExtras as _, InputModeKind};
+ use gpui::Corners;
+ use gpui::Half;
+@@ -475,6 +476,20 @@ impl<M: InputModeKind> TextElement<M> {
+             cursor = masked_display_offset(&state.text, cursor);
+         }
+ 
++        if last_layout.projection.is_some() {
++            let Some(start) = last_layout.project(selected_range.start, ConcealBias::Left) else {
++                return (None, state.scroll_handle.offset(), None);
++            };
++            let Some(end) = last_layout.project(selected_range.end, ConcealBias::Right) else {
++                return (None, state.scroll_handle.offset(), None);
++            };
++            let Some(projected_cursor) = last_layout.project(cursor, ConcealBias::Right) else {
++                return (None, state.scroll_handle.offset(), None);
++            };
++            selected_range.start = start;
++            selected_range.end = end;
++            cursor = projected_cursor;
++        }
+         let mut scroll_offset = state.scroll_handle.offset();
+ 
+         // Padding kept between the cursor and the viewport's top/bottom
+@@ -848,6 +863,11 @@ impl<M: InputModeKind> TextElement<M> {
+             selected_range.end = masked_display_offset(&state.text, selected_range.end);
+         }
+ 
++        if last_layout.projection.is_some() {
++            selected_range.start = last_layout.project(selected_range.start, ConcealBias::Left)?;
++            selected_range.end = last_layout.project(selected_range.end, ConcealBias::Right)?;
++        }
++
+         let (start_ix, end_ix) = if selected_range.start < selected_range.end {
+             (selected_range.start, selected_range.end)
+         } else {
+@@ -1698,7 +1718,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+         let text_size = style.font_size.to_pixels(window.rem_size());
+ 
+         self.state.update(cx, |state, cx| {
+-            state.display_map.set_font(font, text_size, cx);
++            state.display_map.set_font(font.clone(), text_size, cx);
+             state.display_map.ensure_text_prepared(&state.text, cx);
+         });
+ 
+@@ -1757,7 +1777,40 @@ impl<M: InputModeKind> Element for TextElement<M> {
+             });
+         }
+ 
++        self.state.update(cx, |state, cx| {
++            let changed = state.last_layout.as_ref().is_none_or(|last| {
++                last.font != font
++                    || last.font_size != text_size
++                    || last.line_height != window.line_height()
++                    || last.scale_factor != window.scale_factor()
++                    || last.wrap_width != wrap_width
++                    || last.wrapping_indent != wrapping_indent
++                    || last.content_width != bounds.size.width
++            });
++            if changed {
++                state.projection.presentation_changed();
++            }
++            state.refresh_projection();
++            // These transformations do not yet have a source/projected mapping.
++            if !M::projection_compatible(state)
++                || state.masked
++                || state.searchable
++                || state.mode.is_folding()
++                || state.wrapping_indent != super::WrappingIndent::None
++            {
++                state.projection.current = None;
++            }
++            state
++                .display_map
++                .install_projection(state.projection.pin(), &state.text, window, cx);
++        });
+         let state = self.state.read(cx);
++        let projected_rope = state
++            .projection
++            .current
++            .as_ref()
++            .map(|p| Rope::from(p.text()));
++        let display_text = projected_rope.as_ref().unwrap_or(display_text);
+         let line_height = window.line_height();
+ 
+         let (visible_range, visible_buffer_lines, visible_top) =
+@@ -1778,7 +1831,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+ 
+         let visible_line_byte_offsets: Vec<usize> = visible_buffer_lines
+             .iter()
+-            .map(|&bl| state.text.line_start_offset(bl))
++            .map(|&bl| display_text.line_start_offset(bl))
+             .collect();
+ 
+         // For password input (masked: true), convert byte offsets to masked display byte offsets so that
+@@ -1794,11 +1847,17 @@ impl<M: InputModeKind> Element for TextElement<M> {
+         } else {
+             (
+                 visible_line_byte_offsets,
+-                visible_start_offset..visible_end_offset,
++                display_text.line_start_offset(visible_range.start)
++                    ..display_text.line_end_offset(visible_range.end.saturating_sub(1)),
+             )
+         };
+ 
+         let mut last_layout = LastLayout {
++            projection: state.projection.pin(),
++            source_stamp: state.source_stamp(),
++            font: font.clone(),
++            font_size: text_size,
++            scale_factor: window.scale_factor(),
+             visible_range,
+             visible_buffer_lines,
+             visible_line_byte_offsets,
+@@ -1841,7 +1900,15 @@ impl<M: InputModeKind> Element for TextElement<M> {
+             state.masked,
+         );
+ 
+-        let runs = if let (false, Some(highlight_styles)) = (is_empty, highlight_styles) {
++        let runs = if let Some(projection) = &state.projection.current {
++            visible_buffer_lines_for_runs(
++                &last_layout,
++                display_text,
++                projection.as_ref(),
++                &font,
++                text_color,
++            )
++        } else if let (false, Some(highlight_styles)) = (is_empty, highlight_styles) {
+             let mut runs = Vec::with_capacity(highlight_styles.len() + 2);
+ 
+             for (range, style) in &highlight_styles {
+@@ -2380,6 +2447,12 @@ impl<M: InputModeKind> Element for TextElement<M> {
+             state.scroll_size = prepaint.scroll_size;
+             state.update_scroll_offset(Some(prepaint.cursor_scroll_offset), cx);
+             state.deferred_scroll_offset = None;
++            if let Some((event, released)) = state.projection_pending_click.take() {
++                state.on_mouse_down(&event, window, cx);
++                if released {
++                    state.selecting = false;
++                }
++            }
+ 
+             cx.notify();
+         });
+@@ -3243,3 +3316,23 @@ mod tests {
+         );
+     }
+ }
++
++fn visible_buffer_lines_for_runs(
++    last: &LastLayout,
++    text: &Rope,
++    projection: &dyn super::projection::SourceProjection,
++    font: &gpui::Font,
++    color: Hsla,
++) -> Vec<TextRun> {
++    let mut runs = Vec::new();
++    for &row in &last.visible_buffer_lines {
++        let start = text.line_start_offset(row);
++        runs.extend(super::projection_layout::projected_runs(
++            projection,
++            start..start + text.slice_line(row).len(),
++            font,
++            color,
++        ));
++    }
++    runs
++}
+diff --git a/crates/base/src/input/base/kind.rs b/crates/base/src/input/base/kind.rs
+index 26c28d53..d369b217 100644
+--- a/crates/base/src/input/base/kind.rs
++++ b/crates/base/src/input/base/kind.rs
+@@ -179,6 +179,11 @@ pub trait InputModeKind: sealed::Sealed + Sized + 'static {
+         None
+     }
+ 
++    /// Whether all enabled adornments have a source/projection mapping.
++    fn projection_compatible(_state: &InputBaseState<Self>) -> bool {
++        false
++    }
++
+     /// Drops cached language-server results, e.g. after the text is replaced.
+     fn reset_language_features(_state: &mut InputBaseState<Self>) {}
+ 
+diff --git a/crates/base/src/input/base/layout.rs b/crates/base/src/input/base/layout.rs
+index df9b7264..8ccbd960 100644
+--- a/crates/base/src/input/base/layout.rs
++++ b/crates/base/src/input/base/layout.rs
+@@ -2,6 +2,7 @@ use std::{ops::Range, rc::Rc};
+ 
+ use gpui::{Bounds, Half, Pixels, ShapedLine, TextAlign, px};
+ 
++use super::projection::{ConcealBias, PinnedProjection, ProjectedByte, SourceByte, SourceStamp};
+ use super::{WrappingIndent, display_map::LineLayout};
+ 
+ #[derive(Clone, Default)]
+@@ -12,6 +13,12 @@ pub(crate) struct WhitespaceIndicators {
+ 
+ #[derive(Clone)]
+ pub(super) struct LastLayout {
++    pub(super) projection: Option<PinnedProjection>,
++    pub(super) source_stamp: SourceStamp,
++    pub(super) font: gpui::Font,
++    pub(super) font_size: Pixels,
++    pub(super) scale_factor: f32,
++
+     pub(super) visible_range: Range<usize>,
+     pub(super) visible_buffer_lines: Vec<usize>,
+     pub(super) visible_line_byte_offsets: Vec<usize>,
+@@ -28,6 +35,28 @@ pub(super) struct LastLayout {
+ }
+ 
+ impl LastLayout {
++    pub(super) fn project(&self, offset: usize, bias: ConcealBias) -> Option<usize> {
++        match &self.projection {
++            Some(p) => p
++                .projection
++                .to_projected(SourceByte(offset), bias)
++                .map(|v| v.0),
++            None => Some(offset),
++        }
++    }
++    pub(super) fn source(&self, offset: usize, bias: ConcealBias) -> Option<usize> {
++        match &self.projection {
++            Some(p) => {
++                let clipped =
++                    super::projection_layout::clip_hit_offset(p.projection.text(), offset, bias)?;
++                p.projection
++                    .to_source(ProjectedByte(clipped), bias)
++                    .map(|v| v.0)
++            }
++            None => Some(offset),
++        }
++    }
++
+     pub(crate) fn line(&self, row: usize) -> Option<&LineLayout> {
+         let pos = self.visible_buffer_lines.binary_search(&row).ok()?;
+         self.lines.get(pos)
+diff --git a/crates/base/src/input/base/movement.rs b/crates/base/src/input/base/movement.rs
+index 33ebaa15..8c07bf0f 100644
+--- a/crates/base/src/input/base/movement.rs
++++ b/crates/base/src/input/base/movement.rs
+@@ -1,3 +1,4 @@
++use super::projection::ConcealBias;
+ use crate::input::InputModeKind;
+ use gpui::{Context, Point, Window};
+ use sum_tree::Bias;
+@@ -27,8 +28,17 @@ impl<M: InputModeKind> InputBaseState<M> {
+             return;
+         };
+ 
+-        let Some(pos) =
+-            line.position_for_index(point.column, last_layout, self.cursor_line_end_affinity)
++        let Some(offset) = last_layout.project(self.cursor(), ConcealBias::Right) else {
++            self.preferred_column = None;
++            return;
++        };
++        let vi = last_layout
++            .visible_buffer_lines
++            .iter()
++            .position(|row| *row == point.row)
++            .unwrap();
++        let column = offset.saturating_sub(last_layout.visible_line_byte_offsets[vi]);
++        let Some(pos) = line.position_for_index(column, last_layout, self.cursor_line_end_affinity)
+         else {
+             self.preferred_column = None;
+             return;
+@@ -69,6 +79,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+         let offset = self.cursor_boundary(offset, Bias::Left);
+         self.cursor_line_end_affinity = line_end_affinity;
+         self.selected_range = (offset..offset).into();
++        self.sync_projection_active();
+         self.scroll_to(offset, direction, cx);
+         self.pause_blink_cursor(cx);
+         self.update_preferred_column();
+@@ -142,7 +153,20 @@ impl<M: InputModeKind> InputBaseState<M> {
+                     },
+                     last_layout,
+                 ) {
+-                    new_offset = line_start_offset + x;
++                    let Some(vi) = last_layout
++                        .visible_buffer_lines
++                        .iter()
++                        .position(|row| *row == next_point.row)
++                    else {
++                        return;
++                    };
++                    let Some(source) = last_layout.source(
++                        last_layout.visible_line_byte_offsets[vi] + x,
++                        ConcealBias::Right,
++                    ) else {
++                        return;
++                    };
++                    new_offset = source;
+                     // Landing on a wrap boundary means the preferred column pointed past the
+                     // last glyph of the target row, so the caret stays on that row.
+                     new_affinity = line_end_affinity;
+diff --git a/crates/base/src/input/base/selection.rs b/crates/base/src/input/base/selection.rs
+index 8f7a92ef..b76724da 100644
+--- a/crates/base/src/input/base/selection.rs
++++ b/crates/base/src/input/base/selection.rs
+@@ -28,6 +28,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+         self.undo_manager.break_transaction_coalescing();
+         self.selected_range = (range.start..range.end).into();
+         self.selected_word_range = Some(self.selected_range);
++        self.sync_projection_active();
+         cx.notify()
+     }
+ 
+@@ -39,6 +40,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+         self.undo_manager.break_transaction_coalescing();
+         self.selected_range = (range.start..range.end).into();
+         self.selected_word_range = None;
++        self.sync_projection_active();
+         cx.notify()
+     }
+ }
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+index 27bf66b3..2a38ec64 100644
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -2,6 +2,11 @@
+ //!
+ //! Based on the `Input` example from the `gpui` crate.
+ //! https://github.com/zed-industries/zed/blob/main/crates/gpui/examples/input.rs
++use super::projection::{
++    ActiveSource, ProjectionProvider, ProjectionSession, SourceByte, SourceMutation,
++    SourceMutationReason, SourceStamp, WrapAffinity,
++};
++use super::projection::{ConcealBias, SourceUtf16, source_utf16_to_byte};
+ use gpui::TextAlign;
+ use gpui::{
+     Action, App, AppContext, Bounds, ClipboardItem, Context, Edges, Entity, EntityInputHandler,
+@@ -16,6 +21,7 @@ use std::borrow::Cow;
+ use std::cell::Cell;
+ use std::ops::Range;
+ use std::rc::Rc;
++use std::sync::Arc;
+ use sum_tree::Bias;
+ use unicode_segmentation::*;
+ 
+@@ -293,6 +299,8 @@ pub struct InputBaseState<M: InputModeKind> {
+     pub(super) focus_handle: FocusHandle,
+     pub(super) mode: LayoutMode,
+     pub(super) text: Rope,
++    pub(super) projection: ProjectionSession,
++    pub(super) projection_pending_click: Option<(MouseDownEvent, bool)>,
+     pub(super) display_map: DisplayMap,
+     pub(super) undo_manager: UndoManager,
+     pub(super) search_session: super::SearchSession,
+@@ -482,6 +490,7 @@ impl InputPresentation {
+ }
+ 
+ impl<M: InputModeKind> EventEmitter<InputEvent> for InputBaseState<M> {}
++impl<M: InputModeKind> EventEmitter<SourceMutation> for InputBaseState<M> {}
+ 
+ impl<M: InputModeKind> InputBaseState<M> {
+     #[doc(hidden)]
+@@ -626,6 +635,8 @@ impl<M: InputModeKind> InputBaseState<M> {
+             extras: M::Extras::default(),
+             focus_handle: focus_handle.clone(),
+             text: "".into(),
++            projection: ProjectionSession::default(),
++            projection_pending_click: None,
+             display_map: DisplayMap::new(text_style.font(), window.rem_size(), None),
+             search_session: super::SearchSession::default(),
+             search_activation_revision: 0,
+@@ -760,6 +771,13 @@ impl<M: InputModeKind> InputBaseState<M> {
+     }
+ 
+     pub fn set_editor_style(&mut self, style: InputEditorStyle) {
++        if self.editor_style.foreground != style.foreground
++            || self.editor_style.background != style.background
++            || self.editor_style.selection != style.selection
++            || self.editor_style.caret != style.caret
++        {
++            self.projection.presentation_changed();
++        }
+         self.editor_style = style.clone();
+         self.projected_editor_style = style;
+     }
+@@ -767,6 +785,9 @@ impl<M: InputModeKind> InputBaseState<M> {
+     /// Set presentation padding for multi-line text and its scrollbar layout.
+     #[doc(hidden)]
+     pub fn set_editor_paddings(&mut self, paddings: Edges<Pixels>) {
++        if self.editor_paddings != paddings {
++            self.projection.presentation_changed();
++        }
+         self.editor_paddings = paddings;
+     }
+ 
+@@ -816,6 +837,12 @@ impl<M: InputModeKind> InputBaseState<M> {
+         let Some(last_layout) = &self.last_layout else {
+             return (0, 0, None);
+         };
++        if self.projection.enabled && last_layout.source_stamp != self.source_stamp() {
++            return (0, 0, None);
++        }
++        let Some(offset) = last_layout.project(offset, ConcealBias::Right) else {
++            return (0, 0, None);
++        };
+         let line_height = last_layout.line_height;
+ 
+         let mut y_offset = last_layout.visible_top;
+@@ -833,6 +860,82 @@ impl<M: InputModeKind> InputBaseState<M> {
+         (0, 0, None)
+     }
+ 
++    /// Synchronous canonical identity, including silent native IME mutations.
++    pub fn source_stamp(&self) -> SourceStamp {
++        self.projection.stamp.source
++    }
++
++    pub fn presentation_epoch(&self) -> u64 {
++        self.projection.stamp.presentation
++    }
++
++    pub(super) fn sync_projection_active(&mut self) {
++        let (anchor, head) = if self.selection_reversed {
++            (self.selected_range.end, self.selected_range.start)
++        } else {
++            (self.selected_range.start, self.selected_range.end)
++        };
++        self.projection.set_active(ActiveSource {
++            anchor: SourceByte(anchor),
++            head: SourceByte(head),
++            composition: self
++                .ime_marked_range
++                .map(|r| SourceByte(r.start)..SourceByte(r.end)),
++            replacement: None,
++            affinity: if self.cursor_line_end_affinity {
++                WrapAffinity::End
++            } else {
++                WrapAffinity::Start
++            },
++        });
++    }
++
++    pub(super) fn refresh_projection(&mut self) {
++        self.sync_projection_active();
++        if self.projection.current.is_some() {
++            return;
++        }
++        if self.projection.provider.is_some() && self.text.len() <= 256 * 1024 {
++            self.projection.compose(Arc::from(self.text.to_string()));
++        } else {
++            self.projection.current = None;
++        }
++    }
++
++    fn checked_native_range(&self, range: &Range<usize>) -> Option<Range<usize>> {
++        if !self.projection.enabled {
++            return Some(self.range_from_utf16(range));
++        }
++        if range.start > range.end {
++            return None;
++        }
++        let text = self.text.to_string();
++        Some(
++            source_utf16_to_byte(&text, SourceUtf16(range.start))?.0
++                ..source_utf16_to_byte(&text, SourceUtf16(range.end))?.0,
++        )
++    }
++
++    fn reveal_replacement(&mut self, range: &Range<usize>) {
++        self.sync_projection_active();
++        if self.projection.provider.is_some() {
++            let mut active = self.projection.active.clone();
++            active.replacement = Some(SourceByte(range.start)..SourceByte(range.end));
++            self.projection.set_active(active);
++            if self.text.len() <= 256 * 1024 {
++                self.projection.compose(Arc::from(self.text.to_string()));
++            }
++        }
++    }
++
++    fn record_source_mutation(&mut self, reason: SourceMutationReason, cx: &mut Context<Self>) {
++        let event = self.projection.mutation(reason);
++        if self.projection.enabled {
++            self.last_layout = None;
++        }
++        cx.emit(event);
++    }
++
+     /// Set the text of the input field.
+     ///
+     /// For single-line inputs the caret is placed at the end of the text while
+@@ -908,6 +1011,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+             let range_utf16 = this.range_to_utf16(&(this.cursor()..this.cursor()));
+             this.replace_text_in_range_silent(Some(range_utf16), &text, window, cx);
+             this.selected_range = (this.selected_range.end..this.selected_range.end).into();
++            this.sync_projection_active();
+         });
+     }
+ 
+@@ -925,6 +1029,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+             this.undo_manager.pending_intent = Some(EditIntent::Atomic);
+             this.replace_text_in_range_silent(None, &text, window, cx);
+             this.selected_range = (this.selected_range.end..this.selected_range.end).into();
++            this.sync_projection_active();
+         });
+     }
+ 
+@@ -953,6 +1058,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+         } else {
+             self.selected_range.clear();
+         }
++        self.sync_projection_active();
+     }
+ 
+     fn reset_lsp_state(&mut self) {
+@@ -1122,6 +1228,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+     pub fn default_value(mut self, value: impl Into<SharedString>) -> Self {
+         let text: SharedString = value.into();
+         self.text = Rope::from(self.normalize_input(&text).as_ref());
++        self.projection.mutation(SourceMutationReason::Reset);
+         if let Some(diagnostics) = self.mode.diagnostics_mut() {
+             diagnostics.reset(&self.text)
+         }
+@@ -1378,7 +1485,22 @@ impl<M: InputModeKind> InputBaseState<M> {
+             if let Some(line) = self.display_map.line(row)
+                 && let Some(range) = line.wrapped_lines.get(wrap_point.local_row)
+             {
+-                let visual_start = logical_start + range.start;
++                let visual_start = if let Some(layout) =
++                    self.last_layout.as_ref().filter(|l| l.projection.is_some())
++                {
++                    let Some(projected_start) = layout.project(logical_start, ConcealBias::Left)
++                    else {
++                        return self.cursor();
++                    };
++                    let Some(source) =
++                        layout.source(projected_start + range.start, ConcealBias::Left)
++                    else {
++                        return self.cursor();
++                    };
++                    source
++                } else {
++                    logical_start + range.start
++                };
+                 if self.cursor() != visual_start {
+                     return visual_start;
+                 }
+@@ -1412,7 +1534,22 @@ impl<M: InputModeKind> InputBaseState<M> {
+             if let Some(line) = self.display_map.line(row)
+                 && let Some(range) = line.wrapped_lines.get(wrap_point.local_row)
+             {
+-                let visual_end = logical_start + range.end;
++                let visual_end = if let Some(layout) =
++                    self.last_layout.as_ref().filter(|l| l.projection.is_some())
++                {
++                    let Some(projected_start) = layout.project(logical_start, ConcealBias::Left)
++                    else {
++                        return self.cursor();
++                    };
++                    let Some(source) =
++                        layout.source(projected_start + range.end, ConcealBias::Right)
++                    else {
++                        return self.cursor();
++                    };
++                    source
++                } else {
++                    logical_start + range.end
++                };
+                 if self.cursor() != visual_end {
+                     return visual_end;
+                 }
+@@ -1712,6 +1849,16 @@ impl<M: InputModeKind> InputBaseState<M> {
+         window: &mut Window,
+         cx: &mut Context<Self>,
+     ) {
++        if self.projection.enabled
++            && self
++                .last_layout
++                .as_ref()
++                .is_none_or(|last| last.source_stamp != self.source_stamp())
++        {
++            self.projection_pending_click = Some((event.clone(), false));
++            cx.notify();
++            return;
++        }
+         self.undo_manager.break_transaction_coalescing();
+         // Input has its own text selection; suppress the window-level text
+         // selection (Root) so it does not start a drag from here.
+@@ -1729,7 +1876,11 @@ impl<M: InputModeKind> InputBaseState<M> {
+         }
+ 
+         self.selecting = true;
+-        let (offset, line_end_affinity) = self.index_for_mouse_position(event.position);
++        let Some((offset, line_end_affinity)) = self.index_for_mouse_position(event.position)
++        else {
++            cx.notify();
++            return;
++        };
+ 
+         if M::on_click(self, event, offset, window, cx) {
+             return;
+@@ -1771,6 +1922,9 @@ impl<M: InputModeKind> InputBaseState<M> {
+         window: &mut Window,
+         cx: &mut Context<Self>,
+     ) {
++        if let Some((_, released)) = &mut self.projection_pending_click {
++            *released = true;
++        }
+         if event.button == MouseButton::Right {
+             if let Some((position, offset)) = self.pending_context_menu.take() {
+                 self.handle_right_click_menu(position, offset, window, cx);
+@@ -1804,7 +1958,9 @@ impl<M: InputModeKind> InputBaseState<M> {
+         }
+ 
+         // Show diagnostic popover on mouse move
+-        let (offset, _) = self.index_for_mouse_position(event.position);
++        let Some((offset, _)) = self.index_for_mouse_position(event.position) else {
++            return;
++        };
+         M::on_mouse_move(self, offset, event, window, cx);
+ 
+         if self.is_code_editor() {
+@@ -1912,7 +2068,18 @@ impl<M: InputModeKind> InputBaseState<M> {
+             .get(row.saturating_sub(last_layout.visible_range.start))
+         {
+             // Check to scroll horizontally and soft wrap lines
+-            if let Some(pos) = line.position_for_index(point.column, last_layout, false) {
++            let Some(projected) = last_layout.project(offset, ConcealBias::Right) else {
++                return;
++            };
++            let Some(vi) = last_layout
++                .visible_buffer_lines
++                .iter()
++                .position(|r| *r == row)
++            else {
++                return;
++            };
++            let column = projected.saturating_sub(last_layout.visible_line_byte_offsets[vi]);
++            if let Some(pos) = line.position_for_index(column, last_layout, false) {
+                 let bounds_width = bounds.size.width - last_layout.line_number_width;
+                 let col_offset_x = pos.x;
+                 row_offset_y += pos.y;
+@@ -2063,6 +2230,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+                 self.replace_text_in_range_silent(Some(range_utf16), &change.old_text, window, cx);
+             }
+             self.selected_range = selection;
++            self.sync_projection_active();
+         }
+         self.undo_manager.set_ignoring(false);
+     }
+@@ -2076,6 +2244,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+                 self.replace_text_in_range_silent(Some(range_utf16), &change.new_text, window, cx);
+             }
+             self.selected_range = selection;
++            self.sync_projection_active();
+         }
+         self.undo_manager.set_ignoring(false);
+     }
+@@ -2130,6 +2299,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+     pub fn select_all(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+         self.undo_manager.break_transaction_coalescing();
+         self.selected_range = (0..self.text.len()).into();
++        self.sync_projection_active();
+         cx.notify();
+     }
+ 
+@@ -2159,16 +2329,27 @@ impl<M: InputModeKind> InputBaseState<M> {
+     /// end of that row rather than at the start of the next one. Callers that place or extend a
+     /// selection must pass it on, or clicking past the last glyph of a wrapped row leaves a
+     /// caret one row below the pointer.
+-    pub(crate) fn index_for_mouse_position(&self, position: Point<Pixels>) -> (usize, bool) {
++    pub(crate) fn index_for_mouse_position(
++        &self,
++        position: Point<Pixels>,
++    ) -> Option<(usize, bool)> {
++        if self.projection.enabled
++            && self
++                .last_layout
++                .as_ref()
++                .is_none_or(|last| last.source_stamp != self.source_stamp())
++        {
++            return None;
++        }
+         // If the text is empty, always return 0
+         if self.text.len() == 0 {
+-            return (0, false);
++            return Some((0, false));
+         }
+ 
+         let (Some(bounds), Some(last_layout)) =
+             (self.last_bounds.as_ref(), self.last_layout.as_ref())
+         else {
+-            return (0, false);
++            return Some((0, false));
+         };
+ 
+         let line_height = last_layout.line_height;
+@@ -2205,27 +2386,46 @@ impl<M: InputModeKind> InputBaseState<M> {
+             if self.is_single_line() {
+                 let local_index = line_layout.closest_index_for_x(pos.x, last_layout);
+                 // A single line never wraps, so there is no boundary to disambiguate.
+-                return (self.resolve_index(line_start_offset + local_index), false);
++                return Some((
++                    last_layout.source(
++                        self.resolve_index(line_start_offset + local_index),
++                        ConcealBias::Right,
++                    )?,
++                    false,
++                ));
+             }
+ 
+             // Check if mouse is in this line's bounds
+             if let Some((local_index, line_end_affinity)) =
+                 line_layout.closest_index_for_position(pos, last_layout)
+             {
+-                return (
+-                    self.resolve_index(line_start_offset + local_index),
++                return Some((
++                    last_layout.source(
++                        self.resolve_index(line_start_offset + local_index),
++                        ConcealBias::Right,
++                    )?,
+                     line_end_affinity,
+-                );
++                ));
+             } else if pos.y < px(0.) {
+                 // Mouse is above this line, return start of this line
+-                return (self.resolve_index(line_start_offset), false);
++                return Some((
++                    last_layout.source(self.resolve_index(line_start_offset), ConcealBias::Left)?,
++                    false,
++                ));
+             }
+ 
+             y_offset += line_layout.size(line_height).height;
+         }
+ 
+-        // Mouse is below all visible lines, return end of text
+-        (self.text.len(), false)
++        // A drag below a partial viewport stops at the displayed endpoint;
++        // auto-scroll supplies subsequent coherent rows without jumping to EOF.
++        if self.projection.enabled {
++            return Some((
++                last_layout.source(last_layout.visible_range_offset.end, ConcealBias::Right)?,
++                false,
++            ));
++        }
++        Some((self.text.len(), false))
+     }
+ 
+     /// Map a display byte index back to a text offset, undoing the mask expansion when the input
+@@ -2287,6 +2487,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+         if self.selected_range.is_empty() {
+             self.update_preferred_column();
+         }
++        self.sync_projection_active();
+         cx.notify()
+     }
+ 
+@@ -2295,6 +2496,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+         self.undo_manager.break_transaction_coalescing();
+         let offset = self.cursor();
+         self.selected_range = (offset..offset).into();
++        self.sync_projection_active();
+         cx.notify()
+     }
+ 
+@@ -2350,6 +2552,28 @@ impl<M: InputModeKind> InputBaseState<M> {
+     /// not alter the rope or its byte/UTF-16 conversion used for exact source APIs.
+     pub(super) fn cursor_boundary(&self, offset: usize, bias: Bias) -> usize {
+         let offset = self.text.clip_offset(offset, bias);
++        if self.projection.enabled {
++            let text = self.text.to_string();
++            let mut previous = 0;
++            for boundary in text
++                .grapheme_indices(true)
++                .map(|(i, _)| i)
++                .chain(std::iter::once(text.len()))
++            {
++                if boundary == offset {
++                    return offset;
++                }
++                if boundary > offset {
++                    return if bias == Bias::Left {
++                        previous
++                    } else {
++                        boundary
++                    };
++                }
++                previous = boundary;
++            }
++            return text.len();
++        }
+         if offset > 0
+             && self.text.char_at(offset - 1) == Some('\r')
+             && self.text.char_at(offset) == Some('\n')
+@@ -2479,7 +2703,11 @@ impl<M: InputModeKind> InputBaseState<M> {
+         }
+ 
+         self.auto_scroll.last_drag_position = Some(event.position);
+-        let (offset, line_end_affinity) = self.index_for_mouse_position(event.position);
++        let Some((offset, line_end_affinity)) = self.index_for_mouse_position(event.position)
++        else {
++            cx.notify();
++            return;
++        };
+         self.select_to_with_affinity(offset, line_end_affinity, cx);
+ 
+         if !self.is_single_line() {
+@@ -2490,7 +2718,11 @@ impl<M: InputModeKind> InputBaseState<M> {
+                 let current = state.scroll_handle.offset();
+                 state.update_scroll_offset(Some(point(current.x, current.y + delta)), cx);
+                 if let Some(pos) = state.auto_scroll.last_drag_position {
+-                    let (offset, line_end_affinity) = state.index_for_mouse_position(pos);
++                    let Some((offset, line_end_affinity)) = state.index_for_mouse_position(pos)
++                    else {
++                        cx.notify();
++                        return;
++                    };
+                     state.select_to_with_affinity(offset, line_end_affinity, cx);
+                 }
+             });
+@@ -2711,7 +2943,7 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
+         _window: &mut Window,
+         _cx: &mut Context<Self>,
+     ) -> Option<String> {
+-        let range = self.range_from_utf16(&range_utf16);
++        let range = self.checked_native_range(&range_utf16)?;
+         adjusted_range.replace(self.range_to_utf16(&range));
+         Some(self.text.slice(range).to_string())
+     }
+@@ -2724,7 +2956,7 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
+     ) -> Option<UTF16Selection> {
+         Some(UTF16Selection {
+             range: self.range_to_utf16(&self.selected_range.into()),
+-            reversed: false,
++            reversed: self.selection_reversed,
+         })
+     }
+ 
+@@ -2739,6 +2971,7 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
+ 
+     fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
+         self.ime_marked_range = None;
++        self.sync_projection_active();
+         self.undo_manager.commit_transaction();
+     }
+ 
+@@ -2753,6 +2986,11 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
+         window: &mut Window,
+         cx: &mut Context<Self>,
+     ) {
++        if let Some(range) = &range_utf16 {
++            if self.checked_native_range(range).is_none() {
++                return;
++            }
++        }
+         let requested_intent = self.undo_manager.pending_intent.take();
+         if !self.is_editable() {
+             return;
+@@ -2778,6 +3016,7 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
+             }))
+             .unwrap_or(self.selected_range.into());
+ 
++        self.reveal_replacement(&range);
+         let old_text = self.text.clone();
+         self.text.replace(range.clone(), new_text);
+ 
+@@ -2811,6 +3050,17 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
+             }
+         }
+ 
++        self.record_source_mutation(
++            if !self.emit_events {
++                SourceMutationReason::Reset
++            } else if self.silent_replace_text {
++                SourceMutationReason::Silent
++            } else {
++                SourceMutationReason::Edit
++            },
++            cx,
++        );
++
+         if mask_changed {
+             // Masking rewrites the whole document, so ranges recorded against
+             // the old text no longer point at anything.
+@@ -2882,6 +3132,7 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
+         if self.emit_events {
+             cx.emit(InputEvent::Change);
+         }
++        self.sync_projection_active();
+         cx.notify();
+     }
+ 
+@@ -2894,6 +3145,21 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
+         window: &mut Window,
+         cx: &mut Context<Self>,
+     ) {
++        if let Some(range) = &range_utf16 {
++            if self.checked_native_range(range).is_none() {
++                return;
++            }
++        }
++        if self.projection.enabled {
++            if let Some(range) = &new_selected_range_utf16 {
++                if range.start > range.end
++                    || source_utf16_to_byte(new_text, SourceUtf16(range.start)).is_none()
++                    || source_utf16_to_byte(new_text, SourceUtf16(range.end)).is_none()
++                {
++                    return;
++                }
++            }
++        }
+         let requested_intent = self.undo_manager.pending_intent.take();
+         if !self.is_editable() {
+             return;
+@@ -2920,6 +3186,7 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
+             }))
+             .unwrap_or(self.selected_range.into());
+ 
++        self.reveal_replacement(&range);
+         let old_text = self.text.clone();
+         self.text.replace(range.clone(), new_text);
+ 
+@@ -2937,6 +3204,7 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
+             }
+         }
+ 
++        self.record_source_mutation(SourceMutationReason::Preedit, cx);
+         M::adjust_annotations(self, &range, new_text.len());
+         if let Some(diagnostics) = self.mode.diagnostics_mut() {
+             diagnostics.reset(&self.text)
+@@ -2991,6 +3259,7 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
+         if new_text.is_empty() {
+             self.undo_manager.commit_transaction();
+         }
++        self.sync_projection_active();
+         cx.notify();
+     }
+ 
+@@ -3003,9 +3272,14 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
+         _cx: &mut Context<Self>,
+     ) -> Option<Bounds<Pixels>> {
+         let last_layout = self.last_layout.as_ref()?;
++        if self.projection.enabled && last_layout.source_stamp != self.source_stamp() {
++            return None;
++        }
+         let line_height = last_layout.line_height;
+         let line_number_width = last_layout.line_number_width;
+-        let range = self.range_from_utf16(&range_utf16);
++        let range = self.checked_native_range(&range_utf16)?;
++        let range = last_layout.project(range.start, ConcealBias::Left)?
++            ..last_layout.project(range.end, ConcealBias::Right)?;
+ 
+         let mut start_origin = None;
+         let mut end_origin = None;
+@@ -3019,7 +3293,7 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
+ 
+             let index_offset = last_layout.visible_line_byte_offsets[vi];
+ 
+-            if start_origin.is_none() {
++            if start_origin.is_none() && range.start >= index_offset {
+                 if let Some(p) = line.position_for_index(
+                     range.start.saturating_sub(index_offset),
+                     last_layout,
+@@ -3029,7 +3303,7 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
+                 }
+             }
+ 
+-            if end_origin.is_none() {
++            if end_origin.is_none() && range.end >= index_offset {
+                 if let Some(p) = line.position_for_index(
+                     range.end.saturating_sub(index_offset),
+                     last_layout,
+@@ -3042,8 +3316,8 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
+             y_offset += line.size(line_height).height;
+         }
+ 
+-        let start_origin = start_origin.unwrap_or_default();
+-        let mut end_origin = end_origin.unwrap_or_default();
++        let start_origin = start_origin?;
++        let mut end_origin = end_origin?;
+         // Ensure at same line.
+         end_origin.y = start_origin.y;
+ 
+@@ -3060,17 +3334,19 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
+         _window: &mut Window,
+         _cx: &mut Context<Self>,
+     ) -> Option<usize> {
+-        let last_layout = self.last_layout.as_ref()?;
+         let line_point = self.last_bounds?.localize(&point)?;
+-
+-        for (vi, line) in last_layout.lines.iter().enumerate() {
+-            let offset = last_layout.visible_line_byte_offsets[vi];
+-            if let Some(utf8_index) = line.index_for_position(line_point, last_layout) {
+-                return Some(self.offset_to_utf16(offset + utf8_index));
++        if !self.projection.enabled {
++            let last_layout = self.last_layout.as_ref()?;
++            for (vi, line) in last_layout.lines.iter().enumerate() {
++                let offset = last_layout.visible_line_byte_offsets[vi];
++                if let Some(index) = line.index_for_position(line_point, last_layout) {
++                    return Some(self.offset_to_utf16(offset + index));
++                }
+             }
++            return None;
+         }
+-
+-        None
++        let (source, _) = self.index_for_mouse_position(point)?;
++        Some(self.offset_to_utf16(source))
+     }
+ }
+ 
+@@ -3293,6 +3569,99 @@ mod tests {
+         }
+     }
+ 
++    struct ExactSourceProvider;
++    impl ProjectionProvider for ExactSourceProvider {
++        fn compose(
++            &self,
++            _: &super::super::projection::SourceSnapshot,
++            _: &ActiveSource,
++        ) -> Option<Arc<dyn super::super::projection::SourceProjection>> {
++            None
++        }
++    }
++
++    #[gpui::test]
++    fn projection_native_edits_preserve_exact_ime_and_reject_surrogate_halves(
++        cx: &mut TestAppContext,
++    ) {
++        cx.update(crate::init);
++        let view = InputView::new(cx);
++        let mut cx = VisualTestContext::from_window(view.window_handle.into(), cx);
++        cx.update(|window, cx| {
++            view.input.update(cx, |state, cx| {
++                state.set_value("a\u{301}👩\u{200d}💻\r\n", window, cx);
++                state.set_projection_provider(Some(Arc::new(ExactSourceProvider)), cx);
++                let before = state.source_stamp();
++                // Native preedit inside a valid grapheme must stay exact.
++                state.replace_and_mark_text_in_range(Some(1..1), "x", Some(1..1), window, cx);
++                assert_eq!(state.value().as_ref(), "ax\u{301}👩\u{200d}💻\r\n");
++                assert_eq!(state.source_stamp().generation, before.generation + 1);
++                let accepted = state.source_stamp();
++                let bytes = state.value();
++                // The first emoji now occupies source UTF-16 units 3..5.
++                state.replace_text_in_range(Some(4..4), "bad", window, cx);
++                assert_eq!(state.source_stamp(), accepted);
++                assert_eq!(state.value(), bytes);
++                state.set_readonly(true, cx);
++                state.replace_and_mark_text_in_range(Some(1..1), "bad", None, window, cx);
++                assert_eq!(state.source_stamp(), accepted);
++                assert_eq!(state.value(), bytes);
++            })
++        });
++    }
++
++    #[gpui::test]
++    fn projection_reveal_keeps_redo_and_source_generation(cx: &mut TestAppContext) {
++        cx.update(crate::init);
++        let view = InputView::new(cx);
++        let mut cx = VisualTestContext::from_window(view.window_handle.into(), cx);
++        cx.update(|window, cx| {
++            view.input.update(cx, |state, cx| {
++                state.set_value("alpha", window, cx);
++                state.set_projection_provider(Some(Arc::new(ExactSourceProvider)), cx);
++                state.replace_text_in_range(Some(5..5), " beta", window, cx);
++                state.undo(&Undo, window, cx);
++                assert_eq!(state.value().as_ref(), "alpha");
++                let stamp = state.source_stamp();
++                state.set_projection_provider(None, cx);
++                state.set_projection_provider(Some(Arc::new(ExactSourceProvider)), cx);
++                state.refresh_projection();
++                assert_eq!(state.source_stamp(), stamp);
++                state.redo(&Redo, window, cx);
++                assert_eq!(state.value().as_ref(), "alpha beta");
++                assert!(state.source_stamp().generation > stamp.generation);
++            })
++        });
++    }
++
++    #[gpui::test]
++    fn projection_user_delete_is_grapheme_and_crlf_safe(cx: &mut TestAppContext) {
++        cx.update(crate::init);
++        let view = InputView::new(cx);
++        let mut cx = VisualTestContext::from_window(view.window_handle.into(), cx);
++        cx.update(|window, cx| {
++            view.input.update(cx, |state, cx| {
++                let source = "a\u{301}👩\u{200d}💻🇮🇱\r\n";
++                state.set_value(source, window, cx);
++                state.set_projection_provider(Some(Arc::new(ExactSourceProvider)), cx);
++                let boundaries: Vec<_> = source
++                    .grapheme_indices(true)
++                    .map(|(i, _)| i)
++                    .chain(std::iter::once(source.len()))
++                    .collect();
++                for pair in boundaries.windows(2) {
++                    assert_eq!(state.next_boundary(pair[0]), pair[1]);
++                    assert_eq!(state.previous_boundary(pair[1]), pair[0]);
++                }
++                state.move_to(source.len(), None, cx);
++                state.backspace(&Backspace, window, cx);
++                assert_eq!(state.value().as_ref(), "a\u{301}👩\u{200d}💻🇮🇱");
++                state.backspace(&Backspace, window, cx);
++                assert_eq!(state.value().as_ref(), "a\u{301}👩\u{200d}💻");
++            })
++        });
++    }
++
+     #[gpui::test]
+     fn textarea_cursor_treats_crlf_as_one_newline(cx: &mut TestAppContext) {
+         cx.update(crate::init);
+@@ -5393,3 +5762,24 @@ impl InputBaseState<crate::input::EditorMode> {
+         cx.notify();
+     }
+ }
++
++impl InputBaseState<super::EditorMode> {
++    /// Install already classified presentation. This never edits canonical text,
++    /// emits InputEvent::Change, or touches undo/coalescing state.
++    pub fn set_projection_provider(
++        &mut self,
++        provider: Option<Arc<dyn ProjectionProvider>>,
++        cx: &mut Context<Self>,
++    ) {
++        if provider.is_some() {
++            self.projection.enabled = true;
++            if let LayoutMode::CodeEditor { indent_guides, .. } = &mut self.mode {
++                *indent_guides = false;
++            }
++        }
++        self.projection.provider = provider;
++        self.projection.presentation_changed();
++        self.refresh_projection();
++        cx.notify();
++    }
++}
+diff --git a/crates/base/src/input/editor/display_map/display_map.rs b/crates/base/src/input/editor/display_map/display_map.rs
+index c2a6b8c5..afad82b9 100644
+--- a/crates/base/src/input/editor/display_map/display_map.rs
++++ b/crates/base/src/input/editor/display_map/display_map.rs
+@@ -1,3 +1,4 @@
++use crate::input::projection::{ConcealBias, PinnedProjection, ProjectedByte, SourceByte};
+ /// DisplayMap: Public facade for Editor/Input display mapping.
+ ///
+ /// This combines WrapMap and FoldMap to provide a unified API:
+@@ -29,6 +30,8 @@ use crate::input::rope_ext::RopeExt as _;
+ pub struct DisplayMap {
+     wrap_map: WrapMap,
+     fold_map: FoldMap,
++    source_text: Rope,
++    projection: Option<PinnedProjection>,
+ }
+ 
+ impl DisplayMap {
+@@ -36,6 +39,8 @@ impl DisplayMap {
+         Self {
+             wrap_map: WrapMap::new(font, font_size, wrap_width),
+             fold_map: FoldMap::new(),
++            source_text: Rope::new(),
++            projection: None,
+         }
+     }
+ 
+@@ -44,6 +49,14 @@ impl DisplayMap {
+     /// Convert buffer position to display position
+     pub fn buffer_pos_to_display_pos(&self, pos: BufferPoint) -> DisplayPoint {
+         // Buffer → Wrap
++        let pos = if self.projection.is_some() {
++            let offset = self.source_text.line_start_offset(pos.line) + pos.col;
++            let offset = self.project_offset(offset);
++            let point = self.wrap_map.text().offset_to_point(offset);
++            BufferPoint::new(point.row, point.column)
++        } else {
++            pos
++        };
+         let wrap_pos = self.wrap_map.buffer_pos_to_wrap_pos(pos);
+ 
+         // Wrap → Display
+@@ -63,7 +76,14 @@ impl DisplayMap {
+ 
+         // Wrap → Buffer
+         let wrap_pos = WrapPoint::new(wrap_row, pos.col);
+-        self.wrap_map.wrap_pos_to_buffer_pos(wrap_pos)
++        let pos = self.wrap_map.wrap_pos_to_buffer_pos(wrap_pos);
++        if self.projection.is_some() {
++            let offset = self.wrap_map.text().line_start_offset(pos.line) + pos.col;
++            let point = self.source_text.offset_to_point(self.source_offset(offset));
++            BufferPoint::new(point.row, point.column)
++        } else {
++            pos
++        }
+     }
+ 
+     /// Get total number of visible display rows
+@@ -220,8 +240,13 @@ impl DisplayMap {
+         new_text: &Rope,
+         cx: &mut App,
+     ) {
+-        self.wrap_map
+-            .on_text_changed(changed_text, range, new_text, cx);
++        if self.projection.take().is_some() {
++            self.wrap_map.restore_source(changed_text, cx);
++        } else {
++            self.wrap_map
++                .on_text_changed(changed_text, range, new_text, cx);
++        }
++        self.source_text = changed_text.clone();
+         self.rebuild_fold_projection();
+     }
+ 
+@@ -245,6 +270,10 @@ impl DisplayMap {
+ 
+     /// Ensure text is prepared (initializes wrapper if needed)
+     pub fn ensure_text_prepared(&mut self, text: &Rope, cx: &mut App) {
++        if self.projection.is_some() {
++            return;
++        }
++        self.source_text = text.clone();
+         let did_initialize = self.wrap_map.ensure_text_prepared(text, cx);
+         if did_initialize {
+             self.rebuild_fold_projection();
+@@ -253,10 +282,68 @@ impl DisplayMap {
+ 
+     /// Initialize with text
+     pub fn set_text(&mut self, text: &Rope, cx: &mut App) {
++        self.source_text = text.clone();
++        self.projection = None;
+         self.wrap_map.set_text(text, cx);
+         self.rebuild_fold_projection();
+     }
+ 
++    pub(crate) fn install_projection(
++        &mut self,
++        projection: Option<PinnedProjection>,
++        source: &Rope,
++        window: &gpui::Window,
++        cx: &mut App,
++    ) {
++        if projection
++            .as_ref()
++            .zip(self.projection.as_ref())
++            .is_some_and(|(next, old)| next.stamp == old.stamp)
++        {
++            return;
++        }
++        self.source_text = source.clone();
++        match projection {
++            Some(pinned) => {
++                self.wrap_map
++                    .set_projected(pinned.projection.as_ref(), window);
++                self.projection = Some(pinned);
++            }
++            None if self.projection.take().is_some() => self.wrap_map.restore_source(source, cx),
++            None => {}
++        }
++        self.rebuild_fold_projection();
++    }
++
++    fn project_offset(&self, offset: usize) -> usize {
++        match &self.projection {
++            Some(p) => {
++                p.projection
++                    .to_projected(SourceByte(offset), ConcealBias::Right)
++                    .expect("canonical active offset has a projection mapping")
++                    .0
++            }
++            None => offset,
++        }
++    }
++    fn source_offset(&self, offset: usize) -> usize {
++        match &self.projection {
++            Some(p) => {
++                let clipped = crate::input::projection_layout::clip_hit_offset(
++                    p.projection.text(),
++                    offset,
++                    ConcealBias::Right,
++                )
++                .expect("wrap offset is inside projected text");
++                p.projection
++                    .to_source(ProjectedByte(clipped), ConcealBias::Right)
++                    .expect("wrapped grapheme boundary has a source mapping")
++                    .0
++            }
++            None => offset,
++        }
++    }
++
+     // ==================== Internal Helpers ====================
+ 
+     /// Rebuild fold projection after wrap_map or fold state changes
+@@ -277,7 +364,9 @@ impl DisplayMap {
+     /// Convert byte offset to wrap display point (with soft wrap info).
+     #[inline]
+     pub(crate) fn offset_to_wrap_display_point(&self, offset: usize) -> WrapDisplayPoint {
+-        self.wrap_map.wrapper().offset_to_display_point(offset)
++        self.wrap_map
++            .wrapper()
++            .offset_to_display_point(self.project_offset(offset))
+     }
+ 
+     /// Like [`Self::offset_to_wrap_display_point`], but honours the caret's line-end affinity so
+@@ -290,19 +379,20 @@ impl DisplayMap {
+     ) -> WrapDisplayPoint {
+         self.wrap_map
+             .wrapper()
+-            .offset_to_display_point_with_affinity(offset, line_end_affinity)
++            .offset_to_display_point_with_affinity(self.project_offset(offset), line_end_affinity)
+     }
+ 
+     /// Convert wrap display point to byte offset.
+     #[inline]
+     pub(crate) fn wrap_display_point_to_offset(&self, point: WrapDisplayPoint) -> usize {
+-        self.wrap_map.wrapper().display_point_to_offset(point)
++        self.source_offset(self.wrap_map.wrapper().display_point_to_offset(point))
+     }
+ 
+     /// Convert wrap display point to TreeSitterPoint (buffer line/col).
+     #[inline]
+     pub(crate) fn wrap_display_point_to_point(&self, point: WrapDisplayPoint) -> TreeSitterPoint {
+-        self.wrap_map.wrapper().display_point_to_point(point)
++        self.source_text
++            .offset_to_point(self.wrap_display_point_to_offset(point))
+     }
+ 
+     /// Convert a wrap row to a display row (skipping folded rows).
+diff --git a/crates/base/src/input/editor/display_map/text_wrapper.rs b/crates/base/src/input/editor/display_map/text_wrapper.rs
+index 24878fc0..46a443ec 100644
+--- a/crates/base/src/input/editor/display_map/text_wrapper.rs
++++ b/crates/base/src/input/editor/display_map/text_wrapper.rs
+@@ -171,6 +171,13 @@ impl TextWrapper {
+         self.text = text.clone();
+     }
+ 
++    pub(crate) fn restore_source(&mut self, text: &Rope, cx: &mut App) {
++        self._initialized = false;
++        self.lines = SumTree::new(&());
++        self.text = Rope::new();
++        self.prepare_if_need(text, cx);
++    }
++
+     /// Get reference to the rope text.
+     #[inline]
+     pub(crate) fn text(&self) -> &Rope {
+@@ -397,6 +404,76 @@ impl TextWrapper {
+         self.text = changed_text.clone();
+     }
+ 
++    /// Rebuild the bounded candidate with the very same styled font runs used
++    /// for painting. Existing Source wrapping is unchanged.
++    pub(crate) fn set_projected(
++        &mut self,
++        projection: &dyn crate::input::projection::SourceProjection,
++        window: &gpui::Window,
++    ) {
++        let text = Rope::from(projection.text());
++        let mut items = Vec::new();
++        for row in 0..text.lines_len() {
++            let line = text.slice_line(row).to_string();
++            let start = text.line_start_offset(row);
++            let runs = crate::input::projection_layout::projected_runs(
++                projection,
++                start..start + line.len(),
++                &self.font,
++                gpui::black(),
++            );
++            let shaped = window
++                .text_system()
++                .shape_text(
++                    line.clone().into(),
++                    self.font_size,
++                    &runs,
++                    self.wrap_width,
++                    None,
++                )
++                .expect("valid projected text");
++            let mut ranges = SmallVec::new();
++            let mut previous = 0;
++            if let Some(shaped) = shaped.first() {
++                for boundary in &shaped.wrap_boundaries {
++                    let index = shaped.unwrapped_layout.runs[boundary.run_ix].glyphs
++                        [boundary.glyph_ix]
++                        .index;
++                    let mut index = crate::input::projection_layout::clip_hit_offset(
++                        &line,
++                        index,
++                        crate::input::projection::ConcealBias::Left,
++                    )
++                    .expect("shaped boundary is inside its text");
++                    if index <= previous {
++                        index = crate::input::projection_layout::clip_hit_offset(
++                            &line,
++                            shaped.unwrapped_layout.runs[boundary.run_ix].glyphs[boundary.glyph_ix]
++                                .index,
++                            crate::input::projection::ConcealBias::Right,
++                        )
++                        .expect("shaped boundary is inside its text");
++                    }
++                    if index > previous {
++                        ranges.push(previous..index);
++                        previous = index;
++                    }
++                }
++            }
++            if previous < line.len() || ranges.is_empty() {
++                ranges.push(previous..line.len());
++            }
++            items.push(LineItem {
++                len: line.len(),
++                indent: 0,
++                wrapped_lines: ranges,
++            });
++        }
++        self.text = text;
++        self.lines = SumTree::from_iter(items, &());
++        self._initialized = true;
++    }
++
+     /// Update the text wrapper and recalculate the wrapped lines.
+     ///
+     /// If the `text` is the same as the current text, do nothing.
+@@ -1184,6 +1261,14 @@ mod tests {
+     /// A layout context whose only load-bearing field is the line height.
+     fn test_last_layout(line_height: Pixels) -> LastLayout {
+         LastLayout {
++            projection: None,
++            source_stamp: crate::input::projection::SourceStamp {
++                document: 0,
++                generation: 0,
++            },
++            font: gpui::font(".SystemUIFont"),
++            font_size: px(16.),
++            scale_factor: 1.,
+             visible_range: 0..1,
+             visible_buffer_lines: vec![0],
+             visible_line_byte_offsets: vec![0],
+@@ -1484,6 +1569,14 @@ mod tests {
+         line_layout = line_layout.wrap_indent(px(20.0));
+ 
+         let last_layout = LastLayout {
++            projection: None,
++            source_stamp: crate::input::projection::SourceStamp {
++                document: 0,
++                generation: 0,
++            },
++            font: gpui::font(".SystemUIFont"),
++            font_size: px(16.),
++            scale_factor: 1.,
+             visible_range: 0..1,
+             visible_buffer_lines: vec![0],
+             visible_line_byte_offsets: vec![0],
+diff --git a/crates/base/src/input/editor/display_map/wrap_map.rs b/crates/base/src/input/editor/display_map/wrap_map.rs
+index cf593eb4..7930ba85 100644
+--- a/crates/base/src/input/editor/display_map/wrap_map.rs
++++ b/crates/base/src/input/editor/display_map/wrap_map.rs
+@@ -136,6 +136,18 @@ impl WrapMap {
+         self.wrapper.prepare_if_need(text, cx);
+     }
+ 
++    pub(super) fn set_projected(
++        &mut self,
++        projection: &dyn crate::input::projection::SourceProjection,
++        window: &gpui::Window,
++    ) {
++        self.wrapper.set_projected(projection, window);
++    }
++
++    pub(super) fn restore_source(&mut self, text: &Rope, cx: &mut App) {
++        self.wrapper.restore_source(text, cx);
++    }
++
+     /// Get access to the underlying wrapper (for rendering/hit-testing)
+     pub(crate) fn wrapper(&self) -> &TextWrapper {
+         &self.wrapper
+diff --git a/crates/base/src/input/editor/mod.rs b/crates/base/src/input/editor/mod.rs
+index d4e16e3d..ad724ccf 100644
+--- a/crates/base/src/input/editor/mod.rs
++++ b/crates/base/src/input/editor/mod.rs
+@@ -16,6 +16,26 @@ impl InputModeKind for EditorMode {
+ 
+     type Extras = super::EditorExtras;
+ 
++    fn projection_compatible(state: &InputBaseState<Self>) -> bool {
++        let lsp = &state.extras.lsp;
++        lsp.completion_provider.is_none()
++            && lsp.code_action_providers.is_empty()
++            && lsp.hover_provider.is_none()
++            && lsp.definition_provider.is_none()
++            && lsp.document_color_provider.is_none()
++            && lsp.semantic_tokens_provider.is_none()
++            && state
++                .extras
++                .decorations
++                .iter()
++                .all(|items| items.is_empty())
++            && state
++                .mode
++                .diagnostics()
++                .is_none_or(|items| items.is_empty())
++            && !Self::has_inline_completion(state)
++    }
++
+     fn hover_definition_style(
+         state: &InputBaseState<Self>,
+         _cx: &App,
+diff --git a/crates/base/src/input/mod.rs b/crates/base/src/input/mod.rs
+index e8d9c2b2..b338fc3f 100644
+--- a/crates/base/src/input/mod.rs
++++ b/crates/base/src/input/mod.rs
+@@ -31,6 +31,8 @@ mod highlighting;
+ #[path = "editor/indent.rs"]
+ mod indent;
+ mod input;
++pub mod projection;
++mod projection_layout;
+ #[path = "base/kind.rs"]
+ mod kind;
+ #[path = "base/layout.rs"]
+diff --git a/crates/base/src/input/projection.rs b/crates/base/src/input/projection.rs
+new file mode 100644
+index 00000000..3994a017
+--- /dev/null
++++ b/crates/base/src/input/projection.rs
+@@ -0,0 +1,340 @@
++//! Generic, immutable presentation of an editor's canonical source.
++//!
++//! Providers recompose previously classified data; they must not parse in an input
++//! handler. The editor owns text, selection, composition and history. A provider
++//! owns no mutable editor state. Returning `None` requests exact Source display.
++use std::{
++    ops::Range,
++    sync::{
++        Arc,
++        atomic::{AtomicU64, Ordering},
++    },
++};
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct SourceByte(pub usize);
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct ProjectedByte(pub usize);
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct SourceUtf16(pub usize);
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum ConcealBias {
++    Left,
++    Right,
++}
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
++pub enum WrapAffinity {
++    #[default]
++    Start,
++    End,
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct SourceStamp {
++    pub document: u64,
++    pub generation: u64,
++}
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct LayoutStamp {
++    pub source: SourceStamp,
++    pub presentation: u64,
++}
++
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub struct ActiveSource {
++    /// Direction is retained: anchor may be greater than head.
++    pub anchor: SourceByte,
++    pub head: SourceByte,
++    pub composition: Option<Range<SourceByte>>,
++    /// An explicit native replacement can differ from the selection.
++    pub replacement: Option<Range<SourceByte>>,
++    pub affinity: WrapAffinity,
++}
++impl Default for ActiveSource {
++    fn default() -> Self {
++        Self {
++            anchor: SourceByte(0),
++            head: SourceByte(0),
++            composition: None,
++            replacement: None,
++            affinity: WrapAffinity::Start,
++        }
++    }
++}
++
++#[derive(Clone, Debug)]
++pub struct SourceSnapshot {
++    pub stamp: SourceStamp,
++    pub text: Arc<str>,
++}
++
++/// Metric-changing styles supported by the first candidate. All runs share the
++/// editor's font size and line height. Color-only decoration is intentionally
++/// outside this metric contract.
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub struct ProjectionStyle {
++    pub range: Range<ProjectedByte>,
++    pub font_family: Option<String>,
++    pub bold: bool,
++    pub italic: bool,
++    pub strikethrough: bool,
++}
++
++pub trait SourceProjection: Send + Sync {
++    fn source(&self) -> &SourceSnapshot;
++    fn text(&self) -> &str;
++    fn styles(&self) -> &[ProjectionStyle];
++    fn to_projected(&self, source: SourceByte, bias: ConcealBias) -> Option<ProjectedByte>;
++    fn to_source(&self, projected: ProjectedByte, bias: ConcealBias) -> Option<SourceByte>;
++}
++
++pub trait ProjectionProvider: Send + Sync {
++    /// Only compose immutable, already classified ranges with current native
++    /// active state. A stale classification or unrepresentable IME range returns
++    /// None, keeping exact Source editable. Never round an IME replacement.
++    fn compose(
++        &self,
++        source: &SourceSnapshot,
++        active: &ActiveSource,
++    ) -> Option<Arc<dyn SourceProjection>>;
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum SourceMutationReason {
++    Edit,
++    Preedit,
++    Silent,
++    Reset,
++}
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct SourceMutation {
++    pub stamp: SourceStamp,
++    pub reason: SourceMutationReason,
++}
++
++/// One hit resolved against one displayed layout. Reveal/reflow may consume this
++/// source target, but must never re-hit-test its original pixel.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct ResolvedSourceHit {
++    pub source: SourceByte,
++    pub bias: ConcealBias,
++    pub affinity: WrapAffinity,
++    pub stamp: LayoutStamp,
++}
++
++#[derive(Clone)]
++pub struct PinnedProjection {
++    pub stamp: LayoutStamp,
++    pub projection: Arc<dyn SourceProjection>,
++}
++impl PinnedProjection {
++    /// Presentation changes alone do not invalidate the old *displayed* hit
++    /// map. Source changes do: callers must defer instead of guessing an offset.
++    pub fn resolve_hit(
++        &self,
++        current: SourceStamp,
++        offset: ProjectedByte,
++        bias: ConcealBias,
++        affinity: WrapAffinity,
++    ) -> Option<ResolvedSourceHit> {
++        if self.stamp.source != current {
++            return None;
++        }
++        Some(ResolvedSourceHit {
++            source: self.projection.to_source(offset, bias)?,
++            bias,
++            affinity,
++            stamp: self.stamp,
++        })
++    }
++}
++
++/// Authority bookkeeping shared by native input paths, never by undo history.
++/// Advancing either epoch has no transaction or source Change side effects.
++pub(crate) struct ProjectionSession {
++    pub(crate) enabled: bool,
++    pub(crate) stamp: LayoutStamp,
++    pub(crate) active: ActiveSource,
++    pub(crate) provider: Option<Arc<dyn ProjectionProvider>>,
++    pub(crate) current: Option<Arc<dyn SourceProjection>>,
++}
++impl Default for ProjectionSession {
++    fn default() -> Self {
++        static NEXT_DOCUMENT: AtomicU64 = AtomicU64::new(1);
++        Self {
++            enabled: false,
++            stamp: LayoutStamp {
++                source: SourceStamp {
++                    document: NEXT_DOCUMENT.fetch_add(1, Ordering::Relaxed),
++                    generation: 0,
++                },
++                presentation: 0,
++            },
++            active: ActiveSource::default(),
++            provider: None,
++            current: None,
++        }
++    }
++}
++impl ProjectionSession {
++    pub(crate) fn mutation(&mut self, reason: SourceMutationReason) -> SourceMutation {
++        self.stamp.source.generation = self
++            .stamp
++            .source
++            .generation
++            .checked_add(1)
++            .expect("editor source generation exhausted");
++        self.presentation_changed();
++        SourceMutation {
++            stamp: self.stamp.source,
++            reason,
++        }
++    }
++    pub(crate) fn presentation_changed(&mut self) {
++        self.stamp.presentation = self
++            .stamp
++            .presentation
++            .checked_add(1)
++            .expect("editor presentation epoch exhausted");
++        self.current = None;
++    }
++    pub(crate) fn set_active(&mut self, active: ActiveSource) {
++        if self.active != active {
++            self.active = active;
++            self.presentation_changed();
++        }
++    }
++    pub(crate) fn compose(&mut self, source: Arc<str>) {
++        self.current = None;
++        let Some(provider) = &self.provider else {
++            return;
++        };
++        let snapshot = SourceSnapshot {
++            stamp: self.stamp.source,
++            text: source,
++        };
++        let Some(projection) = provider.compose(&snapshot, &self.active) else {
++            return;
++        };
++        // A provider cannot publish a mapping for a different document or bytes.
++        if projection.source().stamp != snapshot.stamp || projection.source().text != snapshot.text
++        {
++            return;
++        }
++        self.current = Some(projection);
++    }
++    pub(crate) fn pin(&self) -> Option<PinnedProjection> {
++        Some(PinnedProjection {
++            stamp: self.stamp,
++            projection: self.current.clone()?,
++        })
++    }
++}
++
++/// Validated native bridge. Out-of-range positions and the middle of a UTF-16
++/// surrogate pair are rejected; valid scalar positions inside a grapheme remain
++/// exact and may require Source presentation. No display coordinates are used.
++pub fn source_utf16_to_byte(text: &str, offset: SourceUtf16) -> Option<SourceByte> {
++    let mut utf16 = 0;
++    for (byte, ch) in text.char_indices() {
++        if utf16 == offset.0 {
++            return Some(SourceByte(byte));
++        }
++        utf16 += ch.len_utf16();
++        if utf16 > offset.0 {
++            return None;
++        }
++    }
++    (utf16 == offset.0).then_some(SourceByte(text.len()))
++}
++pub fn source_byte_to_utf16(text: &str, offset: SourceByte) -> Option<SourceUtf16> {
++    Some(SourceUtf16(text.get(..offset.0)?.encode_utf16().count()))
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    struct Identity(SourceSnapshot);
++    impl SourceProjection for Identity {
++        fn source(&self) -> &SourceSnapshot {
++            &self.0
++        }
++        fn text(&self) -> &str {
++            &self.0.text
++        }
++        fn styles(&self) -> &[ProjectionStyle] {
++            &[]
++        }
++        fn to_projected(&self, p: SourceByte, _: ConcealBias) -> Option<ProjectedByte> {
++            self.text()
++                .is_char_boundary(p.0)
++                .then_some(ProjectedByte(p.0))
++        }
++        fn to_source(&self, p: ProjectedByte, _: ConcealBias) -> Option<SourceByte> {
++            self.text().is_char_boundary(p.0).then_some(SourceByte(p.0))
++        }
++    }
++    struct Provider;
++    impl ProjectionProvider for Provider {
++        fn compose(
++            &self,
++            s: &SourceSnapshot,
++            _: &ActiveSource,
++        ) -> Option<Arc<dyn SourceProjection>> {
++            Some(Arc::new(Identity(s.clone())))
++        }
++    }
++    #[test]
++    fn displayed_hit_survives_reveal_but_never_source_aba() {
++        let mut s = ProjectionSession::default();
++        s.provider = Some(Arc::new(Provider));
++        s.compose(Arc::from("**a**"));
++        let displayed = s.pin().unwrap();
++        s.set_active(ActiveSource {
++            head: SourceByte(3),
++            ..ActiveSource::default()
++        });
++        assert!(
++            displayed
++                .resolve_hit(
++                    s.stamp.source,
++                    ProjectedByte(3),
++                    ConcealBias::Right,
++                    WrapAffinity::End
++                )
++                .is_some()
++        );
++        s.mutation(SourceMutationReason::Edit);
++        s.compose(Arc::from("**b**"));
++        s.mutation(SourceMutationReason::Silent);
++        s.compose(Arc::from("**a**"));
++        assert!(
++            displayed
++                .resolve_hit(
++                    s.stamp.source,
++                    ProjectedByte(3),
++                    ConcealBias::Right,
++                    WrapAffinity::End
++                )
++                .is_none()
++        );
++    }
++    #[test]
++    fn exact_native_bridge_preserves_subgrapheme_preedit() {
++        let text = "a\u{301}👩\u{200d}💻\r\n";
++        assert_eq!(
++            source_utf16_to_byte(text, SourceUtf16(1)),
++            Some(SourceByte(1))
++        );
++        assert_eq!(source_utf16_to_byte(text, SourceUtf16(3)), None);
++        for (byte, _) in text
++            .char_indices()
++            .chain(std::iter::once((text.len(), '\0')))
++        {
++            let native = source_byte_to_utf16(text, SourceByte(byte)).unwrap();
++            assert_eq!(source_utf16_to_byte(text, native), Some(SourceByte(byte)));
++        }
++        assert_eq!(source_byte_to_utf16(text, SourceByte(2)), None);
++        assert_eq!(source_utf16_to_byte(text, SourceUtf16(999)), None);
++    }
++}
+diff --git a/crates/base/src/input/projection_layout.rs b/crates/base/src/input/projection_layout.rs
+new file mode 100644
+index 00000000..925bf03d
+--- /dev/null
++++ b/crates/base/src/input/projection_layout.rs
+@@ -0,0 +1,116 @@
++//! Shared font runs for wrapping and painting projected source.
++use super::projection::SourceProjection;
++use gpui::{Font, FontStyle, FontWeight, Hsla, StrikethroughStyle, TextRun, px};
++use std::ops::Range;
++
++pub(super) fn projected_runs(
++    projection: &dyn SourceProjection,
++    range: Range<usize>,
++    font: &Font,
++    color: Hsla,
++) -> Vec<TextRun> {
++    let mut boundaries = vec![range.start, range.end];
++    for style in projection.styles() {
++        if style.range.start.0 < range.end && style.range.end.0 > range.start {
++            boundaries.push(style.range.start.0.max(range.start));
++            boundaries.push(style.range.end.0.min(range.end));
++        }
++    }
++    boundaries.sort_unstable();
++    boundaries.dedup();
++    boundaries
++        .windows(2)
++        .filter(|r| r[0] < r[1])
++        .map(|r| {
++            let mut actual_font = font.clone();
++            let mut strike = false;
++            for style in projection
++                .styles()
++                .iter()
++                .filter(|s| s.range.start.0 <= r[0] && s.range.end.0 >= r[1])
++            {
++                if let Some(family) = &style.font_family {
++                    actual_font.family = family.clone().into();
++                }
++                if style.bold {
++                    actual_font.weight = FontWeight::BOLD;
++                }
++                if style.italic {
++                    actual_font.style = FontStyle::Italic;
++                }
++                strike |= style.strikethrough;
++            }
++            TextRun {
++                len: r[1] - r[0],
++                font: actual_font,
++                color,
++                background_color: None,
++                underline: None,
++                strikethrough: strike.then_some(StrikethroughStyle {
++                    thickness: px(1.),
++                    color: Some(color),
++                }),
++            }
++        })
++        .collect()
++}
++
++/// Clip a *displayed user hit*, never a native canonical replacement range.
++/// The zero-width CR at a CRLF line ending belongs to the preceding visual row.
++pub(super) fn clip_hit_offset(
++    text: &str,
++    offset: usize,
++    bias: super::projection::ConcealBias,
++) -> Option<usize> {
++    use super::projection::ConcealBias;
++    use unicode_segmentation::UnicodeSegmentation;
++    if offset > text.len() {
++        return None;
++    }
++    if offset > 0
++        && text.as_bytes().get(offset - 1) == Some(&b'\r')
++        && text.as_bytes().get(offset) == Some(&b'\n')
++    {
++        return Some(offset - 1);
++    }
++    let mut previous = 0;
++    for boundary in text
++        .grapheme_indices(true)
++        .map(|(i, _)| i)
++        .chain(std::iter::once(text.len()))
++    {
++        if boundary == offset {
++            return Some(offset);
++        }
++        if boundary > offset {
++            return Some(if bias == ConcealBias::Left {
++                previous
++            } else {
++                boundary
++            });
++        }
++        previous = boundary;
++    }
++    None
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::input::projection::ConcealBias;
++    #[test]
++    fn hit_clipping_retains_crlf_row_and_whole_emoji() {
++        let text = "a\r\n👩\u{200d}💻";
++        assert_eq!(clip_hit_offset(text, 2, ConcealBias::Right), Some(1));
++        assert_eq!(clip_hit_offset(text, 3, ConcealBias::Left), Some(3));
++        assert_eq!(clip_hit_offset(text, 7, ConcealBias::Left), Some(3));
++        assert_eq!(
++            clip_hit_offset(text, 7, ConcealBias::Right),
++            Some(text.len())
++        );
++        assert_eq!(
++            clip_hit_offset(text, text.len() + 1, ConcealBias::Right),
++            None
++        );
++    }
++}
+diff --git a/crates/component/src/input/mod.rs b/crates/component/src/input/mod.rs
+index ebb9399e..fd49121d 100644
+--- a/crates/component/src/input/mod.rs
++++ b/crates/component/src/input/mod.rs
+@@ -9,6 +9,7 @@ mod search;
+ 
+ pub(crate) use clear_button::*;
+ pub use content_type::*;
++pub use gpui_base::input::projection;
+ #[cfg(not(feature = "tree-sitter"))]
+ pub struct Tree;
+ /// The shared editing engine. Internal to the framework: components reach it

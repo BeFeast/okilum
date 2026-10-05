@@ -1,0 +1,217 @@
+--- a/crates/base/src/text/text_view.rs
++++ b/crates/base/src/text/text_view.rs
+@@ -86,6 +86,9 @@
+ /// Type for the table actions generator function.
+ pub(crate) type TableActionsFn =
+     dyn Fn(&TableData, &mut Window, &mut App) -> AnyElement + Send + Sync;
++
++pub(crate) type LinkHoverHandlerFn =
++    dyn Fn(&SharedString, bool, gpui::Point<Pixels>, &mut Window, &mut App) + Send + Sync;
+ 
+ pub(crate) type LinkClickHandlerFn =
+     dyn Fn(&SharedString, &ClickEvent, &mut Window, &mut App) + Send + Sync;
+@@ -143,6 +146,7 @@
+     code_block_highlighter: Option<Arc<CodeBlockHighlighterFn>>,
+     table_actions: Option<Arc<TableActionsFn>>,
+     link_click_handler: Option<Arc<LinkClickHandlerFn>>,
++    link_hover_handler: Option<Arc<LinkHoverHandlerFn>>,
+     link_presentation: Option<Arc<LinkPresentationFn>>,
+     markdown_extensions: Arc<MarkdownExtensions>,
+ }
+@@ -189,6 +193,7 @@
+             code_block_highlighter: None,
+             table_actions: None,
+             link_click_handler: None,
++            link_hover_handler: None,
+             link_presentation: None,
+             markdown_extensions: Arc::default(),
+         }
+@@ -212,6 +217,7 @@
+             code_block_highlighter: None,
+             table_actions: None,
+             link_click_handler: None,
++            link_hover_handler: None,
+             link_presentation: None,
+             markdown_extensions: Arc::default(),
+         }
+@@ -235,6 +241,7 @@
+             code_block_highlighter: None,
+             table_actions: None,
+             link_click_handler: None,
++            link_hover_handler: None,
+             link_presentation: None,
+             markdown_extensions: Arc::default(),
+         }
+@@ -371,6 +378,17 @@
+         self
+     }
+ 
++    /// Report pointer entry/exit on exact link geometry, including nested parts.
++    /// Hover does not consume clicks or change selection.
++    pub fn on_link_hover<F>(mut self, handler: F) -> Self
++    where
++        F: Fn(&SharedString, bool, gpui::Point<Pixels>, &mut Window, &mut App)
++            + Send + Sync + 'static,
++    {
++        self.link_hover_handler = Some(Arc::new(handler));
++        self
++    }
++
+     /// Install this view's parser configuration before staging text off-screen.
+     pub fn prepare_state(&self, state: &mut TextViewState, cx: &mut gpui::Context<TextViewState>) {
+         state.set_markdown_extensions(self.markdown_extensions.clone(), cx);
+@@ -598,6 +616,7 @@
+             state.code_block_highlighter = code_block_highlighter.clone();
+             state.table_actions = self.table_actions.clone();
+             state.link_click_handler = self.link_click_handler.clone();
++            state.link_hover_handler = self.link_hover_handler.clone();
+             state.link_presentation = self.link_presentation.clone();
+             state.set_markdown_extensions(self.markdown_extensions.clone(), cx);
+             state.selectable = self.selectable;
+--- a/crates/base/src/text/state.rs
++++ b/crates/base/src/text/state.rs
+@@ -112,6 +112,7 @@
+     pub(super) code_block_highlighter: Option<std::sync::Arc<CodeBlockHighlighterFn>>,
+     pub(super) table_actions: Option<std::sync::Arc<TableActionsFn>>,
+     pub(super) link_presentation: Option<std::sync::Arc<super::text_view::LinkPresentationFn>>,
++    pub(super) link_hover_handler: Option<Arc<super::text_view::LinkHoverHandlerFn>>,
+     pub(super) link_click_handler: Option<std::sync::Arc<LinkClickHandlerFn>>,
+     pub(super) markdown_extensions: Arc<MarkdownExtensions>,
+ 
+@@ -232,6 +233,7 @@
+             code_block_highlighter: None,
+             table_actions: None,
+             link_click_handler: None,
++            link_hover_handler: None,
+             link_presentation: None,
+             markdown_extensions: Arc::default(),
+             is_selecting: false,
+@@ -917,6 +919,7 @@
+         node_cx.code_block_highlighter = self.code_block_highlighter.clone();
+         node_cx.table_actions = self.table_actions.clone();
+         node_cx.link_click_handler = self.link_click_handler.clone();
++        node_cx.link_hover_handler = self.link_hover_handler.clone();
+         node_cx.link_presentation = self.link_presentation.clone();
+         node_cx.markdown_extensions = self.markdown_extensions.clone();
+         node_cx.style = self.text_view_style.clone();
+--- a/crates/base/src/text/inline.rs
++++ b/crates/base/src/text/inline.rs
+@@ -178,6 +178,7 @@
+ #[derive(Debug, Default, PartialEq)]
+ pub(crate) struct InlineState {
+     hovered_index: Option<usize>,
++    hovered_link: Option<SharedString>,
+     /// The text that actually rendering, matched with selection.
+     pub(super) text: SharedString,
+     pub(super) selection: Option<Selection>,
+@@ -713,6 +714,31 @@
+ 
+         if is_selection || is_selectable {
+             window.set_cursor_style(CursorStyle::IBeam, &hitbox);
++        }
++
++        if let Some(handler) = GlobalState::global(cx).text_view_state()
++            .and_then(|view| view.read(cx).link_hover_handler.clone())
++        {
++            let links = self.links.clone();
++            let layout = text_layout.clone();
++            let hitbox = hitbox.clone();
++            let state = self.state.clone();
++            window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
++                if !phase.bubble() { return; }
++                let current = if hitbox.is_hovered(window) && event.pressed_button.is_none() {
++                    Self::link_for_position(&layout, &links, event.position)
++                        .filter(|link| !link.presentation.inert)
++                        .map(|link| link.url)
++                } else { None };
++                let previous = {
++                    let Ok(mut state) = state.lock() else { return; };
++                    std::mem::replace(&mut state.hovered_link, current.clone())
++                };
++                if previous != current {
++                    if let Some(url) = previous { handler(&url, false, event.position, window, cx); }
++                }
++                if let Some(url) = current { handler(&url, true, event.position, window, cx); }
++            });
+         }
+ 
+         // link cursor pointer
+--- a/crates/base/src/text/inline_flow.rs
++++ b/crates/base/src/text/inline_flow.rs
+@@ -143,7 +143,10 @@
+         _title: &str,
+         size: Size<Pixels>,
+         link_click_handler: Option<Arc<LinkClickHandlerFn>>,
++        cx: &App,
+     ) -> AnyElement {
++        let hover = crate::GlobalState::global(cx).text_view_state()
++            .and_then(|view| view.read(cx).link_hover_handler.clone());
+         img(image_source(url))
+             .id(ix)
+             .object_fit(ObjectFit::Contain)
+@@ -151,9 +154,15 @@
+             .w(size.width)
+             .h(size.height)
+             .when_some(link.clone(), |this, link| {
++                let hover_url = link.url.clone();
+                 let aux_link = link.clone();
+                 let aux_link_click_handler = link_click_handler.clone();
+                 this.cursor_pointer()
++                    .on_hover(move |active, window, cx| {
++                        if let Some(handler) = &hover {
++                            handler(&hover_url, *active, window.mouse_position(), window, cx);
++                        }
++                    })
+                     .on_click(move |event, window, cx| {
+                         crate::TextSelection::end(window, cx);
+                         cx.stop_propagation();
+@@ -426,6 +435,7 @@
+                             title.as_str(),
+                             fragment_size,
+                             self.link_click_handler.clone(),
++                            cx,
+                         ),
+                         InlineFlowItem::Marker { link } => {
+                             let link = link.clone();
+--- a/crates/base/src/text/node.rs
++++ b/crates/base/src/text/node.rs
+@@ -1554,6 +1554,7 @@
+     pub(crate) table_actions: Option<Arc<TableActionsFn>>,
+     pub(crate) link_presentation: Option<Arc<super::text_view::LinkPresentationFn>>,
+     pub(crate) link_click_handler: Option<Arc<LinkClickHandlerFn>>,
++    pub(crate) link_hover_handler: Option<Arc<super::text_view::LinkHoverHandlerFn>>,
+     pub(crate) markdown_extensions: Arc<MarkdownExtensions>,
+ }
+ 
+@@ -1737,9 +1738,14 @@
+                         .when_some(image.width, |this, width| this.w(width))
+                         .when_some(image.link.clone(), |this, link| {
+                             let link_click_handler = link_click_handler.clone();
++                            let hover_handler = node_cx.link_hover_handler.clone();
++                            let hover_url = link.url.clone();
+                             let aux_link = link.clone();
+                             let aux_link_click_handler = link_click_handler.clone();
+                             this.cursor_pointer()
++                                .on_hover(move |active, window, cx| {
++                                    if let Some(handler) = &hover_handler { handler(&hover_url, *active, window.mouse_position(), window, cx); }
++                                })
+                                 .on_click(move |event, window, cx| {
+                                     crate::TextSelection::end(window, cx);
+                                     cx.stop_propagation();
+--- a/crates/component/src/text/compat.rs
++++ b/crates/component/src/text/compat.rs
+@@ -113,6 +113,14 @@
+         F: Fn(&str) -> gpui_base::text::LinkPresentation + Send + Sync + 'static,
+     {
+         self.inner = self.inner.link_presentation(f);
++        self
++    }
++
++    pub fn on_link_hover<F>(mut self, handler: F) -> Self
++    where
++        F: Fn(&gpui::SharedString, bool, gpui::Point<gpui::Pixels>, &mut gpui::Window, &mut gpui::App) + Send + Sync + 'static,
++    {
++        self.inner = self.inner.on_link_hover(handler);
+         self
+     }
+ 
