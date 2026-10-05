@@ -67,7 +67,11 @@ pub(crate) fn save_window(window: AnyWindowHandle, cx: &mut App) -> bool {
 impl Editing {
     // UI subscriptions stay on the foreground executor; only the locked file
     // store crosses to the worker. Reassembly preserves undo/input state.
-    fn park(self) -> (FileEditor, impl FnOnce(FileEditor) -> Self) {
+    fn park(self, cx: &mut App) -> (FileEditor, impl FnOnce(FileEditor) -> Self) {
+        // A second window can still hold its painted input until the next frame.
+        // Freeze it synchronously, before moving the store off the UI thread.
+        self.input
+            .update(cx, |input, cx| input.set_disabled(true, cx));
         let Self {
             store,
             input,
@@ -869,6 +873,15 @@ impl Reader {
         }
         Ok(())
     }
+    pub(super) fn finish_move_editor(&mut self, cx: &mut Context<Self>) {
+        self.move_applying = false;
+        if let Some(editing) = &self.editing {
+            editing
+                .input
+                .update(cx, |input, cx| input.set_disabled(false, cx));
+        }
+    }
+
     pub(super) fn apply_link_move(
         &mut self,
         preview: &tessera_core::link_rewrite::Preview,
@@ -887,12 +900,13 @@ impl Reader {
             if reader.entity_id() == cx.entity_id() {
                 continue;
             }
-            if let Ok(Some((path, editing))) = reader.update(cx, |r, _| {
+            if let Ok(Some((path, editing))) = reader.update(cx, |r, cx| {
                 if same_move_root(&r.vault_root, &self.vault_root) && paths.contains(&r.current_rel)
                 {
                     r.move_applying = true;
                     r.document_preparation_generation =
                         r.document_preparation_generation.wrapping_add(1);
+                    cx.notify();
                     Some((r.current_rel.clone(), r.editing.take()))
                 } else {
                     None
@@ -907,7 +921,7 @@ impl Reader {
         let editing = if park_own { self.editing.take() } else { None };
         let (own_store, own_ui) = match editing {
             Some(editing) => {
-                let (store, ui) = editing.park();
+                let (store, ui) = editing.park(cx);
                 (Some(store), Some(ui))
             }
             None => (None, None),
@@ -917,7 +931,7 @@ impl Reader {
             .into_iter()
             .map(|(reader, window, path, editing)| {
                 let ui = editing.map(|editing| {
-                    let (store, ui) = editing.park();
+                    let (store, ui) = editing.park(cx);
                     stores.push((path.clone(), Some(store)));
                     ui
                 });
@@ -951,7 +965,8 @@ impl Reader {
                 .map(|(ui, store)| ui(store));
             let moved = result.as_ref().is_ok_and(|a| a.moved);
             let _ = this.update_in(cx, |this, _, cx| {
-                this.move_applying = false;
+                // Keep the initiating window frozen until complete_move has
+                // replaced the old source path and synchronized its input.
                 if park_own {
                     this.editing = own_editing;
                 }
@@ -963,6 +978,11 @@ impl Reader {
                     reader.update(cx, |r, cx| {
                         r.move_applying = false;
                         let was_editing = editing.is_some();
+                        if let Some(editing) = &editing {
+                            editing
+                                .input
+                                .update(cx, |input, cx| input.set_disabled(false, cx));
+                        }
                         r.editing = editing;
                         if moved {
                             r.tree.note_moved(&preview.from, &preview.to);
@@ -1846,12 +1866,17 @@ mod tests {
             let task = r.apply_link_move(&preview, window, cx).unwrap();
             assert!(r.move_applying);
             assert!(
+                !input.read(cx).is_editable(),
+                "Parked windows must refuse input before the next paint"
+            );
+            assert!(
                 !r.save_source(cx),
                 "Navigation/quit must wait for the worker"
             );
             task
         });
         assert!(task.await.unwrap().moved);
+        source.update_in(source_visual, |r, _, cx| r.finish_move_editor(cx));
         reference_visual.run_until_parked();
         reference.read_with(reference_visual, |r, cx| {
             let editing = r.editing.as_ref().unwrap();
@@ -1860,6 +1885,7 @@ mod tests {
                 "edited [[renamed]]"
             );
             assert!(!editing.store.dirty());
+            assert!(editing.input.read(cx).is_editable());
         });
         assert_eq!(
             std::fs::read_to_string(root.join("ref.md")).unwrap(),

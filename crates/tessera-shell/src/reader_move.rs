@@ -489,6 +489,7 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.finish_move_editor(cx);
         match result {
             Err(error) => {
                 self.sync_move_input(window, cx);
