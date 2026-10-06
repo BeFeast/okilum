@@ -140,7 +140,7 @@ def github_release(github, tag, release, files, body, stable):
     # Hide an existing rolling release while replacing its matching asset set.
     github.call('PATCH', f'/releases/{rid}', {'draft': True})
     for old in current.get('assets', []):
-        github.call('DELETE', f'/releases/{rid}/assets/{old["id"]}')
+        github.call('DELETE', f'/releases/assets/{old["id"]}')
     for name, data in files.items():
         github.call('POST', f'/releases/{rid}/assets?name={urllib.parse.quote(name)}', data, binary=True)
     github.call('PATCH', f'/releases/{rid}', {
