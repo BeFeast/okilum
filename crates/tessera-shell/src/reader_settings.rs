@@ -352,12 +352,27 @@ impl Settings {
                 }
             }
             Section::Updates => {
-                let content = content.child(format!(
-                    "Version {} · Build {} · Channel: {}",
-                    env!("TESSERA_RELEASE_VERSION"),
-                    env!("TESSERA_BUILD_VERSION"),
-                    updater::channel()
-                ));
+                let content = content.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .child(div().flex_1().min_w_0().text_sm().child(format!(
+                            "Version {} · Build {} · Channel: {}",
+                            env!("TESSERA_RELEASE_VERSION"),
+                            env!("TESSERA_BUILD_VERSION"),
+                            updater::channel()
+                        )))
+                        .when(updater::available(), |row| {
+                            row.child(
+                                Button::new("settings-check-updates")
+                                    .small()
+                                    .flex_shrink_0()
+                                    .label("Check for Updates…")
+                                    .on_click(|_, _, _| updater::check()),
+                            )
+                        }),
+                );
                 if updater::available() {
                     let beta = updater::channel() == "Beta";
                     content
@@ -401,11 +416,6 @@ impl Settings {
                         } else {
                             "Stable selected — receive approved releases."
                         }))
-                        .child(
-                            Button::new("settings-check-updates")
-                                .label("Check for Updates…")
-                                .on_click(|_, _, _| updater::check()),
-                        )
                         .into_any_element()
                 } else {
                     let _ = window;
