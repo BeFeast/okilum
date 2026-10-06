@@ -130,3 +130,17 @@ not replace real browser/passkey QA or claim a completed desktop enrollment.
 The CT141 sandbox now uses a dedicated local CA (`service/tls/ca.pem`) and a separate
 server certificate with `CA:FALSE`, serverAuth and localhost SANs. Native test trust
 uses the CA; no host-wide trust change is required. All fixtures remain synthetic.
+
+The replacement review identified three preparation/discovery durability gaps:
+all are addressed before merge. A completed preparation now rechecks the package
+version and binds its executable hash, so an upgrade at the same path cannot
+bypass compatibility checks. `/proc` discovery includes a running `syncthing
+(deleted)` executable after package replacement. Private state initialization
+syncs the directory and its parent before any journal-authorized network request,
+including retries after interrupted initialization. This is the filesystem
+ordering guarantee; the tests do not simulate physical power loss.
+
+The real Linux regression test replaces the package after preparation, rejects
+both an unsupported version and changed same-version bytes, restores the original
+package, and verifies that unlinking the running executable does not hide its
+custom-home configuration. User-service disable/re-enable still preserves identity.

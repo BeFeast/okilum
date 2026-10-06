@@ -171,7 +171,10 @@ pub fn configuration_paths(
         let Ok(exe) = fs::read_link(process.join("exe")) else {
             continue;
         };
-        if exe.file_name().is_none_or(|n| n != "syncthing") {
+        if exe
+            .file_name()
+            .is_none_or(|n| n != "syncthing" && n != "syncthing (deleted)")
+        {
             continue;
         }
         let bytes =
@@ -298,6 +301,8 @@ pub struct Preparation {
 #[serde(deny_unknown_fields)]
 struct Prepared {
     request: Preparation,
+    binary_version: String,
+    binary_hash: String,
     identity: DaemonIdentity,
 }
 /// Only call after explicit Enable. The random state directory must be new or
@@ -328,22 +333,6 @@ pub fn prepare(state: &Path, request: &Preparation) -> Result<(ManagedInstance, 
         ensure!(!home.exists(), "existing daemon home cannot be adopted");
         private::write(&intent, &serde_json::to_vec(request)?)?;
     }
-    let receipt = state.join("prepared.json");
-    if receipt.try_exists()? {
-        let saved: Prepared = serde_json::from_slice(&private::read(&receipt)?)?;
-        ensure!(
-            &saved.request == request
-                && fingerprint(&saved.identity.config_file)? == saved.identity.certificate_hash,
-            "prepared identity changed"
-        );
-        return Ok((
-            ManagedInstance {
-                home,
-                executable: request.executable.clone(),
-            },
-            saved.identity,
-        ));
-    }
     let version = Command::new(&request.executable)
         .arg("--version")
         .env_clear()
@@ -357,6 +346,25 @@ pub fn prepare(state: &Path, request: &Preparation) -> Result<(ManagedInstance, 
                 == Some(CLIENT_VERSION),
         "unsupported package Syncthing version"
     );
+    let binary_hash = executable_hash(&request.executable)?;
+    let receipt = state.join("prepared.json");
+    if receipt.try_exists()? {
+        let saved: Prepared = serde_json::from_slice(&private::read(&receipt)?)?;
+        ensure!(
+            &saved.request == request
+                && saved.binary_version == CLIENT_VERSION
+                && saved.binary_hash == binary_hash
+                && fingerprint(&saved.identity.config_file)? == saved.identity.certificate_hash,
+            "prepared identity or package binary changed"
+        );
+        return Ok((
+            ManagedInstance {
+                home,
+                executable: request.executable.clone(),
+            },
+            saved.identity,
+        ));
+    }
     private::directory(&home)?;
     let output = Command::new(&request.executable)
         .args(["generate", "--home"])
@@ -429,6 +437,8 @@ pub fn prepare(state: &Path, request: &Preparation) -> Result<(ManagedInstance, 
         &receipt,
         &serde_json::to_vec(&Prepared {
             request: request.clone(),
+            binary_version: CLIENT_VERSION.into(),
+            binary_hash,
             identity: identity.clone(),
         })?,
     )?;
@@ -439,6 +449,27 @@ pub fn prepare(state: &Path, request: &Preparation) -> Result<(ManagedInstance, 
         },
         identity,
     ))
+}
+// Package replacement between prepare and Enable remains coordinated external
+// administration, just like replacement of the service definition. Re-check on
+// every preparation/re-enable, even when the durable receipt already exists.
+fn executable_hash(path: &Path) -> Result<String> {
+    use std::io::Read;
+    let mut file = fs::File::open(path)?;
+    ensure!(
+        file.metadata()?.is_file(),
+        "package executable must be a regular file"
+    );
+    let mut digest = Sha256::new();
+    let mut block = [0u8; 8192];
+    loop {
+        let read = file.read(&mut block)?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&block[..read]);
+    }
+    Ok(format!("{:x}", digest.finalize()))
 }
 fn set(parent: &mut Element, name: &str, value: &str) {
     if parent.get_child(name).is_none() {

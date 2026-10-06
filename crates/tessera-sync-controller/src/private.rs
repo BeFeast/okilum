@@ -19,6 +19,13 @@ pub(crate) fn directory(path: &Path) -> Result<()> {
             && m.mode() & 0o077 == 0,
         "private owned directory required"
     );
+    // Persist the new entry in its parent before a journal can authorize any
+    // external request. Repeat after an interrupted earlier initialization too.
+    File::open(path)?.sync_all()?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("missing state parent"))?;
+    File::open(parent)?.sync_all()?;
     Ok(())
 }
 pub(crate) fn read(path: &Path) -> Result<Vec<u8>> {

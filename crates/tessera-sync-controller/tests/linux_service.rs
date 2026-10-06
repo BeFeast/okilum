@@ -1,7 +1,7 @@
 #![cfg(target_os = "linux")]
 use anyhow::{ensure, Context, Result};
 use std::{fs, net::TcpListener, path::PathBuf, process::Command, time::Duration};
-use tessera_sync_controller::daemon::{discover, prepare, Preparation};
+use tessera_sync_controller::daemon::{configuration_paths, discover, prepare, Preparation};
 use tessera_sync_controller::lifecycle::{Lifecycle, Systemd};
 
 /// Creates a fresh identity and loopback-only config. Never reads a user daemon.
@@ -12,12 +12,14 @@ fn real_service_enable_disable_reenable_and_identity() -> Result<()> {
         std::env::var_os("TESSERA_SYNC_CLIENT").context("set isolated pinned client binary")?,
     );
     let root = tempfile::tempdir()?;
+    let package = root.path().join("syncthing");
+    fs::copy(&binary, &package)?;
     let rest_guard = TcpListener::bind("127.0.0.1:0")?;
     let listen_guard = TcpListener::bind("127.0.0.1:0")?;
     let rest = rest_guard.local_addr()?;
     let listen = listen_guard.local_addr()?;
     let preparation = Preparation {
-        executable: binary.clone(),
+        executable: package.clone(),
         rest_address: rest,
         listen_address: listen,
     };
@@ -27,6 +29,23 @@ fn real_service_enable_disable_reenable_and_identity() -> Result<()> {
     let id = identity.device_id.clone();
     let (_, again) = prepare(&prepared_state, &preparation)?;
     assert_eq!(again.device_id, id);
+    // An ordinary package replacement at the same path must not bypass the
+    // pinned-version gate just because preparation was previously completed.
+    fs::remove_file(&package)?;
+    fs::write(&package, "#!/bin/sh\nprintf 'syncthing v99.0.0\\n'\n")?;
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&package, fs::Permissions::from_mode(0o700))?;
+    assert!(prepare(&prepared_state, &preparation).is_err());
+    fs::copy(&binary, &package)?;
+    assert_eq!(prepare(&prepared_state, &preparation)?.1.device_id, id);
+    // A changed binary claiming the same version also needs explicit review.
+    use std::io::Write;
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&package)?
+        .write_all(b"changed-package")?;
+    assert!(prepare(&prepared_state, &preparation).is_err());
+    fs::copy(&binary, &package)?;
     fs::remove_file(prepared_state.join("prepared.json"))?;
     let (_, resumed) = prepare(&prepared_state, &preparation)?;
     assert_eq!(resumed.device_id, id);
@@ -72,6 +91,14 @@ fn real_service_enable_disable_reenable_and_identity() -> Result<()> {
     };
     assert_eq!(property("UnitFileState")?, "enabled");
     assert_eq!(property("ActiveState")?, "active");
+    // A running replaced executable has a /proc/exe suffix " (deleted)".
+    // Discover both before and after unlink with a custom, nonstandard home.
+    let defaults = root.path().join("unused-defaults");
+    let inventory = || configuration_paths(&defaults, &defaults, &defaults);
+    assert!(inventory()?.contains(&identity.config_file));
+    fs::remove_file(&package)?;
+    assert!(inventory()?.contains(&identity.config_file));
+    fs::copy(&binary, &package)?;
     let api = identity.connect()?;
     assert_eq!(api.version()?["version"], "v2.1.6");
     let before = fs::read(&identity.config_file)?;
