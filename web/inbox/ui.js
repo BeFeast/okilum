@@ -25,6 +25,14 @@ export function mountShell(){
  const syncIcons=()=>{const dark=document.documentElement.dataset.theme==='dark';document.querySelector('.brand img').src=dark?'/icon-dark.svg':'/icon.svg';document.querySelectorAll('link[rel=icon]').forEach(link=>{link.media='all';link.href=dark?'/icon-dark.svg':'/icon.svg';});};syncIcons();
  $('theme-toggle').onclick=()=>{const t=document.documentElement.dataset.theme==='dark'?'light':'dark';document.documentElement.dataset.theme=t;syncIcons();try{localStorage.setItem('tessera-theme',t);}catch{}};
  $('new-thought').prepend(icon('plus'));$('new-thought').onclick=()=>{route('inbox');$('capture-compose').open=true;$('thought').focus();};
+ // Move existing controls, preserving their auth/theme handlers and hidden state.
+ const mobile=matchMedia('(max-width:760px)'), positions=new Map();
+ for(const id of ['new-thought','login','logout','theme-toggle']){const node=$(id),marker=document.createComment(id);node.before(marker);positions.set(id,marker);}
+ const responsive=()=>{for(const [id,marker] of positions){const node=$(id);if(mobile.matches){if(id==='new-thought')$('mobile-actions').prepend(node);else $('mobile-settings-body').append(node);}else marker.after(node);}$('mobile-settings').open=false;};
+ responsive();mobile.addEventListener('change',responsive);
+ const connection=$('connection'),connectionHint=()=>{connection.title=connection.textContent;connection.dataset.connected=String(connection.textContent==='Connected');};
+ connectionHint();new MutationObserver(connectionHint).observe(connection,{childList:true,characterData:true,subtree:true});
+ document.addEventListener('click',event=>{if(!$('mobile-settings').contains(event.target))$('mobile-settings').open=false;});
  document.querySelectorAll('dialog.drawer').forEach(dialog=>{dialog.addEventListener('click',e=>{if(e.target===dialog){const r=dialog.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)dialog.close();}});});
 }
 

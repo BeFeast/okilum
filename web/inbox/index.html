@@ -15,11 +15,11 @@
 <body>
   <aside class="sidebar">
     <a class="brand" href="/" aria-label="Tessera home"><img src="/icon.svg" alt="" width="28" height="28"><span>Tessera</span><span class="edition">Inbox</span></a>
-    <button id="new-thought" class="new-thought">New thought</button>
+    <button id="new-thought" class="new-thought" aria-label="New thought">New thought</button>
     <nav aria-label="Main navigation"><button data-nav="inbox">Inbox</button><button data-nav="questions">Questions</button><button data-nav="projects">Projects</button><button data-nav="overview">Overview</button></nav>
     <div class="sidebar-bottom"><span class="workspace-mark">T</span><div>Your workspace<small>Personal · LAN</small></div><button id="theme-toggle"></button></div>
   </aside>
-  <div class="app-frame"><header class="topbar"><div class="breadcrumb">Workspace <span>/</span> <strong id="screen-title">Inbox</strong></div><div class="account"><span id="connection" role="status">Connecting…</span><button id="login" class="quiet">Sign in</button><button id="logout" class="quiet" hidden>Sign out</button></div></header>
+  <div class="app-frame"><header class="topbar"><div class="breadcrumb"><span class="breadcrumb-prefix">Workspace <span>/</span></span> <strong id="screen-title">Inbox</strong></div><div class="account"><span id="connection" role="status">Connecting…</span><button id="login" class="quiet">Sign in</button><button id="logout" class="quiet" hidden>Sign out</button></div><div id="mobile-actions" class="mobile-only"><details id="mobile-settings"><summary aria-label="Settings">⋯</summary><div id="mobile-settings-body"></div></details></div></header>
   <main>
     <div id="notice" role="status" aria-live="polite" hidden></div>
     <section id="enrollment" class="card" hidden><h2>Make this Inbox yours</h2><p>Create a passkey to sign in from your phone and Mac.</p><button id="register">Create passkey</button></section>
