@@ -58,6 +58,7 @@ mod reader_source_history;
 mod reader_startup;
 #[cfg(test)]
 mod reader_table_tests;
+mod reader_tasks;
 #[cfg(unix)]
 mod reader_templates;
 #[cfg(any(target_os = "macos", all(test, unix)))]
@@ -816,7 +817,8 @@ fn reader_plugins(
     states: prepared_links::States,
 ) -> TextView {
     let hover_entity = entity.clone();
-    markdown_plugins(
+    let tasks_entity = entity.clone();
+    let view = markdown_plugins(
         view,
         Arc::new(move |url, event, window, cx| {
             if matches!(event, ClickEvent::Mouse(e) if e.up.button == MouseButton::Right) {
@@ -862,7 +864,8 @@ fn reader_plugins(
             presentation.tooltip = None;
         }
         presentation
-    })
+    });
+    reader_tasks::plugins(view, tasks_entity)
 }
 
 type MarkdownLinkHandler = Arc<dyn Fn(&str, &ClickEvent, &mut Window, &mut App) + Send + Sync>;
@@ -1105,6 +1108,7 @@ struct Reader {
     watcher_poll_hold: Option<async_channel::Receiver<()>>,
     deferred_vault_changes: tessera_core::Changes,
     incremental_state: Option<tessera_core::vault::warm::incremental::State>,
+    tasks_index: Option<Arc<tessera_core::tasks::Index>>,
     incremental_initializing: bool,
     incremental_active: bool,
     incremental_epoch: u64,
@@ -1313,6 +1317,7 @@ impl Reader {
             watcher_poll_hold: None,
             deferred_vault_changes: Default::default(),
             incremental_state: None,
+            tasks_index: None,
             incremental_initializing: false,
             incremental_active: false,
             incremental_epoch: 0,

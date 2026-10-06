@@ -14,6 +14,7 @@ default = ["brain"]
 brain = ["tessera-core/brain"]
 
 [dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 tessera-core = { workspace = true, default-features = false }
 gpui.workspace = true
 gpui_platform.workspace = true

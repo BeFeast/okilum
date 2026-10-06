@@ -1446,6 +1446,7 @@ impl Reader {
         }
         self.incremental_epoch = self.incremental_epoch.wrapping_add(1);
         self.incremental_state = None;
+        self.tasks_index = None;
         self.incremental_initializing = false;
         self.incremental_active = false;
         #[cfg(unix)]
@@ -1728,16 +1729,18 @@ impl Reader {
                                 #[cfg(unix)]
                                 { this.move_index = None; }
                                 let index_task = cx.background_executor().spawn(async move {
+                                    let tasks = reader_tasks::from_snapshot(&move_snapshot);
                                     let state = tessera_core::vault::warm::incremental::State::new((*state_vault).clone(), *move_snapshot);
                                     #[cfg(unix)]
                                     let candidates = state.candidates.clone();
-                                    (state, { #[cfg(unix)] { Some(candidates) } #[cfg(not(unix))] { None::<()> } })
+                                    (state, tasks, { #[cfg(unix)] { Some(candidates) } #[cfg(not(unix))] { None::<()> } })
                                 });
                                 cx.spawn(async move |this, cx| {
-                                    let (state, candidates) = index_task.await;
+                                    let (state, tasks, candidates) = index_task.await;
                                     let _ = this.update(cx, |this, cx| {
                                         if this.vault_root == index_root && this.incremental_epoch == epoch
                                             && this.loading.as_ref().map(|load| load.generation) == generation {
+                                            this.tasks_index = Some(tasks);
                                             this.incremental_state = Some(state);
                                             this.incremental_initializing = false;
                                             #[cfg(unix)]
