@@ -499,6 +499,19 @@ impl Reader {
                 self.link_notice = Some(format!("Cannot move: {error:#}"));
             }
             Ok(moved) => {
+                let mut changes = tessera_core::Changes {
+                    changed: std::collections::BTreeSet::from([pending.to.clone()]),
+                    removed: std::collections::BTreeSet::from([pending.from.clone()]),
+                    ..Default::default()
+                };
+                if update {
+                    changes
+                        .changed
+                        .extend(pending.links.changes.iter().map(|c| c.path.clone()));
+                }
+                if self.vault_root == pending.root {
+                    self.queue_vault_mutation(changes, cx);
+                }
                 self.tree.note_moved(&pending.from, &pending.to);
                 drop(pending.guard);
                 drop(pending.destination_guard);
@@ -711,6 +724,7 @@ mod tests {
         });
         let reader = reader.unwrap();
         visual.run_until_parked();
+        let generation = reader.read_with(visual, |v, _| v.loading.as_ref().unwrap().generation);
         reader.update_in(visual, |reader, window, cx| {
             reader.reveal_in_tree("start.md", window, cx);
             reader.tree_focus.focus(window, cx);
@@ -845,6 +859,22 @@ mod tests {
         visual.simulate_click(bounds.center(), Modifiers::default());
         visual.run_until_parked();
         reader.read_with(visual, |reader, _| {
+            assert_eq!(
+                reader.loading.as_ref().unwrap().generation,
+                generation,
+                "move must not run full prepare"
+            );
+            assert!(reader
+                .vault
+                .notes
+                .iter()
+                .any(|note| note.path == "Folder/Новое 🧠.md"));
+            assert!(!reader
+                .vault
+                .notes
+                .iter()
+                .any(|note| note.path == "start.md"));
+
             assert!(
                 !reader.note_move_pending,
                 "Move button did not finish confirmation; bounds={bounds:?}, notice={:?}",

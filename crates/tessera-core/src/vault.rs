@@ -575,12 +575,12 @@ impl Vault {
             values.retain(|value| value != path);
             !values.is_empty()
         });
-        self.occupied_paths.remove(path);
-        self.non_directory_paths.remove(path);
-        self.symlink_paths.remove(path);
+        self.occupied_paths.remove(&path.to_lowercase());
+        self.non_directory_paths.remove(&path.to_lowercase());
+        self.symlink_paths.remove(&path.to_lowercase());
         if present {
-            self.occupied_paths.insert(path.into());
-            self.non_directory_paths.insert(path.into());
+            self.occupied_paths.insert(path.to_lowercase());
+            self.non_directory_paths.insert(path.to_lowercase());
             self.entries.push(VaultEntry {
                 path: path.into(),
                 kind: EntryKind::Markdown,

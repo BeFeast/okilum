@@ -163,6 +163,11 @@ impl Reader {
                 this.trash_pending = false;
                 match result {
                     Ok(trashed) => {
+                        if this.vault_root == root {
+                            let mut changes = tessera_core::Changes::default();
+                            if directory { changes.directories.insert(relative.clone()); } else { changes.removed.insert(relative.clone()); }
+                            this.queue_vault_mutation(changes, cx);
+                        }
                         if this.vault_root == root && under(this.selected_file(), &relative) {
                             this.editing = None;
                             this.show_empty_vault(window, cx);
@@ -170,7 +175,7 @@ impl Reader {
                         let reader = cx.entity().downgrade();
                         window.push_notification(Notification::new().message("Moved to Trash").action(move |_, _, _| {
                             let trashed = trashed.clone(); let reader = reader.clone();
-                            Button::new("undo-trash").label("Undo").on_click(move |_, window, cx| {
+                            Button::new("undo-trash").debug_selector(|| "undo-trash".into()).label("Undo").on_click(move |_, window, cx| {
                                 let _ = reader.update(cx, |this, cx| this.undo_trash(trashed.clone(), window, cx));
                             })
                         }), cx);
@@ -199,6 +204,8 @@ impl Reader {
         let Some(state) = self.session_directory.clone() else {
             return;
         };
+        let restored_root = trashed.root.clone();
+        let restored_path = trashed.relative.clone();
         self.trash_pending = true;
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
@@ -216,14 +223,31 @@ impl Reader {
                     } else {
                         None
                     };
-                    trashed.restore()
+                    trashed
+                        .restore()
+                        .map(|()| trashed.root.join(&trashed.relative).is_dir())
                 })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.trash_pending = false;
+                if let Ok(directory) = &result {
+                    if this.vault_root == restored_root {
+                        let mut changes = tessera_core::Changes::default();
+                        if *directory {
+                            changes
+                                .directories
+                                .insert(tessera_core::vault::note_path(&restored_path));
+                        } else {
+                            changes
+                                .changed
+                                .insert(tessera_core::vault::note_path(&restored_path));
+                        }
+                        this.queue_vault_mutation(changes, cx);
+                    }
+                }
                 window.push_notification(
                     match result {
-                        Ok(()) => "Restored from Trash".into(),
+                        Ok(_) => "Restored from Trash".into(),
                         Err(error) => format!("Cannot Undo: {error:#}"),
                     },
                     cx,
@@ -239,6 +263,92 @@ impl Reader {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn delete_and_undo_publish_inventory_search_and_referrers_without_prepare(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            cx.set_reduce_motion(true);
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("New.md"), "uniquetrashword").unwrap();
+        std::fs::write(root.join("Ref.md"), "[[New]]").unwrap();
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("New.md".into()),
+                        index_dir: Some(temp.path().join("cache")),
+                        session_directory: Some(temp.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        visual.run_until_parked();
+        let generation = reader.read_with(visual, |v, _| {
+            assert_eq!(v.vault.backlinks("New.md").len(), 1);
+            v.loading.as_ref().unwrap().generation
+        });
+        reader.update_in(visual, |v, window, cx| {
+            v.delete_path("New.md".into(), window, cx)
+        });
+        visual.run_until_parked();
+        let bounds = visual
+            .debug_bounds("confirm-trash")
+            .expect("incoming link confirmation");
+        visual.simulate_click(bounds.center(), Modifiers::default());
+        visual.run_until_parked();
+        reader.read_with(visual, |v, _| {
+            assert_eq!(v.loading.as_ref().unwrap().generation, generation);
+            assert!(!v.vault.notes.iter().any(|note| note.path == "New.md"));
+            assert!(v.vault.backlinks("New.md").is_empty());
+            assert!(v
+                .searcher
+                .as_ref()
+                .unwrap()
+                .search("uniquetrashword", 10)
+                .unwrap()
+                .is_empty());
+        });
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let undo = visual
+            .debug_bounds("undo-trash")
+            .expect("actual Trash Undo action");
+        visual.simulate_click(undo.center(), Modifiers::default());
+        visual.run_until_parked();
+        reader.read_with(visual, |v, _| {
+            assert_eq!(v.loading.as_ref().unwrap().generation, generation);
+            assert!(v.vault.notes.iter().any(|note| note.path == "New.md"));
+            assert_eq!(v.vault.backlinks("New.md").len(), 1);
+            assert_eq!(
+                v.searcher
+                    .as_ref()
+                    .unwrap()
+                    .search("uniquetrashword", 10)
+                    .unwrap()
+                    .len(),
+                1
+            );
+        });
+        assert_eq!(
+            std::fs::read_to_string(root.join("New.md")).unwrap(),
+            "uniquetrashword"
+        );
+    }
+
     #[gpui::test]
     fn incoming_links_require_confirmation_and_cancel_preserves_source(cx: &mut TestAppContext) {
         cx.update(|cx| {

@@ -15,8 +15,8 @@
 //!   the caller knows whether it is worth paying.
 //! - **Notes and directory topology matter.** Service directories and non-note
 //!   file writes are excluded; ordinary dot/underscore folders remain searchable.
-//!   Directory events also require reconciliation: a populated tree can arrive
-//!   before recursive watches observe its individual files. The legacy in-vault
+//!   Directory events report scope hints: a populated tree can arrive before
+//!   recursive watches observe its individual files. Only lost events force rescan. The legacy in-vault
 //!   index directory is excluded to avoid reacting to its own writes.
 
 use std::collections::BTreeSet;
@@ -33,13 +33,18 @@ pub struct Changes {
     pub changed: BTreeSet<String>,
     /// Notes that no longer exist on disk.
     pub removed: BTreeSet<String>,
-    /// Directory topology or dropped events require a complete metadata scan.
+    /// Directory hints: inspect their children; discover new/removed subtrees.
+    pub directories: BTreeSet<String>,
+    /// Dropped events require a complete metadata scan.
     pub rescan: bool,
 }
 
 impl Changes {
     pub fn is_empty(&self) -> bool {
-        !self.rescan && self.changed.is_empty() && self.removed.is_empty()
+        !self.rescan
+            && self.changed.is_empty()
+            && self.removed.is_empty()
+            && self.directories.is_empty()
     }
 
     /// A batch this large is a bulk operation (checkout, sync, restore), and
@@ -184,7 +189,7 @@ impl VaultWatcher {
                 // before recursive watches can observe their individual files.
                 // A rename source may already be gone, so its file type cannot
                 // be recovered with stat. Known Markdown endpoints use a source
-                // batch; unknown moved trees still need full reconciliation.
+                // batch; moved trees report both directory scopes.
                 if p.is_dir()
                     || matches!(
                         ev.kind,
@@ -204,7 +209,9 @@ impl VaultWatcher {
                                     .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
                         }))
                 {
-                    self.pending.rescan = true;
+                    self.pending
+                        .directories
+                        .insert(crate::vault::note_path(relative));
                 }
                 let Some(rel) = self.relevant(p) else {
                     continue;
@@ -256,5 +263,32 @@ impl VaultWatcher {
             }
             std::thread::sleep(Duration::from_millis(50));
         }
+    }
+}
+
+#[cfg(test)]
+mod topology_tests {
+    use super::*;
+    #[test]
+    fn parent_metadata_is_a_hint_but_dropped_events_require_rescan() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut watcher = VaultWatcher::new(temp.path()).unwrap();
+        let (tx, rx) = mpsc::channel();
+        watcher.rx = rx;
+        tx.send(Ok(Event::new(EventKind::Modify(
+            notify::event::ModifyKind::Metadata(notify::event::MetadataKind::Any),
+        ))
+        .add_path(temp.path().to_owned())))
+            .unwrap();
+        watcher.poll();
+        watcher.last_event = Some(Instant::now() - QUIET_WINDOW);
+        let hint = watcher.poll().unwrap();
+        assert_eq!(hint.directories, BTreeSet::from([String::new()]));
+        assert!(!hint.rescan);
+        tx.send(Err(notify::Error::generic("lost events positive control")))
+            .unwrap();
+        watcher.poll();
+        watcher.last_event = Some(Instant::now() - QUIET_WINDOW);
+        assert!(watcher.poll().unwrap().rescan);
     }
 }
