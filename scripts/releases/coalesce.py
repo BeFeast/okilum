@@ -9,7 +9,7 @@ import subprocess
 
 def needed(event, published, source, platform):
     if event == 'push':
-        # A push cancels the obsolete build; the hourly tick builds the latest main.
+        # Defensive no-op: secondary release workflows have no push trigger.
         return False
     if event in ('workflow_dispatch', 'pull_request'):
         return True

@@ -8,7 +8,8 @@ No build/signing credentials are needed on GitHub.
 
 Linux builds every merge to `main`. macOS and Windows build the newest `main`
 once an hour (the UTC hour boundary), skipping an already-published source.
-New pushes cancel obsolete compilation without occupying a runner for an hour.
+Mac/Windows have no push trigger: an hourly/manual run finishes its selected
+main snapshot even if new merges arrive. No runner sleeps between hourly ticks.
 To get an urgent **Mac build now** or **Windows build now**, dispatch the respective
 `macos-release` or `windows-release` workflow on `main`; this bypasses the window.
 Manual branch builds publish nothing. Windows PR cross-compilation still runs.
@@ -81,16 +82,19 @@ appcast publication lock; scheduled Beta does not block the macOS release queue.
 
 ## Superseded main builds (#562)
 
-The macOS and Windows build workflows cancel obsolete main pushes within their
-platform group. Linux finishes queued builds even while main advances, so frequent
-merges cannot repeatedly discard useful compilation. A successful trusted main
-Linux build can publish after a newer merge; a newer already-published beta makes
-an older completion a no-op. The Arch publisher also retains its rollback guard. They only upload private Actions artifacts and dispatch
-`release-publish`; they do not modify public update channels. The publisher waits
-for the source run to finish successfully, checks trusted main provenance, and
-checks current main again after downloading the artifacts for macOS/Windows.
-Cancelled and failed builds publish nothing; Linux uses the monotonic completion
-policy above instead of discarding a build merely because main advanced. Versions retain the source build's original
+All platform builds finish useful work even while main advances. Linux builds on
+push; Mac/Windows select main only on the hourly tick or manual dispatch. Windows
+PR checks can still cancel an earlier run of the same PR. Scheduled/manual builds
+are not cancelled by a push or the next tick.
+
+Build workflows only upload private Actions artifacts and dispatch `release-publish`.
+The publisher requires a successful trusted main run. Linux and scheduled/manual
+Mac/Windows snapshots can publish after main advances, but every feed's published
+build number is checked under the shared publisher lock. A completion older than
+its feed is a no-op. The platform publishers retain their independent rollback
+guards. Failed/cancelled builds never publish; legacy Mac/Windows push builds
+still require current main.
+Versions retain the source build's original
 `5000 + run number`; the publication workflow's number is never used.
 
 Forgejo concurrency is workflow-wide. Publication therefore runs in a separate,

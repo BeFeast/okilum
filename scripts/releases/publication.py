@@ -3,6 +3,8 @@
 import argparse
 import io
 import json
+import re
+import xml.etree.ElementTree as ET
 import os
 from pathlib import Path
 import subprocess
@@ -26,7 +28,33 @@ def eligible(run, platform, head):
     if (run['workflow_id'] != WORKFLOWS[platform] or run['prettyref'] != 'main'
             or run['is_fork_pull_request'] or run['trigger_event'] not in ['push', 'workflow_dispatch', 'schedule']):
         raise ValueError('Publication requires a trusted main release build')
-    return run['status'] == 'success' and (platform == 'linux' or run['commit_sha'] == head)
+    return run['status'] == 'success' and (snapshot_run(run, platform) or run['commit_sha'] == head)
+
+
+def snapshot_run(run, platform):
+    return platform == 'linux' or run['trigger_event'] in ['schedule', 'workflow_dispatch']
+
+
+def published_build(store, platform):
+    keys = {'linux': 'tessera/arch/beta/x86_64/latest.json',
+            'windows': 'tessera/windows/beta/releases.beta.json',
+            'macos': 'tessera/appcast.xml'}
+    current = store.call('GET', keys[platform])
+    if current is None:
+        return 0
+    if platform == 'linux':
+        return int(json.loads(current)['build'])
+    if platform == 'windows':
+        versions = [a['Version'] for a in json.loads(current)['Assets']]
+        if not versions or any(not re.fullmatch(r'0\.1\.[0-9]+', v) for v in versions):
+            raise ValueError('Unexpected Windows feed version')
+        return max(int(v.split('.')[2]) for v in versions)
+    channel = ET.fromstring(current).find('channel')
+    if channel is None:
+        raise ValueError('Invalid macOS appcast')
+    # Sparkle accepts stable on every channel; match its existing all-item guard.
+    version = '{http://www.andymatuschak.org/xml-namespaces/sparkle}version'
+    return max((int(item.findtext(version)) for item in channel.findall('item')), default=0)
 
 
 def extract(data, directory):
@@ -52,7 +80,7 @@ def publish(client, platform, run_id):
         run = client.call('GET', f'/actions/runs/{run_id}')
         head = client.call('GET', '/branches/main')['commit']['id']
         if (run['status'] in ['failure', 'cancelled', 'skipped']
-                or (platform != 'linux' and run['commit_sha'] != head)):
+                or (not snapshot_run(run, platform) and run['commit_sha'] != head)):
             print('Cancelled, failed or superseded build: nothing published')
             return
         if eligible(run, platform, head):
@@ -61,13 +89,11 @@ def publish(client, platform, run_id):
     else:
         raise ValueError('Source build did not finish successfully')
     build = 5000 + run['index_in_repo']
-    if platform == 'linux':
-        # All publishers share a non-cancellable lock. A completed trusted main
-        # build remains useful after another merge; never replace a newer beta.
-        current = R2().call('GET', 'tessera/arch/beta/x86_64/latest.json')
-        if current is not None and json.loads(current)['build'] > build:
-            print('Newer Linux beta already published: nothing changed')
-            return
+    # Serialized with every platform publisher and stable promotion. Complete
+    # trusted snapshots remain useful after a merge, but never roll back a feed.
+    if published_build(R2(), platform) > build:
+        print(f'Newer {platform} build already published: nothing changed')
+        return
     artifacts = client.call('GET', f'/actions/runs/{run_id}/artifacts')
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -79,7 +105,7 @@ def publish(client, platform, run_id):
             extract(data, root / folder)
         # Recheck after downloads; no public mutation precedes this check.
         if (client.call('GET', '/branches/main')['commit']['id'] != run['commit_sha']
-                and platform != 'linux'):
+                and not snapshot_run(run, platform)):
             print('Superseded during artifact transfer: nothing published')
             return
         env = {**os.environ, 'GITHUB_SHA': run['commit_sha'],

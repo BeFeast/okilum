@@ -2,8 +2,6 @@ name: windows-release
 
 on:
   pull_request:
-  push:
-    branches: [main]
   # Fixed hourly window; the runner is free between ticks. Manual build now bypasses it.
   schedule:
     - cron: "0 * * * *"
@@ -11,7 +9,7 @@ on:
 
 concurrency:
   group: windows-build-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   select:
