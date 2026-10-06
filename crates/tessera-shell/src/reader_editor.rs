@@ -645,10 +645,11 @@ impl Reader {
 
     pub(super) fn render_source(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         if let Some(editing) = &self.editing {
-            // The editor API accepts whole rows. Round up so its end space
-            // never falls below the shared pixel token (13px font, 1.5 leading).
-            let rows = (f32::from(reader_bottom_space(window.viewport_size().height)) / (13. * 1.5))
-                .ceil() as usize;
+            // Use measured leading rather than accumulating an estimated row-height error.
+            let line_height = editing.input.read(cx).line_height().unwrap_or(px(20.));
+            let rows = (f32::from(reader_toast::bottom_space(window, cx))
+                / f32::from(line_height).max(1.))
+            .ceil() as usize;
             editing.input.update(cx, |input, cx| {
                 input.set_scroll_beyond_last_line(Some(rows), window, cx);
             });
@@ -1362,6 +1363,17 @@ mod tests {
         });
         let reader = reader.unwrap();
         visual.run_until_parked();
+        // Establish the no-notification baseline independently of fixture startup notices.
+        visual.update(|window, cx| {
+            use gpui_component::WindowExt;
+            window.clear_notifications(cx);
+        });
+        visual.executor().advance_clock(Duration::from_secs(1));
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            use gpui_component::WindowExt;
+            assert!(window.notifications(cx).is_empty());
+        });
         for height in [700., 1000.] {
             visual.simulate_resize(size(px(1500.), px(height)));
             visual.run_until_parked();
@@ -1385,6 +1397,39 @@ mod tests {
                 );
             });
         }
+        visual.update(|window, cx| {
+            reader_toast::push(
+                gpui_component::notification::Notification::new().content(|_, _, _| {
+                    div()
+                        .debug_selector(|| "end-space-toast".into())
+                        .h(px(180.))
+                        .child("Operation result")
+                        .into_any_element()
+                }),
+                None,
+                window,
+                cx,
+            );
+        });
+        visual.run_until_parked();
+        reader.update_in(visual, |v, _, cx| {
+            v.content.read(cx).list_state().scroll_to_end();
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let toast = visual.debug_bounds("end-space-toast").unwrap();
+        reader.read_with(visual, |v, cx| {
+            let list = v.content.read(cx).list_state();
+            let last = list.bounds_for_item(list.item_count() - 1).unwrap();
+            assert!(
+                last.bottom() < toast.top(),
+                "last Reader line scrolls above the overlay"
+            );
+            assert!(
+                last.top() >= list.viewport_bounds().top(),
+                "last line remains in view"
+            );
+        });
         reader.update_in(visual, |v, window, cx| v.toggle_source(window, cx));
         visual.run_until_parked();
         for height in [700., 1000.] {
@@ -1405,7 +1450,7 @@ mod tests {
                     .range_to_bounds(&(source.len() - 9..source.len()))
                     .unwrap();
                 let gap = v.input_bounds().bottom() - last.bottom();
-                let expected = reader_bottom_space(px(height));
+                let expected = reader_bottom_space(px(height)).max(px(height) * 0.65);
                 assert!(
                     gap >= expected - px(2.) && gap < expected + px(25.),
                     "Editor gap {gap:?}, expected {expected:?}"

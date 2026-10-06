@@ -524,7 +524,7 @@ impl Reader {
         let t = self.active_timeline()?;
         let version = t.versions.get(t.selected?)?;
         let mut style = reader_text_style(cx.theme());
-        style.bottom_padding = reader_bottom_space(window.viewport_size().height);
+        style.bottom_padding = reader_toast::bottom_space(window, cx);
         let timeline_id = t.id;
         let selected = t.selected.unwrap();
         Some(

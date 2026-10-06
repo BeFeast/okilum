@@ -415,3 +415,15 @@ Creation/template errors use readable bottom overlay notifications, leaving the
 input available for correction without an error row constrained by sidebar width.
 The hover header has a nonshrinking height; long fallback messages scroll inside
 the bounded card rather than compressing its title into the border.
+
+## Confirmation and toast lifecycle (#605)
+
+A move preview with no link changes confirms with “Rename” or “Move to <folder>”,
+without zero link/note counts. Trash preparation, application and the result share
+one notification identity: progress is replaced by Undo or an error, and is removed
+while a confirmation dialog is open or after cancellation. Undo has an explicit
+eight-second lifetime, independent of the toolkit default.
+While notifications are present, Reader, source and historical previews gain
+additional scrollable end space (65% of the window height). The viewport/layout
+stays fixed, and the last lines can scroll above the overlay. When the notification
+list empties, the normal end space returns.

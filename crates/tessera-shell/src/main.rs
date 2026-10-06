@@ -1135,6 +1135,7 @@ struct Reader {
     displayed_history_notice: Option<(uuid::Uuid, uuid::Uuid, String)>,
     history_notice_generation: u64,
     notice_generation: u64,
+    toast_subscription: Option<Subscription>,
     link_choices: Vec<(String, Option<String>)>,
     navigation_generation: u64,
     pending_landing: Option<ListOffset>,
@@ -1371,6 +1372,7 @@ impl Reader {
             displayed_history_notice: None,
             history_notice_generation: 0,
             notice_generation: 0,
+            toast_subscription: None,
             link_choices: Vec::new(),
             navigation_generation: 0,
             pending_landing: None,
@@ -3856,7 +3858,7 @@ impl Reader {
         let entity = cx.entity().downgrade();
         let mut style = reader_text_style(cx.theme());
         style.heading_base_font_size = px(BODY_FONT_SIZE);
-        style.bottom_padding = reader_bottom_space(window.viewport_size().height);
+        style.bottom_padding = reader_toast::bottom_space(window, cx);
         let column_bounds = std::rc::Rc::new(std::cell::Cell::new(Bounds::default()));
         let measured_column = column_bounds.clone();
         h_flex()
@@ -5168,6 +5170,10 @@ impl Render for ReaderPanelDrag {
 
 impl Render for Reader {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.toast_subscription.is_none() {
+            let notifications = Root::read(window, cx).notification.clone();
+            self.toast_subscription = Some(cx.observe(&notifications, |_, _, cx| cx.notify()));
+        }
         self.sync_notice_toast(window, cx);
         // Root owns overlay state, but the window content renders these layers.
         let dialog_layer = Root::render_dialog_layer(window, cx);
