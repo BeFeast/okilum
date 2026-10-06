@@ -388,6 +388,7 @@ impl Settings {
                                                 |(id, label, value, icon)| {
                                                     let selected = beta == value;
                                                     Button::new(id)
+                                                        .ghost()
                                                         .debug_selector(move || id.into())
                                                         .label(label)
                                                         .icon(Icon::default().path(icon))
@@ -410,7 +411,8 @@ impl Settings {
                                         .debug_selector(|| "settings-check-updates".into())
                                         .flex_none()
                                         .icon(IconName::RotateCw)
-                                        .label("Check now")
+                                        .ghost()
+                                        .accessibility_label("Check for updates")
                                         .tooltip("Check for updates on the selected channel")
                                         .on_click(|_, _, _| updater::check()),
                                 ),
@@ -439,7 +441,8 @@ impl Settings {
                                         Button::new("settings-linux-channels")
                                             .flex_none()
                                             .icon(IconName::Settings2)
-                                            .label("Repository setup")
+                                            .ghost()
+                                            .accessibility_label("Repository setup")
                                             .tooltip("Configure the Stable or Beta package repository")
                                             .on_click(|_, _, cx| {
                                                 cx.open_url("https://github.com/BeFeast/tessera/blob/main/docs/linux-releases.md")
@@ -450,7 +453,9 @@ impl Settings {
                                     Button::new("settings-releases")
                                         .flex_none()
                                         .icon(IconName::ExternalLink)
-                                        .label("Release notes")
+                                        .ghost()
+                                        .accessibility_label("Release notes")
+                                        .tooltip("Release notes")
                                         .on_click(|_, _, cx| {
                                             cx.open_url("https://git.oklabs.uk/BeFeast/tessera/releases")
                                         }),

@@ -458,7 +458,8 @@ retargets that section. Without a vault it explains that a vault must be opened.
 Updates shows the installed version/build and selected update channel. macOS and
 Windows use a compact joined Stable/Beta control with shield/flask glyphs and
 accent fill on the selected segment; changes persist immediately. Beside it,
-Check now has a refresh glyph and uses the installed updater. All controls use
+the refresh icon button checks through the installed updater. Actions have
+tooltips and accessible names; unselected controls have no grey outline. All controls use
 the same standard Settings button height, radius and padding; the current
 version/build/channel sits directly above. Linux identifies system-package
 management and offers compact repository-setup and release-notes glyph buttons;

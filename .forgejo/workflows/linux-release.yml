@@ -65,6 +65,15 @@ jobs:
           path: dist/arch/*.pkg.tar.zst
           retention-days: 7
 
+      # Preview artifacts let native QA inspect UI before merge. They never
+      # enter the protected publisher or any public update feed.
+      - uses: https://code.forgejo.org/actions/upload-artifact@v3
+        if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
+        with:
+          name: arch-qa
+          path: dist/arch/*.pkg.tar.zst
+          retention-days: 7
+
       - name: Dispatch protected publication
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         env:
