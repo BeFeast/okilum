@@ -136,9 +136,9 @@ For recovery, schedule `sleep 20; pkill -9 -x tessera` in Terminal in the backgr
 then immediately return and edit the COPY. Wait for recovery-copy protection to
 finish while remaining focused and Edited. Relaunch should offer Restore unsaved
 edits. Switching apps to issue the kill after editing instead tests an autosaved
-note: no Restore is then expected. The dismissible banner reports that no unsaved
-edits were lost only after successful draft discovery finds no newer saved draft;
-checking/error states do not make that claim. Only completed journals survive a
+note: no Restore or crash message is then expected. A newer draft produces a
+four-second Restore toast; source mode still offers recovery after it closes.
+Draft-check errors use a dismissible error toast and never claim that edits are safe. Only completed journals survive a
 kill; a process cannot recover keystrokes that never reached durable storage.
 
 ## Create ordinary notes (#361)
@@ -385,5 +385,10 @@ Ordinary feedback disappears after four seconds; notifications with Undo last ei
 seconds. The close glyph or Escape dismisses notifications. Errors remain visible
 until dismissed. Trash keyboard Undo remains available after its notification closes.
 Move feedback names the destination folder (rename names the new file); link counts
-appear only when at least one link was updated. Ambiguous destinations and crash
-recovery retain their existing explicit controls; they are not transient feedback.
+appear only when at least one link was updated. Ambiguous destinations use persistent
+choice notifications (also over expanded tables). Recovery offers use four-second
+toasts only for actual newer drafts; no-draft startup is silent. History actions
+float over the preview, with failures in the same notification overlay. Header save
+status, loading progress, inline filename validation and explicit confirmation dialogs
+are controls, not notification strips. Frozen Brain workspaces retain their separate
+operation review forms; this Reader change does not remove their approval controls.

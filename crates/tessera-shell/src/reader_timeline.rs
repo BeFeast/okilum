@@ -7,7 +7,7 @@ use gpui_component::{
 use tessera_core::source_history::{self, Version};
 
 pub(super) struct Timeline {
-    id: uuid::Uuid,
+    pub(super) id: uuid::Uuid,
     root: PathBuf,
     rel: String,
     versions: Vec<Version>,
@@ -19,8 +19,8 @@ pub(super) struct Timeline {
     source_mode: bool,
     changes: bool,
     loading: bool,
-    message: Option<String>,
-    selection: uuid::Uuid,
+    pub(super) message: Option<String>,
+    pub(super) selection: uuid::Uuid,
     _subscription: Option<Subscription>,
 }
 
@@ -168,6 +168,7 @@ impl Reader {
     pub(super) fn back_from_timeline(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(t) = self.timeline.as_mut() {
             t.selected = None;
+            t.message = None;
             t.content = None;
             t.source = None;
             t.loading = false;
@@ -529,18 +530,64 @@ impl Reader {
         Some(
             v_flex()
                 .id("history-preview")
+                .relative()
                 .debug_selector(|| "history-preview".into())
                 .key_context("ReaderHistory")
                 .size_full()
                 .min_w_0()
                 .min_h_0()
+                .when(t.loading, |d| d.child("Loading version…"))
+                .when_some(t.source.clone().filter(|_| t.source_mode), |d, source| {
+                    d.child(
+                        Editor::new(&source)
+                            .readonly(true)
+                            .w_full()
+                            .flex_1()
+                            .min_h_0(),
+                    )
+                })
+                .when_some(
+                    t.content.clone().filter(|_| !t.source_mode),
+                    |d, content| {
+                        d.child(
+                            h_flex().w_full().flex_1().min_h_0().justify_center().child(
+                                reader_plugins(
+                                    self.vault_root.clone(),
+                                    TextView::new(&content)
+                                        .scrollable(true)
+                                        .selectable(true)
+                                        .style(style)
+                                        .text_size(px(BODY_FONT_SIZE))
+                                        .px(px(READER_SIDE_PADDING))
+                                        .py_4()
+                                        .max_w(px(READER_MAX_WIDTH))
+                                        .w_full()
+                                        .flex_1()
+                                        .min_h_0(),
+                                    cx.weak_entity(),
+                                    self.sel_format,
+                                    t.states.clone(),
+                                ),
+                            ),
+                        )
+                    },
+                )
                 .child(
                     v_flex()
-                        .flex_none()
+                        .id("history-actions-overlay")
+                        .occlude()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .absolute()
+                        .bottom_3()
+                        .left_3()
+                        .max_w(px(440.))
+                        .rounded_lg()
+                        .shadow_md()
+                        .bg(cx.theme().background)
                         .gap_1()
                         .px_4()
                         .py_2()
-                        .border_b_1()
+                        .border_1()
                         .border_color(cx.theme().border)
                         .child(div().min_w_0().text_sm().truncate().child(format!(
                             "{} · {}",
@@ -643,44 +690,7 @@ impl Reader {
                                         ),
                                     )
                                 }),
-                        )
-                        .when_some(t.message.clone(), |d, m| d.child(div().text_sm().child(m))),
-                )
-                .when(t.loading, |d| d.child("Loading version…"))
-                .when_some(t.source.clone().filter(|_| t.source_mode), |d, source| {
-                    d.child(
-                        Editor::new(&source)
-                            .readonly(true)
-                            .w_full()
-                            .flex_1()
-                            .min_h_0(),
-                    )
-                })
-                .when_some(
-                    t.content.clone().filter(|_| !t.source_mode),
-                    |d, content| {
-                        d.child(
-                            h_flex().w_full().flex_1().min_h_0().justify_center().child(
-                                reader_plugins(
-                                    self.vault_root.clone(),
-                                    TextView::new(&content)
-                                        .scrollable(true)
-                                        .selectable(true)
-                                        .style(style)
-                                        .text_size(px(BODY_FONT_SIZE))
-                                        .px(px(READER_SIDE_PADDING))
-                                        .py_4()
-                                        .max_w(px(READER_MAX_WIDTH))
-                                        .w_full()
-                                        .flex_1()
-                                        .min_h_0(),
-                                    cx.weak_entity(),
-                                    self.sel_format,
-                                    t.states.clone(),
-                                ),
-                            ),
-                        )
-                    },
+                        ),
                 )
                 .into_any_element(),
         )
@@ -839,6 +849,22 @@ mod tests {
                 std::fs::read_to_string(root.join("note.md")).unwrap(),
                 "external"
             );
+        });
+        visual.run_until_parked();
+        visual.update(|w, cx| assert_eq!(w.notifications(cx).len(), 1));
+        visual.update(|w, cx| {
+            reader_toast::dismiss(w, cx);
+        });
+        visual.executor().advance_clock(Duration::from_secs(1));
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert!(r.active_timeline().unwrap().message.is_none())
+        });
+        // Retrying the identical failure must show it again after dismissal.
+        reader.update_in(visual, |r, w, cx| r.restore_timeline(w, cx));
+        visual.run_until_parked();
+        visual.update(|w, cx| assert_eq!(w.notifications(cx).len(), 1));
+        reader.update_in(visual, |r, w, cx| {
             std::fs::write(root.join("note.md"), current).unwrap();
             r.restore_timeline(w, cx);
             assert!(r.timeline.is_none());
