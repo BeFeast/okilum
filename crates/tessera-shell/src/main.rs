@@ -3624,8 +3624,11 @@ impl Reader {
                                     "folder-disclosure-{}",
                                     row.path
                                 )))
-                                .on_click(move |_, window, cx| {
+                                .on_click(move |event, window, cx| {
                                     cx.stop_propagation();
+                                    if event.click_count() != 1 {
+                                        return;
+                                    }
                                     let _ = toggle_entity.update(cx, |this, cx| {
                                         this.activate_tree_row(&toggle_row, window, cx)
                                     });

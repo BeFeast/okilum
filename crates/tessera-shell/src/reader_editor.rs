@@ -874,6 +874,18 @@ impl Reader {
             }
         }
         if result.is_ok() && same_move_root(&self.vault_root, &operation.root) {
+            self.remap_move_sidebar(&operation.to, &operation.from, cx);
+            // Pinned/recent paths also belong to readers displaying unrelated notes.
+            for (reader, _) in cx.default_global::<Editors>().0.clone() {
+                if reader.entity_id() != cx.entity_id() {
+                    let _ = reader.update(cx, |r, cx| {
+                        if same_move_root(&r.vault_root, &operation.root) {
+                            r.remap_move_sidebar(&operation.to, &operation.from, cx);
+                            cx.notify();
+                        }
+                    });
+                }
+            }
             let mut changes = tessera_core::Changes {
                 changed: operation.files.keys().cloned().collect(),
                 removed: std::collections::BTreeSet::from([operation.to.clone()]),
@@ -1072,6 +1084,7 @@ impl Reader {
                         r.editing = editing;
                         if moved {
                             r.tree.note_moved(&preview.from, &preview.to);
+                            r.remap_move_sidebar(&preview.from, &preview.to, cx);
                         }
                         let next_path = tessera_core::link_rewrite::moved_path(
                             &path,
@@ -2177,6 +2190,11 @@ mod tests {
         );
         let state = directory.join("state");
         let operations = tessera_core::link_rewrite::Operation::list(&state, &root).unwrap();
+        reference.update_in(reference_visual, |r, _, _| {
+            r.sidebar.pinned = vec!["New/renamed.md".into()];
+            r.sidebar.recent = vec![("New/renamed.md".into(), 123)];
+            r.tree_revealed = "New/renamed.md".into();
+        });
         source.update_in(source_visual, |r, window, cx| {
             r.revert_link_move(&operations.operations[0], &state, window, cx)
                 .unwrap()
@@ -2186,6 +2204,21 @@ mod tests {
             let editing = r.editing.as_ref().unwrap();
             assert_eq!(editing.input.read(cx).value().as_ref(), "edited [[start]]");
             assert!(!editing.store.dirty());
+            assert_eq!(r.sidebar.pinned, ["start.md"]);
+            assert!(r
+                .sidebar
+                .recent
+                .iter()
+                .any(|(path, time)| path == "start.md" && *time == 123));
+            assert!(!r
+                .sidebar
+                .recent
+                .iter()
+                .any(|(path, _)| path == "New/renamed.md"));
+            assert_eq!(
+                r.tree_revealed, "ref.md",
+                "reloaded current note is revealed"
+            );
         });
         assert!(root.join("start.md").exists());
         assert!(!root.join("New/renamed.md").exists());

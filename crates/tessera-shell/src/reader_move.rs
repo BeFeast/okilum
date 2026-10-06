@@ -233,6 +233,17 @@ impl Reader {
         cx.notify();
     }
 
+    pub(super) fn remap_move_sidebar(&mut self, from: &str, to: &str, cx: &mut Context<Self>) {
+        for path in &mut self.sidebar.pinned {
+            *path = tessera_core::link_rewrite::moved_path(path, from, to);
+        }
+        for (path, _) in &mut self.sidebar.recent {
+            *path = tessera_core::link_rewrite::moved_path(path, from, to);
+        }
+        self.tree_revealed = tessera_core::link_rewrite::moved_path(&self.tree_revealed, from, to);
+        self.save_sidebar(cx);
+    }
+
     fn start_move_preview(
         &mut self,
         destination: &Path,
@@ -265,7 +276,7 @@ impl Reader {
         } else {
             None
         };
-        let mut path = destination.to_path_buf();
+        let mut path: PathBuf = destination.components().collect();
         if !directory && path.extension().is_none() {
             path.set_extension("md");
         }
@@ -639,15 +650,7 @@ impl Reader {
                     *path =
                         tessera_core::link_rewrite::moved_path(path, &pending.from, &pending.to);
                 }
-                for path in &mut self.sidebar.pinned {
-                    *path =
-                        tessera_core::link_rewrite::moved_path(path, &pending.from, &pending.to);
-                }
-                for (path, _) in &mut self.sidebar.recent {
-                    *path =
-                        tessera_core::link_rewrite::moved_path(path, &pending.from, &pending.to);
-                }
-                self.save_sidebar(cx);
+                self.remap_move_sidebar(&pending.from, &pending.to, cx);
                 let next_current = tessera_core::link_rewrite::moved_path(
                     &self.current_rel,
                     &pending.from,
@@ -1454,7 +1457,7 @@ mod tests {
         visual.run_until_parked();
         visual.simulate_keystrokes("f2");
         visual.run_until_parked();
-        visual.simulate_input("Новое 🧠");
+        visual.simulate_input("Новое 🧠//");
         visual.simulate_keystrokes("enter");
         visual.run_until_parked();
         if let Some(scan) = visual.debug_bounds("scan-move-links") {
