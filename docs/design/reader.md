@@ -554,6 +554,10 @@ Source restoration keeps the document hidden until its source viewport is ready;
 the preview and the source's initial top position must not flash on startup.
 The published document's source viewport must become usable independently of
 background search validation; “Checking search data” cannot keep it blank.
+Reader restoration installs the saved block/offset before its first layout, so
+the top of the note never paints before the restored position. Breadcrumbs remain
+visible on restoration, including mid-note; deliberate scrolling resumes the
+usual scrolling-header behavior. Neither mode waits for search validation.
 A previously unseen vault inherits the last active window's
 presentation and geometry, without copying its note paths or navigation history.
 Transient menus, hover previews, notifications and dialogs do not reopen.

@@ -5318,9 +5318,11 @@ impl Render for Reader {
             .child(
                 div()
                     .size_full()
-                    // Lay out the source editor before revealing its restored
-                    // viewport; never flash the preview or source at the top.
-                    .when(self.restoring_source(), |view| view.opacity(0.))
+                    // Reveal only a positioned document. Source needs one
+                    // layout; a prepared reader is positioned before layout.
+                    .when(self.restoring_source() || self.restoring_reader(), |view| {
+                        view.opacity(0.)
+                    })
                     .child(self.render_document_surface(window, cx)),
             )
             .when(self.find_open, |s| s.child(self.render_find_bar(cx)));

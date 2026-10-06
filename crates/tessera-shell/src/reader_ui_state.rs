@@ -439,6 +439,8 @@ pub(crate) struct Session {
     source: Option<[f32; 2]>,
     source_position_pending: bool,
     source_reader_position: Option<ListOffset>,
+    pub(crate) reader_header: Option<String>,
+    reader_position_pending: bool,
     pub(crate) ready: bool,
     pub(crate) interacted: bool,
 }
@@ -516,7 +518,16 @@ impl Reader {
                 self.history_ix = saved.history_index;
             }
             if !saved.note.is_empty() && !saved.source {
-                self.scroll_to_position(saved.position.list(), cx);
+                self.cancel_pending_landing();
+                self.ui_state.reader_header = Some(self.current_rel.clone());
+                self.document_header_hidden = px(0.);
+                let positioned = self.content.update(cx, |content, cx| {
+                    content.scroll_to_prepared_position(saved.position.list(), cx)
+                });
+                if !positioned {
+                    self.ui_state.reader_position_pending = true;
+                    self.scroll_to_position(saved.position.list(), cx);
+                }
             }
         }
         cx.notify();
@@ -589,7 +600,19 @@ impl Reader {
         self.ui_state.source.is_some() || self.ui_state.source_position_pending
     }
 
+    pub(crate) fn restoring_reader(&self) -> bool {
+        self.ui_state.reader_position_pending && self.pending_landing.is_some()
+    }
+
+    pub(crate) fn restored_reader_header(&self) -> bool {
+        self.editing.is_none()
+            && self.ui_state.reader_header.as_deref() == Some(self.current_rel.as_str())
+    }
+
     pub(crate) fn record_ui_state(&mut self, active: bool, cx: &mut Context<Self>) {
+        if self.pending_landing.is_none() {
+            self.ui_state.reader_position_pending = false;
+        }
         if !self.ui_state.ready || self.ui_state.root != self.vault_root {
             return;
         }
@@ -1126,7 +1149,7 @@ mod tests {
                     Opts {
                         vault: Some(root.clone()),
                         note: None,
-                        preparation_hold: source.then_some(hold_search),
+                        preparation_hold: Some(hold_search),
                         session_directory: Some(directory.clone()),
                         index_dir: Some(fixture.path().join("index")),
                         panel_settings_override: Some(fixture.path().join("legacy-widths.json")),
@@ -1141,9 +1164,27 @@ mod tests {
         });
         let reader = reader.unwrap();
         visual.run_until_parked();
+        if !source {
+            reader.read_with(visual, |reader, cx| {
+                assert!(
+                    reader.ui_state.ready,
+                    "positive control: publication completed"
+                );
+                assert_eq!(
+                    reader
+                        .content
+                        .read(cx)
+                        .list_state()
+                        .logical_scroll_top()
+                        .item_ix,
+                    14,
+                    "saved position must be installed before any landing timer"
+                );
+            });
+        }
         visual.executor().advance_clock(Duration::from_millis(100));
         visual.run_until_parked();
-        if source {
+        {
             // Search preparation is deliberately held indefinitely. The
             // published source document must still reach its saved viewport.
             for _ in 0..5 {
@@ -1157,18 +1198,46 @@ mod tests {
             reader.read_with(visual, |reader, cx| {
                 let load = reader.loading.as_ref().unwrap();
                 assert!(load.active && load.published, "search remains unfinished");
-                assert!(reader.editing.is_some(), "source must not wait for search");
-                assert!(
-                    !reader.restoring_source(),
-                    "source viewport must be visible"
-                );
-                assert_eq!(reader.source_scroll_offset(cx).unwrap().y, px(-400.));
+                if source {
+                    assert!(reader.editing.is_some(), "source must not wait for search");
+                    assert!(
+                        !reader.restoring_source(),
+                        "source viewport must be visible"
+                    );
+                    assert_eq!(reader.source_scroll_offset(cx).unwrap().y, px(-400.));
+                } else {
+                    assert_eq!(
+                        reader
+                            .content
+                            .read(cx)
+                            .list_state()
+                            .logical_scroll_top()
+                            .item_ix,
+                        14
+                    );
+                    assert!(
+                        reader.pending_landing.is_none(),
+                        "first reader frame is positioned without a timer"
+                    );
+                    assert!(reader.restored_reader_header());
+                }
                 assert_eq!(
                     layout(&root, cx).unwrap().0.position.item,
                     14,
                     "unpainted preview position must survive persisted source restoration"
                 );
             });
+            if !source {
+                assert_eq!(
+                    visual
+                        .debug_bounds("document-header-viewport")
+                        .unwrap()
+                        .size
+                        .height,
+                    px(48.),
+                    "restoration must keep breadcrumbs visible at a mid-note position"
+                );
+            }
             release_search.try_send(()).unwrap();
             visual.run_until_parked();
         }
@@ -1234,5 +1303,27 @@ mod tests {
                 14
             );
         });
+        if !source {
+            for expected_height in [24., 0.] {
+                visual.update(|window, cx| window.draw(cx).clear(cx));
+                let body = visual.debug_bounds("reader-document").unwrap();
+                visual.simulate_event(ScrollWheelEvent {
+                    position: point(body.center().x, body.top() + px(130.)),
+                    delta: ScrollDelta::Pixels(point(px(0.), px(-24.))),
+                    ..Default::default()
+                });
+                visual.run_until_parked();
+                visual.update(|window, cx| window.draw(cx).clear(cx));
+                assert_eq!(
+                    visual
+                        .debug_bounds("document-header-viewport")
+                        .unwrap()
+                        .size
+                        .height,
+                    px(expected_height),
+                    "explicit scrolling resumes the smooth header transition"
+                );
+            }
+        }
     }
 }
