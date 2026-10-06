@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <meta name="theme-color" content="#f5f4ef">
+  <meta name="theme-color" content="#F2F6FC">
   <meta name="referrer" content="no-referrer">
   <title>Inbox · Tessera</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
@@ -12,20 +12,28 @@
   <script type="module" src="/app.js"></script>
 </head>
 <body>
-  <header class="topbar"><a class="brand" href="/" aria-label="Tessera Inbox home"><img src="/icon.svg" alt="" width="30" height="30"><span>Tessera <span class="muted">/ Inbox</span></span></a><div class="account"><span id="connection" role="status">Connecting…</span><button id="login" class="quiet">Sign in</button><button id="logout" class="quiet" hidden>Sign out</button></div></header>
+  <aside class="sidebar">
+    <a class="brand" href="/" aria-label="Tessera home"><img src="/icon.svg" alt="" width="28" height="28"><span>Tessera</span><span class="edition">Inbox</span></a>
+    <button id="new-thought" class="new-thought">New thought</button>
+    <nav aria-label="Main navigation"><button data-nav="inbox">Inbox</button><button data-nav="questions">Questions</button><button data-nav="projects">Projects</button><button data-nav="overview">Overview</button></nav>
+    <div class="sidebar-bottom"><span class="workspace-mark">T</span><div>Your workspace<small>Personal · LAN</small></div><button id="theme-toggle"></button></div>
+  </aside>
+  <div class="app-frame"><header class="topbar"><div class="breadcrumb">Workspace <span>/</span> <strong id="screen-title">Inbox</strong></div><div class="account"><span id="connection" role="status">Connecting…</span><button id="login" class="quiet">Sign in</button><button id="logout" class="quiet" hidden>Sign out</button></div></header>
   <main>
-    <section class="intro"><p class="eyebrow">SPACE TO THINK</p><h1>A place for your next thought.</h1><p class="subtitle">Capture it now. Come back with a little more clarity.</p></section>
     <div id="notice" role="status" aria-live="polite" hidden></div>
     <section id="enrollment" class="card" hidden><h2>Make this Inbox yours</h2><p>Create a passkey to sign in from your phone and Mac.</p><button id="register">Create passkey</button></section>
-    <div class="workspace">
-      <section class="capture-panel"><form id="capture-form" class="card"><label for="thought">What's on your mind?</label><textarea id="thought" rows="7" placeholder="An idea, a question, something to come back to…" required></textarea><div class="form-footer"><span id="capture-help">Sign in once to capture on this device.</span><button id="save" type="submit" disabled>Save thought <span aria-hidden="true">↗</span></button></div></form><p class="storage-note">Unsent thoughts stay on this device until delivery. Export them before clearing browser data.</p><div class="local-tools"><button id="sync" class="quiet">Sync now</button><button id="export" class="quiet" hidden>Export unsent</button></div></section>
-      <section class="inbox-panel" aria-labelledby="list-title"><div class="list-heading"><h2 id="list-title">Your thoughts</h2><span id="count" class="muted"></span></div><ul id="thoughts"></ul><p id="empty" class="empty">No thoughts here yet.<br>Your next one can start small.</p><button id="more" class="quiet" hidden>Load more</button></section>
-    </div>
+    <section data-screen="inbox" class="screen">
+      <div class="page-heading"><div><p class="eyebrow">A little room to think</p><h1>Inbox</h1><p>Catch a thought. Give it a next step.</p></div><span id="count" class="count"></span></div>
+      <details id="capture-compose" class="compose"><summary><span class="compose-plus">＋</span> What's on your mind?<span class="key-hint">New thought</span></summary><form id="capture-form" class="card"><label for="thought">What's on your mind?</label><textarea id="thought" rows="7" placeholder="An idea, a question, something to come back to…" required></textarea><div class="form-footer"><span id="capture-help">Sign in once to capture on this device.</span><button id="save" type="submit" disabled>Save thought <span aria-hidden="true">↗</span></button></div></form><p class="storage-note">Unsent thoughts stay on this device. Export them before clearing browser data.</p></details>
+      <div class="list-toolbar"><span class="section-label" id="list-title">Your thoughts</span><div class="local-tools"><button id="sync" class="quiet">Sync now</button><button id="export" class="quiet" hidden>Export unsent</button></div></div>
+      <ul id="thoughts" class="primary-list"></ul><p id="empty" class="empty">Nothing waiting here.<br><span>Capture a thought whenever it comes.</span></p><button id="more" class="quiet" hidden>Load more</button>
+    </section>
+    <section data-screen="projects" class="screen" hidden><div class="page-heading"><div><p class="eyebrow">Make room for progress</p><h1>Projects</h1><p>Decisions, work in motion, and what comes next.</p></div></div>
     <section id="project-panel" class="card executor-panel" hidden aria-labelledby="project-heading">
-      <div class="list-heading"><h2 id="project-heading">Project</h2><button id="project-refresh" class="quiet">Refresh</button></div>
+      <div class="list-heading"><h2 id="project-heading">Your project</h2><button id="project-refresh" class="quiet">Refresh</button></div>
       <label for="project-select">Choose project</label><select id="project-select"></select>
-      <form id="project-form"><label for="project-summary">Status</label><input id="project-summary" maxlength="256"><label for="project-next">Next step</label><textarea id="project-next" maxlength="4096" rows="3"></textarea><button id="project-save">Save status</button><button id="project-clear-status" type="button" class="quiet" hidden>Clear saved request · keep text</button></form><p id="project-status" role="status"></p>
-      <div class="project-grid"><section><h3>Questions for you</h3><p id="project-question-status" role="status"></p><div id="project-questions"></div></section><section><h3>Who is doing what</h3><p>Executor state comes from T3. Issue assignees are shown separately below.</p><div id="project-executors"></div></section></div>
+      <div class="project-brief"><h2 id="project-state"></h2><p id="project-next-summary"></p></div><details class="status-editor"><summary>Edit status & next step</summary><form id="project-form"><label for="project-summary">Status</label><input id="project-summary" maxlength="256"><label for="project-next">Next step</label><textarea id="project-next" maxlength="4096" rows="3"></textarea><button id="project-save">Save status</button><button id="project-clear-status" type="button" class="quiet" hidden>Clear saved request · keep text</button></form></details><p id="project-status" role="status"></p>
+      <div class="project-grid"><section><h3>Questions for you</h3><p id="project-question-status" role="status"></p><div id="project-questions"></div></section><section><h3>Who is doing what</h3><div id="project-executors"></div></section></div>
       <h3>Results and QA</h3><div id="project-results"></div>
       <details><summary>Record a publication result</summary><p>Record what was published and what to check. This does not publish or run anything; the report is attributed to you.</p>
       <form id="result-form"><label for="result-launch">Completed executor run</label><select id="result-launch" required></select>
@@ -39,18 +47,8 @@
       <button id="result-save">Record result</button><button id="result-clear" type="button" class="quiet" hidden>Clear saved report · keep text</button><p id="result-status" role="status"></p></form></details>
       <h3>Linked repositories</h3><p id="project-repo-status" role="status"></p><div id="project-repos"></div>
     </section>
-    <section id="executor-panel" class="card executor-panel" hidden aria-labelledby="executor-title">
-      <div class="list-heading"><h2 id="executor-title">Questions for you</h2><button id="executor-refresh" class="quiet">Refresh</button></div>
-      <label for="executor-project">Project</label><select id="executor-project"></select>
-      <p id="executor-status" class="muted" role="status"></p><ul id="executor-questions"></ul>
-    </section>
-    <section id="forgejo-panel" class="card executor-panel" hidden aria-labelledby="forgejo-heading">
-      <div class="list-heading"><h2 id="forgejo-heading">Repositories</h2><button id="forgejo-refresh" class="quiet">Refresh</button></div>
-      <label for="forgejo-project">Project filter</label><select id="forgejo-project"><option value="">All accessible repositories</option></select>
-      <p id="forgejo-status" role="status"></p><div id="forgejo-list"></div>
-    </section>
-    <section id="launch-panel" class="card executor-panel" hidden aria-labelledby="launch-heading">
-      <div class="list-heading"><h2 id="launch-heading">Brief → executor</h2><button id="launch-refresh" class="quiet">Refresh</button></div>
+    <details class="launch-disclosure"><summary>New execution brief</summary><section id="launch-panel" class="card executor-panel" hidden aria-labelledby="launch-heading">
+      <div class="list-heading"><h2 id="launch-heading">Start from a brief</h2><button id="launch-refresh" class="quiet">Refresh</button></div>
       <p>Save a preview, then explicitly start one executor in a new worktree. AI cannot start it for you.</p>
       <form id="launch-form"><label for="launch-project">Project</label><select id="launch-project"></select><label for="launch-target">Execution target</label><select id="launch-target"></select>
         <label for="launch-title">Brief title</label><input id="launch-title" required><label for="launch-text">Exact brief</label><textarea id="launch-text" rows="7" required></textarea><button id="launch-save" type="submit">Save preview</button>
@@ -58,15 +56,32 @@
       <pre id="launch-preview"></pre><p id="launch-status" role="status"></p>
       <div class="dialog-actions"><button id="launch-confirm" hidden>Start this executor</button><button id="launch-check" class="quiet" hidden>Check status</button><button id="launch-retry" hidden>Retry exact saved launch</button><button id="launch-new" class="quiet">Edit as a new brief</button></div>
       <ul id="launch-list"></ul>
+    </section></details>
     </section>
-  </main>
-  <dialog id="executor-dialog"><div class="dialog-heading"><h2>Answer the executor</h2><button id="executor-close" class="quiet">Close</button></div>
+    <section data-screen="questions" class="screen" hidden><div class="page-heading"><div><p class="eyebrow">Keep the work moving</p><h1>Questions</h1><p>A decision from you. A next step for your executor.</p></div></div>
+    <section id="executor-panel" class="card executor-panel" hidden aria-labelledby="executor-title">
+      <div class="list-heading"><h2 id="executor-title">Questions for you</h2><button id="executor-refresh" class="quiet">Refresh</button></div>
+      <label for="executor-project">Project</label><select id="executor-project"></select>
+      <p id="executor-status" class="muted" role="status"></p><ul id="executor-questions"></ul>
+    </section>
+    </section>
+    <section data-screen="overview" class="screen wide-screen" hidden><div class="page-heading"><div><p class="eyebrow">Across your repositories</p><h1>Overview</h1><p>The work in progress, all in one place.</p></div></div>
+    <section id="forgejo-panel" class="card executor-panel" hidden aria-labelledby="forgejo-heading">
+      <div class="list-heading"><h2 id="forgejo-heading">Work overview</h2><button id="forgejo-refresh" class="quiet">Refresh</button></div>
+      <label for="forgejo-project">Project filter</label><select id="forgejo-project"><option value="">All accessible repositories</option></select>
+      <div class="overview-tools"><div class="filter-chips" role="group" aria-label="Work type"><button data-kind="all" aria-pressed="true">All work</button><button data-kind="issue" aria-pressed="false">Issues</button><button data-kind="pull" aria-pressed="false">Pull requests</button><button data-kind="release" aria-pressed="false">Releases</button></div><label class="search-box"><span class="sr-only">Filter work</span><input id="overview-search" type="search" placeholder="Filter by title or repository…"></label></div><p id="forgejo-status" class="sync-stamp" role="status"></p><div id="forgejo-list"></div>
+    </section>
+
+    </section>
+  </main></div>
+  <dialog id="executor-dialog" class="drawer"><div class="dialog-heading"><h2>Answer the executor</h2><button id="executor-close" class="quiet">Close</button></div>
     <p id="executor-source" class="muted"></p><p>Send an answer to the original T3 question. Opening it does not answer it.</p>
     <form id="executor-answer-form"><div id="executor-answer-fields"></div><p id="executor-answer-status" role="status"></p>
       <div class="dialog-actions"><button id="executor-send" type="submit" disabled>Send answer</button><button id="executor-retry" type="button" hidden>Retry exact saved answer</button><button id="executor-check" type="button" class="quiet">Check status</button><button id="executor-discard" type="button" class="quiet" hidden>Clear refused request · keep text</button></div>
     </form>
   </dialog>
-  <dialog id="detail"><div class="dialog-heading"><h2>Thought</h2><button id="close-detail" class="quiet" aria-label="Close thought">Close</button></div><p id="detail-status" class="muted"></p><pre id="detail-text"></pre><section id="discussion" hidden><h3>Discuss this thought</h3><p class="muted">Only this original thought and completed exchanges below are sent to AI. AI cannot publish or change files.</p><div id="exchanges"></div><p id="discussion-status" role="status"></p><form id="discussion-form"><label for="question">Your question</label><textarea id="question" rows="3" required></textarea><button id="ask" type="submit">Send to AI</button><button id="forget-question" type="button" class="quiet" hidden>Forget local retry</button></form><h3>Publish a Markdown document</h3><p class="muted">Preview and edit the exact text below. This demo creates a new file in the server's fixture vault; it does not change your original thought.</p><form id="publish-form"><label for="destination">PARA folder</label><select id="destination" required aria-describedby="destination-error publication-help"><option value="">Choose a PARA folder…</option></select><p id="destination-error" class="field-error" hidden></p><label for="filename">New filename or subfolder/name (.md added automatically)</label><input id="filename" required placeholder="tessera/My idea" aria-describedby="filename-error"><p id="filename-error" class="field-error" hidden></p><label for="draft">Document preview / edit</label><textarea id="draft" rows="8" required aria-describedby="draft-error"></textarea><p id="draft-error" class="field-error" hidden></p><p id="publication-help" role="status"></p><button id="publish" type="submit" disabled>Create new Markdown file</button><button id="forget-publication" type="button" class="quiet" hidden>Forget local publication retry</button></form><p id="publication-status" role="status"></p><ul id="publications"></ul></section></dialog>
+  <dialog id="detail" class="drawer"><div class="dialog-heading"><h2>Thought</h2><button id="close-detail" class="quiet" aria-label="Close thought">Close</button></div><p id="detail-status" class="muted"></p><pre id="detail-text"></pre><section id="discussion" hidden><h3>Discuss this thought</h3><p class="muted">Only this original thought and completed exchanges below are sent to AI. AI cannot publish or change files.</p><div id="exchanges"></div><p id="discussion-status" role="status"></p><form id="discussion-form"><label for="question">Your question</label><textarea id="question" rows="3" required></textarea><button id="ask" type="submit">Send to AI</button><button id="forget-question" type="button" class="quiet" hidden>Forget local retry</button></form><h3>Publish a Markdown document</h3><p class="muted">Preview and edit the exact text below. This demo creates a new file in the server's fixture vault; it does not change your original thought.</p><form id="publish-form"><label for="destination">PARA folder</label><select id="destination" required aria-describedby="destination-error publication-help"><option value="">Choose a PARA folder…</option></select><p id="destination-error" class="field-error" hidden></p><label for="filename">New filename or subfolder/name (.md added automatically)</label><input id="filename" required placeholder="tessera/My idea" aria-describedby="filename-error"><p id="filename-error" class="field-error" hidden></p><label for="draft">Document preview / edit</label><textarea id="draft" rows="8" required aria-describedby="draft-error"></textarea><p id="draft-error" class="field-error" hidden></p><p id="publication-help" role="status"></p><button id="publish" type="submit" disabled>Create new Markdown file</button><button id="forget-publication" type="button" class="quiet" hidden>Forget local publication retry</button></form><p id="publication-status" role="status"></p><ul id="publications"></ul></section></dialog>
+  <dialog id="overview-detail" class="drawer"><div class="dialog-heading"><button id="overview-close"></button><span class="section-label">Repository activity</span></div><div id="overview-detail-body"></div></dialog>
   <dialog id="signout-dialog"><h2>Keep your unsent thoughts</h2><p>Some thoughts are still on this device. Export a copy before signing out. The local originals will stay here for this account.</p><div class="dialog-actions"><button id="cancel-signout" class="quiet">Stay signed in</button><button id="export-signout">Export and sign out</button></div></dialog>
   <noscript>This Inbox needs JavaScript for passkey sign-in and local offline capture. Tessera Reader remains available separately.</noscript>
 </body>

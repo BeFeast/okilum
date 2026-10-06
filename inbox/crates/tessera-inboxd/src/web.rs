@@ -72,6 +72,25 @@ pub(crate) fn routes<S: Clone + Send + Sync + 'static>() -> Router<S> {
         "text/javascript; charset=utf-8",
         "projects.js"
     );
+    let router = asset!(router, "/ui.js", "text/javascript; charset=utf-8", "ui.js");
+    let router = router.route(
+        "/noto-sans-400.ttf",
+        get(|| async {
+            (
+                [(header::CONTENT_TYPE, "font/ttf")],
+                &include_bytes!("../../../../web/inbox/noto-sans-400.ttf")[..],
+            )
+        }),
+    );
+    let router = router.route(
+        "/noto-sans-600.ttf",
+        get(|| async {
+            (
+                [(header::CONTENT_TYPE, "font/ttf")],
+                &include_bytes!("../../../../web/inbox/noto-sans-600.ttf")[..],
+            )
+        }),
+    );
     let router = asset!(router, "/sw.js", "text/javascript; charset=utf-8", "sw.js");
     let router = asset!(router, "/style.css", "text/css; charset=utf-8", "style.css");
     let router = asset!(router, "/icon.svg", "image/svg+xml", "icon.svg");
