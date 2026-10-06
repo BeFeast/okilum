@@ -17,8 +17,8 @@ breadcrumbs, a folder tree, well-set Markdown in a readable column.
 | R2 — sidebar | Folder tree (domains → PARA → notes) from #335, compact Search in the header |
 | R3 — right panel | Table of contents above «Linked from» (#337) |
 
-User-selectable themes beyond Light/Dark/System and a theme picker belong to
-[#349](https://git.oklabs.uk/BeFeast/tessera/issues/349).
+User-selectable themes beyond Light/Dark/System and a theme picker are
+[#349](https://git.oklabs.uk/BeFeast/tessera/issues/349); see §Themes.
 
 UI strings stay in English. The mockup's Russian strings show content, not
 localisation.
@@ -94,7 +94,8 @@ choice is remembered globally in the application UI store outside the vault (#68
 - Marks: every match `find-match`, the current one `find-current` with a 1.5 px
   `find-current-ring` outline. The marks are painted inside the vendored text
   view (`scripts/patches/0008-text-view-search-highlights.diff`), which still uses a fixed amber; moving it onto
-  these tokens is a small follow-up patch, not part of R1.
+  these tokens is a small follow-up patch, not part of R1. Every theme already
+  defines `findMatch` and `findCurrent` for it.
 
 ## Status text
 
@@ -191,6 +192,10 @@ Reader tokens (new `reader-tokens.json`, loaded the same way):
 | `find-current-ring` | `#d97706` | `#facc15` | |
 | `hover` | `#eff0f2` | `#2a2d33` | row and icon-button hover |
 | `selection` | `accent` @ 22 % | `accent` @ 35 % | text selection |
+| `callout-important` | `#9333ea` | `#c084fc` | «important» callout accent |
+| `highlight` | `#ffd000` @ 40 % | `#ffd000` @ 40 % | `<mark>` background |
+| `scrim` | black @ 18 % | black @ 45 % | dims the document under the table overlay |
+| `on-status` | `#ffffff` | `#202226` | text on a filled status color |
 
 Status colors (`success`, `warning`, `danger`, `info`) come from the brand
 tokens, unchanged.
@@ -202,6 +207,43 @@ existing `AppearancePreference` already models this; R1 exposes it in the More
 menu and persists the choice in app config (not in notes). Theme flips are live:
 every Reader color is read from the palette on render, so nothing needs
 restarting.
+
+## Themes
+
+A theme (#349) is a pure token set: it names every interface and Reader role
+above for both a light and a dark variant, and nothing else. Mode
+(System/Light/Dark) stays a separate choice, so every theme follows the system
+too. Status colors may fall back to the brand tokens; no other role inherits.
+
+| Theme | Key | Character |
+| --- | --- | --- |
+| Tessera (default) | `tessera` | `interface-tokens.json` + `reader-tokens.json`, the tables above |
+| Graphite | `graphite` | neutral greys, slate accent, no hue in surfaces |
+| Paper | `paper` | warm off-white, ink-blue links, rust accent; sepia dark |
+| High contrast | `high-contrast` | black/white surfaces, AAA (7:1) reading text |
+| Nord | `nord` | cool arctic blues after the Nord palette |
+
+Token files live in `crates/tessera-shell/assets/themes/<key>.json`
+(`tessera-theme/v1`). A unit test checks every theme in both variants: `text`
+and `text-muted` on `surface`, `canvas` and `sidebar`; `link` and `missing-link`
+on `surface` and `canvas`; `text` on `code-bg`, `surface-raised`, `selected` and
+`hover`; status colors on `surface` and `on-status` on them — WCAG AA (4.5:1),
+AAA (7:1) for High contrast. `on-accent` on `accent` is 4.5:1 and `text-faint`
+3:1 (4.5:1 for High contrast). A new theme that fails is fixed, not exempted.
+
+**Settings → Appearance:** a *Mode* segmented control of glyph buttons (monitor,
+sun, moon; tooltips «Match system», «Light», «Dark») and a *Theme* row of
+compact swatch cards (120 px). Each card previews the theme's sidebar, surface,
+text, muted text, link and accent in the variant currently shown. The selected
+card has a 2 px `focus` ring and a check glyph; ring and glyph space are always
+laid out, so selection never moves anything. Cards are keyboard stops (Enter
+or Space selects). The choice applies live and is stored once for the whole
+app (`appearance.json`, key `theme`), never per vault or in notes.
+
+The brand mark keeps its brand colors under every theme. The `highlight` color
+is resolved when a block is parsed, so an open note picks up a new theme's
+highlight on its next re-parse. The syntax-highlight theme for code blocks stays
+the toolkit's light/dark pair.
 
 ## Icons
 
