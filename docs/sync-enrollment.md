@@ -106,3 +106,5 @@ started. It never reads a user daemon/config or contacts the live hub. Port
 allocation has the normal release/bind race; startup failure fails the run.
 
 Evidence and limitations are in [the compatibility result](sync-compatibility.md).
+
+The first Linux controller component is documented in [Linux lifecycle ownership](sync-linux-controller.md). It is not yet connected to Reader or Settings.
