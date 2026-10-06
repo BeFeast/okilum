@@ -284,14 +284,21 @@ impl RenderOnce for TaskCounts {
         let state = results_state(window, cx);
         state.update(cx, |s, _| s.refresh(index, today(), &self.query));
         let results = state.read(cx);
-        if !results.unsupported.is_empty() {
+        if !results.unsupported.is_empty() || results.rows.is_empty() {
             return div().into_any_element();
         }
-        count_badge(results, cx).into_any_element()
+        let count = results.rows.len();
+        div()
+            .debug_selector(move || format!("tasks-section-count-{count}"))
+            .child(count_badge(results, cx))
+            .into_any_element()
     }
 }
 fn count_badge(results: &Results, cx: &App) -> impl IntoElement {
     let count = results.rows.len();
+    if count == 0 {
+        return div().into_any_element();
+    }
     div()
         .text_sm()
         .font_weight(FontWeight::NORMAL)
@@ -302,6 +309,7 @@ fn count_badge(results: &Results, cx: &App) -> impl IntoElement {
         .bg(cx.theme().muted_foreground.opacity(0.08))
         .debug_selector(move || format!("tasks-count-{count}"))
         .child(format!("{count} tasks · {} in notes", results.tasks.len()))
+        .into_any_element()
 }
 
 #[derive(IntoElement)]
@@ -445,6 +453,48 @@ fn group_label(group: Group, task: &Task) -> String {
         group.label(task)
     }
 }
+// SVG strokes fill a predictable secondary-text-sized box; font arrow glyphs
+// have much smaller ink bounds than the adjacent backlink text.
+fn priority_icon(priority: u8, color: Hsla) -> impl IntoElement {
+    let down = priority >= 4;
+    div()
+        .relative()
+        .size(rems(1.))
+        .flex_shrink_0()
+        .text_color(color)
+        .debug_selector(|| "task-priority".into())
+        .when(matches!(priority, 0 | 5), |el| {
+            let chevron = if down {
+                IconName::ChevronDown
+            } else {
+                IconName::ChevronUp
+            };
+            el.child(
+                Icon::new(chevron.clone())
+                    .size(rems(0.75))
+                    .absolute()
+                    .top_0()
+                    .left_0(),
+            )
+            .child(
+                Icon::new(chevron)
+                    .size(rems(0.75))
+                    .absolute()
+                    .top(rems(0.25))
+                    .left_0(),
+            )
+        })
+        .when(!matches!(priority, 0 | 5), |el| {
+            el.child(
+                Icon::new(if down {
+                    IconName::ArrowDown
+                } else {
+                    IconName::ArrowUp
+                })
+                .size(rems(1.)),
+            )
+        })
+}
 fn today() -> time::Date {
     use chrono::Datelike;
     let now = chrono::Local::now();
@@ -539,6 +589,9 @@ impl RenderOnce for TasksList {
             }
             return list.into_any_element();
         }
+        if results.rows.is_empty() {
+            return div().into_any_element();
+        }
         if !self.has_heading {
             list = list.child(
                 h_flex()
@@ -583,11 +636,22 @@ impl RenderOnce for TasksList {
                 let heading = if grouped_by_note {
                     Button::new(("task-group", ix))
                         .small()
+                        .w_full()
+                        .px_0()
+                        .h_5()
                         .ghost()
                         .text_sm()
                         .text_color(muted)
                         .accessibility_label(label.clone())
-                        .child(div().text_sm().truncate().child(label))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_sm()
+                                .truncate()
+                                .debug_selector(move || format!("task-group-label-{offset}-{ix}"))
+                                .child(label),
+                        )
                         .tooltip(format!("Open {} at line {}", task.path, task.line))
                         .debug_selector(move || format!("task-group-{offset}-{ix}"))
                         .on_click(move |_, window, cx| {
@@ -605,7 +669,7 @@ impl RenderOnce for TasksList {
                         .child(label)
                         .into_any_element()
                 };
-                list = list.child(div().mt_2().mb_1().child(heading));
+                list = list.child(div().pl_6().mt_1().child(heading));
                 previous_group = Some(key);
             }
             let target = task.clone();
@@ -660,17 +724,7 @@ impl RenderOnce for TasksList {
                             .child(div().flex_1().min_w_0().text_sm().truncate().child(text)),
                     )
                     .when(task.priority != 3, |row| {
-                        row.child(
-                            div()
-                                .text_sm()
-                                .text_color(muted)
-                                .child(match task.priority {
-                                    0 => "⇈",
-                                    1 | 2 => "↑",
-                                    4 => "↓",
-                                    _ => "⇊",
-                                }),
-                        )
+                        row.child(priority_icon(task.priority, muted))
                     })
                     .when(!grouped_by_note || is_copy, |row| {
                         row.child(
@@ -901,7 +955,7 @@ mod tests {
         std::fs::create_dir(&root).unwrap();
         let dashboard = "# Tasks\n\n```tasks\nnot done\n```\n\n```tasks\ndone\n```\n\n```tasks\nunknown filter\n```\n\n```dataview\nTABLE file.name\n```\n";
         let task_source =
-            "# Work\n\n- [ ] First task 📅 2026-10-06\n- [ ] \n- [ ] 🔼 📅2026-10-06\n";
+            "# Work\n\n- [ ] First task 🔼 📅 2026-10-06\n- [ ] \n- [ ] 🔼 📅2026-10-06\n";
         std::fs::write(root.join("Dashboard.md"), dashboard).unwrap();
         std::fs::write(root.join("Work.md"), task_source).unwrap();
         let mut entity = None;
@@ -932,7 +986,7 @@ mod tests {
             "positive control: a real query result rendered"
         );
         assert!(visual.debug_bounds("tasks-count-1").is_some());
-        assert!(visual.debug_bounds("tasks-count-0").is_some());
+        assert!(visual.debug_bounds("tasks-count-0").is_none());
         assert!(visual.debug_bounds("tasks-unsupported").is_some());
         let heading = visual.debug_bounds("tasks-section-heading").unwrap();
         let badge = visual.debug_bounds("tasks-count-1").unwrap();
@@ -943,6 +997,21 @@ mod tests {
             "grouped source is not repeated"
         );
         assert!(visual.debug_bounds("task-group-9-0").is_some());
+        let group_label = visual.debug_bounds("task-group-label-9-0").unwrap();
+        let task_title = visual.debug_bounds(open_source).unwrap();
+        let priority = visual.debug_bounds("task-priority").unwrap();
+        assert!(
+            priority.size.height >= group_label.size.height * 0.8,
+            "priority is comparable to backlink text"
+        );
+        assert!(
+            (group_label.origin.x - task_title.origin.x).abs() <= px(2.),
+            "group label aligns with the task column"
+        );
+        assert!(
+            task_title.origin.y - (group_label.origin.y + group_label.size.height) <= px(8.),
+            "group stays close to its tasks"
+        );
         let toggle = visual.debug_bounds("dataview-toggle").unwrap();
         assert!(visual.debug_bounds("dataview-source").is_none());
         visual.simulate_click(toggle.center(), Modifiers::default());
@@ -1016,6 +1085,12 @@ mod tests {
         assert!(
             visual.debug_bounds("tasks-count-0").is_none(),
             "heading badge follows query-only edits"
+        );
+        let refreshed_badge = visual.debug_bounds("tasks-section-count-1").unwrap();
+        let refreshed_heading = visual.debug_bounds("tasks-section-heading").unwrap();
+        assert!(
+            (refreshed_badge.center().y - refreshed_heading.center().y).abs() < px(12.),
+            "query-only edits restore the nonzero badge beside the heading"
         );
         std::fs::write(root.join("Dashboard.md"), dashboard).unwrap();
         reader.update_in(visual, |r, window, cx| {
