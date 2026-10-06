@@ -2,6 +2,7 @@
 """Hand off completed build artifacts to a non-cancellable publication workflow."""
 import argparse
 import io
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -11,7 +12,7 @@ import time
 import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'updater'))
-from release import Forgejo
+from release import Forgejo, R2
 
 SCRIPTS = Path(__file__).resolve().parents[1]
 WORKFLOWS = {'macos': 'macos-release.yml', 'linux': 'linux-release.yml',
@@ -25,7 +26,7 @@ def eligible(run, platform, head):
     if (run['workflow_id'] != WORKFLOWS[platform] or run['prettyref'] != 'main'
             or run['is_fork_pull_request'] or run['trigger_event'] not in ['push', 'workflow_dispatch', 'schedule']):
         raise ValueError('Publication requires a trusted main release build')
-    return run['status'] == 'success' and run['commit_sha'] == head
+    return run['status'] == 'success' and (platform == 'linux' or run['commit_sha'] == head)
 
 
 def extract(data, directory):
@@ -50,7 +51,8 @@ def publish(client, platform, run_id):
     for _ in range(120):
         run = client.call('GET', f'/actions/runs/{run_id}')
         head = client.call('GET', '/branches/main')['commit']['id']
-        if run['status'] in ['failure', 'cancelled', 'skipped'] or run['commit_sha'] != head:
+        if (run['status'] in ['failure', 'cancelled', 'skipped']
+                or (platform != 'linux' and run['commit_sha'] != head)):
             print('Cancelled, failed or superseded build: nothing published')
             return
         if eligible(run, platform, head):
@@ -59,6 +61,13 @@ def publish(client, platform, run_id):
     else:
         raise ValueError('Source build did not finish successfully')
     build = 5000 + run['index_in_repo']
+    if platform == 'linux':
+        # All publishers share a non-cancellable lock. A completed trusted main
+        # build remains useful after another merge; never replace a newer beta.
+        current = R2().call('GET', 'tessera/arch/beta/x86_64/latest.json')
+        if current is not None and json.loads(current)['build'] > build:
+            print('Newer Linux beta already published: nothing changed')
+            return
     artifacts = client.call('GET', f'/actions/runs/{run_id}/artifacts')
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -69,7 +78,8 @@ def publish(client, platform, run_id):
             data = client.call('GET', f'/actions/artifacts/{matching[0]["id"]}/zip', raw=True)
             extract(data, root / folder)
         # Recheck after downloads; no public mutation precedes this check.
-        if client.call('GET', '/branches/main')['commit']['id'] != run['commit_sha']:
+        if (client.call('GET', '/branches/main')['commit']['id'] != run['commit_sha']
+                and platform != 'linux'):
             print('Superseded during artifact transfer: nothing published')
             return
         env = {**os.environ, 'GITHUB_SHA': run['commit_sha'],

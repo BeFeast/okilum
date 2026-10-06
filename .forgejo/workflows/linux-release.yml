@@ -10,7 +10,8 @@ on:
 
 concurrency:
   group: tessera-arch-build-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+  # Finish useful work even while main keeps advancing. Publication is monotonic.
+  cancel-in-progress: false
 
 jobs:
   release:
