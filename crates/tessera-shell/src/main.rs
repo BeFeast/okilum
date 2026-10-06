@@ -46,6 +46,7 @@ mod reader_loading;
 #[cfg(unix)]
 mod reader_move;
 mod reader_open;
+mod reader_perf_probe;
 mod reader_properties;
 #[cfg(unix)]
 mod reader_recovery;
@@ -1180,6 +1181,8 @@ struct Reader {
     /// Top-level headings of the open document (docs/design/reader.md §Right
     /// panel, #337). Prepared with the document; never reparsed on scroll.
     outline: Vec<tessera_core::document_links::HeadingEntry>,
+    /// Opt-in large-note timing probe (#653); `None` on ordinary launches.
+    perf_probe: Option<reader_perf_probe::Probe>,
     /// Folder tree over the published inventory (#335). Rebuilt only when the
     /// vault Arc or the current document changes.
     tree: reader_tree::Tree,
@@ -1410,6 +1413,7 @@ impl Reader {
             find_input,
             find_open: false,
             outline: Vec::new(),
+            perf_probe: reader_perf_probe::Probe::from_env(),
             tree: reader_tree::Tree::default(),
             tree_source: None,
             tree_revealed: String::new(),
@@ -4902,6 +4906,44 @@ impl Reader {
         }
     }
 
+    /// Advance the opt-in timing probe after a painted frame (#653).
+    fn drive_perf_probe(
+        &mut self,
+        elapsed_ms: f64,
+        document_ready: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(probe) = self.perf_probe.as_mut() else {
+            return;
+        };
+        let list = self.content.read(cx).list_state().clone();
+        let blocks = if document_ready { list.item_count() } else { 0 };
+        let top = list.logical_scroll_top().item_ix;
+        let content = self.content.clone();
+        match probe.painted(blocks, top, elapsed_ms) {
+            reader_perf_probe::Step::Idle => {}
+            reader_perf_probe::Step::ScrollBy(distance) => window.on_next_frame(move |_, cx| {
+                // As a wheel event does: move the list, notify its view.
+                list.scroll_by(distance);
+                content.update(cx, |_, cx| cx.notify());
+            }),
+            reader_perf_probe::Step::Jump(item_ix) => window.on_next_frame(move |_, cx| {
+                list.scroll_to(ListOffset {
+                    item_ix,
+                    offset_in_item: px(0.),
+                });
+                content.update(cx, |_, cx| cx.notify());
+            }),
+            reader_perf_probe::Step::Finish => {
+                if let Err(error) = probe.write_report(self.outline.len()) {
+                    eprintln!("{}: {error}", reader_perf_probe::ENV);
+                }
+                cx.quit();
+            }
+        }
+    }
+
     /// Index into `outline` of the section containing the top visible block.
     fn current_section(&self, cx: &App) -> Option<usize> {
         let top = self
@@ -5248,6 +5290,9 @@ impl Render for ReaderPanelDrag {
 
 impl Render for Reader {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(probe) = &mut self.perf_probe {
+            probe.render_started();
+        }
         if self.toast_subscription.is_none() {
             let notifications = Root::read(window, cx).notification.clone();
             self.toast_subscription = Some(cx.observe(&notifications, |_, _, cx| cx.notify()));
@@ -5627,6 +5672,11 @@ impl Render for Reader {
                                             cx.notify();
                                             window.refresh();
                                         });
+                                    }
+                                    if this.perf_probe.is_some() {
+                                        let elapsed =
+                                            diagnostics.as_ref().map_or(0., |t| t.elapsed_ms());
+                                        this.drive_perf_probe(elapsed, document_ready, window, cx);
                                     }
                                 });
                                 let drag_view = view.clone();

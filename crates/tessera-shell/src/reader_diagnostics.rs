@@ -70,6 +70,11 @@ impl Trace {
         }
     }
 
+    /// Milliseconds on the launch clock.
+    pub(crate) fn elapsed_ms(&self) -> f64 {
+        self.inner.start.elapsed().as_secs_f64() * 1000.
+    }
+
     pub(crate) fn phase(&self, name: &'static str) -> Phase {
         Phase {
             trace: self.clone(),
