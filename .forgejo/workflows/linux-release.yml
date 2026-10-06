@@ -9,9 +9,9 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # PR validation never publishes; serialize only production publications together.
-  group: tessera-arch-${{ github.event_name == 'pull_request' && github.ref || 'release' }}
-  cancel-in-progress: false
+  group: tessera-arch-build-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -40,14 +40,16 @@ jobs:
           if ldd /usr/bin/tessera | grep 'not found'; then exit 1; fi
           python -m unittest discover -s scripts/arch -p 'test_*.py'
           xvfb-run -a -s '-screen 0 1280x800x24' dbus-run-session -- bash scripts/arch/smoke-x11.sh
-      - name: Publish beta
+      - uses: https://code.forgejo.org/actions/upload-artifact@v3
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        with:
+          name: arch-publication
+          path: dist/arch/*.pkg.tar.zst
+          retention-days: 7
+
+      - name: Dispatch protected publication
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         env:
-          ARCH_GPG_PRIVATE_KEY: ${{ secrets.ARCH_GPG_PRIVATE_KEY }}
-          ARCH_GPG_FINGERPRINT: ${{ vars.ARCH_GPG_FINGERPRINT }}
-          R2_ENDPOINT: ${{ vars.R2_ENDPOINT }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-        run: |
-          python scripts/arch/publish.py publish --build "$((5000 + GITHUB_RUN_NUMBER))" \
-            --source "$GITHUB_SHA" --package dist/arch/tessera-*.pkg.tar.zst
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORGEJO_URL: ${{ github.server_url }}
+        run: python3 scripts/releases/publication.py dispatch linux

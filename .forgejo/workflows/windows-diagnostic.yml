@@ -7,8 +7,8 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: windows-release-${{ github.event_name == 'pull_request' && github.ref || 'publish' }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: windows-build-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
 
 jobs:
   release:
@@ -74,15 +74,17 @@ jobs:
           path: target/windows-release/*
           retention-days: 30
 
-      - name: Publish beta
+      - name: Stage portable archive for publication
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: https://code.forgejo.org/actions/upload-artifact@v3
+        with:
+          name: windows-portable
+          path: target/windows-dist/tessera-*-x86_64.zip
+          retention-days: 7
+
+      - name: Dispatch protected publication
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         env:
-          R2_ENDPOINT: ${{ vars.R2_ENDPOINT }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-        run: |
-          portable=(target/windows-dist/tessera-*-x86_64.zip)
-          test "${#portable[@]}" -eq 1 && test -f "${portable[0]}"
-          python3 scripts/windows/publish.py publish --directory target/windows-release \
-            --build "$((5000 + GITHUB_RUN_NUMBER))" --source "$GITHUB_SHA" \
-            --portable "${portable[0]}"
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORGEJO_URL: ${{ github.server_url }}
+        run: python3 scripts/releases/publication.py dispatch windows

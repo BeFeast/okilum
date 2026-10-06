@@ -1,0 +1,41 @@
+# Separate workflow: a new main push can cancel builds, never public feed writes.
+name: release-publish
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        required: true
+        type: string
+      run_id:
+        required: true
+        type: string
+# Also shares the unified stable promotion's lock. Publication is short and
+# serialized across platforms; compilation uses independent cancellable groups.
+concurrency:
+  group: tessera-macos-release
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: light
+    container:
+      image: archlinux:base-devel@sha256:51dd3d24f7fba779e7c471caeee7804c50e8c134ad948e19685a1c83a42facc3
+    timeout-minutes: 20
+    steps:
+      - name: Install publication tools
+        run: pacman -Syu --noconfirm --needed nodejs git python ca-certificates
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Publish only a complete current-main build
+        env:
+          PLATFORM: ${{ inputs.platform }}
+          SOURCE_RUN: ${{ inputs.run_id }}
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORGEJO_URL: ${{ github.server_url }}
+          ARCH_GPG_PRIVATE_KEY: ${{ secrets.ARCH_GPG_PRIVATE_KEY }}
+          ARCH_GPG_FINGERPRINT: ${{ vars.ARCH_GPG_FINGERPRINT }}
+          R2_ENDPOINT: ${{ vars.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: python scripts/releases/publication.py publish "$PLATFORM" --run "$SOURCE_RUN"
