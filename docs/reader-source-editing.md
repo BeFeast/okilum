@@ -322,7 +322,8 @@ metadata and moves within the same filesystem (home Trash or a private per-user
 Trash at the filesystem root); an unavailable Trash leaves the original in place.
 The notification's Undo restores the exact returned Trash object. It refuses
 occupied original paths, replaced objects and symlink parents; it never overwrites
-another file. The notification lasts until dismissed; after restart, use Finder
+another file. The notification hides after eight seconds; keyboard Undo remains available for
+the session. After restart, use Finder
 or the system file manager to restore items from Trash. Windows stays read-only.
 
 QA on copies: trash a note and Undo, then repeat after creating a replacement at
@@ -360,3 +361,18 @@ seconds or with its close button / Escape. Hiding it does not discard the sessio
 Trash history: Cmd-Z (Ctrl-Z on Linux) in the Reader/tree restores the latest
 trashed item, with the same collision and identity checks. Text inputs retain their
 normal text Undo. A failed restore remains available to retry.
+
+## Create a missing linked note (#546)
+
+Hovering a verified missing wikilink offers **Create note** on writable desktop
+platforms. It opens the inline creation row with the default template and an
+editable target path. A bare target uses the source note's folder; a target with
+folders uses that vault-relative path. Aliases and heading fragments are not
+filename text. Enter creates exclusively; Escape cancels. Ambiguous links,
+missing headings within existing notes, attachments and unsafe paths never offer
+this action. Ordinary clicks retain the existing missing-link behavior.
+
+Successful creation immediately publishes the note identity to the local resolver
+before watcher delivery. Returning to the source note shows the normal resolved
+link (a heading still has to exist). Template originals and source links are never
+rewritten. The watcher continues to maintain search and backlinks.

@@ -1,0 +1,10 @@
+--- a/crates/base/src/text/inline.rs
++++ b/crates/base/src/text/inline.rs
+@@ -727,7 +727,6 @@
+                 if !phase.bubble() { return; }
+                 let current = if hitbox.is_hovered(window) && event.pressed_button.is_none() {
+                     Self::link_for_position(&layout, &links, event.position)
+-                        .filter(|link| !link.presentation.inert)
+                         .map(|link| link.url)
+                 } else { None };
+                 let previous = {

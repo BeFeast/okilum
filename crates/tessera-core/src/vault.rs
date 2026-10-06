@@ -683,6 +683,12 @@ impl Vault {
         vault
     }
 
+    /// Publish a successfully created canonical note before watcher delivery.
+    /// Updates only identity; the watcher still owns derived content/backlinks.
+    pub fn register_created_note(&mut self, path: &str) {
+        self.set_note_identity(path, true);
+    }
+
     /// Find a readable document without collecting or sorting the inventory.
     pub fn discover_document(
         root: &Path,

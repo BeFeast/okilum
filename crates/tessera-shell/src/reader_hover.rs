@@ -18,6 +18,7 @@ pub(super) struct HoverPreview {
     over_source: bool,
     over_preview: bool,
     loading: bool,
+    missing: bool,
     visible: bool,
     content: Option<Entity<TextViewState>>,
     states: prepared_links::States,
@@ -65,6 +66,18 @@ pub(super) fn resolved_target(
 }
 
 impl Reader {
+    #[cfg(unix)]
+    pub(super) fn missing_note_path(&self, url: &str) -> Option<String> {
+        if self.prepared_links.get(url)?.status != LinkStatus::MissingDocument {
+            return None;
+        }
+        let identity = self
+            .link_identities
+            .iter()
+            .find(|link| link.url == url && link.wiki)?;
+        missing_path(&identity.from, &identity.target)
+    }
+
     pub(super) fn clear_hover(&mut self, cx: &mut Context<Self>) {
         let generation = self.hover_preview.generation.wrapping_add(1);
         self.hover_preview = HoverPreview {
@@ -91,6 +104,20 @@ impl Reader {
         }
         if let Some(target) = resolved_target(url, &self.prepared_links, &self.current_rel) {
             self.hover_note(url.to_owned(), target, position, window, cx);
+        }
+        #[cfg(unix)]
+        if let Some(path) = self.missing_note_path(url) {
+            self.hover_note(
+                url.to_owned(),
+                Target {
+                    path,
+                    heading: None,
+                },
+                position,
+                window,
+                cx,
+            );
+            self.hover_preview.missing = true;
         }
     }
 
@@ -190,6 +217,11 @@ impl Reader {
                         return false;
                     }
                     this.hover_preview.visible = true;
+                    if this.hover_preview.missing {
+                        this.hover_preview.message = Some("This note does not exist yet.".into());
+                        cx.notify();
+                        return false;
+                    }
                     this.hover_preview.loading = true;
                     cx.notify();
                     true
@@ -340,7 +372,8 @@ impl Reader {
         let palette = brand::palette(cx);
         let size = window.viewport_size();
         let width = px(520.).min((size.width - px(24.)).max(px(120.)));
-        let height = px(420.).min((size.height - px(64.)).max(px(120.)));
+        let height =
+            px(if h.missing { 112. } else { 420. }).min((size.height - px(64.)).max(px(120.)));
         let entity = cx.entity().downgrade();
         let title = self
             .vault
@@ -419,33 +452,78 @@ impl Reader {
                                         .text_ellipsis()
                                         .child(title),
                                 )
-                                .child(
-                                    Button::new("open-hover-note")
-                                        .debug_selector(|| "open-hover-note".into())
-                                        .label("↗")
-                                        .ghost()
-                                        .small()
-                                        .tooltip("Open note")
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.clear_hover(cx);
-                                            if this.quick_open.open {
-                                                this.close_quick_open(window, cx);
-                                            }
-                                            this.open_note_at(
-                                                &target.path,
-                                                None,
-                                                target.heading.as_deref(),
-                                                window,
-                                                cx,
-                                            );
-                                        })),
-                                ),
+                                .when(h.missing, |row| {
+                                    #[cfg(unix)]
+                                    let row = {
+                                        let source = h.source.clone().unwrap_or_default();
+                                        row.child(
+                                            Button::new("create-hover-note")
+                                                .debug_selector(|| "create-hover-note".into())
+                                                .label("Create note")
+                                                .small()
+                                                .on_click(cx.listener(
+                                                    move |this, _, window, cx| {
+                                                        this.create_missing_note(
+                                                            &source, window, cx,
+                                                        );
+                                                    },
+                                                )),
+                                        )
+                                    };
+                                    row
+                                })
+                                .when(!h.missing, |row| {
+                                    row.child(
+                                        Button::new("open-hover-note")
+                                            .debug_selector(|| "open-hover-note".into())
+                                            .label("↗")
+                                            .ghost()
+                                            .small()
+                                            .tooltip("Open note")
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.clear_hover(cx);
+                                                if this.quick_open.open {
+                                                    this.close_quick_open(window, cx);
+                                                }
+                                                this.open_note_at(
+                                                    &target.path,
+                                                    None,
+                                                    target.heading.as_deref(),
+                                                    window,
+                                                    cx,
+                                                );
+                                            })),
+                                    )
+                                }),
                         )
                         .child(body),
                 )
                 .into_any_element(),
         )
     }
+}
+
+#[cfg(unix)]
+fn missing_path(from: &str, target: &str) -> Option<String> {
+    let note = target.split('#').next()?.trim();
+    if note.is_empty() || note.contains(':') {
+        return None;
+    }
+    let folder = if note.contains('/') {
+        Path::new("")
+    } else {
+        Path::new(from).parent()?
+    };
+    if Path::new(note)
+        .extension()
+        .is_some_and(|e| !e.eq_ignore_ascii_case("md"))
+    {
+        return None;
+    }
+    tessera_core::note_files::typed_path(folder, note, false)
+        .ok()?
+        .to_str()
+        .map(str::to_owned)
 }
 
 fn preview_plugins(
@@ -542,6 +620,180 @@ mod tests {
         ] {
             assert!(resolved_target(url, &states, "Start.md").is_none());
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn missing_paths_follow_authored_target_without_alias_or_escape() {
+        assert_eq!(
+            missing_path("Work/Start.md", "Новая 🧠#Intro"),
+            Some("Work/Новая 🧠.md".into())
+        );
+        assert_eq!(
+            missing_path("Work/Start.md", "Other/Note"),
+            Some("Other/Note.md".into())
+        );
+        for invalid in [
+            "",
+            "#Heading",
+            "../Outside",
+            "/Outside",
+            "a//b",
+            "https://host",
+            "image.png",
+            "a/../b",
+        ] {
+            assert_eq!(missing_path("Work/Start.md", invalid), None, "{invalid}");
+        }
+    }
+
+    #[gpui::test]
+    #[cfg(unix)]
+    fn missing_hover_creates_inline_with_default_template_and_resolves_without_watcher(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        // Exercise keyboard routing with a stable sidebar, not its opening animation.
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let (reader, visual, root) = fixture(cx);
+        let root = root.canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("_Assets/Templates")).unwrap();
+        std::fs::write(
+            root.join("_Assets/Templates/Note.md"),
+            "# {{title}}\nDefault body",
+        )
+        .unwrap();
+        let source = "[[Новая 🧠|Alias]]\n";
+        std::fs::write(root.join("Start.md"), source).unwrap();
+        let state = tempfile::tempdir().unwrap();
+        reader.update_in(visual, |r, window, cx| {
+            r.session_directory = Some(state.path().to_owned());
+            r.prepare_document("Start.md", None, None, window, cx);
+        });
+        visual.run_until_parked();
+        let url = reader.read_with(visual, |r, _| r.link_identities[0].url.clone());
+        reader.read_with(visual, |r, _| {
+            assert_eq!(r.prepared_links[&url].status, LinkStatus::MissingDocument);
+        });
+        let bounds = reader.read_with(visual, |r, cx| r.content.read(cx).bounds());
+        visual.simulate_mouse_move(
+            bounds.origin + point(px(25.), px(10.)),
+            None,
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_millis(350));
+        visual.run_until_parked();
+        let button = visual
+            .debug_bounds("create-hover-note")
+            .expect("missing hover offers create");
+        visual.simulate_click(button.center(), Modifiers::default());
+        visual.run_until_parked();
+        reader.read_with(visual, |r, cx| {
+            let creation = r.creation.as_ref().expect("inline creation");
+            assert_eq!(creation.input.read(cx).value().as_ref(), "Новая 🧠.md");
+            assert_eq!(creation.selected_template.as_deref(), Some("Note.md"));
+        });
+        assert!(!visual.did_prompt_for_new_path());
+        assert!(
+            visual.debug_bounds("inline-create-row").is_some(),
+            "inline row visible"
+        );
+        reader.update_in(visual, |r, window, cx| {
+            assert!(
+                r.creation
+                    .as_ref()
+                    .unwrap()
+                    .input
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window),
+                "inline input focused"
+            );
+        });
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert!(
+                root.join("Новая 🧠.md").exists(),
+                "creation exists={}, current={}, error={:?}, notice={:?}",
+                r.creation.is_some(),
+                r.current_rel,
+                r.creation.as_ref().and_then(|c| c.error.as_ref()),
+                r.link_notice
+            );
+        });
+        assert_eq!(
+            std::fs::read_to_string(root.join("Новая 🧠.md")).unwrap(),
+            "# Новая 🧠\nDefault body"
+        );
+        reader.update_in(visual, |r, window, cx| {
+            assert_eq!(r.current_rel, "Новая 🧠.md");
+            // Resolver has the created identity even before watcher delivery.
+            assert!(matches!(
+                r.vault.resolve_from("Новая 🧠", "Start.md"),
+                tessera_core::vault::Resolution::Resolved { .. }
+            ));
+            r.open_note("Start.md", None, window, cx);
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert!(r
+                .prepared_links
+                .values()
+                .any(|s| s.status == LinkStatus::Resolved));
+            assert!(r.missing_note_path(&url).is_none());
+        });
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[gpui::test]
+    #[cfg(unix)]
+    fn missing_create_cancel_collision_and_nonmissing_exclusions(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let (reader, visual, root) = fixture(cx);
+        let state = tempfile::tempdir().unwrap();
+        std::fs::write(root.join("Start.md"), "[[Missing]]\n").unwrap();
+        reader.update_in(visual, |r, window, cx| {
+            r.session_directory = Some(state.path().to_owned());
+            r.prepare_document("Start.md", None, None, window, cx);
+        });
+        visual.run_until_parked();
+        let url = reader.read_with(visual, |r, _| r.link_identities[0].url.clone());
+        reader.update_in(visual, |r, window, cx| {
+            r.create_missing_note(&url, window, cx)
+        });
+        visual.run_until_parked();
+        visual.simulate_keystrokes("escape");
+        reader.read_with(visual, |r, _| assert!(r.creation.is_none()));
+        assert!(!root.join("Missing.md").exists());
+        reader.update_in(visual, |r, window, cx| {
+            r.create_missing_note(&url, window, cx)
+        });
+        visual.run_until_parked();
+        // Another writer wins after the preview, before Enter.
+        std::fs::write(root.join("Missing.md"), "External writer").unwrap();
+        visual.simulate_keystrokes("enter");
+        reader.read_with(visual, |r, _| {
+            assert!(r.creation.as_ref().unwrap().error.is_some());
+        });
+        assert_eq!(
+            std::fs::read_to_string(root.join("Missing.md")).unwrap(),
+            "External writer"
+        );
+        reader.update_in(visual, |r, _, _| {
+            for status in [
+                LinkStatus::Resolved,
+                LinkStatus::Ambiguous,
+                LinkStatus::MissingHeading,
+            ] {
+                Arc::make_mut(&mut r.prepared_links)
+                    .get_mut(&url)
+                    .unwrap()
+                    .status = status;
+                assert!(r.missing_note_path(&url).is_none());
+            }
+        });
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn fixture(
