@@ -87,7 +87,9 @@ fn typed_preparation_uses_exact_destinations_headings_and_one_read_per_target() 
         prep.link("missing", true).1.status,
         LinkStatus::MissingDocument
     );
-    assert_eq!(prep.link("#^block", true).1.status, LinkStatus::Unsupported);
+    let missing_block = prep.link("same.md#^block", false).1;
+    assert_eq!(missing_block.status, LinkStatus::MissingHeading);
+    assert_eq!(missing_block.reason, "Block not found: ^block");
     assert_eq!(
         prep.link("https://example.invalid/missing.md", false)
             .1
@@ -338,5 +340,34 @@ fn heading_snapshot_preserves_embed_boundaries_without_reading_bodies() {
         before,
         tessera_core::render::reader_heading_source(&vault, "target.md", raw),
         "embedded source bytes do not affect structural preparation"
+    );
+}
+
+#[test]
+fn block_references_land_on_the_marked_block() {
+    let vault = Vault::from_note_paths(["note.md".into()]);
+    let raw = "# Title\n\nFirst paragraph. ^first\n\n| a |\n|---|\n\n^table\n\n- item ^dup\n- other ^DUP\n\n`code ^not`\n";
+    let rendered = tessera_core::render::reader_heading_source(&vault, "note.md", raw);
+    let inventory = HeadingInventory::new(&rendered);
+    // heading 0, paragraph 1, table 2, table marker 3, list 4, code 5
+    assert_eq!(inventory.locate("^first").map(|t| t.block), Ok(1));
+    assert_eq!(
+        inventory.locate("^table").map(|t| t.block),
+        Ok(2),
+        "an ID alone on its line names the block before it"
+    );
+    assert_eq!(
+        inventory.locate("^dup"),
+        Err(HeadingFailure::AmbiguousBlock)
+    );
+    assert_eq!(inventory.locate("^not"), Err(HeadingFailure::MissingBlock));
+    assert_eq!(
+        inventory.locate("Title").map(|t| t.block),
+        Ok(0),
+        "positive control: headings still resolve"
+    );
+    assert_eq!(
+        document_links::heading(&rendered, "^first").map(|t| t.block),
+        Ok(1)
     );
 }

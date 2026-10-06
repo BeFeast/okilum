@@ -47,6 +47,7 @@ mod reader_loading;
 mod reader_move;
 #[cfg(unix)]
 mod reader_move_picker;
+mod reader_obsidian;
 mod reader_open;
 mod reader_properties;
 mod reader_reading_controls;
@@ -525,6 +526,10 @@ struct Callout {
     header: CalloutHeader,
     /// Body Markdown, `>` markers already stripped. Empty for a bare header.
     body: String,
+    /// Byte offset of the quote in the document, for test selectors.
+    offset: usize,
+    /// Fold-state key of a foldable (`+`/`-`) callout (#651).
+    key: u64,
 }
 
 /// Parse an Obsidian callout out of a blockquote node. `None` for a plain quote.
@@ -538,12 +543,15 @@ fn parse_callout(
     let source = cx.node_source(node)?;
     let header = callout::parse_header(source.lines().next()?)?;
     let body = callout::body_from_source(source);
+    let offset = cx.offset() + node.position()?.start.offset;
     Some(
         MarkdownNode::new(
             "callout",
             Callout {
                 header: header.clone(),
                 body: body.clone(),
+                offset,
+                key: reader_obsidian::callout_key(offset, source),
             },
         )
         .plain_part("title", header.title.clone())
@@ -721,6 +729,20 @@ fn backlink_occurrence(b: &Backlink) -> (String, Option<std::ops::Range<usize>>,
 /// callout body): wikilinks open notes, ambiguous ones go to search,
 /// unresolved ones are inert, http(s) leaves the app.
 fn handle_link(entity: &WeakEntity<Reader>, url: &str, window: &mut Window, cx: &mut App) {
+    if let Some(entity) = entity.upgrade() {
+        let landed = entity.update(cx, |this, cx| {
+            let landing = reader_obsidian::footnote_landing(url, &this.note_source)?;
+            match landing {
+                Ok(ix) => this.scroll_to_block(ix, cx),
+                Err(reason) => this.link_notice = Some(reason.into()),
+            }
+            cx.notify();
+            Some(())
+        });
+        if landed.is_some() {
+            return;
+        }
+    }
     let prepared = entity.upgrade().and_then(|entity| {
         let reader = entity.read(cx);
         reader.prepared_links.get(url).cloned().or_else(|| {
@@ -922,6 +944,7 @@ fn markdown_plugins(
     let parse_image = image_resolver.clone();
     let render_image = image_resolver.clone();
     let embed_link_handler = link_handler.clone();
+    let footnote_link_handler = link_handler.clone();
     view.selection_format(sel_format)
         .code_block_language(reader_code_language::resolver())
         .code_block_actions(reader_code::actions)
@@ -1003,6 +1026,11 @@ fn markdown_plugins(
             };
             let theme = cx.theme();
             let (accent, icon) = callout_look(&data.header, theme);
+            // `[!type]-` starts closed and `[!type]+` open; the title row
+            // toggles either (#651). Without a sign there is nothing to fold.
+            let (key, fold, offset) = (data.key, data.header.fold, data.offset);
+            let foldable = fold != callout::Fold::None;
+            let open = !foldable || reader_obsidian::callout_open(key, fold, cx);
             let mut el = v_flex()
                 .my_1()
                 .px_3()
@@ -1015,21 +1043,43 @@ fn markdown_plugins(
                 .bg(accent.opacity(0.08))
                 .child(
                     h_flex()
+                        .id(("reader-callout-title", key))
                         .gap_2()
                         .items_center()
                         .text_color(accent)
                         .font_weight(FontWeight::BOLD)
                         .child(Icon::new(icon).small().text_color(accent))
-                        .child(node.render_part("title", |style| style, _window, cx)),
+                        .child(node.render_part("title", |style| style, _window, cx))
+                        .when(foldable, |el| {
+                            el.cursor_pointer()
+                                .debug_selector(move || format!("reader-callout-fold-{offset}"))
+                                .child(
+                                    Icon::new(if open {
+                                        IconName::ChevronDown
+                                    } else {
+                                        IconName::ChevronRight
+                                    })
+                                    .small()
+                                    .text_color(accent),
+                                )
+                                .on_click(move |_, window, cx| {
+                                    cx.stop_propagation();
+                                    reader_obsidian::toggle_callout(key, fold, window, cx);
+                                })
+                        }),
                 );
-            if !data.body.is_empty() {
+            if open && !data.body.is_empty() {
                 let font_size = reader_ui_state::font_size(cx);
-                el = el.child(node.render_part(
-                    "body",
-                    |style| style.with_heading_base_font_size(px(font_size)),
-                    _window,
-                    cx,
-                ));
+                el = el.child(
+                    div()
+                        .debug_selector(move || format!("reader-callout-body-{offset}"))
+                        .child(node.render_part(
+                            "body",
+                            |style| style.with_heading_base_font_size(px(font_size)),
+                            _window,
+                            cx,
+                        )),
+                );
             }
             el.into_any_element()
         })
@@ -1097,6 +1147,14 @@ fn markdown_plugins(
         .markdown_block_renderer("highlight", move |node, _window, cx| {
             node.render_part("body", |style| style, _window, cx)
         })
+        .markdown_block_parser(reader_obsidian::parse_footnote)
+        .markdown_block_renderer("footnote", move |node, window, cx| {
+            reader_obsidian::render_footnote(node, &footnote_link_handler, window, cx)
+        })
+        .markdown_block_parser(reader_obsidian::parse_math)
+        .markdown_block_renderer("math", reader_obsidian::render_math)
+        .markdown_block_parser(reader_obsidian::parse_block_marker)
+        .markdown_block_renderer("block-marker", |_, _, _| div())
         .on_link_click(move |url, ev, window, cx| link_click(url, ev, window, cx))
 }
 

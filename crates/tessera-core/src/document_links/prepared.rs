@@ -138,10 +138,21 @@ impl<'a, F: FnMut(&str) -> Result<TargetSnapshot, String>> LinkPreparation<'a, F
                                 LinkStatus::Unsupported,
                                 "This preview cannot navigate Setext headings.".into(),
                             ),
+                            Ok(_) if heading.starts_with('^') => {
+                                (LinkStatus::Resolved, format!("Open block: {heading}"))
+                            }
                             Ok(_) => (LinkStatus::Resolved, format!("Open heading: {heading}")),
                             Err(HeadingFailure::Missing) => (
                                 LinkStatus::MissingHeading,
                                 format!("Heading not found: {heading}"),
+                            ),
+                            Err(HeadingFailure::MissingBlock) => (
+                                LinkStatus::MissingHeading,
+                                format!("Block not found: {heading}"),
+                            ),
+                            Err(HeadingFailure::AmbiguousBlock) => (
+                                LinkStatus::Ambiguous,
+                                HeadingFailure::AmbiguousBlock.reason().into(),
                             ),
                             Err(HeadingFailure::Ambiguous) => (
                                 LinkStatus::Ambiguous,

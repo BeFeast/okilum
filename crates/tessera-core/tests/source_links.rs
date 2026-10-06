@@ -305,13 +305,16 @@ fn a_bare_heading_link_names_the_note_itself() {
 }
 
 #[test]
-fn block_references_are_explicitly_unsupported() {
+fn block_references_open_the_note_at_the_block() {
     let (_root, v) = vault_with("blockref", &[("notes/alpha.md", "# A\n")]);
     let out = rewrite_source_links("[[notes/alpha#^abc123]]", &v, "demo.md");
     assert_eq!(
         out,
-        "[notes/alpha#^abc123](tessera://unsupported/Block%20references%20are%20not%20supported.%20Target%3A%20notes/alpha%23%5Eabc123)"
+        format!("[notes/alpha#^abc123]({WIKI_SCHEME}notes/alpha.md#%5Eabc123)")
     );
+    // A caret in the note path is still not a block reference.
+    let out = rewrite_source_links("[[notes/al^pha]]", &v, "demo.md");
+    assert!(out.contains("tessera://unsupported/Block%20references"));
 }
 
 #[test]

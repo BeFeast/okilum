@@ -26,7 +26,10 @@ slugs. The shared Comrak inventory rejects missing and duplicate headings before
 surface-specific landing. Reader supports top-level ATX and Setext; managed Source
 retains its 64 KiB saved-target and accepted ATX limits. Unsupported containers,
 blocks and stale replies cannot land successfully at note top. Self-heading links
-use the same guarded navigation and Back path as cross-note links.
+use the same guarded navigation and Back path as cross-note links. Block references
+(`note#^id`, #651) resolve like headings against the Reader's block-ID markers:
+a missing or duplicated ID refuses visibly; managed Source reports them unsupported.
+See [Obsidian syntax](obsidian-syntax.md).
 
 Preview replies add `document_links_version: 1`, `wiki`, `heading` and `reason`.
 `target` retains its legacy base-only join meaning; the additive `authored_target`

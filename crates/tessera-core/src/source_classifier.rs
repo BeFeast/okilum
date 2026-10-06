@@ -100,6 +100,11 @@ impl Classification {
         if self.snapshot.source().len() > MAX_BYTES {
             return Err("Heading navigation supports saved target notes up to 64 KiB.");
         }
+        if target.starts_with('^') {
+            return Err(
+                "Block navigation is supported in Reader, but not in the managed Source editor.",
+            );
+        }
         let resolved = inventory
             .locate(target)
             .map_err(crate::document_links::HeadingFailure::reason)?;
