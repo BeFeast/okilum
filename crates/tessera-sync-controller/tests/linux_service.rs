@@ -1,11 +1,8 @@
 #![cfg(target_os = "linux")]
 use anyhow::{ensure, Context, Result};
-use std::{
-    fs, net::TcpListener, os::unix::fs::PermissionsExt, path::PathBuf, process::Command,
-    time::Duration,
-};
-use tessera_sync::Syncthing;
-use tessera_sync_controller::lifecycle::{Lifecycle, ManagedInstance, Systemd};
+use std::{fs, net::TcpListener, path::PathBuf, process::Command, time::Duration};
+use tessera_sync_controller::daemon::{discover, prepare, Preparation};
+use tessera_sync_controller::lifecycle::{Lifecycle, Systemd};
 
 /// Creates a fresh identity and loopback-only config. Never reads a user daemon.
 #[test]
@@ -15,41 +12,27 @@ fn real_service_enable_disable_reenable_and_identity() -> Result<()> {
         std::env::var_os("TESSERA_SYNC_CLIENT").context("set isolated pinned client binary")?,
     );
     let root = tempfile::tempdir()?;
-    let home = root.path().join("home");
-    fs::create_dir(&home)?;
-    fs::set_permissions(&home, fs::Permissions::from_mode(0o700))?;
-    let output = Command::new(&binary)
-        .args(["generate", "--home"])
-        .arg(&home)
-        .output()?;
-    ensure!(output.status.success(), "fixture generation failed");
     let rest_guard = TcpListener::bind("127.0.0.1:0")?;
     let listen_guard = TcpListener::bind("127.0.0.1:0")?;
     let rest = rest_guard.local_addr()?;
     let listen = listen_guard.local_addr()?;
-    let output = Command::new("python3").arg("-c").arg(r#"
-import json,sys,xml.etree.ElementTree as E
-from pathlib import Path
-home,rest,listen=sys.argv[1:];home=Path(home)
-t=E.parse(home/'config.xml');r=t.getroot()
-for f in list(r.findall('folder')):r.remove(f)
-r.find('gui/address').text=rest;o=r.find('options')
-for k,v in {'globalAnnounceEnabled':'false','localAnnounceEnabled':'false','natEnabled':'false','relaysEnabled':'false','startBrowser':'false','autoUpgradeIntervalH':'0','urAccepted':'-1','crashReportingEnabled':'false'}.items():
- e=o.find(k)
- if e is None:e=E.SubElement(o,k)
- e.text=v
-for e in list(o.findall('listenAddress')):o.remove(e)
-E.SubElement(o,'listenAddress').text='tcp://'+listen
-t.write(home/'config.xml')
-for n in ['config.xml','cert.pem','key.pem']:(home/n).chmod(0o600)
-print(json.dumps([r.find('device').attrib['id'],r.find('gui/apikey').text]))
-"#).arg(&home).arg(rest.to_string()).arg(listen.to_string()).output()?;
-    ensure!(
-        output.status.success(),
-        "offline fixture configuration failed"
-    );
-    let (id, key): (String, String) = serde_json::from_slice(&output.stdout)?;
-    let api = Syncthing::connect(rest, &key)?;
+    let preparation = Preparation {
+        executable: binary.clone(),
+        rest_address: rest,
+        listen_address: listen,
+    };
+    let prepared_state = root.path().join("prepared");
+    let (instance, identity) = prepare(&prepared_state, &preparation)?;
+    let home = instance.home.clone();
+    let id = identity.device_id.clone();
+    let (_, again) = prepare(&prepared_state, &preparation)?;
+    assert_eq!(again.device_id, id);
+    fs::remove_file(prepared_state.join("prepared.json"))?;
+    let (_, resumed) = prepare(&prepared_state, &preparation)?;
+    assert_eq!(resumed.device_id, id);
+    let mut changed = preparation.clone();
+    changed.listen_address = rest;
+    assert!(prepare(&prepared_state, &changed).is_err());
     let units =
         PathBuf::from(std::env::var_os("HOME").context("user home")?).join(".config/systemd/user");
     let state = root.path().join("controller");
@@ -57,7 +40,7 @@ print(json.dumps([r.find('device').attrib['id'],r.find('gui/apikey').text]))
     assert!(!controller.desired_enabled()?);
     controller.disable()?;
     assert!(!state.exists());
-    assert!(api.identity().is_err());
+
     let certificate = fs::read(home.join("cert.pem"))?;
     drop(rest_guard);
     drop(listen_guard);
@@ -69,14 +52,10 @@ print(json.dumps([r.find('device').attrib['id'],r.find('gui/apikey').text]))
         }
     }
     let _cleanup = Cleanup(&controller);
-    let instance = ManagedInstance {
-        home: home.clone(),
-        executable: binary,
-    };
     let name = controller.enable(instance.clone())?;
     let wait_ready = || -> Result<()> {
         for _ in 0..100 {
-            if api.verify_identity(&id).is_ok() {
+            if identity.connect().is_ok() {
                 return Ok(());
             }
             std::thread::sleep(Duration::from_millis(100));
@@ -93,7 +72,22 @@ print(json.dumps([r.find('device').attrib['id'],r.find('gui/apikey').text]))
     };
     assert_eq!(property("UnitFileState")?, "enabled");
     assert_eq!(property("ActiveState")?, "active");
+    let api = identity.connect()?;
     assert_eq!(api.version()?["version"], "v2.1.6");
+    let before = fs::read(&identity.config_file)?;
+    let discovery = discover(&[identity.config_file.clone(), identity.config_file.clone()]);
+    assert_eq!(discovery.candidates.len(), 1);
+    assert!(discovery.unavailable.is_empty());
+    assert_eq!(
+        discovery.select(&identity.config_file)?.identity.device_id,
+        id
+    );
+    assert_eq!(fs::read(&identity.config_file)?, before);
+    let incomplete = discover(&[
+        identity.config_file.clone(),
+        root.path().join("missing.xml"),
+    ]);
+    assert!(incomplete.select(&identity.config_file).is_err());
     let config = api.config()?;
     assert_eq!(config["gui"]["address"], rest.to_string());
     assert_eq!(
