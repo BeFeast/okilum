@@ -145,7 +145,7 @@ impl Reader {
                     let reader = reader.clone();
                     let journal = journal.clone();
                     let state = state.clone();
-                    reader_icon_button("undo-move", IconName::Undo2, "Undo rename", cx)
+                    reader_icon_button("undo-move", IconName::Undo2, "Undo", cx)
                         .debug_selector(|| "undo-move".into())
                         .on_click(move |_, window, cx| {
                             let _ = reader.update(cx, |r, cx| {
@@ -369,7 +369,7 @@ impl Reader {
         self.save_sidebar(cx);
     }
 
-    fn start_move_preview(
+    pub(super) fn start_move_preview(
         &mut self,
         destination: &Path,
         from: &str,
@@ -429,7 +429,11 @@ impl Reader {
         window.push_notification(
             Notification::new()
                 .id::<MoveProgress>()
-                .message("Preparing rename…")
+                .message(if Path::new(&from).parent() == Path::new(&to).parent() {
+                    "Preparing rename…"
+                } else {
+                    "Preparing move…"
+                })
                 .autohide(false)
                 .placement(Anchor::BottomRight)
                 .action(move |_, _, cx| {
