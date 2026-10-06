@@ -1179,8 +1179,14 @@ struct Reader {
     find_input: Entity<InputState>,
     find_open: bool,
     /// Top-level headings of the open document (docs/design/reader.md §Right
-    /// panel, #337). Prepared with the document; never reparsed on scroll.
-    outline: Vec<tessera_core::document_links::HeadingEntry>,
+    /// panel, #337). Built in the background for each prepared document;
+    /// never reparsed on scroll. Shared with the virtualized outline list,
+    /// which renders visible rows only.
+    outline: Arc<Vec<tessera_core::document_links::HeadingEntry>>,
+    /// False while the background heading inventory for the document runs.
+    outline_ready: bool,
+    outline_task: Task<()>,
+    outline_scroll: UniformListScrollHandle,
     /// Opt-in large-note timing probe (#653); `None` on ordinary launches.
     perf_probe: Option<reader_perf_probe::Probe>,
     /// Folder tree over the published inventory (#335). Rebuilt only when the
@@ -1412,7 +1418,10 @@ impl Reader {
             note_source: String::new(),
             find_input,
             find_open: false,
-            outline: Vec::new(),
+            outline: Arc::default(),
+            outline_ready: true,
+            outline_task: Task::ready(()),
+            outline_scroll: UniformListScrollHandle::new(),
             perf_probe: reader_perf_probe::Probe::from_env(),
             tree: reader_tree::Tree::default(),
             tree_source: None,
@@ -1726,14 +1735,38 @@ impl Reader {
                 s.set_search_query(term, cx);
             }
         });
-        self.outline = if self.use_html {
-            Vec::new()
+        // A refresh of the same note keeps its outline until the new one is
+        // ready; another note never shows the previous note's headings.
+        if self.use_html || self.current_rel != rel {
+            self.outline = Arc::default();
+            self.outline_scroll = UniformListScrollHandle::new();
+            self.outline_ready = self.use_html;
+        }
+        self.outline_task = if self.use_html {
+            Task::ready(())
         } else {
-            tessera_core::document_links::HeadingInventory::new(&source)
-                .entries
-                .into_iter()
-                .filter(|heading| heading.supported_container)
-                .collect()
+            // A full Markdown parse: thousands of headings take a frame or
+            // more, so build the outline off the UI thread (#653).
+            let generation = self.navigation_generation;
+            let outline_source = source.clone();
+            cx.spawn(async move |this, cx| {
+                let outline = cx
+                    .background_spawn(async move {
+                        tessera_core::document_links::HeadingInventory::new(&outline_source)
+                            .entries
+                            .into_iter()
+                            .filter(|heading| heading.supported_container)
+                            .collect::<Vec<_>>()
+                    })
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    if this.navigation_generation == generation {
+                        this.outline = Arc::new(outline);
+                        this.outline_ready = true;
+                        cx.notify();
+                    }
+                });
+            })
         };
         self.properties = frontmatter
             .as_deref()
@@ -4936,7 +4969,17 @@ impl Reader {
                 content.update(cx, |_, cx| cx.notify());
             }),
             reader_perf_probe::Step::Finish => {
-                if let Err(error) = probe.write_report(self.outline.len()) {
+                let outline_height = self
+                    .outline_scroll
+                    .0
+                    .borrow()
+                    .base_handle
+                    .bounds()
+                    .size
+                    .height;
+                if let Err(error) =
+                    probe.write_report(self.outline.len(), f32::from(outline_height))
+                {
                     eprintln!("{}: {error}", reader_perf_probe::ENV);
                 }
                 cx.quit();
@@ -4966,17 +5009,15 @@ impl Reader {
                 .into_any_element();
         }
         let p = brand::palette(cx);
-        let hover = brand::reader_palette(cx).hover;
-        let current = self.current_section(cx);
-        let base = self.outline.iter().map(|h| h.level).min().unwrap_or(1);
-        v_flex()
-            .id("reader-outline")
-            .flex_none()
-            .max_h(relative(0.6))
-            .overflow_y_scroll()
-            .py_1()
-            .when(self.outline.is_empty(), |list| {
-                list.child(
+        if !self.outline_ready {
+            return div().id("reader-outline").flex_none().into_any_element();
+        }
+        if self.outline.is_empty() {
+            return div()
+                .id("reader-outline")
+                .flex_none()
+                .py_1()
+                .child(
                     div()
                         .px_4()
                         .py_1()
@@ -4984,45 +5025,66 @@ impl Reader {
                         .text_color(p.text_muted)
                         .child("No headings in this note."),
                 )
-            })
-            .children(self.outline.iter().enumerate().map(|(ix, heading)| {
-                let block = heading.target.block;
-                let is_current = current == Some(ix);
-                let indent = f32::from(heading.level.saturating_sub(base)) * 12.;
-                div()
-                    .id(("reader-outline-item", ix))
-                    .debug_selector(move || format!("reader-outline-row-{ix}"))
-                    // Scroll long outlines; never shrink a row below its text.
-                    .flex_none()
-                    .pl(px(14. + indent))
-                    .pr_3()
-                    .py(px(3.))
-                    .border_l_2()
-                    .border_color(if is_current {
-                        p.accent
-                    } else {
-                        gpui::transparent_black()
-                    })
-                    .text_color(if is_current { p.text } else { p.text_muted })
-                    .when(is_current, |d| d.font_weight(FontWeight::MEDIUM))
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .whitespace_nowrap()
-                    .cursor_pointer()
-                    .hover(move |d| d.bg(hover))
-                    .child(
-                        div()
-                            .debug_selector(move || format!("reader-outline-text-{ix}"))
-                            .text_ellipsis()
-                            .child(heading.text.clone()),
-                    )
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.scroll_to_block(block, cx);
-                        let focus = this.content.read(cx).focus_handle().clone();
-                        focus.focus(window, cx);
-                    }))
-            }))
-            .into_any_element()
+                .into_any_element();
+        }
+        let hover = brand::reader_palette(cx).hover;
+        let current = self.current_section(cx);
+        let base = self.outline.iter().map(|h| h.level).min().unwrap_or(1);
+        let outline = self.outline.clone();
+        let view = cx.entity().downgrade();
+        // Long notes have thousands of headings (#653): only visible rows are
+        // laid out, so scrolling the document does not re-lay out the outline.
+        // Rows are single-line and uniform in height.
+        uniform_list("reader-outline", outline.len(), move |range, _, _| {
+            range
+                .map(|ix| {
+                    let heading = &outline[ix];
+                    let block = heading.target.block;
+                    let is_current = current == Some(ix);
+                    let indent = f32::from(heading.level.saturating_sub(base)) * 12.;
+                    let view = view.clone();
+                    div()
+                        .id(("reader-outline-item", ix))
+                        .debug_selector(move || format!("reader-outline-row-{ix}"))
+                        .pl(px(14. + indent))
+                        .pr_3()
+                        .py(px(3.))
+                        .border_l_2()
+                        .border_color(if is_current {
+                            p.accent
+                        } else {
+                            gpui::transparent_black()
+                        })
+                        .text_color(if is_current { p.text } else { p.text_muted })
+                        .when(is_current, |d| d.font_weight(FontWeight::MEDIUM))
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .whitespace_nowrap()
+                        .cursor_pointer()
+                        .hover(move |d| d.bg(hover))
+                        .child(
+                            div()
+                                .debug_selector(move || format!("reader-outline-text-{ix}"))
+                                .text_ellipsis()
+                                .child(heading.text.clone()),
+                        )
+                        .on_click(move |_, window, cx| {
+                            let _ = view.update(cx, |this, cx| {
+                                this.scroll_to_block(block, cx);
+                                let focus = this.content.read(cx).focus_handle().clone();
+                                focus.focus(window, cx);
+                            });
+                        })
+                })
+                .collect::<Vec<_>>()
+        })
+        .track_scroll(&self.outline_scroll)
+        // Size to the rows, up to the height limit, like the plain list did.
+        .with_sizing_behavior(ListSizingBehavior::Infer)
+        .flex_none()
+        .max_h(relative(0.6))
+        .py_1()
+        .into_any_element()
     }
 }
 

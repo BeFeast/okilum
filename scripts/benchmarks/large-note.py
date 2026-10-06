@@ -41,7 +41,7 @@ TABLE_COLUMNS = 8
 # Budgets for the median of --runs. Frame time is Reader CPU time from render
 # to the end of paint; presentation is excluded. Calibrated on a 4-vCPU Linux
 # container under Xvfb with Mesa lavapipe (software Vulkan), where the fixed
-# Reader measured about 0.67 s open, 26 ms first frame and 8 ms scroll p95,
+# Reader measured about 0.7 s open, 18 ms first frame and 7 ms scroll p95,
 # and the unfixed one 1.8 s, 720 ms and 119 ms (docs/large-note-performance.md).
 # Tighten, never loosen, without review.
 BUDGETS = {
@@ -162,6 +162,8 @@ def check_controls(data, counts):
         problems.append(f"only {data['blocks']} blocks painted; the note has {counts['headings']} headings")
     if data["outline_rows"] != counts["headings"]:
         problems.append(f"outline has {data['outline_rows']} rows, expected {counts['headings']}")
+    if data.get("outline_height_px", 100) < 100:
+        problems.append(f"the outline painted only {data['outline_height_px']:.0f} px of rows")
     if data["scroll_end_item"] <= data["scroll_start_item"]:
         problems.append("scripted scrolling did not move the document")
     for target, top in data["jump_items"]:

@@ -1,0 +1,453 @@
+--- a/crates/base/src/text/format/markdown.rs
++++ b/crates/base/src/text/format/markdown.rs
+@@ -91,11 +91,251 @@
+ /// Parse Markdown into a tree of nodes.
+ pub(crate) fn parse(source: &str, cx: &mut NodeContext) -> Result<ParsedDocument, SharedString> {
+     let options = cx.markdown_extensions.parse_options();
+-    markdown::to_mdast(&source, &options)
++    to_mdast(source, &options)
+         .map(|n| ast_to_document(source, n, cx))
+         .map_err(|e| e.to_string().into())
+ }
+ 
++/// Source bytes per independently parsed chunk of a long document.
++const PARSE_CHUNK_BYTES: usize = 16 * 1024;
++
++/// `markdown::to_mdast`, in chunks for long documents.
++///
++/// markdown-rs parse time grows faster than linearly with document size (a
++/// 10,000-line note takes several times longer than four quarters of it), so
++/// a long document is parsed as consecutive chunks, in parallel, whose trees
++/// are joined with their positions shifted back into the whole source. The
++/// result is the tree a single parse produces: see [`chunk_starts`] for why
++/// each cut is safe.
++fn to_mdast(source: &str, options: &markdown::ParseOptions) -> Result<Node, markdown::message::Message> {
++    let starts = chunk_starts(source, options);
++    if starts.len() < 2 {
++        return markdown::to_mdast(source, options);
++    }
++    let mut chunks = Vec::with_capacity(starts.len());
++    let mut lines = 0;
++    for (ix, &start) in starts.iter().enumerate() {
++        let end = starts.get(ix + 1).copied().unwrap_or(source.len());
++        chunks.push((start, lines, &source[start..end]));
++        lines += line_endings(&source[start..end]);
++    }
++    let threads = std::thread::available_parallelism()
++        .map_or(1, |n| n.get())
++        .clamp(1, 4)
++        .min(chunks.len());
++    let per_thread = chunks.len().div_ceil(threads);
++    // MDX parse callbacks are not `Sync`; chunked documents never use MDX
++    // (see `chunk_starts`), so every thread gets the same plain options.
++    let constructs = &options.constructs;
++    let single_tilde = options.gfm_strikethrough_single_tilde;
++    let single_dollar = options.math_text_single_dollar;
++    let parse = move |group: &[(usize, usize, &str)]| {
++        let options = markdown::ParseOptions {
++            constructs: constructs.clone(),
++            gfm_strikethrough_single_tilde: single_tilde,
++            math_text_single_dollar: single_dollar,
++            mdx_expression_parse: None,
++            mdx_esm_parse: None,
++        };
++        group
++            .iter()
++            .map(|&(start, lines, chunk)| {
++                let mut node = markdown::to_mdast(chunk, &options)?;
++                shift_positions(&mut node, start, lines);
++                Ok(node)
++            })
++            .collect::<Result<Vec<_>, markdown::message::Message>>()
++    };
++    let groups: Vec<_> = std::thread::scope(|scope| {
++        let mut groups = chunks.chunks(per_thread);
++        let first = groups.next().unwrap_or_default();
++        let handles: Vec<_> = groups.map(|group| scope.spawn(move || parse(group))).collect();
++        std::iter::once(parse(first))
++            .chain(handles.into_iter().map(|handle| {
++                handle
++                    .join()
++                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
++            }))
++            .collect()
++    });
++
++    let mut children = Vec::new();
++    let mut first = None;
++    let mut last = None;
++    for node in groups.into_iter().collect::<Result<Vec<_>, _>>()?.into_iter().flatten() {
++        let Node::Root(root) = node else {
++            unreachable!("to_mdast returns a root");
++        };
++        if let Some(position) = root.position {
++            first.get_or_insert(position.start);
++            last = Some(position.end);
++        }
++        children.extend(root.children);
++    }
++    Ok(Node::Root(mdast::Root {
++        children,
++        position: first.zip(last).map(|(start, end)| markdown::unist::Position { start, end }),
++    }))
++}
++
++/// Line endings as markdown-rs counts them: `\n`, `\r\n` and a lone `\r`.
++fn line_endings(text: &str) -> usize {
++    let bytes = text.as_bytes();
++    bytes
++        .iter()
++        .enumerate()
++        .filter(|&(i, &b)| b == b'\n' || (b == b'\r' && bytes.get(i + 1) != Some(&b'\n')))
++        .count()
++}
++
++fn shift_positions(node: &mut Node, offset: usize, lines: usize) {
++    if let Some(position) = node.position_mut() {
++        for point in [&mut position.start, &mut position.end] {
++            point.offset += offset;
++            point.line += lines;
++        }
++    }
++    if let Some(children) = node.children_mut() {
++        for child in children {
++            shift_positions(child, offset, lines);
++        }
++    }
++}
++
++/// Byte offsets where a long document can be parsed independently; the first
++/// is always 0. Fewer than two offsets means "parse it whole".
++///
++/// A cut is made only before an ATX heading that starts in column 0 after a
++/// blank line. In CommonMark/GFM such a line ends every open container (a
++/// list item needs indentation, a block quote needs `>`, and laziness only
++/// continues a paragraph, which the blank line has closed) and every leaf
++/// except a fenced code block or an HTML block of kinds 1-5. Fences are
++/// tracked exactly from the start of the document; this is only sound when
++/// every fence-like line is itself in column 0 (a fence inside a list item or
++/// block quote could otherwise hide a top-level fence), so any other
++/// fence-like line disables chunking. HTML blocks that can span blank lines,
++/// document-wide definitions (link references and footnotes, `]:`) and
++/// non-GFM constructs also disable it, so they keep the single-parse result.
++fn chunk_starts(source: &str, options: &markdown::ParseOptions) -> Vec<usize> {
++    let mut starts = vec![0];
++    if source.len() < 2 * PARSE_CHUNK_BYTES {
++        return starts;
++    }
++    let constructs = &options.constructs;
++    if !constructs.html_flow
++        || options.mdx_expression_parse.is_some()
++        || options.mdx_esm_parse.is_some()
++        || constructs.mdx_jsx_flow
++        || constructs.mdx_expression_flow
++        || constructs.mdx_esm
++        || constructs.math_flow
++        || constructs.frontmatter
++    {
++        return starts;
++    }
++    if source.contains("]:") || source.contains("<!") || source.contains("<?") {
++        return starts;
++    }
++    let lower = source.to_ascii_lowercase();
++    if ["<script", "<pre", "<style", "<textarea"]
++        .iter()
++        .any(|tag| lower.contains(tag))
++    {
++        return starts;
++    }
++
++    let mut fence: Option<(u8, usize)> = None;
++    let mut previous_blank = true;
++    let mut line_start = 0;
++    let bytes = source.as_bytes();
++    while line_start < bytes.len() {
++        let mut line_end = line_start;
++        while line_end < bytes.len() && bytes[line_end] != b'\n' && bytes[line_end] != b'\r' {
++            line_end += 1;
++        }
++        let line = &source[line_start..line_end];
++        let blank = line.bytes().all(|b| b == b' ' || b == b'\t');
++
++        let marker = fence_marker(line);
++        if marker.is_none() && fence_marker(strip_container_prefix(line)).is_some() {
++            // A fence that is indented or inside a container.
++            return vec![0];
++        }
++        match (fence, marker) {
++            (Some((ch, len)), Some((mch, mlen, info))) => {
++                if mch == ch && mlen >= len && info.trim().is_empty() {
++                    fence = None;
++                }
++            }
++            (None, Some((mch, mlen, info))) => {
++                if mch == b'~' || !info.contains('`') {
++                    fence = Some((mch, mlen));
++                }
++            }
++            _ => {}
++        }
++
++        if fence.is_none()
++            && previous_blank
++            && is_atx_heading(line)
++            && line_start - starts.last().copied().unwrap_or(0) >= PARSE_CHUNK_BYTES
++            && source.len() - line_start >= PARSE_CHUNK_BYTES / 2
++        {
++            starts.push(line_start);
++        }
++        previous_blank = blank;
++
++        line_start = line_end;
++        if bytes.get(line_start) == Some(&b'\r') {
++            line_start += 1;
++        }
++        if bytes.get(line_start) == Some(&b'\n') {
++            line_start += 1;
++        }
++    }
++    starts
++}
++
++/// A run of three or more backticks or tildes starting in column 0: the fence
++/// character, the run length and the rest of the line.
++fn fence_marker(line: &str) -> Option<(u8, usize, &str)> {
++    let ch = *line.as_bytes().first()?;
++    if ch != b'`' && ch != b'~' {
++        return None;
++    }
++    let len = line.bytes().take_while(|&b| b == ch).count();
++    (len >= 3).then(|| (ch, len, &line[len..]))
++}
++
++/// The line without leading whitespace and block quote or list markers.
++fn strip_container_prefix(line: &str) -> &str {
++    let mut rest = line;
++    loop {
++        let trimmed = rest.trim_start_matches([' ', '\t']);
++        let after_marker = trimmed
++            .strip_prefix('>')
++            .or_else(|| trimmed.strip_prefix(['-', '*', '+']))
++            .or_else(|| {
++                let digits = trimmed.bytes().take_while(u8::is_ascii_digit).count();
++                (digits > 0)
++                    .then(|| trimmed[digits..].strip_prefix(['.', ')']))
++                    .flatten()
++            });
++        match after_marker {
++            Some(after) => rest = after,
++            None => return trimmed,
++        }
++    }
++}
++
++/// An ATX heading opening in column 0: one to six `#` then a space, a tab or
++/// the end of the line.
++fn is_atx_heading(line: &str) -> bool {
++    let hashes = line.bytes().take_while(|&b| b == b'#').count();
++    (1..=6).contains(&hashes)
++        && matches!(line.as_bytes().get(hashes), None | Some(b' ') | Some(b'\t'))
++}
++
+ fn parse_table_row(table: &mut Table, node: &mdast::TableRow, cx: &mut NodeContext) {
+     let mut row = TableRow::default();
+     node.children.iter().for_each(|c| {
+@@ -627,6 +867,89 @@
+ 
+     use crate::text::{MarkdownExtensions, MarkdownNode, MarkdownPlugin};
+ 
++    /// A long document mixing every construct a chunk boundary has to respect.
++    fn long_document(line_ending: &str) -> String {
++        let mut text = String::from("---\ntitle: Front\n---\n\n");
++        for i in 0..1200 {
++            text.push_str(&format!("{} Section {i} *em*\n\n", "#".repeat(1 + i % 6)));
++            text.push_str(&format!("Paragraph {i} with [[Link {i}]] and `code`.\n#hashtag {i}\n\n"));
++            match i % 8 {
++                0 => text.push_str("```md\nfenced\n\n# not a heading\n\n```\n\n"),
++                1 => text.push_str("~~~~\n\n# still code\n~~~\n\n## also code\n~~~~~\n\n"),
++                2 => text.push_str("- item\n\n  continued\n- second\n  # nested heading\n\n"),
++                3 => text.push_str("> quote\n>\n> # quoted heading\nlazy line\n\n"),
++                4 => text.push_str("| a | b |\n| - | - |\n| 1 | 2 |\n\n"),
++                5 => text.push_str("    indented code\n\n    # indented\n\n"),
++                6 => text.push_str("Setext\n======\n\n<div>\nhtml\n</div>\n\n"),
++                _ => text.push_str("![image](a.png)\n\n1. one\n2. two\n\n---\n\n"),
++            }
++        }
++        text.replace('\n', line_ending)
++    }
++
++    #[test]
++    fn chunked_parse_matches_a_single_parse() {
++        let options = markdown::ParseOptions::gfm();
++        for line_ending in ["\n", "\r\n", "\r"] {
++            let text = long_document(line_ending);
++            let starts = chunk_starts(&text, &options);
++            assert!(starts.len() > 3, "positive control: {line_ending:?} is chunked");
++            for &start in &starts[1..] {
++                assert!(is_atx_heading(&text[start..]));
++            }
++            assert_eq!(
++                to_mdast(&text, &options).unwrap(),
++                markdown::to_mdast(&text, &options).unwrap(),
++                "{line_ending:?}"
++            );
++        }
++    }
++
++    #[test]
++    fn chunked_parse_keeps_unclosed_fences_whole() {
++        let options = markdown::ParseOptions::gfm();
++        // An unclosed fence swallows every later heading: the document's own
++        // three-backtick and tilde fences cannot close five backticks.
++        let text = format!("`````\n{}", long_document("\n"));
++        assert_eq!(chunk_starts(&text, &options), vec![0]);
++        // A backtick info string with a backtick is not a fence, so the next
++        // bare run opens one (closed by the next bare run) rather than closing it.
++        let text = format!(
++            "{}```a`b\n\n```\n\n# inside\n\n{}",
++            "Filler paragraph.\n\n".repeat(1500),
++            long_document("\n")
++        );
++        let starts = chunk_starts(&text, &options);
++        assert!(starts.len() > 3);
++        assert!(!starts.contains(&text.find("# inside").unwrap()));
++        // Positive control: outside a fence the same heading is a cut.
++        let control = text.replacen("```a`b\n\n```\n\n", "", 1);
++        assert!(chunk_starts(&control, &options).contains(&control.find("# inside").unwrap()));
++        assert_eq!(
++            to_mdast(&text, &options).unwrap(),
++            markdown::to_mdast(&text, &options).unwrap()
++        );
++    }
++
++    #[test]
++    fn chunked_parse_declines_documents_it_cannot_cut_safely() {
++        let options = markdown::ParseOptions::gfm();
++        let text = long_document("\n");
++        for extra in [
++            "[ref]: https://example.com\n",
++            "[^1]: footnote\n",
++            "<!--\n\n# hidden\n\n-->\n",
++            "<pre>\n\n# raw\n</pre>\n",
++            "- list\n\n  ```\n\n# fenced?\n",
++            "> ```\n",
++        ] {
++            let text = format!("{extra}\n{text}");
++            assert_eq!(chunk_starts(&text, &options), vec![0], "{extra:?}");
++        }
++        assert_eq!(chunk_starts("# short\n\n# note\n", &options), vec![0]);
++        assert_eq!(chunk_starts(&text, &markdown::ParseOptions::mdx()), vec![0]);
++    }
++
+     #[test]
+     fn table_rows_use_header_column_count() {
+         let mut cx = NodeContext::default();
+--- a/crates/base/src/text/state.rs
++++ b/crates/base/src/text/state.rs
+@@ -33,6 +33,14 @@
+ // Preserve exact first-layout height for small documents while bounding the
+ // amount of source parsed synchronously on the UI thread.
+ const MAX_SYNC_FULL_REPLACE_BYTES: usize = 4 * 1024;
++/// Documents with more top-level blocks than this measure them lazily.
++///
++/// Measuring every block keeps the scrollbar thumb exact, but it lays out the
++/// whole document on the first frame and again after every width change,
++/// which costs hundreds of milliseconds for a note of several thousand blocks.
++/// Above this count only the visible blocks (plus overdraw) are laid out, and
++/// the others carry an estimated height until they scroll into view.
++const MEASURE_ALL_MAX_BLOCKS: usize = 500;
+ 
+ pub(crate) fn init(cx: &mut App) {
+     cx.bind_keys(vec![
+@@ -93,6 +101,9 @@
+ pub struct TextViewState {
+     pub(super) focus_handle: FocusHandle,
+     pub(super) list_state: ListState,
++    /// Whether `list_state` measures every block; enabled once a short
++    /// document is shown, and never disabled for this list.
++    measures_all_blocks: bool,
+ 
+     /// The bounds of the text view
+     bounds: Bounds<Pixels>,
+@@ -222,11 +233,10 @@
+             max_lines: None,
+             line_spans: Arc::default(),
+             clamped: false,
+-            // Measure all blocks (not just visible ones) so the scrollbar
+-            // thumb size stays stable. Without this, off-screen blocks count
+-            // as zero height until scrolled into view, which makes the
+-            // scrollbar jitter as more blocks get measured during scrolling.
+-            list_state: ListState::new(0, gpui::ListAlignment::Top, px(1000.)).measure_all(),
++            // Short documents measure all blocks (not just visible ones) so
++            // the scrollbar thumb size stays stable; see `sync_block_list`.
++            list_state: ListState::new(0, gpui::ListAlignment::Top, px(1000.)),
++            measures_all_blocks: false,
+             text_view_style: TextViewStyle::default(),
+             code_block_actions: None,
+             code_block_language: None,
+@@ -654,6 +664,33 @@
+     /// `remeasure_items` re-arms the latch and marks the items unmeasured
+     /// while keeping their old sizes as hints, so the scrollbar does not
+     /// collapse in the frame before the next layout measures the real heights.
++    /// Match the block list to `document` before layout.
++    ///
++    /// Short documents measure every block, so the scrollbar thumb is exact
++    /// and stable. Long documents (more than [`MEASURE_ALL_MAX_BLOCKS`]) lay
++    /// out only what is visible; every other block carries an estimated height
++    /// until it is measured, so opening or resizing a long note does not lay
++    /// out thousands of blocks in one frame. Measuring every block cannot be
++    /// switched off on a shared `ListState`, so a list that once showed a
++    /// short document keeps measuring all blocks, as it always did.
++    fn sync_block_list(&mut self, document: &ParsedDocument) {
++        let count = document.blocks.len();
++        if self.list_state.item_count() == count {
++            return;
++        }
++        if count > MEASURE_ALL_MAX_BLOCKS {
++            self.list_state
++                .reset_with_uniform_height(count, estimated_block_height(document));
++            return;
++        }
++        if count > 0 && !self.measures_all_blocks {
++            self.measures_all_blocks = true;
++            // `measure_all` configures the shared list state in place.
++            let _ = self.list_state.clone().measure_all();
++        }
++        self.list_state.reset(count);
++    }
++
+     fn invalidate_measured_heights(&self) {
+         let count = self.list_state.item_count();
+         if count > 0 {
+@@ -928,10 +965,8 @@
+         node_cx.search_current = self.search_current;
+         // Align the containing block before its layout; glyph geometry from
+         // this frame must describe the scroll position used in that frame.
++        self.sync_block_list(&document);
+         if self.search_reveal_pending {
+-            if self.list_state.item_count() != document.blocks.len() {
+-                self.list_state.reset(document.blocks.len());
+-            }
+             self.reveal_search_match();
+             self.search_reveal_pending = false;
+         }
+@@ -1114,6 +1149,18 @@
+     true
+ }
+ 
++/// A height hint for unmeasured blocks of a long document. It only sizes the
++/// scrollbar thumb until blocks are measured; positions are item-based, so
++/// heading jumps and restored positions do not depend on it.
++fn estimated_block_height(document: &ParsedDocument) -> Pixels {
++    const LINE: f32 = 26.;
++    const BLOCK_GAP: f32 = 16.;
++    const CHARS_PER_LINE: f32 = 80.;
++    let blocks = document.blocks.len().max(1) as f32;
++    let lines = (document.source.len() as f32 / blocks / CHARS_PER_LINE).clamp(1., 12.);
++    px(lines * LINE + BLOCK_GAP)
++}
++
+ fn parse_content(
+     format: TextViewFormat,
+     mut content: ParsedContent,

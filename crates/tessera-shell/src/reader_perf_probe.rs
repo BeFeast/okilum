@@ -138,12 +138,17 @@ impl Probe {
 
     /// Write the JSON report. Positive controls let the harness reject a run
     /// that never painted the document or never moved it.
-    pub(crate) fn write_report(&self, outline_rows: usize) -> std::io::Result<()> {
+    pub(crate) fn write_report(
+        &self,
+        outline_rows: usize,
+        outline_height: f32,
+    ) -> std::io::Result<()> {
         let report = serde_json::json!({
             "open_ms": self.open_ms,
             "first_frame_ms": self.first_frame_ms,
             "blocks": self.first_frame_blocks,
             "outline_rows": outline_rows,
+            "outline_height_px": outline_height,
             "step_px": f32::from(STEP),
             "scroll": stats(&self.scroll_frames),
             "jump": stats(&self.jump_frames),
