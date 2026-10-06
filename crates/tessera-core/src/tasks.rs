@@ -202,11 +202,50 @@ impl Filter {
         }
     }
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Group {
+    #[default]
+    Filename,
+    Path,
+    Due,
+    Priority,
+    Status,
+}
+impl Group {
+    pub fn label(self, task: &Task) -> String {
+        match self {
+            Self::Filename => std::path::Path::new(&task.path)
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+            Self::Path => task
+                .path
+                .strip_suffix(".md")
+                .unwrap_or(&task.path)
+                .to_owned(),
+            Self::Due => task
+                .due
+                .map_or_else(|| "No due date".into(), |d| d.to_string()),
+            Self::Priority => [
+                "Highest priority",
+                "High priority",
+                "Medium priority",
+                "Normal priority",
+                "Low priority",
+                "Lowest priority",
+            ][task.priority as usize]
+                .into(),
+            Self::Status => if task.checked { "Done" } else { "Open" }.into(),
+        }
+    }
+}
 #[derive(Debug, Default)]
 pub struct Query {
     filters: Vec<Filter>,
     sorts: Vec<(Sort, bool)>,
     pub unsupported: Vec<String>,
+    pub groups: Vec<Group>,
 }
 impl Query {
     pub fn parse(source: &str, today: Date) -> Self {
@@ -221,7 +260,20 @@ impl Query {
                 "done" => query.filters.push(Filter::Status(true)),
                 "no due date" => query.filters.push(Filter::NoDue),
                 _ => {
-                    if let Some(sort) = line.strip_prefix("sort by ") {
+                    if let Some(group) = line.strip_prefix("group by ") {
+                        let group = match group {
+                            "filename" => Some(Group::Filename),
+                            "path" => Some(Group::Path),
+                            "due" => Some(Group::Due),
+                            "priority" => Some(Group::Priority),
+                            "status" => Some(Group::Status),
+                            _ => None,
+                        };
+                        if let Some(group) = group {
+                            query.groups.push(group);
+                            continue;
+                        }
+                    } else if let Some(sort) = line.strip_prefix("sort by ") {
                         let reverse = sort.ends_with(" reverse");
                         let key = sort.strip_suffix(" reverse").unwrap_or(sort);
                         let key = match key {
