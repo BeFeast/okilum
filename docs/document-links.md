@@ -56,8 +56,24 @@ root/sibling sentinels, exact fragments/ranges, encoding once, code exclusion,
 wiki compatibility, fallback boundaries, heading ambiguity and actual managed
 navigation/Back. Native acceptance records exact binary/source/vendor, host,
 gestures, destination, heading, refusal, Back and source-byte preservation
-separately from headless test results. Attachments and Markdown incoming references
-are follow-up issues #315 and #316.
+separately from headless test results. Managed image attachment actions remain
+follow-up #315.
+
+## Incoming references (#316)
+
+Reader Linked from and managed incoming references include ordinary Markdown
+note links, using the same source-relative resolution as navigation. Inline and
+reference forms, encoded filenames and heading-qualified destinations contribute
+note edges; code examples, malformed links and attachments do not. Wiki behavior,
+including embeds and explicitly ambiguous candidate rows, remains unchanged.
+Managed rows retain original source lines, revisions, scope filtering, pagination,
+budgets and per-source/target/line deduplication. Self-links are excluded.
+
+Managed Markdown resolution uses backend metadata, but only accepted indexed
+snapshots receive edges. Resolver discovery does not enroll additional content or
+expose operational records. Derived cache v6 rejects wiki-only generations and
+binds reuse to metadata identity, including occupied non-note paths that block
+fallback to a root namesake. Rebuild changes no canonical files.
 
 ## Prepared link presentation (#336)
 
