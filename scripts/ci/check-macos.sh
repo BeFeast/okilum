@@ -8,6 +8,7 @@ export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
 # Same toolchain/profile/cache as main releases; the single runner serializes jobs.
 export CARGO_TARGET_DIR="$HOME/.cache/tessera-macos/1.96.1-arm64"
 export CARGO_INCREMENTAL=0
+source scripts/ci/release-cache.sh
 if ! rustup run 1.96.1 rustc --version >/dev/null 2>&1; then
     rustup toolchain install 1.96.1 --profile minimal --target aarch64-apple-darwin
 fi
@@ -49,3 +50,5 @@ run_tests tessera-shell --bins reader_replay::
 # #477: real Quick Look providers, bounded Retina output and cancellation.
 export TESSERA_THUMBNAIL_EVIDENCE_DIR="${RUNNER_TEMP}/thumbnail-evidence"
 run_tests tessera-shell --bins reader_thumbnail::native_tests
+
+release_cache_stats

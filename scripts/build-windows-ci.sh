@@ -16,6 +16,8 @@ scripts/vendor-setup.sh --verify
 # This optimized profile selects its existing Windows runtime HLSL compiler.
 # Disable defaults in both shell and core: Windows never compiles managed writes.
 export RUSTFLAGS="-C target-feature=+crt-static"
+source scripts/ci/release-cache.sh
+export TESSERA_SCCACHE="${RUSTC_WRAPPER:-}"
 export RUSTC_WRAPPER="$PWD/scripts/windows-rustc.py"
 export RC_x86_64_pc_windows_msvc="$PWD/scripts/windows-rc.py"
 cargo +1.96.1 xwin build --locked --target x86_64-pc-windows-msvc \
@@ -49,3 +51,5 @@ with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as bun
     hashlib.sha256(archive.read_bytes()).hexdigest() + '  ' + archive.name + '\n')
 print(archive)
 PY
+
+release_cache_stats

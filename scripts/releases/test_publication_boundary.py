@@ -21,6 +21,7 @@ class PublicationBoundary(unittest.TestCase):
                'is_fork_pull_request': False, 'trigger_event': 'push',
                'status': 'success', 'commit_sha': 'latest'}
         self.assertTrue(publication.eligible(run, 'windows', 'latest'))
+        self.assertTrue(publication.eligible({**run, 'trigger_event': 'schedule'}, 'windows', 'latest'))
         self.assertFalse(publication.eligible(run, 'windows', 'newer'))
         for state in ['running', 'cancelled', 'failure']:
             self.assertFalse(publication.eligible({**run, 'status': state}, 'windows', 'latest'))

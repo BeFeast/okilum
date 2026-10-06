@@ -7,7 +7,8 @@ export TESSERA_RELEASE_VERSION="0.1.$TESSERA_BUILD_VERSION"
 export TESSERA_SOURCE_COMMIT="$(git rev-parse HEAD)"
 export PATH="$HOME/.cargo/bin:$PATH"
 export CARGO_INCREMENTAL=0
-export CARGO_BUILD_JOBS=2
+export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-4}"
+source scripts/ci/release-cache.sh
 export RUSTFLAGS='-C link-arg=-fuse-ld=mold'
 if ! command -v rustup >/dev/null; then
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.96.1
@@ -18,3 +19,5 @@ cp scripts/arch/PKGBUILD dist/arch/PKGBUILD
 sed -i "s/^pkgver=.*/pkgver=0.1.$TESSERA_BUILD_VERSION/" dist/arch/PKGBUILD
 cd dist/arch
 makepkg --cleanbuild --noconfirm
+
+release_cache_stats

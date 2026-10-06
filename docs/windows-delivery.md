@@ -55,3 +55,6 @@ integrity, not independent publisher authentication.
 Packaging feasibility was tested on Linux with the accepted diagnostic ZIP:
 Setup/full/delta/feed in ~4 seconds; delta reconstruction matched all package
 members. This does not replace native installation/update acceptance above.
+
+Windows Beta builds the newest main once an hour; manual dispatch of
+`windows-release` on main builds immediately. See [release cadence](releases.md).

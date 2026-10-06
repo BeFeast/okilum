@@ -65,7 +65,8 @@ wait for stable to catch up. Each channel refuses backwards publication.
 
 ## Release and promotion
 
-`.forgejo/workflows/linux-release.yml` builds each merge to `main` in a pinned
+`.forgejo/workflows/linux-release.yml` builds each merge to `main` with shared
+sccache and cached dependency downloads, in a pinned
 Arch `base-devel` container, with Rust 1.96.1 and the locked dependency graph.
 The package version is `0.1.<5000 + workflow run number>-1`. PRs touching packaging
 build/install the package and test signing with a disposable key; they cannot
