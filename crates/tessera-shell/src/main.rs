@@ -56,6 +56,7 @@ mod reader_recovery;
 #[path = "reader_recovery_windows.rs"]
 mod reader_recovery;
 mod reader_replay;
+mod reader_right_panel;
 mod reader_settings;
 mod reader_sidebar;
 #[cfg(unix)]
@@ -2916,29 +2917,19 @@ impl Reader {
         }
     }
 
-    fn backlinks_count_label(&self) -> String {
-        if !self.vault.inventory_scanned {
-            return "pending".into();
-        }
-        let mut notes = 0;
-        let mut previous: Option<&str> = None;
-        for b in &self.backlinks {
-            if previous != Some(b.path.as_str()) {
-                notes += 1;
-                previous = Some(b.path.as_str());
-            }
-        }
-        let links = self.backlinks.len();
-        let label = format!(
-            "{notes} {} · {links} {}",
-            if notes == 1 { "note" } else { "notes" },
-            if links == 1 { "place" } else { "places" }
-        );
-        if self.vault.unreadable.is_empty() {
-            label
+    /// «Linked from» with counts only when something links here (#646).
+    fn linked_from_title(&self) -> String {
+        let (notes, places) = if self.file_preview.is_some() {
+            (0, 0)
         } else {
-            format!("{label} · partial")
-        }
+            reader_right_panel::link_counts(self.backlinks.iter().map(|b| b.path.as_str()))
+        };
+        reader_right_panel::linked_from_title(
+            self.vault.inventory_scanned,
+            notes,
+            places,
+            !self.vault.unreadable.is_empty(),
+        )
     }
 
     /// Panel title row: name and count, with compact quick-open in Notes.
@@ -4222,14 +4213,10 @@ impl Reader {
     }
 
     fn render_backlinks(&self, cx: &mut Context<Self>) -> AnyElement {
-        if self.file_preview.is_some() {
-            return div()
-                .p_4()
-                .child("No note backlinks for this file")
-                .into_any_element();
-        }
-        let border = cx.theme().border;
         let muted = cx.theme().muted_foreground;
+        if self.file_preview.is_some() {
+            return panel_empty_line(muted, "—");
+        }
         let current_bg = cx.theme().accent;
         let hover_bg = brand::reader_palette(cx).hover;
 
@@ -4531,24 +4518,22 @@ impl Reader {
             })
             .collect();
 
-        let empty = items.is_empty() && self.vault.inventory_scanned;
-        let _ = border;
+        let empty = (items.is_empty() || !self.vault.inventory_scanned).then(|| {
+            reader_right_panel::linked_from_empty(
+                self.vault.inventory_scanned,
+                self.vault.inventory_complete,
+            )
+        });
         v_flex()
             .id("backlinks")
             .flex_1()
             .min_h(px(96.))
             .overflow_y_scroll()
-            .p_1()
-            .when(empty, |list| {
-                list.child(div().px_3().py_1().text_sm().text_color(muted).child(
-                    if self.vault.inventory_complete {
-                        "—"
-                    } else {
-                        "No links found in readable items."
-                    },
-                ))
+            .py_1()
+            .when_some(empty, |list, line| {
+                list.child(panel_empty_line(muted, line))
             })
-            .children(items)
+            .when(empty.is_none(), |list| list.px_1().children(items))
             .into_any_element()
     }
 
@@ -4573,13 +4558,7 @@ impl Reader {
                 .child(Icon::default().path(icon).xsmall().text_color(faint))
                 .child(label)
         };
-        let linked = if self.vault.inventory_scanned && self.backlinks.is_empty() {
-            "Linked from".into()
-        } else if self.vault.inventory_scanned {
-            format!("Linked from · {}", self.backlinks_count_label())
-        } else {
-            "Linked from · pending".into()
-        };
+        let linked = self.linked_from_title();
         v_flex()
             .w_full()
             .h_full()
@@ -4990,13 +4969,17 @@ impl Reader {
     }
 
     fn render_outline(&self, cx: &mut Context<Self>) -> AnyElement {
-        if self.file_preview.is_some() {
+        let p = brand::palette(cx);
+        if self.file_preview.is_some() || self.outline.is_empty() {
             return div()
-                .p_4()
-                .child("No headings in this file")
+                .flex_none()
+                .py_1()
+                .child(panel_empty_line(
+                    p.text_muted,
+                    reader_right_panel::contents_empty(self.file_preview.is_some()),
+                ))
                 .into_any_element();
         }
-        let p = brand::palette(cx);
         let hover = brand::reader_palette(cx).hover;
         let current = self.current_section(cx);
         let base = self.outline.iter().map(|h| h.level).min().unwrap_or(1);
@@ -5006,16 +4989,6 @@ impl Reader {
             .max_h(relative(0.6))
             .overflow_y_scroll()
             .py_1()
-            .when(self.outline.is_empty(), |list| {
-                list.child(
-                    div()
-                        .px_4()
-                        .py_1()
-                        .text_sm()
-                        .text_color(p.text_muted)
-                        .child("No headings in this note."),
-                )
-            })
             .children(self.outline.iter().enumerate().map(|(ix, heading)| {
                 let block = heading.target.block;
                 let is_current = current == Some(ix);
@@ -5055,6 +5028,18 @@ impl Reader {
             }))
             .into_any_element()
     }
+}
+
+/// The one muted line an empty right-panel section shows under its header
+/// (#646), aligned with the section label.
+fn panel_empty_line(color: Hsla, text: &'static str) -> AnyElement {
+    div()
+        .px_4()
+        .py_1()
+        .text_sm()
+        .text_color(color)
+        .child(text)
+        .into_any_element()
 }
 
 const READER_HEADER_HEIGHT: f32 = 46.;
