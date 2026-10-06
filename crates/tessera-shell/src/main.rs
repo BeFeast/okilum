@@ -1096,6 +1096,8 @@ struct Reader {
     #[cfg(unix)]
     note_move_pending: bool,
     #[cfg(unix)]
+    move_notice_generation: u64,
+    #[cfg(unix)]
     move_applying: bool,
     #[cfg(unix)]
     trash_pending: bool,
@@ -1361,6 +1363,8 @@ impl Reader {
             renaming: None,
             #[cfg(unix)]
             note_move_pending: false,
+            #[cfg(unix)]
+            move_notice_generation: 0,
             #[cfg(unix)]
             move_applying: false,
             #[cfg(unix)]
@@ -2368,7 +2372,24 @@ impl Reader {
                         row.kind == tessera_core::vault::EntryKind::Directory,
                     ));
                     if let Some(error) = &rename.error {
-                        items.push(SideItem::CreateError(error.clone()));
+                        let mut line = String::new();
+                        for word in error.split_whitespace() {
+                            if !line.is_empty()
+                                && line.chars().count() + word.chars().count() + 1 > 28
+                            {
+                                items.push(SideItem::CreateError(
+                                    std::mem::take(&mut line),
+                                    row.depth,
+                                ));
+                            }
+                            if !line.is_empty() {
+                                line.push(' ');
+                            }
+                            line.push_str(word);
+                        }
+                        if !line.is_empty() {
+                            items.push(SideItem::CreateError(line, row.depth));
+                        }
                     }
                     continue;
                 }
@@ -3256,14 +3277,17 @@ impl Reader {
                         .into_any_element()
                 }
                 #[cfg(unix)]
-                SideItem::CreateError(error) => row_base("inline-create-error".into())
-                    .text_color(p.danger)
-                    .text_xs()
-                    .child(error.clone())
-                    .tooltip(move |window, cx| {
-                        gpui_component::tooltip::Tooltip::new(error.clone()).build(window, cx)
-                    })
-                    .into_any_element(),
+                SideItem::CreateError(error, depth) => {
+                    row_base(format!("inline-create-error-{ix}").into())
+                        .pl(px(38. + depth as f32 * 14.))
+                        .text_color(p.danger)
+                        .text_size(px(12.))
+                        .child(error.clone())
+                        .tooltip(move |window, cx| {
+                            gpui_component::tooltip::Tooltip::new(error.clone()).build(window, cx)
+                        })
+                        .into_any_element()
+                }
                 SideItem::Header(section, count) => {
                     let closed = collapsed.contains(&section);
                     let icon = match section {
@@ -5034,7 +5058,7 @@ enum SideItem {
     #[cfg(unix)]
     Create(Entity<InputState>, usize, bool, Vec<String>, Option<String>),
     #[cfg(unix)]
-    CreateError(String),
+    CreateError(String, usize),
     #[cfg(unix)]
     Rename(Entity<InputState>, usize, bool),
 }
