@@ -21,8 +21,9 @@ use uuid::Uuid;
 
 // v4 excludes unverified proposals, including brain-owned unplanned Inbox drafts.
 // v5 adds complete, bounded incoming references from original source snapshots.
+// v6 includes ordinary Markdown note links using the shared document resolver.
 // Reject previous generations rather than reusing their derived chunks or vectors.
-const INDEX_SCHEMA: &str = "tessera-brain-index/v5";
+const INDEX_SCHEMA: &str = "tessera-brain-index/v6";
 const MAX_SOURCE_BYTES: u64 = 1024 * 1024;
 const MAX_TOTAL_BYTES: usize = 64 * 1024 * 1024;
 const MAX_CHUNKS: usize = 32_000;
@@ -549,6 +550,7 @@ impl BrainIndex {
     fn refresh_at(&self, force: bool, epoch: u64) -> Result<()> {
         let configuration = self.configuration_revision();
         let sources = self.inventory()?;
+        let markdown_vault = tessera_core::Vault::scan_metadata(&self.root)?;
         let docs: BTreeMap<_, _> = sources
             .iter()
             .map(|s| (s.path.clone(), s.revision.clone()))
@@ -576,6 +578,7 @@ impl BrainIndex {
         if !force
             && previous.is_some_and(|p| {
                 p.documents == docs
+                    && p.incoming.matches_inventory(&markdown_vault)
                     && p.model == model
                     && (model.is_none() || p.chunks.iter().all(|c| c.vector.is_some()))
             })
@@ -584,7 +587,13 @@ impl BrainIndex {
                 let same_settings =
                     current.embedder.as_ref().map(|e| &e.settings) == settings.as_ref();
                 if same_settings {
-                    self.validate_refresh(epoch, &configuration, &docs, None)?;
+                    self.validate_refresh(
+                        epoch,
+                        &configuration,
+                        &docs,
+                        &current.cache.incoming,
+                        None,
+                    )?;
                     let mut view = self.view.write().unwrap();
                     ensure!(view.epoch == epoch, "index refresh superseded");
                     view.status.status = "ready".into();
@@ -607,7 +616,8 @@ impl BrainIndex {
             })
             .unwrap_or_default();
         drop(current);
-        let incoming = crate::incoming_references::Graph::build(&sources, &self.records_dir);
+        let incoming =
+            crate::incoming_references::Graph::build(&sources, &self.records_dir, &markdown_vault);
         let mut chunks = vec![];
         for source in &sources {
             let (mut next, mut notes) = chunks_for(source, &self.records_dir)?;
@@ -734,6 +744,7 @@ impl BrainIndex {
         epoch: u64,
         configuration: &Option<String>,
         documents: &BTreeMap<String, String>,
+        incoming: &crate::incoming_references::Graph,
         expected_generation: Option<&str>,
     ) -> Result<()> {
         let owned = |view: &View| {
@@ -746,7 +757,10 @@ impl BrainIndex {
         }
         let sources = self.inventory()?;
         let after: BTreeMap<_, _> = sources.into_iter().map(|s| (s.path, s.revision)).collect();
-        if &after != documents || &self.configuration_revision() != configuration {
+        if &after != documents
+            || &self.configuration_revision() != configuration
+            || !incoming.matches_inventory(&tessera_core::Vault::scan_metadata(&self.root)?)
+        {
             let mut view = self.view.write().unwrap();
             if owned(&view) {
                 view.epoch += 1;
@@ -787,7 +801,13 @@ impl BrainIndex {
             cache.observed_at = now();
             let cache_bytes = serde_json::to_vec(&cache)?;
             fs::write(directory.join("index.json"), &cache_bytes)?;
-            self.validate_refresh(epoch, configuration, &cache.documents, expected_generation)?;
+            self.validate_refresh(
+                epoch,
+                configuration,
+                &cache.documents,
+                &cache.incoming,
+                expected_generation,
+            )?;
             let status = IndexStatus {
                 status: "ready".into(),
                 generation: Some(generation.clone()),

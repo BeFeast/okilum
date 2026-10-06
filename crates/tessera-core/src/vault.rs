@@ -1039,6 +1039,29 @@ impl Vault {
         }
     }
 
+    /// Stable identity of the metadata used by document-link resolution.
+    /// Include occupied paths omitted from visible entries (symlinks, special
+    /// files and non-directory ancestors), since they can block fallback.
+    /// This reads only the captured inventory, never canonical file contents.
+    pub fn link_inventory_revision(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let sorted = |paths: &HashSet<String>| {
+            let mut paths: Vec<_> = paths.iter().cloned().collect();
+            paths.sort();
+            paths
+        };
+        let bytes = serde_json::to_vec(&(
+            &self.entries,
+            &self.unreadable,
+            self.inventory_complete,
+            sorted(&self.occupied_paths),
+            sorted(&self.non_directory_paths),
+            sorted(&self.symlink_paths),
+        ))
+        .expect("serializable link inventory");
+        format!("{:x}", Sha256::digest(bytes))
+    }
+
     /// Backlinks to `rel`, grouped by source note (path order) and in
     /// source-line order within each note. Uncapped (#25).
     pub fn backlinks(&self, rel: &str) -> Vec<Backlink> {
