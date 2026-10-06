@@ -533,8 +533,9 @@ the current note or file using the same action as the sidebar crosshair.
 
 Tessera restores the last reading environment without an inheritance setting.
 Appearance (System/Light/Dark), reading text size (12–24, default 15.5) and reading
-width (Narrow 620 / Comfort 740 / Wide 960 logical pixels) are global. Appearance
-uses a segmented control; text size uses quiet minus/plus glyphs with tooltips.
+width (560–1200 logical pixels, default 740) are global. Their model and persistence
+live in `reader_ui_state`; Settings presentation is owned by the separate #623
+redesign. #592 does not add or change Settings controls.
 Source text scales with the reading size. Windows in the running application
 share these values live; new application instances restore the latest persisted
 preferences. Independently edited fields merge without replacing other preferences.

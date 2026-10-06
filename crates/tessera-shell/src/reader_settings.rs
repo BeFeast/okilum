@@ -300,7 +300,7 @@ impl Settings {
                 content
                     .child("Choose how Tessera looks.")
                     .child(
-                        ButtonGroup::new("appearance-choice").children(
+                        h_flex().gap_2().children(
                             [
                                 ("settings-system", "System", None),
                                 ("settings-light", "Light", Some(ThemeMode::Light)),
@@ -318,7 +318,6 @@ impl Settings {
                             }),
                         ),
                     )
-                    .child(reader_reading_controls::render(cx))
                     .into_any_element()
             }
             Section::Files => {

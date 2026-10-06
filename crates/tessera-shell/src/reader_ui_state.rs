@@ -766,6 +766,8 @@ pub(crate) fn reading_width(cx: &App) -> f32 {
         state.saved.reading_width.clamp(560., 1200.)
     })
 }
+// Settings owns the production caller in the parallel #623 redesign.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn set_reading(font: f32, width: f32, cx: &mut App) {
     if !font.is_finite() || !width.is_finite() || !installed(cx) {
         return;
