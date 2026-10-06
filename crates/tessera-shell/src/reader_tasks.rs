@@ -154,44 +154,45 @@ impl RenderOnce for TasksList {
             let root = reader.read(cx).vault_root.clone();
             let reader = self.reader.clone();
             let due = task.due.map(|d| format!("📅 {d}"));
+            let text = task
+                .display
+                .clone()
+                .unwrap_or_else(|| tessera_core::render::strip_inline_markdown(&task.text));
             let text = due
                 .as_ref()
-                .map_or_else(|| task.text.clone(), |due| task.text.replace(due, ""));
-            list =
-                list.child(
-                    v_flex()
-                        .gap_1()
-                        .child(
-                            h_flex()
-                                .items_start()
-                                .gap_2()
-                                .child(div().text_color(muted).child(if task.checked {
-                                    "☑"
-                                } else {
-                                    "☐"
-                                }))
-                                .child(div().flex_1().child(
-                                    tessera_core::render::strip_inline_markdown(text.trim()),
-                                ))
-                                .when_some(due, |row, due| {
-                                    row.child(div().text_xs().text_color(muted).child(due))
-                                }),
-                        )
-                        .child(
-                            Button::new(("task-source", ix))
-                                .xsmall()
-                                .ghost()
-                                .label(format!("{}:{}", task.path, task.line))
-                                .debug_selector(move || format!("task-source-{ix}"))
-                                .on_click(move |_, window, cx| {
-                                    let _ = reader.update(cx, |this, cx| {
-                                        if this.vault_root == root {
-                                            this.prepare_task_document(&target, window, cx);
-                                        }
-                                    });
-                                }),
-                        ),
-                );
+                .map_or_else(|| text.clone(), |due| text.replace(due, ""));
+            list = list.child(
+                v_flex()
+                    .gap_1()
+                    .child(
+                        h_flex()
+                            .items_start()
+                            .gap_2()
+                            .child(div().text_color(muted).child(if task.checked {
+                                "☑"
+                            } else {
+                                "☐"
+                            }))
+                            .child(div().flex_1().child(text.trim().to_owned()))
+                            .when_some(due, |row, due| {
+                                row.child(div().text_xs().text_color(muted).child(due))
+                            }),
+                    )
+                    .child(
+                        Button::new(("task-source", ix))
+                            .xsmall()
+                            .ghost()
+                            .label(format!("{}:{}", task.path, task.line))
+                            .debug_selector(move || format!("task-source-{ix}"))
+                            .on_click(move |_, window, cx| {
+                                let _ = reader.update(cx, |this, cx| {
+                                    if this.vault_root == root {
+                                        this.prepare_task_document(&target, window, cx);
+                                    }
+                                });
+                            }),
+                    ),
+            );
         }
         if results.tasks.len() > results.shown {
             list = list.child(

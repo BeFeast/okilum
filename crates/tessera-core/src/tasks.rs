@@ -10,6 +10,8 @@ pub struct Task {
     pub block: usize,
     pub body_line: usize,
     pub text: String,
+    /// Visible inline text when its projection is supported without guessing.
+    pub display: Option<String>,
     pub checked: bool,
     pub due: Option<Date>,
     pub scheduled: Option<Date>,
@@ -67,6 +69,7 @@ pub fn parse(path: &str, source: &str) -> Vec<Task> {
                 line: prefix_lines + body_line,
                 block,
                 body_line,
+                display: node.children().next().and_then(inline_text),
                 checked: status.is_some(),
                 due: metadata(&text, '📅'),
                 scheduled: metadata(&text, '⏳'),
@@ -81,6 +84,29 @@ pub fn parse(path: &str, source: &str) -> Vec<Task> {
         }
     }
     tasks
+}
+
+fn inline_text<'a>(node: &'a comrak::nodes::AstNode<'a>) -> Option<String> {
+    if !matches!(node.data.borrow().value, NodeValue::Paragraph) {
+        return None;
+    }
+    let mut text = String::new();
+    for child in node.descendants() {
+        match &child.data.borrow().value {
+            NodeValue::Text(value) => text.push_str(value),
+            NodeValue::Code(value) => text.push_str(&value.literal),
+            NodeValue::Paragraph
+            | NodeValue::Emph
+            | NodeValue::Strong
+            | NodeValue::Strikethrough
+            | NodeValue::Link(_) => {}
+            // Images, HTML, multiline and extension nodes may be split or
+            // replaced by the native renderer. Never use a lossy approximation
+            // to jump to an unrelated occurrence elsewhere in the document.
+            _ => return None,
+        }
+    }
+    (!text.is_empty()).then_some(text)
 }
 
 #[derive(Clone, Debug, Default)]
@@ -244,7 +270,12 @@ fn relative_date(value: &str, today: Date) -> Option<Date> {
 
 /// Bind a result to the same source task, then map its ordinal through the
 /// Reader rewrite (expanded embeds are fenced and cannot add canonical tasks).
-pub fn target_block(task: &Task, original_body: &str, rendered: &str) -> anyhow::Result<usize> {
+pub struct Target {
+    pub block: usize,
+    pub text: Option<String>,
+}
+
+pub fn target(task: &Task, original_body: &str, rendered: &str) -> anyhow::Result<Target> {
     let original = parse(&task.path, original_body);
     let ordinal = original
         .iter()
@@ -259,7 +290,10 @@ pub fn target_block(task: &Task, original_body: &str, rendered: &str) -> anyhow:
         displayed.len() == original.len(),
         "Task location cannot be mapped in this document"
     );
-    Ok(displayed[ordinal].block)
+    Ok(Target {
+        block: displayed[ordinal].block,
+        text: displayed[ordinal].display.clone(),
+    })
 }
 
 #[cfg(test)]
@@ -348,10 +382,30 @@ mod tests {
         assert!(run(&i, "").is_empty());
     }
     #[test]
+    fn navigation_uses_rendered_inline_text_and_rejects_lossy_projection() {
+        let source = "- [ ] Use `code` and **bold**\n";
+        let task = parse("a.md", source).remove(0);
+        assert_eq!(
+            target(&task, source, source).unwrap().text.as_deref(),
+            Some("Use code and bold")
+        );
+        let source = "- [ ] Read [[note|alias]]\n";
+        let task = parse("a.md", source).remove(0);
+        let rendered = "- [ ] Read [alias](tessera://open/note.md)\n";
+        assert_eq!(
+            target(&task, source, rendered).unwrap().text.as_deref(),
+            Some("Read alias")
+        );
+        let source = "- [ ] ![Image](asset.png)\n";
+        let task = parse("a.md", source).remove(0);
+        assert!(target(&task, source, source).unwrap().text.is_none());
+    }
+
+    #[test]
     fn duplicate_task_navigation_is_source_bound_and_rejects_stale_results() {
         let source = "# Work\n\n- [ ] Same\n\nParagraph\n\n- [ ] Same\n";
         let tasks = parse("a.md", source);
-        assert_eq!(target_block(&tasks[1], source, source).unwrap(), 3);
-        assert!(target_block(&tasks[1], "- [ ] Same\n", "- [ ] Same\n").is_err());
+        assert_eq!(target(&tasks[1], source, source).unwrap().block, 3);
+        assert!(target(&tasks[1], "- [ ] Same\n", "- [ ] Same\n").is_err());
     }
 }

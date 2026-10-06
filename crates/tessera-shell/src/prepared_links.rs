@@ -242,15 +242,9 @@ impl Reader {
                             let original = document.original.as_deref().ok_or_else(|| {
                                 anyhow::anyhow!("Task navigation is unavailable in HTML mode")
                             })?;
-                            let block = tessera_core::tasks::target_block(
-                                &task,
-                                original,
-                                &document.source,
-                            )?;
-                            Some((
-                                block,
-                                tessera_core::render::strip_inline_markdown(&task.text),
-                            ))
+                            let target =
+                                tessera_core::tasks::target(&task, original, &document.source)?;
+                            Some((target.block, target.text.unwrap_or_default()))
                         } else {
                             None
                         };
