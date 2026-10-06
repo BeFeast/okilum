@@ -26,6 +26,11 @@
       <label for="executor-project">Project</label><select id="executor-project"></select>
       <p id="executor-status" class="muted" role="status"></p><ul id="executor-questions"></ul>
     </section>
+    <section id="forgejo-panel" class="card executor-panel" hidden aria-labelledby="forgejo-heading">
+      <div class="list-heading"><h2 id="forgejo-heading">Repositories</h2><button id="forgejo-refresh" class="quiet">Refresh</button></div>
+      <label for="forgejo-project">Project filter</label><select id="forgejo-project"><option value="">All accessible repositories</option></select>
+      <p id="forgejo-status" role="status"></p><div id="forgejo-list"></div>
+    </section>
     <section id="launch-panel" class="card executor-panel" hidden aria-labelledby="launch-heading">
       <div class="list-heading"><h2 id="launch-heading">Brief → executor</h2><button id="launch-refresh" class="quiet">Refresh</button></div>
       <p>Save a preview, then explicitly start one executor in a new worktree. AI cannot start it for you.</p>

@@ -333,3 +333,16 @@ conflict. Machine `/api/bridge/v1/launches` supports scoped list/lookup/progress
 not creation. The browser's session/Origin protections remain mandatory. Retain
 both server DB and bridge journal in consistent backups; do not erase uncertain
 operations or create new IDs to recover a missing acknowledgement.
+
+
+## Forgejo read-only overview (slice 2, PR 4)
+
+The optional [collector](forgejo/README.md) projects accessible repositories,
+open issues/PRs, commit status attempts and published releases into a replaceable
+cache outside the vault. Configure a dedicated read-only credential and explicit
+project/repository associations; no source token reaches the browser or Inbox API.
+`GET /api/v1/forgejo` serves authenticated observations and computed freshness;
+`?project=UUID` filters linked repositories and attaches separately identified
+executor launches. This does not turn assignees or a launch's base commit into
+claims about who authored a PR or the executor's current HEAD. The service stays
+disabled until operator configuration is supplied; Maestro is unaffected.

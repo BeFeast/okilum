@@ -57,3 +57,5 @@ jobs:
           python3 -m venv /tmp/tessera-bridge-tests
           /tmp/tessera-bridge-tests/bin/pip install --require-hashes --only-binary=:all: -r inbox/bridge/requirements.txt
           /tmp/tessera-bridge-tests/bin/python -m unittest discover -s inbox/bridge -p 'test_*.py' -v
+      - name: Read-only Forgejo collector pagination and failure tests
+        run: python3 -m unittest discover -s inbox/forgejo -p 'test_*.py' -v

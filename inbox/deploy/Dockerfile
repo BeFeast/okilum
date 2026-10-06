@@ -10,5 +10,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 COPY --from=build /source/inbox/target/release/tessera-inboxd /usr/local/bin/tessera-inboxd
 COPY inbox/deploy/entrypoint.sh /usr/local/bin/inbox-entrypoint
 COPY inbox/deploy/backup.py /usr/local/bin/inbox-backup
+COPY inbox/forgejo/collector.py /usr/local/bin/forgejo-collector
 USER 1000:1000
 ENTRYPOINT ["/usr/local/bin/inbox-entrypoint"]

@@ -20,3 +20,7 @@
 #launch-preview { white-space: pre-wrap; overflow-wrap: anywhere; background: #f5f4ef; padding: 1rem; border-radius: 8px; }
 #launch-list { list-style: none; padding: 0; }
 #launch-list li { padding: 1rem 0; border-top: 1px solid #ddd; overflow-wrap: anywhere; }
+#forgejo-project { display:block; width:100%; margin:10px 0; padding:9px; border:1px solid var(--line); border-radius:8px; background:var(--surface); color:inherit; }
+#forgejo-list details { margin:16px 0; padding:12px; border:1px solid var(--line); border-radius:8px; overflow-wrap:anywhere; }
+#forgejo-list summary { cursor:pointer; font-weight:600; }
+#forgejo-list details > a { display:block; margin:8px 0; }
