@@ -350,7 +350,8 @@ existing recovery journal and exact source preimages.
 
 Inline filename inputs own Space and editing keys; tree shortcuts do not run
 while those inputs are focused. Submitting the current rename destination simply
-closes the row without moving a file.
+closes the row without moving a file. Clicking a tree row opens its note while
+keeping keyboard focus in the tree, so F2 or Enter can immediately start rename.
 
 The Trash Undo notification appears at the bottom right and hides after eight
 seconds or with its close button / Escape. Hiding it does not discard the session's

@@ -2494,12 +2494,15 @@ impl Reader {
                 self.tree_focus.focus(window, cx);
             }
             EntryKind::Markdown => {
-                self.select_panel_note(reader_layout::Panel::Notes, &row.path, None, window, cx)
+                self.open_note(&row.path, None, window, cx);
             }
             EntryKind::Attachment => {
                 self.preview_file(&row.path, window, cx);
             }
         }
+        // Tree activation keeps keyboard navigation/rename in the navigator.
+        // Async document replacement only transfers focus from the old content.
+        self.tree_focus.focus(window, cx);
         cx.notify();
     }
 
@@ -3458,6 +3461,10 @@ impl Reader {
                     let open_entity = entity.clone();
                     let open_act = act.clone();
                     row_base(group.clone())
+                        .debug_selector({
+                            let group = group.clone();
+                            move || group.to_string()
+                        })
                         .group(group.clone())
                         .pl(px(10.))
                         .cursor_pointer()
@@ -3540,6 +3547,10 @@ impl Reader {
                     let on = pinned.contains(&row.path);
                     let path = row.path.clone();
                     row_base(group.clone())
+                        .debug_selector({
+                            let group = group.clone();
+                            move || group.to_string()
+                        })
                         .group(group.clone())
                         .pl(px(4. + row.depth as f32 * 14.))
                         .cursor_pointer()
@@ -5204,6 +5215,8 @@ impl Render for Reader {
                             "reader-backlinks-panel".into()
                         }
                     })
+                    // Overlay panel clicks must not reach the dismiss backdrop.
+                    .occlude()
                     .w(px(panel_widths.get(panel)))
                     .absolute()
                     .top_0()
