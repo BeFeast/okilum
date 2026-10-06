@@ -135,9 +135,13 @@ mod tests {
     }
     #[cfg(target_os = "linux")]
     fn child_refusal(script: &str, cancel: bool, expected: Error) {
-        let marker =
-            std::env::temp_dir().join(format!("tessera-clipboard-child-{}", uuid::Uuid::new_v4()));
-        let mut command = shell(script);
+        let directory = tempfile::tempdir().unwrap();
+        let marker = directory.path().join("reader.pid");
+        // Publish only after printf closes the complete PID file. Cancellation
+        // must not kill the shell between redirection's create and its write.
+        let mut command = shell(&format!(
+            "printf '%s\\n' \"$$\" > \"$TESSERA_TEST_PID.tmp\" && mv -- \"$TESSERA_TEST_PID.tmp\" \"$TESSERA_TEST_PID\" && {script}"
+        ));
         command.env("TESSERA_TEST_PID", &marker);
         let start = Instant::now();
         let duration = if expected == Error::Timeout {
@@ -146,13 +150,18 @@ mod tests {
             TIMEOUT
         };
         REAPED.with(|reaped| *reaped.borrow_mut() = None);
-        let result = read(&mut command, start + duration, || cancel && marker.exists());
+        let published_pid = || {
+            let text = std::fs::read_to_string(&marker).ok()?;
+            text.strip_suffix('\n')?
+                .parse::<u32>()
+                .ok()
+                .filter(|pid| *pid > 0)
+        };
+        let result = read(&mut command, start + duration, || {
+            cancel && published_pid().is_some()
+        });
         assert_eq!(result.as_ref(), Err(&expected));
-        let pid: u32 = std::fs::read_to_string(&marker)
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
+        let pid = published_pid().expect("the child must publish a complete positive PID");
         let (reaped_pid, status) = REAPED
             .with(|reaped| reaped.borrow_mut().take())
             .expect("read must run the child cleanup before returning");
@@ -177,7 +186,7 @@ mod tests {
     fn timeout_and_cancellation_kill_and_reap_the_reader() {
         for cancel in [false, true] {
             child_refusal(
-                "echo $$ > \"$TESSERA_TEST_PID\"; exec sleep 30",
+                "exec sleep 30",
                 cancel,
                 if cancel {
                     Error::Cancelled
@@ -190,11 +199,7 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn oversize_stream_is_bounded_and_reader_is_reaped() {
-        child_refusal(
-            "echo $$ > \"$TESSERA_TEST_PID\"; exec head -c 8388610 /dev/zero",
-            false,
-            Error::TooLarge,
-        );
+        child_refusal("exec head -c 8388610 /dev/zero", false, Error::TooLarge);
     }
     #[test]
     fn missing_status_and_failed_child_do_not_become_empty_paste() {
