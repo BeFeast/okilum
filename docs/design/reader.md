@@ -305,6 +305,10 @@ backlinks content under the title «Backlinks» with a quiet «N notes · M link
   at this place»). More than 3 places collapse behind «Show N more». An
   ambiguous link gets `TriangleAlert` and an «ambiguous» pill, never a
   silent pick.
+- **Empty sections (#646):** counts appear only when above zero. An empty
+  section keeps its header and shows one muted line: «No headings yet» under
+  Contents, «No links yet» under a bare «Linked from» («Looking for links…»
+  while the vault is still being scanned). Never «0 notes · 0 places».
 
 ## Properties (#386, approved by Oleg 2026-10-04)
 

@@ -122,10 +122,16 @@ pub fn summary(props: &[Property]) -> String {
         }
     }
     if parts.is_empty() {
+        // Never «0 properties» (#646): a note with only `_` keys counts those.
         let shown = props.iter().filter(|p| !p.hidden()).count();
+        let (count, noun) = if shown > 0 {
+            (shown, ("property", "properties"))
+        } else {
+            (props.len(), ("system property", "system properties"))
+        };
         parts.push(format!(
-            "{shown} {}",
-            if shown == 1 { "property" } else { "properties" }
+            "{count} {}",
+            if count == 1 { noun.0 } else { noun.1 }
         ));
     }
     parts.join(" · ")
@@ -179,5 +185,13 @@ mod tests {
             "1 property",
             "positive control: hidden keys not counted"
         );
+    }
+
+    #[test]
+    fn summary_never_reads_zero() {
+        let system = properties::parse("_id: x\n_rev: 2\n").unwrap();
+        assert_eq!(summary(&system), "2 system properties");
+        let one = properties::parse("_id: x\n").unwrap();
+        assert_eq!(summary(&one), "1 system property");
     }
 }
