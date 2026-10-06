@@ -437,6 +437,7 @@ pub(crate) struct Session {
     active: bool,
     tree: Option<Layout>,
     source: Option<[f32; 2]>,
+    source_position_pending: bool,
     pub(crate) ready: bool,
     pub(crate) interacted: bool,
 }
@@ -534,11 +535,11 @@ impl Reader {
         } else {
             0.
         };
-        self.tree_scroll
-            .0
-            .borrow()
-            .base_handle
-            .set_offset(point(px(0.), px(offset)));
+        let mut scroll = self.tree_scroll.0.borrow_mut();
+        // sync_tree may have queued a reveal before the saved layout arrived.
+        // That request runs during layout and would overwrite this offset.
+        scroll.deferred_scroll_to_item = None;
+        scroll.base_handle.set_offset(point(px(0.), px(offset)));
     }
 
     pub(crate) fn restore_ui_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -550,8 +551,25 @@ impl Reader {
         };
         if self.editing.is_none() && !self.current_rel.is_empty() && self.file_preview.is_none() {
             self.toggle_source(window, cx);
+            self.ui_state.source_position_pending = self.editing.is_some();
+            if self.editing.is_some() && offset[1] < -0.5 {
+                // Reserve the final viewport before the editor's first layout,
+                // so applying its offset cannot move content by header height.
+                self.document_header_hidden = px(48.);
+            }
             self.restore_source_position(offset, window, cx);
+            let reader = cx.entity().downgrade();
+            window.on_next_frame(move |_, cx| {
+                let _ = reader.update(cx, |reader, cx| {
+                    reader.ui_state.source_position_pending = false;
+                    cx.notify();
+                });
+            });
         }
+    }
+
+    pub(crate) fn restoring_source(&self) -> bool {
+        self.ui_state.source.is_some() || self.ui_state.source_position_pending
     }
 
     pub(crate) fn record_ui_state(&mut self, active: bool, cx: &mut Context<Self>) {
@@ -1003,6 +1021,15 @@ mod tests {
 
     #[gpui::test]
     fn restored_reader_keeps_panels_sections_folders_history_and_scroll(cx: &mut TestAppContext) {
+        restored_document_state(cx, false);
+    }
+
+    #[gpui::test]
+    fn restored_source_hides_preview_until_source_viewport_is_ready(cx: &mut TestAppContext) {
+        restored_document_state(cx, true);
+    }
+
+    fn restored_document_state(cx: &mut TestAppContext, source: bool) {
         let fixture = tempfile::tempdir().unwrap();
         let root = fixture.path().join("vault");
         std::fs::create_dir_all(root.join("Folder")).unwrap();
@@ -1014,6 +1041,9 @@ mod tests {
         )
         .unwrap();
         std::fs::write(root.join("other.md"), "# Other").unwrap();
+        for i in 0..100 {
+            std::fs::write(root.join(format!("tree-{i:03}.md")), "# Tree entry").unwrap();
+        }
         // Legacy history disagrees with the newer UI snapshot (e.g. an early
         // quit while its independent background write was still pending).
         let directory = fixture.path().join("state");
@@ -1035,6 +1065,9 @@ mod tests {
             ]),
             folders: BTreeSet::new(),
             tree_cursor: Some("Folder".into()),
+            tree_scroll: -840.,
+            source,
+            source_scroll: [0., -400.],
             note: "Folder/note.md".into(),
             position: Position {
                 item: 14,
@@ -1086,8 +1119,25 @@ mod tests {
         visual.run_until_parked();
         visual.executor().advance_clock(Duration::from_millis(100));
         visual.run_until_parked();
+        reader.update(visual, |reader, _| {
+            // Native startup can publish state between sync_tree's reveal and
+            // the list's first layout. Exercise that ordering explicitly.
+            assert!(reader.vault.inventory_scanned);
+            reader.ui_state.tree = Some(saved.clone());
+            reader.tree_scroll.scroll_to_item(0, ScrollStrategy::Center);
+            reader.restore_ui_tree();
+        });
         for _ in 0..5 {
-            visual.update(|window, cx| window.draw(cx).clear(cx));
+            reader.read_with(visual, |reader, _| {
+                if source && reader.ui_state.ready && reader.editing.is_none() {
+                    assert!(reader.restoring_source(), "preview must remain hidden");
+                }
+            });
+            visual.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+            visual.executor().advance_clock(Duration::from_millis(20));
             visual.run_until_parked();
         }
         reader.read_with(visual, |reader, cx| {
@@ -1102,6 +1152,19 @@ mod tests {
             );
             assert_eq!(reader.sidebar.collapsed, saved.collapsed);
             assert_eq!(reader.tree.expanded_paths(), &saved.folders);
+            assert_eq!(
+                reader.tree_scroll.0.borrow().base_handle.offset().y,
+                px(saved.tree_scroll),
+                "saved tree scroll must survive the initial selected-note reveal"
+            );
+            if source {
+                assert!(reader.editing.is_some(), "positive control: source mounted");
+                assert!(
+                    !reader.restoring_source(),
+                    "restored source must become visible"
+                );
+                assert_eq!(reader.source_scroll_offset(cx).unwrap().y, px(-400.));
+            }
             assert_eq!(reader.history, ["other.md", "Folder/note.md"]);
             assert_eq!(reader.history_ix, 1);
             assert_eq!(

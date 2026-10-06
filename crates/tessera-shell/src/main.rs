@@ -5315,7 +5315,14 @@ impl Render for Reader {
             .min_w(px(0.))
             .overflow_hidden()
             .relative()
-            .child(self.render_document_surface(window, cx))
+            .child(
+                div()
+                    .size_full()
+                    // Lay out the source editor before revealing its restored
+                    // viewport; never flash the preview or source at the top.
+                    .when(self.restoring_source(), |view| view.opacity(0.))
+                    .child(self.render_document_surface(window, cx)),
+            )
             .when(self.find_open, |s| s.child(self.render_find_bar(cx)));
         let panels: Vec<_> = [reader_layout::Panel::Notes, reader_layout::Panel::Backlinks]
             .into_iter()

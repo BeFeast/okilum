@@ -546,7 +546,13 @@ presentation, source/preview mode, the current note (including the empty vault),
 reading scroll and Back/Forward entries with their offsets. Window geometry,
 display, maximized and fullscreen state are vault-specific and still clamped to
 an available display. Native window managers/compositors retain control of placement
-(e.g. Wayland tiling and X11 automatic placement). A previously unseen vault inherits the last active window's
+(e.g. Wayland tiling and X11 automatic placement). Linux requests native maximize
+after mapping the window; a tiling compositor may retain the geometry without
+acknowledging the maximized flag (observed in Hyprland). Tessera records the
+compositor's actual state rather than claiming a rejected request succeeded.
+Source restoration keeps the document hidden until its source viewport is ready;
+the preview and the source's initial top position must not flash on startup.
+A previously unseen vault inherits the last active window's
 presentation and geometry, without copying its note paths or navigation history.
 Transient menus, hover previews, notifications and dialogs do not reopen.
 
