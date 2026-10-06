@@ -334,14 +334,25 @@ fn set_appearance(
     sync_appearance(window, cx);
     window.refresh();
     cx.refresh_windows();
+    save_appearance(vault, cx);
+}
+/// One app-wide color theme (#349); Light/Dark/System stays a separate choice.
+fn set_theme(theme: brand::ThemeId, vault: Option<&Path>, window: &mut Window, cx: &mut App) {
+    cx.set_global(brand::ThemeChoice(theme));
+    sync_appearance(window, cx);
+    window.refresh();
+    cx.refresh_windows();
+    save_appearance(vault, cx);
+}
+fn save_appearance(vault: Option<&Path>, cx: &App) {
     #[cfg(test)]
-    let _ = vault;
+    let _ = (vault, cx);
     #[cfg(not(test))]
     if let Some(path) = appearance_settings_path().filter(|path| {
         // Never write presentation state into the opened canonical tree.
         vault.is_none_or(|vault| reader_layout::settings_path_at(vault, path.clone()).is_some())
     }) {
-        let value = match mode {
+        let value = match cx.try_global::<AppearancePreference>().and_then(|p| p.0) {
             None => "system",
             Some(gpui_component::ThemeMode::Light) => "light",
             Some(gpui_component::ThemeMode::Dark) => "dark",
@@ -354,7 +365,7 @@ fn set_appearance(
             let temporary = parent.join(format!(".appearance-{}.json", uuid::Uuid::new_v4()));
             std::fs::write(
                 &temporary,
-                serde_json::json!({ "appearance": value }).to_string(),
+                appearance_settings_json(value, brand::theme_id(cx)).to_string(),
             )?;
             std::fs::rename(&temporary, &path).inspect_err(|_| {
                 let _ = std::fs::remove_file(&temporary);
@@ -365,22 +376,37 @@ fn set_appearance(
         }
     }
 }
+fn appearance_settings_json(appearance: &str, theme: brand::ThemeId) -> serde_json::Value {
+    serde_json::json!({ "appearance": appearance, "theme": theme.key() })
+}
 fn appearance_settings_path() -> Option<PathBuf> {
     reader_layout::config_base().map(|base| base.join("tessera/appearance.json"))
 }
-fn load_appearance(cx: &App) -> AppearancePreference {
+/// Unknown or missing values fall back to System and the default theme; a file
+/// written before #349 has no `theme` key.
+fn parse_appearance_settings(
+    value: &serde_json::Value,
+) -> (AppearancePreference, brand::ThemeChoice) {
+    let mode = match value["appearance"].as_str() {
+        Some("light") => Some(gpui_component::ThemeMode::Light),
+        Some("dark") => Some(gpui_component::ThemeMode::Dark),
+        _ => None,
+    };
+    let theme = value["theme"]
+        .as_str()
+        .and_then(brand::ThemeId::from_key)
+        .unwrap_or_default();
+    (AppearancePreference(mode), brand::ThemeChoice(theme))
+}
+fn load_appearance(cx: &App) -> (AppearancePreference, brand::ThemeChoice) {
     if reader_recovery::is_recovering(cx) {
-        return AppearancePreference(None);
+        return Default::default();
     }
-    let mode = appearance_settings_path()
+    appearance_settings_path()
         .and_then(|path| std::fs::read(path).ok())
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-        .and_then(|value| match value["appearance"].as_str() {
-            Some("light") => Some(gpui_component::ThemeMode::Light),
-            Some("dark") => Some(gpui_component::ThemeMode::Dark),
-            _ => None,
-        });
-    AppearancePreference(mode)
+        .map(|value| parse_appearance_settings(&value))
+        .unwrap_or_default()
 }
 
 /// Reader typography, derived from the live theme.
@@ -620,10 +646,6 @@ fn parse_embed(
     )
 }
 
-/// Highlight background, `#rrggbbaa`: Obsidian's `rgba(255, 208, 0, 0.4)`,
-/// which reads on both the light and the dark theme.
-const HIGHLIGHT_COLOR: &str = "#ffd00066";
-
 /// Parse a paragraph or heading that contains an inline `<mark>` into a
 /// `"highlight"` node. `None` for every other block, so plain paragraphs keep
 /// TextView's stock Markdown rendering.
@@ -643,8 +665,11 @@ fn parse_highlight(
         return None;
     }
     let source = cx.node_source(node)?;
+    // The `highlight` token is translucent, so it reads on every theme. It is
+    // resolved when the block is parsed; a theme switch applies on re-parse.
+    let color = brand::css_color(brand::reader_palette_current().highlight);
     let html = tessera_core::render::block_html(source)
-        .replace("<mark>", &format!("<mark color=\"{HIGHLIGHT_COLOR}\">"));
+        .replace("<mark>", &format!("<mark color=\"{color}\">"));
     let mut text = String::new();
     mdast_text(node, &mut text);
     Some(
@@ -657,7 +682,10 @@ fn parse_highlight(
 
 fn callout_look(header: &CalloutHeader, theme: &Theme) -> (Hsla, IconName) {
     if header.type_name == "important" {
-        return (theme.magenta, IconName::Asterisk);
+        return (
+            brand::reader_palette_for_theme(theme).callout_important,
+            IconName::Asterisk,
+        );
     }
     match header.kind {
         CalloutKind::Warning => (theme.warning, IconName::TriangleAlert),
@@ -4044,7 +4072,7 @@ impl Reader {
         let mut style = reader_text_style(cx.theme());
         style.heading_base_font_size = px(BODY_FONT_SIZE);
         let entity = cx.entity().downgrade();
-        let scrim = gpui::black().opacity(if cx.theme().is_dark() { 0.45 } else { 0.18 });
+        let scrim = brand::reader_palette(cx).scrim;
         Some(
             div()
                 .id("table-overlay")
@@ -5136,7 +5164,7 @@ fn reader_icon_button(
         .rounded(px(6.))
 }
 
-/// More (⋯): open actions and appearance. The theme picker proper is #349.
+/// More (⋯): open actions and appearance. Themes are picked in Settings (#349).
 fn reader_more_menu(
     vault: PathBuf,
     _selected: String,
@@ -5808,7 +5836,9 @@ fn main() {
         }
         drop(fonts_phase);
         let appearance_phase = diagnostics.phase("appearance_load");
-        cx.set_global(load_appearance(cx));
+        let (appearance, theme) = load_appearance(cx);
+        cx.set_global(appearance);
+        cx.set_global(theme);
         brand::apply_theme(cx);
         cx.activate(true);
         drop(appearance_phase);
