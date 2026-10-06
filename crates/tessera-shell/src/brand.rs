@@ -34,7 +34,15 @@ pub const READER_PIN_ICON: &str = "icons/pin.svg";
 pub const READER_CLOCK_ICON: &str = "icons/clock.svg";
 pub const READER_COLLAPSE_ICON: &str = "icons/chevrons-down-up.svg";
 pub const READER_FOCUS_ICON: &str = "icons/locate-fixed.svg";
-const IMAGES: [(&str, &[u8]); 18] = [
+const IMAGES: [(&str, &[u8]); 20] = [
+    (
+        "icons/monitor.svg",
+        include_bytes!("../assets/icons/monitor.svg"),
+    ),
+    (
+        "icons/arrow-down-circle.svg",
+        include_bytes!("../assets/icons/arrow-down-circle.svg"),
+    ),
     (
         "icons/trash.svg",
         include_bytes!("../assets/icons/trash.svg"),
@@ -290,6 +298,9 @@ pub fn apply_theme(cx: &mut App) {
     // visible on the neutral surface; input_background derives its fill.
     t.input = p.border;
     t.caret = p.text;
+    // Keep both the OFF track and its thumb visible on the reading surface.
+    t.switch = p.text_muted;
+    t.switch_thumb = p.canvas;
     t.muted = p.surface_raised;
     t.muted_foreground = p.text_muted;
     t.popover = p.surface;
@@ -518,6 +529,8 @@ mod tests {
                 assert_eq!(t.tokens.button_secondary.color, p.surface_raised);
                 assert_eq!(t.tokens.sidebar.color, p.sidebar);
                 assert_eq!(t.tokens.ring.color, p.focus);
+                assert_eq!(t.switch, p.text_muted);
+                assert_eq!(t.switch_thumb, p.canvas);
                 assert_eq!(t.input, p.border);
                 assert_ne!(t.input, p.surface);
                 assert_eq!(t.button_primary_foreground, p.on_accent);

@@ -102,7 +102,7 @@ fn compact_vault_path(root: &Path) -> String {
         .and_then(|home| root.strip_prefix(home).ok())
         .map(|relative| format!("~/{}", relative.to_string_lossy()))
         .unwrap_or_else(|| root.to_string_lossy().into_owned());
-    if display.chars().count() <= 36 {
+    if display.starts_with("~/") && display.chars().count() <= 36 {
         return display;
     }
     let name = root.file_name().unwrap_or_default().to_string_lossy();
