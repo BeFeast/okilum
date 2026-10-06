@@ -1,4 +1,4 @@
-//! Explicit system Trash with confirmation and a non-overwriting Undo action.
+//! System Trash with Undo; only incoming links require a risk confirmation.
 use super::*;
 use gpui_component::{notification::Notification, WindowExt};
 use std::os::unix::fs::MetadataExt;
@@ -138,90 +138,234 @@ impl Reader {
         );
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
-            let scan_root = root.clone(); let scan_relative = relative.clone();
-            let scan_own = own_path.clone(); let scan_state = state.clone();
-            let prepared = cx.background_executor().spawn(async move {
-                let before = inventory(&scan_root.join(&scan_relative))?;
-                let mut pending = vec![scan_root.join(&scan_relative)];
-                let mut count = 0usize; let mut locks = Vec::new();
-                while let Some(path) = pending.pop() {
-                    let meta = std::fs::symlink_metadata(&path)?;
-                    if meta.is_dir() {
-                        for entry in std::fs::read_dir(path)? { pending.push(entry?.path()); }
-                    } else {
-                        count += 1;
-                        if scan_own.as_ref() != Some(&path) && meta.is_file() && path.extension().is_some_and(|e| e.eq_ignore_ascii_case("md")) {
-                            locks.push(FileEditor::reserve_destination(&path, &scan_state.join("editor-drafts"))?);
+            let scan_root = root.clone();
+            let scan_relative = relative.clone();
+            let scan_own = own_path.clone();
+            let scan_state = state.clone();
+            let prepared = cx
+                .background_executor()
+                .spawn(async move {
+                    let before = inventory(&scan_root.join(&scan_relative))?;
+                    let mut pending = vec![scan_root.join(&scan_relative)];
+                    let mut count = 0usize;
+                    let mut locks = Vec::new();
+                    while let Some(path) = pending.pop() {
+                        let meta = std::fs::symlink_metadata(&path)?;
+                        if meta.is_dir() {
+                            for entry in std::fs::read_dir(path)? {
+                                pending.push(entry?.path());
+                            }
+                        } else {
+                            count += 1;
+                            if scan_own.as_ref() != Some(&path)
+                                && meta.is_file()
+                                && path
+                                    .extension()
+                                    .is_some_and(|e| e.eq_ignore_ascii_case("md"))
+                            {
+                                locks.push(FileEditor::reserve_destination(
+                                    &path,
+                                    &scan_state.join("editor-drafts"),
+                                )?);
+                            }
                         }
                     }
-                }
-                anyhow::ensure!(inventory(&scan_root.join(&scan_relative))? == before, "The item changed while preparing Trash. Try again");
-                Ok::<_, anyhow::Error>((count, locks, before))
-            }).await;
+                    anyhow::ensure!(
+                        inventory(&scan_root.join(&scan_relative))? == before,
+                        "The item changed while preparing Trash. Try again"
+                    );
+                    Ok::<_, anyhow::Error>((count, locks, before))
+                })
+                .await;
             let (count, _locks, before) = match prepared {
                 Ok(value) => value,
-                Err(error) => { let _ = this.update_in(cx, |this, window, cx| {
-                    this.trash_pending = false;
-                    window.push_notification(Notification::new().id::<TrashToast>()
-                        .message(format!("Cannot move to Trash: {error:#}"))
-                        .placement(Anchor::BottomRight).py_2().autohide(false), cx); cx.notify();
-                }); return; }
+                Err(error) => {
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        this.trash_pending = false;
+                        window.push_notification(
+                            Notification::new()
+                                .id::<TrashToast>()
+                                .message(format!("Cannot move to Trash: {error:#}"))
+                                .placement(Anchor::BottomRight)
+                                .py_2()
+                                .autohide(false),
+                            cx,
+                        );
+                        cx.notify();
+                    });
+                    return;
+                }
             };
-            if directory || incoming > 0 {
+            if incoming > 0 {
                 let (send, receive) = async_channel::bounded(1);
-                let shown = this.update_in(cx, |this, window, cx| {
-                    window.remove_notification::<TrashToast>(cx);
-                    if this.vault_root != root { this.trash_pending = false; return false; }
-                    let message = format!("{relative}\n{count} files · {incoming} incoming links. Links stay unchanged.");
-                    window.open_dialog(cx, move |dialog, _, cx| {
-                        let yes = send.clone(); let no = send.clone(); let close = send.clone();
-                        dialog.title("Move to Trash").child(message.clone())
-                            .on_ok(move |_, _, _| { let _ = yes.try_send(true); true })
-                            .on_cancel(move |_, _, _| { let _ = no.try_send(false); true })
-                            .footer({
-                                let yes = send.clone(); let no = send.clone();
-                                h_flex().justify_end().gap_2()
-                                    .child(Button::new("cancel-trash").debug_selector(|| "cancel-trash".into()).ghost().label("Cancel").on_click(move |_, window, cx| { let _ = no.try_send(false); window.close_dialog(cx); }))
-                                    .child(reader_icon_button("confirm-trash", Icon::default().path("icons/trash.svg"), "Move to Trash", cx).danger().debug_selector(|| "confirm-trash".into()).on_click(move |_, window, cx| { let _ = yes.try_send(true); window.close_dialog(cx); }))
-                            })
-                            .on_close(move |_, _, _| { let _ = close.try_send(false); })
-                    }); true
-                }).unwrap_or(false);
+                let shown = this
+                    .update_in(cx, |this, window, cx| {
+                        window.remove_notification::<TrashToast>(cx);
+                        if this.vault_root != root {
+                            this.trash_pending = false;
+                            return false;
+                        }
+                        let name = Path::new(&relative)
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy();
+                        let name = if directory {
+                            name.to_string()
+                        } else {
+                            name.strip_suffix(".md").unwrap_or(&name).to_string()
+                        };
+                        let message = if incoming == 1 {
+                            "1 link will stop opening this item until you Undo.".to_string()
+                        } else {
+                            format!("{incoming} links will stop opening this item until you Undo.")
+                        };
+                        let contents = match count {
+                            0 => None,
+                            1 => Some("1 file".to_string()),
+                            n => Some(format!("{n} files")),
+                        };
+                        window.open_dialog(cx, move |dialog, _, cx| {
+                            let yes = send.clone();
+                            let no = send.clone();
+                            let close = send.clone();
+                            let p = brand::palette(cx);
+                            dialog
+                                .title("Move to Trash")
+                                .width(px(440.))
+                                .child(
+                                    v_flex()
+                                        .gap_2()
+                                        .child(
+                                            div()
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .child(name.clone()),
+                                        )
+                                        .when(directory, |d| {
+                                            d.children(contents.clone().map(|text| {
+                                                div().text_sm().text_color(p.text_muted).child(text)
+                                            }))
+                                        })
+                                        .child(
+                                            div()
+                                                .text_sm()
+                                                .text_color(p.text_muted)
+                                                .child(message.clone()),
+                                        ),
+                                )
+                                .on_ok(move |_, _, _| {
+                                    let _ = yes.try_send(true);
+                                    true
+                                })
+                                .on_cancel(move |_, _, _| {
+                                    let _ = no.try_send(false);
+                                    true
+                                })
+                                .footer({
+                                    let yes = send.clone();
+                                    let no = send.clone();
+                                    h_flex()
+                                        .justify_end()
+                                        .gap_2()
+                                        .child(
+                                            Button::new("cancel-trash")
+                                                .debug_selector(|| "cancel-trash".into())
+                                                .ghost()
+                                                .label("Cancel")
+                                                .on_click(move |_, window, cx| {
+                                                    let _ = no.try_send(false);
+                                                    window.close_dialog(cx);
+                                                }),
+                                        )
+                                        .child(
+                                            reader_icon_button(
+                                                "confirm-trash",
+                                                Icon::default().path("icons/trash.svg"),
+                                                "Move to Trash",
+                                                cx,
+                                            )
+                                            .danger()
+                                            .debug_selector(|| "confirm-trash".into())
+                                            .on_click(
+                                                move |_, window, cx| {
+                                                    let _ = yes.try_send(true);
+                                                    window.close_dialog(cx);
+                                                },
+                                            ),
+                                        )
+                                })
+                                .on_close(move |_, _, _| {
+                                    let _ = close.try_send(false);
+                                })
+                        });
+                        true
+                    })
+                    .unwrap_or(false);
                 if !shown || receive.recv().await != Ok(true) {
-                    let _ = this.update(cx, |this, cx| {this.trash_pending = false; cx.notify();}); return;
+                    let _ = this.update(cx, |this, cx| {
+                        this.trash_pending = false;
+                        cx.notify();
+                    });
+                    return;
                 }
             }
             let held_editor = match this.update_in(cx, |this, window, cx| {
                 if this.vault_root != root || !this.save_source(cx) {
                     window.remove_notification::<TrashToast>(cx);
-                    this.trash_pending = false; cx.notify(); return None;
+                    this.trash_pending = false;
+                    cx.notify();
+                    return None;
                 }
-                window.push_notification(Notification::new().id::<TrashToast>()
-                    .message("Moving to Trash…").placement(Anchor::BottomRight)
-                    .py_2().autohide(false), cx);
+                window.push_notification(
+                    Notification::new()
+                        .id::<TrashToast>()
+                        .message("Moving to Trash…")
+                        .placement(Anchor::BottomRight)
+                        .py_2()
+                        .autohide(false),
+                    cx,
+                );
                 let editor = if own_path.as_ref() == Some(&root.join(this.selected_file())) {
                     this.editing.take()
-                } else { None };
+                } else {
+                    None
+                };
                 Some(editor)
-            }) { Ok(Some(editor)) => editor, _ => return };
+            }) {
+                Ok(Some(editor)) => editor,
+                _ => return,
+            };
             let held_path = own_path.clone();
             let has_editor = held_editor.is_some();
-            let move_root = root.clone(); let move_relative = relative.clone();
-            let result = cx.background_executor().spawn(async move {
-                let _late_guard = match own_path.filter(|_| !has_editor) {
-                    Some(path) => Some(FileEditor::reserve_destination(&path, &state.join("editor-drafts"))?),
-                    None => None,
-                };
-                anyhow::ensure!(inventory(&move_root.join(&move_relative))? == before, "The item changed since confirmation. Nothing was moved; try again");
-                reader_trash_fs::move_to_trash(&move_root, Path::new(&move_relative))
-            }).await;
+            let move_root = root.clone();
+            let move_relative = relative.clone();
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let _late_guard = match own_path.filter(|_| !has_editor) {
+                        Some(path) => Some(FileEditor::reserve_destination(
+                            &path,
+                            &state.join("editor-drafts"),
+                        )?),
+                        None => None,
+                    };
+                    anyhow::ensure!(
+                        inventory(&move_root.join(&move_relative))? == before,
+                        "The item changed since confirmation. Nothing was moved; try again"
+                    );
+                    reader_trash_fs::move_to_trash(&move_root, Path::new(&move_relative))
+                })
+                .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.trash_pending = false;
                 match result {
                     Ok(trashed) => {
                         if this.vault_root == root {
                             let mut changes = tessera_core::Changes::default();
-                            if directory { changes.directories.insert(relative.clone()); } else { changes.removed.insert(relative.clone()); }
+                            if directory {
+                                changes.directories.insert(relative.clone());
+                            } else {
+                                changes.removed.insert(relative.clone());
+                            }
                             this.queue_vault_mutation(changes, cx);
                         }
                         if this.vault_root == root && under(this.selected_file(), &relative) {
@@ -232,17 +376,27 @@ impl Reader {
                         this.show_trash_toast(window, cx);
                     }
                     Err(error) => {
-                        if this.vault_root == root && held_path.as_ref() == Some(&root.join(this.selected_file())) && this.editing.is_none() {
+                        if this.vault_root == root
+                            && held_path.as_ref() == Some(&root.join(this.selected_file()))
+                            && this.editing.is_none()
+                        {
                             this.editing = held_editor;
                         }
-                        window.push_notification(Notification::new().id::<TrashToast>()
-                            .message(format!("Cannot move to Trash: {error:#}"))
-                            .placement(Anchor::BottomRight).py_2().autohide(false), cx);
+                        window.push_notification(
+                            Notification::new()
+                                .id::<TrashToast>()
+                                .message(format!("Cannot move to Trash: {error:#}"))
+                                .placement(Anchor::BottomRight)
+                                .py_2()
+                                .autohide(false),
+                            cx,
+                        );
                     }
                 }
                 cx.notify();
             });
-        }).detach();
+        })
+        .detach();
     }
 
     fn show_trash_toast(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -746,6 +900,63 @@ mod tests {
     }
 
     #[gpui::test]
+    fn unlinked_folder_moves_without_dialog_and_undo_restores_contents(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_reduce_motion(true);
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir_all(root.join("Folder/Nested")).unwrap();
+        std::fs::write(root.join("Home.md"), "# Home").unwrap();
+        std::fs::write(root.join("Folder/Nested/Note.md"), "original\r\n").unwrap();
+        std::fs::write(root.join("Folder/image.bin"), [0, 255, 42]).unwrap();
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("Home.md".into()),
+                        index_dir: Some(temp.path().join("cache")),
+                        session_directory: Some(temp.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            r.delete_path("Folder".into(), window, cx)
+        });
+        visual.run_until_parked();
+        assert!(!root.join("Folder").exists());
+        assert!(visual.debug_bounds("confirm-trash").is_none());
+        reader.read_with(visual, |r, _| assert_eq!(r.trash_undo.items.len(), 1));
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let undo = visual
+            .debug_bounds("undo-trash")
+            .expect("visible Undo after direct folder Trash");
+        visual.simulate_click(undo.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(
+            std::fs::read(root.join("Folder/Nested/Note.md")).unwrap(),
+            b"original\r\n"
+        );
+        assert_eq!(
+            std::fs::read(root.join("Folder/image.bin")).unwrap(),
+            [0, 255, 42]
+        );
+        reader.read_with(visual, |r, _| assert!(r.trash_undo.items.is_empty()));
+    }
+
+    #[gpui::test]
     fn incoming_links_require_confirmation_and_cancel_preserves_source(cx: &mut TestAppContext) {
         cx.update(|cx| {
             cx.set_reduce_motion(true);
@@ -757,7 +968,9 @@ mod tests {
         std::fs::create_dir(&root).unwrap();
         let root = root.canonicalize().unwrap();
         std::fs::write(root.join("target.md"), "# Target\n").unwrap();
-        std::fs::write(root.join("source.md"), "[[target]]\n").unwrap();
+        std::fs::create_dir(root.join("Folder")).unwrap();
+        std::fs::write(root.join("Folder/first.md"), "first").unwrap();
+        std::fs::write(root.join("source.md"), "[[target]]\n[[Folder/first]]\n").unwrap();
         let mut reader = None;
         let (_, visual) = cx.add_window_view(|window, cx| {
             let view = cx.new(|cx| {
@@ -800,17 +1013,15 @@ mod tests {
         );
         assert_eq!(
             std::fs::read_to_string(root.join("source.md")).unwrap(),
-            "[[target]]\n"
+            "[[target]]\n[[Folder/first]]\n"
         );
-        std::fs::create_dir(root.join("Folder")).unwrap();
-        std::fs::write(root.join("Folder/first.md"), "first").unwrap();
         reader.update_in(visual, |reader, window, cx| {
             reader.delete_path("Folder".into(), window, cx)
         });
         visual.run_until_parked();
         let confirm = visual
             .debug_bounds("confirm-trash")
-            .expect("folder confirmation");
+            .expect("folder with incoming links requires confirmation");
         // A new writer arrived after the displayed count and lock set were built.
         std::fs::write(root.join("Folder/new.md"), "new arrival").unwrap();
         visual.simulate_click(confirm.center(), Modifiers::default());
