@@ -96,7 +96,24 @@ def origin_link(base, value):
 def repo_summary(base, row):
     full = text(row['full_name'], 512)
     require(len(full.split('/')) == 2 and all(full.split('/')), 'invalid_repo')
-    return {'id': identity(row['id']), 'name': full, 'url': origin_link(base, row['html_url'])}
+    units = {unit: row.get('has_' + unit, True) for unit in ('issues','pull_requests','releases')}
+    require(all(type(flag) is bool for flag in units.values()), 'invalid_repo_units')
+    return {'id': identity(row['id']), 'name': full, 'url': origin_link(base, row['html_url']), 'units': units}
+
+
+def discover(client):
+    # Forgejo /user/repos can omit public organization repositories. Enumerate
+    # memberships explicitly as well; a partial org traversal is not discovery.
+    rows = client.pages('/user/repos')
+    for org in client.pages('/user/orgs'):
+        name = text(org.get('name') or org.get('username'), 256)
+        require(name and '/' not in name, 'invalid_org')
+        rows.extend(client.pages('/orgs/' + urllib.parse.quote(name, safe='') + '/repos'))
+    found = {}
+    for row in rows:
+        repo = repo_summary(client.base, row)
+        found[repo['id']] = repo
+    return list(found.values())
 
 
 def item_summary(base, row):
@@ -114,9 +131,10 @@ def sha(value):
 def read_repo(client, summary):
     base = client.base
     route = '/repos/' + '/'.join(urllib.parse.quote(p, safe='') for p in summary['name'].split('/'))
-    issues = [item_summary(base, r) for r in client.pages(route + '/issues?state=open&type=issues') if 'pull_request' not in r]
+    units = summary['units']
+    issues = [item_summary(base, r) for r in client.pages(route + '/issues?state=open&type=issues') if not r.get('pull_request')] if units['issues'] else []
     pulls = []
-    for row in client.pages(route + '/pulls?state=open'):
+    for row in (client.pages(route + '/pulls?state=open') if units['pull_requests'] else []):
         item = item_summary(base, row)
         item['head_commit'] = sha(row['head']['sha'])
         # Commit status API returns a list with ordinary pagination, unlike combined status.
@@ -125,7 +143,7 @@ def read_repo(client, summary):
                          for s in client.pages(route + '/commits/' + item['head_commit'] + '/statuses')]
         pulls.append(item)
     releases = []
-    for row in client.pages(route + '/releases'):
+    for row in (client.pages(route + '/releases') if units['releases'] else []):
         if row.get('draft'):
             continue
         releases.append({'id': identity(row['id']), 'tag': text(row['tag_name'], 512),
@@ -154,7 +172,7 @@ def collect(client, config, old, now):
         account = client.get('/user')
         require(identity(account['id']) == config['account_id'], 'account_changed')
         login = text(account['login'], 256)
-        rows = [repo_summary(client.base, r) for r in client.pages('/user/repos')]
+        rows = discover(client)
         require(len({r['id'] for r in rows}) == len(rows), 'duplicate_repo')
     except (Unavailable, KeyError, TypeError, ValueError) as error:
         view['error'] = str(error) if isinstance(error, Unavailable) else 'invalid_source'

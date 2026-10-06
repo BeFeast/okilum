@@ -32,7 +32,8 @@ Secrets should come from Infisical `services/prod/tessera`, outside the checkout
 Run `python3 inbox/forgejo/collector.py --config /private/forgejo.json` (or
 `--once`). One process owns a cache lock. Five-minute intervals; each request has
 a 15-second timeout, each sync a 240-second/64 MB input budget. Every endpoint is
-paginated until an empty page; duplicate pages, malformed JSON, overflow, missing
+paginated until an empty page; account organization memberships and their public
+repositories are traversed as well as `/user/repos`; duplicate pages, malformed JSON, overflow, missing
 permissions and truncated traversals are failures, never a successful empty list.
 
 The cache includes all accessible repositories, **open** issues and PRs, all
@@ -44,7 +45,8 @@ remain separate. Launch base SHA is not the executor's current HEAD or proof tha
 it authored a PR. Deeper release platform/channel and execution-result presentation
 belongs to the project screen, not heuristics in this collector.
 
-Discovery failures retain the whole previous snapshot; repository failures retain
+Explicitly disabled repository units are shown as disabled and are not requested;
+a 404 on an enabled unit remains a failure. Discovery failures retain the whole previous snapshot; repository failures retain
 that repository's last complete observation. Disappeared repositories are marked
 unavailable and retained. Writes use fsync + atomic replacement. The API derives
 staleness after 15 minutes even if the collector has stopped. No token, source issue

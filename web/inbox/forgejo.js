@@ -35,6 +35,7 @@ export function mountForgejo({api,owner}) {
       $('forgejo-status').textContent=`${data.instance} · ${data.account_login??'Account not verified'} · ${freshness(data)}. Open issues and PRs; published releases. Assignees are not executor status.`;
       const nodes=data.repos.map(repo=>{
         const card=el('details',''),summary=el('summary',`${repo.name} · ${repo.issues.length} issues · ${repo.pulls.length} PRs`);card.append(summary,el('p',freshness(repo)),link('Open repository',repo.url,data.instance));
+        const disabled=Object.entries(repo.units??{}).filter(([,enabled])=>enabled===false).map(([unit])=>unit.replaceAll('_',' '));if(disabled.length)card.append(el('p',`Disabled in Forgejo: ${disabled.join(', ')}`));
         for(const issue of repo.issues){const p=el('p','');p.append(link(`#${issue.number} ${issue.title}`,issue.url,data.instance),el('span',` · assignees: ${issue.assignees.join(', ')||'none'}`));card.append(p);}
         for(const pr of repo.pulls){const p=el('p','');p.append(link(`PR #${pr.number} ${pr.title}`,pr.url,data.instance),el('span',` · head ${pr.head_commit.slice(0,12)} · assignees: ${pr.assignees.join(', ')||'none'}`));card.append(p);
           // Status endpoints may contain multiple attempts: show each with time, never flatten to an invented pass.

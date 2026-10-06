@@ -9,11 +9,11 @@ from collector import Client, Unavailable, collect, configuration, empty, write_
 BASE='https://forgejo.example.test'
 CONFIG={'owner_id':str(uuid.uuid4()),'base_url':BASE,'account_id':7,'projects':{},'credential_file':'/private/key','cache_file':'/derived/cache'}
 REPO={'id':10,'full_name':'team/one','html_url':BASE+'/team/one'}
-ITEM={'id':22,'number':3,'title':'A question','html_url':BASE+'/team/one/issues/3','state':'open','updated_at':'2026-10-06T01:00:00Z','assignees':[{'login':'oleg'}]}
+ITEM={'id':22,'number':3,'title':'A question','html_url':BASE+'/team/one/issues/3','state':'open','pull_request':None,'updated_at':'2026-10-06T01:00:00Z','assignees':[{'login':'oleg'}]}
 class Source(Client):
     def __init__(self):
         self.base=BASE;self.calls=[];self.fail=None
-        self.rows={'/user/repos':[REPO],'/repos/team/one/issues':[ITEM],'/repos/team/one/pulls':[], '/repos/team/one/releases':[]}
+        self.rows={'/user/orgs':[], '/user/repos':[REPO],'/repos/team/one/issues':[ITEM],'/repos/team/one/pulls':[], '/repos/team/one/releases':[]}
     def get(self,path):
         self.calls.append(path)
         if self.fail and self.fail in path:raise Unavailable('source_unavailable')
@@ -31,9 +31,25 @@ class Tests(unittest.TestCase):
         s.rows['/repos/team/one/commits/'+'a'*40+'/statuses']=[{'id':9,'context':'ci','status':'success','updated_at':'now'}]
         v=collect(s,CONFIG,None,100)
         self.assertIsNone(v['error']);self.assertEqual(len(v['repos']),2)
+        self.assertEqual(len(v['repos'][0]['issues']),1)
         self.assertEqual(v['repos'][0]['pulls'][0]['checks'][0]['state'],'success')
         self.assertTrue(any('page=3' in p for p in s.calls))
         self.assertFalse(any('token' in p for p in s.calls))
+    def test_org_public_repositories_are_included_and_duplicates_merge_by_id(self):
+        s=Source();s.rows['/user/orgs']=[{'id':3,'name':'team'}]
+        public=dict(REPO,id=11,full_name='team/public',html_url=BASE+'/team/public')
+        s.rows['/orgs/team/repos']=[REPO,public]
+        for unit in ('issues','pulls','releases'):s.rows['/repos/team/public/'+unit]=[]
+        v=collect(s,CONFIG,None,100);self.assertEqual({r['id'] for r in v['repos']},{10,11})
+        s.fail='/orgs/team/repos?limit=50&page=2'
+        last=collect(s,CONFIG,v,200);self.assertEqual(last['repos'],v['repos']);self.assertEqual(last['error'],'source_unavailable')
+    def test_disabled_units_are_explicit_and_not_requested(self):
+        s=Source();s.rows['/user/repos']=[dict(REPO,has_issues=False,has_pull_requests=False)]
+        v=collect(s,CONFIG,None,100);r=v['repos'][0]
+        self.assertIsNone(r['error']);self.assertEqual(r['units'],{'issues':False,'pull_requests':False,'releases':True})
+        self.assertFalse(any('/issues?' in p or '/pulls?' in p for p in s.calls))
+        s.rows['/user/repos']=[REPO];s.fail='/issues?'
+        self.assertEqual(collect(s,CONFIG,v,200)['repos'][0]['error'],'source_unavailable')
     def test_partial_discovery_keeps_every_previous_record(self):
         s=Source();old=collect(s,CONFIG,None,100);s.fail='user/repos?limit=50&page=2'
         v=collect(s,CONFIG,old,200)
