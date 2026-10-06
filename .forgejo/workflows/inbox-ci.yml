@@ -42,7 +42,10 @@ jobs:
       - name: Format, lint and test isolated Inbox workspace
         working-directory: inbox
         run: |
-          cargo fmt --all --check
+          # --all follows path dependencies into the Reader workspace, whose
+          # GPUI vendor is intentionally absent from this isolated Inbox job.
+          cargo fmt --check
+          cargo fmt --manifest-path ../crates/tessera-sync/Cargo.toml -p tessera-sync --check
           cargo clippy --locked --workspace --all-targets -- -D warnings
           cargo test --locked --workspace
       - name: Consistent SQLite backup and restore

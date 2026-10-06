@@ -121,7 +121,7 @@ fn migration_preserves_original_credential_and_owner() {
     assert!(auth.authenticate(&session, 1000).is_ok());
     drop(auth);
     let db = rusqlite::Connection::open(&path).unwrap();
-    db.execute_batch("UPDATE auth_owner SET passkey=(SELECT passkey FROM auth_passkeys LIMIT 1); DROP TABLE auth_passkeys; PRAGMA user_version=10;").unwrap();
+    db.execute_batch("UPDATE auth_owner SET passkey=(SELECT passkey FROM auth_passkeys LIMIT 1); DROP TABLE auth_passkeys; DROP TABLE sync_scopes; DROP TABLE sync_requests; DROP TABLE sync_grants; PRAGMA user_version=10;").unwrap();
     drop(db);
     let mut restored = Auth::new(Store::open(&path).unwrap(), ORIGIN).unwrap();
     assert_eq!(restored.owner, owner);

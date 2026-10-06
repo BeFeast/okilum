@@ -19,6 +19,12 @@ pub(crate) fn routes<S: Clone + Send + Sync + 'static>() -> Router<S> {
     let router = Router::new();
     let router = asset!(
         router,
+        "/sync-pairing.js",
+        "text/javascript; charset=utf-8",
+        "sync-pairing.js"
+    );
+    let router = asset!(
+        router,
         "/devices.js",
         "text/javascript; charset=utf-8",
         "devices.js"

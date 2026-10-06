@@ -31,6 +31,9 @@ struct Options {
     ai_credential_file: Option<PathBuf>,
     #[arg(long, requires = "vault_folder")]
     fixture_vault: Option<PathBuf>,
+    /// Private opt-in owner/vault mapping; does not contain the hub REST key.
+    #[arg(long)]
+    sync_config: Option<PathBuf>,
     /// Private operator-provisioned T3 bridge credential and scope (disabled by default).
     #[arg(long)]
     bridge_credential_file: Option<PathBuf>,
@@ -89,10 +92,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .bridge_credential_file
                 .map(|path| tessera_inboxd::bridge::Bridge::from_credential(&path, auth.owner))
                 .transpose()?;
+            let sync = options.sync_config.and_then(|path| {
+                let result=(|| -> Result<_,Box<dyn std::error::Error>> {
+                    let config=tessera_inboxd::sync::Config::load(&path,auth.owner.0)?;
+                    config.bind(&mut auth.store)?;
+                    Ok(std::sync::Arc::new(config))
+                })();
+                match result {
+                    Ok(config)=>Some(config),
+                    Err(_)=>{eprintln!("sync_configuration_rejected: Sync disabled; Inbox login/capture remain available");None}
+                }
+            });
             let listener = tokio::net::TcpListener::bind(options.listen).await?;
             axum::serve(
                 listener,
-                tessera_inboxd::http::router_with_forgejo(
+                tessera_inboxd::http::router_with_sync(
                     auth,
                     provider,
                     vault,
@@ -100,6 +114,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     options
                         .forgejo_cache_file
                         .map(tessera_inboxd::forgejo::Cache),
+                    sync,
                 ),
             )
             .with_graceful_shutdown(async {
