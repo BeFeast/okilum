@@ -4998,9 +4998,6 @@ fn append_creation_rows(items: &mut Vec<SideItem>, create: &reader_create::Creat
             .map_or_else(Vec::new, |c| c.files.clone()),
         create.selected_template.clone(),
     ));
-    if let Some(error) = &create.error {
-        items.push(SideItem::CreateError(error.clone()));
-    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
