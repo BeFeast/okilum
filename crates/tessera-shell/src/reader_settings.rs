@@ -77,6 +77,14 @@ enum Section {
     Inbox,
 }
 impl Section {
+    fn icon(self) -> IconName {
+        match self {
+            Self::Appearance => IconName::Palette,
+            Self::Files => IconName::Folder,
+            Self::Updates => IconName::RotateCw,
+            Self::Inbox => IconName::Inbox,
+        }
+    }
     fn label(self) -> &'static str {
         match self {
             Self::Appearance => "Appearance",
@@ -557,7 +565,14 @@ impl Render for Settings {
                                     Button::new(section.label())
                                         .w_full()
                                         .ghost()
-                                        .label(section.label())
+                                        .accessibility_label(section.label())
+                                        .child(
+                                            h_flex()
+                                                .w_full()
+                                                .gap_2()
+                                                .child(Icon::new(section.icon()).size_4())
+                                                .child(section.label()),
+                                        )
                                         .selected(self.section == section)
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             this.section = section;
