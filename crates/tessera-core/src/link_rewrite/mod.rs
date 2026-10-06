@@ -33,6 +33,8 @@ pub struct SkippedFile {
 pub struct Preview {
     #[serde(default)]
     pub timings: PreviewTimings,
+    #[serde(default)]
+    pub directory: Option<crate::note_move::DirectorySnapshot>,
     pub from: String,
     pub to: String,
     pub changes: Vec<Change>,
@@ -93,23 +95,30 @@ impl Preview {
         read: &mut impl FnMut(&Path) -> std::io::Result<String>,
     ) -> Result<Self> {
         let started = std::time::Instant::now();
-        crate::note_move::MovePlan::prepare(root, Path::new(from), Path::new(to))?;
+        let directory = if fs::symlink_metadata(root.join(from))?.is_dir() {
+            let snapshot = crate::note_move::DirectorySnapshot::read(root, Path::new(from))?;
+            crate::note_move::DirectoryMovePlan::prepare(
+                root,
+                Path::new(from),
+                Path::new(to),
+                &snapshot,
+            )?;
+            Some(snapshot)
+        } else {
+            crate::note_move::MovePlan::prepare(root, Path::new(from), Path::new(to))?;
+            None
+        };
         let plan_ms = started.elapsed().as_secs_f64() * 1000.;
         let inventory_started = std::time::Instant::now();
         let vault = Vault::scan_metadata_with(root, checkpoint)?;
         let inventory_ms = inventory_started.elapsed().as_secs_f64() * 1000.;
 
         ensure!(
-            vault.notes.iter().any(|n| n.path == from),
+            directory.is_some() || vault.notes.iter().any(|n| n.path == from),
             "The moved note is excluded from this folder inventory"
         );
-        let mut after = Vault::from_note_paths(vault.notes.iter().map(|n| {
-            if n.path == from {
-                to.to_owned()
-            } else {
-                n.path.clone()
-            }
-        }));
+        let mut after =
+            Vault::from_note_paths(vault.notes.iter().map(|n| moved_path(&n.path, from, to)));
         // Simulated inventory must not consult pre-move filesystem entries.
         after.root = root.to_path_buf();
         let candidates_started = std::time::Instant::now();
@@ -127,6 +136,7 @@ impl Preview {
                 indexed: index.is_some(),
                 ..Default::default()
             },
+            directory,
             from: from.into(),
             to: to.into(),
             changes: vec![],
@@ -175,7 +185,7 @@ impl Preview {
             preview.timings.read_ms += read_started.elapsed().as_secs_f64() * 1000.;
             let source = match source {
                 Ok(source) => source,
-                Err(error) if note.path != from => {
+                Err(error) if note.path != from || preview.directory.is_some() => {
                     preview.skipped_files.push(SkippedFile {
                         path: note.path.clone(),
                         reason: error.to_string(),
@@ -248,12 +258,38 @@ impl Preview {
             .changes
             .iter()
             .map(|c| c.path.clone())
-            .chain(std::iter::once(self.from.clone()))
+            .chain(
+                self.snapshots
+                    .keys()
+                    .filter(|p| moved_path(p, &self.from, &self.to) != **p)
+                    .cloned(),
+            )
             .collect();
         paths.sort();
         paths.dedup();
         paths
     }
+    /// Include displayed descendants even when their source was unreadable/skipped.
+    pub fn editor_paths(&self) -> Vec<String> {
+        let mut paths = self.affected_paths();
+        if self.directory.is_some() {
+            paths.extend(
+                self.inventory
+                    .iter()
+                    .filter(|p| {
+                        moved_path(p, &self.from, &self.to) != **p
+                            && Path::new(p)
+                                .extension()
+                                .is_some_and(|e| e.eq_ignore_ascii_case("md"))
+                    })
+                    .cloned(),
+            );
+        }
+        paths.sort();
+        paths.dedup();
+        paths
+    }
+
     pub fn validate(&self, root: &Path) -> Result<()> {
         let vault = Vault::scan_metadata(root)?;
         let mut enumeration_skips: Vec<_> = vault
@@ -318,7 +354,16 @@ impl Preview {
                 "{path} changed; preview again. Nothing was written"
             );
         }
-        crate::note_move::MovePlan::prepare(root, Path::new(&self.from), Path::new(&self.to))?;
+        if let Some(snapshot) = &self.directory {
+            crate::note_move::DirectoryMovePlan::prepare(
+                root,
+                Path::new(&self.from),
+                Path::new(&self.to),
+                snapshot,
+            )?;
+        } else {
+            crate::note_move::MovePlan::prepare(root, Path::new(&self.from), Path::new(&self.to))?;
+        }
         Ok(())
     }
     pub fn rewritten(&self, path: &str) -> Result<String> {
@@ -336,6 +381,16 @@ impl Preview {
         }
         Ok(result)
     }
+}
+
+/// Map one identity through a file or directory move, never a textual prefix twin.
+pub fn moved_path(path: &str, from: &str, to: &str) -> String {
+    if path == from {
+        return to.to_owned();
+    }
+    path.strip_prefix(from)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .map_or_else(|| path.to_owned(), |rest| format!("{to}/{rest}"))
 }
 
 fn replacement(
@@ -374,9 +429,6 @@ fn replacement(
             ]
             .contains(&extension.as_str()));
     let resolution = if asset {
-        if source != from {
-            return Ok(None);
-        }
         Resolution::Resolved {
             path: resolve_attachment(before, source, &decoded)?,
         }
@@ -389,7 +441,7 @@ fn replacement(
         Resolution::Resolved { path } => path,
         Resolution::Ambiguous { candidates } => bail!("Ambiguous: {}", candidates.join(", ")),
         Resolution::Unresolved => {
-            if source != from {
+            if moved_path(source, from, to) == source {
                 bail!("Unresolved target");
             }
             resolve_attachment(before, source, &decoded)?
@@ -426,7 +478,8 @@ fn replacement(
                 == 1,
             "Case-ambiguous note path"
         );
-        let desired = if resolved == from { to } else { &resolved };
+        let mapped = moved_path(&resolved, from, to);
+        let desired = mapped.as_str();
         ensure!(
             after
                 .notes
@@ -437,8 +490,10 @@ fn replacement(
             "Destination would be case-ambiguous"
         );
     }
-    let desired = if resolved == from { to } else { &resolved };
-    let new_source = if source == from { to } else { source };
+    let mapped = moved_path(&resolved, from, to);
+    let desired = mapped.as_str();
+    let mapped_source = moved_path(source, from, to);
+    let new_source = mapped_source.as_str();
     let relative = decoded.starts_with("./") || decoded.starts_with("../");
     let next = if !is_note {
         let unchanged = if target.wiki {
@@ -1190,5 +1245,197 @@ mod tests {
             p.rewritten("Old/n.md").unwrap(),
             "![image](../Old/100%25.png)"
         );
+    }
+}
+#[cfg(test)]
+mod directory_tests {
+    use super::*;
+    use crate::note_move::{DirectoryMovePlan, DirectorySnapshot};
+    use std::collections::BTreeMap;
+
+    fn fixture() -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("Old/sub")).unwrap();
+        fs::create_dir_all(root.path().join("Old/media")).unwrap();
+        fs::create_dir(root.path().join("Parent")).unwrap();
+        fs::write(root.path().join("Old/a.md"), "\u{feff}# Привет\r\n[[./sub/b#^id|🧠]]\r\n[out](../Outside.md) ![asset](media/p.png)\r\n").unwrap();
+        fs::write(root.path().join("Old/sub/b.md"), "# B\n^id\n[[../a]]\n").unwrap();
+        fs::write(root.path().join("Outside.md"), "---\r\nrelated: '[[Old/a#Привет|e\u{301}]]'\r\n---\r\n![[Old/sub/b#^id|🧠]]\r\n![p](Old/media/p.png)\r\n").unwrap();
+        fs::write(root.path().join("Old/media/p.png"), [0, 255, 1, 128]).unwrap();
+        fs::write(root.path().join("Old/._a.md"), [255, 254, 0]).unwrap();
+        fs::write(root.path().join("Old/bad.md"), [255, 0]).unwrap();
+        root
+    }
+
+    #[test]
+    fn directory_move_updates_lossless_links_assets_and_restores_preimages() {
+        let root = fixture();
+        let state = tempfile::tempdir().unwrap();
+        let before: BTreeMap<_, _> = ["Old/a.md", "Old/sub/b.md", "Outside.md"]
+            .map(|p| (p, fs::read(root.path().join(p)).unwrap()))
+            .into_iter()
+            .collect();
+        let preview = Preview::prepare(root.path(), "Old", "Parent/New").unwrap();
+        assert!(preview.directory.is_some());
+        assert!(preview.skipped_files.iter().any(|s| s.path == "Old/bad.md"));
+        assert!(preview.changes.iter().any(|c| c.path == "Outside.md"));
+        assert!(preview.changes.iter().any(|c| c.path == "Old/a.md"));
+        let result = preview
+            .apply(root.path(), state.path(), &mut BTreeMap::new())
+            .unwrap();
+        assert!(result.moved, "{:?}", result.warning);
+        assert!(result.warning.is_none(), "{:?}", result.warning);
+        assert!(!root.path().join("Old").exists());
+        let versions = crate::source_history::move_versions(state.path(), root.path()).unwrap();
+        assert!(versions.versions.iter().any(|v| v.note
+            == root.path().canonicalize().unwrap().join("Parent/New/a.md")
+            && v.text.as_bytes() == before["Old/a.md"]));
+        let moved = fs::read_to_string(root.path().join("Parent/New/a.md")).unwrap();
+        assert!(
+            moved.starts_with("\u{feff}# Привет\r\n[[./sub/b#^id|🧠]]\r\n"),
+            "{moved}"
+        );
+        assert!(moved.contains("[out](../../Outside.md)"), "{moved}");
+        assert!(moved.contains("![asset](media/p.png)"), "{moved}");
+        let outside = fs::read_to_string(root.path().join("Outside.md")).unwrap();
+        assert!(
+            outside.contains("'[[Parent/New/a#Привет|e\u{301}]]'"),
+            "{outside}"
+        );
+        assert!(
+            outside.contains("![[Parent/New/sub/b#^id|🧠]]"),
+            "{outside}"
+        );
+        assert!(
+            outside.contains("![p](./Parent/New/media/p.png)"),
+            "{outside}"
+        );
+        assert_eq!(
+            fs::read(root.path().join("Parent/New/media/p.png")).unwrap(),
+            [0, 255, 1, 128]
+        );
+        assert_eq!(
+            fs::read(root.path().join("Parent/New/._a.md")).unwrap(),
+            [255, 254, 0]
+        );
+        assert_eq!(
+            fs::read(root.path().join("Parent/New/bad.md")).unwrap(),
+            [255, 0]
+        );
+        Operation::revert(&result.journal, state.path()).unwrap();
+        for (path, bytes) in before {
+            assert_eq!(fs::read(root.path().join(path)).unwrap(), bytes);
+        }
+        assert!(!root.path().join("Parent/New").exists());
+    }
+
+    #[test]
+    fn indexed_directory_preview_matches_full_scan_and_includes_changed_sources() {
+        let root = fixture();
+        fs::write(root.path().join("Unrelated.md"), "unrelated").unwrap();
+        let (_, snapshot, _) =
+            crate::vault::warm::reconcile(root.path(), None, false, &mut |_, _| Ok(())).unwrap();
+        let index = CandidateIndex::from_snapshot(&snapshot);
+        let full = Preview::prepare(root.path(), "Old", "Parent/New").unwrap();
+        let fast = Preview::prepare_with(
+            root.path(),
+            "Old",
+            "Parent/New",
+            Some(&index),
+            &mut |_, _| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(&full.changes).unwrap(),
+            serde_json::to_value(&fast.changes).unwrap()
+        );
+        assert!(fast.timings.files_read < full.timings.files_read);
+        fs::write(root.path().join("Unrelated.md"), "[[Old/a]]").unwrap();
+        assert!(fast.validate(root.path()).is_err());
+        let refreshed = Preview::prepare_with(
+            root.path(),
+            "Old",
+            "Parent/New",
+            Some(&index),
+            &mut |_, _| Ok(()),
+        )
+        .unwrap();
+        assert!(refreshed.changes.iter().any(|c| c.path == "Unrelated.md"));
+    }
+
+    #[test]
+    fn directory_rejects_preview_changes_collisions_nested_target_and_preserves_binary_edits() {
+        let root = fixture();
+        let state = tempfile::tempdir().unwrap();
+        let preview = Preview::prepare(root.path(), "Old", "Parent/New").unwrap();
+        fs::write(root.path().join("Old/media/p.png"), b"external").unwrap();
+        assert!(preview
+            .apply(root.path(), state.path(), &mut BTreeMap::new())
+            .is_err());
+        assert!(root.path().join("Old/a.md").exists());
+        assert!(Preview::prepare(root.path(), "Old", "Old/sub/New").is_err());
+        fs::create_dir(root.path().join("Existing")).unwrap();
+        assert!(Preview::prepare(root.path(), "Old", "Existing").is_err());
+        let preview = Preview::prepare(root.path(), "Old", "Parent/New").unwrap();
+        let moved = preview
+            .apply(root.path(), state.path(), &mut BTreeMap::new())
+            .unwrap();
+        assert!(moved.moved, "{:?}", moved.warning);
+        fs::write(root.path().join("Parent/New/media/p.png"), b"new external").unwrap();
+        assert!(Operation::revert(&moved.journal, state.path()).is_err());
+        assert_eq!(
+            fs::read(root.path().join("Parent/New/media/p.png")).unwrap(),
+            b"new external"
+        );
+    }
+
+    #[test]
+    fn directory_destination_preserves_orphaned_descendant_drafts() {
+        let root = fixture();
+        let state = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("Parent/New")).unwrap();
+        let destination = root.path().join("Parent/New/a.md");
+        fs::write(&destination, "Old destination").unwrap();
+        let mut editor =
+            crate::file_editor::FileEditor::open(&destination, &state.path().join("editor-drafts"))
+                .unwrap();
+        editor.set_text("Unsaved destination draft".into()).unwrap();
+        drop(editor);
+        fs::remove_file(&destination).unwrap();
+        fs::remove_dir(root.path().join("Parent/New")).unwrap();
+        let preview = Preview::prepare(root.path(), "Old", "Parent/New").unwrap();
+        let error = preview
+            .apply(root.path(), state.path(), &mut BTreeMap::new())
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("recovery draft"), "{error:#}");
+        assert!(root.path().join("Old/a.md").exists());
+        assert!(!root.path().join("Parent/New").exists());
+    }
+
+    #[test]
+    fn empty_directory_moves_and_reverts_without_making_a_markdown_file() {
+        let root = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("Empty")).unwrap();
+        let preview = Preview::prepare(root.path(), "Empty", "New Name").unwrap();
+        let moved = preview
+            .apply(root.path(), state.path(), &mut BTreeMap::new())
+            .unwrap();
+        assert!(moved.moved, "{:?}", moved.warning);
+        assert!(root.path().join("New Name").is_dir());
+        Operation::revert(&moved.journal, state.path()).unwrap();
+        assert!(root.path().join("Empty").is_dir());
+        let snapshot = DirectorySnapshot::read(root.path(), Path::new("Empty")).unwrap();
+        let plan = DirectoryMovePlan::prepare(
+            root.path(),
+            Path::new("Empty"),
+            Path::new("Racing"),
+            &snapshot,
+        )
+        .unwrap();
+        fs::create_dir(root.path().join("Racing")).unwrap();
+        assert!(plan.commit().is_err());
+        assert!(root.path().join("Empty").is_dir());
     }
 }

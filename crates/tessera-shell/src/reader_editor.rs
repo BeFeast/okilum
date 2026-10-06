@@ -790,11 +790,18 @@ impl Reader {
         let paths: Vec<_> = operation
             .files
             .keys()
-            .cloned()
-            .chain(std::iter::once(operation.to.clone()))
+            .flat_map(|p| {
+                [
+                    p.clone(),
+                    tessera_core::link_rewrite::moved_path(p, &operation.from, &operation.to),
+                ]
+            })
+            .chain([operation.from.clone(), operation.to.clone()])
             .collect();
         self.check_move_editors(&paths, cx)?;
-        let self_affected = paths.contains(&self.current_rel);
+        let self_affected = paths
+            .iter()
+            .any(|p| self.current_rel == *p || self.current_rel.starts_with(&format!("{p}/")));
         let self_editing = if self_affected {
             self.editing.take().is_some()
         } else {
@@ -807,7 +814,10 @@ impl Reader {
                 continue;
             }
             if let Ok(Some(was_editing)) = reader.update(cx, |r, _| {
-                if same_move_root(&r.vault_root, &operation.root) && paths.contains(&r.current_rel)
+                if same_move_root(&r.vault_root, &operation.root)
+                    && paths
+                        .iter()
+                        .any(|p| r.current_rel == *p || r.current_rel.starts_with(&format!("{p}/")))
                 {
                     Some(r.editing.take().is_some())
                 } else {
@@ -821,8 +831,20 @@ impl Reader {
         for (reader, owner, was_editing) in parked {
             let _ = owner.update(cx, |_, window, cx| {
                 reader.update(cx, |r, cx| {
-                    if result.is_ok() && r.current_rel == operation.to {
-                        r.current_rel = operation.from.clone();
+                    if result.is_ok() {
+                        r.current_rel = tessera_core::link_rewrite::moved_path(
+                            &r.current_rel,
+                            &operation.to,
+                            &operation.from,
+                        );
+                        r.tree.note_moved(&operation.to, &operation.from);
+                        for p in &mut r.history {
+                            *p = tessera_core::link_rewrite::moved_path(
+                                p,
+                                &operation.to,
+                                &operation.from,
+                            );
+                        }
                     }
                     let rel = r.current_rel.clone();
                     r.prepare_document(&rel, None, None, window, cx);
@@ -834,8 +856,16 @@ impl Reader {
             });
         }
         if self_affected {
-            if result.is_ok() && self.current_rel == operation.to {
-                self.current_rel = operation.from.clone();
+            if result.is_ok() {
+                self.current_rel = tessera_core::link_rewrite::moved_path(
+                    &self.current_rel,
+                    &operation.to,
+                    &operation.from,
+                );
+                self.tree.note_moved(&operation.to, &operation.from);
+                for p in &mut self.history {
+                    *p = tessera_core::link_rewrite::moved_path(p, &operation.to, &operation.from);
+                }
             }
             let rel = self.current_rel.clone();
             self.prepare_document(&rel, None, None, window, cx);
@@ -846,9 +876,14 @@ impl Reader {
         if result.is_ok() && same_move_root(&self.vault_root, &operation.root) {
             let mut changes = tessera_core::Changes {
                 changed: operation.files.keys().cloned().collect(),
-                removed: std::collections::BTreeSet::from([operation.to]),
+                removed: std::collections::BTreeSet::from([operation.to.clone()]),
                 ..Default::default()
             };
+            if operation.directory.is_some() {
+                changes
+                    .directories
+                    .extend([operation.from.clone(), operation.to.clone()]);
+            }
             changes.changed.insert(operation.from);
             self.queue_vault_mutation(changes, cx);
         }
@@ -893,7 +928,10 @@ impl Reader {
             "A move is already being applied in this window"
         );
         anyhow::ensure!(
-            !paths.contains(&self.current_rel) || !self.source_is_dirty(cx),
+            !paths
+                .iter()
+                .any(|p| self.current_rel == *p || self.current_rel.starts_with(&format!("{p}/")))
+                || !self.source_is_dirty(cx),
             "Save or discard this note's unsaved edits before moving"
         );
         let readers = cx.default_global::<Editors>().0.clone();
@@ -905,7 +943,8 @@ impl Reader {
                 let reader = reader.read(cx);
                 anyhow::ensure!(
                     !same_move_root(&reader.vault_root, &self.vault_root)
-                        || !paths.contains(&reader.current_rel)
+                        || !paths.iter().any(|p| reader.current_rel == *p
+                            || reader.current_rel.starts_with(&format!("{p}/")))
                         || (!reader.source_is_dirty(cx) && !reader.move_applying),
                     "{} has unsaved edits in another window; save or discard them first",
                     reader.current_rel
@@ -929,7 +968,7 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> anyhow::Result<Task<anyhow::Result<tessera_core::link_rewrite::Applied>>> {
-        let paths = preview.affected_paths();
+        let paths = preview.editor_paths();
         self.check_move_editors(&paths, cx)?;
         let state = self
             .session_directory
@@ -942,7 +981,13 @@ impl Reader {
                 continue;
             }
             if let Ok(Some((path, editing))) = reader.update(cx, |r, cx| {
-                if same_move_root(&r.vault_root, &self.vault_root) && paths.contains(&r.current_rel)
+                if same_move_root(&r.vault_root, &self.vault_root)
+                    && (paths.contains(&r.current_rel)
+                        || tessera_core::link_rewrite::moved_path(
+                            r.selected_file(),
+                            &preview.from,
+                            &preview.to,
+                        ) != r.selected_file())
                 {
                     r.move_applying = true;
                     r.document_preparation_generation =
@@ -1028,16 +1073,32 @@ impl Reader {
                         if moved {
                             r.tree.note_moved(&preview.from, &preview.to);
                         }
-                        if moved && path == preview.from {
+                        let next_path = tessera_core::link_rewrite::moved_path(
+                            &path,
+                            &preview.from,
+                            &preview.to,
+                        );
+                        if moved && next_path != path {
                             r.editing = None;
-                            r.current_rel = preview.to.clone();
+                            r.current_rel = next_path;
                             for p in &mut r.history {
-                                if *p == preview.from {
-                                    *p = preview.to.clone();
-                                }
+                                *p = tessera_core::link_rewrite::moved_path(
+                                    p,
+                                    &preview.from,
+                                    &preview.to,
+                                );
                             }
                         }
-                        if let Some(e) = r.editing.as_mut() {
+                        if let Some(file) = &r.file_preview {
+                            let next = tessera_core::link_rewrite::moved_path(
+                                &file.rel,
+                                &preview.from,
+                                &preview.to,
+                            );
+                            if moved && next != file.rel {
+                                r.preview_file(&next, window, cx);
+                            }
+                        } else if let Some(e) = r.editing.as_mut() {
                             e.input.update(cx, |input, cx| {
                                 input.set_value(e.store.text().to_owned(), window, cx)
                             });
@@ -1045,7 +1106,11 @@ impl Reader {
                             let rel = r.current_rel.clone();
                             r.prepare_document(&rel, None, None, window, cx);
                             if moved
-                                && path == preview.from
+                                && tessera_core::link_rewrite::moved_path(
+                                    &path,
+                                    &preview.from,
+                                    &preview.to,
+                                ) != path
                                 && was_editing
                                 && result.as_ref().is_ok_and(|a| a.warning.is_none())
                             {

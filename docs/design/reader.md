@@ -245,6 +245,10 @@ shows «Collapse all» and «Focus current» (only the path to the open note sta
 expanded; ⇧⌘← while browsing). ⌥-click on a folder, ⌥→/⌥← on the selected folder and the
 folder context menu («Expand/Collapse all subfolders») act on the folder and
 everything below it, as in Finder. There is no global «Expand all» (#410).
+F2/Enter starts inline rename for notes and folders (#578); Right/Left expands/
+collapses, and Left on a child selects its parent. A folder-label click selects;
+double-click, its disclosure glyph, or ⌘↓ (Ctrl↓ on Linux) toggles it.
+
 
 ### Sections (#369, variant A «Sections», chosen by Oleg 2026-10-04)
 

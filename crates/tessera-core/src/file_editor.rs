@@ -138,6 +138,27 @@ impl FileEditor {
             .context("Destination has no folder")?
             .canonicalize()?
             .join(path.file_name().context("Destination has no filename")?);
+        Self::reserve_path(path, state)
+    }
+
+    /// Reserve a descendant of a directory destination which does not exist yet.
+    /// The directory move validates its real destination parent separately.
+    pub(crate) fn reserve_future_destination(
+        root: &Path,
+        relative: &Path,
+        state: &Path,
+    ) -> Result<EditorLock> {
+        anyhow::ensure!(
+            !relative.as_os_str().is_empty()
+                && relative
+                    .components()
+                    .all(|c| matches!(c, std::path::Component::Normal(_))),
+            "Invalid future destination"
+        );
+        Self::reserve_path(root.canonicalize()?.join(relative), state)
+    }
+
+    fn reserve_path(path: PathBuf, state: &Path) -> Result<EditorLock> {
         fs::create_dir_all(state)?;
         let key = format!("{:x}", Sha256::digest(path.as_os_str().as_encoded_bytes()));
         let lock = EditorLock::acquire(&state.join(format!("{key}.lock")))

@@ -76,24 +76,24 @@ impl Tree {
     /// Publish a completed local move before watcher inventory delivery.
     #[cfg(unix)]
     pub fn note_moved(&mut self, from: &str, to: &str) {
-        let mut entries: Vec<_> = self
+        let entries: Vec<_> = self
             .kinds
             .iter()
-            .filter(|(path, _)| path.as_str() != from)
             .map(|(path, kind)| VaultEntry {
-                path: path.clone(),
+                path: tessera_core::link_rewrite::moved_path(path, from, to),
                 kind: *kind,
             })
             .collect();
-        entries.push(VaultEntry {
-            path: to.to_owned(),
-            kind: EntryKind::Markdown,
-        });
+        self.expanded = self
+            .expanded
+            .iter()
+            .map(|p| tessera_core::link_rewrite::moved_path(p, from, to))
+            .collect();
+        if let Some(cursor) = &mut self.cursor {
+            *cursor = tessera_core::link_rewrite::moved_path(cursor, from, to);
+        }
         let root = self.root.clone();
         self.refresh(&root, &entries);
-        if self.cursor.as_deref() == Some(from) {
-            self.cursor = Some(to.to_owned());
-        }
     }
 
     pub fn refresh(&mut self, root: &Path, entries: &[VaultEntry]) {

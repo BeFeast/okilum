@@ -418,12 +418,13 @@ pub fn move_versions(state: &Path, root: &Path) -> Result<Listing> {
             .unwrap_or_default()
             .as_micros() as u64;
         for original in op.files.keys() {
-            let current = if original != &op.from {
+            let mapped = crate::link_rewrite::moved_path(original, &op.from, &op.to);
+            let current = if mapped == *original {
                 original
             } else if op.complete
                 || (!op.root.join(original).exists() && op.root.join(&op.to).exists())
             {
-                &op.to
+                &mapped
             } else if op.root.join(original).exists() && !op.root.join(&op.to).exists() {
                 original
             } else {
