@@ -683,11 +683,17 @@ fn prepare_rest_with_io_and_snapshot(
         }
         drop(search_phase);
         cancel.check()?;
-        if watcher
+        if let Some(changes) = watcher
             .as_mut()
             .and_then(VaultWatcher::drain_preparation_changes)
-            .is_some()
         {
+            if let Some(trace) = &opts.diagnostics {
+                trace.event("reconcile_scan_time_changes", serde_json::json!({
+                    "changed":changes.changed.len(), "removed":changes.removed.len(),
+                    "directory_hints":changes.directories.len(), "rescan":changes.rescan,
+                    "examples":changes.changed.iter().chain(&changes.removed).chain(&changes.directories).take(8).collect::<Vec<_>>()
+                }));
+            }
             previous = Some(snapshot);
             progress(send, "Updating changed notes".into())?;
             continue;
@@ -775,7 +781,20 @@ fn prepare_search_generation(
     send: &async_channel::Sender<Event>,
 ) -> Result<Searcher> {
     use tessera_core::vault::display_path;
-    if let Some(searcher) = open_completed_generation(destination) {
+    let cached = {
+        let _phase = _opts
+            .diagnostics
+            .as_ref()
+            .map(|trace| trace.phase("search_generation_lookup"));
+        open_completed_generation(destination)
+    };
+    if let Some(trace) = &_opts.diagnostics {
+        trace.event(
+            "search_generation_cache",
+            serde_json::json!({"hit":cached.is_some()}),
+        );
+    }
+    if let Some(searcher) = cached {
         return Ok(searcher);
     }
     // Windows does not permit moving directories with open descendant handles.
@@ -4411,6 +4430,282 @@ mod tests {
         new_release.try_send(()).unwrap();
         visual.run_until_parked();
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Each launch is a new process with only the persisted snapshot/search bank.
+    #[test]
+    fn second_unchanged_relaunch_reuses_sources_and_graph() {
+        unchanged_relaunch_fixture(false);
+    }
+
+    #[test]
+    fn second_unchanged_relaunch_after_topology_delta_reuses_sources_and_graph() {
+        unchanged_relaunch_fixture(true);
+    }
+
+    fn unchanged_relaunch_fixture(topology_delta: bool) {
+        let fixture = tempfile::Builder::new()
+            .prefix("tessera-unchanged-relaunch-")
+            .tempdir()
+            .unwrap();
+        let root = fixture.path().join("vault");
+        std::fs::create_dir_all(root.join("notes")).unwrap();
+        std::fs::write(root.join("last.md"), "# Last\n\nunchangedcanary").unwrap();
+        for n in 0..5000 {
+            std::fs::write(
+                root.join(format!("notes/note-{n}.md")),
+                format!(
+                    "# Note {n}\n\n[[last]]\n[Last](../last.md)\n{}",
+                    "Stable paragraph.\n\n".repeat(40)
+                ),
+            )
+            .unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(root.join(format!("notes/note-{n}.md")))
+                .unwrap()
+                .set_times(
+                    std::fs::FileTimes::new().set_modified(
+                        std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000 + n),
+                    ),
+                )
+                .unwrap();
+        }
+        for launch in 0..=2 {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "reader_loading::tests::unchanged_relaunch_probe_child",
+                    "--exact",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env("TESSERA_UNCHANGED_RELAUNCH_FIXTURE", fixture.path())
+                .env("TESSERA_UNCHANGED_RELAUNCH_NUMBER", launch.to_string())
+                .env(
+                    "TESSERA_RELAUNCH_TOPOLOGY_DELTA",
+                    if topology_delta { "1" } else { "0" },
+                )
+                .status()
+                .unwrap();
+            assert!(status.success(), "fresh-process launch {launch}");
+        }
+    }
+
+    #[test]
+    fn unchanged_relaunch_probe_child() {
+        let Some(fixture) = std::env::var_os("TESSERA_UNCHANGED_RELAUNCH_FIXTURE") else {
+            return;
+        };
+        let fixture = PathBuf::from(fixture);
+        let root = fixture.join("vault").canonicalize().unwrap();
+        let launch: usize = std::env::var("TESSERA_UNCHANGED_RELAUNCH_NUMBER")
+            .unwrap()
+            .parse()
+            .unwrap();
+        #[cfg(target_os = "linux")]
+        let calls = if std::env::var_os("TESSERA_SLOW_FS_MS").is_some() {
+            #[link(name = "dl")]
+            unsafe extern "C" {
+                fn dlsym(
+                    handle: *mut std::ffi::c_void,
+                    name: *const std::ffi::c_char,
+                ) -> *mut std::ffi::c_void;
+            }
+            unsafe {
+                let set = dlsym(std::ptr::null_mut(), c"tessera_slow_fs_phase".as_ptr());
+                let count = dlsym(std::ptr::null_mut(), c"tessera_slow_fs_count".as_ptr());
+                assert!(
+                    !set.is_null() && !count.is_null(),
+                    "filesystem injection must be installed"
+                );
+                let set: unsafe extern "C" fn(*const std::ffi::c_char) = std::mem::transmute::<
+                    *mut std::ffi::c_void,
+                    unsafe extern "C" fn(*const std::ffi::c_char),
+                >(set);
+                let count: unsafe extern "C" fn(i32) -> std::ffi::c_ulong = std::mem::transmute::<
+                    *mut std::ffi::c_void,
+                    unsafe extern "C" fn(i32) -> std::ffi::c_ulong,
+                >(count);
+                set(c"positive_control".as_ptr());
+                std::fs::read(root.join("last.md")).unwrap();
+                tessera_core::vault::warm::SourceRevision::read(&root.join("last.md")).unwrap();
+                assert!(
+                    count(0) > 0 && count(1) > 0 && count(2) > 0,
+                    "open/read/stat positive control"
+                );
+                set(c"warm_reconcile".as_ptr());
+                Some(count)
+            }
+        } else {
+            None
+        };
+        let state = fixture.join(format!("trace-{launch}"));
+        let session = fixture.join("session");
+        let trace = reader_diagnostics::Trace::new(Some(state.clone()), Some(root.clone()));
+        let opts = Opts {
+            vault: Some(root.clone()),
+            note: Some("last.md".into()),
+            index_dir: Some(fixture.join("cache")),
+            session_directory: Some(session),
+            diagnostics: Some(trace.clone()),
+            ..Default::default()
+        };
+        let started = std::time::Instant::now();
+        let first = prepare_first(&opts, &Cancellation::default()).unwrap();
+        let first_ms = started.elapsed().as_secs_f64() * 1000.;
+        let Event::First {
+            snapshot,
+            vault: first_vault,
+            searcher: first_searcher,
+            ..
+        } = first
+        else {
+            panic!("first publication")
+        };
+        if launch > 0 {
+            assert_eq!(first_vault.notes.len(), 5001, "cached first inventory");
+            assert!(
+                first_searcher.is_some(),
+                "persisted search generation must open before reconcile"
+            );
+        }
+        drop(first_searcher);
+        let (send, _receive) = async_channel::unbounded();
+        let ready = prepare_rest_with_snapshot(
+            &root,
+            &opts,
+            &Cancellation::default(),
+            &send,
+            snapshot.map(|snapshot| *snapshot),
+        )
+        .unwrap();
+        let ready_ms = started.elapsed().as_secs_f64() * 1000.;
+        if launch == 0 && std::env::var("TESSERA_RELAUNCH_TOPOLOGY_DELTA").as_deref() == Ok("1") {
+            let Event::Ready {
+                move_snapshot,
+                vault,
+                searcher: Some(searcher),
+                ..
+            } = ready
+            else {
+                panic!("ready baseline")
+            };
+            let mut state =
+                tessera_core::vault::warm::incremental::State::new(vault, *move_snapshot);
+            let session = searcher.fork_session().unwrap();
+            let transient = root.join("transient.md");
+            for present in [true, false] {
+                if present {
+                    std::fs::write(&transient, "# Transient\n\n[[last]]").unwrap();
+                } else {
+                    std::fs::remove_file(&transient).unwrap();
+                }
+                let mut changes = tessera_core::Changes::default();
+                if present {
+                    changes.changed.insert("transient.md".into());
+                } else {
+                    changes.removed.insert("transient.md".into());
+                }
+                let batch = state.apply(&changes, &mut |_, _| Ok(())).unwrap();
+                let documents: Vec<_> = batch
+                    .affected
+                    .iter()
+                    .filter_map(|path| {
+                        Some(tessera_core::search::SearchDocument {
+                            path: path.clone(),
+                            title: path.clone(),
+                            text: state.snapshot.source(path)?,
+                        })
+                    })
+                    .collect();
+                session
+                    .update_snapshot_batch(
+                        &state.vault,
+                        &documents,
+                        &batch.removed.into_iter().collect::<Vec<_>>(),
+                    )
+                    .unwrap();
+            }
+            let generation = "abcdef0123456789".repeat(4);
+            let cache = fixture.join("cache");
+            let destination = cache.join("generations").join(&generation);
+            std::fs::create_dir_all(&destination).unwrap();
+            session.copy_committed_to(&destination).unwrap();
+            std::fs::write(destination.join("complete"), b"1").unwrap();
+            state.set_search_generation(Some(generation));
+            state.persist_delta(&cache).unwrap();
+        } else {
+            assert!(matches!(ready, Event::Ready { .. }));
+        }
+        trace.event("unchanged_relaunch_probe_done", serde_json::json!({}));
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let events = loop {
+            let events: Vec<serde_json::Value> =
+                std::fs::read_to_string(state.join("reader-diagnostic.log"))
+                    .unwrap_or_default()
+                    .lines()
+                    .filter_map(|line| serde_json::from_str(line).ok())
+                    .collect();
+            if events
+                .iter()
+                .any(|e| e["phase"] == "unchanged_relaunch_probe_done")
+            {
+                break events;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "diagnostic delivery positive control"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let stats: Vec<_> = events
+            .iter()
+            .filter(|e| e["phase"] == "reconcile_stats")
+            .map(|e| e["details"].clone())
+            .collect();
+        let replay = events
+            .iter()
+            .find(|e| e["phase"] == "replay_invalidations")
+            .unwrap()["details"]
+            .clone();
+        assert!(!stats.is_empty());
+        if launch == 0 {
+            assert_eq!(stats[0]["read"], 5001, "cold read counter positive control");
+            assert_eq!(stats[0]["reused"], 0);
+        }
+        if launch > 0 {
+            let search_lookups: Vec<_> = events
+                .iter()
+                .filter(|event| event["phase"] == "search_generation_cache")
+                .collect();
+            assert!(
+                !search_lookups.is_empty(),
+                "search cache lookup positive control"
+            );
+            assert!(
+                search_lookups
+                    .iter()
+                    .all(|event| event["details"]["hit"] == true),
+                "unchanged relaunch must not rebuild search"
+            );
+            for s in &stats {
+                assert_eq!(
+                    s["read"], 0,
+                    "unchanged fresh relaunch must not read sources: {s}"
+                );
+                assert_eq!(s["reused"], 5001);
+                assert_eq!(s["graph_reused"], true);
+                assert_eq!(s["replay_force_all"], false);
+            }
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(count) = calls {
+            eprintln!(
+                "ACTUAL_FS_CALLS launch={launch} {:?}",
+                (0..4).map(|i| unsafe { count(i) }).collect::<Vec<_>>()
+            );
+        }
+        eprintln!("UNCHANGED_RELAUNCH launch={launch} first_ms={first_ms:.2} ready_ms={ready_ms:.2} stats={} replay={replay}",serde_json::to_string(&stats).unwrap());
     }
 
     #[test]
