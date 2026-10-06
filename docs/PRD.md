@@ -21,6 +21,8 @@ provider jobs, canonical enrollment or deployment.
 
 **Reader editing extension (2026-10-04, #354):** [source editing and safe save](reader-source-editing.md) adds explicit desktop source editing to ordinary notes. The v0 reader protocol remains read-only; this approved phase does not require Brain enrollment.
 
+**Single-file viewer extension (2026-10-06, #560):** [quick viewer](single-file-viewer.md) defines document-only startup, lazy folder browsing and explicit vault upgrade.
+
 ## 1. What Tessera is
 
 A local-first desktop knowledge environment that replaces Obsidian without taking

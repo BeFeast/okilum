@@ -718,7 +718,7 @@ fn expand_embeds_structure(
                 out.push_str(line);
                 continue;
             }
-            if !vault.inventory_complete {
+            if !vault.inventory_complete && !(vault.single_file && vault.inventory_scanned) {
                 out.push_str(&format!(
                     "\n~~~~{EMBED_LANG} {EMBED_PENDING} {target}\n~~~~\n\n"
                 ));

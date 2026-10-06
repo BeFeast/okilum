@@ -66,6 +66,11 @@ pub(crate) fn save_window(window: AnyWindowHandle, cx: &mut App) -> bool {
 
 impl Editing {
     #[cfg(test)]
+    pub(super) fn test_input(&self) -> Entity<EditorState> {
+        self.input.clone()
+    }
+
+    #[cfg(test)]
     pub(super) fn set_value(&self, value: &str, window: &mut Window, cx: &mut Context<Reader>) {
         self.input
             .update(cx, |input, cx| input.set_value(value, window, cx));

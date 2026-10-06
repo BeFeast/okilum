@@ -8,6 +8,7 @@ const MAX_MEMORY_SEARCH_BYTES: usize = 128 * 1024 * 1024;
 pub(super) struct SessionRecord {
     pub(super) root: PathBuf,
     pub(super) document: String,
+    pub(super) single_file: bool,
     pub(super) cache: Option<PathBuf>,
     pub(super) cache_lease: Option<Arc<reader_cache::Lease>>,
     pub(super) diagnostics: Option<reader_diagnostics::Trace>,
@@ -56,6 +57,7 @@ enum Event {
         recovery_notice: Option<String>,
     },
     Progress(String),
+    Siblings(Vault),
     SearchInventory {
         notes: Vec<tessera_core::vault::Note>,
         reconciled: Option<Box<Vault>>,
@@ -133,6 +135,43 @@ fn prepare_first_with_last_document(
         .reusable_roots
         .iter()
         .find(|root| canonical_path.starts_with(root));
+    if opts.single_file || (canonical_path.is_file() && root.is_none() && reusable.is_none()) {
+        let mut intent = reader_open::OpenIntent::validate_cached(&canonical_path, root, None)?;
+        intent.single_file = true;
+        let rel = intent
+            .note
+            .clone()
+            .context("A quick viewer requires a document")?;
+        let mut vault = Vault::from_note_paths([rel.clone()]);
+        vault.root = intent.root.clone();
+        vault.single_file = true;
+        let document = if opts.use_html {
+            prepared_links::PreparedDocument {
+                source: tessera_core::render_html(&vault, &rel, "InspiredGitHub")?,
+                original: None,
+                identities: Vec::new(),
+                frontmatter: None,
+            }
+        } else {
+            let document = tessera_core::render::reader_document(&vault, &rel)?;
+            prepared_links::PreparedDocument {
+                source: document.rendered,
+                original: Some(document.original_body),
+                identities: document.links,
+                frontmatter: document.frontmatter,
+            }
+        };
+        return Ok(Event::First {
+            intent,
+            vault,
+            cache_lease: None,
+            searcher: None,
+            snapshot: None,
+            document: Some((rel, document)),
+            published: None,
+            recovery_notice: None,
+        });
+    }
     // Local derived data is prepared before preferences, recursive watching or
     // reconciliation. Publish it atomically with the first usable document.
     let candidate_root = if canonical_path.is_dir() {
@@ -1175,7 +1214,12 @@ impl Reader {
         }
         self.vault_root = pending.intent.root.clone();
         let opts = &self.loading.as_ref().unwrap().opts;
-        self.index_dir = reader_open::cache_path_for(&self.vault_root, opts).ok();
+        self.single_file = pending.intent.single_file;
+        self.index_dir = if self.single_file {
+            None
+        } else {
+            reader_open::cache_path_for(&self.vault_root, opts).ok()
+        };
         self.cache_lease = opts.cache_lease.clone();
         // No predecessor-root capability survives publication. Eligibility is
         // installed only by the matching background preference result.
@@ -1361,6 +1405,7 @@ impl Reader {
             while let Ok(SessionRecord {
                 root,
                 document,
+                single_file,
                 cache,
                 cache_lease,
                 diagnostics,
@@ -1373,15 +1418,9 @@ impl Reader {
                     .background_executor()
                     .spawn(async move {
                         let _cache_lease = cache_lease;
-                        let result = if document.is_empty() {
-                            crate::reader_history::ReadingHistory::record_empty_vault(
-                                &directory, &root,
-                            )
-                        } else {
-                            crate::reader_history::ReadingHistory::record_usable_document(
-                                &directory, &root, &document,
-                            )
-                        };
+                        let result = crate::reader_history::ReadingHistory::record_document_mode(
+                            &directory, &root, &document, single_file,
+                        );
                         if !document.is_empty() {
                             if let Some(base) = cache {
                                 let started = std::time::Instant::now();
@@ -1436,14 +1475,18 @@ impl Reader {
         }
         if let Some(send) = &self.session_records {
             // A pending candidate's options do not own the displayed document.
-            let cache = self
-                .index_dir
-                .clone()
-                .or_else(|| reader_open::cache_candidate_path(&identity.0).ok());
+            let cache = if self.single_file {
+                None
+            } else {
+                self.index_dir
+                    .clone()
+                    .or_else(|| reader_open::cache_candidate_path(&identity.0).ok())
+            };
             if send
                 .try_send(SessionRecord {
                     root: identity.0.clone(),
                     document: identity.1.clone(),
+                    single_file: self.single_file,
                     cache,
                     cache_lease: self.cache_lease.clone(),
                     diagnostics: self
@@ -1505,6 +1548,11 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.single_file {
+            self.load_quick_folder(String::new(), cx);
+            self.refresh_quick_document(window, cx);
+            return;
+        }
         self.invalidate_links();
         let opts = Opts {
             force_source_read,
@@ -1614,6 +1662,7 @@ impl Reader {
                         else {
                             unreachable!()
                         };
+                        opts.single_file = intent.single_file;
                         let root = intent.root.clone();
                         opts.cache_lease = cache_lease.clone();
                         if let Some(trace) = &opts.diagnostics {
@@ -1665,6 +1714,11 @@ impl Reader {
                             revision: panel_revision,
                         })
                         .map_err(|_| anyhow::anyhow!("Reader closed"))?;
+                    }
+                    if opts.single_file {
+                        let vault = quick_folder(&root, "", &[], &cancel)?;
+                        send.send_blocking(Event::Siblings(vault)).map_err(|_| anyhow::anyhow!("Reader closed"))?;
+                        return Ok(());
                     }
                     #[cfg(test)]
                     if let Some(hold) = &opts.preparation_hold {
@@ -1771,6 +1825,12 @@ impl Reader {
                                     use gpui_component::WindowExt;
                                     window.push_notification(notice, cx);
                                 }
+                            }
+                            Event::Siblings(vault) => {
+                                this.publish_quick_folder(vault, cx);
+                                this.refresh_quick_document(window, cx);
+                                this.loading.as_mut().unwrap().active = false;
+                                this.loading.as_mut().unwrap().phase = "Ready".into();
                             }
                             Event::Progress(phase) => {
                                 let load = this.loading.as_mut().unwrap();
@@ -2095,7 +2155,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_file_open_replaces_a_foreign_candidate_lease() {
+    fn quick_file_open_discards_a_foreign_candidate_lease() {
         let temp = TestDirectory::new();
         let a = temp.path().join("a");
         let b = temp.path().join("b");
@@ -2114,6 +2174,9 @@ mod tests {
         opts.cache_lease = Some(Arc::new(
             reader_cache::Lease::acquire(old_path.clone(), &a).unwrap(),
         ));
+        opts.cache_lease.as_ref().unwrap().mark_published().unwrap();
+        assert!(old_path.exists(), "published vault cache positive control");
+        let quick_cache = reader_open::cache_path_for(&b, &opts).unwrap();
         let Event::First {
             intent,
             cache_lease,
@@ -2123,10 +2186,11 @@ mod tests {
         else {
             unreachable!()
         };
-        let lease = cache_lease.unwrap();
+        assert!(cache_lease.is_none());
+        assert!(intent.single_file);
         assert_eq!(intent.root, b);
-        assert_eq!(lease.root, b);
-        assert_ne!(lease.path, old_path);
+        assert!(old_path.exists(), "existing published cache remains intact");
+        assert!(!quick_cache.exists(), "quick open never creates its cache");
     }
 
     #[gpui::test]
@@ -5233,5 +5297,412 @@ mod tests {
         assert_eq!(document.unwrap().0, "other.md");
         reader.update_in(visual, |v, _, _| assert_eq!(v.vault_root, root));
         std::fs::remove_dir_all(fixture).unwrap();
+    }
+}
+
+/// A directory is enumerated only after publication or an explicit expansion.
+/// No recursive scanner, source reads, watcher, index, or cache participates.
+fn quick_folder(
+    root: &Path,
+    folder: &str,
+    previous: &[tessera_core::vault::VaultEntry],
+    cancel: &Cancellation,
+) -> Result<Vault> {
+    use tessera_core::vault::{EntryKind, VaultEntry};
+    let directory = root.join(folder).canonicalize()?;
+    if !directory.starts_with(root) {
+        bail!("Folder is outside the quick viewer root");
+    }
+    let mut entries: Vec<_> = previous
+        .iter()
+        .filter(|entry| Path::new(&entry.path).parent() != Some(Path::new(folder)))
+        .cloned()
+        .collect();
+    let mut warnings = Vec::new();
+    for entry in std::fs::read_dir(directory)? {
+        cancel.check()?;
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        // Match the Reader inventory policy: do not follow symlink entries.
+        if kind.is_symlink() {
+            continue;
+        }
+        let entry_path = entry.path();
+        let Some(path) = entry_path.strip_prefix(root)?.to_str() else {
+            warnings.push(tessera_core::vault::UnreadableEntry {
+                path: entry_path,
+                operation: "list siblings",
+                error: "Filename is not valid UTF-8".into(),
+            });
+            continue;
+        };
+        let path = path.replace('\\', "/");
+        let kind = if kind.is_dir() {
+            EntryKind::Directory
+        } else if kind.is_file()
+            && entry
+                .path()
+                .extension()
+                .is_some_and(|s| s.eq_ignore_ascii_case("md"))
+        {
+            EntryKind::Markdown
+        } else if kind.is_file() {
+            EntryKind::Attachment
+        } else {
+            continue;
+        };
+        entries.push(VaultEntry { path, kind });
+    }
+    let mut vault = quick_vault(root, entries);
+    vault.inventory_complete = warnings.is_empty();
+    vault.unreadable = warnings;
+    Ok(vault)
+}
+
+fn quick_vault(root: &Path, mut entries: Vec<tessera_core::vault::VaultEntry>) -> Vault {
+    use tessera_core::vault::EntryKind;
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
+    let mut vault = Vault::from_note_paths(
+        entries
+            .iter()
+            .filter(|e| e.kind == EntryKind::Markdown)
+            .map(|e| e.path.clone()),
+    );
+    vault.root = root.to_owned();
+    vault.entries = entries;
+    // Complete within the explicitly browsed folders, never a vault-wide graph.
+    vault.inventory_complete = true;
+    vault.inventory_scanned = true;
+    vault.single_file = true;
+    vault
+}
+
+impl Reader {
+    fn refresh_quick_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let root = self.vault_root.clone();
+        let rel = self.current_rel.clone();
+        let navigation = self.navigation_generation;
+        cx.spawn_in(window, async move |this, cx| {
+            let path = root.join(&rel);
+            let source = cx
+                .background_executor()
+                .spawn(async move { std::fs::read_to_string(path) })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if !this.single_file
+                    || this.vault_root != root
+                    || this.navigation_generation != navigation
+                {
+                    return;
+                }
+                let sources = source
+                    .ok()
+                    .map(|source| (rel, source))
+                    .into_iter()
+                    .collect();
+                this.reconcile_inventory_document(&sources, window, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn publish_quick_folder(&mut self, vault: Vault, cx: &mut Context<Self>) {
+        self.vault = Arc::new(vault);
+        self.quick_open.inventory = Some(Arc::new(self.vault.notes.clone()));
+        self.sync_tree();
+        self.refresh_link_preparation(cx);
+        self.refresh_quick_open(cx);
+        cx.notify();
+    }
+
+    pub(crate) fn load_quick_folder(&mut self, folder: String, cx: &mut Context<Self>) {
+        let root = self.vault_root.clone();
+        let generation = self.loading.as_ref().map(|l| l.generation);
+        cx.spawn(async move |this, cx| {
+            let expected_root = root.clone();
+            let expected_folder = folder.clone();
+            let result = cx
+                .background_executor()
+                .spawn(async move { quick_folder(&root, &folder, &[], &Cancellation::default()) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if !this.single_file
+                    || this.vault_root != expected_root
+                    || this.loading.as_ref().map(|l| l.generation) != generation
+                {
+                    return;
+                }
+                match result {
+                    Ok(vault) => {
+                        let mut entries: Vec<_> = this
+                            .vault
+                            .entries
+                            .iter()
+                            .filter(|entry| {
+                                Path::new(&entry.path).parent() != Some(Path::new(&expected_folder))
+                            })
+                            .cloned()
+                            .collect();
+                        entries.extend(vault.entries);
+                        let mut updated = quick_vault(&expected_root, entries);
+                        updated.unreadable = this
+                            .vault
+                            .unreadable
+                            .iter()
+                            .filter(|warning| {
+                                warning.path.parent()
+                                    != Some(expected_root.join(&expected_folder).as_path())
+                            })
+                            .cloned()
+                            .collect();
+                        updated.unreadable.extend(vault.unreadable);
+                        updated.inventory_complete = updated.unreadable.is_empty();
+                        this.publish_quick_folder(updated, cx);
+                    }
+                    Err(error) => {
+                        this.link_notice = Some(format!("Cannot list folder: {error:#}"));
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+}
+
+#[cfg(test)]
+mod quick_view_tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+
+    #[test]
+    fn quick_first_has_no_cache_and_siblings_are_shallow() {
+        let directory =
+            std::env::temp_dir().join(format!("tessera-quick-{}", uuid::Uuid::new_v4()));
+        let root = directory.join("notes");
+        std::fs::create_dir_all(root.join("child")).unwrap();
+        std::fs::create_dir(root.join(".obsidian")).unwrap();
+        std::fs::write(
+            root.join("start.md"),
+            "# Start\n\n![image](picture.png)\n\n[[sibling]]",
+        )
+        .unwrap();
+        std::fs::write(root.join("sibling.md"), "# Sibling").unwrap();
+        std::fs::write(root.join("child/deep.md"), "# Deep").unwrap();
+        std::fs::write(root.join("picture.png"), b"image").unwrap();
+        let cache = directory.join("cache");
+        let opts = Opts {
+            open_path: Some(root.join("start.md")),
+            index_dir: Some(cache.clone()),
+            ..Default::default()
+        };
+        let Event::First {
+            intent,
+            vault,
+            document,
+            cache_lease,
+            snapshot,
+            searcher,
+            ..
+        } = prepare_first(&opts, &Cancellation::default()).unwrap()
+        else {
+            panic!("first document");
+        };
+        assert!(intent.single_file);
+        assert_eq!(
+            vault.notes.len(),
+            1,
+            "first publication never enumerates siblings"
+        );
+        assert!(document.unwrap().1.source.contains("Start"));
+        assert!(cache_lease.is_none() && snapshot.is_none() && searcher.is_none());
+        let siblings = quick_folder(&root, "", &[], &Cancellation::default()).unwrap();
+        assert!(siblings.entries.iter().any(|e| e.path == "child"));
+        assert!(siblings.entries.iter().any(|e| e.path == "picture.png"));
+        assert!(!siblings.entries.iter().any(|e| e.path == "child/deep.md"));
+        assert!(matches!(
+            siblings.resolve("sibling"),
+            tessera_core::vault::Resolution::Resolved { .. }
+        ));
+        assert!(matches!(
+            siblings.resolve_markdown("child/deep.md", "start.md"),
+            tessera_core::vault::Resolution::Resolved { .. }
+        ));
+        assert!(matches!(
+            siblings.resolve_markdown("/child/deep.md", "start.md"),
+            tessera_core::vault::Resolution::Resolved { .. }
+        ));
+        assert_eq!(
+            siblings.resolve_asset("picture.png", "start.md"),
+            Some(root.join("picture.png"))
+        );
+        let expanded =
+            quick_folder(&root, "child", &siblings.entries, &Cancellation::default()).unwrap();
+        assert!(expanded.entries.iter().any(|e| e.path == "child/deep.md"));
+        assert!(!cache.exists(), "neither quick phase writes an index");
+        let (send, _receive) = async_channel::unbounded();
+        let full = Opts {
+            vault: Some(root.clone()),
+            index_dir: Some(cache.clone()),
+            ..Default::default()
+        };
+        assert!(matches!(
+            prepare_rest(&root, &full, &Cancellation::default(), &send).unwrap(),
+            Event::Ready {
+                searcher: Some(_),
+                ..
+            }
+        ));
+        assert!(cache.exists(), "positive full-vault index creation control");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn quick_inventory_preserves_wikilink_ambiguity() {
+        use tessera_core::vault::{EntryKind, Resolution, VaultEntry};
+        let vault = quick_vault(
+            Path::new("/notes"),
+            ["one/same.md", "two/same.md"]
+                .into_iter()
+                .map(|path| VaultEntry {
+                    path: path.into(),
+                    kind: EntryKind::Markdown,
+                })
+                .collect(),
+        );
+        assert!(
+            matches!(vault.resolve("same"), Resolution::Ambiguous { candidates } if candidates.len() == 2)
+        );
+        assert!(
+            matches!(vault.resolve("one/same"), Resolution::Resolved { path } if path == "one/same.md")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn quick_siblings_keep_usable_entries_when_a_name_is_not_utf8() {
+        use std::os::unix::ffi::OsStringExt;
+        let root =
+            std::env::temp_dir().join(format!("tessera-quick-names-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("valid.md"), "# Valid").unwrap();
+        std::fs::write(
+            root.join(std::ffi::OsString::from_vec(b"invalid-\xff.md".to_vec())),
+            "# Other",
+        )
+        .unwrap();
+        let vault = quick_folder(&root, "", &[], &Cancellation::default()).unwrap();
+        assert_eq!(vault.notes.len(), 1);
+        assert_eq!(vault.notes[0].path, "valid.md");
+        assert_eq!(vault.unreadable.len(), 1);
+        assert!(!vault.inventory_complete);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[gpui::test]
+    fn quick_reader_navigation_refresh_and_upgrade(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let directory =
+            std::env::temp_dir().join(format!("tessera-quick-ui-{}", uuid::Uuid::new_v4()));
+        let root = directory.join("notes");
+        let cache = directory.join("index");
+        let state = directory.join("state");
+        std::fs::create_dir_all(root.join("child")).unwrap();
+        std::fs::write(root.join("start.md"), "# Start\n\n[[sibling]]").unwrap();
+        std::fs::write(root.join("sibling.md"), "# Sibling").unwrap();
+        std::fs::write(root.join("child/deep.md"), "# Deep").unwrap();
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        open_path: Some(root.join("start.md")),
+                        index_dir: Some(cache.clone()),
+                        session_directory: Some(state.clone()),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        visual.run_until_parked();
+        reader.update_in(visual, |reader, window, cx| {
+            assert!(reader.single_file && reader.document_ready());
+            assert!(
+                reader.index_dir.is_none() && reader.searcher.is_none() && reader.watcher.is_none()
+            );
+            assert!(reader.vault.entries.iter().any(|e| e.path == "child"));
+            assert!(!reader
+                .vault
+                .entries
+                .iter()
+                .any(|e| e.path == "child/deep.md"));
+            reader.open_note("sibling.md", None, window, cx);
+        });
+        visual.run_until_parked();
+        reader.update_in(visual, |reader, window, cx| {
+            assert_eq!(reader.current_rel, "sibling.md");
+            reader.refresh_inventory(Default::default(), window, cx);
+        });
+        visual.run_until_parked();
+        #[cfg(unix)]
+        {
+            reader.update_in(visual, |reader, window, cx| {
+                reader.toggle_source(window, cx)
+            });
+            visual.run_until_parked();
+            let input = reader.read_with(visual, |reader, _| {
+                reader.editing.as_ref().unwrap().test_input()
+            });
+            input.update_in(visual, |input, window, cx| {
+                input.replace_text_in_range(Some(0..0), "edited ", window, cx);
+            });
+            visual.run_until_parked();
+            reader.update_in(visual, |reader, _, cx| assert!(reader.save_source(cx)));
+            visual.run_until_parked();
+            assert_eq!(
+                std::fs::read_to_string(root.join("sibling.md")).unwrap(),
+                "edited # Sibling"
+            );
+        }
+        assert!(!cache.exists());
+        assert_eq!(
+            crate::reader_history::ReadingHistory::quick_document(&state, &root)
+                .unwrap()
+                .as_deref(),
+            Some("sibling.md")
+        );
+        reader.update_in(visual, |reader, window, cx| {
+            assert!(reader.single_file && reader.searcher.is_none());
+            reader.start_loading(
+                Opts {
+                    vault: Some(root.clone()),
+                    note: Some(reader.current_rel.clone()),
+                    index_dir: Some(cache.clone()),
+                    ..Default::default()
+                },
+                window,
+                cx,
+            );
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |reader, _| {
+            assert!(!reader.single_file);
+            assert!(reader.searcher.is_some());
+            assert_eq!(reader.current_rel, "sibling.md");
+        });
+        assert!(cache.exists());
+        assert_eq!(
+            crate::reader_history::ReadingHistory::quick_document(&state, &root).unwrap(),
+            None
+        );
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

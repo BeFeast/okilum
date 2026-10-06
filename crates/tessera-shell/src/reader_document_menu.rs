@@ -355,6 +355,7 @@ impl Reader {
             let _ = send.try_send(reader_loading::SessionRecord {
                 root: self.vault_root.clone(),
                 document: String::new(),
+                single_file: self.single_file,
                 cache: None,
                 cache_lease: None,
                 diagnostics: None,

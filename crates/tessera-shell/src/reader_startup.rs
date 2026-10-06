@@ -29,21 +29,30 @@ pub(crate) fn launch(mut opts: Opts, cx: &mut App) {
     let directory = opts.session_directory.clone();
     let diagnostics = opts.diagnostics.clone();
     cx.spawn(async move |cx| {
-        let history = cx
-            .background_executor()
-            .spawn(async move {
-                let _phase = diagnostics
-                    .as_ref()
-                    .map(|trace| trace.phase("startup_history_and_root_validation"));
-                let directory = directory
-                    .map(Ok)
-                    .unwrap_or_else(reader_history::state_directory)?;
-                let (last, roots) = reader_history::ReadingHistory::startup_roots(&directory)?;
-                let restore =
-                    last.map(|root| reader_open::OpenIntent::validate(&root, Some(&root), None));
-                Ok::<_, anyhow::Error>((directory, roots, restore))
-            })
-            .await;
+        let history =
+            cx.background_executor()
+                .spawn(async move {
+                    let _phase = diagnostics
+                        .as_ref()
+                        .map(|trace| trace.phase("startup_history_and_root_validation"));
+                    let directory = directory
+                        .map(Ok)
+                        .unwrap_or_else(reader_history::state_directory)?;
+                    let (last, roots) = reader_history::ReadingHistory::startup_roots(&directory)?;
+                    let restore = last.map(|root| {
+                        match reader_history::ReadingHistory::quick_document(&directory, &root)? {
+                            Some(note) if note.is_empty() => Err(anyhow::anyhow!(
+                                "The last quick viewer has no selected document"
+                            )),
+                            Some(note) => {
+                                reader_open::OpenIntent::validate(&root.join(note), None, None)
+                            }
+                            None => reader_open::OpenIntent::validate(&root, Some(&root), None),
+                        }
+                    });
+                    Ok::<_, anyhow::Error>((directory, roots, restore))
+                })
+                .await;
         cx.update(|cx| {
             if cx.global::<Startup>().superseded {
                 return;
@@ -52,11 +61,13 @@ pub(crate) fn launch(mut opts: Opts, cx: &mut App) {
                 Ok((directory, roots, restore)) => {
                     opts.session_directory = Some(directory);
                     match restore {
-                        Some(Ok(intent)) => (roots, Some(intent.root), None),
+                        Some(Ok(intent)) => (roots, Some(intent), None),
                         Some(Err(error)) => (
                             roots,
                             None,
-                            Some(format!("Cannot restore your last folder: {error:#}")),
+                            Some(format!(
+                                "Cannot restore your last Reader session: {error:#}"
+                            )),
                         ),
                         None => (roots, None, None),
                     }
@@ -64,12 +75,18 @@ pub(crate) fn launch(mut opts: Opts, cx: &mut App) {
                 Err(error) => (
                     Vec::new(),
                     None,
-                    Some(format!("Cannot restore your last folder: {error:#}")),
+                    Some(format!(
+                        "Cannot restore your last Reader session: {error:#}"
+                    )),
                 ),
             };
-            if let Some(root) = restore {
+            if let Some(intent) = restore {
                 // Folder intent revalidates the last document and falls back if it disappeared.
-                opts.vault = Some(root);
+                if intent.single_file {
+                    opts.open_path = intent.note.map(|note| intent.root.join(note));
+                } else {
+                    opts.vault = Some(intent.root);
+                }
                 if let Err(error) = reader_open::open_window(opts, cx) {
                     show_entry(
                         roots,

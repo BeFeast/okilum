@@ -16,6 +16,8 @@ mod connectors;
 mod desktop_app_menu;
 #[cfg(all(unix, feature = "brain"))]
 mod export;
+#[cfg(windows)]
+mod markdown_handler;
 mod platform;
 mod prepared_links;
 mod quick_open;
@@ -433,6 +435,7 @@ struct Opts {
     /// be a good way to index the wrong directory.
     vault: Option<PathBuf>,
     open_path: Option<PathBuf>,
+    single_file: bool,
     reusable_roots: Vec<PathBuf>,
     session_directory: Option<PathBuf>,
     exact_restore: bool,
@@ -1066,6 +1069,7 @@ fn markdown_plugins(
 }
 
 struct Reader {
+    single_file: bool,
     hover_preview: reader_hover::HoverPreview,
     file_preview: Option<reader_files::FilePreview>,
     file_menu: Option<(Entity<gpui_component::menu::PopupMenu>, Point<Pixels>)>,
@@ -1115,7 +1119,6 @@ struct Reader {
     incremental_cancel: Option<reader_loading::Cancellation>,
     #[cfg(test)]
     incremental_hold: Option<async_channel::Receiver<()>>,
-    #[cfg(unix)]
     reader_window: AnyWindowHandle,
     sidebar_search_focus: FocusHandle,
     quick_open: quick_open::Palette,
@@ -1324,7 +1327,7 @@ impl Reader {
             incremental_cancel: None,
             #[cfg(test)]
             incremental_hold: None,
-            #[cfg(unix)]
+            single_file: false,
             reader_window: window.window_handle(),
             sidebar_search_focus: cx.focus_handle(),
             quick_open,
@@ -2021,6 +2024,19 @@ impl Reader {
         if self.current_rel.is_empty() {
             return;
         }
+        if self.single_file
+            && self.vault.inventory_scanned
+            && !self
+                .vault
+                .notes
+                .iter()
+                .any(|note| note.path == self.current_rel)
+        {
+            let parent = Path::new(&self.current_rel)
+                .parent()
+                .unwrap_or(Path::new(""));
+            self.load_quick_folder(tessera_core::vault::note_path(parent), cx);
+        }
         self.load_sidebar_state();
         let rel = self.current_rel.clone();
         if self.sidebar.record_open(&rel, reader_sidebar::now()) {
@@ -2100,6 +2116,9 @@ impl Reader {
     /// Load this root's sidebar state and recompute Inbox when the published
     /// inventory changes. Birth times are read off the UI thread.
     fn sync_sidebar(&mut self, cx: &mut Context<Self>) {
+        if self.single_file {
+            return;
+        }
         self.load_sidebar_state();
         if self.tree.show_hidden() != self.sidebar.show_hidden {
             self.tree.set_show_hidden(self.sidebar.show_hidden);
@@ -2216,6 +2235,19 @@ impl Reader {
     /// Section rows; headers are mounted outside their content viewports (#434).
     fn sidebar_items(&self) -> Vec<SideItem> {
         use reader_sidebar::Section;
+        if self.single_file {
+            let mut items = vec![SideItem::Header(
+                Section::Folders,
+                Some(self.vault.entries.len()),
+            )];
+            if !self
+                .scroll_sections
+                .closed(Section::Folders, &self.sidebar.collapsed)
+            {
+                items.extend(self.tree.rows.iter().cloned().map(SideItem::Tree));
+            }
+            return items;
+        }
         let now = reader_sidebar::now();
         let open = |section| {
             !self
@@ -2339,7 +2371,7 @@ impl Reader {
                 .is_some_and(|source| source.root == self.vault.root);
             self.tree.refresh(&self.vault_root, &self.vault.entries);
             #[cfg(unix)]
-            {
+            if !self.single_file {
                 let folder = self
                     .creation_templates()
                     .map(|catalog| catalog.folder.to_string_lossy().into_owned())
@@ -2397,6 +2429,9 @@ impl Reader {
                 })
             {
                 self.tree.toggle(path);
+                if self.single_file {
+                    self.load_quick_folder(path.to_owned(), cx);
+                }
             }
             if let Some(ix) = self.tree.cursor_index() {
                 self.scroll_tree_to(ix);
@@ -2414,6 +2449,12 @@ impl Reader {
         {
             return;
         }
+        let lazy_folder =
+            if self.single_file && matches!(key, TreeKey::Right | TreeKey::ExpandSubtree) {
+                self.tree.cursor_folder()
+            } else {
+                None
+            };
         let tree = &mut self.tree;
         match key {
             TreeKey::Down => tree.step(1),
@@ -2433,6 +2474,9 @@ impl Reader {
                 }
             }
         }
+        if let Some(folder) = lazy_folder {
+            self.load_quick_folder(folder, cx);
+        }
         if let Some(ix) = self.tree.cursor_index() {
             self.scroll_tree_to(ix);
         }
@@ -2450,6 +2494,9 @@ impl Reader {
         let tree = &mut self.tree;
         tree.cursor = Some(path.to_owned());
         tree.set_subtree(path, expand);
+        if self.single_file && expand {
+            self.load_quick_folder(path.to_owned(), cx);
+        }
         self.tree_focus.focus(window, cx);
         cx.notify();
     }
@@ -2496,6 +2543,9 @@ impl Reader {
         match row.kind {
             EntryKind::Directory => {
                 tree.toggle(&row.path);
+                if self.single_file && !row.expanded {
+                    self.load_quick_folder(row.path.clone(), cx);
+                }
                 self.tree_focus.focus(window, cx);
             }
             EntryKind::Markdown => {
@@ -2619,6 +2669,24 @@ impl Reader {
                 header_controls()
                     .flex_shrink(1.)
                     .min_w_0()
+                    .when(self.single_file, |controls| {
+                        controls.child(
+                            Button::new("open-folder-as-vault")
+                                .label("Open folder as vault")
+                                .small()
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.start_loading(
+                                        Opts {
+                                            vault: Some(this.vault_root.clone()),
+                                            note: Some(this.current_rel.clone()),
+                                            ..Default::default()
+                                        },
+                                        window,
+                                        cx,
+                                    );
+                                })),
+                        )
+                    })
                     .child(self.render_loading(cx))
                     .child(
                         reader_icon_button("reader-find", IconName::Search, FIND_TOOLTIP, cx)
@@ -5647,7 +5715,11 @@ OPTIONS:
 
 fn main() {
     #[cfg(windows)]
-    velopack::VelopackApp::build().run();
+    velopack::VelopackApp::build()
+        .on_after_install_fast_callback(|_| markdown_handler::install())
+        .on_after_update_fast_callback(|_| markdown_handler::install())
+        .on_before_uninstall_fast_callback(|_| markdown_handler::uninstall())
+        .run();
     let process_start = std::time::Instant::now();
     // Before any thread exists (see `init_local_offset`).
     reader_properties::init_local_offset();
