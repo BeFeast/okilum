@@ -24,3 +24,12 @@
 #forgejo-list details { margin:16px 0; padding:12px; border:1px solid var(--line); border-radius:8px; overflow-wrap:anywhere; }
 #forgejo-list summary { cursor:pointer; font-weight:600; }
 #forgejo-list details > a { display:block; margin:8px 0; }
+#project-panel input,#project-panel select { width:100%; padding:12px; font:inherit; border:1px solid var(--line); border-radius:8px; background:var(--surface); color:inherit; min-width:0; }
+#project-form,#result-form { display:grid; gap:12px; margin:18px 0; }
+#project-panel label { margin-bottom:0; }
+.project-grid { display:grid; grid-template-columns:1fr 1fr; gap:24px; }
+#project-panel details,.project-result { padding:14px; border:1px solid var(--line); border-radius:10px; margin:12px 0; overflow-wrap:anywhere; }
+#project-panel summary { cursor:pointer; font-weight:600; }
+#project-panel pre { white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; line-height:1.5; max-height:420px; overflow:auto; }
+#project-panel p { overflow-wrap:anywhere; }
+@media(max-width:760px){.project-grid{grid-template-columns:1fr}}

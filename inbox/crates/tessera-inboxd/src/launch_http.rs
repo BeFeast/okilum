@@ -27,6 +27,7 @@ pub(crate) fn browser() -> Router<Shared> {
 pub(crate) fn machine() -> Router<BridgeState> {
     Router::new()
         .route("/api/bridge/v1/launches", get(machine_list))
+        .route("/api/bridge/v1/launches/{id}/output", post(machine_output))
         .route(
             "/api/bridge/v1/launches/{id}",
             get(machine_get).post(advance),
@@ -201,6 +202,27 @@ async fn advance(
         Ok(Json(
             auth.store
                 .advance_execution_launch(OwnerId(scope.owner_id), id, &p)?,
+        )
+        .into_response())
+    })
+    .await
+}
+
+async fn machine_output(
+    State(state): State<BridgeState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(body): Json<crate::results::Output>,
+) -> Result<Response, ApiError> {
+    let scope = state.bridge.authenticate(&headers, "launches")?;
+    blocking(state.auth, move |auth| {
+        scoped(
+            auth.store.execution_launch(OwnerId(scope.owner_id), id)?,
+            &state.bridge,
+        )?;
+        Ok(Json(
+            auth.store
+                .record_execution_output(OwnerId(scope.owner_id), id, &body)?,
         )
         .into_response())
     })

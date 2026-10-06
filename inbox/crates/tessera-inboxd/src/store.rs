@@ -6,7 +6,7 @@ use tessera_inbox_domain::{
 };
 use uuid::Uuid;
 
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 10;
 const SCHEMA: &str = "
 CREATE TABLE captures (
     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -96,7 +96,7 @@ impl Store {
                 }
                 tx.execute_batch(SCHEMA)?;
             }
-            1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | SCHEMA_VERSION => {}
+            1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | SCHEMA_VERSION => {}
             _ => return Err(Error::UnsupportedDatabase),
         }
         if version < 2 {
@@ -131,6 +131,9 @@ impl Store {
         }
         if version < 9 {
             tx.execute_batch(crate::launch::SCHEMA)?;
+        }
+        if version < 10 {
+            tx.execute_batch(crate::results::SCHEMA)?;
         }
         tx.commit()?;
         connection.pragma_update(None, "journal_mode", "WAL")?;

@@ -299,6 +299,98 @@ async fn real_webauthn_session_capture_restart_login_and_lost_response_replay() 
         .1,
         launched
     );
+
+    {
+        use tessera_inboxd::launch::{Progress, State};
+        let mut store = Store::open(&path).unwrap();
+        let id = Uuid::parse_str(launch["operation_id"].as_str().unwrap()).unwrap();
+        store
+            .advance_execution_launch(
+                owner,
+                id,
+                &Progress {
+                    expected: State::Queued,
+                    next: State::Uncertain,
+                    run_id: None,
+                    worktree_path: None,
+                    error_code: None,
+                },
+            )
+            .unwrap();
+        store
+            .advance_execution_launch(
+                owner,
+                id,
+                &Progress {
+                    expected: State::Uncertain,
+                    next: State::Completed,
+                    run_id: Some("test-run".into()),
+                    worktree_path: None,
+                    error_code: None,
+                },
+            )
+            .unwrap();
+    }
+    let report = json!({"operation_id":Uuid::new_v4(),"project_id":source_project,"launch_id":launch["operation_id"],"run_id":"test-run","commit":"b".repeat(40),"platform":"web","channel":"QA","version":"1","publication":"published","url":"https://inbox-qa.example.test/","what_to_check":"Check fixture"});
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/v1/results",
+            report.clone(),
+            Some(&session),
+            Some("https://foreign.example")
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/v1/results",
+            report.clone(),
+            None,
+            Some(ORIGIN)
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (reported, result, _) = call(
+        &app,
+        "POST",
+        "/api/v1/results",
+        report.clone(),
+        Some(&session),
+        Some(ORIGIN),
+    )
+    .await;
+    assert_eq!(reported, StatusCode::OK);
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/v1/results",
+            report,
+            Some(&session),
+            Some(ORIGIN)
+        )
+        .await
+        .1,
+        result
+    );
+    let (_, results, _) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/projects/{source_project}/results"),
+        Value::Null,
+        Some(&session),
+        None,
+    )
+    .await;
+    assert_eq!(results["results"].as_array().unwrap().len(), 1);
     let mut duplicate = launch.clone();
     duplicate["operation_id"] = json!(Uuid::new_v4());
     assert_eq!(

@@ -1,3 +1,19 @@
+export function repositoryCards(data) {
+  const el=(tag,text)=>{const n=document.createElement(tag);n.textContent=text;return n;};
+  const link=(label,url,instance)=>{const a=el('a',label),safe=sourceURL(url,instance);if(safe){a.href=safe;a.target='_blank';a.rel='noopener noreferrer';}return a;};
+  return data.repos.map(repo=>{
+        const card=el('details',''),summary=el('summary',`${repo.name} · ${repo.issues.length} issues · ${repo.pulls.length} PRs`);card.append(summary,el('p',freshness(repo)),link('Open repository',repo.url,data.instance));
+        const disabled=Object.entries(repo.units??{}).filter(([,enabled])=>enabled===false).map(([unit])=>unit.replaceAll('_',' '));if(disabled.length)card.append(el('p',`Disabled in Forgejo: ${disabled.join(', ')}`));
+        for(const issue of repo.issues){const p=el('p','');p.append(link(`#${issue.number} ${issue.title}`,issue.url,data.instance),el('span',` · assignees: ${issue.assignees.join(', ')||'none'}`));card.append(p);}
+        for(const pr of repo.pulls){const p=el('p','');p.append(link(`PR #${pr.number} ${pr.title}`,pr.url,data.instance),el('span',` · head ${pr.head_commit.slice(0,12)} · assignees: ${pr.assignees.join(', ')||'none'}`));card.append(p);
+          // Status endpoints may contain multiple attempts: show each with time, never flatten to an invented pass.
+          for(const c of pr.checks)card.append(el('p',`${c.context}: ${c.state} · ${c.updated_at}`));
+        }
+        for(const release of repo.releases){const p=el('p','');p.append(link(`${release.prerelease?'Pre-release':'Release'} ${release.tag}`,release.url,data.instance),el('span',` · ${release.published_at}`));card.append(p);for(const a of release.assets)card.append(link(a.name,a.url,data.instance));}
+        for(const run of (data.execution_links??[]).filter(r=>r.repo_id===repo.id))card.append(el('p',`Linked executor: ${run.state} · thread ${run.thread_id} · base ${run.base_commit.slice(0,12)} (not current HEAD)`));
+        return card;
+      });
+}
 // Forgejo is the source of truth. This panel has no mutation or dispatch actions.
 export function freshness(row) {
   const time=row.synced_at ?? row.discovered_at;
@@ -33,18 +49,7 @@ export function mountForgejo({api,owner}) {
       $('forgejo-panel').hidden=!data.enabled;
       if(!data.enabled)return;
       $('forgejo-status').textContent=`${data.instance} · ${data.account_login??'Account not verified'} · ${freshness(data)}. Open issues and PRs; published releases. Assignees are not executor status.`;
-      const nodes=data.repos.map(repo=>{
-        const card=el('details',''),summary=el('summary',`${repo.name} · ${repo.issues.length} issues · ${repo.pulls.length} PRs`);card.append(summary,el('p',freshness(repo)),link('Open repository',repo.url,data.instance));
-        const disabled=Object.entries(repo.units??{}).filter(([,enabled])=>enabled===false).map(([unit])=>unit.replaceAll('_',' '));if(disabled.length)card.append(el('p',`Disabled in Forgejo: ${disabled.join(', ')}`));
-        for(const issue of repo.issues){const p=el('p','');p.append(link(`#${issue.number} ${issue.title}`,issue.url,data.instance),el('span',` · assignees: ${issue.assignees.join(', ')||'none'}`));card.append(p);}
-        for(const pr of repo.pulls){const p=el('p','');p.append(link(`PR #${pr.number} ${pr.title}`,pr.url,data.instance),el('span',` · head ${pr.head_commit.slice(0,12)} · assignees: ${pr.assignees.join(', ')||'none'}`));card.append(p);
-          // Status endpoints may contain multiple attempts: show each with time, never flatten to an invented pass.
-          for(const c of pr.checks)card.append(el('p',`${c.context}: ${c.state} · ${c.updated_at}`));
-        }
-        for(const release of repo.releases){const p=el('p','');p.append(link(`${release.prerelease?'Pre-release':'Release'} ${release.tag}`,release.url,data.instance),el('span',` · ${release.published_at}`));card.append(p);for(const a of release.assets)card.append(link(a.name,a.url,data.instance));}
-        for(const run of (data.execution_links??[]).filter(r=>r.repo_id===repo.id))card.append(el('p',`Linked executor: ${run.state} · thread ${run.thread_id} · base ${run.base_commit.slice(0,12)} (not current HEAD)`));
-        return card;
-      });
+      const nodes=repositoryCards(data);
       $('forgejo-list').replaceChildren(...nodes);
       if(!nodes.length)$('forgejo-list').append(el('p',project?'No repositories are explicitly linked to this project.':'No repository observations available.'));
     }catch(error){if(e===epoch&&mine===owner()){$('forgejo-panel').hidden=false;$('forgejo-status').textContent=`Unavailable: ${error.message}. Previously shown observations may be stale.`;}}

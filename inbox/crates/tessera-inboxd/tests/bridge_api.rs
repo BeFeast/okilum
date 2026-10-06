@@ -625,11 +625,60 @@ async fn launch_transport_requires_separate_scope_and_preserves_source_identity(
         .0,
         StatusCode::CONFLICT
     );
+    let output_path = format!("{path}/output");
+    let output = json!({"run_id":"completed-run","message_id":"final","text":"PILOT_READY"});
+    assert_eq!(
+        call(&app, "POST", &output_path, output.clone(), None, None)
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        call(&app, "POST", &output_path, output.clone(), Some(KEY), None)
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &path,
+            json!({"expected":"uncertain","next":"completed","run_id":"completed-run"}),
+            Some(KEY),
+            None
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    for _ in 0..2 {
+        assert_eq!(
+            call(&app, "POST", &output_path, output.clone(), Some(KEY), None)
+                .await
+                .0,
+            StatusCode::OK
+        );
+    }
+    let mut changed = output.clone();
+    changed["text"] = json!("different");
+    assert_eq!(
+        call(&app, "POST", &output_path, changed, Some(KEY), None)
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
     config["scope"]["instance_id"] = json!("replacement-source");
     std::fs::write(&cred, serde_json::to_vec(&config).unwrap()).unwrap();
     let app = f.app(true);
     assert_eq!(
         call(&app, "GET", &path, Value::Null, Some(KEY), None)
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(&app, "POST", &output_path, output, Some(KEY), None)
             .await
             .0,
         StatusCode::NOT_FOUND
