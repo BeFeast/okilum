@@ -1393,6 +1393,7 @@ impl Reader {
             self.move_index = None;
         }
         self.watcher = None;
+        self.watcher_poll_active = false;
         self.watcher_generation = self.watcher_generation.wrapping_add(1);
         self.deferred_vault_changes = Default::default();
         if !preserve_document {
@@ -1422,6 +1423,9 @@ impl Reader {
             );
         }
         self.restore_ui_state(window, cx);
+        if let Some(note) = self.queued_open_note.take() {
+            self.open_note(&note, None, window, cx);
+        }
         self.refresh_quick_open(cx);
         if let Some(trace) = &self.loading.as_ref().unwrap().opts.diagnostics {
             trace.event("document_published", serde_json::json!({ "notes": self.vault.notes.len(), "warm": warm, "unreadable": self.vault.unreadable.len() }));
@@ -1686,6 +1690,10 @@ impl Reader {
         }
         self.file_preview = None;
         self.file_menu = None;
+        if opts.vault.as_ref() != Some(&self.vault_root) || opts.open_path.is_some() {
+            self.shared_session = None;
+            self.shared_version = 0;
+        }
         self.start_preparation(opts, None, window, cx);
     }
 
@@ -1695,10 +1703,19 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.shared_session.is_some() {
+            self.deferred_vault_changes.rescan = true;
+            self.deferred_vault_changes.changed.extend(changes.changed);
+            self.deferred_vault_changes.removed.extend(changes.removed);
+            self.deferred_vault_changes
+                .directories
+                .extend(changes.directories);
+            return;
+        }
         self.refresh_inventory_with_read(changes, false, window, cx);
     }
 
-    fn refresh_inventory_with_read(
+    pub(crate) fn refresh_inventory_with_read(
         &mut self,
         changes: tessera_core::Changes,
         force_source_read: bool,
@@ -2058,6 +2075,7 @@ impl Reader {
                                             this.incremental_initializing = false;
                                             #[cfg(unix)]
                                             { this.move_index = candidates; }
+                                            this.publish_shared_ready();
                                             #[cfg(not(unix))]
                                             let _ = candidates;
                                             cx.notify();

@@ -396,7 +396,7 @@ fn reusable_roots(cx: &App) -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
-actions!(reader_open, [OpenFile, OpenFolder]);
+actions!(reader_open, [OpenFile, OpenFolder, NewWindow]);
 
 pub(crate) fn install(cx: &mut App) {
     cx.set_global(Readers::default());
@@ -409,6 +409,11 @@ pub(crate) fn install(cx: &mut App) {
         KeyBinding::new(file_key, OpenFile, None),
         KeyBinding::new(folder_key, OpenFolder, None),
     ]);
+    #[cfg(target_os = "macos")]
+    cx.bind_keys([KeyBinding::new("cmd-shift-n", NewWindow, None)]);
+    #[cfg(not(target_os = "macos"))]
+    cx.bind_keys([KeyBinding::new("ctrl-shift-n", NewWindow, None)]);
+    cx.on_action(|_: &NewWindow, cx| new_window(cx));
     cx.on_action(|_: &OpenFile, cx| pick(false, cx));
     cx.on_action(|_: &OpenFolder, cx| pick(true, cx));
 }
@@ -420,6 +425,7 @@ pub(crate) fn file_menu() -> Menu {
         items: vec![
             MenuItem::action("Open Markdown File…", OpenFile),
             MenuItem::action("Open Folder…", OpenFolder),
+            MenuItem::action("New Window", NewWindow),
         ],
     }
 }
@@ -528,50 +534,6 @@ pub(crate) fn dispatch_urls(urls: Vec<String>, cx: &mut App) {
 
 fn dispatch_path(path: &Path, cx: &mut App) {
     super::reader_startup::supersede(cx);
-    // Canonicalization is deliberately off the UI thread, including network paths.
-    let path = path.to_owned();
-    cx.spawn(async move |cx| {
-        let (canonical, is_file) = cx
-            .background_executor()
-            .spawn(async move {
-                let canonical = path.canonicalize().unwrap_or(path);
-                let is_file = canonical.is_file();
-                (canonical, is_file)
-            })
-            .await;
-        cx.update(|cx| dispatch_canonical_path(&canonical, is_file, cx));
-    })
-    .detach();
-}
-
-fn dispatch_canonical_path(path: &Path, is_file: bool, cx: &mut App) {
-    let existing = cx.try_global::<Readers>().and_then(|readers| {
-        readers.0.iter().rev().find_map(|(weak, root)| {
-            let reader = weak.upgrade()?;
-            let state = reader.read(cx);
-            if !is_file
-                || !path
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
-                || state.single_file
-                || !path.starts_with(root)
-            {
-                return None;
-            }
-            let relative = path.strip_prefix(root).ok()?;
-            relative.to_str()?;
-            let rel = tessera_core::vault::note_path(relative);
-            Some((reader.clone(), state.reader_window, rel))
-        })
-    });
-    if let Some((reader, window, rel)) = existing {
-        let _ = window.update(cx, |_, window, cx| {
-            reader.update(cx, |reader, cx| reader.open_note(&rel, None, window, cx));
-            window.activate_window();
-        });
-        cx.activate(true);
-        return;
-    }
     let opts = super::Opts {
         open_path: Some(path.to_path_buf()),
         reusable_roots: reusable_roots(cx),
@@ -582,7 +544,112 @@ fn dispatch_canonical_path(path: &Path, is_file: bool, cx: &mut App) {
     }
 }
 
-pub(crate) fn open_window(opts: super::Opts, cx: &mut App) -> Result<()> {
+/// Resolve aliases away from the UI thread, then choose or reserve the window
+/// in one UI transaction. A window is registered before preparation starts so
+/// simultaneous OS deliveries cannot create duplicate vault readers.
+pub(crate) fn open_window(mut opts: super::Opts, cx: &mut App) -> Result<()> {
+    if opts.reusable_roots.is_empty() {
+        opts.reusable_roots = reusable_roots(cx);
+    }
+    cx.spawn(async move |cx| {
+        let resolved = cx
+            .background_executor()
+            .spawn(async move {
+                let path = opts
+                    .open_path
+                    .clone()
+                    .or_else(|| {
+                        opts.vault.as_ref().map(|root| {
+                            opts.note
+                                .as_ref()
+                                .map_or_else(|| root.clone(), |note| root.join(note))
+                        })
+                    })
+                    .context("No file or vault was requested")?;
+                let path = path.canonicalize().context("Resolve requested path")?;
+                let intent = OpenIntent::validate_cached(
+                    &path,
+                    opts.vault.as_deref(),
+                    opts.reusable_roots
+                        .iter()
+                        .find(|root| path.starts_with(root))
+                        .map(PathBuf::as_path),
+                )?;
+                opts.vault = Some(intent.root.clone());
+                opts.single_file |= intent.single_file;
+                if intent.note.is_some() {
+                    opts.note = intent.note;
+                }
+                opts.open_path = None;
+                Ok::<_, anyhow::Error>(opts)
+            })
+            .await;
+        cx.update(|cx| match resolved {
+            Ok(opts) => {
+                if !focus_existing(&opts, cx) {
+                    if let Err(error) = create_window(opts, None, cx) {
+                        show_error(format!("{error:#}"), cx);
+                    }
+                }
+            }
+            Err(error) => show_error(format!("{error:#}"), cx),
+        });
+    })
+    .detach();
+    Ok(())
+}
+
+fn focus_existing(opts: &super::Opts, cx: &mut App) -> bool {
+    let existing = cx.try_global::<Readers>().and_then(|readers| {
+        readers.0.iter().rev().find_map(|(weak, root)| {
+            let reader = weak.upgrade()?;
+            let state = reader.read(cx);
+            if state.single_file || !cx.windows().contains(&state.reader_window) {
+                return None;
+            }
+            let note = if opts.single_file {
+                let path = opts.vault.as_ref()?.join(opts.note.as_ref()?);
+                let relative = path.strip_prefix(root).ok()?;
+                Some(tessera_core::vault::note_path(relative))
+            } else {
+                if opts.vault.as_ref() != Some(root) {
+                    return None;
+                }
+                opts.note.clone()
+            };
+            Some((reader.clone(), state.reader_window, note))
+        })
+    });
+    let Some((reader, handle, note)) = existing else {
+        return false;
+    };
+    if handle
+        .update(cx, |_, window, cx| {
+            if let Some(note) = &note {
+                reader.update(cx, |reader, cx| {
+                    if reader.document_ready() {
+                        reader.open_note(note, None, window, cx);
+                    } else {
+                        reader.queued_open_note = Some(note.clone());
+                    }
+                });
+            }
+            window.activate_window();
+        })
+        .is_err()
+    {
+        return false;
+    }
+    super::reader_startup::supersede(cx);
+    cx.activate(true);
+    true
+}
+
+fn create_window(
+    opts: super::Opts,
+    shared: Option<super::reader_session::Shared>,
+    cx: &mut App,
+) -> Result<()> {
     let _phase = super::reader_diagnostics::phase(cx, "native_window_open");
     let _key_phase = super::reader_diagnostics::phase(cx, "window_key_and_geometry");
     let key = super::window_state::reader_key(&opts);
@@ -598,7 +665,20 @@ pub(crate) fn open_window(opts: super::Opts, cx: &mut App) -> Result<()> {
             })
             .detach();
         window.set_window_title("Tessera — Opening document");
+        let selected = opts.note.clone().unwrap_or_default();
+        let root_path = opts.vault.clone();
+        let full_vault = !opts.single_file;
         let reader = cx.new(|cx| super::Reader::new(opts, window, cx));
+        if full_vault {
+            if let Some(root) = root_path {
+                register(reader.downgrade(), root, cx);
+            }
+        }
+        if let Some(session) = shared {
+            reader.update(cx, |reader, cx| {
+                reader.attach_session(session, selected, window, cx)
+            });
+        }
         let weak = reader.downgrade();
         window.on_window_should_close(cx, move |window, cx| {
             super::window_state::record_window(window, cx);
@@ -619,6 +699,57 @@ pub(crate) fn open_window(opts: super::Opts, cx: &mut App) -> Result<()> {
     super::reader_startup::supersede(cx);
     cx.activate(true);
     Ok(())
+}
+
+fn new_window(cx: &mut App) {
+    let active = cx.active_window();
+    let source = cx.try_global::<Readers>().and_then(|readers| {
+        readers.0.iter().rev().find_map(|(weak, _)| {
+            let reader = weak.upgrade()?;
+            (Some(reader.read(cx).reader_window) == active && !reader.read(cx).single_file)
+                .then_some(weak.clone())
+        })
+    });
+    let Some(source) = source else {
+        return;
+    };
+    cx.spawn(async move |cx| loop {
+        let outcome = source.update(cx, |reader, _| {
+            let opts = super::Opts {
+                vault: Some(reader.vault_root.clone()),
+                note: Some(reader.current_rel.clone()),
+                session_directory: reader.session_directory.clone(),
+                use_html: reader.use_html,
+                defer_loading: true,
+                ..Default::default()
+            };
+            let failed = reader
+                .loading
+                .as_ref()
+                .is_some_and(|load| !load.active && !load.published);
+            (
+                reader.share_session().map(|session| (opts, session)),
+                failed,
+            )
+        });
+        match outcome {
+            Ok((Some((opts, session)), _)) => {
+                cx.update(|cx| {
+                    if let Err(error) = create_window(opts, Some(session), cx) {
+                        show_error(format!("{error:#}"), cx);
+                    }
+                });
+                break;
+            }
+            Err(_) | Ok((None, true)) => break,
+            Ok((None, false)) => {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(100))
+                    .await
+            }
+        }
+    })
+    .detach();
 }
 
 pub(crate) fn window_options(cx: &App) -> WindowOptions {
@@ -978,6 +1109,146 @@ mod entry_tests {
     }
 
     #[gpui::test]
+    fn vault_opens_coalesce_while_preparing_and_explicit_windows_share_resources(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        let other = fixture.path().join("other");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(root.join("a.md"), "# Alpha\n").unwrap();
+        std::fs::write(root.join("b.md"), "# Bravo\n").unwrap();
+        std::fs::write(other.join("a.md"), "# Other\n").unwrap();
+        let root = root.canonicalize().unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            install(cx);
+            let opts = super::super::Opts {
+                vault: Some(root.clone()),
+                note: Some("a.md".into()),
+                index_dir: Some(fixture.path().join("index")),
+                ..Default::default()
+            };
+            // Both requests arrive before the first background preparation.
+            open_window(opts.clone(), cx).unwrap();
+            open_window(opts, cx).unwrap();
+        });
+        cx.run_until_parked();
+        let first = cx.update(|cx| {
+            assert_eq!(cx.windows().len(), 1);
+            let first = cx.global::<Readers>().0[0].0.upgrade().unwrap();
+            assert!(
+                first.read(cx).searcher.is_some(),
+                "full-vault positive control"
+            );
+            first
+        });
+        #[cfg(unix)]
+        {
+            let alias = fixture.path().join("alias");
+            std::os::unix::fs::symlink(&root, &alias).unwrap();
+            cx.update(|cx| dispatch_path(&alias, cx));
+            cx.run_until_parked();
+            assert_eq!(cx.windows().len(), 1, "symlink is the same vault");
+        }
+        cx.update(|cx| {
+            let handle = first.read(cx).reader_window;
+            handle
+                .update(cx, |_, window, _| window.activate_window())
+                .unwrap();
+            new_window(cx);
+        });
+        cx.run_until_parked();
+        let second = cx.update(|cx| {
+            assert_eq!(cx.windows().len(), 2, "explicit New Window bypasses reuse");
+            let second = cx
+                .global::<Readers>()
+                .0
+                .last()
+                .unwrap()
+                .0
+                .upgrade()
+                .unwrap();
+            assert_ne!(first.entity_id(), second.entity_id());
+            assert!(std::sync::Arc::ptr_eq(
+                first.read(cx).shared_session.as_ref().unwrap(),
+                second.read(cx).shared_session.as_ref().unwrap()
+            ));
+            assert!(std::sync::Arc::ptr_eq(
+                first.read(cx).searcher.as_ref().unwrap(),
+                second.read(cx).searcher.as_ref().unwrap()
+            ));
+            let handle = second.read(cx).reader_window;
+            handle
+                .update(cx, |_, window, cx| {
+                    second.update(cx, |reader, cx| reader.open_note("b.md", None, window, cx))
+                })
+                .unwrap();
+            second
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert_eq!(first.read(cx).current_rel, "a.md");
+            assert_eq!(second.read(cx).current_rel, "b.md");
+            let handle = first.read(cx).reader_window;
+            handle
+                .update(cx, |_, window, _| window.remove_window())
+                .unwrap();
+        });
+        std::fs::write(root.join("b.md"), "# Changed after first window closed\n").unwrap();
+        cx.update(|cx| {
+            let handle = second.read(cx).reader_window;
+            handle
+                .update(cx, |_, window, cx| {
+                    second.update(cx, |reader, cx| {
+                        reader.apply_vault_changes(
+                            tessera_core::Changes {
+                                changed: ["b.md".to_string()].into(),
+                                ..Default::default()
+                            },
+                            window,
+                            cx,
+                        );
+                    })
+                })
+                .unwrap();
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let handle = second.read(cx).reader_window;
+            handle
+                .update(cx, |_, window, cx| {
+                    second.update(cx, |reader, cx| reader.poll_vault(window, cx))
+                })
+                .unwrap();
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert!(second
+                .read(cx)
+                .note_source
+                .contains("Changed after first window closed"));
+            dispatch_path(&root, cx);
+            open_window(
+                super::super::Opts {
+                    vault: Some(other),
+                    index_dir: Some(fixture.path().join("other-index")),
+                    ..Default::default()
+                },
+                cx,
+            )
+            .unwrap();
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            cx.windows().len(),
+            2,
+            "existing vault focuses survivor; another vault opens independently"
+        );
+    }
+
+    #[gpui::test]
     fn cold_and_warm_delivery_preserve_existing_reader(cx: &mut TestAppContext) {
         let root =
             std::env::temp_dir().join(format!("tessera-327-events-{}", uuid::Uuid::new_v4()));
@@ -1080,7 +1351,7 @@ mod entry_tests {
         cx.update(|cx| {
             assert_eq!(
                 cx.global::<Readers>().0.len(),
-                2,
+                1,
                 "refusal must not open a namesake"
             )
         });
