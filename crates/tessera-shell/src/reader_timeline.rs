@@ -3,7 +3,6 @@ use super::*;
 use gpui_component::{
     input::{Editor, EditorState},
     notification::Notification,
-    WindowExt,
 };
 use tessera_core::source_history::{self, Version};
 
@@ -690,6 +689,7 @@ impl Reader {
 
 #[cfg(test)]
 mod tests {
+    use gpui_component::WindowExt;
     use super::*;
     use ::core::prelude::v1::test;
 
