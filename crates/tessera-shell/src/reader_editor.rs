@@ -174,9 +174,12 @@ impl Reader {
                     }
                     Err(error) => {
                         this.recovery_error = true;
-                        this.link_notice = Some(format!(
+                        this.link_notice = Some(
+                            format!(
                         "Could not check saved drafts: {error:#}. Draft files have been preserved."
-                    ))
+                    )
+                            .into(),
+                        )
                     }
                 }
                 cx.notify();
@@ -236,7 +239,7 @@ impl Reader {
         let store = match result {
             Ok(store) => store,
             Err(error) => {
-                self.link_notice = Some(format!("Cannot edit: {error:#}"));
+                self.link_notice = Some(format!("Cannot edit: {error:#}").into());
                 cx.notify();
                 return;
             }
@@ -286,7 +289,7 @@ impl Reader {
                     editing.protecting = false;
                     if let Err(error) = result {
                         editing.save_failed = true;
-                        this.link_notice = Some(format!("Draft recovery could not be saved: {error:#}. Keep this window open and retry Save or copy your draft."));
+                        this.link_notice = Some(format!("Draft recovery could not be saved: {error:#}. Keep this window open and retry Save or copy your draft.").into());
                     }
                     cx.notify();
                 });
@@ -453,9 +456,10 @@ impl Reader {
         if editing.store.text() != text {
             if let Err(error) = editing.store.set_text(text.clone()) {
                 editing.save_failed = true;
-                self.link_notice = Some(format!(
-                    "Could not protect your edits: {error:#}. Your draft remains open."
-                ));
+                self.link_notice = Some(
+                    format!("Could not protect your edits: {error:#}. Your draft remains open.")
+                        .into(),
+                );
                 cx.notify();
                 return;
             }
@@ -482,9 +486,12 @@ impl Reader {
                 }
             }
             Err(error) => {
-                self.link_notice = Some(format!(
-                    "Could not read the changed file: {error:#}. Your edits are still here."
-                ));
+                self.link_notice = Some(
+                    format!(
+                        "Could not read the changed file: {error:#}. Your edits are still here."
+                    )
+                    .into(),
+                );
             }
         }
         cx.notify();
@@ -537,7 +544,7 @@ impl Reader {
             Err(error) => {
                 editing.save_failed = true;
                 self.link_notice =
-                    Some(format!("Save failed: {error:#}. Your draft remains open."));
+                    Some(format!("Save failed: {error:#}. Your draft remains open.").into());
                 cx.notify();
                 false
             }
@@ -597,7 +604,7 @@ impl Reader {
             }
             Err(error) => {
                 editing.save_failed = true;
-                self.link_notice = Some(format!("Could not resolve: {error:#}"));
+                self.link_notice = Some(format!("Could not resolve: {error:#}").into());
             }
         }
         self.editing = Some(editing);
@@ -619,9 +626,10 @@ impl Reader {
                 self.focus_handle.focus(window, cx);
             }
             Err(error) => {
-                self.link_notice = Some(format!(
-                    "Cannot protect this draft: {error:#}. Copy the draft before closing."
-                ));
+                self.link_notice = Some(
+                    format!("Cannot protect this draft: {error:#}. Copy the draft before closing.")
+                        .into(),
+                );
             }
         }
         cx.notify();

@@ -412,7 +412,7 @@ impl Reader {
                                     Ok(()) => { notice.dismiss(window,cx); reader_toast::transient("Restore undone",window,cx); }
                                     Err(error) => {
                                         let _ = reader.update(cx, |r,cx| {
-                                            r.link_notice = Some(format!("Cannot undo restore: {error:#}. The previous text remains in Note history."));
+                                            r.link_notice = Some(format!("Cannot undo restore: {error:#}. The previous text remains in Note history.").into());
                                             cx.notify();
                                         });
                                     }

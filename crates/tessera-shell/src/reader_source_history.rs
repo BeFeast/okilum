@@ -65,7 +65,7 @@ impl Reader {
         let listing = match result {
             Ok(listing) => listing,
             Err(error) => {
-                self.link_notice = Some(format!("Cannot open history: {error:#}"));
+                self.link_notice = Some(format!("Cannot open history: {error:#}").into());
                 cx.notify();
                 return;
             }
@@ -217,7 +217,7 @@ impl Reader {
                         window,
                         cx,
                     ),
-                    Err(error) => r.link_notice = Some(format!("Cannot restore: {error:#}")),
+                    Err(error) => r.link_notice = Some(format!("Cannot restore: {error:#}").into()),
                 }
                 cx.notify();
             });
@@ -278,7 +278,9 @@ impl Reader {
                         window,
                         cx,
                     ),
-                    Err(error) => r.link_notice = Some(format!("Cannot recover a copy: {error:#}")),
+                    Err(error) => {
+                        r.link_notice = Some(format!("Cannot recover a copy: {error:#}").into())
+                    }
                 }
                 cx.notify();
             });

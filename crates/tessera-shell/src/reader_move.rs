@@ -139,7 +139,7 @@ impl Reader {
             return;
         }
         if let Err(error) = self.check_move_editors(std::slice::from_ref(&path), cx) {
-            self.link_notice = Some(error.to_string());
+            self.link_notice = Some(error.to_string().into());
             cx.notify();
             return;
         }
@@ -406,7 +406,8 @@ impl Reader {
                         Ok(pending) => Some(this.show_move_preview(pending, window, cx)),
                         Err(error) => {
                             this.note_move_pending = false;
-                            this.link_notice = Some(format!("Cannot preview move: {error:#}"));
+                            this.link_notice =
+                                Some(format!("Cannot preview move: {error:#}").into());
                             cx.notify();
                             None
                         }
@@ -554,7 +555,7 @@ impl Reader {
         let task = match result {
             Ok(task) => task,
             Err(error) => {
-                self.link_notice = Some(format!("Cannot move: {error:#}"));
+                self.link_notice = Some(format!("Cannot move: {error:#}").into());
                 cx.notify();
                 return;
             }
@@ -612,7 +613,7 @@ impl Reader {
         match result {
             Err(error) => {
                 self.sync_move_input(window, cx);
-                self.link_notice = Some(format!("Cannot move: {error:#}"));
+                self.link_notice = Some(format!("Cannot move: {error:#}").into());
             }
             Ok(moved) => {
                 let mut changes = tessera_core::Changes {
@@ -674,7 +675,7 @@ impl Reader {
                 if showing_file || next_current == self.current_rel {
                     self.sync_move_input(window, cx);
                     if let Some(warning) = moved.warning {
-                        self.link_notice = Some(warning);
+                        self.link_notice = Some(warning.into());
                     } else {
                         reader_toast::transient(
                             move_message(
@@ -722,8 +723,8 @@ impl Reader {
                 }
                 if let Some(warning) = moved.warning {
                     self.link_notice = Some(match self.link_notice.take() {
-                        Some(error) => format!("{warning} {error}"),
-                        None => warning,
+                        Some(error) => format!("{warning} {error}").into(),
+                        None => warning.into(),
                     });
                 } else {
                     reader_toast::transient(success_message, window, cx);
@@ -744,7 +745,7 @@ impl Reader {
         let operations = match Operation::list(&state, &self.vault_root) {
             Ok(paths) => paths,
             Err(error) => {
-                self.link_notice = Some(format!("Cannot read move recovery: {error:#}"));
+                self.link_notice = Some(format!("Cannot read move recovery: {error:#}").into());
                 cx.notify();
                 return;
             }
@@ -768,7 +769,7 @@ impl Reader {
                     ),
                 )),
                 Err(error) => {
-                    self.link_notice = Some(format!("Cannot read move recovery: {error:#}"));
+                    self.link_notice = Some(format!("Cannot read move recovery: {error:#}").into());
                     cx.notify();
                     return;
                 }
@@ -800,7 +801,7 @@ impl Reader {
         let operation = match Operation::load(&path) {
             Ok(op) => op,
             Err(error) => {
-                self.link_notice = Some(error.to_string());
+                self.link_notice = Some(error.to_string().into());
                 cx.notify();
                 return;
             }
@@ -822,7 +823,7 @@ impl Reader {
                     Ok(()) => reader_toast::transient("Link move reverted. Original bytes restored.", window, cx),
                     Err(error) => this.link_notice = Some(format!(
                         "Recovery stopped: {error:#}. Original bytes are retained; resolve the reported file and try again."
-                    )),
+                    ).into()),
                 }
                 cx.notify();
             });

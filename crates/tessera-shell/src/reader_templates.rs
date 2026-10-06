@@ -195,7 +195,7 @@ impl Reader {
                         });
                     }
                     Err(error) => {
-                        this.link_notice = Some(format!("Cannot use template: {error:#}"));
+                        this.link_notice = Some(format!("Cannot use template: {error:#}").into());
                         cx.notify();
                     }
                 }

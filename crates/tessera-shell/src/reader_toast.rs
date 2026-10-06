@@ -7,6 +7,53 @@ struct Toast;
 struct LinkNotice;
 struct HistoryNotice;
 static NEXT_TOAST: AtomicU64 = AtomicU64::new(1);
+static NEXT_NOTICE: AtomicU64 = AtomicU64::new(1);
+
+/// One occurrence of a persistent reader notice.
+///
+/// Every producer assignment mints a fresh occurrence, so two notices with the
+/// same text published by different operations stay distinguishable. Equality
+/// includes the occurrence: closing an older toast never clears a newer
+/// occurrence of the same message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Notice {
+    text: String,
+    occurrence: u64,
+}
+
+impl Notice {
+    pub(super) fn new(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            occurrence: NEXT_NOTICE.fetch_add(1, Ordering::Relaxed),
+        }
+    }
+}
+
+impl std::ops::Deref for Notice {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.text
+    }
+}
+
+impl std::fmt::Display for Notice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.text)
+    }
+}
+
+impl From<String> for Notice {
+    fn from(text: String) -> Self {
+        Self::new(text)
+    }
+}
+
+impl From<&str> for Notice {
+    fn from(text: &str) -> Self {
+        Self::new(text)
+    }
+}
 
 /// Scroll-only space: keep the last line reachable above the notification stack.
 /// This never takes a layout row or changes the document viewport.
@@ -202,7 +249,7 @@ impl Reader {
                     window.push_notification(
                         Notification::new()
                             .id::<LinkNotice>()
-                            .message(message)
+                            .message(message.text)
                             .content(move |_, _, _| {
                                 let reader = actions_reader.clone();
                                 v_flex()
@@ -382,5 +429,93 @@ mod tests {
         reader.read_with(visual, |r, _| assert!(r.link_notice.is_none()));
         visual.update(|window, cx| assert!(window.notifications(cx).is_empty()));
         assert_eq!(visual.debug_bounds("reader-document").unwrap(), before);
+    }
+
+    #[gpui::test]
+    fn closing_a_notice_keeps_a_new_occurrence_of_the_same_message(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_reduce_motion(true);
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        std::fs::write(root.join("start.md"), "# Stable document\nBody").unwrap();
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        open_path: Some(root.join("start.md")),
+                        index_dir: Some(temp.path().join("index")),
+                        session_directory: Some(temp.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        let message = "Cannot move: destination exists";
+
+        // Positive control: an undisturbed dismissal clears the notice, so the
+        // close callback demonstrably runs within the clock advanced below.
+        reader.update_in(visual, |r, _, cx| {
+            r.link_notice = Some(message.into());
+            cx.notify();
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| assert_eq!(window.notifications(cx).len(), 1));
+        visual.update(|window, cx| assert!(dismiss(window, cx)));
+        visual.executor().advance_clock(Duration::from_secs(1));
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| assert!(r.link_notice.is_none()));
+        visual.update(|window, cx| assert!(window.notifications(cx).is_empty()));
+
+        // Display A, start dismissing it, publish a new occurrence of A while
+        // the old close transition is still running, then finish that transition.
+        reader.update_in(visual, |r, _, cx| {
+            r.link_notice = Some(message.into());
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let first = reader.read_with(visual, |r, _| r.link_notice.clone().unwrap());
+        visual.update(|window, cx| assert!(dismiss(window, cx)));
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert_eq!(r.link_notice.as_ref(), Some(&first))
+        });
+        let second = Notice::from(message);
+        assert_eq!(&*second, &*first, "same message text");
+        assert_ne!(second, first, "distinct occurrence");
+        reader.update_in(visual, |r, _, cx| {
+            r.link_notice = Some(second.clone());
+            cx.notify();
+        });
+        visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_secs(1));
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert_eq!(
+                r.link_notice.as_ref(),
+                Some(&second),
+                "new occurrence remains"
+            )
+        });
+        visual.update(|window, cx| assert_eq!(window.notifications(cx).len(), 1));
+
+        // The new occurrence still dismisses normally.
+        visual.update(|window, cx| assert!(dismiss(window, cx)));
+        visual.executor().advance_clock(Duration::from_secs(1));
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| assert!(r.link_notice.is_none()));
+        visual.update(|window, cx| assert!(window.notifications(cx).is_empty()));
     }
 }
