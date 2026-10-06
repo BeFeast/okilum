@@ -35,7 +35,7 @@ async function setup(width,theme){
   else if(p.startsWith('/questions/'))data=state.questions.find(q=>q.id===p.split('/').at(-1));
   else if(p.endsWith('/discussion'))data=[];
   else if(p.endsWith('/publications'))data=[];
-  else if(p==='/publication-folders')data={folders:['Projects','Areas','Resources','Archives']};
+  else if(p==='/destinations')data={folders:['Projects','Areas','Resources','Archives']};
   else{state.errorPaths.push(p);status=404;data={error:'fixture_unhandled'};}
   await route.fulfill({status,contentType:'application/json',body:JSON.stringify(data)});
  });
@@ -55,7 +55,10 @@ try{
    await page.locator('[data-nav="projects"]').click();await page.locator('#project-summary').fill('Ready for design review');await page.locator('#project-save').click();await page.getByText('Project status saved.',{exact:true}).waitFor();assert.equal(state.project.draft.status,'Ready for design review');
    await page.locator('#new-thought').click();await page.locator('#thought').fill('Captured during browser QA');await Promise.all([page.waitForResponse(r=>r.url().endsWith('/api/v1/items')&&r.request().method()==='POST'),page.locator('#save').click()]);await page.waitForFunction(()=>!document.querySelector('#sync').disabled);await page.locator('#thoughts').getByText('Captured during browser QA',{exact:true}).waitFor();assert.equal(state.captures.length,1);
    state.offline=true;await page.locator('#thought').fill('Offline browser QA');await page.locator('#save').click();await page.locator('#thoughts').getByText('Offline browser QA',{exact:true}).waitFor();assert.equal(state.captures.length,1);await page.waitForFunction(()=>!document.querySelector('#sync').disabled);state.offline=false;await Promise.all([page.waitForResponse(r=>r.url().endsWith('/api/v1/items')&&r.request().method()==='POST'),page.locator('#sync').click()]);await page.waitForFunction(()=>!document.querySelector('#sync').disabled);assert.equal(state.captures.length,2);
-   assert.deepEqual(errors,[]);reports.push({width,theme,passed:true,unhandled:state.errorPaths});
+   assert.deepEqual(errors,[]);assert.deepEqual(state.errorPaths,[], 'Unhandled fixture API requests');
+   const destinations=await page.evaluate(()=>fetch('/api/v1/destinations').then(r=>r.json()));assert.deepEqual(destinations.folders,['Projects','Areas','Resources','Archives']);
+   await page.evaluate(()=>fetch('/api/v1/qa-positive-control'));assert.throws(()=>assert.deepEqual(state.errorPaths,[]));assert.deepEqual(state.errorPaths,['/qa-positive-control']);state.errorPaths.length=0;
+   reports.push({width,theme,passed:true,unhandled:state.errorPaths});
   }finally{await context.close();}
  }
  await fs.writeFile(`${root}/functional.json`,JSON.stringify(reports,null,2));console.log(reports);
