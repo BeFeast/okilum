@@ -171,20 +171,57 @@ jobs:
         if: always()
         run: if [ -n "${RUSTC_WRAPPER:-}" ]; then sccache --show-stats; fi
 
-  macos:
+  macos-github:
     needs: linux
+    if: >-
+      github.event_name == 'pull_request' &&
+      needs.linux.outputs.macos == 'true' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: light
+    timeout-minutes: 52
+    outputs:
+      result: ${{ steps.remote.outputs.result }}
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - name: Run the exact PR head on GitHub macOS
+        id: remote
+        env:
+          MIRROR_TOKEN: ${{ secrets.TESSERA_GITHUB_MIRROR }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/ci/github-macos.py run
+
+  macos-local:
+    needs: [linux, macos-github]
     # The host runner has a signing keychain. Fork code must first be reviewed
     # and moved to a trusted same-repository branch; the final gate fails closed.
     if: >-
+      always() && !cancelled() &&
+      needs.macos-github.result == 'success' &&
+      needs.macos-github.outputs.result == 'unavailable' &&
       github.event_name == 'pull_request' &&
       needs.linux.outputs.macos == 'true' &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: macos
     timeout-minutes: 20
+    # LAN cache credentials belong only to the trusted local fallback (#563).
+    env:
+      SCCACHE_BUCKET: ${{ vars.SCCACHE_BUCKET }}
+      SCCACHE_ENDPOINT: ${{ vars.SCCACHE_ENDPOINT }}
+      SCCACHE_REGION: ${{ vars.SCCACHE_REGION }}
+      SCCACHE_S3_USE_SSL: "false"
+      SCCACHE_S3_KEY_PREFIX: rust
+      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
           github-server-url: ${{ vars.FORGEJO_CHECKOUT_URL || github.server_url }}
       - name: Compile Reader and run quick native regressions
         shell: bash
@@ -195,6 +232,36 @@ jobs:
         with:
           name: native-thumbnail-evidence
           path: ${{ runner.temp }}/thumbnail-evidence/
+
+  # This job preserves the required Forgejo `ci / macos` status. Only the
+  # exact-head hosted success or an explicitly requested local fallback passes.
+  macos:
+    needs: [linux, macos-github, macos-local]
+    if: always() && github.event_name == 'pull_request'
+    runs-on: light
+    timeout-minutes: 2
+    steps:
+      - name: Require a native result
+        env:
+          LINUX_RESULT: ${{ needs.linux.result }}
+          MACOS_REQUIRED: ${{ needs.linux.outputs.macos }}
+          HOSTED_JOB: ${{ needs.macos-github.result }}
+          HOSTED_RESULT: ${{ needs.macos-github.outputs.result }}
+          LOCAL_RESULT: ${{ needs.macos-local.result }}
+        run: |
+          set -euo pipefail
+          test "$LINUX_RESULT" = success
+          case "$MACOS_REQUIRED" in
+            false) echo "Documentation-only PR: native runner not needed" ;;
+            true)
+              test "$HOSTED_JOB" = success
+              case "$HOSTED_RESULT" in
+                success) test "$LOCAL_RESULT" = skipped ;;
+                unavailable) test "$LOCAL_RESULT" = success ;;
+                *) exit 1 ;;
+              esac ;;
+            *) exit 1 ;;
+          esac
 
   # Keep the existing protected-branch context. Skipped/cancelled/failed native
   # jobs never pass a code PR; docs-only PRs and main retain Linux-only CI here.

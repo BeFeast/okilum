@@ -1,6 +1,6 @@
 # Mirror main (and release tags created from now on) to the public GitHub repository.
-# Forgejo stays primary; GitHub receives only main, so internal branches, PR refs
-# and pre-publication history never leave Forgejo.
+# Forgejo stays primary; this workflow mirrors only main and release tags.
+# ci.yml separately publishes temporary trusted PR refs for the native gate.
 name: github-mirror
 
 on:
