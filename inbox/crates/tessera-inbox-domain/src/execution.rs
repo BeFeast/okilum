@@ -45,15 +45,27 @@ pub struct Brief {
     pub text: String,
     pub target_id: String,
 }
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceKind {
+    #[default]
     T3,
     Maestro,
+}
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceRecordKind {
+    #[default]
+    Question,
+    Approval,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct QuestionSource {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_id: Option<String>,
+    #[serde(default, skip_serializing_if = "is_question")]
+    pub record_kind: SourceRecordKind,
     pub kind: SourceKind,
     pub instance_id: String,
     pub project_id: String,
@@ -61,6 +73,20 @@ pub struct QuestionSource {
     pub question_id: String,
     /// T3 run/attempt identity or Maestro worker generation.
     pub generation: String,
+}
+fn is_question(kind: &SourceRecordKind) -> bool {
+    *kind == SourceRecordKind::Question
+}
+/// Exact native approval details shown at consent, never inferred from a title.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Approval {
+    pub action: String,
+    pub target: serde_json::Value,
+    pub summary: String,
+    pub risk: String,
+    pub payload_hash: String,
+    pub target_state_hash: Option<String>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -87,6 +113,8 @@ pub struct QuestionField {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Question {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval: Option<Approval>,
     /// Display metadata, never part of source identity or reply revision.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread_title: Option<String>,
@@ -164,6 +192,42 @@ impl SaveBrief {
 impl Question {
     pub fn validate(&self) -> Result<(), InvalidExecution> {
         let s = &self.source;
+        match (&s.kind, &s.record_kind, &self.approval) {
+            (SourceKind::T3, SourceRecordKind::Question, None) if s.worker_id.is_none() => {}
+            (SourceKind::Maestro, SourceRecordKind::Question, None)
+                if s.worker_id.as_ref().is_some_and(|w| identity(w)) => {}
+            (SourceKind::Maestro, SourceRecordKind::Approval, Some(a)) => {
+                let target = serde_json::to_vec(&a.target).map_err(|_| InvalidExecution)?;
+                if s.worker_id.is_some()
+                    || !identity(&a.action)
+                    || a.action == "stop_worker"
+                    || !a.target.is_object()
+                    || target.len() > 16384
+                    || !bounded(&a.summary, 16384, true)
+                    || !identity(&a.risk)
+                    || !identity(&a.payload_hash)
+                    || a.target_state_hash.as_ref().is_some_and(|v| !identity(v))
+                    || self.fields.len() != 1
+                {
+                    return Err(InvalidExecution);
+                }
+                let field = &self.fields[0];
+                if field.id != "decision"
+                    || field.allow_text
+                    || field.multiple
+                    || field.options.is_empty()
+                    || field.options.iter().any(|o| {
+                        !matches!(
+                            (o.id.as_str(), o.label.as_str()),
+                            ("approve", "Approve") | ("reject", "Reject")
+                        )
+                    })
+                {
+                    return Err(InvalidExecution);
+                }
+            }
+            _ => return Err(InvalidExecution),
+        }
         if self
             .thread_title
             .as_ref()

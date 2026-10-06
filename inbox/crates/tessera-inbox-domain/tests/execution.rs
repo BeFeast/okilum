@@ -3,10 +3,13 @@ use uuid::Uuid;
 #[test]
 fn replies_bind_exact_fields_revision_and_capability() {
     let q = Question {
+        approval: None,
         thread_title: None,
         id: Uuid::new_v4(),
         project_id: Uuid::new_v4(),
         source: QuestionSource {
+            worker_id: None,
+            record_kind: SourceRecordKind::Question,
             kind: SourceKind::T3,
             instance_id: "instance".into(),
             project_id: "project".into(),
@@ -58,4 +61,47 @@ fn replies_bind_exact_fields_revision_and_capability() {
     closed = q;
     closed.can_reply = false;
     assert!(closed.validate_reply(&reply).is_err());
+}
+
+#[test]
+fn maestro_approval_is_typed_and_never_accepts_free_text_authority() {
+    let mut q:Question=serde_json::from_value(serde_json::json!({
+        "id":Uuid::new_v4(),"project_id":Uuid::new_v4(),
+        "source":{"kind":"maestro","record_kind":"approval","instance_id":"instance","project_id":"pilot","thread_id":"approval","question_id":"a1","generation":"approval"},
+        "source_revision":"opaque-digest","state":"pending","can_reply":true,
+        "approval":{"action":"merge_pr","target":{"repository":"fixture","number":1},"summary":"Merge fixture","risk":"high","payload_hash":"hash","target_state_hash":null},
+        "fields":[{"id":"decision","prompt":"Merge fixture?","options":[{"id":"approve","label":"Approve"},{"id":"reject","label":"Reject"}],"allow_text":false,"multiple":false}]
+    })).unwrap();
+    assert!(q.validate().is_ok());
+    let mut r = Reply {
+        operation_id: Uuid::new_v4(),
+        question_id: q.id,
+        expected_revision: q.source_revision.clone(),
+        answers: vec![AnswerField {
+            id: "decision".into(),
+            text: String::new(),
+            option_ids: vec!["approve".into()],
+        }],
+    };
+    assert!(q.validate_reply(&r).is_ok());
+    r.answers[0].text = "please approve".into();
+    assert!(q.validate_reply(&r).is_err());
+    r.answers[0].text.clear();
+    r.expected_revision = "stale".into();
+    assert!(q.validate_reply(&r).is_err());
+    q.fields[0].allow_text = true;
+    assert!(q.validate().is_err());
+    q.fields[0].allow_text = false;
+    q.approval.as_mut().unwrap().action = "stop_worker".into();
+    assert!(q.validate().is_err());
+    q.approval.as_mut().unwrap().action = "merge_pr".into();
+    q.source.kind = SourceKind::T3;
+    assert!(q.validate().is_err());
+}
+
+#[test]
+fn old_t3_source_serialization_remains_byte_compatible() {
+    let source = serde_json::json!({"kind":"t3","instance_id":"instance","project_id":"project","thread_id":"thread","question_id":"q","generation":"attempt"});
+    let s: QuestionSource = serde_json::from_value(source.clone()).unwrap();
+    assert_eq!(serde_json::to_value(s).unwrap(), source);
 }
