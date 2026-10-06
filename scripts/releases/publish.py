@@ -116,7 +116,9 @@ def github_release(github, tag, release, files, body, stable):
     page = 1
     while True:
         candidates = github.call('GET', f'/releases?per_page=100&page={page}')
-        matching = [r for r in candidates if r['tag_name'] == tag]
+        matching = [r for r in candidates if r['tag_name'] == tag or (
+            not stable and r.get('name') == 'Beta' and r.get('prerelease')
+            and r['tag_name'].startswith('untagged-'))]
         if matching:
             if current is not None or len(matching) != 1:
                 raise ValueError('Duplicate releases for tag; reconcile drafts before retrying')
@@ -137,7 +139,13 @@ def github_release(github, tag, release, files, body, stable):
         github.call('POST', f'/releases/{rid}/assets?name={urllib.parse.quote(name)}', data, binary=True)
     github.call('PATCH', f'/releases/{rid}', {
         'name': f'Tessera 0.1.{release["build"]}' if stable else 'Beta',
+        'tag_name': tag, 'target_commitish': release['source'],
         'body': body, 'draft': False, 'prerelease': not stable})
+    published = github.call('GET', f'/releases/tags/{tag}')
+    if (published is None or published['id'] != rid or published['draft']
+            or published['tag_name'] != tag or published['prerelease'] != (not stable)
+            or {a['name'] for a in published['assets']} != set(files)):
+        raise ValueError('Published GitHub release does not match the requested tag/assets')
     if stable:
         github.call('PATCH', f'/releases/{rid}', {'make_latest': 'true'})
 
@@ -209,7 +217,7 @@ def execute(store, github, forgejo, build=None, supersede_pending=False):
         return
     if previous and previous['build'] > release['build']:
         raise ValueError('Refusing release rollback')
-    if previous == release:
+    if previous == release and (stable or github.call('GET', '/releases/tags/beta') is not None):
         print(f'{channel} already published')
         return
     files = catalog.download(store, release)
