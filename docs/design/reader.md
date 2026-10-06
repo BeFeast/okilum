@@ -431,7 +431,8 @@ and a quiet unsaved dot; conflict recovery actions remain explicit glyphs with
 tooltips. Attachment headers use the same language: Quick Look (macOS), Open,
 Reveal and Copy path glyphs alongside More.
 
-Document More contains Edit/Preview, Rename/move, Note history, Reveal,
+Document More contains Reveal in sidebar (the sidebar crosshair action),
+Edit/Preview, Rename/move, Note history, Reveal,
 Copy path and Close note. Delete joins this menu when its action is available.
 The app More menu contains New note, Open file/folder, recovery, appearance,
 hidden files, About and Quit. Editing actions are absent in Windows diagnostic.
@@ -504,3 +505,6 @@ asynchronous. The file revision is checked before publishing the result; a chang
 or missing source yields the unavailable state. Reopening always requests a fresh
 preview. Thumbnails are memory-only derived data; they never write to the vault.
 The preview is a GPUI image, so palettes and menus retain normal overlay ordering.
+
+“Reveal in sidebar” opens the Notes panel if hidden, expands Folders and focuses
+the current note or file using the same action as the sidebar crosshair.
