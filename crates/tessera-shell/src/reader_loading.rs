@@ -2647,6 +2647,7 @@ mod tests {
         std::fs::write(root.join("locked.md"), "# Locked\n\ndeniedcontent").unwrap();
         let before = source_manifest(&root);
         let mut denied = 0;
+        let mut watch_attempted = false;
         let (send, _receive) = async_channel::unbounded();
         let Event::Ready {
             vault,
@@ -2654,8 +2655,9 @@ mod tests {
             sources,
             warnings,
             titles,
+            watcher,
             ..
-        } = prepare_rest_with_reader(
+        } = prepare_rest_with_io(
             &root,
             &Opts {
                 index_dir: Some(cache.clone()),
@@ -2675,18 +2677,32 @@ mod tests {
                     std::fs::read(path)
                 }
             },
+            // A real recursive watcher depends on the host fd/inotify limits
+            // and is not under test here; keep this test independent of them.
+            |path| {
+                watch_attempted = true;
+                assert_eq!(path, root);
+                Err(anyhow::anyhow!("test watcher disabled"))
+            },
+            MAX_MEMORY_SEARCH_BYTES,
         )
         .unwrap()
         else {
             panic!("Ready must publish readable inventory")
         };
         assert_eq!(denied, 1, "The denied read actually fired");
+        assert!(watch_attempted, "Stub watcher positive control");
+        assert!(watcher.is_none());
         assert!(vault.inventory_scanned);
         assert!(!vault.inventory_complete);
         assert_eq!(vault.unreadable.len(), 1);
         assert_eq!(vault.unreadable[0].path, root.join("locked.md"));
         assert_eq!(vault.unreadable[0].operation, "read note");
-        assert!(warnings.is_empty(), "Disk search positive control");
+        // The only preparation warning is the stubbed watcher; no search
+        // cache warning means disk search was validated, built and persisted.
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].operation.starts_with("watch vault"));
+        assert!(warnings[0].error.contains("test watcher disabled"));
         assert!(sources.contains_key("readable.md"));
         assert!(!sources.contains_key("locked.md"));
         assert_eq!(titles["readable.md"], "Readable");
@@ -2701,6 +2717,10 @@ mod tests {
         assert!(
             !saved.vault().inventory_complete,
             "Partial cache stays provisional"
+        );
+        assert!(
+            saved.search_generation.is_some(),
+            "Disk search positive control"
         );
         let startup = tessera_core::vault::warm::StartupSnapshot::load(&cache, &root).unwrap();
         assert_eq!(startup.vault().notes.len(), 2);
