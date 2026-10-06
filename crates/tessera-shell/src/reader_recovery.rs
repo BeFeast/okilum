@@ -76,6 +76,14 @@ struct Run {
     stale: Vec<PathBuf>,
     _lock: File,
 }
+impl Drop for Run {
+    fn drop(&mut self) {
+        // Explicitly release the open-file-description lock before close. A
+        // concurrent subprocess fork may briefly retain a descriptor until exec.
+        // Keep the marker itself: only clean() acknowledges a safe shutdown.
+        let _ = rustix::fs::flock(&self._lock, rustix::fs::FlockOperation::Unlock);
+    }
+}
 impl Run {
     fn begin(directory: &Path) -> Result<Self> {
         let directory = directory.join("reader-runs");
@@ -160,13 +168,14 @@ pub(crate) fn install(directory: &Path, config_directory: Option<&Path>, cx: &mu
     cx.set_global(RecoveryStartup(recovering));
     let runs = Arc::new(runs);
     cx.on_app_quit(move |cx| {
-        if !super::reader_editor::save_all(cx) {
-            // Conflicts retain durable drafts and are rediscovered per note;
-            // a deliberate quit is not a crash even when canonical save fails.
-            eprintln!("Some notes could not be saved; recovery drafts are retained.");
-        }
+        let protected = super::reader_editor::protect_all_for_quit(cx);
         let runs = runs.clone();
         async move {
+            // A canonical conflict with a durable draft is a clean quit. Failed
+            // draft persistence (or an in-flight move) must retain the safety marker.
+            if !protected {
+                return;
+            }
             for run in runs.iter() {
                 if let Err(error) = run.clean() {
                     eprintln!("Cannot finish Reader launch marker: {error}");
@@ -187,6 +196,12 @@ mod tests {
         let config = root.path().join("config");
         cx.update(|cx| {
             install(&state, Some(&config), cx);
+            for directory in [&state, &config] {
+                assert_eq!(
+                    fs::read_dir(directory.join("reader-runs")).unwrap().count(),
+                    1
+                );
+            }
             cx.shutdown();
         });
         for directory in [&state, &config] {
@@ -282,9 +297,11 @@ mod tests {
         let concurrent = Run::begin(&directory).unwrap();
         assert!(concurrent.stale.is_empty());
         concurrent.clean().unwrap();
-        drop(first); // Abrupt termination: release the lock without a clean marker.
+        let inherited = first._lock.try_clone().unwrap();
+        drop(first); // Release synchronously even while a duplicated descriptor exists.
         let recovered = Run::begin(&directory).unwrap();
         assert_eq!(recovered.stale.len(), 1);
+        drop(inherited);
         recovered.clean().unwrap();
         let clean = Run::begin(&directory).unwrap();
         assert!(clean.stale.is_empty());

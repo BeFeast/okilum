@@ -399,6 +399,7 @@ SIGTERM/SIGINT use the native application quit path on Linux and macOS. Signal
 handlers only set an atomic flag; the UI thread initiates shutdown, flushes every
 editor (even if another note conflicts), and runs the usual state persistence hooks.
 OS quit/logout and updater relaunch use the same quit observers. Both historical
-launch-marker directories are cleared on deliberate shutdown; unresolved conflicts
-retain their durable drafts and are still discovered per note. SIGKILL, panic and
+launch-marker directories are cleared on deliberate shutdown when all drafts are
+protected; a failed draft write or an in-flight move retains the safety marker.
+Unresolved conflicts retain their durable drafts and are still discovered per note. SIGKILL, panic and
 power loss leave their markers for conservative startup; no-draft recovery is silent.
