@@ -438,6 +438,7 @@ pub(crate) struct Session {
     tree: Option<Layout>,
     source: Option<[f32; 2]>,
     source_position_pending: bool,
+    source_reader_position: Option<ListOffset>,
     pub(crate) ready: bool,
     pub(crate) interacted: bool,
 }
@@ -479,6 +480,8 @@ impl Reader {
         self.show_hidden_properties = saved.hidden_properties;
         self.ui_state.tree = Some(saved.clone());
         if saved.source {
+            self.ui_state.source_reader_position =
+                (saved.note == self.current_rel).then(|| saved.position.list());
             self.ui_state.source = Some(if saved.note == self.current_rel {
                 saved.source_scroll
             } else {
@@ -512,7 +515,7 @@ impl Reader {
                 self.history_positions = visits.iter().map(|visit| visit.position.list()).collect();
                 self.history_ix = saved.history_index;
             }
-            if !saved.note.is_empty() {
+            if !saved.note.is_empty() && !saved.source {
                 self.scroll_to_position(saved.position.list(), cx);
             }
         }
@@ -544,12 +547,11 @@ impl Reader {
 
     pub(crate) fn restore_ui_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // The selected document is usable before background search validation
-        // finishes. Only its publication/viewport may delay source restoration.
+        // finishes. The invisible Markdown preview need not finish laying out.
         if self
             .loading
             .as_ref()
             .is_some_and(|load| load.active && !load.published)
-            || self.pending_landing.is_some()
         {
             return;
         }
@@ -557,7 +559,15 @@ impl Reader {
             return;
         };
         if self.editing.is_none() && !self.current_rel.is_empty() && self.file_preview.is_none() {
+            self.cancel_pending_landing();
             self.toggle_source(window, cx);
+            if self.editing.is_none() {
+                if let Some(position) = self.ui_state.source_reader_position.take() {
+                    // If draft recovery cannot open, preserve the preview landing
+                    // as well as the existing error notice.
+                    self.scroll_to_position(position, cx);
+                }
+            }
             self.ui_state.source_position_pending = self.editing.is_some();
             if self.editing.is_some() && offset[1] < -0.5 {
                 // Reserve the final viewport before the editor's first layout,
@@ -597,9 +607,14 @@ impl Reader {
             self.ui_state.active = false;
             return;
         }
+        if self.editing.is_none() && self.ui_state.source.is_none() {
+            self.ui_state.source_reader_position = None;
+        }
         let pending = self.ui_state.tree.as_ref();
         let position = self
-            .pending_landing
+            .ui_state
+            .source_reader_position
+            .or(self.pending_landing)
             .unwrap_or_else(|| self.content.read(cx).list_state().logical_scroll_top());
         let history = self
             .history
@@ -1148,6 +1163,11 @@ mod tests {
                     "source viewport must be visible"
                 );
                 assert_eq!(reader.source_scroll_offset(cx).unwrap().y, px(-400.));
+                assert_eq!(
+                    layout(&root, cx).unwrap().0.position.item,
+                    14,
+                    "unpainted preview position must survive persisted source restoration"
+                );
             });
             release_search.try_send(()).unwrap();
             visual.run_until_parked();
@@ -1201,12 +1221,16 @@ mod tests {
             assert_eq!(reader.history, ["other.md", "Folder/note.md"]);
             assert_eq!(reader.history_ix, 1);
             assert_eq!(
-                reader
-                    .content
-                    .read(cx)
-                    .list_state()
-                    .logical_scroll_top()
-                    .item_ix,
+                if source {
+                    reader.ui_state.source_reader_position.unwrap().item_ix
+                } else {
+                    reader
+                        .content
+                        .read(cx)
+                        .list_state()
+                        .logical_scroll_top()
+                        .item_ix
+                },
                 14
             );
         });
