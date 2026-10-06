@@ -439,7 +439,8 @@ pub(crate) struct Session {
     source: Option<[f32; 2]>,
     source_position_pending: bool,
     source_reader_position: Option<ListOffset>,
-    pub(crate) reader_header: Option<String>,
+    pub(crate) restored_header: Option<(String, bool)>,
+    pub(crate) source_highlight_pending: bool,
     reader_position_pending: bool,
     pub(crate) ready: bool,
     pub(crate) interacted: bool,
@@ -519,7 +520,7 @@ impl Reader {
             }
             if !saved.note.is_empty() && !saved.source {
                 self.cancel_pending_landing();
-                self.ui_state.reader_header = Some(self.current_rel.clone());
+                self.ui_state.restored_header = Some((self.current_rel.clone(), false));
                 self.document_header_hidden = px(0.);
                 let positioned = self.content.update(cx, |content, cx| {
                     content.scroll_to_prepared_position(saved.position.list(), cx)
@@ -580,10 +581,10 @@ impl Reader {
                 }
             }
             self.ui_state.source_position_pending = self.editing.is_some();
-            if self.editing.is_some() && offset[1] < -0.5 {
-                // Reserve the final viewport before the editor's first layout,
-                // so applying its offset cannot move content by header height.
-                self.document_header_hidden = px(48.);
+            if self.editing.is_some() {
+                self.ui_state.restored_header = Some((self.current_rel.clone(), true));
+                self.document_header_hidden = px(0.);
+                self.ui_state.source_highlight_pending = self.source_highlighting_pending(cx);
             }
             self.restore_source_position(offset, window, cx);
             let reader = cx.entity().downgrade();
@@ -597,16 +598,22 @@ impl Reader {
     }
 
     pub(crate) fn restoring_source(&self) -> bool {
-        self.ui_state.source.is_some() || self.ui_state.source_position_pending
+        self.ui_state.source.is_some()
+            || self.ui_state.source_position_pending
+            || (self.editing.is_some() && self.ui_state.source_highlight_pending)
     }
 
     pub(crate) fn restoring_reader(&self) -> bool {
         self.ui_state.reader_position_pending && self.pending_landing.is_some()
     }
 
-    pub(crate) fn restored_reader_header(&self) -> bool {
-        self.editing.is_none()
-            && self.ui_state.reader_header.as_deref() == Some(self.current_rel.as_str())
+    pub(crate) fn restored_document_header(&self) -> bool {
+        self.ui_state
+            .restored_header
+            .as_ref()
+            .is_some_and(|(note, source)| {
+                note == &self.current_rel && *source == self.editing.is_some()
+            })
     }
 
     pub(crate) fn record_ui_state(&mut self, active: bool, cx: &mut Context<Self>) {
@@ -1219,7 +1226,7 @@ mod tests {
                         reader.pending_landing.is_none(),
                         "first reader frame is positioned without a timer"
                     );
-                    assert!(reader.restored_reader_header());
+                    assert!(reader.restored_document_header());
                 }
                 assert_eq!(
                     layout(&root, cx).unwrap().0.position.item,
@@ -1227,7 +1234,7 @@ mod tests {
                     "unpainted preview position must survive persisted source restoration"
                 );
             });
-            if !source {
+            {
                 assert_eq!(
                     visual
                         .debug_bounds("document-header-viewport")
@@ -1303,7 +1310,7 @@ mod tests {
                 14
             );
         });
-        if !source {
+        {
             for expected_height in [24., 0.] {
                 visual.update(|window, cx| window.draw(cx).clear(cx));
                 let body = visual.debug_bounds("reader-document").unwrap();

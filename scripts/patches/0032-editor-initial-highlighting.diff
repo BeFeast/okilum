@@ -1,0 +1,164 @@
+diff --git a/crates/base/src/input/editor/highlighting.rs b/crates/base/src/input/editor/highlighting.rs
+--- a/crates/base/src/input/editor/highlighting.rs
++++ b/crates/base/src/input/editor/highlighting.rs
+@@ -29,6 +29,11 @@
+ /// behavior. Base only asks for styled ranges and fold candidates.
+ pub trait InputHighlighter {
+     fn language(&self) -> SharedString;
++
++    /// Whether the current syntax parse is still running.
++    fn is_pending(&self) -> bool {
++        false
++    }
+ 
+     fn update(
+         &mut self,
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -783,6 +783,32 @@
+         self.mode.ensure_highlighter_factory(factory);
+     }
+ 
++    /// Prepare syntax before mounting an editor, without doing layout.
++    pub fn prepare_highlighting(&mut self, window: &mut Window, cx: &mut Context<Self>) {
++        self.mode.update_highlighter::<M>(
++            super::mode::HighlighterUpdate {
++                selected_range: &(0..0),
++                old_text: &self.text,
++                new_text: &self.text,
++                change_text: "",
++                force: false,
++            },
++            window,
++            cx,
++        );
++    }
++
++    /// Unsupported languages have no pending syntax work.
++    pub fn highlighting_pending(&self) -> bool {
++        match &self.mode {
++            LayoutMode::CodeEditor { highlighter, .. } => highlighter
++                .borrow()
++                .as_ref()
++                .is_some_and(|highlighter| highlighter.is_pending()),
++            _ => false,
++        }
++    }
++
+     pub fn set_editor_style(&mut self, style: InputEditorStyle) {
+         if self.editor_style.foreground != style.foreground
+             || self.editor_style.background != style.background
+diff --git a/crates/component/src/highlighter/input_adapter.rs b/crates/component/src/highlighter/input_adapter.rs
+--- a/crates/component/src/highlighter/input_adapter.rs
++++ b/crates/component/src/highlighter/input_adapter.rs
+@@ -1,5 +1,5 @@
+ use std::{
+-    cell::RefCell,
++    cell::{Cell, RefCell},
+     ops::Range,
+     rc::Rc,
+     sync::{
+@@ -19,7 +19,7 @@
+ 
+ use super::{LanguageRegistry, SyntaxHighlighter};
+ 
+-pub(crate) fn input_highlighter_factory() -> InputHighlighterFactory {
++pub fn input_highlighter_factory() -> InputHighlighterFactory {
+     Rc::new(|language| {
+         let config = LanguageRegistry::singleton().language(language)?;
+         config.has_grammar().then(|| {
+@@ -31,6 +31,7 @@
+ struct TreeSitterInputHighlighter {
+     inner: Rc<RefCell<SyntaxHighlighter>>,
+     parse_task: Rc<RefCell<Option<Task<()>>>>,
++    pending: Rc<Cell<bool>>,
+ }
+ 
+ impl TreeSitterInputHighlighter {
+@@ -38,6 +39,7 @@
+         Self {
+             inner: Rc::new(RefCell::new(SyntaxHighlighter::new(language))),
+             parse_task: Rc::new(RefCell::new(None)),
++            pending: Rc::new(Cell::new(false)),
+         }
+     }
+ }
+@@ -56,6 +58,10 @@
+ impl InputHighlighter for TreeSitterInputHighlighter {
+     fn language(&self) -> SharedString {
+         self.inner.borrow().language().clone()
++    }
++
++    fn is_pending(&self) -> bool {
++        self.pending.get()
+     }
+ 
+     fn update(
+@@ -70,6 +76,7 @@
+         const SYNC_PARSE_MAX_BYTES: usize = 256 * 1024;
+         const PARSE_DEBOUNCE: Duration = Duration::from_millis(150);
+ 
++        let initial_parse = self.inner.borrow().tree().is_none();
+         let edit = edit.map(to_tree_sitter_edit);
+         let completed = {
+             let mut highlighter = self.inner.borrow_mut();
+@@ -81,10 +88,13 @@
+             }
+         };
+         if completed {
++            self.pending.set(false);
+             self.parse_task.borrow_mut().take();
+             return;
+         }
+ 
++        self.pending.set(true);
++        let pending = self.pending.clone();
+         let highlighter = self.inner.clone();
+         let parse_task = self.parse_task.clone();
+         let language = highlighter.borrow().language().clone();
+@@ -102,7 +112,10 @@
+                 }
+             }
+             let _cancel_guard = CancelOnDrop(cancel.clone());
+-            cx.background_executor().timer(PARSE_DEBOUNCE).await;
++            // Initial presentation has no typing burst to debounce.
++            if !initial_parse {
++                cx.background_executor().timer(PARSE_DEBOUNCE).await;
++            }
+ 
+             let parse_cancel = cancel.clone();
+             let result = cx
+@@ -147,6 +160,7 @@
+                 })
+                 .await;
+ 
++            pending.set(false);
+             if let Some((tree, injections, folds)) = result {
+                 highlighter
+                     .borrow_mut()
+@@ -154,6 +168,8 @@
+                 let _ = entity.update(cx, |state, cx| {
+                     state.apply_highlighter_fold_candidates(folds, cx);
+                 });
++            } else {
++                let _ = entity.update(cx, |_, cx| cx.notify());
+             }
+         });
+         parse_task.borrow_mut().replace(task);
+diff --git a/crates/component/src/highlighter/mod.rs b/crates/component/src/highlighter/mod.rs
+--- a/crates/component/src/highlighter/mod.rs
++++ b/crates/component/src/highlighter/mod.rs
+@@ -9,10 +9,10 @@
+ #[cfg(feature = "tree-sitter")]
+ mod input_adapter;
+ #[cfg(feature = "tree-sitter")]
+-pub(crate) use input_adapter::input_highlighter_factory;
++pub use input_adapter::input_highlighter_factory;
+ 
+ #[cfg(not(feature = "tree-sitter"))]
+-pub(crate) fn input_highlighter_factory() -> gpui_base::input::InputHighlighterFactory {
++pub fn input_highlighter_factory() -> gpui_base::input::InputHighlighterFactory {
+     std::rc::Rc::new(|_| None)
+ }
+ 
