@@ -985,6 +985,14 @@ mod entry_tests {
                 std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o555)).unwrap();
             }
         }
+        // A folder's first discovered note follows filesystem enumeration order.
+        // Seed the initial selection explicitly so the later file event proves
+        // navigation to a different note on every filesystem.
+        let state = root.with_extension("state");
+        super::super::reader_history::ReadingHistory::record_usable_document(
+            &state, &root, "start.md",
+        )
+        .unwrap();
         let before_tree = tree(&root);
         let (sender, receiver) = async_channel::unbounded();
         // Delivery before app initialization must not be lost.
@@ -995,6 +1003,9 @@ mod entry_tests {
             gpui_component::init(cx);
             super::super::bind_keys(cx);
             install(cx);
+            cx.set_global(super::super::reader_history::TestSessionDirectory(
+                state.clone(),
+            ));
             receive_events(receiver, cx);
         });
         cx.run_until_parked();
@@ -1081,6 +1092,7 @@ mod entry_tests {
             }
         }
         std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_dir_all(state).unwrap();
     }
 }
 
