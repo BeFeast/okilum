@@ -99,6 +99,7 @@ use gpui_component::{
     v_flex, ActiveTheme as _, Disableable as _, Icon, IconName, Root, Selectable as _,
     Sizable as _, Theme, TitleBar,
 };
+use platform::labels::with_shortcut;
 // The schemes come from core, not from copies here. The shell only needs to
 // recognise what core emitted; two independent definitions are free to drift,
 // and the click handler would then quietly stop matching links the renderer
@@ -2679,7 +2680,7 @@ impl Reader {
                         reader_icon_button(
                             "reader-history-back",
                             IconName::ArrowLeft,
-                            "Back ⌥←",
+                            with_shortcut("Back", "alt-left"),
                             cx,
                         )
                         .disabled(self.history_ix == 0)
@@ -2691,7 +2692,7 @@ impl Reader {
                         reader_icon_button(
                             "reader-history-forward",
                             IconName::ArrowRight,
-                            "Forward ⌥→",
+                            with_shortcut("Forward", "alt-right"),
                             cx,
                         )
                         .disabled(self.history_ix + 1 >= self.history.len())
@@ -3042,7 +3043,7 @@ impl Reader {
                     .ghost()
                     .small()
                     .icon(IconName::ChevronUp)
-                    .tooltip("Previous match ⇧⏎")
+                    .tooltip(with_shortcut("Previous match", "shift-enter"))
                     .on_click(cx.listener(|this, _, _, cx| this.find_step(-1, cx))),
             )
             .child(
@@ -3335,7 +3336,7 @@ impl Reader {
                                 row.child(action(
                                     "folders-new-note",
                                     "icons/file-plus.svg",
-                                    "New File ⌘N",
+                                    with_shortcut("New File", "secondary-n"),
                                     |this, window, cx| {
                                         let folder = this
                                             .tree
