@@ -2338,14 +2338,20 @@ impl Reader {
                 .scroll_sections
                 .closed(section, &self.sidebar.collapsed)
         };
+        // Hidden notes follow Show hidden files here as in the tree (#635).
+        let shown = |path: &str| !self.tree.hidden_by_preference(path);
+        let recent: Vec<_> = self
+            .sidebar
+            .recent
+            .iter()
+            .filter(|(path, _)| shown(path))
+            .collect();
+        let pinned: Vec<_> = self.sidebar.pinned.iter().filter(|p| shown(p)).collect();
+        let inbox: Vec<_> = self.inbox.iter().filter(|i| shown(&i.path)).collect();
         let mut items = Vec::new();
-        items.push(SideItem::Header(
-            Section::Recent,
-            Some(self.sidebar.recent.len()),
-        ));
+        items.push(SideItem::Header(Section::Recent, Some(recent.len())));
         if open(Section::Recent) {
-            let recent = &self.sidebar.recent;
-            let shown = if self.recent_expanded {
+            let visible = if self.recent_expanded {
                 recent.len()
             } else {
                 recent.len().min(reader_sidebar::RECENT_SHOWN)
@@ -2353,7 +2359,7 @@ impl Reader {
             if recent.is_empty() {
                 items.push(SideItem::Empty("Notes you open appear here."));
             }
-            for (path, at) in &recent[..shown] {
+            for (path, at) in &recent[..visible] {
                 items.push(SideItem::Entry {
                     section: Section::Recent,
                     path: path.clone(),
@@ -2363,19 +2369,16 @@ impl Reader {
                     folder: false,
                 });
             }
-            if shown < recent.len() {
-                items.push(SideItem::More(recent.len() - shown));
+            if visible < recent.len() {
+                items.push(SideItem::More(recent.len() - visible));
             }
         }
-        items.push(SideItem::Header(
-            Section::Pinned,
-            Some(self.sidebar.pinned.len()),
-        ));
+        items.push(SideItem::Header(Section::Pinned, Some(pinned.len())));
         if open(Section::Pinned) {
-            if self.sidebar.pinned.is_empty() {
+            if pinned.is_empty() {
                 items.push(SideItem::Empty("Hover a note or folder to pin it."));
             }
-            for path in &self.sidebar.pinned {
+            for path in pinned {
                 items.push(SideItem::Entry {
                     section: Section::Pinned,
                     path: path.clone(),
@@ -2386,12 +2389,12 @@ impl Reader {
                 });
             }
         }
-        items.push(SideItem::Header(Section::Inbox, Some(self.inbox.len())));
+        items.push(SideItem::Header(Section::Inbox, Some(inbox.len())));
         if open(Section::Inbox) {
-            if self.inbox.is_empty() {
+            if inbox.is_empty() {
                 items.push(SideItem::Empty("No new unfiled notes."));
             }
-            for item in &self.inbox {
+            for item in inbox {
                 items.push(SideItem::Entry {
                     section: Section::Inbox,
                     path: item.path.clone(),
@@ -6931,6 +6934,92 @@ mod document_link_landing_tests {
                 .sidebar
                 .collapsed
                 .contains(&reader_sidebar::Section::Folders));
+        });
+    }
+
+    #[gpui::test]
+    fn sections_follow_show_hidden_files_live(cx: &mut gpui::TestAppContext) {
+        use reader_sidebar::{InboxItem, InboxReason, Section};
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| Reader::new(Opts::default(), window, cx));
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let view = reader.unwrap();
+        visual.run_until_parked();
+        let notes = ["Visible.md", ".Dot note.md", "_Hidden/Inside.md"];
+        let section_paths = |v: &Reader, section: Section| -> Vec<String> {
+            v.sidebar_items()
+                .into_iter()
+                .filter_map(|item| match item {
+                    SideItem::Entry {
+                        section: s, path, ..
+                    } if s == section => Some(path),
+                    _ => None,
+                })
+                .collect()
+        };
+        let header_count = |v: &Reader, section: Section| {
+            v.sidebar_items().into_iter().find_map(|item| match item {
+                SideItem::Header(s, count) if s == section => count,
+                _ => None,
+            })
+        };
+        view.update(visual, |v, cx| {
+            v.loading = None;
+            v.vault = Arc::new(Vault::from_note_paths(notes.map(String::from)));
+            v.sync_tree();
+            v.sidebar.show_hidden = true;
+            v.tree.set_show_hidden(true);
+            for (at, path) in notes.iter().enumerate() {
+                v.sidebar.record_open(path, at as u64);
+                v.sidebar.toggle_pin(path);
+            }
+            v.sidebar.toggle_pin("_Hidden");
+            v.inbox = notes
+                .iter()
+                .map(|path| InboxItem {
+                    path: path.to_string(),
+                    created: reader_sidebar::now(),
+                    reason: InboxReason::VaultRoot,
+                    domain: None,
+                })
+                .collect();
+            // Positive control: with Show hidden files on, every section lists
+            // the hidden notes, so their absence below is the filter's doing.
+            for section in [Section::Recent, Section::Pinned, Section::Inbox] {
+                let paths = section_paths(v, section);
+                assert!(
+                    paths.iter().any(|p| p == ".Dot note.md")
+                        && paths.iter().any(|p| p == "_Hidden/Inside.md"),
+                    "{section:?} with hidden files shown: {paths:?}"
+                );
+            }
+            assert!(section_paths(v, Section::Pinned).contains(&"_Hidden".to_string()));
+            // Switching it off hides them everywhere at once, as in the tree.
+            v.toggle_hidden_files(cx);
+            assert!(!v
+                .tree
+                .rows
+                .iter()
+                .any(|row| row.path.starts_with(['.', '_'])));
+            for section in [Section::Recent, Section::Pinned, Section::Inbox] {
+                assert_eq!(
+                    section_paths(v, section),
+                    ["Visible.md"],
+                    "{section:?} with hidden files off"
+                );
+                assert_eq!(header_count(v, section), Some(1), "{section:?} count");
+            }
+            // And back on without a rescan or recomputation.
+            v.toggle_hidden_files(cx);
+            assert_eq!(section_paths(v, Section::Inbox).len(), notes.len());
+            assert_eq!(header_count(v, Section::Pinned), Some(notes.len() + 1));
         });
     }
 

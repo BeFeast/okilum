@@ -237,6 +237,13 @@ impl Tree {
         self.show_hidden
     }
 
+    /// Whether Show hidden files being off hides `path`. Recent, Pinned and
+    /// Inbox use this so they list what the tree lists (#635); a navigation
+    /// reveal applies to the tree only.
+    pub fn hidden_by_preference(&self, path: &str) -> bool {
+        !self.show_hidden && hidden(path) && !self.template_branch(path)
+    }
+
     pub fn set_show_hidden(&mut self, show: bool) {
         if self.show_hidden != show {
             self.show_hidden = show;
@@ -540,6 +547,44 @@ mod tests {
         t.set_show_hidden(true);
         assert!(paths(&t).contains(&"_AgentContract.md".to_string()));
         assert!(paths(&t).contains(&"_System".to_string()));
+    }
+
+    #[test]
+    fn hidden_by_preference_matches_tree_visibility() {
+        use EntryKind::*;
+        let entries = [
+            entry("Life", Directory),
+            entry("Life/plan.md", Markdown),
+            entry(".dot.md", Markdown),
+            entry("_System", Directory),
+            entry("_System/tool.md", Markdown),
+            entry("_Assets", Directory),
+            entry("_Assets/Templates", Directory),
+            entry("_Assets/Templates/Daily.md", Markdown),
+        ];
+        let mut t = Tree::default();
+        t.refresh(Path::new("/vault"), &entries);
+        for path in ["Life", "_System", "_Assets"] {
+            t.toggle(path);
+        }
+        t.toggle("_Assets/Templates");
+        let rows = paths(&t);
+        for e in &entries {
+            assert_eq!(
+                t.hidden_by_preference(&e.path),
+                !rows.contains(&e.path.as_str()),
+                "{} must match the tree",
+                e.path
+            );
+        }
+        assert!(t.hidden_by_preference(".dot.md"));
+        assert!(t.hidden_by_preference("_System/tool.md"));
+        assert!(!t.hidden_by_preference("_Assets/Templates/Daily.md"));
+        // A navigation reveal is tree-only and does not unhide sections.
+        t.reveal("_System/tool.md");
+        assert!(t.hidden_by_preference("_System/tool.md"));
+        t.set_show_hidden(true);
+        assert!(!entries.iter().any(|e| t.hidden_by_preference(&e.path)));
     }
 
     #[test]

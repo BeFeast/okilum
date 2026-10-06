@@ -250,7 +250,9 @@ not shown; their notes stay reachable through links and search. Archive folders
 the current note. Navigating to a hidden note shows its branch muted with a
 «hidden» marker until the next note; the tree never highlights a neighbour
 instead. «Show hidden files» (eye button on the Folders header, … menu, ⇧⌘. — bound as `cmd->`, the way macOS reports it) lists
-them all and is remembered per vault (#395). Hovering the Folders header
+them all and is remembered per vault (#395). Recent, Pinned and Inbox follow the
+same rule and update as soon as it changes; quick open and search still find
+hidden notes (#635). Hovering the Folders header
 shows «Collapse all» and «Focus current» (only the path to the open note stays
 expanded; ⇧⌘← while browsing). ⌥-click on a folder, ⌥→/⌥← on the selected folder and the
 folder context menu («Expand/Collapse all subfolders») act on the folder and
