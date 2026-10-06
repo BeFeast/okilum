@@ -37,8 +37,6 @@ comrak gfm 652 deviation:tagfilter            # raw HTML is not filtered
 # reader
 reader commonmark 96 deviation:front_matter   # leading --- block is YAML front matter
 reader commonmark 98 deviation:front_matter   # leading --- block is YAML front matter
-reader commonmark 216 deviation:source_links  # bug: link rewrite spliced at a wrong Comrak range
-reader commonmark 510 deviation:source_links  # bug: link rewrite spliced at a wrong Comrak range
 reader commonmark 559 deviation:source_links  # [[...]] is an Obsidian wikilink
 reader commonmark 590 deviation:combined      # ![[...]] is an Obsidian embed
 reader commonmark 602 deviation:autolink      # GFM autolink literals are on everywhere
@@ -47,7 +45,6 @@ reader commonmark 611 deviation:autolink      # GFM autolink literals are on eve
 reader commonmark 612 deviation:autolink      # GFM autolink literals are on everywhere
 reader gfm 66 deviation:front_matter          # leading --- block is YAML front matter
 reader gfm 68 deviation:front_matter          # leading --- block is YAML front matter
-reader gfm 185 deviation:source_links         # bug: link rewrite spliced at a wrong Comrak range
 reader gfm 398 spec-drift                     # CommonMark 0.31.2 changed this example
 reader gfm 426 spec-drift                     # CommonMark 0.31.2 changed this example
 reader gfm 434 spec-drift                     # CommonMark 0.31.2 changed this example
@@ -57,7 +54,6 @@ reader gfm 473 spec-drift                     # CommonMark 0.31.2 changed this e
 reader gfm 474 spec-drift                     # CommonMark 0.31.2 changed this example
 reader gfm 475 spec-drift                     # CommonMark 0.31.2 changed this example
 reader gfm 477 spec-drift                     # CommonMark 0.31.2 changed this example
-reader gfm 518 deviation:source_links         # bug: link rewrite spliced at a wrong Comrak range
 reader gfm 567 deviation:source_links         # [[...]] is an Obsidian wikilink
 reader gfm 598 deviation:combined             # ![[...]] is an Obsidian embed
 reader gfm 610 deviation:autolink             # GFM autolink literals are on everywhere
