@@ -160,7 +160,7 @@ jobs:
       - name: Reader tests (required)
         # The Reader's workspace crates are core and shell; all workspace code
         # still passes fmt and clippy above. Brain is frozen under #380.
-        run: cargo test -p tessera-core -p tessera-shell
+        run: cargo test -p tessera-core -p tessera-shell -p tessera-sync
 
       - name: Reader-only feature boundary
         run: |

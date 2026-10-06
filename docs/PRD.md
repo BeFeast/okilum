@@ -23,6 +23,8 @@ provider jobs, canonical enrollment or deployment.
 
 **Single-file viewer extension (2026-10-06, #560):** [quick viewer](single-file-viewer.md) defines document-only startup, lazy folder browsing and explicit vault upgrade.
 
+**Sync extension (2026-10-06, #574):** [explicit Sync enrollment](sync-enrollment.md) defines the approved opt-in background/reuse contract. Slice 1 tests compatibility only; it does not enable Sync in the reader.
+
 ## 1. What Tessera is
 
 A local-first desktop knowledge environment that replaces Obsidian without taking
