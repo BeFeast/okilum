@@ -1606,7 +1606,7 @@ impl Reader {
                             && this.current_rel == requested_document
                         {
                             this.link_notice =
-                                Some(format!("Reading history could not be saved: {error:#}"));
+                                Some(format!("Reading history could not be saved: {error:#}").into());
                             cx.notify();
                         }
                     });
@@ -5646,7 +5646,7 @@ impl Reader {
                         this.publish_quick_folder(updated, cx);
                     }
                     Err(error) => {
-                        this.link_notice = Some(format!("Cannot list folder: {error:#}"));
+                        this.link_notice = Some(format!("Cannot list folder: {error:#}").into());
                         cx.notify();
                     }
                 }

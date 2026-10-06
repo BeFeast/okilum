@@ -251,6 +251,7 @@ impl Reader {
             cx.notify();
             return;
         }
+
         self.creation = None;
         let was_expanded = self
             .tree
@@ -537,6 +538,7 @@ impl Reader {
                         Err(error) => {
                             this.note_move_pending = false;
                             this.rename_error(format!("{error:#}"), cx);
+
                             cx.notify();
                             None
                         }
@@ -704,6 +706,7 @@ impl Reader {
             Err(error) => {
                 self.note_move_pending = false;
                 self.rename_error(format!("{error:#}"), cx);
+
                 cx.notify();
                 return;
             }
@@ -813,7 +816,7 @@ impl Reader {
                 if showing_file || next_current == self.current_rel {
                     self.sync_move_input(window, cx);
                     if let Some(warning) = moved.warning {
-                        self.link_notice = Some(warning);
+                        self.link_notice = Some(warning.into());
                     } else {
                         self.move_undo_toast(
                             journal.clone(),
@@ -863,8 +866,8 @@ impl Reader {
                 }
                 if let Some(warning) = moved.warning {
                     self.link_notice = Some(match self.link_notice.take() {
-                        Some(error) => format!("{warning} {error}"),
-                        None => warning,
+                        Some(error) => format!("{warning} {error}").into(),
+                        None => warning.into(),
                     });
                 } else {
                     self.move_undo_toast(
@@ -891,7 +894,7 @@ impl Reader {
         let operations = match Operation::list(&state, &self.vault_root) {
             Ok(paths) => paths,
             Err(error) => {
-                self.link_notice = Some(format!("Cannot read move recovery: {error:#}"));
+                self.link_notice = Some(format!("Cannot read move recovery: {error:#}").into());
                 cx.notify();
                 return;
             }
@@ -915,7 +918,7 @@ impl Reader {
                     ),
                 )),
                 Err(error) => {
-                    self.link_notice = Some(format!("Cannot read move recovery: {error:#}"));
+                    self.link_notice = Some(format!("Cannot read move recovery: {error:#}").into());
                     cx.notify();
                     return;
                 }
@@ -947,7 +950,7 @@ impl Reader {
         let operation = match Operation::load(&path) {
             Ok(op) => op,
             Err(error) => {
-                self.link_notice = Some(error.to_string());
+                self.link_notice = Some(error.to_string().into());
                 cx.notify();
                 return;
             }
@@ -969,7 +972,7 @@ impl Reader {
                     Ok(()) => reader_toast::transient("Link move reverted. Original bytes restored.", window, cx),
                     Err(error) => this.link_notice = Some(format!(
                         "Recovery stopped: {error:#}. Original bytes are retained; resolve the reported file and try again."
-                    )),
+                    ).into()),
                 }
                 cx.notify();
             });
