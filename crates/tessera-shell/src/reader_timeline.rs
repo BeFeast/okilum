@@ -47,7 +47,7 @@ fn age(created: u64) -> String {
 
 fn delta(old: &str, current: &str) -> String {
     format!(
-        "{:+} bytes · {:+} lines",
+        "{:+} B · {:+} L",
         old.len() as i64 - current.len() as i64,
         old.lines().count() as i64 - current.lines().count() as i64
     )
@@ -435,10 +435,7 @@ impl Reader {
             .gap_2()
             .p_3()
             .child(
-                Button::new("history-close")
-                    .small()
-                    .ghost()
-                    .label("On this page")
+                reader_icon_button("history-close", IconName::ArrowLeft, "On this page", cx)
                     .on_click(cx.listener(|r, _, window, cx| {
                         r.timeline = None;
                         r.focus_handle.focus(window, cx);
@@ -460,40 +457,60 @@ impl Reader {
                     .overflow_y_scroll()
                     .gap_1()
                     .children(t.versions.iter().enumerate().map(|(index, v)| {
-                        div()
+                        let details = format!(
+                            "{} · {}{}",
+                            date(v.created),
+                            v.label,
+                            if v.protected { " · Protected" } else { "" }
+                        );
+                        h_flex()
                             .id(("history-version", index))
+                            .debug_selector(move || format!("history-version-{index}"))
+                            .min_w_0()
+                            .min_h(px(36.))
+                            .gap_2()
+                            .px_2()
+                            .py_1()
                             .cursor_pointer()
                             .rounded_md()
-                            .p_2()
                             .bg(if t.selected == Some(index) {
                                 cx.theme().accent
                             } else {
                                 cx.theme().background
                             })
+                            .hover(|d| d.bg(cx.theme().accent))
+                            .tooltip(move |w, cx| {
+                                gpui_component::tooltip::Tooltip::new(details.clone()).build(w, cx)
+                            })
                             .on_click(cx.listener(move |r, _, window, cx| {
                                 r.select_timeline_version(index, window, cx)
                             }))
-                            .child(div().text_sm().child(age(v.created)))
-                            .child(div().text_xs().text_color(faint).child(date(v.created)))
+                            .child(div().flex_1().min_w_0().text_sm().child(age(v.created)))
+                            .when(v.protected, |d| {
+                                d.child(Icon::new(IconName::Star).size(px(12.)).text_color(faint))
+                            })
                             .child(
-                                div().text_xs().text_color(faint).child(
-                                    t.current
-                                        .as_deref()
-                                        .map(|current| delta(&v.text, current))
-                                        .unwrap_or_else(|| {
-                                            format!(
-                                                "{} bytes · {} lines",
-                                                v.text.len(),
-                                                v.text.lines().count()
-                                            )
-                                        }),
-                                ),
+                                div()
+                                    .flex_shrink_0()
+                                    .rounded(px(4.))
+                                    .px_1()
+                                    .py(px(2.))
+                                    .text_xs()
+                                    .text_color(faint)
+                                    .bg(cx.theme().muted)
+                                    .child(
+                                        t.current
+                                            .as_deref()
+                                            .map(|current| delta(&v.text, current))
+                                            .unwrap_or_else(|| {
+                                                format!(
+                                                    "{} B · {} L",
+                                                    v.text.len(),
+                                                    v.text.lines().count()
+                                                )
+                                            }),
+                                    ),
                             )
-                            .child(div().text_xs().child(format!(
-                                "{}{}",
-                                v.label,
-                                if v.protected { " · Protected" } else { "" }
-                            )))
                     })),
             )
             .into_any_element()
@@ -522,11 +539,12 @@ impl Reader {
                     v_flex()
                         .flex_none()
                         .gap_1()
-                        .p_3()
+                        .px_4()
+                        .py_2()
                         .border_b_1()
                         .border_color(cx.theme().border)
-                        .child(div().text_sm().child(format!(
-                            "{} · Version from {}",
+                        .child(div().min_w_0().text_sm().truncate().child(format!(
+                            "{} · {}",
                             self.current_title,
                             date(version.created)
                         )))
@@ -535,57 +553,70 @@ impl Reader {
                                 .flex_wrap()
                                 .gap_1()
                                 .child(
-                                    Button::new("history-restore")
-                                        .small()
-                                        .primary()
-                                        .label("Restore")
-                                        .disabled(
-                                            t.loading || version.link_move || t.current.is_none(),
-                                        )
-                                        .on_click(
-                                            cx.listener(|r, _, w, cx| r.restore_timeline(w, cx)),
-                                        ),
+                                    reader_icon_button(
+                                        "history-restore",
+                                        IconName::Undo2,
+                                        "Restore this version",
+                                        cx,
+                                    )
+                                    .disabled(t.loading || version.link_move || t.current.is_none())
+                                    .on_click(cx.listener(|r, _, w, cx| r.restore_timeline(w, cx))),
                                 )
                                 .child(
-                                    Button::new("history-changes")
-                                        .disabled(
-                                            t.loading || t.source.is_none() || t.current.is_none(),
-                                        )
-                                        .small()
-                                        .ghost()
-                                        .label(if t.changes {
+                                    reader_icon_button(
+                                        "history-changes",
+                                        IconName::Replace,
+                                        if t.changes {
                                             "Hide changes"
                                         } else {
                                             "Show changes"
-                                        })
-                                        .on_click(cx.listener(|r, _, w, cx| {
-                                            r.show_timeline_changes(w, cx)
-                                        })),
+                                        },
+                                        cx,
+                                    )
+                                    .selected(t.changes)
+                                    .disabled(
+                                        t.loading || t.source.is_none() || t.current.is_none(),
+                                    )
+                                    .on_click(
+                                        cx.listener(|r, _, w, cx| r.show_timeline_changes(w, cx)),
+                                    ),
                                 )
                                 .child(
-                                    Button::new("history-source")
-                                        .small()
-                                        .ghost()
-                                        .label(if t.source_mode { "Preview" } else { "Source" })
-                                        .on_click(cx.listener(|r, _, w, cx| {
-                                            r.toggle_timeline_source(w, cx)
-                                        })),
+                                    reader_icon_button(
+                                        "history-source",
+                                        if t.source_mode {
+                                            IconName::Eye
+                                        } else {
+                                            IconName::FileText
+                                        },
+                                        if t.source_mode { "Preview" } else { "Source" },
+                                        cx,
+                                    )
+                                    .selected(t.source_mode)
+                                    .on_click(
+                                        cx.listener(|r, _, w, cx| r.toggle_timeline_source(w, cx)),
+                                    ),
                                 )
                                 .child(
-                                    Button::new("history-back")
-                                        .small()
-                                        .ghost()
-                                        .label("Back to current")
-                                        .on_click(
-                                            cx.listener(|r, _, w, cx| r.back_from_timeline(w, cx)),
-                                        ),
+                                    reader_icon_button(
+                                        "history-back",
+                                        IconName::ArrowLeft,
+                                        "Back to current (Esc)",
+                                        cx,
+                                    )
+                                    .on_click(
+                                        cx.listener(|r, _, w, cx| r.back_from_timeline(w, cx)),
+                                    ),
                                 )
                                 .child(
-                                    Button::new("history-save-copy")
-                                        .small()
-                                        .ghost()
-                                        .label("Save as recovered note…")
-                                        .on_click(cx.listener(move |r, _, w, cx| {
+                                    reader_icon_button(
+                                        "history-save-copy",
+                                        IconName::Copy,
+                                        "Save as recovered note…",
+                                        cx,
+                                    )
+                                    .on_click(cx.listener(
+                                        move |r, _, w, cx| {
                                             let selected = r
                                                 .active_timeline()
                                                 .filter(|t| t.id == timeline_id)
@@ -597,17 +628,20 @@ impl Reader {
                                             if let Some((version, root)) = selected {
                                                 r.save_source_copy(version, root, w, cx);
                                             }
-                                        })),
+                                        },
+                                    )),
                                 )
                                 .when(version.link_move, |d| {
                                     d.child(
-                                        Button::new("history-recover-move")
-                                            .small()
-                                            .ghost()
-                                            .label("Recover whole link move…")
-                                            .on_click(cx.listener(|r, _, w, cx| {
-                                                r.recover_link_moves(w, cx)
-                                            })),
+                                        reader_icon_button(
+                                            "history-recover-move",
+                                            IconName::Network,
+                                            "Recover whole link move…",
+                                            cx,
+                                        )
+                                        .on_click(
+                                            cx.listener(|r, _, w, cx| r.recover_link_moves(w, cx)),
+                                        ),
                                     )
                                 }),
                         )
@@ -661,7 +695,7 @@ mod tests {
 
     #[test]
     fn comparison_handles_insertions_deletions_and_empty_files() {
-        assert_eq!(delta("a\nb\n", "a\n"), "+2 bytes · +1 lines");
+        assert_eq!(delta("a\nb\n", "a\n"), "+2 B · +1 L");
         assert!(changes("a\nb\nz", "a\nc\nz").contains("- c\n+ b\n"));
         assert!(changes("", "removed").contains("- removed"));
         assert!(changes("added", "").contains("+ added"));
