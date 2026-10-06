@@ -46,3 +46,14 @@ Exact copies carried between notes collapse under their first source group with
 an expandable “×N notes” action. Every original backlink stays available on
 expansion. Different statuses, dates, priorities, or two occurrences in the same
 note remain separate. Explicit query groups never collapse across group boundaries.
+
+Counts distinguish displayed tasks from all matching occurrences in notes, and
+exclude empty/metadata-only checkboxes. For an immediately preceding standalone
+heading, the count is a muted badge beside it; a query without such a heading has
+its own compact Tasks header. Counts refresh with the index and local date.
+
+Source-note headings use a human date for ISO date filenames. Grouped rows omit
+the repeated source name; clicking the task title still opens that exact task.
+Expanded copies and other grouping modes retain source backlinks. Dataview and
+DataviewJS blocks show a collapsed unsupported placeholder with an explicit
+Show source action. Their code is never executed.
