@@ -249,7 +249,7 @@ fn auth_schema_upgrade_preserves_existing_capture_and_replay() {
         .unwrap();
     Connection::open(&path)
         .unwrap()
-        .execute_batch("DROP TABLE IF EXISTS execution_outputs; DROP TABLE IF EXISTS execution_results; DROP TABLE IF EXISTS execution_launches; DROP TABLE execution_replies; DROP TABLE execution_questions; DROP TABLE execution_mutations; DROP TABLE execution_briefs; DROP TABLE execution_projects; DROP TABLE publications; DROP TABLE discussion_turns; DROP TABLE auth_owner; PRAGMA user_version=1;")
+        .execute_batch("DROP TABLE IF EXISTS execution_outputs; DROP TABLE IF EXISTS execution_results; DROP TABLE IF EXISTS execution_launches; DROP TABLE execution_replies; DROP TABLE execution_questions; DROP TABLE execution_mutations; DROP TABLE execution_briefs; DROP TABLE execution_projects; DROP TABLE publications; DROP TABLE discussion_turns; DROP TABLE auth_owner; DROP TABLE auth_passkeys; PRAGMA user_version=1;")
         .unwrap();
     assert_eq!(
         Store::open(&path)

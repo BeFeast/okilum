@@ -218,7 +218,7 @@ fn guarded_launch_progress_cannot_requeue_or_change_source_identity() {
     drop(s);
     let db = rusqlite::Connection::open(&path).unwrap();
     db.execute_batch(
-        "DROP TABLE execution_outputs; DROP TABLE execution_results; DROP TABLE execution_launches; PRAGMA user_version=8;",
+        "DROP TABLE execution_outputs; DROP TABLE execution_results; DROP TABLE execution_launches; DROP TABLE auth_passkeys; PRAGMA user_version=8;",
     )
     .unwrap();
     drop(db);

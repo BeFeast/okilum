@@ -67,3 +67,6 @@ dialog{border:1px solid var(--line);border-radius:10px;background:var(--surface)
 @media(max-width:760px){.thought-conversation{padding:24px 22px}.original-thought #detail-text{font-size:21px}.message-bubble{font-size:14px;max-width:94%}#discussion-form #question{font-size:16px}#executor-dialog{padding:18px 24px}#executor-dialog .dialog-heading{margin-bottom:32px}#executor-answer-fields .answer-card h3{font-size:26px}.publication-sheet{padding:22px 22px max(24px,env(safe-area-inset-bottom))}.publication-sheet #draft{font-size:16px}}
 
 #executor-dialog .dialog-heading{justify-content:flex-start}#executor-dialog .dialog-heading .section-label{margin-right:auto}
+
+.device-list li{display:flex;align-items:center;gap:12px;padding:16px 0;border-bottom:1px solid var(--line)}.device-list li>div{flex:1;min-width:0}.device-list small{display:block;color:var(--muted);margin-top:5px}.device-list button{font-size:12px}.pairing-code{font-size:26px;letter-spacing:3px;font-weight:600}#add-passkey-form>button,#join-device-save{margin-top:12px}#invite-link{font-size:11px;margin-bottom:8px}
+@media(max-width:760px){#mobile-settings-body #devices-settings{gap:10px}#mobile-settings-body #devices-settings:after{content:'Passkeys & devices';font-size:13px}#devices-dialog,#join-device-dialog{max-height:90dvh;overflow:auto}}

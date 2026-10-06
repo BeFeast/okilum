@@ -1,5 +1,5 @@
-const CACHE = 'tessera-inbox-shell-v15';
-const SHELL = ['/', '/app.js', '/launches.js', '/forgejo.js', '/projects.js', '/ui.js', '/noto-sans-400.ttf', '/noto-sans-600.ttf', '/questions.js', '/questions-view.js', '/outbox.js', '/publication-form.js', '/webauthn.js', '/style.css', '/manifest.webmanifest', '/icon.svg', '/icon-dark.svg'];
+const CACHE = 'tessera-inbox-shell-v16';
+const SHELL = ['/', '/devices.js', '/app.js', '/launches.js', '/forgejo.js', '/projects.js', '/ui.js', '/noto-sans-400.ttf', '/noto-sans-600.ttf', '/questions.js', '/questions-view.js', '/outbox.js', '/publication-form.js', '/webauthn.js', '/style.css', '/manifest.webmanifest', '/icon.svg', '/icon-dark.svg'];
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL)).then(() => self.skipWaiting()));
 });

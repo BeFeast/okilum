@@ -146,7 +146,7 @@ fn migration_preserves_captures_and_bounds_discussion() {
     rusqlite::Connection::open(&path)
         .unwrap()
         .execute_batch(
-            "DROP TABLE IF EXISTS execution_outputs; DROP TABLE IF EXISTS execution_results; DROP TABLE IF EXISTS execution_launches; DROP TABLE execution_replies; DROP TABLE execution_questions; DROP TABLE execution_mutations; DROP TABLE execution_briefs; DROP TABLE execution_projects; DROP TABLE publications; DROP TABLE discussion_turns; PRAGMA user_version=2;",
+            "DROP TABLE IF EXISTS execution_outputs; DROP TABLE IF EXISTS execution_results; DROP TABLE IF EXISTS execution_launches; DROP TABLE execution_replies; DROP TABLE execution_questions; DROP TABLE execution_mutations; DROP TABLE execution_briefs; DROP TABLE execution_projects; DROP TABLE publications; DROP TABLE discussion_turns; DROP TABLE auth_passkeys; PRAGMA user_version=2;",
         )
         .unwrap();
     let mut store = Store::open(&path).unwrap();

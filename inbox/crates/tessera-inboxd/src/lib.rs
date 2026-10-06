@@ -1,6 +1,8 @@
 //! Detached Inbox backend.
 pub mod auth;
 pub mod bridge;
+pub mod devices;
+mod devices_http;
 pub mod execution;
 pub mod http;
 pub mod launch;

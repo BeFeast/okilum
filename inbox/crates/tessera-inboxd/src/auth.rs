@@ -24,6 +24,12 @@ pub enum Error {
     Rejected,
     #[error("authentication rate limit reached")]
     Limited,
+    #[error("the last passkey cannot be revoked")]
+    LastKey,
+    #[error("invalid passkey name")]
+    InvalidName,
+    #[error("confirm with a passkey before changing devices")]
+    RecentRequired,
     #[error("owner is already enrolled")]
     Enrolled,
     #[error("configured HTTPS origin does not match this Inbox")]
@@ -42,25 +48,40 @@ impl From<serde_json::Error> for Error {
     }
 }
 
-enum Ceremony {
+pub(crate) enum Ceremony {
+    Add {
+        state: PasskeyRegistration,
+        session_hash: String,
+        name: String,
+    },
+    Device {
+        state: PasskeyRegistration,
+        invite_hash: String,
+    },
     Register {
         state: PasskeyRegistration,
         bootstrap_hash: String,
     },
     Login(PasskeyAuthentication),
 }
-struct Flow {
+pub(crate) struct Flow {
     expires: i64,
     ceremony: Ceremony,
 }
 
+pub(crate) struct Session {
+    pub expires: i64,
+    pub verified: i64,
+    pub key: String,
+}
 pub struct Auth {
     pub store: Store,
     pub origin: String,
     pub owner: OwnerId,
-    webauthn: Webauthn,
-    flows: HashMap<String, Flow>,
-    sessions: HashMap<String, i64>,
+    pub(crate) webauthn: Webauthn,
+    pub(crate) flows: HashMap<String, Flow>,
+    pub(crate) sessions: HashMap<String, Session>,
+    pub(crate) invitations: HashMap<String, crate::devices::Invitation>,
     starts: VecDeque<i64>,
 }
 impl Auth {
@@ -106,6 +127,7 @@ impl Auth {
             webauthn,
             flows: HashMap::new(),
             sessions: HashMap::new(),
+            invitations: HashMap::new(),
             starts: VecDeque::new(),
         })
     }
@@ -118,7 +140,7 @@ impl Auth {
         }
         let token = secret();
         let updated = self.store.connection.execute(
-            "UPDATE auth_owner SET bootstrap_hash=?1,bootstrap_expires=?2 WHERE singleton=1 AND passkey IS NULL",
+            "UPDATE auth_owner SET bootstrap_hash=?1,bootstrap_expires=?2 WHERE singleton=1 AND NOT EXISTS(SELECT 1 FROM auth_passkeys)",
             params![digest(&token), now + 600],
         )?;
         if updated != 1 {
@@ -167,23 +189,26 @@ impl Auth {
             .webauthn
             .finish_passkey_registration(credential, &state)
             .map_err(|_| Error::Rejected)?;
-        let changed = self.store.connection.execute(
-            "UPDATE auth_owner SET passkey=?1,bootstrap_hash=NULL,bootstrap_expires=NULL
-             WHERE singleton=1 AND passkey IS NULL AND bootstrap_hash=?2 AND bootstrap_expires>?3",
-            params![serde_json::to_string(&passkey)?, bootstrap_hash, now],
-        )?;
+        let id = Uuid::new_v4().to_string();
+        let tx = self.store.connection.transaction()?;
+        let changed = tx.execute("UPDATE auth_owner SET bootstrap_hash=NULL,bootstrap_expires=NULL WHERE singleton=1 AND NOT EXISTS(SELECT 1 FROM auth_passkeys) AND bootstrap_hash=?1 AND bootstrap_expires>?2",params![bootstrap_hash,now])?;
         if changed != 1 {
             return Err(Error::Unauthorized);
         }
-        Ok(self.session(now))
+        tx.execute("INSERT INTO auth_passkeys(id,name,passkey,created_at) VALUES(?1,'Original passkey',?2,?3)",params![id,serde_json::to_string(&passkey)?,now])?;
+        tx.commit()?;
+        Ok(self.session(now, id))
     }
 
     pub fn login_start(&mut self, now: i64) -> Result<(String, RequestChallengeResponse), Error> {
         self.limit(now)?;
-        let key = self.passkey()?.ok_or(Error::Unauthorized)?;
+        let keys: Vec<Passkey> = self.keys()?.into_iter().map(|(_, key)| key).collect();
+        if keys.is_empty() {
+            return Err(Error::Unauthorized);
+        }
         let (options, state) = self
             .webauthn
-            .start_passkey_authentication(&[key])
+            .start_passkey_authentication(&keys)
             .map_err(|_| Error::Rejected)?;
         let flow = self.insert_flow(Ceremony::Login(state), now);
         Ok((flow, options))
@@ -202,22 +227,26 @@ impl Auth {
             .webauthn
             .finish_passkey_authentication(credential, &state)
             .map_err(|_| Error::Rejected)?;
-        let mut key = self.passkey()?.ok_or(Error::Unauthorized)?;
+        let (id, mut key) = self
+            .keys()?
+            .into_iter()
+            .find(|(_, key)| key.cred_id() == result.cred_id())
+            .ok_or(Error::Unauthorized)?;
         if key.update_credential(&result).is_none() {
             return Err(Error::Rejected);
         }
         self.store.connection.execute(
-            "UPDATE auth_owner SET passkey=?1 WHERE singleton=1",
-            [serde_json::to_string(&key)?],
+            "UPDATE auth_passkeys SET passkey=?1,last_used=?2 WHERE id=?3",
+            params![serde_json::to_string(&key)?, now, id],
         )?;
         // Other pending login states contain older credential counters. Require
         // a fresh challenge rather than authenticate against stale snapshots.
         self.flows.clear();
-        Ok(self.session(now))
+        Ok(self.session(now, id))
     }
 
     pub fn authenticate(&mut self, token: &str, now: i64) -> Result<OwnerId, Error> {
-        self.sessions.retain(|_, expiry| *expiry > now);
+        self.sessions.retain(|_, session| session.expires > now);
         if !self.sessions.contains_key(&digest(token)) {
             return Err(Error::Unauthorized);
         }
@@ -227,24 +256,29 @@ impl Auth {
         self.sessions.remove(&digest(token));
     }
 
+    pub(crate) fn keys(&self) -> Result<Vec<(String, Passkey)>, Error> {
+        let mut query = self
+            .store
+            .connection
+            .prepare("SELECT id,passkey FROM auth_passkeys ORDER BY id")?;
+        let rows = query.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        rows.map(|row| {
+            let (id, key) = row?;
+            Ok((id, serde_json::from_str(&key)?))
+        })
+        .collect()
+    }
     fn passkey(&self) -> Result<Option<Passkey>, Error> {
-        let value: Option<String> = self.store.connection.query_row(
-            "SELECT passkey FROM auth_owner WHERE singleton=1",
-            [],
-            |r| r.get(0),
-        )?;
-        value
-            .map(|s| serde_json::from_str(&s).map_err(Error::from))
-            .transpose()
+        Ok(self.keys()?.into_iter().next().map(|(_, key)| key))
     }
     fn check_bootstrap(&self, hash: &str, now: i64) -> Result<(), Error> {
         let found = self.store.connection.query_row(
-            "SELECT 1 FROM auth_owner WHERE singleton=1 AND passkey IS NULL AND bootstrap_hash=?1 AND bootstrap_expires>?2",
+            "SELECT 1 FROM auth_owner WHERE singleton=1 AND NOT EXISTS(SELECT 1 FROM auth_passkeys) AND bootstrap_hash=?1 AND bootstrap_expires>?2",
             params![hash,now], |_|Ok(()),
         ).optional()?;
         found.ok_or(Error::Unauthorized)
     }
-    fn limit(&mut self, now: i64) -> Result<(), Error> {
+    pub(crate) fn limit(&mut self, now: i64) -> Result<(), Error> {
         self.flows.retain(|_, v| v.expires > now);
         while self.starts.front().is_some_and(|v| *v <= now - 60) {
             self.starts.pop_front();
@@ -255,7 +289,7 @@ impl Auth {
         self.starts.push_back(now);
         Ok(())
     }
-    fn insert_flow(&mut self, ceremony: Ceremony, now: i64) -> String {
+    pub(crate) fn insert_flow(&mut self, ceremony: Ceremony, now: i64) -> String {
         let token = secret();
         self.flows.insert(
             digest(&token),
@@ -266,33 +300,40 @@ impl Auth {
         );
         token
     }
-    fn take_flow(&mut self, token: &str, now: i64) -> Result<Ceremony, Error> {
+    pub(crate) fn take_flow(&mut self, token: &str, now: i64) -> Result<Ceremony, Error> {
         self.flows
             .remove(&digest(token))
             .filter(|v| v.expires > now)
             .map(|v| v.ceremony)
             .ok_or(Error::Unauthorized)
     }
-    fn session(&mut self, now: i64) -> String {
-        self.sessions.retain(|_, expiry| *expiry > now);
+    fn session(&mut self, now: i64, key: String) -> String {
+        self.sessions.retain(|_, session| session.expires > now);
         if self.sessions.len() >= MAX_SESSIONS {
             if let Some(oldest) = self
                 .sessions
                 .iter()
-                .min_by_key(|(_, t)| *t)
+                .min_by_key(|(_, session)| session.expires)
                 .map(|(k, _)| k.clone())
             {
                 self.sessions.remove(&oldest);
             }
         }
         let token = secret();
-        self.sessions.insert(digest(&token), now + SESSION_SECONDS);
+        self.sessions.insert(
+            digest(&token),
+            Session {
+                expires: now + SESSION_SECONDS,
+                verified: now,
+                key,
+            },
+        );
         token
     }
 }
-fn secret() -> String {
+pub(crate) fn secret() -> String {
     format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
 }
-fn digest(value: &str) -> String {
+pub(crate) fn digest(value: &str) -> String {
     format!("{:x}", Sha256::digest(value.as_bytes()))
 }

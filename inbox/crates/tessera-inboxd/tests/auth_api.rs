@@ -1161,3 +1161,150 @@ async fn discussion_finishes_without_client_and_replay_calls_provider_once() {
     assert_eq!(original["original_text"], "Original");
     provider_task.abort();
 }
+
+#[tokio::test]
+async fn passkey_routes_enforce_origin_session_and_recent_confirmation() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut backend = auth(&dir.path().join("db"));
+    let now = seconds();
+    let bootstrap = backend.bootstrap(now - 301).unwrap();
+    let (flow, options) = backend.register_start(&bootstrap, now - 301).unwrap();
+    let mut key = WebauthnAuthenticator::new(SoftPasskey::new(true));
+    let credential = key
+        .do_registration(Url::parse(ORIGIN).unwrap(), options)
+        .unwrap();
+    let session = format!(
+        "__Host-inbox-session={}",
+        backend
+            .register_finish(&flow, &credential, now - 301)
+            .unwrap()
+    );
+    let app = router(backend);
+    assert_eq!(
+        call(&app, "GET", "/api/v1/passkeys", json!({}), None, None)
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (status, keys, _) = call(
+        &app,
+        "GET",
+        "/api/v1/passkeys",
+        json!({}),
+        Some(&session),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(keys["keys"].as_array().unwrap().len(), 1);
+    for (path, body) in [
+        ("/api/v1/passkeys/add/start", json!({"name":"Phone"})),
+        (
+            "/api/v1/passkeys/revoke",
+            json!({"id":keys["keys"][0]["id"]}),
+        ),
+        ("/api/v1/devices/invitations", json!({})),
+        (
+            "/api/v1/devices/approve",
+            json!({"id":"unknown","code":"unknown"}),
+        ),
+    ] {
+        assert_eq!(
+            call(
+                &app,
+                "POST",
+                path,
+                body.clone(),
+                Some(&session),
+                Some("https://foreign.example")
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            call(&app, "POST", path, body.clone(), None, Some(ORIGIN))
+                .await
+                .0,
+            StatusCode::UNAUTHORIZED
+        );
+        let (status, body, cookies) =
+            call(&app, "POST", path, body, Some(&session), Some(ORIGIN)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["error"], "recent_authentication_required");
+        assert!(cookies.is_empty());
+    }
+    for path in ["/api/v1/devices/register/start", "/api/v1/devices/status"] {
+        assert_eq!(
+            call(
+                &app,
+                "POST",
+                path,
+                json!({"token":"invalid"}),
+                None,
+                Some(ORIGIN)
+            )
+            .await
+            .0,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            call(&app, "POST", path, json!({"token":"invalid"}), None, None)
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
+    }
+}
+
+#[tokio::test]
+async fn revoking_the_calling_passkey_reports_and_clears_its_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut backend = auth(&dir.path().join("db"));
+    let now = seconds();
+    let bootstrap = backend.bootstrap(now).unwrap();
+    let (flow, options) = backend.register_start(&bootstrap, now).unwrap();
+    let mut first = WebauthnAuthenticator::new(SoftPasskey::new(true));
+    let credential = first
+        .do_registration(Url::parse(ORIGIN).unwrap(), options)
+        .unwrap();
+    let session = backend.register_finish(&flow, &credential, now).unwrap();
+    let original = backend.passkeys(&session, now).unwrap()[0].id.clone();
+    let (flow, options) = backend.add_start(&session, "Second", now).unwrap();
+    let mut second = WebauthnAuthenticator::new(SoftPasskey::new(true));
+    let credential = second
+        .do_registration(Url::parse(ORIGIN).unwrap(), options)
+        .unwrap();
+    backend
+        .add_finish(&session, &flow, &credential, now)
+        .unwrap();
+    let app = router(backend);
+    let session = format!("__Host-inbox-session={session}");
+    let (status, result, cookies) = call(
+        &app,
+        "POST",
+        "/api/v1/passkeys/revoke",
+        json!({"id":original}),
+        Some(&session),
+        Some(ORIGIN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(result["session_revoked"], true);
+    assert!(cookies
+        .iter()
+        .any(|c| c.starts_with("__Host-inbox-session=") && c.contains("Max-Age=0")));
+    assert_eq!(
+        call(
+            &app,
+            "GET",
+            "/api/v1/session",
+            json!({}),
+            Some(&session),
+            None
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+}

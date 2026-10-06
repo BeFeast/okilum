@@ -333,7 +333,7 @@ fn schema_four_publications_migrate_without_losing_replay_identity() {
     store.prepare_publication(owner, item, &request).unwrap();
     drop(store);
     let db = rusqlite::Connection::open(&path).unwrap();
-    db.execute_batch("DROP TABLE IF EXISTS execution_outputs; DROP TABLE IF EXISTS execution_results; DROP TABLE IF EXISTS execution_launches; DROP TABLE execution_replies; DROP TABLE execution_questions; DROP TABLE execution_mutations; DROP TABLE execution_briefs; DROP TABLE execution_projects; ALTER TABLE publications DROP COLUMN conflict; PRAGMA user_version=4;")
+    db.execute_batch("DROP TABLE IF EXISTS execution_outputs; DROP TABLE IF EXISTS execution_results; DROP TABLE IF EXISTS execution_launches; DROP TABLE execution_replies; DROP TABLE execution_questions; DROP TABLE execution_mutations; DROP TABLE execution_briefs; DROP TABLE execution_projects; ALTER TABLE publications DROP COLUMN conflict; DROP TABLE auth_passkeys; PRAGMA user_version=4;")
         .unwrap();
     drop(db);
     let mut store = Store::open(&path).unwrap();
