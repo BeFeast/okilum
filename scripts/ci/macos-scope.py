@@ -4,9 +4,23 @@ import sys
 
 
 def needs_macos(paths):
-    # Only documentation is exempt. Unknown/new build inputs fail closed.
-    return any(not (path.endswith('.md') and
-                   (path.startswith('docs/') or '/' not in path)) for path in paths)
+    # Keep every shell change, filesystem fixture, dependency, vendor patch and
+    # unknown input native-checked. Pure web/docs and other-OS packaging do not
+    # compile into the Mac Reader or exercise APFS/FSEvents/clipboard behavior.
+    def portable_only(path):
+        if path.endswith('.md') and (path.startswith('docs/') or '/' not in path):
+            return True
+        if path.startswith(('web/', 'inbox/', 'scripts/arch/', 'scripts/windows/')):
+            return True
+        if path.startswith('docs/') and path.endswith(('.svg', '.png', '.jpg', '.webp')):
+            return True
+        return path in {
+            '.forgejo/workflows/linux-release.yml',
+            '.forgejo/workflows/windows-diagnostic.yml',
+            'scripts/build-windows-ci.sh', 'scripts/windows-rustc.py',
+            'scripts/windows-rc.py', 'scripts/windows-icon.py',
+        }
+    return any(not portable_only(path) for path in paths)
 
 
 if __name__ == '__main__':

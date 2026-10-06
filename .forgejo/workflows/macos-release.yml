@@ -1,22 +1,47 @@
-# Every push to main becomes a signed, notarized build in the Sparkle `beta`
-# channel. A manual run on another branch builds and signs but publishes nothing.
+# The latest main becomes a signed, notarized Sparkle beta about once an hour. A manual run on another branch builds and signs but publishes nothing.
 # See docs/macos-auto-update.md.
 name: macos-release
 
 on:
   push:
     branches: [main]
+  # Fixed hourly window; the runner is free between ticks. Manual build now bypasses it.
+  schedule:
+    - cron: "0 * * * *"
   workflow_dispatch:
 
 # Cancel obsolete compilation, never a job already publishing public metadata.
 concurrency:
   group: tessera-macos-build-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}
 
 jobs:
+  select:
+    runs-on: light
+    timeout-minutes: 3
+    outputs:
+      build: ${{ steps.select.outputs.build }}
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Select hourly or manual build
+        id: select
+        run: python3 scripts/releases/coalesce.py macos
+
   release:
+    needs: select
+    if: needs.select.outputs.build == 'true'
     runs-on: macos
     timeout-minutes: 90
+    env:
+      SCCACHE_BUCKET: ${{ vars.SCCACHE_BUCKET }}
+      SCCACHE_ENDPOINT: ${{ vars.SCCACHE_ENDPOINT }}
+      SCCACHE_REGION: ${{ vars.SCCACHE_REGION }}
+      SCCACHE_S3_USE_SSL: "false"
+      SCCACHE_S3_KEY_PREFIX: rust
+      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:

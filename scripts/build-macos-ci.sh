@@ -28,6 +28,7 @@ bash scripts/vendor-setup.sh --verify
 # Build cache lives outside the checkout.
 export CARGO_TARGET_DIR="$HOME/.cache/tessera-macos/1.96.1-arm64"
 export CARGO_INCREMENTAL=0
+source scripts/ci/release-cache.sh
 SPARKLE_ARCHIVE="$OUTPUT/Sparkle-2.10.0.tar.xz"
 python3 scripts/updater/sparkle.py fetch "$SPARKLE_ARCHIVE"
 python3 scripts/updater/sparkle.py prepare --archive "$SPARKLE_ARCHIVE" --destination vendor/sparkle
@@ -96,3 +97,5 @@ ARCHIVE=$ARCHIVE
 SIGN_UPDATE=$(find "$OUTPUT/sparkle-bin" -name sign_update -type f | head -1)
 EOF
 cat "$OUTPUT/release.env"
+
+release_cache_stats

@@ -23,7 +23,7 @@ ARTIFACTS = {'macos': {'macos-publication': 'macos'},
 
 def eligible(run, platform, head):
     if (run['workflow_id'] != WORKFLOWS[platform] or run['prettyref'] != 'main'
-            or run['is_fork_pull_request'] or run['trigger_event'] not in ['push', 'workflow_dispatch']):
+            or run['is_fork_pull_request'] or run['trigger_event'] not in ['push', 'workflow_dispatch', 'schedule']):
         raise ValueError('Publication requires a trusted main release build')
     return run['status'] == 'success' and run['commit_sha'] == head
 

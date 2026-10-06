@@ -8,7 +8,7 @@ checks every hour on its own.
 
 ## How a build is released
 
-Every push to `main` runs [`macos-release.yml`](../.forgejo/workflows/macos-release.yml)
+The hourly newest-main build (or manual build now) runs [`macos-release.yml`](../.forgejo/workflows/macos-release.yml)
 on the existing M4 runner (label `macos`):
 
 1. build `Tessera.app` with `CFBundleVersion = 5000 + run number` and

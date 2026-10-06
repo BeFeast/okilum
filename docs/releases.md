@@ -4,6 +4,23 @@ Forgejo builds and publishes each platform's Beta independently. GitHub receives
 only public `main`, release tags, and completed cross-platform release artifacts.
 No build/signing credentials are needed on GitHub.
 
+## Build cadence and manual builds
+
+Linux builds every merge to `main`. macOS and Windows build the newest `main`
+once an hour (the UTC hour boundary), skipping an already-published source.
+New pushes cancel obsolete compilation without occupying a runner for an hour.
+To get an urgent **Mac build now** or **Windows build now**, dispatch the respective
+`macos-release` or `windows-release` workflow on `main`; this bypasses the window.
+Manual branch builds publish nothing. Windows PR cross-compilation still runs.
+Scheduled starts can be delayed by runner queues; the source run number, rather
+than the publication time, remains the build version. Rapid merges can supersede
+a build before publication; the next hourly tick or manual build uses newest main.
+
+Release compilation uses pinned sccache with the existing private S3 cache when
+credentials are available, otherwise the ordinary compiler. Arch/Windows cache
+Cargo downloads and the verified pinned vendor checkout, never per-commit target
+archives. Native macOS tests and signing/notarization remain enabled.
+
 ## One accepted source, three builds
 
 CI run numbers differ between platforms. Select the **macOS build number** as the

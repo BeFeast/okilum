@@ -18,6 +18,14 @@ jobs:
     container:
       image: archlinux:base-devel@sha256:51dd3d24f7fba779e7c471caeee7804c50e8c134ad948e19685a1c83a42facc3
     timeout-minutes: 90
+    env:
+      SCCACHE_BUCKET: ${{ vars.SCCACHE_BUCKET }}
+      SCCACHE_ENDPOINT: ${{ vars.SCCACHE_ENDPOINT }}
+      SCCACHE_REGION: ${{ vars.SCCACHE_REGION }}
+      SCCACHE_S3_USE_SSL: "false"
+      SCCACHE_S3_KEY_PREFIX: rust
+      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
     steps:
       - name: Install Arch build and packaging tools
         run: |
@@ -27,10 +35,19 @@ jobs:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Prepare build user
+        run: useradd -m builder
+      - name: Restore dependency downloads and pinned vendor
+        uses: https://code.forgejo.org/actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            /home/builder/.cargo/registry/
+            /home/builder/.cargo/git/
+            vendor/gpui-component/
+          key: tessera-arch-downloads-v1-${{ hashFiles('Cargo.lock', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff') }}
       - name: Build package as an unprivileged user
         run: |
-          useradd -m builder
-          chown -R builder:builder "$GITHUB_WORKSPACE"
+          chown -R builder:builder "$GITHUB_WORKSPACE" /home/builder
           runuser -u builder -- env TESSERA_BUILD_VERSION="$((5000 + GITHUB_RUN_NUMBER))" bash scripts/arch/build.sh
       - name: Validate package and install without changing MIME defaults
         run: |
