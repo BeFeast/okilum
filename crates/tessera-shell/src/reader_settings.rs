@@ -352,64 +352,68 @@ impl Settings {
                 }
             }
             Section::Updates => {
-                let content = content.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_3()
-                        .child(div().flex_1().min_w_0().text_sm().child(format!(
-                            "Version {} · Build {} · Channel: {}",
-                            env!("TESSERA_RELEASE_VERSION"),
-                            env!("TESSERA_BUILD_VERSION"),
-                            updater::channel()
-                        )))
-                        .when(updater::available(), |row| {
-                            row.child(
-                                Button::new("settings-check-updates")
-                                    .small()
-                                    .flex_shrink_0()
-                                    .label("Check for Updates…")
-                                    .on_click(|_, _, _| updater::check()),
-                            )
-                        }),
-                );
+                let content =
+                    content.child(div().text_sm().text_color(p.text_muted).child(format!(
+                        "Version {} · Build {} · Channel: {}",
+                        env!("TESSERA_RELEASE_VERSION"),
+                        env!("TESSERA_BUILD_VERSION"),
+                        updater::channel()
+                    )));
                 if updater::available() {
                     let beta = updater::channel() == "Beta";
                     content
                         .child(
-                            ButtonGroup::new("settings-update-channel").children(
-                                [
-                                    (
-                                        "settings-stable",
-                                        "Stable",
-                                        false,
-                                        "icons/channel-stable.svg",
-                                    ),
-                                    ("settings-beta", "Beta", true, "icons/channel-beta.svg"),
-                                ]
-                                .map(|(id, label, value, icon)| {
-                                    let selected = beta == value;
-                                    Button::new(id)
-                                        .debug_selector(move || id.into())
-                                        .label(label)
-                                        .icon(Icon::default().path(icon))
-                                        .selected(selected)
-                                        .when(selected, |button| button.primary())
-                                        .child(
-                                            div().w(px(16.)).child(
-                                                Icon::new(IconName::Check)
-                                                    .size(px(16.))
-                                                    .opacity(if selected { 1. } else { 0. }),
+                            h_flex()
+                                .flex_wrap()
+                                .gap_2()
+                                .child(
+                                    ButtonGroup::new("settings-update-channel")
+                                        .flex_none()
+                                        .children(
+                                            [
+                                                (
+                                                    "settings-stable",
+                                                    "Stable",
+                                                    false,
+                                                    "icons/channel-stable.svg",
+                                                ),
+                                                (
+                                                    "settings-beta",
+                                                    "Beta",
+                                                    true,
+                                                    "icons/channel-beta.svg",
+                                                ),
+                                            ]
+                                            .map(
+                                                |(id, label, value, icon)| {
+                                                    let selected = beta == value;
+                                                    Button::new(id)
+                                                        .debug_selector(move || id.into())
+                                                        .label(label)
+                                                        .icon(Icon::default().path(icon))
+                                                        .selected(selected)
+                                                        .when(selected, |button| button.primary())
+                                                        .tooltip(if value {
+                                                            "Beta: preview new features and fixes"
+                                                        } else {
+                                                            "Stable: receive approved releases"
+                                                        })
+                                                        .on_click(move |_, _, cx| {
+                                                            updater::set_beta(value, cx)
+                                                        })
+                                                },
                                             ),
-                                        )
-                                        .tooltip(if value {
-                                            "Beta: preview new features and fixes"
-                                        } else {
-                                            "Stable: receive approved releases"
-                                        })
-                                        .on_click(move |_, _, cx| updater::set_beta(value, cx))
-                                }),
-                            ),
+                                        ),
+                                )
+                                .child(
+                                    Button::new("settings-check-updates")
+                                        .debug_selector(|| "settings-check-updates".into())
+                                        .flex_none()
+                                        .icon(IconName::RotateCw)
+                                        .label("Check now")
+                                        .tooltip("Check for updates on the selected channel")
+                                        .on_click(|_, _, _| updater::check()),
+                                ),
                         )
                         .child(div().text_sm().text_color(p.text_muted).child(if beta {
                             "Beta selected — preview new features and fixes."
@@ -428,21 +432,29 @@ impl Settings {
                     };
                     content
                         .child(message)
-                        .when(cfg!(target_os = "linux"), |content| {
-                            content.child(
-                                Button::new("settings-linux-channels")
-                                    .label("Stable / Beta repository setup")
-                                    .on_click(|_, _, cx| {
-                                        cx.open_url("https://github.com/BeFeast/tessera/blob/main/docs/linux-releases.md")
-                                    }),
-                            )
-                        })
                         .child(
-                            Button::new("settings-releases")
-                                .label("Release notes")
-                                .on_click(|_, _, cx| {
-                                    cx.open_url("https://git.oklabs.uk/BeFeast/tessera/releases")
-                                }),
+                            h_flex().flex_wrap().gap_2()
+                                .when(cfg!(target_os = "linux"), |row| {
+                                    row.child(
+                                        Button::new("settings-linux-channels")
+                                            .flex_none()
+                                            .icon(IconName::Settings2)
+                                            .label("Repository setup")
+                                            .tooltip("Configure the Stable or Beta package repository")
+                                            .on_click(|_, _, cx| {
+                                                cx.open_url("https://github.com/BeFeast/tessera/blob/main/docs/linux-releases.md")
+                                            }),
+                                    )
+                                })
+                                .child(
+                                    Button::new("settings-releases")
+                                        .flex_none()
+                                        .icon(IconName::ExternalLink)
+                                        .label("Release notes")
+                                        .on_click(|_, _, cx| {
+                                            cx.open_url("https://git.oklabs.uk/BeFeast/tessera/releases")
+                                        }),
+                                ),
                         )
                         .into_any_element()
                 }
