@@ -69,7 +69,7 @@ pub(crate) fn show(reader: Option<WeakEntity<Reader>>, cx: &mut App) {
     });
 }
 
-fn setting_row(
+pub(super) fn setting_row(
     label: &'static str,
     help: &'static str,
     control: impl IntoElement,
@@ -336,7 +336,7 @@ impl Settings {
                 .gap_2()
                 .child(setting_row(
                     "Templates folder",
-                    "Used when creating a note from a template.",
+                    "Templates for new notes.",
                     h_flex()
                         .gap_2()
                         .child(
@@ -393,7 +393,7 @@ impl Settings {
                 content
                     .child(setting_row(
                         "Theme",
-                        "Choose a light or dark appearance.",
+                        "Light, dark, or automatic.",
                         ButtonGroup::new("settings-theme").flex_none().children(
                             [
                                 (
@@ -432,6 +432,7 @@ impl Settings {
                         ),
                         cx,
                     ))
+                    .child(reader_reading_controls::render(cx))
                     // #349 inserts its swatch row here, using the same setting_row layout.
                     .into_any_element()
             }
@@ -770,6 +771,36 @@ mod tests {
         visual.simulate_click(bounds.center(), Modifiers::default());
         visual.run_until_parked();
         assert_eq!(updater::channel(), platform_channel);
+    }
+
+    #[gpui::test]
+    fn reading_controls_update_the_shared_store(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            reader_ui_state::install(directory.path(), cx);
+        });
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let settings = cx.new(|cx| Settings::new(None, cx));
+            Root::new(settings, window, cx)
+        });
+        visual.run_until_parked();
+        let original = visual.update(|_, cx| reader_ui_state::font_size(cx));
+        for (selector, font, width) in [
+            ("reading-larger", original + 1., READER_MAX_WIDTH),
+            ("reading-wide", original + 1., 960.),
+            ("reading-smaller", original, 960.),
+        ] {
+            let bounds = visual
+                .debug_bounds(selector)
+                .expect("reading control visible");
+            visual.simulate_click(bounds.center(), Modifiers::default());
+            visual.run_until_parked();
+            visual.update(|_, cx| {
+                assert_eq!(reader_ui_state::font_size(cx), font);
+                assert_eq!(reader_ui_state::reading_width(cx), width);
+            });
+        }
     }
 
     #[gpui::test]

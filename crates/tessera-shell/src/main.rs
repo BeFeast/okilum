@@ -47,6 +47,7 @@ mod reader_loading;
 mod reader_move;
 mod reader_open;
 mod reader_properties;
+mod reader_reading_controls;
 #[cfg(unix)]
 mod reader_recovery;
 #[cfg(windows)]
