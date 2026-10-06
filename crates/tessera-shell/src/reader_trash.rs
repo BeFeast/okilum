@@ -42,6 +42,35 @@ fn under(path: &str, parent: &str) -> bool {
     Path::new(path).starts_with(parent)
 }
 
+/// `Trashed.root` is canonical; the open vault root normally is too, but a
+/// non-canonical spelling of the same folder must still match.
+fn same_vault(trashed_root: &Path, vault_root: &Path) -> bool {
+    trashed_root == vault_root
+        || vault_root
+            .canonicalize()
+            .is_ok_and(|root| root == trashed_root)
+}
+
+/// Undo never restores into a vault other than the open one (#561). The item
+/// stays in system Trash and the user is told how to get it back.
+fn foreign_vault_notice(trashed: &reader_trash_fs::Trashed) -> String {
+    let vault = trashed
+        .root
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| trashed.root.display().to_string());
+    let trash = if cfg!(target_os = "macos") {
+        "the Trash in Finder"
+    } else {
+        "the Trash in your file manager"
+    };
+    format!(
+        "Nothing to Undo in this vault. \u{201c}{}\u{201d} from vault \u{201c}{vault}\u{201d} \
+         remains in system Trash. Reopen that vault to Undo, or restore it from {trash}.",
+        trashed.relative.display()
+    )
+}
+
 impl Reader {
     pub(super) fn delete_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let path = if self.tree_focus.contains_focused(window, cx) {
@@ -204,6 +233,7 @@ impl Reader {
         let visible = std::rc::Rc::new(std::cell::Cell::new(true));
         self.trash_undo.visible = visible.clone();
         let reader = cx.entity().downgrade();
+        let announced = self.trash_undo.items.last().map(|t| t.root.clone());
         window.push_notification(
             Notification::new()
                 .id::<TrashToast>()
@@ -213,6 +243,7 @@ impl Reader {
                 .on_close(move |_, _| visible.set(false))
                 .action(move |_, _, cx| {
                     let reader = reader.clone();
+                    let announced = announced.clone();
                     reader_icon_button(
                         "undo-trash",
                         IconName::Undo2,
@@ -225,7 +256,16 @@ impl Reader {
                     )
                     .debug_selector(|| "undo-trash".into())
                     .on_click(move |_, window, cx| {
-                        let _ = reader.update(cx, |this, cx| this.undo_last_trash(window, cx));
+                        let _ = reader.update(cx, |this, cx| {
+                            // The toast announced one vault's item; after a
+                            // vault switch it must not undo another vault's.
+                            match announced.as_deref() {
+                                Some(root) if !same_vault(root, &this.vault_root) => {
+                                    this.explain_foreign_trash(window, cx)
+                                }
+                                _ => this.undo_last_trash(window, cx),
+                            }
+                        });
                     })
                 }),
             cx,
@@ -253,13 +293,22 @@ impl Reader {
         true
     }
 
+    /// Undo history is scoped to the open vault: items trashed from another
+    /// vault stay in system Trash until that vault is open again.
     pub(super) fn undo_last_trash(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(trashed) = self.trash_undo.items.last().cloned() else {
-            return;
-        };
-        if self.trash_pending {
+        if self.trash_undo.items.is_empty() || self.trash_pending {
             return;
         }
+        let Some(index) = self
+            .trash_undo
+            .items
+            .iter()
+            .rposition(|t| same_vault(&t.root, &self.vault_root))
+        else {
+            self.explain_foreign_trash(window, cx);
+            return;
+        };
+        let trashed = self.trash_undo.items[index].clone();
         let Some(state) = self.session_directory.clone() else {
             return;
         };
@@ -307,7 +356,8 @@ impl Reader {
                 }
                 match result {
                     Ok(_) => {
-                        this.trash_undo.items.pop();
+                        // `trash_pending` blocked every history change meanwhile.
+                        this.trash_undo.items.remove(index);
                         reader_toast::transient("Restored from Trash", window, cx);
                     }
                     Err(error) => {
@@ -318,6 +368,16 @@ impl Reader {
             });
         })
         .detach();
+    }
+
+    fn explain_foreign_trash(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(trashed) = self.trash_undo.items.last() else {
+            return;
+        };
+        let message = foreign_vault_notice(trashed);
+        self.dismiss_trash_toast(window, cx);
+        reader_toast::error(message, window, cx);
+        cx.notify();
     }
 }
 
@@ -505,6 +565,151 @@ mod tests {
             );
             reader.read_with(visual, |r, _| assert!(r.trash_undo.items.is_empty()));
         }
+    }
+
+    #[test]
+    fn foreign_vault_notice_names_the_item_vault_and_recovery() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("Vault A");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("gone.md"), "x").unwrap();
+        let trashed = reader_trash_fs::Trashed::test_move(
+            &root,
+            Path::new("gone.md"),
+            &temp.path().join("Trash"),
+        );
+        let notice = foreign_vault_notice(&trashed);
+        for part in [
+            "gone.md",
+            "Vault A",
+            "remains in system Trash",
+            "Reopen that vault",
+        ] {
+            assert!(notice.contains(part), "{part}: {notice}");
+        }
+    }
+
+    #[gpui::test]
+    fn undo_after_vault_switch_keeps_the_other_vault_item_in_trash(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_reduce_motion(true);
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let trash = temp.path().join("Trash");
+        let a = temp.path().join("a");
+        let b = temp.path().join("b");
+        for root in [&a, &b] {
+            std::fs::create_dir(root).unwrap();
+            std::fs::write(root.join("start.md"), "# Start").unwrap();
+        }
+        let a = a.canonicalize().unwrap();
+        let b = b.canonicalize().unwrap();
+        std::fs::write(a.join("gone.md"), "A bytes\r\n").unwrap();
+        std::fs::write(b.join("own.md"), "B bytes").unwrap();
+        let opts_for = |root: &Path| Opts {
+            vault: Some(root.to_owned()),
+            open_path: Some(root.join("start.md")),
+            cache_base_override: Some(temp.path().join("os-cache")),
+            session_directory: Some(temp.path().join("state")),
+            ..Default::default()
+        };
+        let in_trash = |name: &str| -> Vec<String> {
+            std::fs::read_dir(trash.join("files"))
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .filter(|p| p.to_string_lossy().ends_with(name))
+                .map(|p| std::fs::read_to_string(p).unwrap())
+                .collect()
+        };
+        let notices = |visual: &mut VisualTestContext| {
+            visual.update(|window, cx| window.notifications(cx).len())
+        };
+        let undo = |visual: &mut VisualTestContext, keyboard: bool| {
+            if keyboard {
+                #[cfg(target_os = "macos")]
+                visual.simulate_keystrokes("cmd-z");
+                #[cfg(not(target_os = "macos"))]
+                visual.simulate_keystrokes("ctrl-z");
+            } else {
+                visual.update(|window, cx| window.draw(cx).clear(cx));
+                let button = visual
+                    .debug_bounds("undo-trash")
+                    .expect("visible Undo action");
+                visual.simulate_click(button.center(), Modifiers::default());
+            }
+            visual.run_until_parked();
+        };
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| Reader::new(opts_for(&a), window, cx));
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        let trashed = reader_trash_fs::Trashed::test_move(&a, Path::new("gone.md"), &trash);
+        reader.update_in(visual, |r, window, cx| {
+            r.trash_undo.items.push(trashed);
+            r.show_trash_toast(window, cx);
+        });
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            r.start_loading(opts_for(&b), window, cx)
+        });
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            assert_eq!(r.vault_root, b, "positive control: the switch published B");
+            r.reveal_in_tree("start.md", window, cx);
+        });
+        visual.run_until_parked();
+        // Both the still-visible toast button and the keyboard refuse to cross vaults.
+        for keyboard in [false, true] {
+            let before = notices(visual);
+            undo(visual, keyboard);
+            assert!(!a.join("gone.md").exists(), "keyboard={keyboard}");
+            assert!(!b.join("gone.md").exists(), "keyboard={keyboard}");
+            assert_eq!(in_trash("gone.md"), ["A bytes\r\n"], "keyboard={keyboard}");
+            assert!(notices(visual) > before, "keyboard={keyboard}: explained");
+            reader.read_with(visual, |r, _| {
+                assert!(!r.trash_pending);
+                assert!(!r.trash_undo.visible.get());
+                assert_eq!(r.trash_undo.items.len(), 1);
+            });
+        }
+        // Positive control: B's own item is undone by the same button in B.
+        let own = reader_trash_fs::Trashed::test_move(&b, Path::new("own.md"), &trash);
+        reader.update_in(visual, |r, window, cx| {
+            r.trash_undo.items.push(own);
+            r.show_trash_toast(window, cx);
+        });
+        visual.run_until_parked();
+        undo(visual, false);
+        assert_eq!(
+            std::fs::read_to_string(b.join("own.md")).unwrap(),
+            "B bytes"
+        );
+        assert!(!a.join("gone.md").exists());
+        reader.read_with(visual, |r, _| assert_eq!(r.trash_undo.items.len(), 1));
+        // Back in A, keyboard Undo restores the scoped item into A.
+        reader.update_in(visual, |r, window, cx| {
+            r.start_loading(opts_for(&a), window, cx)
+        });
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            assert_eq!(r.vault_root, a);
+            r.reveal_in_tree("start.md", window, cx);
+        });
+        visual.run_until_parked();
+        undo(visual, true);
+        assert_eq!(
+            std::fs::read_to_string(a.join("gone.md")).unwrap(),
+            "A bytes\r\n"
+        );
+        assert!(!b.join("gone.md").exists());
+        assert!(in_trash("gone.md").is_empty());
+        reader.read_with(visual, |r, _| assert!(r.trash_undo.items.is_empty()));
     }
 
     #[gpui::test]
