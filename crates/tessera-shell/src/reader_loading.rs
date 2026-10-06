@@ -1930,7 +1930,7 @@ impl Reader {
                                 this.index_dir = index;
                                 this.backlinks = this.vault.backlinks(&this.current_rel);
                                 this.sync_tree();
-                                this.backlink_titles = titles;
+                                this.backlink_titles = Arc::new(titles);
                                 this.reconcile_inventory_document(&sources, window, cx);
                                 this.loading.as_mut().unwrap().active = false;
                                 this.loading.as_mut().unwrap().warnings = warnings;

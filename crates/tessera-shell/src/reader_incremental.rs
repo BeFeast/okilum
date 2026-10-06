@@ -179,10 +179,11 @@ impl Reader {
                             }
                             #[cfg(not(unix))]
                             let _ = candidates;
+                            let known = Arc::make_mut(&mut this.backlink_titles);
                             for path in &batch.removed {
-                                this.backlink_titles.remove(path);
+                                known.remove(path);
                             }
-                            this.backlink_titles.extend(titles);
+                            known.extend(titles);
                             this.backlinks = this.vault.backlinks(&this.current_rel);
                             if batch.topology_changed {
                                 this.sync_tree();

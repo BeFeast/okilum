@@ -1209,8 +1209,9 @@ struct Reader {
     show_hidden_properties: bool,
     /// Linking notes whose places are all shown (#394, «Show N more»).
     backlinks_expanded: std::collections::HashSet<String>,
-    /// Display titles of linking notes (#381), read from their first bytes.
-    backlink_titles: std::collections::HashMap<String, String>,
+    /// Display titles of notes (#381), read from their first bytes. Shared
+    /// with the quick-open worker, which matches and labels by them (#645).
+    backlink_titles: Arc<std::collections::HashMap<String, String>>,
     panels: reader_layout::Panels,
     embedded_in_workspace: bool,
     panel_widths: reader_layout::Widths,
@@ -1427,7 +1428,7 @@ impl Reader {
             recent_expanded: false,
             sidebar_save_sequence: Arc::default(),
             inbox_ready_root: None,
-            backlink_titles: std::collections::HashMap::new(),
+            backlink_titles: Arc::default(),
             backlinks_expanded: std::collections::HashSet::new(),
             properties: Ok(Vec::new()),
             table_overlay: None,
@@ -2250,6 +2251,7 @@ impl Reader {
             return;
         }
         // Placeholders keep this from re-spawning while the read runs.
+        let titles = Arc::make_mut(&mut self.backlink_titles);
         for path in &missing {
             let stem = path
                 .rsplit('/')
@@ -2257,7 +2259,7 @@ impl Reader {
                 .unwrap_or(path)
                 .trim_end_matches(".md")
                 .to_owned();
-            self.backlink_titles.insert(path.clone(), stem);
+            titles.insert(path.clone(), stem);
         }
     }
 
@@ -2442,7 +2444,7 @@ impl Reader {
                 self.tree_revealed.clear();
             }
             // Titles belong to this inventory and root.
-            self.backlink_titles.clear();
+            Arc::make_mut(&mut self.backlink_titles).clear();
             self.backlinks_expanded.clear();
         }
         let selected = self.selected_file().to_owned();

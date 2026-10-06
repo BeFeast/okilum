@@ -2,15 +2,36 @@
 use super::*;
 use tessera_core::SearchHit;
 
-/// Presentation only: ranking still uses the original file name and path.
+use std::collections::HashMap;
+
+fn is_markdown(path: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+}
+
+/// Folder notes (`_index`, `index`, `README`) are titled by their folder.
+fn is_folder_note(path: &str) -> bool {
+    let stem = Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    is_markdown(path)
+        && ["_index", "index", "readme"]
+            .iter()
+            .any(|name| stem.eq_ignore_ascii_case(name))
+}
+
+/// Primary line (#645): the note title the backlinks panel uses (first H1,
+/// then frontmatter title, then file name), never the `.md` file name. Other
+/// files keep their extension. Ranking still uses the file name and path too.
 /// Called on the query worker, never during rendering.
-fn result_title(root: &Path, hit: &SearchHit) -> String {
+fn result_title(root: &Path, titles: &HashMap<String, String>, hit: &SearchHit) -> String {
     let path = root.join(&hit.path);
-    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-    if ["_index", "index", "readme"]
-        .iter()
-        .any(|name| stem.eq_ignore_ascii_case(name))
-    {
+    if !is_markdown(&hit.path) {
+        return hit.path.rsplit('/').next().unwrap_or(&hit.path).to_owned();
+    }
+    if is_folder_note(&hit.path) {
         if let Some(folder) = path
             .parent()
             .and_then(Path::file_name)
@@ -19,7 +40,31 @@ fn result_title(root: &Path, hit: &SearchHit) -> String {
             return folder.to_owned();
         }
     }
-    display_title(&path).unwrap_or_else(|| hit.title.clone())
+    titles
+        .get(&hit.path)
+        .cloned()
+        .or_else(|| display_title(&path))
+        .unwrap_or_else(|| hit.title.clone())
+}
+
+/// Muted second line (#645): the containing folder, not the file path. A
+/// folder note is already titled by its folder, so it shows that folder's
+/// parent. Notes at the top level show the vault's name.
+fn result_location(vault_name: &str, path: &str) -> String {
+    let parent = |path: &str| {
+        path.rsplit_once('/')
+            .map_or("", |(folder, _)| folder)
+            .to_owned()
+    };
+    let mut folder = parent(path);
+    if is_folder_note(path) {
+        folder = parent(&folder);
+    }
+    if folder.is_empty() {
+        vault_name.to_owned()
+    } else {
+        folder.replace('/', " / ")
+    }
 }
 
 pub(super) struct Palette {
@@ -162,6 +207,7 @@ impl Reader {
         #[cfg(test)]
         let hold = self.quick_open.hold_query.take();
         let title_root = root.clone();
+        let titles = self.backlink_titles.clone();
         let task = cx.background_executor().spawn(async move {
             #[cfg(test)]
             if let Some(hold) = hold {
@@ -186,8 +232,9 @@ impl Reader {
                     )),
                 }
             } else {
-                let rows = tessera_core::quick_open::search(
+                let rows = tessera_core::quick_open::search_titled(
                     names.as_deref().unwrap_or(&vault.notes),
+                    &titles,
                     &query,
                     &recent,
                     100,
@@ -204,7 +251,7 @@ impl Reader {
             };
             result.map(|(mut rows, message)| {
                 for hit in &mut rows {
-                    hit.title = result_title(&title_root, hit);
+                    hit.title = result_title(&title_root, &titles, hit);
                 }
                 (rows, message)
             })
@@ -280,6 +327,11 @@ impl Reader {
         let generation = self.quick_open.generation;
         let root = self.vault_root.clone();
         let inventory = self.watcher_generation;
+        let vault_name = self
+            .vault_root
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
         let list = uniform_list("quick-open-results", rows.len(), move |range, _, _| {
             range
                 .map(|ix| {
@@ -349,7 +401,7 @@ impl Reader {
                                 .overflow_hidden()
                                 .whitespace_nowrap()
                                 .text_ellipsis()
-                                .child(hit.path.clone()),
+                                .child(result_location(&vault_name, &hit.path)),
                         )
                         .when(full_text, |row| {
                             row.child(div().text_xs().overflow_hidden().child(TextView::html(
@@ -438,6 +490,9 @@ mod tests {
             ("Memory/_index.md", "# Ignored", "Memory"),
             ("Memory/index.md", "# Ignored", "Memory"),
             ("Memory/README.md", "# Ignored", "Memory"),
+            ("Memory/Scan.pdf", "%PDF", "Scan.pdf"),
+            ("Memory/Board.canvas", "{}", "Board.canvas"),
+            ("Memory/readme.txt", "# Not a note", "readme.txt"),
         ] {
             std::fs::write(root.join(path), body).unwrap();
             let hit = SearchHit {
@@ -446,10 +501,42 @@ mod tests {
                 score: 0.,
                 snippet_html: String::new(),
             };
-            assert_eq!(result_title(&root, &hit), expected);
+            let title = result_title(&root, &HashMap::new(), &hit);
+            assert_eq!(title, expected);
+            assert!(!title.ends_with(".md"), "{path}");
             assert_eq!(hit.path, path);
         }
+        // The shared title map wins over a disk read; folder notes keep their folder.
+        let titles = HashMap::from([
+            ("plain.md".to_string(), "Cached title".to_string()),
+            ("Memory/_index.md".to_string(), "Ignored".to_string()),
+        ]);
+        for (path, expected) in [("plain.md", "Cached title"), ("Memory/_index.md", "Memory")] {
+            let hit = SearchHit {
+                path: path.into(),
+                title: Vault::title_of(path),
+                score: 0.,
+                snippet_html: String::new(),
+            };
+            assert_eq!(result_title(&root, &titles, &hit), expected);
+        }
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn result_location_shows_folder_without_file_name() {
+        for (path, expected) in [
+            ("plain.md", "Vault"),
+            ("Projects/Roadmap.md", "Projects"),
+            ("Projects/2026/Q4/Plan.md", "Projects / 2026 / Q4"),
+            ("Memory/_index.md", "Vault"),
+            ("Projects/Memory/README.md", "Projects"),
+            ("Projects/Scan.pdf", "Projects"),
+        ] {
+            let location = result_location("Vault", path);
+            assert_eq!(location, expected, "{path}");
+            assert!(!location.contains(".md"));
+        }
     }
 
     #[gpui::test]
@@ -745,6 +832,11 @@ canaryhidden [[Target]]",
         std::fs::write(root.join("start.md"), "# Start\n\nOrdinary text.").unwrap();
         std::fs::create_dir_all(root.join("Memory")).unwrap();
         std::fs::write(
+            root.join("Memory/2026-10-06-kickoff.md"),
+            "---\ntitle: Ignored\n---\n# Quarterly planning\n",
+        )
+        .unwrap();
+        std::fs::write(
             root.join("Memory/_index.md"),
             format!(
                 "# Target\n\n{}\n\nUnique canaryword landing.",
@@ -775,6 +867,24 @@ canaryhidden [[Target]]",
             assert!(v.searcher.is_some(), "index must publish before searching");
             window.focus(&v.focus_handle, cx);
         });
+        // The resolved title matches, fuzzily too, although no file name or
+        // path contains it (#645).
+        for query in ["Quarterly planning", "qplan"] {
+            reader.update_in(visual, |v, window, cx| {
+                v.open_quick_open(false, window, cx);
+                v.quick_open
+                    .input
+                    .update(cx, |input, cx| input.set_value(query, window, cx));
+                v.refresh_quick_open(cx);
+            });
+            visual.run_until_parked();
+            reader.update_in(visual, |v, window, cx| {
+                assert_eq!(v.quick_open.rows.len(), 1, "query {query}");
+                assert_eq!(v.quick_open.rows[0].path, "Memory/2026-10-06-kickoff.md");
+                assert_eq!(v.quick_open.rows[0].title, "Quarterly planning");
+                v.close_quick_open(window, cx);
+            });
+        }
         // Name/path matching remains intact even though the displayed title differs.
         visual.simulate_keystrokes("ctrl-k");
         visual.run_until_parked();
