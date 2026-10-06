@@ -174,23 +174,35 @@ impl VaultWatcher {
                 let Some(relative) = p.strip_prefix(&self.root).ok() else {
                     continue;
                 };
-                if crate::vault::service_path(relative) {
+                if crate::vault::service_path(relative)
+                    || p.file_name()
+                        .is_some_and(|name| name.to_string_lossy().starts_with(".tessera-save-"))
+                {
                     continue;
                 }
                 // Newly created/moved trees may arrive as a directory event only,
                 // before recursive watches can observe their individual files.
                 // A rename source may already be gone, so its file type cannot
-                // be recovered with stat. Conservatively reconcile renames too.
+                // be recovered with stat. Known Markdown endpoints use a source
+                // batch; unknown moved trees still need full reconciliation.
                 if p.is_dir()
                     || matches!(
                         ev.kind,
                         EventKind::Create(notify::event::CreateKind::Folder)
                             | EventKind::Remove(notify::event::RemoveKind::Folder)
                     )
-                    || matches!(
+                    || (matches!(
                         ev.kind,
                         EventKind::Modify(notify::event::ModifyKind::Name(_))
-                    )
+                    ) && p
+                        .extension()
+                        .is_none_or(|ext| !ext.eq_ignore_ascii_case("md"))
+                        && !ev.paths.iter().any(|endpoint| {
+                            endpoint.is_file()
+                                && endpoint
+                                    .extension()
+                                    .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+                        }))
                 {
                     self.pending.rescan = true;
                 }

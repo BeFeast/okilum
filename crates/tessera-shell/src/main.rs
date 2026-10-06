@@ -37,6 +37,7 @@ mod reader_files;
 mod reader_history;
 mod reader_hover;
 mod reader_image;
+mod reader_incremental;
 mod reader_layout;
 mod reader_loading;
 #[cfg(unix)]
@@ -433,6 +434,7 @@ struct Opts {
     diagnostics: Option<reader_diagnostics::Trace>,
     /// Explicit manual refresh verifies canonical bytes even with unchanged revisions.
     force_source_read: bool,
+    reconcile_recent: Vec<String>,
     #[cfg(test)]
     preparation_hold: Option<async_channel::Receiver<()>>,
     #[cfg(test)]
@@ -1092,6 +1094,15 @@ struct Reader {
     #[cfg(test)]
     watcher_poll_hold: Option<async_channel::Receiver<()>>,
     deferred_vault_changes: tessera_core::Changes,
+    incremental_state: Option<tessera_core::vault::warm::incremental::State>,
+    incremental_initializing: bool,
+    incremental_active: bool,
+    incremental_epoch: u64,
+    incremental_cancel: Option<reader_loading::Cancellation>,
+    #[cfg(test)]
+    incremental_hold: Option<async_channel::Receiver<()>>,
+    #[cfg(unix)]
+    reader_window: AnyWindowHandle,
     sidebar_search_focus: FocusHandle,
     quick_open: quick_open::Palette,
     content: Entity<TextViewState>,
@@ -1287,6 +1298,15 @@ impl Reader {
             #[cfg(test)]
             watcher_poll_hold: None,
             deferred_vault_changes: Default::default(),
+            incremental_state: None,
+            incremental_initializing: false,
+            incremental_active: false,
+            incremental_epoch: 0,
+            incremental_cancel: None,
+            #[cfg(test)]
+            incremental_hold: None,
+            #[cfg(unix)]
+            reader_window: window.window_handle(),
             sidebar_search_focus: cx.focus_handle(),
             quick_open,
             content,
@@ -1412,16 +1432,13 @@ impl Reader {
         this
     }
 
-    /// React to a batch of vault changes. A handful of notes: rescan the
-    /// vault (link resolution may have moved) and update just those in the
-    /// index. A bulk batch: rebuild the index too, which is cheaper than that
-    /// many single updates.
-    ///
-    /// The open note is re-rendered if it changed underneath the reader; the
-    /// note list and backlinks are rebuilt either way, since they are views
-    /// over the vault.
+    /// Drain/coalesce notifications off the UI thread. Known note batches use
+    /// the reconciled baseline; topology/overflow needs background reconciliation.
     fn poll_vault(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.loading.as_ref().is_some_and(|l| l.active) {
+        if self.loading.as_ref().is_some_and(|l| l.active)
+            || self.incremental_active
+            || self.incremental_initializing
+        {
             return;
         }
         if !self.deferred_vault_changes.is_empty() {
@@ -1477,7 +1494,21 @@ impl Reader {
         cx: &mut Context<Self>,
     ) {
         reader_drawing::invalidate(&self.vault_root, cx);
-        self.refresh_inventory(changes, window, cx);
+        if self.incremental_active || self.incremental_initializing {
+            self.deferred_vault_changes.rescan |= changes.rescan;
+            self.deferred_vault_changes.changed.extend(changes.changed);
+            self.deferred_vault_changes.removed.extend(changes.removed);
+            return;
+        }
+        if !changes.is_empty()
+            && !changes.rescan
+            && self.incremental_state.is_some()
+            && self.searcher.is_some()
+        {
+            self.start_incremental(changes, window, cx);
+        } else {
+            self.refresh_inventory(changes, window, cx);
+        }
     }
 
     fn open_note(

@@ -8,6 +8,7 @@ use tantivy::schema::{
     FAST, INDEXED, STORED, STRING, TEXT,
 };
 use tantivy::snippet::SnippetGenerator;
+use tantivy::Directory;
 use tantivy::DocSet;
 use tantivy::{doc, Index, TantivyDocument};
 
@@ -100,6 +101,8 @@ pub struct Searcher {
     /// Lazily opened: a read-only reader never pays for a writer, and a writer
     /// takes an exclusive lock on the index directory.
     writer: std::sync::Mutex<Option<tantivy::IndexWriter>>,
+    /// Drops after index and writer so Windows handles close before cleanup.
+    session: Option<tempfile::TempDir>,
 }
 
 /// How much of a body the snippet generator sees. Four times the snippet
@@ -330,6 +333,7 @@ impl Searcher {
             index,
             f,
             writer: std::sync::Mutex::new(Some(writer)),
+            session: None,
         })
     }
 
@@ -399,6 +403,109 @@ impl Searcher {
             }
         }
         d
+    }
+
+    /// Copy search bytes once per Reader session, never canonical sources or a
+    /// completed generation. Call only on a worker with no concurrent writer.
+    pub fn fork_session(&self) -> Result<Self> {
+        let directory = tempfile::Builder::new()
+            .prefix("tessera-search-session-")
+            .tempdir()?;
+        self.copy_committed_to(directory.path())?;
+        let mut fork = Self::open(directory.path())?;
+        fork.session = Some(directory);
+        Ok(fork)
+    }
+
+    /// Copy committed search files to a caller-owned fresh directory. No parsing
+    /// or canonical note I/O; segment footers and metadata remain unchanged.
+    pub fn copy_committed_to(&self, destination: &Path) -> Result<()> {
+        // In-memory fallback/session indexes can still have merging workers.
+        let writer = self
+            .writer
+            .lock()
+            .map_err(|_| anyhow::anyhow!("index writer poisoned"))?
+            .take();
+        if let Some(writer) = writer {
+            writer.wait_merging_threads()?;
+        }
+        let managed = self.index.directory();
+        let paths = managed.list_managed_files();
+        for path in &paths {
+            anyhow::ensure!(
+                path.components()
+                    .all(|part| matches!(part, std::path::Component::Normal(_)))
+                    && path.components().count() == 1,
+                "Invalid search segment identity"
+            );
+            if path == Path::new("meta.json") {
+                continue;
+            }
+            // atomic_read preserves the segment footer; open_read strips it.
+            std::fs::write(destination.join(path), managed.atomic_read(path)?)?;
+        }
+        std::fs::write(
+            destination.join("meta.json"),
+            managed.atomic_read(Path::new("meta.json"))?,
+        )?;
+        std::fs::write(
+            destination.join(".managed.json"),
+            serde_json::to_vec(&paths)?,
+        )?;
+        Ok(())
+    }
+
+    pub fn is_session(&self) -> bool {
+        self.session.is_some()
+    }
+
+    /// Commit exactly one source batch using already-read canonical bytes.
+    pub fn update_snapshot_batch(
+        &self,
+        vault: &Vault,
+        documents: &[SearchDocument],
+        removed: &[String],
+    ) -> Result<()> {
+        let parsed: Vec<_> = documents
+            .iter()
+            .map(|document| {
+                Self::document_for_text(
+                    self.f,
+                    vault,
+                    &document.path,
+                    &document.title,
+                    &document.text,
+                )
+            })
+            .collect();
+        let mut guard = self
+            .writer
+            .lock()
+            .map_err(|_| anyhow::anyhow!("index writer poisoned"))?;
+        if guard.is_none() {
+            // Reader batches are usually one document. Starting one worker per
+            // CPU adds latency/memory without parallel source work to perform.
+            *guard = Some(self.index.writer_with_num_threads(1, 32_000_000)?);
+        }
+        let writer = guard.as_mut().unwrap();
+        let result = (|| -> Result<()> {
+            for path in removed
+                .iter()
+                .map(String::as_str)
+                .chain(documents.iter().map(|document| document.path.as_str()))
+            {
+                writer.delete_term(tantivy::Term::from_field_text(self.f.path_id, path));
+            }
+            for document in parsed {
+                writer.add_document(document)?;
+            }
+            writer.commit()?;
+            Ok(())
+        })();
+        if result.is_err() {
+            writer.rollback()?;
+        }
+        result
     }
 
     /// Re-index one note in place: delete whatever the index holds for `rel`,
@@ -508,6 +615,7 @@ impl Searcher {
             index,
             f,
             writer: std::sync::Mutex::new(None),
+            session: None,
         })
     }
 

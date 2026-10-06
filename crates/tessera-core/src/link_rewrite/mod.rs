@@ -1,8 +1,7 @@
 //! Revision-bound, lossless link rewrite previews for ordinary note moves.
-mod index;
-pub use index::CandidateIndex;
+pub use crate::link_candidates::CandidateIndex;
 mod operation;
-mod syntax;
+use crate::link_candidates::syntax;
 pub use operation::{Applied, Operation, RecoveryList};
 
 use crate::{Resolution, Vault};
