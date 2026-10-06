@@ -312,7 +312,8 @@ stay hidden when no template collection exists.
 
 Move to Trash is an ordinary Reader action, available in the tree context menu
 and through ⌘⌫ (Ctrl+Backspace on Linux) outside text inputs. Files with incoming
-links and all folders require confirmation with file/link counts. Current edits
+links require a compact warning before moving. Unlinked folders move immediately
+with Undo; empty counts and Markdown extensions are omitted from the warning (#621). Current edits
 must save successfully first; other source writers and orphaned drafts block the
 operation. Links are left unchanged. Preparation and filesystem work run off the
 UI thread. A deleted open selection closes to the empty vault view.
