@@ -456,11 +456,15 @@ through the existing user appearance, per-vault sidebar and Sparkle preferences.
 Files identifies the originating vault; opening Settings from another Reader
 retargets that section. Without a vault it explains that a vault must be opened.
 Updates shows the installed version/build and selected update channel. macOS and
-Windows use a joined Stable/Beta control: shield/flask glyphs, accent fill and a
-checkmark on the selected segment, with immediate persisted changes. Check for
-Updates uses the installed updater. Linux identifies system-package management
-and links to Stable/Beta repository setup; it does not pretend to switch pacman
-repositories. Unpackaged builds explain updater availability.
+Windows use a compact joined Stable/Beta control with shield/flask glyphs and
+accent fill on the selected segment; changes persist immediately. Beside it,
+the refresh icon button checks through the installed updater. Actions have
+tooltips and accessible names; unselected controls have no grey outline. All controls use
+the same standard Settings button height, radius and padding; the current
+version/build/channel sits directly above. Linux identifies system-package
+management and offers compact repository-setup and release-notes glyph buttons;
+it does not pretend to switch pacman repositories. Unpackaged builds explain
+updater availability.
 Inbox shows “Not connected”; no connection controls are enabled in this slice.
 The deferred local Excalidraw editor needs no editor-URL setting.
 
