@@ -13,7 +13,7 @@ export function mountSyncPairing({api,post,owner,requestId,signIn}) {
   if(e!==epoch||who!==owner())throw new Error('Account changed. Start approval again.');
  }
  async function action(fn){if(busy)return;busy=true;try{await fn();}catch(e){$('sync-pairing-status').textContent=e.name==='NotAllowedError'?'Passkey confirmation cancelled.':e.message;}finally{busy=false;}}
- function reset(){epoch++;current=null;loadedOwner=null;$('sync-pairing-details').hidden=true;$('sync-pairing-list').replaceChildren();$('sync-pairing-pending').replaceChildren();$('sync-pairing-status').textContent='';$('sync-pairing-dialog').close();}
+ function reset(){epoch++;current=null;loadedOwner=null;$('sync-pairing-details').hidden=true;$('sync-pairing-list').replaceChildren();$('sync-pairing-pending').replaceChildren();$('sync-pairing-removed-list').replaceChildren();$('sync-pairing-removed').open=false;$('sync-pairing-status').textContent='';$('sync-pairing-dialog').close();}
  function present(mode){
   view=mode;$('sync-pairing-all').hidden=mode==='devices';
   $('sync-pairing-title').textContent=mode==='approval'?'Add this computer':'Folder sync computers';
@@ -55,11 +55,15 @@ export function mountSyncPairing({api,post,owner,requestId,signIn}) {
    const review=node('button','Review');review.className='quiet';review.onclick=()=>action(async()=>{requestId=p.id;current=null;present('approval');await refresh();});row.append(review);return row;
   }));
   $('sync-pairing-pending-empty').hidden=!!list.pending?.length;
-  $('sync-pairing-list-empty').hidden=!!list.registrations.length;
-  $('sync-pairing-list').replaceChildren(...list.registrations.map(r=>{
+  const connected=list.registrations.filter(r=>r.state!=='revoked'),removed=list.registrations.filter(r=>r.state==='revoked');
+  $('sync-pairing-list-empty').hidden=!!connected.length;
+  $('sync-pairing-removed').hidden=!removed.length;
+  const registrationRow=r=>{
    const row=node('li',''),info=node('div','');info.append(node('strong',r.name),node('small',vaults.vaults.find(v=>v.id===r.vault)?.name || 'Unavailable vault'),node('small',syncState(r.state)),node('small',r.device_id));if(r.last_error)info.append(node('small','Hub unavailable or configuration needs attention. Retrying.'));row.append(info);
    if(r.state!=='revoked'){const remove=node('button','Remove');remove.className='quiet';remove.onclick=()=>action(async()=>{if(!confirm(`Remove ${r.name} from this hub? Local files and copies on other computers remain. Existing sync elsewhere may continue.`))return;await freshPasskey();await post('/sync/remove',{id:r.id});await refresh();});row.append(remove);}return row;
-  }));
+  };
+  $('sync-pairing-list').replaceChildren(...connected.map(registrationRow));
+  $('sync-pairing-removed-list').replaceChildren(...removed.map(registrationRow));
  }
  $('sync-pairing-open').onclick=()=>{dismissed=false;return action(async()=>{present('devices');await refresh();});};
  $('sync-pairing-all').onclick=()=>action(async()=>{present('devices');await refresh();});

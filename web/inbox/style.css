@@ -75,7 +75,7 @@ dialog{border:1px solid var(--line);border-radius:10px;background:var(--surface)
 #sync-pairing-details label { display: block; margin: 1rem 0 .5rem; }
 
 #sync-pairing-code{display:block;text-align:center;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:clamp(32px,8vw,44px);font-weight:600;letter-spacing:.08em;line-height:1.3;margin:24px 0}
-#sync-pairing-details .sync-code-match{display:flex;align-items:center;gap:12px;line-height:1.5}
+#sync-pairing-details .sync-code-match{font-size:14px;display:flex;align-items:center;gap:12px;line-height:1.5}
 #sync-pairing-match{appearance:auto;flex:0 0 auto;width:18px;height:18px;min-height:0;padding:0;margin:0}
 #sync-pairing-dialog{max-height:90dvh;overflow:auto}
-#sync-pairing-pending small{overflow-wrap:anywhere}
+#sync-pairing-pending small,#sync-pairing-removed-list small{overflow-wrap:anywhere}

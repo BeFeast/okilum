@@ -12,7 +12,7 @@ function fixture(t,{expired=false}={}){
  const credentials={get:async()=>credential};
  for(const[k,value]of Object.entries({document:{getElementById:$,createElement:()=>element(),hidden:false},navigator:{credentials},setInterval:()=>0}))Object.defineProperty(globalThis,k,{configurable:true,value});
  let owner='owner',state='requested';const calls=[];
- const api=async path=>{if(path==='/sync/vaults')return {vaults:[{id:'v1',name:'First'},{id:'v2',name:'Second'}]};if(path.startsWith('/sync/requests/')){if(expired)throw Object.assign(new Error('Expired'),{status:404});return {id:'request',name:'Laptop',device_id:'DEVICE',code:'ABCD1234',state,expires:9999999999,vault:state==='approved'?'v2':null};}if(path==='/sync/registrations')return {pending:['requested','approved'].includes(state)?[{id:'request',name:'Laptop',device_id:'DEVICE',state}]:[],registrations:[{id:'other',vault:'v1',name:'Other laptop',state:'removal_pending',device_id:'OTHER'}]};throw new Error(path);};
+ const api=async path=>{if(path==='/sync/vaults')return {vaults:[{id:'v1',name:'First'},{id:'v2',name:'Second'}]};if(path.startsWith('/sync/requests/')){if(expired)throw Object.assign(new Error('Expired'),{status:404});return {id:'request',name:'Laptop',device_id:'DEVICE',code:'ABCD1234',state,expires:9999999999,vault:state==='approved'?'v2':null};}if(path==='/sync/registrations')return {pending:['requested','approved'].includes(state)?[{id:'request',name:'Laptop',device_id:'DEVICE',state}]:[],registrations:[{id:'other',vault:'v1',name:'Other laptop',state:'removal_pending',device_id:'OTHER'},{id:'removed',vault:'v1',name:'Old laptop',state:'revoked',device_id:'OLD'}]};throw new Error(path);};
  const post=async(path,body)=>{calls.push([path,body]);if(path==='/auth/login/start')return {publicKey:{challenge:'AQ'}};if(path==='/sync/approve')state='approved';if(path==='/sync/cancel')state='cancelled';return {};};
  const ui=mountSyncPairing({api,post,owner:()=>owner,requestId:'request',signIn:async()=>{}});
  return {$,ui,calls,credentials,logout:()=>{owner=null;ui.reset();}};
@@ -51,6 +51,9 @@ test('computer list has its own view with pending requests and no underlying set
  assert.equal($('devices-dialog').open,false);assert.equal($('sync-pairing-title').textContent,'Folder sync computers');
  assert.equal($('sync-pairing-details').hidden,true);assert.equal($('sync-pairing-computers').hidden,false);
  assert.equal($('sync-pairing-pending').children.length,1);
+ assert.equal($('sync-pairing-list').children.length,1);
+ assert.equal($('sync-pairing-removed-list').children.length,1);
+ assert.equal($('sync-pairing-removed').open,false);
  await $('sync-pairing-pending').children[0].children[1].onclick();
  assert.equal($('sync-pairing-title').textContent,'Add this computer');
  assert.equal($('sync-pairing-code').textContent,'ABCD 1234');
