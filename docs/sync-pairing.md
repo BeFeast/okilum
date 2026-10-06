@@ -46,7 +46,10 @@ Native routes reject browser Origin and Cookie headers. They do not enable CORS.
 the credential selects only its own owner/vault/device registration. Never put it
 in a URL, diagnostic log or command argument. No grant endpoint can execute an
 arbitrary hub operation. The browser has authenticated list/remove endpoints,
-with fresh passkey confirmation required for removal.
+with fresh passkey confirmation required for removal. The computer list includes
+unexpired requests awaiting approval or desktop exchange; a Review action opens
+the separate approval view. Expired, cancelled and exchanged requests leave the
+pending list.
 
 States are `provisioning`, `hub_ready`, `removal_pending`, `revoked`.
 `hub_ready` means only that the hub share is configured, **not** that a desktop has

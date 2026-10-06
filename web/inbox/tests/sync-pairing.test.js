@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mountSyncPairing} from '../sync-pairing.js';
+import {mountSyncPairing,formatMatchingCode} from '../sync-pairing.js';
 function fixture(t,{expired=false}={}){
  const elements=new Map();
  function element(id=''){return {id,hidden:false,disabled:false,checked:false,value:'',children:[],textContent:'',open:false,
@@ -12,8 +12,8 @@ function fixture(t,{expired=false}={}){
  const credentials={get:async()=>credential};
  for(const[k,value]of Object.entries({document:{getElementById:$,createElement:()=>element(),hidden:false},navigator:{credentials},setInterval:()=>0}))Object.defineProperty(globalThis,k,{configurable:true,value});
  let owner='owner',state='requested';const calls=[];
- const api=async path=>{if(path==='/sync/vaults')return {vaults:[{id:'v1',name:'First'},{id:'v2',name:'Second'}]};if(path.startsWith('/sync/requests/')){if(expired)throw Object.assign(new Error('Expired'),{status:404});return {id:'request',name:'Laptop',device_id:'DEVICE',code:'ABCD1234',state,expires:9999999999,vault:state==='approved'?'v2':null};}if(path==='/sync/registrations')return {registrations:[{id:'other',vault:'v1',name:'Other laptop',state:'removal_pending',device_id:'OTHER'}]};throw new Error(path);};
- const post=async(path,body)=>{calls.push([path,body]);if(path==='/auth/login/start')return {publicKey:{challenge:'AQ'}};if(path==='/sync/approve')state='approved';return {};};
+ const api=async path=>{if(path==='/sync/vaults')return {vaults:[{id:'v1',name:'First'},{id:'v2',name:'Second'}]};if(path.startsWith('/sync/requests/')){if(expired)throw Object.assign(new Error('Expired'),{status:404});return {id:'request',name:'Laptop',device_id:'DEVICE',code:'ABCD1234',state,expires:9999999999,vault:state==='approved'?'v2':null};}if(path==='/sync/registrations')return {pending:['requested','approved'].includes(state)?[{id:'request',name:'Laptop',device_id:'DEVICE',state}]:[],registrations:[{id:'other',vault:'v1',name:'Other laptop',state:'removal_pending',device_id:'OTHER'}]};throw new Error(path);};
+ const post=async(path,body)=>{calls.push([path,body]);if(path==='/auth/login/start')return {publicKey:{challenge:'AQ'}};if(path==='/sync/approve')state='approved';if(path==='/sync/cancel')state='cancelled';return {};};
  const ui=mountSyncPairing({api,post,owner:()=>owner,requestId:'request',signIn:async()=>{}});
  return {$,ui,calls,credentials,logout:()=>{owner=null;ui.reset();}};
 }
@@ -36,4 +36,26 @@ test('sign-out during passkey prompt cannot approve a stale request',async t=>{
 test('background session verification never reopens a dismissed approval or clears confirmation',async t=>{
  const {$,ui}=fixture(t);await ui.ready();$('sync-pairing-match').checked=true;await ui.ready();assert.equal($('sync-pairing-match').checked,true);
  $('sync-pairing-close').onclick();assert.equal($('sync-pairing-dialog').open,false);await ui.ready();assert.equal($('sync-pairing-dialog').open,false);
+});
+
+test('reject after approval replaces approval receipt with cancellation',async t=>{
+ const {$,ui}=fixture(t);await ui.ready();$('sync-pairing-match').checked=true;
+ await $('sync-pairing-approve').onclick();assert.match($('sync-pairing-status').textContent,/Approved/);
+ await $('sync-pairing-reject').onclick();assert.equal($('sync-pairing-status').textContent,'Request cancelled.');
+ assert.equal($('sync-pairing-reject').disabled,true);
+ assert.equal($('sync-pairing-pending').children.length,0);
+});
+test('computer list has its own view with pending requests and no underlying settings dialog',async t=>{
+ const {$,ui}=fixture(t);await ui.ready();$('devices-dialog').showModal();
+ await $('sync-pairing-open').onclick();
+ assert.equal($('devices-dialog').open,false);assert.equal($('sync-pairing-title').textContent,'Folder sync computers');
+ assert.equal($('sync-pairing-details').hidden,true);assert.equal($('sync-pairing-computers').hidden,false);
+ assert.equal($('sync-pairing-pending').children.length,1);
+ await $('sync-pairing-pending').children[0].children[1].onclick();
+ assert.equal($('sync-pairing-title').textContent,'Add this computer');
+ assert.equal($('sync-pairing-code').textContent,'ABCD 1234');
+ assert.equal($('sync-pairing-match').checked,false);
+});
+test('matching code is grouped without changing its characters',()=>{
+ assert.equal(formatMatchingCode('482913AF'),'4829 13AF');
 });

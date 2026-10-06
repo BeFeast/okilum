@@ -79,6 +79,13 @@ fn durable_pairing_scope_replay_expiry_and_revoke() {
     let (r, x) = request();
     let p = auth.store.sync_start(owner, &r, 1001).unwrap();
     assert_eq!(auth.store.sync_start(owner, &r, 1002).unwrap().code, p.code);
+    assert_eq!(auth.store.sync_pending(owner, 1002).unwrap().len(), 1);
+    assert!(auth
+        .store
+        .sync_pending(Uuid::new_v4(), 1002)
+        .unwrap()
+        .is_empty());
+    assert!(auth.store.sync_pending(owner, 1601).unwrap().is_empty());
     let mut changed = r.clone();
     changed.name = "Different".into();
     assert!(matches!(
@@ -123,6 +130,7 @@ fn durable_pairing_scope_replay_expiry_and_revoke() {
     assert!(auth.store.sync_exchange(owner, &bad, 1006).is_err());
     let registered = auth.store.sync_exchange(owner, &x, 1006).unwrap().unwrap();
     assert_eq!(registered.state, "provisioning");
+    assert!(auth.store.sync_pending(owner, 1006).unwrap().is_empty());
     assert_eq!(
         auth.store
             .sync_exchange(owner, &x, 1007)

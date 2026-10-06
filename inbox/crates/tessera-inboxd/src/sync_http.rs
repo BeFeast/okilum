@@ -126,7 +126,7 @@ async fn registrations(
     let t = token(&h, SESSION)?;
     blocking(s, move |a| {
         a.authenticate(&t, now())?;
-        Ok(Json(json!({"registrations":a.store.sync_registrations(a.owner.0)?})).into_response())
+        Ok(Json(json!({"registrations":a.store.sync_registrations(a.owner.0)?,"pending":a.store.sync_pending(a.owner.0,now())?})).into_response())
     })
     .await
 }

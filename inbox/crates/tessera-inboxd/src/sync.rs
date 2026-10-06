@@ -361,6 +361,13 @@ impl Store {
         }
         self.connection.query_row("SELECT id,vault,device,name,state,last_error FROM sync_grants WHERE owner=?1 AND grant_hash=?2",params![owner.to_string(),digest(secret)],registration).optional()?.ok_or(Error::Missing)
     }
+    pub fn sync_pending(&self, owner: Uuid, now: i64) -> Result<Vec<Pairing>, Error> {
+        let mut q = self.connection.prepare("SELECT id,device,name,state,expires,vault,verifier_hash FROM sync_requests WHERE owner=?1 AND expires>?2 AND state IN ('requested','approved') ORDER BY created DESC")?;
+        let rows = q
+            .query_map(params![owner.to_string(), now], pairing)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
     pub fn sync_registrations(&self, owner: Uuid) -> Result<Vec<Registration>, Error> {
         let mut q=self.connection.prepare("SELECT id,vault,device,name,state,last_error FROM sync_grants WHERE owner=?1 ORDER BY rowid")?;
         let rows = q
