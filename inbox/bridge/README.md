@@ -108,3 +108,65 @@ automatic replacement launch. A late preparation result may fill previously
 unknown run/path fields; established identity cannot change. Large/truncated source
 snapshots remain unconfirmed. Launches do not broaden the question thread allowlist;
 question discovery for newly launched threads is a separate follow-up.
+
+## Maestro adapter (#601)
+
+`maestro.py` is a separate, disabled-by-default process. It never imports a T3
+runtime token, starts workers, edits fleet configuration or connects automatically
+on Inbox deploy. The reviewed source contract is `BeFeast/maestro` PR #1289,
+commit `0812fd6159cf19b84fa84719aaafe84341c44f45`, `docs/inbox-bridge.md`.
+
+Provision a private configuration and **two different scoped credentials** only
+for an isolated pilot after the separately agreed Maestro deployment window:
+
+```json
+{
+  "instance_id": "<durable identity returned by Maestro>",
+  "source_project_id": "<stable Maestro project ID>",
+  "project_id": "<Inbox project UUID>",
+  "approval_actions": ["merge_pr"],
+  "maestro_url": "https://operator-configured-maestro-endpoint",
+  "inbox_url": "https://inbox-qa.oklabs.uk",
+  "maestro_credential_file": "/private/maestro.json",
+  "inbox_credential_file": "/private/inbox-maestro.json",
+  "state_file": "/private/state/maestro.db"
+}
+```
+
+Credential files contain `{"token":"…"}`, mode 0600; the state directory is 0700.
+The source token principal must remain stable across rotation and have only this
+project's `read`, `reply`, and explicit `approve:<action>`/`reject:<action>` grants.
+The Inbox token belongs to its independent `maestro` scope. HTTP is allowed only
+for a loopback source; other connections require HTTPS, without redirects/proxies.
+
+Run `python3 inbox/bridge/maestro.py --config /private/config.json`. `--once`
+observes/reconciles only; initial queued operations are never automatically sent.
+A process lock prevents two processes sharing a journal. Never provision separate
+journals for the same scope; include this durable SQLite DB in private backups.
+Restore or missing operation receipts are not permission to send again.
+
+Complete snapshots refresh source liveness. Truncated question snapshots rebuild
+from the durable change feed from cursor zero, in bounded pages; malformed pages,
+cursor regression, and instance changes fail closed. Missing items are not marked
+withdrawn; their Inbox observation expires. Approval snapshots are re-read before
+sending. The displayed consent revision wraps the exact opaque native revision and
+capabilities, so permission changes invalidate a choice even without a native edit.
+Only the original native revision is sent to Maestro's atomic guard.
+
+The immutable request and native operation ID are saved before I/O. Inbox marks it
+uncertain before the source POST; there are no transport retries. Lost responses
+use principal-scoped operation lookup with the original ID. Returned identities,
+answer/decision and approval target/hash are checked before accepting the receipt.
+A question is only delivered after the worker's durable acknowledgement. A delivered
+approval receipt means the decision was saved, never that an external action ran.
+Rejected source revisions retain their exact operation receipt and require new
+explicit consent; text answers never become approval decisions.
+
+Tests use contract fixtures and a loopback HTTP fixture with a durable SQLite
+receipt committed before a dropped response. They do not start Maestro or touch
+any native worker/fleet. `test_maestro.py`, existing bridge tests, and the browser
+`web/inbox/qa/maestro.mjs` exercise the isolated paths; live acceptance is a separate
+gate requiring a manager-coordinated deployment window. The Rust `bridge_api`
+integration test additionally runs this Python adapter against a real HTTP Inbox
+and SQLite Store, recovers question/approval receipts after a journal restart,
+and verifies one source dispatch per operation.

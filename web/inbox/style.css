@@ -79,3 +79,6 @@ dialog{border:1px solid var(--line);border-radius:10px;background:var(--surface)
 #sync-pairing-match{appearance:auto;flex:0 0 auto;width:18px;height:18px;min-height:0;padding:0;margin:0}
 #sync-pairing-dialog{max-height:90dvh;overflow:auto}
 #sync-pairing-pending small,#sync-pairing-removed-list small{overflow-wrap:anywhere}
+
+/* Native approval consent shares the question's spacing and typography. */
+#executor-approval{margin:24px 0 28px}.approval-heading{display:flex;align-items:center;gap:12px}.approval-action{font-size:14px;font-weight:600}.approval-risk{font-size:12px;color:var(--muted);margin-left:auto}.approval-heading .icon-button{width:32px;height:32px}.approval-heading svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.6}.approval-target{display:grid;grid-template-columns:auto 1fr;gap:8px 18px;margin:18px 0;font-size:14px}.approval-target dt{color:var(--muted);text-transform:capitalize}.approval-target dd{margin:0;overflow-wrap:anywhere}.approval-exact{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.6;background:var(--page);padding:16px;border-radius:12px}#executor-source,#executor-answer-status,#executor-status,#executor-retry,#executor-discard{font-size:12px}

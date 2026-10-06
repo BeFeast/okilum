@@ -804,6 +804,7 @@ async fn approvals_require_action_scope_and_freeze_exact_revision_and_target() {
     q.source.kind = SourceKind::Maestro;
     q.source.record_kind = SourceRecordKind::Approval;
     q.approval = Some(Approval {
+        repo: None,
         action: "merge_pr".into(),
         target: json!({"repository":"fixture","number":1}),
         summary: "Merge fixture".into(),
@@ -894,4 +895,106 @@ async fn approvals_require_action_scope_and_freeze_exact_revision_and_target() {
     let mut stale = r;
     stale.operation_id = Uuid::new_v4();
     assert!(store.prepare_execution_reply(f.owner, &stale).is_err());
+}
+
+// Exercise the shipped Python adapter against a real HTTP Inbox and durable Store.
+// The source is the pinned contract fixture; no Maestro process or fleet is involved.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn maestro_adapter_round_trip_recovers_lost_response_without_resend() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::{Command, Stdio};
+    let f = Fixture::new();
+    let path = f.dir.path().join("credential");
+    let mut config: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    config["scope"]["source_kind"] = json!("maestro");
+    config["scope"]["instance_id"] = json!("instance");
+    config["scope"]["source_project_id"] = json!("pilot");
+    config["scope"]["approval_actions"] = json!(["merge_pr"]);
+    std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let app = f.app(true);
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let script = r#"
+import json,os,signal,sys,tempfile
+from pathlib import Path
+from maestro import Journal,Runner,Unavailable,project
+from test_maestro import SourceFixture,config
+from t3_questions import Inbox
+signal.alarm(30)
+c=config();c['project_id']=sys.argv[2];c['inbox_url']=sys.argv[1]
+with tempfile.TemporaryDirectory() as d:
+ os.chmod(d,0o700);p=Path(d)/'journal.db';j=Journal(p,c)
+ source=SourceFixture(c);inbox=Inbox(c['inbox_url'],sys.argv[3]);runner=Runner(c,j,source,inbox)
+ runner.step()
+ print(json.dumps([project(source.q,c),project(source.a,c,True)]),flush=True)
+ assert sys.stdin.readline().strip()=='send'
+ source.lose=True
+ for expected in (1,2):
+  try:runner.step()
+  except Unavailable:pass
+  assert len(source.sent)==expected
+ j.db.close();j=Journal(p,c);runner=Runner(c,j,source,inbox);runner.step()
+ ops=list(inbox.operations());assert sorted(o['state'] for o in ops)==['accepted','delivered']
+ question_op=next(o for o in ops if not o['question'].get('approval'))
+ source.ack(question_op['request']['operation_id']);runner.step();runner.step()
+ assert all(o['state']=='delivered' for o in inbox.operations())
+ assert len(source.sent)==2
+ j.db.close()
+ print('question ack + approval decision recovered; exactly two POSTs',flush=True)
+"#;
+    let mut child = Command::new("python3")
+        .args([
+            "-c",
+            script,
+            &format!("http://{address}"),
+            &f.project.to_string(),
+            KEY,
+        ])
+        .env(
+            "PYTHONPATH",
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../bridge"),
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    let mut line = String::new();
+    output.read_line(&mut line).unwrap();
+    let questions: Vec<Question> = serde_json::from_str(&line).unwrap();
+    assert_eq!(questions.len(), 2);
+    let mut store = Store::open(&f.dir.path().join("db")).unwrap();
+    for q in &questions {
+        store
+            .prepare_execution_reply(
+                f.owner,
+                &Reply {
+                    operation_id: Uuid::new_v4(),
+                    question_id: q.id,
+                    expected_revision: q.source_revision.clone(),
+                    answers: vec![AnswerField {
+                        id: q.fields[0].id.clone(),
+                        text: String::new(),
+                        option_ids: vec![if q.approval.is_some() {
+                            "approve"
+                        } else {
+                            "blue"
+                        }
+                        .into()],
+                    }],
+                },
+            )
+            .unwrap();
+    }
+    child.stdin.take().unwrap().write_all(b"send\n").unwrap();
+    let result = child.wait_with_output().unwrap();
+    server.abort();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
 }

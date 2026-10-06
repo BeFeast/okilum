@@ -1,4 +1,4 @@
-import { buildReply, questionStatus, replyJournal, optionLabel } from './questions.js';
+import { buildReply, questionStatus, replyJournal, optionLabel, sourceName, operationLabel } from './questions.js';
 
 export function mountQuestions({ api, post, owner, online, storage = localStorage }) {
   const $ = id => document.getElementById(id);
@@ -53,7 +53,7 @@ export function mountQuestions({ api, post, owner, online, storage = localStorag
       if (!data.next_after || data.next_after === after || page === 99) throw new Error('Question list is incomplete. Try refreshing.');
       after = data.next_after;
     }
-    rows = found; renderList(); status(`${rows.size} question${rows.size === 1 ? '' : 's'} · checked ${new Date().toLocaleTimeString()}`);
+    rows = found; renderList(); status(rows.size ? `${rows.size} question${rows.size === 1 ? '' : 's'}` : '');
   }
   function renderList() {
     $('executor-questions').replaceChildren();
@@ -69,7 +69,7 @@ export function mountQuestions({ api, post, owner, online, storage = localStorag
     if (selected && !pending && !operation) drafts.set(selected.id, readAnswers());
     const epoch = ++generation, who = currentOwner;
     selected = null; operation = null; pending = null; loadedAt = 0; refused = false; refusalWarning = '';
-    $('executor-answer-fields').replaceChildren(); $('executor-send').disabled = true;
+    $('executor-answer-fields').replaceChildren(); $('executor-approval').replaceChildren(); $('executor-approval').hidden = true; $('executor-send').disabled = true;
     $('executor-retry').hidden = true; $('executor-discard').hidden = true;
     $('executor-answer-status').textContent = 'Checking the original question…';
     if (!$('executor-dialog').open) $('executor-dialog').showModal();
@@ -91,8 +91,28 @@ export function mountQuestions({ api, post, owner, online, storage = localStorag
       renderAnswer();
     } catch (error) { if (validSession(who,epoch)) $('executor-answer-status').textContent = error.message; }
   }
+  function renderApproval(q) {
+    const panel=$('executor-approval');panel.replaceChildren();panel.hidden=!q.approval;
+    if(!q.approval)return;
+    const a=q.approval,heading=el('div',null,'approval-heading');
+    const action=a.action.split('_').map(w=>w==='pr'?'PR':w[0].toUpperCase()+w.slice(1)).join(' ');
+    heading.append(el('span',action,'approval-action'),el('span',`${a.risk} risk`,'approval-risk'));
+    const info=el('button',null,'icon-button');info.type='button';info.title='Exact action and target';info.setAttribute('aria-label','Exact action and target');info.setAttribute('aria-expanded','false');
+    info.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6 M12 7h.01"/></svg>';
+    const exact=el('pre',JSON.stringify({action:a.action,target:a.target,repo:a.repo,payload_hash:a.payload_hash,target_state_hash:a.target_state_hash},null,2),'approval-exact');exact.hidden=true;
+    info.onclick=()=>{exact.hidden=!exact.hidden;info.setAttribute('aria-expanded',String(!exact.hidden));};heading.append(info);panel.append(heading);
+    const target=el('dl',null,'approval-target');
+    for(const [key,value] of Object.entries({...a.repo?{repo:a.repo}:{},...a.target})){
+      if(value===null||value===''||/(?:^id$|_id$|hash|sha|path|session)/.test(key))continue;
+      target.append(el('dt',key==='pr'?'PR':key.replaceAll('_',' ')),el('dd',typeof value==='object'?JSON.stringify(value):String(value)));
+    }
+    if(!target.children.length)target.append(el('dt','Target'),el('dd','See exact details'));
+    panel.append(target,exact);
+  }
   function renderAnswer() {
     const q = selected; if (!q) return;
+    renderApproval(q);
+    $('executor-dialog').querySelector('.section-label').textContent=q.approval?'Approval':'Question';
     $('executor-answer-fields').replaceChildren();
     const saved = operation?.request || pending;
     const display = saved || { answers: drafts.get(q.id) || [] };
@@ -115,14 +135,14 @@ export function mountQuestions({ api, post, owner, online, storage = localStorag
       $('executor-answer-fields').append(group);
     }
     const projectName = projects.find(p => p.id === q.project_id)?.draft.title || 'Project';
-    $('executor-source').textContent = `${projectName} · ${q.thread_title || 'T3 conversation'}`;
+    $('executor-source').textContent = `${projectName} · ${q.thread_title || `${sourceName(q)} conversation`}`;
     $('executor-source').title = `${q.source.kind.toUpperCase()} · ${q.source.thread_id}`;
     updateStatus();
   }
   function updateStatus(){
     if(!selected)return;
     const full=refused?`Not sent — the source refused this answer. Clear this refused draft to choose again. ${refusalWarning}`:pending&&!operation?'Delivery unconfirmed — retry the same saved answer':questionStatus(selected,operation,online());
-    const short=refused?'Not sent':operation?({queued:'Sending',uncertain:'Unconfirmed',accepted:'Accepted by T3',delivered:'Received',rejected:'Not sent'})[operation.state]:pending?'Unconfirmed':selected.state==='answered'?'Answered':selected.state==='withdrawn'?'Withdrawn':!online()?'Offline':!selected.source_fresh?'Reconnecting':!selected.can_reply?'Unavailable':'Awaiting answer';
+    const short=refused?'Not sent':operation?operationLabel(selected,operation.state):pending?'Unconfirmed':selected.state==='answered'?'Answered':selected.state==='withdrawn'?'Withdrawn':!online()?'Offline':!selected.source_fresh?'Reconnecting':!selected.can_reply?'Unavailable':selected.approval?'Awaiting decision':'Awaiting answer';
     $('executor-answer-status').textContent=short;$('executor-answer-status').title=full;
     $('executor-retry').hidden=refused||!pending||Boolean(operation);$('executor-retry').disabled=!online()||sending;
     $('executor-discard').hidden=!refused&&operation?.state!=='rejected';updateSend();
@@ -136,6 +156,7 @@ export function mountQuestions({ api, post, owner, online, storage = localStorag
   function updateSend(){
     let ready=false;
     if(selected)try{buildReply(selected,Object.fromEntries(readAnswers().map(a=>[a.id,a])),'preview');ready=true;}catch{}
+    $('executor-send').textContent=selected?.approval?'Send decision':'Send';
     $('executor-send').disabled=!ready||!online()||sending||refused||Boolean(pending)||Boolean(operation)||Date.now()-loadedAt>20000;
   }
   async function checkSelected(){

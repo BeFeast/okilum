@@ -1,10 +1,15 @@
+export function sourceName(question) { return question.source?.kind === 'maestro' ? 'Maestro' : 'T3'; }
+export function operationLabel(question, state) {
+  return ({queued:'Sending', uncertain:'Unconfirmed', accepted:`Accepted by ${sourceName(question)}`,
+    delivered:question.approval?'Decision recorded':'Received', rejected:'Not sent'})[state] || 'Unconfirmed';
+}
 // Online question actions are never part of the capture outbox.
 export function questionStatus(question, operation, online = true) {
   if (operation) return ({
     queued: 'Queued for the source bridge',
     uncertain: 'Delivery unconfirmed — checking the original request; no automatic resend',
-    accepted: 'Accepted by T3 — receipt by the executor is not yet confirmed',
-    delivered: 'Received by the executor',
+    accepted: `Accepted by ${sourceName(question)} — receipt by the executor is not yet confirmed`,
+    delivered: question.approval ? 'Decision recorded in Maestro — execution is not confirmed' : 'Received by the executor',
     rejected: 'Not sent — the source changed or refused this answer',
   })[operation.state] || 'Unknown delivery status';
   if (question.state === 'answered') return 'Answered at the source';
