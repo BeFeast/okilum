@@ -53,6 +53,7 @@ class LaunchRunner:
     def __init__(self,config,journal,source,inbox):
         self.config,self.journal,self.source,self.inbox=config,journal,source,inbox
         self.ready=False
+        self.outputs_seen=set()
         journal.db.execute('CREATE TABLE IF NOT EXISTS launch_intents(id TEXT PRIMARY KEY,body TEXT NOT NULL,command TEXT NOT NULL)')
         journal.db.commit()
 
@@ -88,7 +89,25 @@ class LaunchRunner:
     def step(self):
         operations=list(self.operations())
         for op in operations:
-            if op['state'] in ('completed','failed'):continue
+            if op['state']=='failed':continue
+            if op['state']=='completed':
+                key=op['request']['operation_id']
+                if key in self.outputs_seen:continue
+                try:
+                    command=command_for(op,self.config)
+                    snapshot=self.source.snapshot(op['thread_id'])
+                    progress=observed(snapshot,command)
+                    require(progress['next']=='completed' and progress['run_id']==op['run_id'],'output_run_changed')
+                    messages=[m for m in snapshot['projection']['messages'] if m.get('role')=='assistant' and m.get('runId')==op['run_id']]
+                    if not messages:continue
+                    message=messages[-1]
+                    if message.get('streaming') or not message.get('text'):continue
+                    require(isinstance(message['text'],str) and len(message['text'].encode())<=65536,'output_limit')
+                    self.inbox.request('POST','/api/bridge/v1/launches/'+key+'/output',{'run_id':op['run_id'],'message_id':message['id'],'text':message['text']})
+                    self.outputs_seen.add(key)
+                except Unavailable as error:
+                    print(canonical({'event':'launch_output','status':'unavailable','code':str(error)}),flush=True)
+                continue
             command=command_for(op,self.config)
             fresh=self.persist(op,command)
             try:snapshot=self.source.snapshot(op['thread_id'])

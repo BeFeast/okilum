@@ -64,6 +64,7 @@ pub fn router_with_forgejo(
         .merge(crate::web::routes())
         .merge(crate::launch_http::browser())
         .merge(crate::forgejo::routes())
+        .merge(crate::results::routes())
         .route("/health", get(|| async { "ok" }))
         .route("/api/v1/auth/register/start", post(register_start))
         .route("/api/v1/auth/register/finish", post(register_finish))

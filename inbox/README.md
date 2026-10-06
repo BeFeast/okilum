@@ -346,3 +346,32 @@ project/repository associations; no source token reaches the browser or Inbox AP
 executor launches. This does not turn assignees or a launch's base commit into
 claims about who authored a PR or the executor's current HEAD. The service stays
 disabled until operator configuration is supplied; Maestro is unaffected.
+
+## Project and results screen (slice 2, PR 5)
+
+The responsive Project panel combines guarded status/next-step edits, source
+questions (the existing reply dialog), executor identities/state/final output,
+explicitly mapped Forgejo repositories, and publication/QA history. Assignees and
+executors remain separate. Independent source errors retain observations with a
+stale/unavailable label. The fixture pilot is not mapped to Tessera development.
+
+Schema 10 adds durable `execution_outputs` and `execution_results`. The scoped
+launch bridge stores the final non-streaming assistant message from the exact
+completed run via `POST /api/bridge/v1/launches/{id}/output`; identity/content are
+immutable and exact retries survive lost acknowledgements and restart. Browser
+reads require the owner's session. This does not relaunch work or infer a build
+from generated prose. T3 thread IDs/worktrees are displayed; a browser deep link
+is not fabricated where no operator-provisioned public source route exists.
+
+`POST /api/v1/results` records an explicitly **owner-reported** publication (or
+failure), linked to a terminal launch, exact run and full commit. HTTPS result
+link, platform, channel, version and QA text are required. This endpoint does not
+publish or verify external deployment. Operation IDs replay exact records;
+changed payloads conflict. `GET /api/v1/projects/{id}/results` returns append-only
+history. A later failed report does not replace the last published result for
+that exact platform/channel. Client retry journals are owner/project scoped;
+clearing a saved request keeps text and does not delete a committed record.
+
+Back up schema-10 DB and the bridge journal using SQLite online backup. Image
+rollback must retain newer operations; old binaries reject newer schema rather
+than resetting it. Maestro and broader execution remain gated separately.

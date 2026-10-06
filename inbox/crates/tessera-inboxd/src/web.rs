@@ -66,6 +66,12 @@ pub(crate) fn routes<S: Clone + Send + Sync + 'static>() -> Router<S> {
         "text/javascript; charset=utf-8",
         "forgejo.js"
     );
+    let router = asset!(
+        router,
+        "/projects.js",
+        "text/javascript; charset=utf-8",
+        "projects.js"
+    );
     let router = asset!(router, "/sw.js", "text/javascript; charset=utf-8", "sw.js");
     let router = asset!(router, "/style.css", "text/css; charset=utf-8", "style.css");
     let router = asset!(router, "/icon.svg", "image/svg+xml", "icon.svg");

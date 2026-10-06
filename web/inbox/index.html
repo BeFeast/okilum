@@ -21,6 +21,24 @@
       <section class="capture-panel"><form id="capture-form" class="card"><label for="thought">What's on your mind?</label><textarea id="thought" rows="7" placeholder="An idea, a question, something to come back to…" required></textarea><div class="form-footer"><span id="capture-help">Sign in once to capture on this device.</span><button id="save" type="submit" disabled>Save thought <span aria-hidden="true">↗</span></button></div></form><p class="storage-note">Unsent thoughts stay on this device until delivery. Export them before clearing browser data.</p><div class="local-tools"><button id="sync" class="quiet">Sync now</button><button id="export" class="quiet" hidden>Export unsent</button></div></section>
       <section class="inbox-panel" aria-labelledby="list-title"><div class="list-heading"><h2 id="list-title">Your thoughts</h2><span id="count" class="muted"></span></div><ul id="thoughts"></ul><p id="empty" class="empty">No thoughts here yet.<br>Your next one can start small.</p><button id="more" class="quiet" hidden>Load more</button></section>
     </div>
+    <section id="project-panel" class="card executor-panel" hidden aria-labelledby="project-heading">
+      <div class="list-heading"><h2 id="project-heading">Project</h2><button id="project-refresh" class="quiet">Refresh</button></div>
+      <label for="project-select">Choose project</label><select id="project-select"></select>
+      <form id="project-form"><label for="project-summary">Status</label><input id="project-summary" maxlength="256"><label for="project-next">Next step</label><textarea id="project-next" maxlength="4096" rows="3"></textarea><button id="project-save">Save status</button><button id="project-clear-status" type="button" class="quiet" hidden>Clear saved request · keep text</button></form><p id="project-status" role="status"></p>
+      <div class="project-grid"><section><h3>Questions for you</h3><p id="project-question-status" role="status"></p><div id="project-questions"></div></section><section><h3>Who is doing what</h3><p>Executor state comes from T3. Issue assignees are shown separately below.</p><div id="project-executors"></div></section></div>
+      <h3>Results and QA</h3><div id="project-results"></div>
+      <details><summary>Record a publication result</summary><p>Record what was published and what to check. This does not publish or run anything; the report is attributed to you.</p>
+      <form id="result-form"><label for="result-launch">Completed executor run</label><select id="result-launch" required></select>
+      <label for="result-commit">Exact commit (40 characters)</label><input id="result-commit" required pattern="[a-fA-F0-9]{40}" maxlength="40">
+      <label for="result-platform">Platform (for example web, macOS, Arch)</label><input id="result-platform" required maxlength="128">
+      <label for="result-channel">Channel (for example QA, beta, stable)</label><input id="result-channel" required maxlength="128">
+      <label for="result-version">Build / version</label><input id="result-version" required maxlength="128">
+      <label for="result-publication">Publication status</label><select id="result-publication"><option value="published">Published</option><option value="failed">Failed</option></select>
+      <label for="result-url">Result or source URL (HTTPS)</label><input id="result-url" type="url" required maxlength="2048">
+      <label for="result-qa">What to check</label><textarea id="result-qa" required maxlength="8192" rows="3"></textarea>
+      <button id="result-save">Record result</button><button id="result-clear" type="button" class="quiet" hidden>Clear saved report · keep text</button><p id="result-status" role="status"></p></form></details>
+      <h3>Linked repositories</h3><p id="project-repo-status" role="status"></p><div id="project-repos"></div>
+    </section>
     <section id="executor-panel" class="card executor-panel" hidden aria-labelledby="executor-title">
       <div class="list-heading"><h2 id="executor-title">Questions for you</h2><button id="executor-refresh" class="quiet">Refresh</button></div>
       <label for="executor-project">Project</label><select id="executor-project"></select>

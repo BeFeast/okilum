@@ -33,9 +33,15 @@ class Source:
 
 
 class Inbox:
-    def __init__(self):self.ops=[];self.lose=False
+    def __init__(self):self.ops=[];self.lose=False;self.outputs={}
     def request(self,method,path,body=None):
         if method=='GET':return {'operations':copy.deepcopy(self.ops),'next_cursor':len(self.ops),'has_more':False}
+        if path.endswith('/output'):
+            key=path.split('/')[-2]
+            if key in self.outputs and self.outputs[key]!=body:raise Unavailable('conflict')
+            self.outputs[key]=copy.deepcopy(body)
+            if self.lose:raise Unavailable('http_unavailable')
+            return body
         op=next(o for o in self.ops if o['request']['operation_id']==path.split('/')[-1])
         self.assert_expected=body['expected']==op['state']
         if not self.assert_expected:raise Unavailable('conflict')
@@ -57,6 +63,30 @@ class LaunchTests(unittest.TestCase):
         self.source.snap['projection']['runs'][0]['status']='completed';self.runner.step();self.runner.step()
         self.assertEqual(self.op['state'],'completed');self.assertEqual(self.op['run_id'],'original-run');self.assertEqual(len(self.source.sent),1)
         self.assertEqual(self.source.sent[0]['workspaceStrategy']['baseRef'],'a'*40)
+    def test_final_output_matches_original_run_and_replays_after_lost_ack(self):
+        self.inbox.ops=[self.op];self.runner.step()
+        self.source.snap['projection']['runs'][0]['status']='completed'
+        self.source.snap['projection']['messages'].append({'id':'final','runId':'original-run','role':'assistant','text':'DONE'})
+        self.runner.step();self.inbox.lose=True
+        self.runner.step()
+        self.inbox.lose=False;self.runner=LaunchRunner(self.config,self.journal,self.source,self.inbox);self.runner.step()
+        self.assertEqual(len(self.source.sent),1);self.assertEqual(len(self.inbox.outputs),1)
+        self.assertEqual(self.inbox.outputs[self.op['request']['operation_id']]['text'],'DONE')
+    def test_unavailable_old_output_does_not_block_another_launch(self):
+        old=copy.deepcopy(self.op);old['state']='completed';old['run_id']='old-run';old['request']['operation_id']=str(uuid.uuid4())
+        old['target']=copy.deepcopy(old['target']);old['target']['target']['id']='revoked'
+        self.inbox.ops=[old,self.op];self.runner.step();self.runner.step()
+        self.assertEqual(len(self.source.sent),1)
+        self.assertEqual(self.op['state'],'preparing')
+    def test_streaming_output_is_not_frozen_as_final(self):
+        self.inbox.ops=[self.op];self.runner.step()
+        self.source.snap['projection']['runs'][0]['status']='completed'
+        self.source.snap['projection']['messages'].append({'id':'earlier','runId':'original-run','role':'assistant','text':'Intermediate commentary','streaming':False})
+        message={'id':'final','runId':'original-run','role':'assistant','text':'PARTIAL','streaming':True}
+        self.source.snap['projection']['messages'].append(message)
+        self.runner.step();self.runner.step();self.assertEqual(self.inbox.outputs,{})
+        message.update(text='DONE',streaming=False);self.runner.step()
+        self.assertEqual(self.inbox.outputs[self.op['request']['operation_id']]['text'],'DONE')
     def test_lost_launch_ack_restart_reads_same_thread_without_relaunch(self):
         self.inbox.ops=[self.op];self.source.lose=True
         with self.assertRaises(Unavailable):self.runner.step()

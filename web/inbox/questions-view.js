@@ -172,5 +172,5 @@ export function mountQuestions({ api, post, owner, online, storage = localStorag
     if (saved) drafts.set(selected.id,saved.answers);
     journal().clear(selected.id); open(selected.id);
   };
-  return { refresh, reset, expire() { if (selected && Date.now()-loadedAt>20000) $('executor-send').disabled=true; } };
+  return { refresh, reset, open, expire() { if (selected && Date.now()-loadedAt>20000) $('executor-send').disabled=true; } };
 }
