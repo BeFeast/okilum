@@ -429,7 +429,8 @@ pub struct ReconcileStats {
     pub reuse: ReuseDiagnostics,
     /// True when the previous graph was retained, including bounded refreshes.
     pub graph_reused: bool,
-    /// Sources whose graph/search rows changed relative to the retained baseline.
+    /// Bounded graph/search batch against the retained baseline. Empty on a full
+    /// rebuild; callers must first check `graph_reused`.
     pub affected: std::collections::BTreeSet<String>,
 }
 

@@ -586,7 +586,7 @@ fn prepare_rest_with_io_and_snapshot(
         }
         drop(reconcile_phase);
         if let Some(trace) = &opts.diagnostics {
-            trace.event("reconcile_stats", serde_json::json!({ "notes": vault.notes.len(), "read": stats.read, "reused": stats.reused, "unreadable": vault.unreadable.len(), "replay_force_all": replay.force_all, "manual_force_read": opts.force_source_read, "reuse": stats.reuse, "graph_reused": stats.graph_reused, "graph_updated_sources":stats.affected.len() }));
+            trace.event("reconcile_stats", serde_json::json!({ "notes": vault.notes.len(), "read": stats.read, "reused": stats.reused, "unreadable": vault.unreadable.len(), "replay_force_all": replay.force_all, "manual_force_read": opts.force_source_read, "reuse": stats.reuse, "graph_reused": stats.graph_reused, "graph_updated_sources":if stats.graph_reused { stats.affected.len() } else { vault.notes.len() } }));
         }
         let search_phase = opts
             .diagnostics
@@ -822,6 +822,8 @@ fn prepare_search_batch(
     prior: &Path,
     cancel: &Cancellation,
 ) -> Result<Option<(Searcher, String)>> {
+    // Repairs belong to this exact generation, never an older ID. Incremental
+    // checkpoints (and Windows full builds) intentionally have no direct index.
     let Some(old) = open_completed_generation(prior) else {
         return Ok(None);
     };
@@ -4504,6 +4506,81 @@ mod tests {
         new_release.try_send(()).unwrap();
         visual.run_until_parked();
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn search_batch_uses_only_the_named_complete_generation_including_repairs() {
+        use tessera_core::search::SearchDocument;
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        let base = fixture.path().join("cache");
+        std::fs::create_dir(&root).unwrap();
+        for path in ["a.md", "b.md"] {
+            std::fs::write(root.join(path), "source").unwrap();
+        }
+        let vault = Vault::scan(&root).unwrap();
+        let documents = [
+            SearchDocument {
+                path: "a.md".into(),
+                title: "A".into(),
+                text: "initialcanary".into(),
+            },
+            SearchDocument {
+                path: "b.md".into(),
+                title: "B".into(),
+                text: "retainedcanary".into(),
+            },
+        ];
+        let baseline =
+            Searcher::build_snapshot_in_memory(&vault, &documents, &mut |_, _| Ok(())).unwrap();
+        let prior = base.join("generations").join("a".repeat(64));
+        let completed = prior.with_extension("repairs").join("completed");
+        std::fs::create_dir_all(&completed).unwrap();
+        baseline.copy_committed_to(&completed).unwrap();
+        std::fs::write(completed.join("complete"), b"1").unwrap();
+        assert!(
+            !prior.exists(),
+            "Windows/checkpoint storage positive control"
+        );
+        let updated = [SearchDocument {
+            path: "a.md".into(),
+            title: "A".into(),
+            text: "updatedcanary".into(),
+        }];
+        let cancel = Cancellation::default();
+        let (first, generation) =
+            prepare_search_batch(&vault, &updated, &[], &base, &prior, &cancel)
+                .unwrap()
+                .unwrap();
+        assert!(first.search("initialcanary", 5).unwrap().is_empty());
+        assert_eq!(first.search("updatedcanary", 5).unwrap().len(), 1);
+        assert_eq!(first.search("retainedcanary", 5).unwrap().len(), 1);
+        assert_eq!(baseline.search("initialcanary", 5).unwrap().len(), 1);
+        let next = base.join("generations").join(generation);
+        assert!(!next.exists());
+        let (second, _) =
+            prepare_search_batch(&vault, &[], &["b.md".into()], &base, &next, &cancel)
+                .unwrap()
+                .unwrap();
+        assert_eq!(second.search("updatedcanary", 5).unwrap().len(), 1);
+        assert!(second.search("retainedcanary", 5).unwrap().is_empty());
+        assert_eq!(first.search("retainedcanary", 5).unwrap().len(), 1);
+        // Other IDs' completed repairs cannot satisfy a missing baseline.
+        let missing = base.join("generations").join("b".repeat(64));
+        assert!(
+            prepare_search_batch(&vault, &[], &[], &base, &missing, &cancel)
+                .unwrap()
+                .is_none()
+        );
+        // Index files copied before a crash are not published without the marker.
+        let incomplete = missing.with_extension("repairs").join("incomplete");
+        std::fs::create_dir_all(&incomplete).unwrap();
+        first.copy_committed_to(&incomplete).unwrap();
+        assert!(
+            prepare_search_batch(&vault, &[], &[], &base, &missing, &cancel)
+                .unwrap()
+                .is_none()
+        );
     }
 
     /// Each launch is a new process with only the persisted snapshot/search bank.
