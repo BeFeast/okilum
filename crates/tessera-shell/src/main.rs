@@ -2747,15 +2747,18 @@ impl Reader {
                     })
                     .child(self.render_loading(cx))
                     .child(
-                        reader_icon_button("reader-find", IconName::Search, FIND_TOOLTIP, cx)
-                            .selected(self.find_open)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                if this.find_open {
-                                    this.close_find(window, cx)
-                                } else {
-                                    this.open_find(window, cx)
-                                }
-                            })),
+                        reader_icon_button(
+                            "reader-search",
+                            IconName::Search,
+                            VAULT_SEARCH_TOOLTIP,
+                            cx,
+                        )
+                        .debug_selector(|| "reader-search".into())
+                        .on_click(
+                            cx.listener(|this, _, window, cx| {
+                                this.open_quick_open(true, window, cx)
+                            }),
+                        ),
                     )
                     .child(preserve_reader_selection(
                         "reader-backlinks-preserve",
@@ -5115,9 +5118,9 @@ const FOCUS_CURRENT_TOOLTIP: &str = "Focus current note ⇧⌘←";
 const FOCUS_CURRENT_TOOLTIP: &str = "Focus current note Ctrl+Shift+←";
 
 #[cfg(target_os = "macos")]
-const FIND_TOOLTIP: &str = "Find in note ⌘F";
+const VAULT_SEARCH_TOOLTIP: &str = "Search in vault (⇧⌘F)";
 #[cfg(not(target_os = "macos"))]
-const FIND_TOOLTIP: &str = "Find in note Ctrl+F";
+const VAULT_SEARCH_TOOLTIP: &str = "Search in vault (Ctrl+Shift+F)";
 
 /// Reader window title bar: the native traffic lights are vertically centred
 /// on the 46px Reader header (#365). The toolkit default centres them on its

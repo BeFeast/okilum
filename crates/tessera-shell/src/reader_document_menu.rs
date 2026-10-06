@@ -241,6 +241,11 @@ impl Reader {
                         )
                         .separator();
                     if !is_file {
+                        menu = menu.menu_with_icon(
+                            "Find in note",
+                            IconName::Search,
+                            Box::new(FindInNote),
+                        );
                         #[cfg(unix)]
                         {
                             menu = menu

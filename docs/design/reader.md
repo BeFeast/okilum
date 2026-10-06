@@ -39,7 +39,7 @@ localisation.
   separate «Tessera» title row in the Reader; the document header *is* the title
   bar (`TitleBar` hosts it, so window dragging and double-click still work).
 - **Document header (46 px).** From the left: sidebar toggle (shown selected while
-  the sidebar is open), Back, Forward, breadcrumbs, loading status, flexible space, Find,
+  the sidebar is open), Back, Forward, breadcrumbs, loading status, flexible space, Search in vault,
   right-panel toggle, More (⋯). The breadcrumbs show the root-relative folders of the current
   note, then its title in `text` weight 500. Folder crumbs are `text-muted`.
   The last crumb's tooltip shows the full root path (replaces the old
@@ -66,6 +66,11 @@ Forward, breadcrumbs (they shrink first; leading folders collapse to «…»),
 Find, right-panel toggle, More.
 
 ## Find in note
+
+The main toolbar search glyph opens vault-wide **content search** (#624), with
+Ctrl+Shift+F / ⇧⌘F in its tooltip. **Find in note** lives in the document's **…**
+menu and retains Ctrl+F / ⌘F. Quick open (Ctrl+K / ⌘K) is unchanged; the document
+header has no duplicate search glyph.
 
 - Hidden by default. ⌘F / Ctrl+F opens it; ✕ closes it and clears marks.
   Opening it keeps docked panels; only a compact overlay closes.

@@ -97,6 +97,15 @@ impl Reader {
         self.quick_open.open = true;
         self.quick_open.full_text = full_text;
         self.quick_open.input.update(cx, |input, cx| {
+            input.set_placeholder(
+                if full_text {
+                    "Search note contents…"
+                } else {
+                    "Search names and paths…"
+                },
+                window,
+                cx,
+            );
             input.set_value("", window, cx);
             input.focus(window, cx);
         });
@@ -790,7 +799,14 @@ canaryhidden [[Target]]",
                 v.open_note("start.md", None, window, cx);
             });
             visual.run_until_parked();
-            visual.simulate_keystrokes("ctrl-shift-f");
+            if mouse {
+                let search = visual
+                    .debug_bounds("reader-search")
+                    .expect("main toolbar search");
+                visual.simulate_click(search.center(), Modifiers::default());
+            } else {
+                visual.simulate_keystrokes("ctrl-shift-f");
+            }
             visual.run_until_parked();
             visual.simulate_input("canaryword");
             visual.run_until_parked();
