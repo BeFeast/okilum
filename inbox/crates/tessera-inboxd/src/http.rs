@@ -47,10 +47,12 @@ pub fn router_with_bridge(
     vault: Option<Arc<crate::vault::Vault>>,
     bridge: Option<crate::bridge::Bridge>,
 ) -> Router {
+    let bridge = bridge.map(Arc::new);
     let origin = Some(auth.origin.clone());
     let shared = Arc::new(Mutex::new(auth));
     let browser = Router::new()
         .merge(crate::web::routes())
+        .merge(crate::launch_http::browser())
         .route("/health", get(|| async { "ok" }))
         .route("/api/v1/auth/register/start", post(register_start))
         .route("/api/v1/auth/register/finish", post(register_finish))
@@ -89,6 +91,7 @@ pub fn router_with_bridge(
             "/api/v1/items/{id}/publications",
             get(publications).post(publish),
         )
+        .layer(Extension(bridge.clone()))
         .layer(Extension(vault))
         .layer(Extension(provider))
         .layer(DefaultBodyLimit::max(128 * 1024))
@@ -266,7 +269,7 @@ where
     .await
     .map_err(|_| ApiError(StatusCode::INTERNAL_SERVER_ERROR, "backend_unavailable"))?
 }
-fn token(headers: &HeaderMap, name: &str) -> Result<String, ApiError> {
+pub(crate) fn token(headers: &HeaderMap, name: &str) -> Result<String, ApiError> {
     let mut found = None;
     for h in headers.get_all(header::COOKIE) {
         for part in h.to_str().unwrap_or("").split(';') {
@@ -310,7 +313,7 @@ fn signed_in(token: &str, owner: Uuid) -> Response {
         ],
     )
 }
-fn now() -> i64 {
+pub(crate) fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()

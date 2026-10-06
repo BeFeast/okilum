@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import sys
 import stat
 import time
 import urllib.error
@@ -221,7 +222,7 @@ class Http:
             return json.loads(data) if data else None
         except urllib.error.HTTPError as error:
             error.close()
-            raise Unavailable('http_unavailable') from None
+            raise Unavailable('http_not_found' if error.code == 404 else 'http_unavailable') from None
         except (OSError, ValueError):
             raise Unavailable('http_unavailable') from None
 
@@ -235,6 +236,15 @@ class T3(Http):
     def respond(self, command):
         # Transport is deliberately limited to native question answers.
         require(command['type'] == 'runtime-request.respond', 'unsupported_command')
+        result = self._rpc('orchestration.dispatchCommand', command)
+        require(type(result.get('sequence')) is int, 'source_outcome_uncertain')
+
+    def launch(self, command):
+        result = self._rpc('orchestration.launchThread', command)
+        require(result.get('threadId') == command['threadId'], 'source_outcome_uncertain')
+
+    def _rpc(self, method, command):
+        require(method in ('orchestration.dispatchCommand', 'orchestration.launchThread'), 'unsupported_command')
         try:
             from websockets.sync.client import connect
             parts = urllib.parse.urlsplit(self.base)
@@ -243,7 +253,7 @@ class T3(Http):
             with connect(url, additional_headers={'Authorization': 'Bearer ' + self.token},
                          proxy=None, open_timeout=15, close_timeout=1, max_size=LIMIT) as ws:
                 ws.send(canonical({'_tag':'Request','id':command['commandId'],
-                    'tag':'orchestration.dispatchCommand','headers':[],'payload':command}))
+                    'tag':method,'headers':[],'payload':command}))
                 deadline = time.monotonic() + 20
                 while time.monotonic() < deadline:
                     incoming = json.loads(ws.recv(timeout=max(0.01, deadline-time.monotonic())))
@@ -252,8 +262,8 @@ class T3(Http):
                             ws.send('{"_tag":"Pong"}')
                         elif message.get('_tag') == 'Exit' and str(message.get('requestId')) == command['commandId']:
                             result = message.get('exit', {})
-                            require(result.get('_tag') == 'Success' and type(result.get('value', {}).get('sequence')) is int, 'source_outcome_uncertain')
-                            return
+                            require(result.get('_tag') == 'Success' and isinstance(result.get('value'), dict), 'source_outcome_uncertain')
+                            return result['value']
                 raise Unavailable('source_outcome_uncertain')
         except Exception:
             raise Unavailable('source_outcome_uncertain') from None
@@ -368,7 +378,7 @@ def private_json(path):
 
 def configuration(path):
     config = private_json(path)
-    require(set(config) == {'instance_id','source_project_id','project_id','thread_ids',
+    require(set(config) - {'launch_targets'} == {'instance_id','source_project_id','project_id','thread_ids',
                             't3_url','inbox_url','t3_credential_file','inbox_credential_file','state_file'}, 'invalid_configuration')
     for name in ('instance_id','source_project_id','project_id'):
         text(config[name])
@@ -403,10 +413,15 @@ def main():
     credentials = [private_json(config[name]) for name in ('t3_credential_file','inbox_credential_file')]
     for credential in credentials:
         require(isinstance(credential.get('token'), str) and len(credential['token']) >= 32, 'invalid_credential')
-    runner = Runner(config,journal,T3(config['t3_url'],credentials[0]['token']),Inbox(config['inbox_url'],credentials[1]['token']))
+    source, inbox = T3(config['t3_url'],credentials[0]['token']), Inbox(config['inbox_url'],credentials[1]['token'])
+    runner = Runner(config,journal,source,inbox)
+    from t3_launch import LaunchRunner
+    launches = LaunchRunner(config,journal,source,inbox) if config.get('launch_targets') else None
     while True:
         try:
             runner.step()
+            if launches:
+                launches.step()
             print('{"event":"bridge_sync","status":"ok"}', flush=True)
         except Unavailable as error:
             print(canonical({'event':'bridge_sync','status':'unavailable','code':str(error)}), flush=True)
@@ -416,6 +431,7 @@ def main():
 
 
 if __name__ == '__main__':
+    sys.modules.setdefault('t3_questions', sys.modules[__name__])
     try:
         main()
     except Exception:

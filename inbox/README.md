@@ -306,3 +306,30 @@ cleared into a new send. Accepted is distinct from executor receipt.
 The source bridge remains opt-in. This PR adds the web surface and freshness gate;
 CT119 deployment and an actual T3 pilot must validate the combined flow before
 claiming slice-2 acceptance. Maestro stays disconnected.
+
+## Explicit T3 executor launch (slice 2, PR 3)
+
+Schema 9 adds immutable launch operations. Browser clients save a brief, inspect
+its exact revision and operator-provisioned target, then explicitly POST
+`/api/v1/launches` with operation ID, brief ID/revision and target fingerprint.
+Saving a brief never launches anything. The preview shows repository, pinned
+commit, new-worktree policy, model/options and modes. Launches are online-only;
+uncertain actions remain visible and never enter the capture outbox.
+
+Targets are disabled by default. The private bridge credential may additionally
+set `scope.launches: true` and `launch_targets: [Target]`, where Target contains
+`id`, `label`, `repository`, `base_commit` (40-character lowercase commit),
+`model_selection` (native instanceId/model/options), `runtime_mode` and
+`interaction_mode`. Scope fixes owner, Inbox project and source project. Provision
+only the isolated pilot; do not grant authority to Tessera development or a real
+vault. GET `/api/v1/projects/{id}/launch-targets` returns immutable snapshots and
+fingerprints. The bridge's separate local configuration must allow those exact
+snapshots too; backend configuration alone cannot broaden native execution.
+
+GET `/api/v1/launches/{operation_id}` and the paginated project launch list retain
+thread, run and worktree identity through reloads. Exact request replay survives
+target revocation; changed payloads and a second launch of the same brief revision
+conflict. Machine `/api/bridge/v1/launches` supports scoped list/lookup/progress,
+not creation. The browser's session/Origin protections remain mandatory. Retain
+both server DB and bridge journal in consistent backups; do not erase uncertain
+operations or create new IDs to recover a missing acknowledgement.

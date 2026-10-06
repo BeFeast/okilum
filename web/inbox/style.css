@@ -14,3 +14,9 @@
 #executor-answer-fields input { width: auto; margin: .2rem 0; flex-shrink: 0; }
 #executor-answer-fields textarea { width: 100%; box-sizing: border-box; }
 #executor-answer-fields span { overflow-wrap: anywhere; }
+
+#launch-form { display: grid; gap: .6rem; }
+#launch-form input, #launch-form textarea, #launch-form select, #executor-project { width: 100%; box-sizing: border-box; padding: .6rem; }
+#launch-preview { white-space: pre-wrap; overflow-wrap: anywhere; background: #f5f4ef; padding: 1rem; border-radius: 8px; }
+#launch-list { list-style: none; padding: 0; }
+#launch-list li { padding: 1rem 0; border-top: 1px solid #ddd; overflow-wrap: anywhere; }

@@ -128,7 +128,25 @@ async fn real_webauthn_session_capture_restart_login_and_lost_response_replay() 
         .store
         .observe_execution_question(owner, &source_question, 1)
         .unwrap();
-    let app = router(backend);
+    let target = tessera_inboxd::launch::Target {
+        id: "launch-pilot".into(),
+        label: "Pilot".into(),
+        repository: "fixture".into(),
+        base_commit: "a".repeat(40),
+        model_selection: json!({"instanceId":"codex","model":"test"}),
+        runtime_mode: "approval-required".into(),
+        interaction_mode: "default".into(),
+    };
+    let credential_path = dir.path().join("bridge");
+    std::fs::write(&credential_path,serde_json::to_vec(&json!({"token":"a".repeat(64),"scope":{"owner_id":owner.0,"project_id":source_project,"instance_id":"test","source_project_id":"pilot","ingest":false,"replies":false,"launches":true},"launch_targets":[target]})).unwrap()).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&credential_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let bridge = tessera_inboxd::bridge::Bridge::from_credential(&credential_path, owner).unwrap();
+    let app = tessera_inboxd::http::router_with_bridge(backend, None, None, Some(bridge));
+
     let mut key = WebauthnAuthenticator::new(SoftPasskey::new(true));
     let (status, options, cookies) = call(
         &app,
@@ -161,6 +179,88 @@ async fn real_webauthn_session_capture_restart_login_and_lost_response_replay() 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(identity["owner_id"], owner.0.to_string());
     let session = cookie(&cookies, "__Host-inbox-session=");
+    let targets_path = format!("/api/v1/projects/{source_project}/launch-targets");
+    assert_eq!(
+        call(&app, "GET", &targets_path, Value::Null, None, None)
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (_, targets, _) = call(
+        &app,
+        "GET",
+        &targets_path,
+        Value::Null,
+        Some(&session),
+        None,
+    )
+    .await;
+    assert_eq!(targets["targets"].as_array().unwrap().len(), 1);
+    let launch_brief = Uuid::new_v4();
+    assert_eq!(call(&app,"POST","/api/v1/briefs",json!({"operation_id":Uuid::new_v4(),"project_id":source_project,"brief_id":launch_brief,"expected_revision":0,"title":"Launch pilot","text":"Print marker","target_id":"launch-pilot"}),Some(&session),Some(ORIGIN)).await.0,StatusCode::OK);
+    let launch = json!({"operation_id":Uuid::new_v4(),"brief_id":launch_brief,"expected_revision":1,"target_revision":targets["targets"][0]["revision"]});
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/v1/launches",
+            launch.clone(),
+            Some(&session),
+            Some("https://foreign.test")
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    let (status, launched, _) = call(
+        &app,
+        "POST",
+        "/api/v1/launches",
+        launch.clone(),
+        Some(&session),
+        Some(ORIGIN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(launched["state"], "queued");
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/v1/launches",
+            launch.clone(),
+            Some(&session),
+            Some(ORIGIN)
+        )
+        .await
+        .1,
+        launched
+    );
+    let mut duplicate = launch.clone();
+    duplicate["operation_id"] = json!(Uuid::new_v4());
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/v1/launches",
+            duplicate,
+            Some(&session),
+            Some(ORIGIN)
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    let path_launch = format!(
+        "/api/v1/launches/{}",
+        launch["operation_id"].as_str().unwrap()
+    );
+    assert_eq!(
+        call(&app, "GET", &path_launch, Value::Null, None, None)
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
     let reply_path = format!("/api/v1/questions/{}/reply", source_question.id);
     let reply = json!({"operation_id":Uuid::new_v4(),"question_id":source_question.id,
         "expected_revision":"r1","answers":[{"id":"answer","text":"Exact answer","option_ids":[]}]});
