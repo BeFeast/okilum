@@ -528,3 +528,31 @@ The preview is a GPUI image, so palettes and menus retain normal overlay orderin
 
 “Reveal in sidebar” opens the Notes panel if hidden, expands Folders and focuses
 the current note or file using the same action as the sidebar crosshair.
+
+### UI state and new windows (#592)
+
+Tessera restores the last reading environment without an inheritance setting.
+Appearance (System/Light/Dark), reading text size (12–24, default 15.5) and reading
+width (Narrow 620 / Comfort 740 / Wide 960 logical pixels) are global. Appearance
+uses a segmented control; text size uses quiet minus/plus glyphs with tooltips.
+Source text scales with the reading size. Every open vault uses the same global
+values and new windows start with those values.
+
+Each canonical vault remembers independent panel visibility and preferred widths,
+collapsed sidebar sections, expanded tree folders, tree cursor/scroll, Properties
+presentation, source/preview mode, the current note (including the empty vault),
+reading scroll and Back/Forward entries with their offsets. Window geometry,
+display, maximized and fullscreen state are vault-specific and still clamped to
+an available display. A previously unseen vault inherits the last active window's
+presentation and geometry, without copying its note paths or navigation history.
+Transient menus, hover previews, notifications and dialogs do not reopen.
+
+Missing presentation state lives in the versioned OS state store
+`reader-ui.json`, outside vaults and rebuildable caches. Writes are atomic and
+debounced; normal quit, update relaunch and the existing graceful SIGTERM path
+flush pending state. Invalid/future stores are preserved rather than overwritten.
+Legacy appearance, panel-width and window-frame files remain migration inputs;
+existing pinned/recent/Inbox metadata and source/draft recovery keep their
+respective storage contracts. Source contents never enter the UI state file.
+On Linux the default store is `~/.local/state/tessera/reader-ui.json` (or
+`$XDG_STATE_HOME/tessera/reader-ui.json`), beside `reader-diagnostic.log`.

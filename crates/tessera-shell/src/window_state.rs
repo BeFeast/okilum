@@ -6,8 +6,8 @@ use gpui_component::Root;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::PathBuf};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct Frame {
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Frame {
     x: f32,
     y: f32,
     width: f32,
@@ -115,11 +115,8 @@ pub(crate) fn prepare(
     };
     let slot = *state.next.get(key).unwrap_or(&0);
     let key_with_slot = format!("{key}#{slot}");
-    let saved = state
-        .saved
-        .frames
-        .get(&key_with_slot)
-        .cloned()
+    let saved = super::reader_ui_state::window_frame(&key_with_slot, cx)
+        .or_else(|| state.saved.frames.get(&key_with_slot).cloned())
         .filter(Frame::valid);
     cx.global_mut::<State>().next.insert(key.into(), slot + 1);
     if let Some(frame) = saved {
@@ -177,6 +174,9 @@ fn record(key: &str, window: &Window, cx: &mut App) {
     if !saved.valid() {
         return;
     }
+    if super::reader_ui_state::record_frame(key, saved.clone(), window.is_window_active(), cx) {
+        return;
+    }
     let state = cx.global_mut::<State>();
     state.saved.frames.insert(key.into(), saved);
     state.dirty = true;
@@ -193,6 +193,10 @@ fn record(key: &str, window: &Window, cx: &mut App) {
 }
 
 fn flush(cx: &mut App) {
+    if super::reader_ui_state::installed(cx) {
+        super::reader_ui_state::flush(cx);
+        return;
+    }
     let Some(state) = cx.try_global::<State>() else {
         return;
     };
@@ -225,6 +229,13 @@ pub(crate) fn track(root: &Entity<Root>, key: Option<String>, window: &mut Windo
     };
     record(&key, window, cx);
     root.update(cx, |_, cx| {
+        let active_key = key.clone();
+        cx.observe_window_activation(window, move |_, window, cx| {
+            if window.is_window_active() {
+                record(&active_key, window, cx);
+            }
+        })
+        .detach();
         cx.observe_window_bounds(window, move |_, window, cx| record(&key, window, cx))
             .detach();
     });

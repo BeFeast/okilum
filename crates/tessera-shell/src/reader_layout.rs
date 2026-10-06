@@ -1,5 +1,5 @@
 //! Presentation state only: opening a panel never owns document/navigation state.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Panel {
     #[default]
     Closed,
@@ -9,7 +9,7 @@ pub enum Panel {
 
 /// Wide visibility is independent; compact presentation exposes only the last
 /// requested side. Viewport changes never mutate the user's wide choices.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Panels {
     pub notes: bool,
     pub backlinks: bool,
@@ -114,7 +114,7 @@ pub fn overlay(width: f32) -> bool {
 }
 
 /// Preferred sizes are independent of transient viewport clamps.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Widths {
     pub notes: f32,

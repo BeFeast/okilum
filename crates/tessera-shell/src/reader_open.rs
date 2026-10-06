@@ -586,6 +586,7 @@ pub(crate) fn open_window(opts: super::Opts, cx: &mut App) -> Result<()> {
     let _phase = super::reader_diagnostics::phase(cx, "native_window_open");
     let _key_phase = super::reader_diagnostics::phase(cx, "window_key_and_geometry");
     let key = super::window_state::reader_key(&opts);
+    super::reader_ui_state::guard_window_root(&key, cx);
     let (options, frame_key) = super::window_state::prepare(window_options(cx), &key, cx);
     drop(_key_phase);
     cx.open_window(options, |window, cx| {
@@ -600,8 +601,15 @@ pub(crate) fn open_window(opts: super::Opts, cx: &mut App) -> Result<()> {
         let reader = cx.new(|cx| super::Reader::new(opts, window, cx));
         let weak = reader.downgrade();
         window.on_window_should_close(cx, move |_, cx| {
-            weak.update(cx, |reader, cx| reader.save_source(cx))
-                .unwrap_or(true)
+            weak.update(cx, |reader, cx| {
+                if !reader.save_source(cx) {
+                    return false;
+                }
+                reader.record_ui_state(reader.ui_state.was_active(), cx);
+                super::reader_ui_state::flush(cx);
+                true
+            })
+            .unwrap_or(true)
         });
         let root = cx.new(|cx| Root::new(reader, window, cx));
         super::window_state::track(&root, frame_key, window, cx);

@@ -627,6 +627,23 @@ impl Reader {
         }
         cx.notify();
     }
+    pub(super) fn restore_source_position(
+        &self,
+        offset: [f32; 2],
+        window: &Window,
+        _: &mut Context<Self>,
+    ) {
+        if let Some(editing) = &self.editing {
+            let input = editing.input.clone();
+            window.on_next_frame(move |_, cx| {
+                input.update(cx, |input, cx| {
+                    input
+                        .set_scroll_offset(point(px(offset[0].min(0.)), px(offset[1].min(0.))), cx);
+                });
+            });
+        }
+    }
+
     pub(super) fn source_scroll_offset(&self, cx: &App) -> Option<Point<Pixels>> {
         self.editing
             .as_ref()
@@ -761,7 +778,7 @@ impl Reader {
             .child(
                 Editor::new(&editing.input)
                     .font_family("Cascadia Code")
-                    .text_size(px(13.))
+                    .text_size(px(13. * reader_ui_state::font_size(cx) / BODY_FONT_SIZE))
                     .size_full(),
             )
             .into_any_element()

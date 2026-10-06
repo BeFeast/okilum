@@ -81,10 +81,24 @@ enum Event {
     Failed(String),
 }
 
+#[cfg(test)]
 fn prepare_first(opts: &Opts, cancel: &Cancellation) -> Result<Event> {
+    prepare_first_with_ui_notes(opts, cancel, &Default::default())
+}
+
+fn prepare_first_with_ui_notes(
+    opts: &Opts,
+    cancel: &Cancellation,
+    notes: &std::collections::BTreeMap<PathBuf, String>,
+) -> Result<Event> {
     let mut recovery_notice = None;
-    let mut event =
-        prepare_first_with_last_document(opts, cancel, |root| match &opts.session_directory {
+    let mut event = prepare_first_with_last_document(opts, cancel, |root| {
+        if let Some(note) = notes.get(root).filter(|note| !note.is_empty()) {
+            if root.join(note).is_file() {
+                return Ok(Some(note.clone()));
+            }
+        }
+        match &opts.session_directory {
             Some(directory) => {
                 let (document, notice) =
                     crate::reader_history::ReadingHistory::last_document_or_recover(
@@ -94,7 +108,8 @@ fn prepare_first(opts: &Opts, cancel: &Cancellation) -> Result<Event> {
                 Ok(document)
             }
             None => Ok(None),
-        })?;
+        }
+    })?;
     if let Event::First {
         recovery_notice: notice,
         ..
@@ -1283,6 +1298,7 @@ impl Reader {
                 cx,
             );
         }
+        self.restore_ui_state(window, cx);
         self.refresh_quick_open(cx);
         if let Some(trace) = &self.loading.as_ref().unwrap().opts.diagnostics {
             trace.event("document_published", serde_json::json!({ "notes": self.vault.notes.len(), "warm": warm, "unreadable": self.vault.unreadable.len() }));
@@ -1649,6 +1665,7 @@ impl Reader {
         let prepare_preferences = !refresh_worker || !self.panel_preferences_ready;
         let panel_revision = self.panel_widths_revision;
         let recovery_startup = self.recovery_startup;
+        let ui_notes = reader_ui_state::notes(cx);
         cx.background_executor()
             .spawn(async move {
                 let mut opts = opts;
@@ -1666,7 +1683,7 @@ impl Reader {
                         if let Some(trace) = &opts.diagnostics {
                             trace.event("first_worker_start", serde_json::json!({}));
                         }
-                        let mut first = prepare_first(&opts, &cancel)?;
+                        let mut first = prepare_first_with_ui_notes(&opts, &cancel, &ui_notes)?;
                         if let Event::First { document, .. } = &first {
                             opts.note = document.as_ref().map(|(path, _)| path.clone());
                         }

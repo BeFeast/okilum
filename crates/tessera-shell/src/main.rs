@@ -76,6 +76,7 @@ mod reader_trash;
 #[cfg(unix)]
 mod reader_trash_fs;
 mod reader_tree;
+mod reader_ui_state;
 mod text_ranges;
 mod updater;
 mod window_state;
@@ -335,6 +336,9 @@ fn set_appearance(
     sync_appearance(window, cx);
     window.refresh();
     cx.refresh_windows();
+    if reader_ui_state::set_appearance(mode, cx) {
+        return;
+    }
     #[cfg(test)]
     let _ = vault;
     #[cfg(not(test))]
@@ -372,6 +376,9 @@ fn appearance_settings_path() -> Option<PathBuf> {
 fn load_appearance(cx: &App) -> AppearancePreference {
     if reader_recovery::is_recovering(cx) {
         return AppearancePreference(None);
+    }
+    if let Some(saved) = reader_ui_state::appearance(cx) {
+        return saved;
     }
     let mode = appearance_settings_path()
         .and_then(|path| std::fs::read(path).ok())
@@ -1084,6 +1091,7 @@ fn markdown_plugins(
 }
 
 struct Reader {
+    ui_state: reader_ui_state::Session,
     single_file: bool,
     hover_preview: reader_hover::HoverPreview,
     file_preview: Option<reader_files::FilePreview>,
@@ -1327,6 +1335,7 @@ impl Reader {
         let content_sub = cx.observe(&content, |_, _, cx| cx.notify());
 
         let mut this = Self {
+            ui_state: Default::default(),
             loading: None,
             pending_open_document: None,
             usable_document: false,
@@ -1484,6 +1493,12 @@ impl Reader {
                 .update(cx, |input, cx| input.set_value(query.clone(), window, cx));
             this.refresh_quick_open(cx);
         }
+        cx.observe_self(|this, cx| this.record_ui_state(this.ui_state.was_active(), cx))
+            .detach();
+        cx.observe_window_activation(window, |this, window, cx| {
+            this.record_ui_state(window.is_window_active(), cx);
+        })
+        .detach();
         this.install_source_lifecycle(window, cx);
         this.start_session_records(cx);
         this.start_loading(opts, window, cx);
@@ -1965,11 +1980,15 @@ impl Reader {
     }
 
     fn set_panel_width(&mut self, panel: reader_layout::Panel, width: f32) {
+        self.ui_state.interacted = true;
         self.panel_widths_revision = self.panel_widths_revision.wrapping_add(1);
         self.panel_widths.set(panel, width);
     }
 
     fn persist_panel_width(&mut self, panel: reader_layout::Panel) {
+        if self.ui_state.ready {
+            return;
+        }
         if let Some(path) = &self.panel_settings {
             if let Err(error) = self.panel_widths.save_panel(panel, path) {
                 self.link_notice = Some(format!("Could not save panel width: {error}"));
@@ -1984,6 +2003,7 @@ impl Reader {
         cx: &mut Context<Self>,
     ) {
         self.resizing_panel = None;
+        self.ui_state.interacted = true;
         self.panels.close(panel);
         let focus = self.content.read(cx).focus_handle().clone();
         focus.focus(window, cx);
@@ -1996,6 +2016,7 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.ui_state.interacted = true;
         self.resizing_panel = None;
         if self
             .panels
@@ -3929,7 +3950,7 @@ impl Reader {
         }
         let entity = cx.entity().downgrade();
         let mut style = reader_text_style(cx.theme());
-        style.heading_base_font_size = px(BODY_FONT_SIZE);
+        style.heading_base_font_size = px(reader_ui_state::font_size(cx));
         style.bottom_padding = reader_toast::bottom_space(window, cx);
         let column_bounds = std::rc::Rc::new(std::cell::Cell::new(Bounds::default()));
         let measured_column = column_bounds.clone();
@@ -3973,7 +3994,7 @@ impl Reader {
                     )
                     .h_full()
                     .w_full()
-                    .max_w(px(READER_MAX_WIDTH))
+                    .max_w(px(reader_ui_state::reading_width(cx)))
                     .when_some(self.render_properties_strip(cx), |column, strip| {
                         column.child(strip)
                     })
@@ -3988,7 +4009,7 @@ impl Reader {
                                 // selection_format is clobbered unless set here too.
                                 .selection_format(self.sel_format)
                                 .style(style)
-                                .text_size(px(BODY_FONT_SIZE))
+                                .text_size(px(reader_ui_state::font_size(cx)))
                                 .px(px(READER_SIDE_PADDING))
                                 .pt(px(44.))
                                 .w_full()
@@ -4067,7 +4088,7 @@ impl Reader {
         let state = self.table_overlay.clone()?;
         let p = brand::palette(cx);
         let mut style = reader_text_style(cx.theme());
-        style.heading_base_font_size = px(BODY_FONT_SIZE);
+        style.heading_base_font_size = px(reader_ui_state::font_size(cx));
         let entity = cx.entity().downgrade();
         let scrim = gpui::black().opacity(if cx.theme().is_dark() { 0.45 } else { 0.18 });
         Some(
@@ -4132,7 +4153,7 @@ impl Reader {
                                     .selectable(true)
                                     .selection_format(self.sel_format)
                                     .style(style)
-                                    .text_size(px(BODY_FONT_SIZE))
+                                    .text_size(px(reader_ui_state::font_size(cx)))
                                     .px(px(24.))
                                     .py(px(16.))
                                     .size_full(),
@@ -5256,6 +5277,9 @@ impl Render for Reader {
         let sync_started = std::time::Instant::now();
         self.sync_tree();
         self.sync_sidebar(cx);
+        self.restore_ui_tree();
+        self.restore_ui_source(window, cx);
+        self.record_ui_state(window.is_window_active(), cx);
         self.sync_backlink_titles();
         let diagnostics = self
             .loading
@@ -5684,6 +5708,12 @@ impl Render for Reader {
             .when(self.quick_open.open, |view| {
                 view.child(self.render_quick_open(cx))
             })
+            .when(reader_ui_state::installed(cx), |view| {
+                view.child(reader_ui_state::capture_scroll(cx.entity().downgrade()))
+            })
+            .capture_key_down(cx.listener(|_, _, window, cx| {
+                reader_ui_state::capture_next_frame(cx.entity().downgrade(), window);
+            }))
             .on_modifiers_changed(
                 cx.listener(|this, _, window, cx| this.hover_modifiers(window, cx)),
             )
@@ -5805,6 +5835,7 @@ fn main() {
         {
             let config_directory = reader_layout::config_base().map(|base| base.join("tessera"));
             reader_recovery::install(&directory, config_directory.as_deref(), cx);
+            reader_ui_state::install(&directory, cx);
             window_state::install(directory, cx);
         }
         drop(recovery_phase);
