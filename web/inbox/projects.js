@@ -47,11 +47,11 @@ export function mountProjects({api,post,owner,online,openQuestion,storage=localS
   }
   for(const name of ['project-summary','project-next'])$(name).disabled=Boolean(pending);
   $('project-save').textContent=pending?'Retry saved status':'Save status';$('project-clear-status').hidden=!pending;
-  $('project-status').textContent=notice||`Project status revision ${project.revision} · checked ${new Date().toLocaleTimeString()}`;
+  $('project-status').textContent=notice||`Updated ${new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}`;
   const [qs,ls,rs,fs]=results;
   if(qs.status==='fulfilled'){
-   $('project-questions').replaceChildren(...qs.value.map(q=>{const b=el('button',`${q.fields.map(f=>f.prompt).join(' · ')} · ${questionStatus(q,null,online())}`);b.className='thought-row';b.onclick=()=>openQuestion(q.id);return b;}));
-   if(!qs.value.length)$('project-questions').append(el('p','No source questions.'));
+   $('project-questions').replaceChildren(...qs.value.map(q=>{const b=el('button','');b.className='thought-row';const title=el('span',q.fields.map(f=>f.prompt).join(' · '));title.className='thought-preview';const meta=el('span',questionStatus(q,null,online()));meta.className='thought-meta';b.append(title,meta);b.onclick=()=>openQuestion(q.id);return b;}));
+   if(!qs.value.length)$('project-questions').append(el('p','No questions waiting.'));
   }else $('project-question-status').textContent='Questions unavailable; previous observations may be stale.';
   if(qs.status==='fulfilled')$('project-question-status').textContent='';
   if(ls.status==='fulfilled'){
@@ -63,23 +63,23 @@ export function mountProjects({api,post,owner,online,openQuestion,storage=localS
     if(op.state==='completed')d.addEventListener('toggle',()=>{if(!d.open||d.dataset.loaded)return;d.dataset.loaded='1';api(`/launches/${op.request.operation_id}/output`).then(v=>{if(valid(mine,e)&&id===project?.id)result.textContent=v.output?.text??'Result not yet received from T3.';}).catch(()=>{if(valid(mine,e))result.textContent='Source result unavailable.';delete d.dataset.loaded;});});
     return d;
    }));
-   if(!launches.length)$('project-executors').append(el('p','No executors launched for this project.'));
+   if(!launches.length)$('project-executors').append(el('p','No executions yet.'));
    const selected=$('result-launch').value;
    $('result-launch').replaceChildren(...launches.filter(o=>['completed','failed'].includes(o.state)&&o.run_id).map(o=>{const n=el('option',`${o.brief.title} · ${launchLabel(o)}`);n.value=o.request.operation_id;return n;}));
    if(launches.some(o=>o.request.operation_id===selected))$('result-launch').value=selected;
   }else status('Execution source unavailable; previous observations may be stale.');
   if(rs.status==='fulfilled'){
    const all=rs.value,latest=latestPublished(all),fragment=document.createDocumentFragment();
-   fragment.append(el('h4','Latest reported publication per platform / channel'));
+   if(latest.length)fragment.append(el('h4','Latest publications · reported by you'));
    for(const r of latest)fragment.append(resultCard(r));
-   if(!latest.length)fragment.append(el('p','No published result has been recorded. A completed executor is not proof of publication.'));
-   const history=el('details','');history.append(el('summary',`Publication history (${all.length})`));for(const r of [...all].reverse())history.append(resultCard(r));fragment.append(history);$('project-results').replaceChildren(fragment);
+   if(!latest.length)fragment.append(el('p','No publications yet.'));
+   const earlier=all.filter(row=>!latest.includes(row));if(earlier.length){fragment.append(el('h4','Earlier reports'));for(const r of [...earlier].reverse())fragment.append(resultCard(r));}$('project-results').replaceChildren(fragment);
   }else $('project-results').prepend(el('p','Results unavailable; previously shown records may be stale.'));
-  if(fs.status==='fulfilled'&&fs.value.enabled){$('project-repo-status').textContent=freshness(fs.value);$('project-repos').replaceChildren(...repositoryCards(fs.value));if(!fs.value.repos.length)$('project-repos').append(el('p','No repositories explicitly linked to this project. The all-repository overview remains available below.'));}
+  if(fs.status==='fulfilled'&&fs.value.enabled){$('project-repo-status').textContent=freshness(fs.value);$('project-repos').replaceChildren(...repositoryCards(fs.value));if(!fs.value.repos.length)$('project-repos').append(el('p','No linked repositories.'));}
   else $('project-repo-status').textContent=fs.status==='fulfilled'?'Forgejo is not connected.':'Forgejo unavailable; previous observations may be stale.';
   renderPendingResult();
  }
- function resultCard(row){const r=row.report,d=el('article','');d.className='project-result';d.append(el('strong',`${r.platform} / ${r.channel} · ${r.version} · ${r.publication}`),el('p',`Reported by you · ${new Date(row.recorded_at*1000).toLocaleString()}`),el('p',`Commit: ${r.commit}`),el('p',`Run: ${r.run_id}`));const a=el('a','Open result / source');const url=safeResultURL(r.url);if(url){a.href=url;a.target='_blank';a.rel='noopener noreferrer';}d.append(a,el('h4','What to check'),el('pre',r.what_to_check));return d;}
+ function resultCard(row){const r=row.report,d=el('article','');d.className='project-result';d.append(el('strong',`${r.platform} / ${r.channel} · ${r.version} · ${r.publication}`),el('p',`Reported by you · ${new Date(row.recorded_at*1000).toLocaleString()}`),el('p',r.what_to_check));const a=el('a','Open result / source');const url=safeResultURL(r.url);if(url){a.href=url;a.target='_blank';a.rel='noopener noreferrer';}const source=el('details','');source.append(el('summary','Execution details'),el('p',`Commit: ${r.commit}`),el('p',`Run: ${r.run_id}`));d.append(a,source);return d;}
  const resultFields=['launch','commit','platform','channel','version','publication','url','qa'];
  function renderPendingResult(){const pending=journal('result').get();for(const field of resultFields)$('result-'+field).disabled=Boolean(pending);if(pending){for(const field of resultFields)$('result-'+field).value=pending[field==='launch'?'launch_id':field==='qa'?'what_to_check':field];}$('result-save').textContent=pending?'Retry exact saved report':'Record result';$('result-clear').hidden=!pending;}
  async function saveStatus(event){event.preventDefault();if(writing||busy||!project||!online())return;const mine=who,e=epoch;writing=true;$('project-select').disabled=true;const j=journal('status');

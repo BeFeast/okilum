@@ -1,3 +1,5 @@
+import { mountShell } from './ui.js';
+mountShell();
 import { mountProjects } from './projects.js';
 import { mountForgejo } from './forgejo.js';
 import { mountLaunches } from './launches.js';
