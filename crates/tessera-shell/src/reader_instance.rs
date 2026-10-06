@@ -18,6 +18,12 @@ pub(crate) struct Request {
     vault: Option<PathBuf>,
     path: Option<PathBuf>,
     note: Option<String>,
+    index_dir: Option<PathBuf>,
+    session_directory: Option<PathBuf>,
+    query: Option<String>,
+    use_html: bool,
+    copy_source: bool,
+    jump: bool,
 }
 
 pub(crate) enum Instance {
@@ -122,6 +128,12 @@ pub(crate) fn connect(opts: &Opts) -> anyhow::Result<Instance> {
                         vault: absolute(&opts.vault, &cwd),
                         path: absolute(&opts.open_path, &cwd),
                         note: opts.note.clone(),
+                        index_dir: absolute(&opts.index_dir, &cwd),
+                        session_directory: Some(directory.clone()),
+                        query: opts.query.clone(),
+                        use_html: opts.use_html,
+                        copy_source: opts.copy_source,
+                        jump: opts.jump,
                     };
                     serde_json::to_writer(&mut stream, &request)?;
                     stream.write_all(b"\n")?;
@@ -152,6 +164,12 @@ pub(crate) fn receive(receiver: async_channel::Receiver<Request>, cx: &mut App) 
                             vault: request.vault,
                             open_path: request.path,
                             note: request.note,
+                            index_dir: request.index_dir,
+                            session_directory: request.session_directory,
+                            query: request.query,
+                            use_html: request.use_html,
+                            copy_source: request.copy_source,
+                            jump: request.jump,
                             ..Default::default()
                         },
                         cx,
@@ -196,6 +214,7 @@ mod tests {
             Some(std::env::current_dir().unwrap().join("relative vault"))
         );
         assert_eq!(request.note.as_deref(), Some("note.md"));
+        assert_eq!(request.session_directory, opts.session_directory);
         assert!(
             requests.try_recv().is_err(),
             "one launch creates one request"

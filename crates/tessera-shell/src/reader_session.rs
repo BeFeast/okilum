@@ -13,8 +13,9 @@ struct Published {
     tasks: Arc<tessera_core::tasks::Index>,
     #[cfg(unix)]
     candidates: Option<Arc<tessera_core::link_rewrite::CandidateIndex>>,
-    titles: std::collections::HashMap<String, String>,
+    titles: Arc<std::collections::HashMap<String, String>>,
     version: u64,
+    warnings: Vec<tessera_core::vault::UnreadableEntry>,
 }
 
 pub(crate) struct Session {
@@ -24,10 +25,13 @@ pub(crate) struct Session {
     pending: tessera_core::Changes,
     busy: bool,
     reload: bool,
+    force_source_read: bool,
     reload_owner: Option<WeakEntity<Reader>>,
     index: Option<PathBuf>,
     // Pin the cache for every window and all outstanding workers.
     lease: Option<Arc<reader_cache::Lease>>,
+    #[cfg(test)]
+    pub(crate) hold: Option<async_channel::Receiver<()>>,
 }
 
 pub(crate) type Shared = Arc<Mutex<Session>>;
@@ -61,17 +65,25 @@ impl Reader {
                 tasks: self.tasks_index.clone().unwrap_or_default(),
                 #[cfg(unix)]
                 candidates: self.move_index.clone(),
-                titles: self.backlink_titles.clone(),
+                titles: Arc::new(self.backlink_titles.clone()),
                 version: 1,
+                warnings: self
+                    .loading
+                    .as_ref()
+                    .map(|load| load.warnings.clone())
+                    .unwrap_or_default(),
             },
             state: Some(state),
             watcher: self.watcher.take(),
             pending: std::mem::take(&mut self.deferred_vault_changes),
             busy: false,
             reload: false,
+            force_source_read: false,
             reload_owner: None,
             index: self.index_dir.clone(),
             lease: self.cache_lease.clone(),
+            #[cfg(test)]
+            hold: None,
         }));
         self.shared_version = 1;
         self.shared_session = Some(session.clone());
@@ -106,17 +118,37 @@ impl Reader {
             if self.shared_version == shared.published.version {
                 return;
             }
-            let Some(state) = &shared.state else {
-                return;
-            };
-            let sources = state
-                .snapshot
-                .source(&self.current_rel)
-                .map(|raw| (self.current_rel.clone(), raw))
-                .into_iter()
-                .collect();
+            let sources = shared.state.as_ref().map(|state| {
+                state
+                    .snapshot
+                    .source(&self.current_rel)
+                    .map(|raw| (self.current_rel.clone(), raw))
+                    .into_iter()
+                    .collect()
+            });
             (shared.published.clone(), sources)
         };
+        if self.loading.is_none() {
+            self.loading = Some(reader_loading::Loading {
+                generation: 0,
+                cancellation: Default::default(),
+                phase: "Ready".into(),
+                active: false,
+                published: true,
+                warm: true,
+                show_progress: false,
+                opts: Opts {
+                    vault: Some(self.vault_root.clone()),
+                    index_dir: self.index_dir.clone(),
+                    session_directory: self.session_directory.clone(),
+                    ..Default::default()
+                },
+                warnings: Vec::new(),
+            });
+        }
+        if let Some(load) = self.loading.as_mut().filter(|load| !load.active) {
+            load.warnings = published.warnings;
+        }
         self.shared_version = published.version;
         self.vault = published.vault;
         self.searcher = Some(published.searcher);
@@ -125,7 +157,7 @@ impl Reader {
         {
             self.move_index = published.candidates;
         }
-        self.backlink_titles = published.titles;
+        self.backlink_titles = (*published.titles).clone();
         self.backlinks = self.vault.backlinks(&self.current_rel);
         self.quick_open.inventory = Some(Arc::new(self.vault.notes.clone()));
         self.sync_tree();
@@ -135,7 +167,9 @@ impl Reader {
         if !self.current_rel.is_empty() {
             // Re-read only this window's displayed document; the shared graph
             // and search work has already happened once in the session worker.
-            self.reconcile_inventory_document(&sources, window, cx);
+            if let Some(sources) = sources {
+                self.reconcile_inventory_document(&sources, window, cx);
+            }
         }
         cx.notify();
     }
@@ -159,13 +193,29 @@ impl Reader {
             tasks: self.tasks_index.clone().unwrap_or_default(),
             #[cfg(unix)]
             candidates: self.move_index.clone(),
-            titles: self.backlink_titles.clone(),
+            titles: Arc::new(self.backlink_titles.clone()),
             version: shared.published.version.wrapping_add(1),
+            warnings: self
+                .loading
+                .as_ref()
+                .map(|load| load.warnings.clone())
+                .unwrap_or_default(),
         };
         shared.busy = false;
         shared.reload = false;
         shared.reload_owner = None;
         self.shared_version = shared.published.version;
+    }
+
+    pub(crate) fn queue_shared_reconcile(
+        &mut self,
+        changes: tessera_core::Changes,
+        force_source_read: bool,
+    ) {
+        let mut shared = self.shared_session.as_ref().unwrap().lock().unwrap();
+        merge(&mut shared.pending, changes);
+        shared.pending.rescan = true;
+        shared.force_source_read |= force_source_read;
     }
 
     pub(crate) fn poll_shared_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -201,13 +251,14 @@ impl Reader {
             shared.busy = true;
             shared.reload_owner = Some(cx.entity().downgrade());
             shared.pending = Default::default();
+            let force_source_read = std::mem::take(&mut shared.force_source_read);
             drop(shared);
-            self.refresh_inventory_with_read(
+            self.refresh_inventory_unshared(
                 tessera_core::Changes {
                     rescan: true,
                     ..Default::default()
                 },
-                false,
+                force_source_read,
                 window,
                 cx,
             );
@@ -220,10 +271,16 @@ impl Reader {
         let mut changes = std::mem::take(&mut shared.pending);
         let previous = shared.published.clone();
         let index = shared.index.clone();
+        #[cfg(test)]
+        let hold = shared.hold.take();
         shared.busy = true;
         drop(shared);
         cx.background_executor()
             .spawn(async move {
+                #[cfg(test)]
+                if let Some(hold) = hold {
+                    let _ = hold.recv().await;
+                }
                 if let Some(observed) = watcher.as_mut().and_then(VaultWatcher::poll) {
                     merge(&mut changes, observed);
                 }
@@ -265,7 +322,7 @@ fn update(
     let mut tasks = (*published.tasks).clone();
     for path in &batch.removed {
         tasks.remove(path);
-        published.titles.remove(path);
+        Arc::make_mut(&mut published.titles).remove(path);
     }
     for path in &batch.changed {
         if let Some(raw) = state.snapshot.source(path) {
@@ -279,7 +336,7 @@ fn update(
     for path in &batch.affected {
         if let Some(raw) = state.snapshot.source(path) {
             let title = state.vault.note_title(path);
-            published.titles.insert(
+            Arc::make_mut(&mut published.titles).insert(
                 path.clone(),
                 display_title_source(&raw).unwrap_or_else(|| title.clone()),
             );

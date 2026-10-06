@@ -1703,19 +1703,24 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.shared_session.is_some() {
-            self.deferred_vault_changes.rescan = true;
-            self.deferred_vault_changes.changed.extend(changes.changed);
-            self.deferred_vault_changes.removed.extend(changes.removed);
-            self.deferred_vault_changes
-                .directories
-                .extend(changes.directories);
-            return;
-        }
         self.refresh_inventory_with_read(changes, false, window, cx);
     }
 
     pub(crate) fn refresh_inventory_with_read(
+        &mut self,
+        changes: tessera_core::Changes,
+        force_source_read: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.shared_session.is_some() {
+            self.queue_shared_reconcile(changes, force_source_read);
+            return;
+        }
+        self.refresh_inventory_unshared(changes, force_source_read, window, cx);
+    }
+
+    pub(crate) fn refresh_inventory_unshared(
         &mut self,
         changes: tessera_core::Changes,
         force_source_read: bool,

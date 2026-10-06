@@ -389,7 +389,12 @@ fn reusable_roots(cx: &App) -> Vec<PathBuf> {
                 .0
                 .iter()
                 .rev()
-                .filter(|(reader, _)| reader.upgrade().is_some_and(|r| !r.read(cx).single_file))
+                .filter(|(reader, _)| {
+                    reader.upgrade().is_some_and(|r| {
+                        let reader = r.read(cx);
+                        !reader.single_file && cx.windows().contains(&reader.reader_window)
+                    })
+                })
                 .map(|(_, root)| root.clone())
                 .collect()
         })
@@ -625,15 +630,19 @@ fn focus_existing(opts: &super::Opts, cx: &mut App) -> bool {
     };
     if handle
         .update(cx, |_, window, cx| {
-            if let Some(note) = &note {
-                reader.update(cx, |reader, cx| {
+            reader.update(cx, |reader, cx| {
+                if !reader.document_ready()
+                    && reader.loading.as_ref().is_some_and(|load| !load.active)
+                {
+                    reader.start_loading(opts.clone(), window, cx);
+                } else if let Some(note) = &note {
                     if reader.document_ready() {
                         reader.open_note(note, None, window, cx);
                     } else {
                         reader.queued_open_note = Some(note.clone());
                     }
-                });
-            }
+                }
+            });
             window.activate_window();
         })
         .is_err()
@@ -723,14 +732,13 @@ fn new_window(cx: &mut App) {
                 defer_loading: true,
                 ..Default::default()
             };
-            let failed = reader
-                .loading
-                .as_ref()
-                .is_some_and(|load| !load.active && !load.published);
-            (
-                reader.share_session().map(|session| (opts, session)),
-                failed,
-            )
+            let session = reader.share_session();
+            let failed = session.is_none()
+                && !reader.loading.as_ref().is_some_and(|load| load.active)
+                && !reader.incremental_active
+                && !reader.incremental_initializing
+                && !reader.watcher_poll_active;
+            (session.map(|session| (opts, session)), failed)
         });
         match outcome {
             Ok((Some((opts, session)), _)) => {
@@ -741,7 +749,16 @@ fn new_window(cx: &mut App) {
                 });
                 break;
             }
-            Err(_) | Ok((None, true)) => break,
+            Err(_) => break,
+            Ok((None, true)) => {
+                cx.update(|cx| {
+                    show_error(
+                        "Open the vault successfully before creating another window.".into(),
+                        cx,
+                    )
+                });
+                break;
+            }
             Ok((None, false)) => {
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(100))
@@ -1191,17 +1208,16 @@ mod entry_tests {
         cx.update(|cx| {
             assert_eq!(first.read(cx).current_rel, "a.md");
             assert_eq!(second.read(cx).current_rel, "b.md");
-            let handle = first.read(cx).reader_window;
-            handle
-                .update(cx, |_, window, _| window.remove_window())
-                .unwrap();
         });
+        let (release, hold) = async_channel::bounded(1);
         std::fs::write(root.join("b.md"), "# Changed after first window closed\n").unwrap();
         cx.update(|cx| {
-            let handle = second.read(cx).reader_window;
+            let shared = first.read(cx).shared_session.clone().unwrap();
+            shared.lock().unwrap().hold = Some(hold);
+            let handle = first.read(cx).reader_window;
             handle
                 .update(cx, |_, window, cx| {
-                    second.update(cx, |reader, cx| {
+                    first.update(cx, |reader, cx| {
                         reader.apply_vault_changes(
                             tessera_core::Changes {
                                 changed: ["b.md".to_string()].into(),
@@ -1218,11 +1234,42 @@ mod entry_tests {
         cx.update(|cx| {
             let handle = second.read(cx).reader_window;
             handle
-                .update(cx, |_, window, cx| {
-                    second.update(cx, |reader, cx| reader.poll_vault(window, cx))
-                })
+                .update(cx, |_, window, _| window.activate_window())
+                .unwrap();
+            new_window(cx);
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert_eq!(cx.windows().len(), 3);
+            let third = cx
+                .global::<Readers>()
+                .0
+                .last()
+                .unwrap()
+                .0
+                .upgrade()
+                .unwrap();
+            assert_eq!(
+                third.read(cx).current_rel,
+                "b.md",
+                "attachment during a held worker uses the last published snapshot"
+            );
+            assert!(third.read(cx).searcher.is_some());
+            let handle = third.read(cx).reader_window;
+            handle
+                .update(cx, |_, window, _| window.remove_window())
                 .unwrap();
         });
+        cx.update(|cx| {
+            let handle = first.read(cx).reader_window;
+            handle
+                .update(cx, |_, window, _| window.remove_window())
+                .unwrap();
+        });
+        release.try_send(()).unwrap();
+        cx.run_until_parked();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(300));
         cx.run_until_parked();
         cx.update(|cx| {
             assert!(second
