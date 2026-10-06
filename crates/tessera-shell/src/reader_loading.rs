@@ -990,7 +990,7 @@ impl Reader {
             TextView::markdown("prepared-reader-configuration", ""),
             cx.entity().downgrade(),
             self.sel_format,
-            self.prepared_links.clone(),
+            Arc::default(),
         );
         let _phase = self.loading.as_ref().and_then(|load| {
             load.opts
