@@ -215,6 +215,19 @@ class CatalogTests(unittest.TestCase):
 
 
 class GitHubTests(unittest.TestCase):
+    def test_delete_asset_uses_github_documented_endpoint(self):
+        from unittest.mock import Mock
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.read.return_value = b''
+        with patch.dict('os.environ', {'MIRROR_TOKEN': 'test-token'}), \
+             patch.object(p.urllib.request, 'urlopen', return_value=response) as request:
+            p.GitHub().call('DELETE', '/releases/assets/9')
+        sent = request.call_args.args[0]
+        self.assertEqual(sent.full_url, 'https://api.github.com/repos/BeFeast/tessera/releases/assets/9')
+        self.assertEqual(sent.method, 'DELETE')
+
     def test_rolling_release_reuses_id_and_publishes_after_all_uploads(self):
         calls = []
         class API:
@@ -228,7 +241,7 @@ class GitHubTests(unittest.TestCase):
                              'assets': [{'id': 9, 'name': 'obsolete.zip'}]}]
         p.github_release(API(), 'beta', {'build': 700, 'source': SOURCE}, {'x.zip': b'ZIP', 'SHA256SUMS': b'hash'}, 'notes', False)
         self.assertEqual(calls[1], ('PATCH', '/releases/42', {'draft': True}))
-        self.assertEqual(calls[2][:2], ('DELETE', '/releases/42/assets/9'))
+        self.assertEqual(calls[2][:2], ('DELETE', '/releases/assets/9'))
         self.assertFalse(calls[-2][2]['draft'])
         self.assertTrue(calls[-2][2]['prerelease'])
         self.assertNotIn('make_latest', calls[-2][2])
