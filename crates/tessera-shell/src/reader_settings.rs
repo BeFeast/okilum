@@ -470,8 +470,18 @@ impl Settings {
                                                 .whitespace_nowrap()
                                                 .child(short_path)
                                                 .tooltip(move |window, cx| {
-                                                    gpui_component::tooltip::Tooltip::new(
-                                                        full_path.clone(),
+                                                    let path = full_path.clone();
+                                                    let width =
+                                                        (f32::from(window.viewport_size().width)
+                                                            - 64.)
+                                                            .clamp(160., 360.);
+                                                    gpui_component::tooltip::Tooltip::element(
+                                                        move |_, _| {
+                                                            div()
+                                                                .w(px(width))
+                                                                .whitespace_normal()
+                                                                .child(path.clone())
+                                                        },
                                                     )
                                                     .build(window, cx)
                                                 }),
