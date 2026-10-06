@@ -42,6 +42,12 @@ tempfile = "3"
 tar = { version = "0.4", optional = true }
 url = "2"
 
+[dev-dependencies]
+# The default reader parses Markdown with markdown-rs inside gpui-component
+# (vendored). The spec harness (#650) measures that parse too. Keep the
+# requirement identical to the vendor's so both resolve to one locked build.
+markdown = "1.0.0"
+
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1", features = ["fs"] }
 
