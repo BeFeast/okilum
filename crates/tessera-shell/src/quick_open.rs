@@ -94,6 +94,7 @@ impl Reader {
         if self.find_open {
             self.close_find(window, cx);
         }
+        self.shortcut_sheet.open = false;
         self.quick_open.open = true;
         self.quick_open.full_text = full_text;
         self.quick_open.input.update(cx, |input, cx| {
@@ -116,6 +117,12 @@ impl Reader {
         self.clear_hover(cx);
         self.quick_open.open = false;
         self.quick_open.invalidate();
+        self.restore_document_focus(window, cx);
+        cx.notify();
+    }
+
+    /// Focus returns to the open note, or to the Reader when none is shown.
+    pub(super) fn restore_document_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.selected_file().is_empty() || self.file_preview.is_some() {
             self.focus_handle.focus(window, cx);
         } else {
@@ -125,7 +132,6 @@ impl Reader {
                 .clone()
                 .focus(window, cx);
         }
-        cx.notify();
     }
 
     pub(super) fn refresh_quick_open(&mut self, cx: &mut Context<Self>) {
@@ -384,17 +390,9 @@ impl Reader {
                     .border_color(palette.border)
                     .shadow_lg()
                     .child(div().px_3().py_2().text_sm().child(if full_text {
-                        if cfg!(target_os = "macos") {
-                            "Search contents · ⇧⌘F"
-                        } else {
-                            "Search contents · Ctrl+Shift+F"
-                        }
+                        reader_shortcuts::hint("Search contents", &FullTextSearch, cx)
                     } else {
-                        if cfg!(target_os = "macos") {
-                            "Quick open · ⌘K"
-                        } else {
-                            "Quick open · Ctrl+K"
-                        }
+                        reader_shortcuts::hint("Quick open", &QuickOpen, cx)
                     }))
                     .child(
                         div()

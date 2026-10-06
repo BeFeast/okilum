@@ -421,11 +421,7 @@ impl Reader {
                     reader_icon_button(
                         "undo-trash",
                         IconName::Undo2,
-                        if cfg!(target_os = "macos") {
-                            "Undo (⌘Z)"
-                        } else {
-                            "Undo (Ctrl+Z)"
-                        },
+                        reader_shortcuts::hint("Undo", &UndoTrash, cx),
                         cx,
                     )
                     .debug_selector(|| "undo-trash".into())
