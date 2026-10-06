@@ -7,6 +7,44 @@ use tessera_core::{
     note_move::MovePlan,
 };
 
+fn move_message(from: &str, to: &str, links: Option<&Preview>) -> String {
+    let destination = Path::new(to);
+    let mut message = if Path::new(from).parent() == destination.parent() {
+        format!(
+            "Renamed to {}",
+            destination
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+        )
+    } else {
+        let folder = destination
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "vault root".into());
+        format!("Moved to {folder}")
+    };
+    if let Some(links) = links.filter(|p| !p.changes.is_empty()) {
+        message.push_str(&format!(
+            " · Updated {} {} in {} {}",
+            links.changes.len(),
+            if links.changes.len() == 1 {
+                "link"
+            } else {
+                "links"
+            },
+            links.changed_notes(),
+            if links.changed_notes() == 1 {
+                "note"
+            } else {
+                "notes"
+            }
+        ));
+    }
+    message
+}
+
 struct PendingMove {
     links: Preview,
     root: PathBuf,
@@ -541,13 +579,27 @@ impl Reader {
                 self.save_sidebar(cx);
                 if self.current_rel != pending.from {
                     self.sync_move_input(window, cx);
-                    self.link_notice = Some(moved.warning.unwrap_or_else(|| "Note moved.".into()));
+                    if let Some(warning) = moved.warning {
+                        self.link_notice = Some(warning);
+                    } else {
+                        reader_toast::transient(
+                            move_message(
+                                &pending.from,
+                                &pending.to,
+                                update.then_some(&pending.links),
+                            ),
+                            window,
+                            cx,
+                        );
+                    }
                     cx.notify();
                     return;
                 }
                 self.editing = None;
                 self.document_preparation_generation =
                     self.document_preparation_generation.wrapping_add(1);
+                let success_message =
+                    move_message(&pending.from, &pending.to, update.then_some(&pending.links));
                 let document =
                     tessera_core::render::reader_document(&self.vault, &pending.to).map(|d| {
                         prepared_links::PreparedDocument {
@@ -576,21 +628,14 @@ impl Reader {
                 if pending.was_editing && moved.warning.is_none() {
                     self.toggle_source(window, cx);
                 }
-                let notice = moved.warning.unwrap_or_else(|| {
-                    if update {
-                        format!(
-                            "Note moved. Updated {} links in {} notes.",
-                            pending.links.changes.len(),
-                            pending.links.changed_notes()
-                        )
-                    } else {
-                        "Note moved. Link text was not changed.".into()
-                    }
-                });
-                self.link_notice = Some(match self.link_notice.take() {
-                    Some(error) => format!("{notice} {error}"),
-                    None => notice,
-                });
+                if let Some(warning) = moved.warning {
+                    self.link_notice = Some(match self.link_notice.take() {
+                        Some(error) => format!("{warning} {error}"),
+                        None => warning,
+                    });
+                } else {
+                    reader_toast::transient(success_message, window, cx);
+                }
             }
         }
         cx.notify();
@@ -681,12 +726,12 @@ impl Reader {
                 return;
             }
             let _ = this.update_in(cx, |this, window, cx| {
-                this.link_notice = Some(match this.revert_link_move(&path, &state, window, cx) {
-                    Ok(()) => "Link move reverted. Original bytes restored.".into(),
-                    Err(error) => format!(
+                match this.revert_link_move(&path, &state, window, cx) {
+                    Ok(()) => reader_toast::transient("Link move reverted. Original bytes restored.", window, cx),
+                    Err(error) => this.link_notice = Some(format!(
                         "Recovery stopped: {error:#}. Original bytes are retained; resolve the reported file and try again."
-                    ),
-                });
+                    )),
+                }
                 cx.notify();
             });
         })
@@ -698,6 +743,32 @@ impl Reader {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+    #[test]
+    fn move_feedback_omits_empty_counts_and_keeps_real_updates() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("Folder")).unwrap();
+        std::fs::write(root.path().join("Start.md"), "Body").unwrap();
+        let empty = Preview::prepare(root.path(), "Start.md", "Folder/Next.md").unwrap();
+        assert_eq!(
+            move_message("Start.md", "Folder/Next.md", Some(&empty)),
+            "Moved to Folder"
+        );
+        assert_eq!(
+            move_message("Folder/Start.md", "Next.md", None),
+            "Moved to vault root"
+        );
+        assert_eq!(
+            move_message("Start.md", "Next.md", None),
+            "Renamed to Next.md"
+        );
+        std::fs::write(root.path().join("Ref.md"), "[[Start]]").unwrap();
+        let linked = Preview::prepare(root.path(), "Start.md", "Folder/Next.md").unwrap();
+        assert_eq!(
+            move_message("Start.md", "Folder/Next.md", Some(&linked)),
+            "Moved to Folder · Updated 1 link in 1 note"
+        );
+    }
+
     #[gpui::test]
     fn inline_names_receive_tree_keys_and_same_name_is_noop(cx: &mut TestAppContext) {
         cx.update(|cx| {

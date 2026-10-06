@@ -394,7 +394,7 @@ impl Reader {
             Ok(()) => {
                 self.timeline = None;
                 let reader = cx.weak_entity();
-                window.push_notification(Notification::success("Version restored")
+                reader_toast::push(Notification::success("Version restored")
                     .action(move |_,_,cx| {
                         let reader = reader.clone(); let root = root.clone(); let rel = rel.clone();
                         let restored = version.text.clone(); let replaced = reviewed.clone(); let note = version.note.clone();
@@ -408,7 +408,7 @@ impl Reader {
                                     r.restore_source_version(&restored, &replaced, window, cx)
                                 });
                                 match result.and_then(|result| result) {
-                                    Ok(()) => { notice.dismiss(window,cx); window.push_notification("Restore undone",cx); }
+                                    Ok(()) => { notice.dismiss(window,cx); reader_toast::transient("Restore undone",window,cx); }
                                     Err(error) => {
                                         let _ = reader.update(cx, |r,cx| {
                                             r.link_notice = Some(format!("Cannot undo restore: {error:#}. The previous text remains in Note history."));
@@ -417,7 +417,7 @@ impl Reader {
                                     }
                                 }
                             }))
-                    }),cx);
+                    }), Some(Duration::from_secs(8)), window, cx);
 
                 cx.notify();
             }
@@ -853,7 +853,7 @@ mod tests {
                 .iter()
                 .any(|v| v.text == current)
         );
-        // Exercise the actual persistent toast action, not a direct restore call.
+        // Exercise the actual eight-second Undo action, not a direct restore call.
         visual.update(|w, cx| w.draw(cx).clear(cx));
         let undo = visual
             .debug_bounds("history-undo")
@@ -865,7 +865,19 @@ mod tests {
             std::fs::read_to_string(root.join("note.md")).unwrap(),
             "external after restore"
         );
-        // A refused undo remains available; retry only against the reviewed bytes.
+        // The actionable error is the front toast. Dismiss it before retrying
+        // the still-available Undo against the exact reviewed bytes.
+        reader.read_with(visual, |r, _| {
+            assert!(r
+                .link_notice
+                .as_ref()
+                .unwrap()
+                .contains("Cannot undo restore"))
+        });
+        visual.simulate_keystrokes("escape");
+        visual.executor().advance_clock(Duration::from_secs(1));
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| assert!(r.link_notice.is_none()));
         std::fs::write(root.join("note.md"), old).unwrap();
         visual.update(|w, cx| w.draw(cx).clear(cx));
         let undo = visual.debug_bounds("history-undo").unwrap();

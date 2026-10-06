@@ -211,12 +211,14 @@ impl Reader {
                 } else {
                     Err(anyhow::anyhow!("The open note changed; open history again"))
                 };
-                r.link_notice = Some(match result {
-                    Ok(()) => {
-                        "Previous version restored. The replaced source is in Note history.".into()
-                    }
-                    Err(error) => format!("Cannot restore: {error:#}"),
-                });
+                match result {
+                    Ok(()) => reader_toast::transient(
+                        "Previous version restored. The replaced source is in Note history.",
+                        window,
+                        cx,
+                    ),
+                    Err(error) => r.link_notice = Some(format!("Cannot restore: {error:#}")),
+                }
                 cx.notify();
             });
         })
@@ -238,7 +240,7 @@ impl Reader {
             if path.extension().is_none() {
                 path.set_extension("md");
             }
-            let _ = this.update_in(cx, |r, _, cx| {
+            let _ = this.update_in(cx, |r, window, cx| {
                 let result = (|| -> anyhow::Result<_> {
                     anyhow::ensure!(
                         r.vault_root == root,
@@ -268,12 +270,16 @@ impl Reader {
                     )?;
                     Ok(relative.display().to_string())
                 })();
-                r.link_notice = Some(match result {
-                    Ok(path) => format!(
-                        "Recovered source saved as {path}. The original recovery is retained."
+                match result {
+                    Ok(path) => reader_toast::transient(
+                        format!(
+                            "Recovered source saved as {path}. The original recovery is retained."
+                        ),
+                        window,
+                        cx,
                     ),
-                    Err(error) => format!("Cannot recover a copy: {error:#}"),
-                });
+                    Err(error) => r.link_notice = Some(format!("Cannot recover a copy: {error:#}")),
+                }
                 cx.notify();
             });
         })

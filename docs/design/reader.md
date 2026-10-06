@@ -88,9 +88,10 @@ Find, right-panel toggle, More.
 Idle status is never shown. «Ready» and «Document not yet available» labels
 disappear. While loading is active, the header shows a 14 px spinner and the
 phase text (`text-muted`, 12 px) after the breadcrumbs, plus Cancel. A failed
-load shows the phase text in `danger` plus Retry. Link notices and ambiguous
-link choices render as a dismissible strip under the header using the `notice`
-surface, not as bare text rows.
+load shows the phase text in `danger` plus Retry. Operation feedback uses the bottom notification overlay without reflow (#576):
+four seconds for ordinary feedback, eight seconds with Undo, ×/Esc to close.
+Errors persist until dismissed. Ambiguous-link choices and crash-recovery actions
+retain their explicit controls below the header; plain notices no longer add a row.
 
 ## Typography
 

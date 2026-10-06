@@ -376,3 +376,14 @@ Successful creation immediately publishes the note identity to the local resolve
 before watcher delivery. Returning to the source note shows the normal resolved
 link (a heading still has to exist). Template originals and source links are never
 rewritten. The watcher continues to maintain search and backlinks.
+
+## Transient operation feedback (#576)
+
+Create, rename/move, copy, disk reload and recovery success messages use the same
+bottom-right notification overlay as Trash; the document and sidebar never reflow.
+Ordinary feedback disappears after four seconds; notifications with Undo last eight
+seconds. The close glyph or Escape dismisses notifications. Errors remain visible
+until dismissed. Trash keyboard Undo remains available after its notification closes.
+Move feedback names the destination folder (rename names the new file); link counts
+appear only when at least one link was updated. Ambiguous destinations and crash
+recovery retain their existing explicit controls; they are not transient feedback.

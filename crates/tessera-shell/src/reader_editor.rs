@@ -426,7 +426,6 @@ impl Reader {
     }
 
     pub(super) fn refresh_source_from_disk(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        use gpui_component::WindowExt;
         let Some(editing) = &mut self.editing else {
             return;
         };
@@ -461,7 +460,7 @@ impl Reader {
                     editing.conflict_detected = false;
                     editing.save_failed = false;
                     editing.saved_at = None;
-                    window.push_notification("Updated from disk", cx);
+                    reader_toast::transient("Updated from disk", window, cx);
                 }
             }
             Err(error) => {

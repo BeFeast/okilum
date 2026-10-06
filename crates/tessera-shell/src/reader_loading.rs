@@ -1768,8 +1768,7 @@ impl Reader {
                                     intent, vault, document, searcher, published, window, cx,
                                 );
                                 if let Some(notice) = recovery_notice {
-                                    use gpui_component::WindowExt;
-                                    window.push_notification(notice, cx);
+                                    reader_toast::error(notice, window, cx);
                                 }
                             }
                             Event::Progress(phase) => {

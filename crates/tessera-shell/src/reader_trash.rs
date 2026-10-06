@@ -96,7 +96,7 @@ impl Reader {
             .filter(|_| under(self.selected_file(), &relative))
             .map(|_| root.join(self.selected_file()));
         self.trash_pending = true;
-        window.push_notification("Preparing to move to Trash…", cx);
+        reader_toast::transient("Preparing to move to Trash…", window, cx);
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
             let scan_root = root.clone(); let scan_relative = relative.clone();
@@ -123,7 +123,7 @@ impl Reader {
                 Ok(value) => value,
                 Err(error) => { let _ = this.update_in(cx, |this, window, cx| {
                     this.trash_pending = false;
-                    window.push_notification(format!("Cannot move to Trash: {error:#}"), cx); cx.notify();
+                    reader_toast::error(format!("Cannot move to Trash: {error:#}"), window, cx); cx.notify();
                 }); return; }
             };
             if directory || incoming > 0 {
@@ -189,7 +189,7 @@ impl Reader {
                         if this.vault_root == root && held_path.as_ref() == Some(&root.join(this.selected_file())) && this.editing.is_none() {
                             this.editing = held_editor;
                         }
-                        window.push_notification(format!("Cannot move to Trash: {error:#}"), cx);
+                        reader_toast::error(format!("Cannot move to Trash: {error:#}"), window, cx);
                     }
                 }
                 cx.notify();
@@ -305,16 +305,15 @@ impl Reader {
                         this.queue_vault_mutation(changes, cx);
                     }
                 }
-                window.push_notification(
-                    match result {
-                        Ok(_) => {
-                            this.trash_undo.items.pop();
-                            "Restored from Trash".into()
-                        }
-                        Err(error) => format!("Cannot Undo: {error:#}"),
-                    },
-                    cx,
-                );
+                match result {
+                    Ok(_) => {
+                        this.trash_undo.items.pop();
+                        reader_toast::transient("Restored from Trash", window, cx);
+                    }
+                    Err(error) => {
+                        reader_toast::error(format!("Cannot Undo: {error:#}"), window, cx)
+                    }
+                }
                 cx.notify();
             });
         })

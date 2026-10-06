@@ -68,6 +68,7 @@ mod reader_timeline;
 #[cfg(windows)]
 #[path = "reader_timeline_windows.rs"]
 mod reader_timeline;
+mod reader_toast;
 #[cfg(unix)]
 mod reader_trash;
 #[cfg(unix)]
@@ -1125,6 +1126,8 @@ struct Reader {
     current_title: String,
     document_header_hidden: Pixels,
     link_notice: Option<String>,
+    displayed_notice: Option<String>,
+    notice_generation: u64,
     link_choices: Vec<(String, Option<String>)>,
     navigation_generation: u64,
     pending_landing: Option<ListOffset>,
@@ -1355,6 +1358,8 @@ impl Reader {
             current_title: String::new(),
             document_header_hidden: px(0.),
             link_notice: None,
+            displayed_notice: None,
+            notice_generation: 0,
             link_choices: Vec::new(),
             navigation_generation: 0,
             pending_landing: None,
@@ -1910,6 +1915,9 @@ impl Reader {
         }
         #[cfg(unix)]
         if self.dismiss_trash_toast(window, cx) {
+            return;
+        }
+        if reader_toast::dismiss(window, cx) {
             return;
         }
         if self.find_open {
@@ -2784,7 +2792,7 @@ impl Reader {
         }
     }
 
-    /// Link notices and ambiguous-link choices, one quiet strip under the header.
+    /// Persistent recovery and ambiguous-link choices retain their explicit controls.
     fn render_notice(&self, cx: &mut Context<Self>) -> AnyElement {
         h_flex()
             .id("reader-notice")
@@ -2832,7 +2840,7 @@ impl Reader {
                     )
                 },
             )
-            .when_some(self.link_notice.clone(), |row, notice| row.child(notice))
+            .when_some(self.link_notice.clone().filter(|_| !self.link_choices.is_empty()), |row, notice| row.child(notice))
             .children(
                 self.link_choices
                     .iter()
@@ -4031,12 +4039,9 @@ impl Reader {
                                     )),
                                 ),
                         )
-                        // Link notices raised from the table show here, not
-                        // under the scrim.
-                        .when(
-                            self.link_notice.is_some() || !self.link_choices.is_empty(),
-                            |panel| panel.child(self.render_notice(cx)),
-                        )
+                        .when(!self.link_choices.is_empty(), |panel| {
+                            panel.child(self.render_notice(cx))
+                        })
                         .child(
                             div().flex_1().min_h_0().child(reader_plugins(
                                 self.vault_root.clone(),
@@ -5160,6 +5165,7 @@ impl Render for ReaderPanelDrag {
 
 impl Render for Reader {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_notice_toast(window, cx);
         // Root owns overlay state, but the window content renders these layers.
         let dialog_layer = Root::render_dialog_layer(window, cx);
         let notification_layer = Root::render_notification_layer(window, cx);
@@ -5460,8 +5466,7 @@ impl Render for Reader {
                 }
             })
             .when(
-                self.link_notice.is_some()
-                    || !self.link_choices.is_empty()
+                !self.link_choices.is_empty()
                     || ((self.recovery_startup || self.recovery_offer)
                         && !self.recovery_dismissed
                         && self.editing.is_none()),

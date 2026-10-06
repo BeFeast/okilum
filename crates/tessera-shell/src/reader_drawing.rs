@@ -357,8 +357,9 @@ pub(super) fn render(
                             )
                             .on_click(move |_, window, cx| {
                                 cx.write_to_clipboard(ClipboardItem::new_string(open.json.clone()));
-                                window.push_notification(
+                                reader_toast::transient(
                                     "Scene copied — paste it into Excalidraw",
+                                    window,
                                     cx,
                                 );
                                 cx.open_url("https://draw.oklabs.uk");
