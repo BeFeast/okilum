@@ -25,6 +25,34 @@ impl Reader {
         tessera_core::note_templates::Catalog::load_with_folder(&self.vault_root, folder.as_deref())
     }
 
+    #[cfg(unix)]
+    pub(super) fn create_missing_note(
+        &mut self,
+        url: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(path) = self.missing_note_path(url) else {
+            return;
+        };
+        if self.creation.is_some() || self.trash_pending || self.note_move_pending {
+            self.link_notice = Some("Finish or cancel the current file operation first.".into());
+            cx.notify();
+            return;
+        }
+        self.clear_hover(cx);
+        // Keep the complete proposed path editable in an existing root row;
+        // create-only validation checks every segment again on submission.
+        self.new_note(Some(""), window, cx);
+        if let Some(create) = &self.creation {
+            create.input.update(cx, |input, cx| {
+                input.set_value(path, window, cx);
+                input.focus(window, cx);
+                input.select_all(window, cx);
+            });
+        }
+    }
+
     pub(super) fn new_note(
         &mut self,
         folder: Option<&str>,
@@ -192,6 +220,7 @@ impl Reader {
             Ok((rel, Some(source))) => {
                 let created = rel.clone();
                 self.creation = None;
+                Arc::make_mut(&mut self.vault).register_created_note(&rel);
                 // Publish the successful create before the watcher catches up.
                 // Its ancestors must exist in the tree for an immediate Cmd-N
                 // in this new folder to render a focused, actionable input row.
