@@ -137,7 +137,8 @@ are positive controls before absence assertions.
 ```sh
 # On the authorized isolated development host, with the build wrapper:
 cd inbox
-cargo fmt --all --check
+cargo fmt --check
+cargo fmt --manifest-path ../crates/tessera-sync/Cargo.toml -p tessera-sync --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace
 TESSERA_SYNC_HUB=/path/to/pinned/syncthing-1.29.5 \
