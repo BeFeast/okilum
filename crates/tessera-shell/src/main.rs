@@ -66,6 +66,7 @@ mod reader_session;
 mod reader_settings;
 #[cfg(target_os = "linux")]
 mod reader_settings_sync;
+mod reader_shortcuts;
 mod reader_sidebar;
 use reader_sidebar::SectionAction;
 #[cfg(unix)]
@@ -212,6 +213,7 @@ actions!(
         PdfZoomIn,
         PdfZoomOut,
         PdfZoomFit,
+        ToggleShortcutSheet,
     ]
 );
 
@@ -240,7 +242,10 @@ fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("alt-cmd-r", RevealFile, Some(READER_CONTEXT)),
         KeyBinding::new("alt-cmd-c", CopyVaultPath, Some(READER_CONTEXT)),
+        // Quick Look is a macOS service; elsewhere Space would only report that.
+        #[cfg(target_os = "macos")]
         KeyBinding::new("space", QuickLookFile, Some("ReaderFile && !Input")),
+        #[cfg(target_os = "macos")]
         KeyBinding::new("space", QuickLookFile, Some("ReaderTree && !Input")),
     ]);
     // ⌘/Ctrl + and − arrive as `=`/`+` and `-` depending on layout and shift.
@@ -286,17 +291,19 @@ fn bind_keys(cx: &mut App) {
     // `j`/`k` are plain letters: with an input focused they must keep being
     // text, so those two are disabled anywhere under an `Input` context.
     let not_input = format!("{READER_CONTEXT} && !Input");
+    // Where macOS has both a `ctrl` alias and a `cmd` binding, the `cmd` one
+    // comes later: GPUI ranks later bindings higher, and menus, tooltips and
+    // the shortcut sheet (#647) all show the highest-ranked key.
     cx.bind_keys([
         KeyBinding::new("ctrl-shift-f", FullTextSearch, ctx),
         KeyBinding::new("ctrl-shift-f", FullTextSearch, Some("Reader > Input")),
         #[cfg(target_os = "macos")]
-        KeyBinding::new("cmd-k", QuickOpen, ctx),
-        #[cfg(target_os = "macos")]
-        KeyBinding::new("cmd-k", QuickOpen, Some("Reader > Input")),
-        #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-shift-f", FullTextSearch, ctx),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-shift-f", FullTextSearch, Some("Reader > Input")),
+        KeyBinding::new("secondary-/", ToggleShortcutSheet, ctx),
+        KeyBinding::new("secondary-/", ToggleShortcutSheet, Some("Reader > Input")),
+        KeyBinding::new("escape", Dismiss, Some("Reader > ShortcutSheet > Input")),
         KeyBinding::new("down", PaletteNext, Some("Reader > QuickOpen > Input")),
         KeyBinding::new("up", PalettePrevious, Some("Reader > QuickOpen > Input")),
         KeyBinding::new("escape", Dismiss, Some("Reader > QuickOpen > Input")),
@@ -320,16 +327,20 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-s", SaveSource, Some("Reader > Input")),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-f", FindInNote, ctx),
-        #[cfg(target_os = "macos")]
-        KeyBinding::new("cmd-f", FindInNote, ctx),
-        #[cfg(target_os = "macos")]
-        KeyBinding::new("cmd-f", FindInNote, Some("Reader > Input")),
         // Reader commands outrank toolkit editing aliases only inside Reader inputs.
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-f", FindInNote, Some("Reader > Input")),
         KeyBinding::new("ctrl-k", QuickOpen, Some("Reader > Input")),
         KeyBinding::new("escape", Dismiss, ctx),
         KeyBinding::new("ctrl-k", QuickOpen, ctx),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-f", FindInNote, ctx),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-f", FindInNote, Some("Reader > Input")),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-k", QuickOpen, ctx),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-k", QuickOpen, Some("Reader > Input")),
         KeyBinding::new("alt-left", HistoryBack, ctx),
         KeyBinding::new("alt-right", HistoryForward, ctx),
         KeyBinding::new("ctrl-down", ListNext, ctx),
@@ -1337,6 +1348,7 @@ struct Reader {
     reader_window: AnyWindowHandle,
     sidebar_search_focus: FocusHandle,
     quick_open: quick_open::Palette,
+    shortcut_sheet: reader_shortcuts::Sheet,
     content: Entity<TextViewState>,
     _content_sub: Subscription,
     current_rel: String,
@@ -1491,6 +1503,7 @@ impl Reader {
         let vault = Arc::new(placeholder);
         let searcher = None;
         let quick_open = quick_open::Palette::new(window, cx);
+        let shortcut_sheet = reader_shortcuts::Sheet::new(window, cx);
         let find_input = cx.new(|cx| InputState::new(window, cx).placeholder("Find in note…"));
         let sel_format = if opts.copy_source {
             SelectionFormat::Source
@@ -1561,6 +1574,7 @@ impl Reader {
             reader_window: window.window_handle(),
             sidebar_search_focus: cx.focus_handle(),
             quick_open,
+            shortcut_sheet,
             content,
             editing: None,
             #[cfg(unix)]
@@ -2156,6 +2170,10 @@ impl Reader {
         }
         if self.hover_preview.is_active() {
             self.clear_hover(cx);
+            return;
+        }
+        if self.shortcut_sheet.open {
+            self.dismiss_shortcut_sheet(window, cx);
             return;
         }
         if self.quick_open.open {
@@ -3084,17 +3102,22 @@ impl Reader {
                 header_controls()
                     .child(preserve_reader_selection(
                         "reader-notes-preserve",
-                        reader_icon_button("reader-notes", IconName::PanelLeft, NOTES_TOOLTIP, cx)
-                            .selected(notes_open)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.toggle_panel(reader_layout::Panel::Notes, window, cx)
-                            })),
+                        reader_icon_button(
+                            "reader-notes",
+                            IconName::PanelLeft,
+                            reader_shortcuts::hint("Notes", &ToggleNotes, cx),
+                            cx,
+                        )
+                        .selected(notes_open)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.toggle_panel(reader_layout::Panel::Notes, window, cx)
+                        })),
                     ))
                     .child(
                         reader_icon_button(
                             "reader-history-back",
                             IconName::ArrowLeft,
-                            with_shortcut("Back", "alt-left"),
+                            reader_shortcuts::hint("Back", &HistoryBack, cx),
                             cx,
                         )
                         .disabled(self.history_ix == 0)
@@ -3106,7 +3129,7 @@ impl Reader {
                         reader_icon_button(
                             "reader-history-forward",
                             IconName::ArrowRight,
-                            with_shortcut("Forward", "alt-right"),
+                            reader_shortcuts::hint("Forward", &HistoryForward, cx),
                             cx,
                         )
                         .disabled(self.history_ix + 1 >= self.history.len())
@@ -3143,7 +3166,7 @@ impl Reader {
                         reader_icon_button(
                             "reader-search",
                             IconName::Search,
-                            VAULT_SEARCH_TOOLTIP,
+                            reader_shortcuts::hint("Search in vault", &FullTextSearch, cx),
                             cx,
                         )
                         .debug_selector(|| "reader-search".into())
@@ -3158,7 +3181,7 @@ impl Reader {
                         reader_icon_button(
                             "reader-backlinks",
                             IconName::PanelRight,
-                            BACKLINKS_TOOLTIP,
+                            reader_shortcuts::hint("On this page", &ToggleBacklinks, cx),
                             cx,
                         )
                         .selected(backlinks_open)
@@ -3194,7 +3217,7 @@ impl Reader {
                         reader_icon_button(
                             "reader-settings",
                             IconName::Settings,
-                            with_shortcut("Settings", "secondary-,"),
+                            reader_shortcuts::hint("Settings", &reader_settings::OpenSettings, cx),
                             cx,
                         )
                         .on_click(cx.listener(|_, _, _, cx| {
@@ -3410,7 +3433,7 @@ impl Reader {
                         reader_icon_button(
                             "sidebar-new-note",
                             Icon::default().path("icons/square-pen.svg"),
-                            with_shortcut("New note", "secondary-n"),
+                            reader_shortcuts::hint("New note", &NewNote, cx),
                             cx,
                         )
                         .on_click(
@@ -3433,9 +3456,8 @@ impl Reader {
                         reader_icon_button(
                             "sidebar-folders-only",
                             Icon::default().path(brand::READER_COLLAPSE_ICON),
-                            with_shortcut(
-                                "Folders only / Restore sections",
-                                "secondary-shift-left",
+                            reader_shortcuts::hint(
+                                "Folders only / Restore sections", &CollapseSidebarSections, cx,
                             ),
                             cx,
                         )
@@ -3459,8 +3481,8 @@ impl Reader {
                             .hover(|s| s.bg(brand::reader_palette(cx).hover))
                             .focus(|s| s.bg(brand::reader_palette(cx).hover))
                             .tooltip(|window, cx| {
-                                gpui_component::tooltip::Tooltip::new(format!(
-                                    "Search notes ({SEARCH_SHORTCUT})"
+                                gpui_component::tooltip::Tooltip::new(reader_shortcuts::hint(
+                                    "Search notes", &QuickOpen, cx,
                                 ))
                                 .build(window, cx)
                             })
@@ -3469,7 +3491,7 @@ impl Reader {
                                 button.child(
                                     div()
                                         .text_size(px(11.))
-                                        .child(SEARCH_SHORTCUT)
+                                        .children(reader_shortcuts::shortcut(&QuickOpen, cx))
                                         .debug_selector(|| "sidebar-search-shortcut".into()),
                                 )
                             })
@@ -3557,7 +3579,7 @@ impl Reader {
                     .ghost()
                     .small()
                     .icon(IconName::ChevronDown)
-                    .tooltip("Next match ⏎")
+                    .tooltip(with_shortcut("Next match", "enter"))
                     .on_click(cx.listener(|this, _, _, cx| this.find_step(1, cx))),
             )
             .child(
@@ -3565,7 +3587,7 @@ impl Reader {
                     .ghost()
                     .small()
                     .icon(IconName::Close)
-                    .tooltip("Close Esc")
+                    .tooltip(reader_shortcuts::hint("Close", &Dismiss, cx))
                     .on_click(cx.listener(|this, _, window, cx| this.close_find(window, cx))),
             )
             .into_any_element()
@@ -3823,7 +3845,7 @@ impl Reader {
                         // hover of the header (#410).
                         let action = |id: &'static str,
                                                   icon: &'static str,
-                                                  tooltip: &'static str,
+                                                  tooltip: fn(&App) -> SharedString,
                                                   f: fn(
                                         &mut Reader,
                                         &mut Window,
@@ -3841,7 +3863,7 @@ impl Reader {
                                             .text_color(p.text_muted)
                                             .hover(move |s| s.text_color(p.text))
                                             .tooltip(move |window, cx| {
-                                                gpui_component::tooltip::Tooltip::new(tooltip)
+                                                gpui_component::tooltip::Tooltip::new(tooltip(cx))
                                                     .build(window, cx)
                                             })
                                             .child(Icon::default().path(icon).small())
@@ -3860,7 +3882,7 @@ impl Reader {
                                 row.child(action(
                                     "folders-new-note",
                                     "icons/file-plus.svg",
-                                    with_shortcut("New File", "secondary-n"),
+                                    |cx| reader_shortcuts::hint("New File", &NewNote, cx),
                                     |this, window, cx| {
                                         let folder = this
                                             .tree
@@ -3888,7 +3910,7 @@ impl Reader {
                                 .child(action(
                                     "folders-new-folder",
                                     "icons/folder-plus.svg",
-                                    "New Folder",
+                                    |_| "New Folder".into(),
                                     |this, window, cx| {
                                         let folder = this
                                             .tree
@@ -3917,13 +3939,19 @@ impl Reader {
                             .child(action(
                                 "folders-collapse-all",
                                 brand::READER_COLLAPSE_ICON,
-                                COLLAPSE_FOLDERS_TOOLTIP,
+                                |_| COLLAPSE_FOLDERS_TOOLTIP.into(),
                                 |this, _, cx| this.collapse_folders(cx),
                             ))
                             .child(action(
                                 "folders-focus-current",
                                 brand::READER_FOCUS_ICON,
-                                FOCUS_CURRENT_TOOLTIP,
+                                |cx| {
+                                    reader_shortcuts::hint(
+                                        "Focus current note",
+                                        &FocusCurrentFolder,
+                                        cx,
+                                    )
+                                },
                                 |this, window, cx| this.focus_current_folder(window, cx),
                             ))
                             .child(
@@ -3933,8 +3961,14 @@ impl Reader {
                                     .px_1()
                                     .text_color(if show_hidden { p.accent } else { p.text_muted })
                                     .tooltip(|window, cx| {
-                                        gpui_component::tooltip::Tooltip::new(HIDDEN_FILES_TOOLTIP)
-                                            .build(window, cx)
+                                        gpui_component::tooltip::Tooltip::new(
+                                            reader_shortcuts::hint(
+                                                HIDDEN_FILES_MENU,
+                                                &ToggleHiddenFiles,
+                                                cx,
+                                            ),
+                                        )
+                                        .build(window, cx)
                                     })
                                     .child(
                                         Icon::new(if show_hidden {
@@ -4742,7 +4776,7 @@ impl Reader {
                                     reader_icon_button(
                                         "table-overlay-close",
                                         IconName::Close,
-                                        "Close Esc",
+                                        reader_shortcuts::hint("Close", &Dismiss, cx),
                                         cx,
                                     )
                                     .on_click(cx.listener(
@@ -5713,34 +5747,9 @@ enum TreeKey {
 // Below this width the icon remains; only its shortcut hint is hidden.
 const SEARCH_HINT_MIN_PANEL_WIDTH: f32 = 260.;
 
-#[cfg(target_os = "macos")]
-const SEARCH_SHORTCUT: &str = "⌘K";
-#[cfg(not(target_os = "macos"))]
-const SEARCH_SHORTCUT: &str = "Ctrl+K";
-#[cfg(target_os = "macos")]
-const NOTES_TOOLTIP: &str = "Notes ⌘\\";
-#[cfg(not(target_os = "macos"))]
-const NOTES_TOOLTIP: &str = "Notes Ctrl+\\";
-#[cfg(target_os = "macos")]
-const BACKLINKS_TOOLTIP: &str = "On this page ⌥⌘\\";
-#[cfg(not(target_os = "macos"))]
-const BACKLINKS_TOOLTIP: &str = "On this page Ctrl+Alt+\\";
-#[cfg(target_os = "macos")]
-const HIDDEN_FILES_TOOLTIP: &str = "Show hidden files ⇧⌘.";
-#[cfg(not(target_os = "macos"))]
-const HIDDEN_FILES_TOOLTIP: &str = "Show hidden files Ctrl+Shift+.";
 const HIDDEN_FILES_MENU: &str = "Show hidden files";
 const FOLDERS_HEADER_GROUP: &str = "folders-header";
 const COLLAPSE_FOLDERS_TOOLTIP: &str = "Collapse all";
-#[cfg(target_os = "macos")]
-const FOCUS_CURRENT_TOOLTIP: &str = "Reveal in sidebar";
-#[cfg(not(target_os = "macos"))]
-const FOCUS_CURRENT_TOOLTIP: &str = "Reveal in sidebar";
-
-#[cfg(target_os = "macos")]
-const VAULT_SEARCH_TOOLTIP: &str = "Search in vault (⇧⌘F)";
-#[cfg(not(target_os = "macos"))]
-const VAULT_SEARCH_TOOLTIP: &str = "Search in vault (Ctrl+Shift+F)";
 
 /// Reader window title bar: the native traffic lights are vertically centred
 /// on the 46px Reader header (#365). The toolkit default centres them on its
@@ -5772,7 +5781,7 @@ fn header_controls() -> Div {
 fn reader_icon_button(
     id: impl Into<ElementId>,
     icon: impl Into<Icon>,
-    tooltip: &'static str,
+    tooltip: impl Into<SharedString>,
     _cx: &App,
 ) -> Button {
     Button::new(id)
@@ -5806,9 +5815,15 @@ fn reader_more_menu(
             };
             let settings_reader = reader.clone();
             let reader = reader.clone();
-            menu.item(PopupMenuItem::new("Settings…").on_click(move |_, _, cx| {
-                reader_settings::show(Some(settings_reader.clone()), cx);
-            }))
+            // `.action` only shows the bound key; the click handler still runs.
+            menu.item(
+                PopupMenuItem::new("Settings…")
+                    .action(Box::new(reader_settings::OpenSettings))
+                    .on_click(move |_, _, cx| {
+                        reader_settings::show(Some(settings_reader.clone()), cx);
+                    }),
+            )
+            .menu("Keyboard shortcuts", Box::new(ToggleShortcutSheet))
             .separator()
             .when(cfg!(unix), |menu| {
                 menu.menu("New note…", Box::new(NewNote))
@@ -5825,6 +5840,7 @@ fn reader_more_menu(
             .item(
                 PopupMenuItem::new(HIDDEN_FILES_MENU)
                     .checked(show_hidden)
+                    .action(Box::new(ToggleHiddenFiles))
                     .on_click(move |_, _, cx| {
                         let _ = reader.update(cx, |this, cx| this.toggle_hidden_files(cx));
                     }),
@@ -6036,6 +6052,7 @@ impl Render for Reader {
                     .active_timeline()
                     .is_some_and(|t| t.selected.is_some() || self.editing.is_none())
                     && !self.quick_open.open
+                    && !self.shortcut_sheet.open
                 {
                     "Reader ReaderHistory"
                 } else {
@@ -6048,6 +6065,9 @@ impl Render for Reader {
             }))
             .on_action(cx.listener(|this, _: &FullTextSearch, window, cx| {
                 this.open_quick_open(true, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ToggleShortcutSheet, window, cx| {
+                this.toggle_shortcut_sheet(window, cx)
             }))
             .on_action(cx.listener(|this, _: &PaletteNext, _, cx| this.move_quick_open(1, cx)))
             .on_action(cx.listener(|this, _: &PalettePrevious, _, cx| this.move_quick_open(-1, cx)))
@@ -6366,6 +6386,9 @@ impl Render for Reader {
             .capture_key_down(cx.listener(|_, _, window, cx| {
                 reader_ui_state::capture_next_frame(cx.entity().downgrade(), window);
             }))
+            .when(self.shortcut_sheet.open, |view| {
+                view.child(self.render_shortcut_sheet(cx))
+            })
             .on_modifiers_changed(
                 cx.listener(|this, _, window, cx| this.hover_modifiers(window, cx)),
             )
