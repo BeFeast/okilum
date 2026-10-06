@@ -1,6 +1,7 @@
 //! Native, read-only Tasks blocks. Index ownership stays with Reader snapshots.
 use super::*;
-use tessera_core::tasks::{Index, Query, Task};
+use gpui_component::{checkbox::Checkbox, Disableable};
+use tessera_core::tasks::{Group, Index, Query, Task};
 
 pub(super) fn from_snapshot(snapshot: &tessera_core::vault::warm::Snapshot) -> Arc<Index> {
     let mut index = Index::default();
@@ -64,7 +65,11 @@ struct Results {
     today: time::Date,
     query: String,
     tasks: Vec<Task>,
+    rows: Vec<Vec<usize>>,
     unsupported: Vec<String>,
+    groups: Vec<Group>,
+    explicit_groups: bool,
+    expanded: std::collections::BTreeSet<(String, usize)>,
     shown: usize,
 }
 impl Results {
@@ -72,15 +77,91 @@ impl Results {
         if !Arc::ptr_eq(&self.index, &index) || self.today != now || self.query != source {
             let query = Query::parse(source, now);
             self.tasks = index.query(&query);
+
+            self.explicit_groups = !query.groups.is_empty();
+            self.groups = if query.groups.is_empty() {
+                vec![Group::Filename]
+            } else {
+                query.groups
+            };
+            // Stable grouping preserves the query ordering inside each group.
+            self.tasks.sort_by_key(|task| group_key(task, &self.groups));
+            self.rows = carried_rows(&self.tasks, &self.groups, self.explicit_groups);
             self.unsupported = query.unsupported;
             self.index = index;
             self.today = now;
             if self.query != source {
-                self.shown = 50;
+                self.shown = 20;
+                self.expanded.clear();
             }
             self.query = source.to_owned();
         }
     }
+}
+// Include source identity in filename groups: equal stems never merge unrelated notes.
+fn group_key(task: &Task, groups: &[Group]) -> Vec<String> {
+    groups
+        .iter()
+        .map(|g| match g {
+            Group::Filename => format!("{}\0{}", g.label(task), task.path),
+            Group::Priority => task.priority.to_string(),
+            _ => g.label(task),
+        })
+        .collect()
+}
+// Collapse exact carried copies, never different schedules/statuses or two tasks
+// in the same note. Expansion retains every source action and its own identity.
+fn carried_rows(tasks: &[Task], groups: &[Group], explicit: bool) -> Vec<Vec<usize>> {
+    let mut keys = std::collections::BTreeMap::new();
+    let mut rows: Vec<Vec<usize>> = Vec::new();
+    for (ix, task) in tasks.iter().enumerate() {
+        let key = (
+            task.text.split_whitespace().collect::<Vec<_>>().join(" "),
+            task.checked,
+            task.due,
+            task.scheduled,
+            task.start,
+            task.done,
+            task.priority,
+            if explicit {
+                group_key(task, groups)
+            } else {
+                Vec::new()
+            },
+        );
+        let candidates: &mut Vec<usize> = keys.entry(key).or_default();
+        if let Some(row) = candidates
+            .iter()
+            .copied()
+            .find(|&r| rows[r].iter().all(|&t| tasks[t].path != task.path))
+        {
+            rows[row].push(ix);
+        } else {
+            candidates.push(rows.len());
+            rows.push(vec![ix]);
+        }
+    }
+    rows
+}
+fn task_label(task: &Task) -> String {
+    let mut text = task
+        .display
+        .clone()
+        .unwrap_or_else(|| tessera_core::render::strip_inline_markdown(&task.text));
+    for (marker, date) in [
+        ('📅', task.due),
+        ('⏳', task.scheduled),
+        ('🛫', task.start),
+        ('✅', task.done),
+    ] {
+        if let Some(date) = date {
+            text = text.replace(&format!("{marker} {date}"), "");
+        }
+    }
+    for marker in ['🔺', '⏫', '🔼', '🔽', '⏬'] {
+        text = text.replace(marker, "");
+    }
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 fn today() -> time::Date {
     use chrono::Datelike;
@@ -148,14 +229,18 @@ impl RenderOnce for TasksList {
                 today: now,
                 query: String::new(),
                 tasks: Vec::new(),
+                rows: Vec::new(),
                 unsupported: Vec::new(),
-                shown: 50,
+                groups: vec![Group::Filename],
+                explicit_groups: false,
+                expanded: Default::default(),
+                shown: 20,
             }
         });
         state.update(cx, |s, _| s.refresh(index, now, &self.query));
         let results = state.read(cx);
         let muted = cx.theme().muted_foreground;
-        let mut list = v_flex().gap_2().py_2().w_full();
+        let mut list = v_flex().gap_0().py_1().w_full();
         if !results.unsupported.is_empty() {
             for line in &results.unsupported {
                 list = list.child(
@@ -173,65 +258,157 @@ impl RenderOnce for TasksList {
                 .text_sm()
                 .text_color(muted)
                 .debug_selector({
-                    let count = results.tasks.len();
+                    let count = results.rows.len();
                     move || format!("tasks-count-{count}")
                 })
-                .child(format!("{} tasks · read-only", results.tasks.len())),
+                .child(format!("{} tasks", results.rows.len())),
         );
-        for (ix, task) in results.tasks.iter().take(results.shown).enumerate() {
+        let rows = &results.rows;
+        let mut visible = Vec::new();
+        for row in rows.iter().take(results.shown) {
+            let first = row[0];
+            visible.push((first, row.len(), false));
+            if results
+                .expanded
+                .contains(&(results.tasks[first].path.clone(), results.tasks[first].line))
+            {
+                visible.extend(row.iter().skip(1).map(|&ix| (ix, 1, true)));
+            }
+        }
+        let mut previous_group = None;
+        for (ix, copies, is_copy) in visible {
+            let task = &results.tasks[ix];
+            let key = group_key(task, &results.groups);
+            if !is_copy && previous_group.as_ref() != Some(&key) {
+                list = list.child(
+                    div().mt_2().mb_1().text_xs().text_color(muted).child(
+                        results
+                            .groups
+                            .iter()
+                            .map(|g| g.label(task))
+                            .collect::<Vec<_>>()
+                            .join(" · "),
+                    ),
+                );
+                previous_group = Some(key);
+            }
             let target = task.clone();
             let root = reader.read(cx).vault_root.clone();
             let reader = self.reader.clone();
-            let due = task.due.map(|d| format!("📅 {d}"));
-            let text = task
-                .display
-                .clone()
-                .unwrap_or_else(|| tessera_core::render::strip_inline_markdown(&task.text));
-            let text = due
-                .as_ref()
-                .map_or_else(|| text.clone(), |due| text.replace(due, ""));
-            list = list.child(
-                v_flex()
-                    .gap_1()
-                    .child(
-                        h_flex()
-                            .items_start()
-                            .gap_2()
-                            .child(div().text_color(muted).child(if task.checked {
-                                "☑"
-                            } else {
-                                "☐"
-                            }))
-                            .child(div().flex_1().child(text.trim().to_owned()))
-                            .when_some(due, |row, due| {
-                                row.child(div().text_xs().text_color(muted).child(due))
-                            }),
-                    )
-                    .child(
-                        Button::new(("task-source", ix))
-                            .xsmall()
-                            .ghost()
-                            .label(format!("{}:{}", task.path, task.line))
-                            .debug_selector(move || format!("task-source-{offset}-{ix}"))
-                            .on_click(move |_, window, cx| {
-                                let _ = reader.update(cx, |this, cx| {
-                                    if this.vault_root == root {
-                                        this.prepare_task_document(&target, window, cx);
+            let text = task_label(task);
+            let expansion_state = state.clone();
+            let task_key = (task.path.clone(), task.line);
+            let expanded = results.expanded.contains(&task_key);
+            let overdue = !task.checked && task.due.is_some_and(|d| d < now);
+            let due_color = if overdue { cx.theme().danger } else { muted };
+            list =
+                list.child(
+                    h_flex()
+                        .w_full()
+                        .min_h(px(28.))
+                        .when(is_copy, |row| row.pl_6())
+                        .gap_2()
+                        .child(
+                            Checkbox::new(("task-check", ix))
+                                .checked(task.checked)
+                                .disabled(true)
+                                .accessibility_label(text.clone())
+                                .tooltip("Read-only task — open the source note to edit"),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_sm()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .whitespace_nowrap()
+                                .id(("task-label", ix))
+                                .tooltip({
+                                    let text = text.clone();
+                                    move |window, cx| {
+                                        gpui_component::tooltip::Tooltip::new(text.clone())
+                                            .build(window, cx)
                                     }
-                                });
-                            }),
-                    ),
-            );
+                                })
+                                .child(text),
+                        )
+                        .when(task.priority != 3, |row| {
+                            row.child(div().text_xs().text_color(muted).child(
+                                match task.priority {
+                                    0 => "⇈",
+                                    1 | 2 => "↑",
+                                    4 => "↓",
+                                    _ => "⇊",
+                                },
+                            ))
+                        })
+                        .child(
+                            Button::new(("task-source", ix))
+                                .xsmall()
+                                .ghost()
+                                .max_w(px(144.))
+                                .flex_shrink_0()
+                                .label(Group::Filename.label(task))
+                                .text_color(muted)
+                                .tooltip(format!("Open {} at line {}", task.path, task.line))
+                                .debug_selector(move || format!("task-source-{offset}-{ix}"))
+                                .on_click(move |_, window, cx| {
+                                    let _ = reader.update(cx, |this, cx| {
+                                        if this.vault_root == root {
+                                            this.prepare_task_document(&target, window, cx);
+                                        }
+                                    });
+                                }),
+                        )
+                        .when(copies > 1, |row| {
+                            row.child(
+                                Button::new(("task-copies", ix))
+                                    .xsmall()
+                                    .ghost()
+                                    .label(format!(
+                                        "{} ×{} notes",
+                                        if expanded { "▾" } else { "▸" },
+                                        copies
+                                    ))
+                                    .tooltip("Show every source of this identical task")
+                                    .on_click(move |_, _, cx| {
+                                        expansion_state.update(cx, |s, cx| {
+                                            if !s.expanded.remove(&task_key) {
+                                                s.expanded.insert(task_key.clone());
+                                            }
+                                            cx.notify();
+                                        });
+                                    }),
+                            )
+                        })
+                        .when_some(task.due, |row, due| {
+                            row.child(
+                                div()
+                                    .flex_shrink_0()
+                                    .px_2()
+                                    .py_0p5()
+                                    .rounded_md()
+                                    .text_xs()
+                                    .text_color(due_color)
+                                    .bg(due_color.opacity(0.10))
+                                    .child(due.to_string()),
+                            )
+                        }),
+                );
         }
-        if results.tasks.len() > results.shown {
+        if rows.len() > results.shown {
             list = list.child(
                 Button::new("tasks-more")
                     .small()
                     .ghost()
-                    .label("Show 50 more")
+                    .label(format!(
+                        "Show {} more",
+                        (rows.len() - results.shown).min(20)
+                    ))
                     .on_click(move |_, _, cx| {
                         state.update(cx, |s, cx| {
-                            s.shown += 50;
+                            s.shown += 20;
                             cx.notify();
                         });
                     }),
@@ -278,22 +455,70 @@ mod tests {
     use ::core::prelude::v1::test;
 
     #[test]
+    fn presentation_preserves_source_and_groups_without_merging_equal_stems() {
+        let task = tessera_core::tasks::parse(
+            "a/Work.md",
+            "- [ ] **Ship** 🔼 📅 2026-10-06 ⏳ 2026-10-05",
+        )
+        .remove(0);
+        assert_eq!(task_label(&task), "Ship");
+        assert!(task.text.contains("📅"));
+        assert_eq!(Group::Filename.label(&task), "Work");
+        let mut other = task.clone();
+        other.path = "b/Work.md".into();
+        assert_ne!(
+            group_key(&task, &[Group::Filename]),
+            group_key(&other, &[Group::Filename])
+        );
+        assert_eq!(
+            carried_rows(&[task.clone(), other.clone()], &[Group::Filename], false),
+            vec![vec![0, 1]]
+        );
+        assert_eq!(
+            carried_rows(&[task.clone(), other.clone()], &[Group::Filename], true),
+            vec![vec![0], vec![1]]
+        );
+        other.due = None;
+        assert_eq!(
+            carried_rows(&[task.clone(), other], &[Group::Filename], false).len(),
+            2
+        );
+        assert_eq!(
+            carried_rows(&[task.clone(), task], &[Group::Filename], false).len(),
+            2
+        );
+        let query = Query::parse("not done\ngroup by due\ngroup by filename", today());
+        assert!(query.unsupported.is_empty());
+        assert_eq!(query.groups, vec![Group::Due, Group::Filename]);
+        assert!(!Query::parse("group by unknown", today())
+            .unsupported
+            .is_empty());
+    }
+
+    #[test]
     fn index_refresh_keeps_expanded_pagination() {
         let mut results = Results {
             index: Arc::default(),
             today: today(),
             query: "not done".into(),
             tasks: Vec::new(),
+            rows: Vec::new(),
             unsupported: Vec::new(),
+            groups: vec![Group::Filename],
+            explicit_groups: false,
+            expanded: Default::default(),
             shown: 150,
         };
+        results.expanded.insert(("old.md".into(), 1));
         let mut index = Index::default();
         index.replace("new.md", "- [ ] New task");
         results.refresh(Arc::new(index), today(), "not done");
         assert_eq!(results.tasks.len(), 1);
         assert_eq!(results.shown, 150);
+        assert!(results.expanded.contains(&("old.md".into(), 1)));
         results.refresh(results.index.clone(), today(), "done");
-        assert_eq!(results.shown, 50);
+        assert_eq!(results.shown, 20);
+        assert!(results.expanded.is_empty());
     }
 
     #[gpui::test]
