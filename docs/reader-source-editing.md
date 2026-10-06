@@ -392,3 +392,13 @@ float over the preview, with failures in the same notification overlay. Header s
 status, loading progress, inline filename validation and explicit confirmation dialogs
 are controls, not notification strips. Frozen Brain workspaces retain their separate
 operation review forms; this Reader change does not remove their approval controls.
+
+## Graceful process termination (#590)
+
+SIGTERM/SIGINT use the native application quit path on Linux and macOS. Signal
+handlers only set an atomic flag; the UI thread initiates shutdown, flushes every
+editor (even if another note conflicts), and runs the usual state persistence hooks.
+OS quit/logout and updater relaunch use the same quit observers. Both historical
+launch-marker directories are cleared on deliberate shutdown; unresolved conflicts
+retain their durable drafts and are still discovered per note. SIGKILL, panic and
+power loss leave their markers for conservative startup; no-draft recovery is silent.

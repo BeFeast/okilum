@@ -7,6 +7,70 @@ use std::{
     sync::Arc,
 };
 
+/// Signal callbacks do only an atomic store. Saving, marker cleanup and GPUI
+/// shutdown always run on the normal application thread, never in a handler.
+struct TerminationSignals {
+    requested: Arc<std::sync::atomic::AtomicBool>,
+    registrations: Vec<signal_hook_registry::SigId>,
+}
+impl Global for TerminationSignals {}
+impl TerminationSignals {
+    fn install() -> Result<Self> {
+        let mut signals = Self {
+            requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            registrations: vec![],
+        };
+        for signal in [rustix::process::Signal::TERM, rustix::process::Signal::INT] {
+            let requested = signals.requested.clone();
+            // SAFETY: this lock-free atomic store is the entire signal handler.
+            let registration = unsafe {
+                signal_hook_registry::register(signal.as_raw(), move || {
+                    requested.store(true, std::sync::atomic::Ordering::SeqCst);
+                })?
+            };
+            signals.registrations.push(registration);
+        }
+        Ok(signals)
+    }
+    #[cfg(test)]
+    fn requested(&self) -> bool {
+        self.requested.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+impl Drop for TerminationSignals {
+    fn drop(&mut self) {
+        for registration in self.registrations.drain(..) {
+            signal_hook_registry::unregister(registration);
+        }
+    }
+}
+
+fn install_termination(cx: &mut App) {
+    let signals = match TerminationSignals::install() {
+        Ok(signals) => signals,
+        Err(error) => {
+            eprintln!("Cannot install graceful termination handlers: {error}");
+            return;
+        }
+    };
+    let requested = signals.requested.clone();
+    cx.set_global(signals);
+    cx.spawn(async move |cx| {
+        loop {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(100))
+                .await;
+            if requested.load(std::sync::atomic::Ordering::SeqCst) {
+                // Use the same native quit path as the application/OS menu. Its
+                // on_app_quit observers flush editors and window preferences.
+                cx.update(|cx| cx.quit());
+                break;
+            }
+        }
+    })
+    .detach();
+}
+
 struct Run {
     marker: PathBuf,
     stale: Vec<PathBuf>,
@@ -67,6 +131,10 @@ pub(crate) fn is_recovering(cx: &App) -> bool {
 }
 
 pub(crate) fn install(directory: &Path, config_directory: Option<&Path>, cx: &mut App) {
+    // Tests install their own isolated signal handlers in subprocesses.
+    if !cfg!(test) {
+        install_termination(cx);
+    }
     // Track both historical locations: moving either one aside must not hide a
     // crash recorded in the other. Neither journals nor preferences are moved.
     let mut directories = vec![directory.to_path_buf()];
@@ -92,14 +160,16 @@ pub(crate) fn install(directory: &Path, config_directory: Option<&Path>, cx: &mu
     cx.set_global(RecoveryStartup(recovering));
     let runs = Arc::new(runs);
     cx.on_app_quit(move |cx| {
-        let saved = super::reader_editor::save_all(cx);
+        if !super::reader_editor::save_all(cx) {
+            // Conflicts retain durable drafts and are rediscovered per note;
+            // a deliberate quit is not a crash even when canonical save fails.
+            eprintln!("Some notes could not be saved; recovery drafts are retained.");
+        }
         let runs = runs.clone();
         async move {
-            if saved {
-                for run in runs.iter() {
-                    if let Err(error) = run.clean() {
-                        eprintln!("Cannot finish Reader launch marker: {error}");
-                    }
+            for run in runs.iter() {
+                if let Err(error) = run.clean() {
+                    eprintln!("Cannot finish Reader launch marker: {error}");
                 }
             }
         }
@@ -110,6 +180,80 @@ pub(crate) fn install(directory: &Path, config_directory: Option<&Path>, cx: &mu
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[gpui::test]
+    fn os_quit_cleans_both_launch_markers(cx: &mut gpui::TestAppContext) {
+        let root = tempfile::tempdir().unwrap();
+        let state = root.path().join("bundle");
+        let config = root.path().join("config");
+        cx.update(|cx| {
+            install(&state, Some(&config), cx);
+            cx.shutdown();
+        });
+        for directory in [&state, &config] {
+            let next = Run::begin(directory).unwrap();
+            assert!(next.stale.is_empty());
+            next.clean().unwrap();
+        }
+    }
+
+    // The real signal is delivered only to this subprocess, never to the test runner.
+    #[test]
+    fn signal_child() {
+        let Some(directory) = std::env::var_os("TESSERA_SIGNAL_TEST_DIRECTORY") else {
+            return;
+        };
+        let directory = PathBuf::from(directory);
+        let signals = TerminationSignals::install().unwrap();
+        let run = Run::begin(&directory).unwrap();
+        use std::io::Write;
+        println!("SIGNALS_READY");
+        std::io::stdout().flush().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !signals.requested() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "termination was not delivered"
+            );
+            std::thread::park_timeout(std::time::Duration::from_millis(10));
+        }
+        run.clean().unwrap();
+    }
+
+    #[test]
+    fn termination_signals_are_graceful_but_sigkill_retains_crash_evidence() {
+        use rustix::process::{kill_process, Pid, Signal};
+        use std::io::{BufRead, BufReader, Read};
+        use std::process::{Command, Stdio};
+        for signal in [Signal::TERM, Signal::INT, Signal::KILL] {
+            let directory = tempfile::tempdir().unwrap();
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "reader_recovery::tests::signal_child",
+                    "--nocapture",
+                ])
+                .env("TESSERA_SIGNAL_TEST_DIRECTORY", directory.path())
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let mut output = BufReader::new(child.stdout.take().unwrap());
+            let ready = output
+                .by_ref()
+                .lines()
+                .any(|line| line.unwrap().contains("SIGNALS_READY"));
+            assert!(ready, "child exited before installing signal handlers");
+            kill_process(Pid::from_raw(child.id() as i32).unwrap(), signal).unwrap();
+            // Keep stdout open and drain the test harness footer after readiness.
+            // Dropping the pipe at the handshake would manufacture a BrokenPipe exit.
+            std::io::copy(&mut output, &mut std::io::sink()).unwrap();
+            let status = child.wait().unwrap();
+            assert_eq!(status.success(), signal != Signal::KILL);
+            let next = Run::begin(directory.path()).unwrap();
+            assert_eq!(!next.stale.is_empty(), signal == Signal::KILL);
+            next.clean().unwrap();
+        }
+    }
+
     #[gpui::test]
     fn either_state_location_can_trigger_safe_startup(cx: &mut gpui::TestAppContext) {
         for stale_config in [false, true] {

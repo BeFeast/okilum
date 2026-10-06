@@ -45,10 +45,12 @@ impl Global for Editors {}
 
 pub(crate) fn save_all(cx: &mut App) -> bool {
     let editors = cx.default_global::<Editors>().0.clone();
-    editors.into_iter().all(|(editor, _)| {
+    // Visit every editor even if an earlier one has a conflict or save error.
+    editors.into_iter().fold(true, |saved, (editor, _)| {
         editor
             .update(cx, |reader, cx| reader.save_source(cx))
             .unwrap_or(true)
+            && saved
     })
 }
 
@@ -1076,6 +1078,75 @@ impl Reader {
 
 #[cfg(test)]
 mod tests {
+
+    #[gpui::test]
+    fn quit_flushes_every_editor_even_after_a_conflict(cx: &mut TestAppContext) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        let state = temp.path().join("state");
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+            reader_recovery::install(&state, None, cx);
+        });
+        let mut readers = vec![];
+        for name in ["first.md", "second.md"] {
+            std::fs::write(root.join(name), "original").unwrap();
+            let mut reader = None;
+            let (_, visual) = cx.add_window_view(|window, cx| {
+                let view = cx.new(|cx| {
+                    Reader::new(
+                        Opts {
+                            vault: Some(root.clone()),
+                            open_path: Some(root.join(name)),
+                            index_dir: Some(temp.path().join("index")),
+                            session_directory: Some(state.clone()),
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    )
+                });
+                reader = Some(view.clone());
+                Root::new(view, window, cx)
+            });
+            let reader = reader.unwrap();
+            visual.run_until_parked();
+            reader.update_in(visual, |r, window, cx| {
+                r.toggle_source(window, cx);
+                r.editing
+                    .as_ref()
+                    .unwrap()
+                    .set_value("local edits", window, cx);
+            });
+            readers.push(reader);
+        }
+        std::fs::write(root.join("first.md"), "external changes").unwrap();
+        cx.update(|cx| assert!(!save_all(cx)));
+        assert_eq!(
+            std::fs::read_to_string(root.join("first.md")).unwrap(),
+            "external changes"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("second.md")).unwrap(),
+            "local edits"
+        );
+        cx.update(|cx| cx.shutdown());
+        assert_eq!(
+            std::fs::read_dir(state.join("reader-runs"))
+                .unwrap()
+                .count(),
+            0
+        );
+        assert!(FileEditor::has_unsaved_draft(
+            &root.join("first.md"),
+            &state.join("editor-drafts")
+        )
+        .unwrap());
+        drop(readers);
+    }
 
     #[gpui::test]
     fn native_history_restore_preserves_source_and_refuses_dirty_or_stale_input(
