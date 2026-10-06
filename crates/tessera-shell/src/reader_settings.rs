@@ -88,6 +88,8 @@ impl Section {
 }
 struct Settings {
     section: Section,
+    #[cfg(all(target_os = "linux", feature = "settings-ui-harness"))]
+    preview_beta: Option<bool>,
     reader: Option<WeakEntity<Reader>>,
     focus: FocusHandle,
     _reader_changes: Option<Subscription>,
@@ -110,6 +112,11 @@ impl Settings {
             .map(|reader| cx.observe(&reader, |_, _, cx| cx.notify()));
         Self {
             section: Section::Appearance,
+            #[cfg(all(target_os = "linux", feature = "settings-ui-harness"))]
+            preview_beta: match std::env::var("TESSERA_DEBUG_UPDATER_UI").as_deref() {
+                Ok("sparkle" | "velopack") => Some(false),
+                _ => None,
+            },
             reader,
             focus: cx.focus_handle(),
             _reader_changes: observer,
@@ -124,6 +131,23 @@ impl Settings {
             #[cfg(unix)]
             template_epoch: 0,
         }
+    }
+    // The harness renders the production control tree, with in-memory actions.
+    // It never initializes Sparkle/Velopack, changes preferences, or uses the network.
+    fn preview_channel(&self) -> Option<bool> {
+        #[cfg(all(target_os = "linux", feature = "settings-ui-harness"))]
+        return self.preview_beta;
+        #[cfg(not(all(target_os = "linux", feature = "settings-ui-harness")))]
+        None
+    }
+    fn select_update_channel(&mut self, beta: bool, cx: &mut Context<Self>) {
+        #[cfg(all(target_os = "linux", feature = "settings-ui-harness"))]
+        if let Some(value) = self.preview_beta.as_mut() {
+            *value = beta;
+            cx.notify();
+            return;
+        }
+        updater::set_beta(beta, cx);
     }
     fn set_reader(&mut self, reader: Option<WeakEntity<Reader>>, cx: &mut Context<Self>) {
         self._reader_changes = reader
@@ -357,10 +381,16 @@ impl Settings {
                         "Version {} · Build {} · Channel: {}",
                         env!("TESSERA_RELEASE_VERSION"),
                         env!("TESSERA_BUILD_VERSION"),
-                        updater::channel()
+                        match self.preview_channel() {
+                            Some(true) => "Beta",
+                            Some(false) => "Stable",
+                            None => updater::channel(),
+                        }
                     )));
-                if updater::available() {
-                    let beta = updater::channel() == "Beta";
+                if self.preview_channel().is_some() || updater::available() {
+                    let beta = self
+                        .preview_channel()
+                        .unwrap_or_else(|| updater::channel() == "Beta");
                     content
                         .child(
                             h_flex()
@@ -399,9 +429,13 @@ impl Settings {
                                                         } else {
                                                             "Stable: receive approved releases"
                                                         })
-                                                        .on_click(move |_, _, cx| {
-                                                            updater::set_beta(value, cx)
-                                                        })
+                                                        .on_click(cx.listener(
+                                                            move |this, _, _, cx| {
+                                                                this.select_update_channel(
+                                                                    value, cx,
+                                                                );
+                                                            },
+                                                        ))
                                                 },
                                             ),
                                         ),
@@ -414,7 +448,11 @@ impl Settings {
                                         .ghost()
                                         .accessibility_label("Check for updates")
                                         .tooltip("Check for updates on the selected channel")
-                                        .on_click(|_, _, _| updater::check()),
+                                        .on_click(cx.listener(|this, _, _, _| {
+                                            if this.preview_channel().is_none() {
+                                                updater::check();
+                                            }
+                                        })),
                                 ),
                         )
                         .child(div().text_sm().text_color(p.text_muted).child(if beta {
@@ -548,6 +586,43 @@ impl Render for Settings {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    #[cfg(all(target_os = "linux", feature = "settings-ui-harness"))]
+    #[gpui::test]
+    fn preview_uses_real_channel_controls_without_changing_the_platform_channel(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(gpui_component::init);
+        let (root, visual) = cx.add_window_view(|window, cx| {
+            let settings = cx.new(|cx| {
+                let mut settings = Settings::new(None, cx);
+                settings.section = Section::Updates;
+                settings.preview_beta = Some(false);
+                settings
+            });
+            Root::new(settings, window, cx)
+        });
+        let settings = root.read_with(visual, |root, _| {
+            root.view().clone().downcast::<Settings>().unwrap()
+        });
+        let platform_channel = updater::channel();
+        visual.run_until_parked();
+        for (selector, expected) in [("settings-beta", true), ("settings-stable", false)] {
+            let bounds = visual.debug_bounds(selector).expect("real channel segment");
+            visual.simulate_click(bounds.center(), Modifiers::default());
+            visual.run_until_parked();
+            settings.read_with(visual, |settings, _| {
+                assert_eq!(settings.preview_channel(), Some(expected));
+            });
+            assert_eq!(updater::channel(), platform_channel);
+        }
+        let bounds = visual
+            .debug_bounds("settings-check-updates")
+            .expect("refresh glyph");
+        visual.simulate_click(bounds.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(updater::channel(), platform_channel);
+    }
 
     #[gpui::test]
     fn sections_switch_and_appearance_changes_without_a_vault(cx: &mut TestAppContext) {

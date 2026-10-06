@@ -15,7 +15,15 @@ build() {
     scripts/vendor-setup.sh
     scripts/vendor-setup.sh --verify
     python3 scripts/brand-assets.py verify
-    cargo +1.96.1 build --release --locked -p tessera-shell
+    local qa_features=()
+    if [[ ${TESSERA_SETTINGS_UI_HARNESS:-0} == 1 ]]; then
+        qa_features=(--features settings-ui-harness)
+    fi
+    cargo +1.96.1 build --release --locked -p tessera-shell "${qa_features[@]}"
+    if [[ ${TESSERA_SETTINGS_UI_HARNESS:-0} == 1 ]]; then
+        cargo +1.96.1 test --release --locked -p tessera-shell --features settings-ui-harness \
+            reader_settings::tests::preview_uses_real_channel_controls_without_changing_the_platform_channel -- --exact
+    fi
 }
 
 package() {

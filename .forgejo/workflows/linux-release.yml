@@ -49,7 +49,12 @@ jobs:
       - name: Build package as an unprivileged user
         run: |
           chown -R builder:builder "$GITHUB_WORKSPACE" /home/builder
-          runuser -u builder -- env TESSERA_BUILD_VERSION="$((5000 + GITHUB_RUN_NUMBER))" bash scripts/arch/build.sh
+          # Only branch dispatch artifacts may contain the visual QA harness.
+          harness=0
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$GITHUB_REF" != refs/heads/main ]; then
+            harness=1
+          fi
+          runuser -u builder -- env TESSERA_SETTINGS_UI_HARNESS="$harness" TESSERA_BUILD_VERSION="$((5000 + GITHUB_RUN_NUMBER))" bash scripts/arch/build.sh
       - name: Validate package and install without changing MIME defaults
         run: |
           desktop-file-validate scripts/arch/tessera.desktop
