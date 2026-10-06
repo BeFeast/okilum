@@ -339,6 +339,8 @@ impl Reader {
         self.properties = Ok(Vec::new());
         self.link_notice = None;
         self.link_choices.clear();
+        self.invalidate_links();
+        self.link_presentations = Arc::default();
         self.link_original_source = None;
         self.link_identities.clear();
         self.last_recorded_document = None;

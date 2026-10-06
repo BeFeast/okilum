@@ -1116,6 +1116,9 @@ struct Reader {
     pending_landing: Option<ListOffset>,
     landing_generation: u64,
     prepared_links: prepared_links::States,
+    /// Last verified appearance for this exact displayed source. Pending action
+    /// evidence is cleared separately during same-document verification.
+    link_presentations: prepared_links::States,
     link_preparation_generation: u64,
     document_preparation_generation: u64,
     link_original_source: Option<String>,
@@ -1339,6 +1342,7 @@ impl Reader {
             pending_landing: None,
             landing_generation: 0,
             prepared_links: Arc::default(),
+            link_presentations: Arc::default(),
             link_preparation_generation: 0,
             document_preparation_generation: 0,
             link_original_source: None,
@@ -1638,6 +1642,8 @@ impl Reader {
         if content_had_focus {
             window.focus(&self.content.read(cx).focus_handle().clone(), cx);
         }
+        self.invalidate_links();
+        self.link_presentations = Arc::default();
         self.link_original_source = original_body.clone();
         self.link_identities = identities;
         let configured = reader_plugins(
@@ -1645,7 +1651,7 @@ impl Reader {
             TextView::new(&self.content),
             cx.entity().downgrade(),
             self.sel_format,
-            self.prepared_links.clone(),
+            self.link_presentations.clone(),
         );
         self.content.update(cx, |s, cx| {
             configured.prepare_state(s, cx);
@@ -3848,7 +3854,7 @@ impl Reader {
                                 .min_h_0(),
                             entity.clone(),
                             self.sel_format,
-                            self.prepared_links.clone(),
+                            self.link_presentations.clone(),
                         )
                         .table_actions(move |data, _, _| {
                             // #368: only a table wider than the column offers it.
@@ -3884,7 +3890,7 @@ impl Reader {
             TextView::new(&self.content),
             entity,
             self.sel_format,
-            self.prepared_links.clone(),
+            self.link_presentations.clone(),
         );
         let markdown = markdown.to_owned();
         let sel_format = self.sel_format;
@@ -3994,7 +4000,7 @@ impl Reader {
                                     .size_full(),
                                 entity,
                                 self.sel_format,
-                                self.prepared_links.clone(),
+                                self.link_presentations.clone(),
                             )),
                         ),
                 )

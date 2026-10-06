@@ -10,6 +10,11 @@ use tessera_core::document_links::{
 pub(crate) type States = Arc<BTreeMap<String, LinkState>>;
 pub(crate) type SnippetLinks = Vec<(std::ops::Range<usize>, String)>;
 
+#[cfg(test)]
+thread_local! {
+    static PAINTED_LINKS: std::cell::RefCell<Option<Vec<(String, bool, bool)>>> = const { std::cell::RefCell::new(None) };
+}
+
 /// External protocol links have a visible destination, never an internal-note guess.
 pub(crate) fn external_tooltip(url: &str) -> Option<String> {
     let parsed = url::Url::parse(url).ok()?;
@@ -126,12 +131,26 @@ pub(crate) fn presentation(
             ..Default::default()
         });
     }
-    LinkPresentation {
+    let presentation = LinkPresentation {
         style,
         tooltip: Some(state.reason.clone().into()),
         inert: state.status.is_missing(),
         ..Default::default()
-    }
+    };
+    #[cfg(test)]
+    PAINTED_LINKS.with(|painted| {
+        if let Some(painted) = &mut *painted.borrow_mut() {
+            painted.push((
+                url.into(),
+                presentation.inert,
+                presentation
+                    .style
+                    .underline
+                    .is_some_and(|underline| underline.wavy),
+            ));
+        }
+    });
+    presentation
 }
 
 pub(crate) struct PreparedDocument {
@@ -212,6 +231,8 @@ impl Reader {
 
     pub(crate) fn invalidate_links(&mut self) {
         self.link_preparation_generation = self.link_preparation_generation.wrapping_add(1);
+        // Action evidence is pending, but the displayed source has not changed.
+        // Keep its verified appearance until a newer result replaces it.
         self.prepared_links = Arc::default();
     }
 
@@ -259,7 +280,14 @@ impl Reader {
                 {
                     return;
                 }
+                this.link_presentations = states.clone();
                 this.prepared_links = states;
+                // TextView caches its entity render independently of Reader.
+                // Refresh paint without replacing the parse, scroll or selection.
+                this.content.update(cx, |_, cx| cx.notify());
+                if let Some(overlay) = &this.table_overlay {
+                    overlay.update(cx, |_, cx| cx.notify());
+                }
                 cx.notify();
             });
         })
@@ -306,6 +334,136 @@ mod tests {
     use ::core::prelude::v1::test;
     use std::sync::Mutex;
     use tessera_core::document_links::prepared::LinkStatus;
+
+    #[cfg(unix)]
+    #[gpui::test]
+    fn unsaved_editor_exit_keeps_missing_paint_through_overlapping_save_watcher_refresh(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("start.md"), "# Start\n\n[[target|Control]]").unwrap();
+        std::fs::write(root.join("target.md"), "# Target").unwrap();
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("start.md".into()),
+                        index_dir: Some(temp.path().join("cache")),
+                        session_directory: Some(temp.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        PAINTED_LINKS.with(|trace| *trace.borrow_mut() = Some(Vec::new()));
+        let (first_send, first_hold) = async_channel::bounded(1);
+        reader.update_in(visual, |v, window, cx| {
+            v.incremental_hold = Some(first_hold);
+            v.toggle_source(window, cx);
+            v.editing.as_ref().unwrap().set_value(
+                "# Start\n\n[[target|Control]]\n\n[[missing|Missing]]",
+                window,
+                cx,
+            );
+            // No explicit save. Cmd+E's lifecycle save races the watcher.
+            v.toggle_source(window, cx);
+        });
+        visual.run_until_parked();
+        let url = reader.read_with(visual, |v, _| {
+            assert!(v.editing.is_none() && v.incremental_active);
+            v.link_identities
+                .iter()
+                .find(|link| link.target == "missing")
+                .unwrap()
+                .url
+                .clone()
+        });
+        let drawn = || {
+            PAINTED_LINKS.with(|trace| {
+                trace
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .iter()
+                    .filter(|(u, _, _)| u == &url)
+                    .map(|(_, inert, wavy)| (*inert, *wavy))
+                    .collect::<Vec<_>>()
+            })
+        };
+        assert_eq!(
+            drawn().last(),
+            Some(&(true, true)),
+            "positive control: actual renderer sees the initial missing style"
+        );
+        PAINTED_LINKS.with(|trace| trace.borrow_mut().as_mut().unwrap().clear());
+        let (second_send, second_hold) = async_channel::bounded(1);
+        reader.update_in(visual, |v, window, cx| {
+            v.incremental_hold = Some(second_hold);
+            v.apply_vault_changes(
+                tessera_core::Changes {
+                    changed: std::collections::BTreeSet::from(["start.md".into()]),
+                    ..Default::default()
+                },
+                window,
+                cx,
+            );
+        });
+        first_send.try_send(()).unwrap();
+        visual.run_until_parked();
+        reader.read_with(visual, |v, _| {
+            assert!(v.incremental_active);
+            assert!(
+                v.prepared_links.is_empty(),
+                "action evidence remains pending"
+            );
+            assert_eq!(
+                v.link_presentations[&url].status,
+                LinkStatus::MissingDocument
+            );
+        });
+        visual.update(|window, cx| handle_link(&reader.downgrade(), &url, window, cx));
+        reader.read_with(visual, |v, _| {
+            assert_eq!(v.current_rel, "start.md");
+            assert_eq!(
+                v.link_notice.as_deref(),
+                Some(LinkState::unknown().reason.as_str())
+            );
+        });
+        assert!(!drawn().is_empty(), "watcher refresh must paint a frame");
+        assert!(
+            drawn().iter().all(|state| *state == (true, true)),
+            "missing link must not become ordinary while its same-source refresh is pending: {:?}",
+            drawn()
+        );
+        second_send.try_send(()).unwrap();
+        visual.run_until_parked();
+        assert_eq!(drawn().last(), Some(&(true, true)));
+        reader.update_in(visual, |v, window, cx| {
+            // A previous-source worker must never refill a newly accepted note.
+            v.refresh_link_preparation(cx);
+            v.open_note("target.md", None, window, cx);
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |v, _| {
+            assert_eq!(v.current_rel, "target.md");
+            assert!(v.prepared_links.is_empty() && v.link_presentations.is_empty());
+        });
+        PAINTED_LINKS.with(|trace| *trace.borrow_mut() = None);
+    }
 
     #[test]
     fn external_links_and_snippet_offsets_are_source_bound() {
@@ -684,6 +842,7 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("tessera-prepared-reader-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
+        PAINTED_LINKS.with(|trace| *trace.borrow_mut() = Some(Vec::new()));
         let source =
             "# Start\n\n[Absent](target.md#Landing)\n\n> [!note]\n> [[target#Landing|Nested]]\n";
         std::fs::write(root.as_path().join("start.md"), source).unwrap();
@@ -706,11 +865,45 @@ mod tests {
         let reader = reader.unwrap();
         visual.run_until_parked();
         let url = "tessera://unresolved/target.md%23Landing";
-        let content = reader.update_in(visual, |v, _, _| {
+        let urls = reader.read_with(visual, |v, _| {
+            v.link_identities
+                .iter()
+                .map(|link| link.url.clone())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(
+            urls.len(),
+            2,
+            "positive control: document and nested callout links"
+        );
+        let assert_paint = |missing: bool| {
+            PAINTED_LINKS.with(|trace| {
+                let trace = trace.borrow();
+                let trace = trace.as_ref().unwrap();
+                for url in &urls {
+                    assert_eq!(
+                        trace
+                            .iter()
+                            .rfind(|(u, _, _)| u == url)
+                            .map(|(_, inert, wavy)| (*inert, *wavy)),
+                        Some((missing, missing)),
+                        "actual paint for {url}"
+                    );
+                }
+            });
+        };
+        assert_paint(true);
+        let content = reader.update_in(visual, |v, _, cx| {
             assert_eq!(v.prepared_links[url].status, LinkStatus::MissingDocument);
+            v.content.update(cx, |s, cx| s.select_all(cx));
             v.link_notice = Some("Retain notice".into());
             v.content.entity_id()
         });
+        let selection = reader.read_with(visual, |v, cx| v.content.read(cx).selected_text());
+        assert!(
+            !selection.is_empty(),
+            "positive control: selected document text"
+        );
         visual.update(|window, cx| handle_link(&reader.downgrade(), url, window, cx));
         reader.update_in(visual, |v, _, _| {
             assert_eq!(v.current_rel, "start.md");
@@ -732,6 +925,7 @@ mod tests {
                 )
                 .unwrap();
             }
+            PAINTED_LINKS.with(|trace| trace.borrow_mut().as_mut().unwrap().clear());
             reader.update_in(visual, |v, window, cx| {
                 let mut changes = tessera_core::Changes::default();
                 changes.changed.insert("target.md".into());
@@ -742,11 +936,13 @@ mod tests {
                 );
             });
             visual.run_until_parked();
-            reader.update_in(visual, |v, _, _| {
+            reader.update_in(visual, |v, _, cx| {
                 assert_eq!(v.prepared_links[url].status, expected);
+                assert_eq!(v.content.read(cx).selected_text(), selection);
                 assert_eq!(v.content.entity_id(), content);
                 assert_eq!(v.history, ["start.md"]);
             });
+            assert_paint(expected.is_missing());
         }
         // Force a late previous-source completion through the actual async seam.
         reader.update_in(visual, |v, _, cx| {
@@ -759,6 +955,7 @@ mod tests {
             std::fs::read_to_string(root.join("start.md")).unwrap(),
             source
         );
+        PAINTED_LINKS.with(|trace| *trace.borrow_mut() = None);
         std::fs::remove_dir_all(root).unwrap();
     }
     #[gpui::test]

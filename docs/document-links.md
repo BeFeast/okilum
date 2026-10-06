@@ -84,6 +84,14 @@ results; pending or incomplete inventory cannot prove absence. The existing
 watcher refresh seam recomputes status after appearance, deletion, rename or
 heading edits. Startup vault scans and index work are separately tracked in #338.
 
+During same-source Reader revalidation, the last verified link appearance remains
+visible while action evidence becomes pending. A duplicate save/watcher refresh
+cannot temporarily turn a known missing link into an ordinary link (#482).
+Accepted results refresh document and table-overlay paint without replacing text,
+selection or scrolling. Accepting another source/document clears that appearance;
+late jobs cannot restore the previous document's evidence. Cmd+E still performs
+the approved lifecycle save before returning from Source to Reader.
+
 Managed preview adds `prepared_links_version: 1` and a `prepared` object on each
 link row, including target revision. Existing preview path, source revision,
 draft digest, workspace scope and generation guards remain authoritative. Target
