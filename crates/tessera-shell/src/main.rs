@@ -819,7 +819,22 @@ fn reader_plugins(
     entity: WeakEntity<Reader>,
     sel_format: SelectionFormat,
     states: prepared_links::States,
+    identities: &[tessera_core::document_links::prepared::LinkIdentity],
 ) -> TextView {
+    // Use exactly the same eligibility as the Create note hover action.
+    #[cfg(unix)]
+    let missing_cards = identities
+        .iter()
+        .filter_map(|identity| {
+            reader_hover::missing_note_target(&identity.url, &states, identities)
+                .map(|_| identity.url.clone())
+        })
+        .collect();
+    #[cfg(not(unix))]
+    let missing_cards = {
+        let _ = identities;
+        std::collections::BTreeSet::new()
+    };
     let hover_entity = entity.clone();
     let tasks_entity = entity.clone();
     let view = markdown_plugins(
@@ -862,13 +877,7 @@ fn reader_plugins(
             this.hover_link(url, active, position, window, cx)
         });
     })
-    .link_presentation(move |url| {
-        let mut presentation = prepared_links::presentation(url, &states);
-        if reader_hover::resolved_target(url, &states, "").is_some() {
-            presentation.tooltip = None;
-        }
-        presentation
-    });
+    .link_presentation(move |url| reader_hover::link_presentation(url, &states, &missing_cards));
     reader_tasks::plugins(view, tasks_entity)
 }
 
@@ -1135,6 +1144,7 @@ struct Reader {
     displayed_history_notice: Option<(uuid::Uuid, uuid::Uuid, String)>,
     history_notice_generation: u64,
     notice_generation: u64,
+    toast_subscription: Option<Subscription>,
     link_choices: Vec<(String, Option<String>)>,
     navigation_generation: u64,
     pending_landing: Option<ListOffset>,
@@ -1371,6 +1381,7 @@ impl Reader {
             displayed_history_notice: None,
             history_notice_generation: 0,
             notice_generation: 0,
+            toast_subscription: None,
             link_choices: Vec::new(),
             navigation_generation: 0,
             pending_landing: None,
@@ -1692,6 +1703,7 @@ impl Reader {
             cx.entity().downgrade(),
             self.sel_format,
             self.link_presentations.clone(),
+            &self.link_identities,
         );
         self.content.update(cx, |s, cx| {
             configured.prepare_state(s, cx);
@@ -3856,7 +3868,7 @@ impl Reader {
         let entity = cx.entity().downgrade();
         let mut style = reader_text_style(cx.theme());
         style.heading_base_font_size = px(BODY_FONT_SIZE);
-        style.bottom_padding = reader_bottom_space(window.viewport_size().height);
+        style.bottom_padding = reader_toast::bottom_space(window, cx);
         let column_bounds = std::rc::Rc::new(std::cell::Cell::new(Bounds::default()));
         let measured_column = column_bounds.clone();
         h_flex()
@@ -3923,6 +3935,7 @@ impl Reader {
                             entity.clone(),
                             self.sel_format,
                             self.link_presentations.clone(),
+                            &self.link_identities,
                         )
                         .table_actions(move |data, _, _| {
                             // #368: only a table wider than the column offers it.
@@ -3959,6 +3972,7 @@ impl Reader {
             entity,
             self.sel_format,
             self.link_presentations.clone(),
+            &self.link_identities,
         );
         let markdown = markdown.to_owned();
         let sel_format = self.sel_format;
@@ -4063,6 +4077,7 @@ impl Reader {
                                 entity,
                                 self.sel_format,
                                 self.link_presentations.clone(),
+                                &self.link_identities,
                             )),
                         ),
                 )
@@ -5168,6 +5183,10 @@ impl Render for ReaderPanelDrag {
 
 impl Render for Reader {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.toast_subscription.is_none() {
+            let notifications = Root::read(window, cx).notification.clone();
+            self.toast_subscription = Some(cx.observe(&notifications, |_, _, cx| cx.notify()));
+        }
         self.sync_notice_toast(window, cx);
         // Root owns overlay state, but the window content renders these layers.
         let dialog_layer = Root::render_dialog_layer(window, cx);

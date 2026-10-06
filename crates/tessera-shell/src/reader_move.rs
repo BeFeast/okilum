@@ -66,6 +66,41 @@ pub(super) struct Renaming {
     _subscription: Subscription,
 }
 
+fn move_confirmation_label(preview: &Preview) -> String {
+    let action = if Path::new(&preview.from).parent() == Path::new(&preview.to).parent() {
+        "Rename".to_owned()
+    } else {
+        let parent = Path::new(&preview.to).parent().unwrap_or(Path::new(""));
+        format!(
+            "Move to {}",
+            if parent.as_os_str().is_empty() {
+                "vault root".into()
+            } else {
+                parent.display().to_string()
+            }
+        )
+    };
+    if preview.changes.is_empty() {
+        action
+    } else {
+        format!(
+            "{action} and update {} {} in {} {}",
+            preview.changes.len(),
+            if preview.changes.len() == 1 {
+                "link"
+            } else {
+                "links"
+            },
+            preview.changed_notes(),
+            if preview.changed_notes() == 1 {
+                "note"
+            } else {
+                "notes"
+            }
+        )
+    }
+}
+
 impl Reader {
     pub(super) fn rename_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.file_preview.is_some() {
@@ -427,11 +462,7 @@ impl Reader {
                         .child(
                             Button::new("move-update")
                                 .primary()
-                                .label(format!(
-                                    "Move and update {} links in {} notes",
-                                    display.changes.len(),
-                                    display.changed_notes()
-                                ))
+                                .label(move_confirmation_label(&display))
                                 .on_click(move |_, window, cx| {
                                     let _ = update.try_send(Some(true));
                                     window.close_dialog(cx);
@@ -749,6 +780,9 @@ mod tests {
         std::fs::create_dir(root.path().join("Folder")).unwrap();
         std::fs::write(root.path().join("Start.md"), "Body").unwrap();
         let empty = Preview::prepare(root.path(), "Start.md", "Folder/Next.md").unwrap();
+        assert_eq!(move_confirmation_label(&empty), "Move to Folder");
+        let rename = Preview::prepare(root.path(), "Start.md", "Next.md").unwrap();
+        assert_eq!(move_confirmation_label(&rename), "Rename");
         assert_eq!(
             move_message("Start.md", "Folder/Next.md", Some(&empty)),
             "Moved to Folder"
@@ -763,6 +797,7 @@ mod tests {
         );
         std::fs::write(root.path().join("Ref.md"), "[[Start]]").unwrap();
         let linked = Preview::prepare(root.path(), "Start.md", "Folder/Next.md").unwrap();
+        assert!(move_confirmation_label(&linked).contains("update 1 link in 1 note"));
         assert_eq!(
             move_message("Start.md", "Folder/Next.md", Some(&linked)),
             "Moved to Folder · Updated 1 link in 1 note"

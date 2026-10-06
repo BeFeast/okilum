@@ -8,6 +8,22 @@ struct LinkNotice;
 struct HistoryNotice;
 static NEXT_TOAST: AtomicU64 = AtomicU64::new(1);
 
+/// Scroll-only space: keep the last line reachable above the notification stack.
+/// This never takes a layout row or changes the document viewport.
+pub(super) fn bottom_space(window: &Window, cx: &App) -> Pixels {
+    let height = window.viewport_size().height;
+    if Root::read(window, cx)
+        .notification
+        .read(cx)
+        .notifications()
+        .is_empty()
+    {
+        reader_bottom_space(height)
+    } else {
+        reader_bottom_space(height).max(height * 0.65)
+    }
+}
+
 pub(super) fn transient(message: impl Into<SharedString>, window: &mut Window, cx: &mut App) {
     push(
         Notification::new().message(message),

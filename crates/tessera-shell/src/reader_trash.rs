@@ -96,7 +96,17 @@ impl Reader {
             .filter(|_| under(self.selected_file(), &relative))
             .map(|_| root.join(self.selected_file()));
         self.trash_pending = true;
-        reader_toast::transient("Preparing to move to Trash…", window, cx);
+        self.trash_undo.visible.set(false);
+        self.trash_undo.generation = self.trash_undo.generation.wrapping_add(1);
+        window.push_notification(
+            Notification::new()
+                .id::<TrashToast>()
+                .message("Preparing to move to Trash…")
+                .placement(Anchor::BottomRight)
+                .py_2()
+                .autohide(false),
+            cx,
+        );
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
             let scan_root = root.clone(); let scan_relative = relative.clone();
@@ -123,12 +133,15 @@ impl Reader {
                 Ok(value) => value,
                 Err(error) => { let _ = this.update_in(cx, |this, window, cx| {
                     this.trash_pending = false;
-                    reader_toast::error(format!("Cannot move to Trash: {error:#}"), window, cx); cx.notify();
+                    window.push_notification(Notification::new().id::<TrashToast>()
+                        .message(format!("Cannot move to Trash: {error:#}"))
+                        .placement(Anchor::BottomRight).py_2().autohide(false), cx); cx.notify();
                 }); return; }
             };
             if directory || incoming > 0 {
                 let (send, receive) = async_channel::bounded(1);
                 let shown = this.update_in(cx, |this, window, cx| {
+                    window.remove_notification::<TrashToast>(cx);
                     if this.vault_root != root { this.trash_pending = false; return false; }
                     let message = format!("{relative}\n{count} files · {incoming} incoming links. Links stay unchanged.");
                     window.open_dialog(cx, move |dialog, _, cx| {
@@ -149,10 +162,14 @@ impl Reader {
                     let _ = this.update(cx, |this, cx| {this.trash_pending = false; cx.notify();}); return;
                 }
             }
-            let held_editor = match this.update_in(cx, |this, _, cx| {
+            let held_editor = match this.update_in(cx, |this, window, cx| {
                 if this.vault_root != root || !this.save_source(cx) {
+                    window.remove_notification::<TrashToast>(cx);
                     this.trash_pending = false; cx.notify(); return None;
                 }
+                window.push_notification(Notification::new().id::<TrashToast>()
+                    .message("Moving to Trash…").placement(Anchor::BottomRight)
+                    .py_2().autohide(false), cx);
                 let editor = if own_path.as_ref() == Some(&root.join(this.selected_file())) {
                     this.editing.take()
                 } else { None };
@@ -189,7 +206,9 @@ impl Reader {
                         if this.vault_root == root && held_path.as_ref() == Some(&root.join(this.selected_file())) && this.editing.is_none() {
                             this.editing = held_editor;
                         }
-                        reader_toast::error(format!("Cannot move to Trash: {error:#}"), window, cx);
+                        window.push_notification(Notification::new().id::<TrashToast>()
+                            .message(format!("Cannot move to Trash: {error:#}"))
+                            .placement(Anchor::BottomRight).py_2().autohide(false), cx);
                     }
                 }
                 cx.notify();
@@ -198,7 +217,7 @@ impl Reader {
     }
 
     fn show_trash_toast(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.dismiss_trash_toast(window, cx);
+        self.trash_undo.visible.set(false);
         self.trash_undo.generation = self.trash_undo.generation.wrapping_add(1);
         let generation = self.trash_undo.generation;
         let visible = std::rc::Rc::new(std::cell::Cell::new(true));
@@ -208,6 +227,7 @@ impl Reader {
             Notification::new()
                 .id::<TrashToast>()
                 .message("Moved to Trash")
+                .autohide(false)
                 .py_2()
                 .placement(Anchor::BottomRight)
                 .on_close(move |_, _| visible.set(false))
@@ -451,8 +471,21 @@ mod tests {
                 &temp.path().join("Trash"),
             );
             reader.update_in(visual, |r, window, cx| {
+                window.push_notification(
+                    Notification::new()
+                        .id::<TrashToast>()
+                        .message("Preparing to move to Trash…")
+                        .autohide(false),
+                    cx,
+                );
+                let with_progress = window.notifications(cx).len();
                 r.trash_undo.items.push(trashed);
                 r.show_trash_toast(window, cx);
+                assert_eq!(
+                    window.notifications(cx).len(),
+                    with_progress,
+                    "result replaces progress without touching unrelated toasts"
+                );
                 r.reveal_in_tree("start.md", window, cx);
             });
             visual.run_until_parked();

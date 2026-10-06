@@ -257,6 +257,7 @@ impl Reader {
                             cx.entity().downgrade(),
                             r.sel_format,
                             states.clone(),
+                            &r.link_identities,
                         );
                         let content = cx.new(|cx| {
                             let mut text = TextViewState::markdown("", cx)
@@ -524,7 +525,7 @@ impl Reader {
         let t = self.active_timeline()?;
         let version = t.versions.get(t.selected?)?;
         let mut style = reader_text_style(cx.theme());
-        style.bottom_padding = reader_bottom_space(window.viewport_size().height);
+        style.bottom_padding = reader_toast::bottom_space(window, cx);
         let timeline_id = t.id;
         let selected = t.selected.unwrap();
         Some(
@@ -567,6 +568,7 @@ impl Reader {
                                     cx.weak_entity(),
                                     self.sel_format,
                                     t.states.clone(),
+                                    &self.link_identities,
                                 ),
                             ),
                         )

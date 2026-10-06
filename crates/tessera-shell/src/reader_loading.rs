@@ -1146,6 +1146,7 @@ impl Reader {
             cx.entity().downgrade(),
             self.sel_format,
             Arc::default(),
+            &self.link_identities,
         );
         let _phase = self.loading.as_ref().and_then(|load| {
             load.opts
@@ -3628,6 +3629,7 @@ mod tests {
                 cx.entity().downgrade(),
                 v.sel_format,
                 v.prepared_links.clone(),
+                &v.link_identities,
             );
             v.content.update(cx, |state, cx| {
                 configured.prepare_state(state, cx);
