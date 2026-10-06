@@ -41,3 +41,5 @@ pub mod vault {
         }
     }
 }
+
+pub mod forgejo;

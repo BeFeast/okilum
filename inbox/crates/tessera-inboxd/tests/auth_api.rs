@@ -145,7 +145,15 @@ async fn real_webauthn_session_capture_restart_login_and_lost_response_replay() 
         std::fs::set_permissions(&credential_path, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
     let bridge = tessera_inboxd::bridge::Bridge::from_credential(&credential_path, owner).unwrap();
-    let app = tessera_inboxd::http::router_with_bridge(backend, None, None, Some(bridge));
+    let forgejo_path = dir.path().join("forgejo-cache");
+    std::fs::write(&forgejo_path,serde_json::to_vec(&json!({"version":1,"owner_id":owner.0,"projects":{source_project.to_string():[{"repo_id":10,"launch_target_ids":["launch-pilot"]}]},"discovered_at":1,"error":null,"repos":[{"id":10,"synced_at":1,"error":null,"issues":[],"pulls":[],"releases":[]},{"id":11,"synced_at":1,"error":null,"issues":[],"pulls":[],"releases":[]}]})).unwrap()).unwrap();
+    let app = tessera_inboxd::http::router_with_forgejo(
+        backend,
+        None,
+        None,
+        Some(bridge),
+        Some(tessera_inboxd::forgejo::Cache(forgejo_path)),
+    );
 
     let mut key = WebauthnAuthenticator::new(SoftPasskey::new(true));
     let (status, options, cookies) = call(
@@ -179,6 +187,46 @@ async fn real_webauthn_session_capture_restart_login_and_lost_response_replay() 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(identity["owner_id"], owner.0.to_string());
     let session = cookie(&cookies, "__Host-inbox-session=");
+    assert_eq!(
+        call(&app, "GET", "/api/v1/forgejo", Value::Null, None, None)
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (status, forgejo, _) = call(
+        &app,
+        "GET",
+        "/api/v1/forgejo",
+        Value::Null,
+        Some(&session),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(forgejo["repos"].as_array().unwrap().len(), 2);
+    let (_, project_repos, _) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/forgejo?project={source_project}"),
+        Value::Null,
+        Some(&session),
+        None,
+    )
+    .await;
+    assert_eq!(project_repos["repos"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        call(
+            &app,
+            "GET",
+            &format!("/api/v1/forgejo?project={}", Uuid::new_v4()),
+            Value::Null,
+            Some(&session),
+            None
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
     let targets_path = format!("/api/v1/projects/{source_project}/launch-targets");
     assert_eq!(
         call(&app, "GET", &targets_path, Value::Null, None, None)
@@ -223,6 +271,21 @@ async fn real_webauthn_session_capture_restart_login_and_lost_response_replay() 
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(launched["state"], "queued");
+    let (_, linked, _) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/forgejo?project={source_project}"),
+        Value::Null,
+        Some(&session),
+        None,
+    )
+    .await;
+    assert_eq!(
+        linked["execution_links"][0]["thread_id"],
+        launched["thread_id"]
+    );
+    assert_eq!(linked["execution_links"][0]["repo_id"], 10);
+
     assert_eq!(
         call(
             &app,

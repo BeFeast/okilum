@@ -1,3 +1,4 @@
+import { mountForgejo } from './forgejo.js';
 import { mountLaunches } from './launches.js';
 import { mountQuestions } from './questions-view.js';
 import { publicationProblem, publicationProblems, markdownFilename, suggestedFilename, publicationLabel } from './publication-form.js';
@@ -12,9 +13,10 @@ let filenameSuggestion = '';
 let selectedItem = null, discussionBusy = false, publicationBusy = false;
 let publicationFolders = [], publicationReady = false, discussionRendered = null, publicationRecovery = false, publicationConflict = false;
 let syncing = false, captures = new Map(), page = null, synchronizedThrough = 0;
+const forgejoUI = mountForgejo({api, owner: () => sessionOwner});
 const launchesUI = mountLaunches({api, post, owner: () => sessionOwner, online: () => online && navigator.onLine});
 const questionsUI = mountQuestions({api, post, owner: () => sessionOwner, online: () => online && navigator.onLine});
-function clearRemote() { launchesUI.reset(); questionsUI.reset(); captures.clear(); page = null; synchronizedThrough = 0; selectedItem = null; $('discussion').hidden = true; }
+function clearRemote() { forgejoUI.reset(); launchesUI.reset(); questionsUI.reset(); captures.clear(); page = null; synchronizedThrough = 0; selectedItem = null; $('discussion').hidden = true; }
 function notice(message) { $('notice').textContent = message; $('notice').hidden = !message; }
 function message(error) {
   if (error.name === 'NotAllowedError') return 'Passkey request cancelled or unavailable. You can try again.';
@@ -127,7 +129,7 @@ async function sync() {
     const result = await flushOutbox(outbox, sessionOwner, body => post('/items', body));
     await fetchItems();
     await questionsUI.refresh();
-    await launchesUI.refresh();
+    await launchesUI.refresh(); forgejoUI.refresh();
     if (result.conflicts) notice('A thought has a delivery conflict. Its original is still on this device; export it for safekeeping.');
     else if (result.sent) notice(`${result.sent === 1 ? 'Thought' : 'Thoughts'} saved to Inbox.`);
   } catch (error) { notice(message(error)); }
@@ -398,3 +400,4 @@ setInterval(() => { questionsUI.expire(); }, 1000);
 setInterval(() => { if (sessionOwner && online && !document.hidden) questionsUI.refresh(); }, 15000);
 
 setInterval(() => { if (sessionOwner && online && !document.hidden) launchesUI.refresh(); }, 15000);
+setInterval(() => { if (sessionOwner && online && !document.hidden) forgejoUI.refresh(); }, 60000);

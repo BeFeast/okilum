@@ -34,6 +34,9 @@ struct Options {
     /// Private operator-provisioned T3 bridge credential and scope (disabled by default).
     #[arg(long)]
     bridge_credential_file: Option<PathBuf>,
+    /// Read-only derived projection; the collector retains the separate source token.
+    #[arg(long)]
+    forgejo_cache_file: Option<PathBuf>,
     #[arg(long, requires = "fixture_vault")]
     vault_folder: Vec<String>,
 }
@@ -89,7 +92,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let listener = tokio::net::TcpListener::bind(options.listen).await?;
             axum::serve(
                 listener,
-                tessera_inboxd::http::router_with_bridge(auth, provider, vault, bridge),
+                tessera_inboxd::http::router_with_forgejo(
+                    auth,
+                    provider,
+                    vault,
+                    bridge,
+                    options
+                        .forgejo_cache_file
+                        .map(tessera_inboxd::forgejo::Cache),
+                ),
             )
             .with_graceful_shutdown(async {
                 let _ = tokio::signal::ctrl_c().await;
