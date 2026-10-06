@@ -1,5 +1,6 @@
 //! Explicit attachment previews and file actions; no external app opens on selection.
 use super::*;
+use crate::platform::labels::Os;
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 
 #[derive(Clone, Copy)]
@@ -24,7 +25,7 @@ pub(crate) fn run(action: FileAction, root: &Path, rel: &str, window: &mut Windo
         let path = checked_path(root, rel)?;
         let copied = match action {
             FileAction::Reveal => {
-                cx.reveal_path(&path);
+                reveal(&path, window, cx);
                 None
             }
             FileAction::Open => {
@@ -74,9 +75,24 @@ pub(crate) fn run(action: FileAction, root: &Path, rel: &str, window: &mut Windo
     }
 }
 
+/// Shows the item in the platform file manager; a failure of every route is
+/// reported rather than left as a silent no-op.
+pub(crate) fn reveal(path: &Path, window: &mut Window, cx: &mut App) {
+    let task = crate::platform::reveal::reveal_path(path, cx);
+    window
+        .spawn(cx, async move |cx| {
+            if let Err(error) = task.await {
+                let _ = cx.update(|window, cx| {
+                    reader_toast::error(format!("File action failed: {error:#}"), window, cx)
+                });
+            }
+        })
+        .detach();
+}
+
 pub(crate) fn menu(mut menu: PopupMenu, root: PathBuf, rel: String) -> PopupMenu {
     let actions = [
-        ("Reveal in Finder", FileAction::Reveal),
+        (Os::CURRENT.reveal(), FileAction::Reveal),
         ("Copy absolute path", FileAction::Absolute),
         ("Copy vault path", FileAction::Relative),
         ("Copy wikilink", FileAction::Wiki),
@@ -170,7 +186,8 @@ impl Reader {
             let path = path.clone();
             let copy = copy.clone();
             menu.item(
-                PopupMenuItem::new(label.clone()).on_click(move |_, _, cx| cx.reveal_path(&path)),
+                PopupMenuItem::new(label.clone())
+                    .on_click(move |_, window, cx| reveal(&path, window, cx)),
             )
             .item(
                 PopupMenuItem::new("Copy absolute path").on_click(move |_, window, cx| {

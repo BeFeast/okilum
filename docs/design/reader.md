@@ -433,6 +433,12 @@ and a quiet unsaved dot; conflict recovery actions remain explicit glyphs with
 tooltips. Attachment headers use the same language: Quick Look (macOS), Open,
 Reveal and Copy path glyphs alongside More.
 
+Reveal uses the platform's name for the file manager: «Reveal in Finder» on
+macOS, «Show in Explorer» on Windows and «Show in File Manager» on Linux, where
+it calls `org.freedesktop.FileManager1.ShowItems` and falls back to `xdg-open`
+on the containing folder. Shortcut hints use ⌘/⌥/⇧ glyphs only on macOS and
+spell out Ctrl/Alt/Shift elsewhere; both come from `platform::labels` (#612).
+
 Document More contains Reveal in sidebar (the sidebar crosshair action),
 Edit/Preview, Rename/move, Note history, Reveal,
 Copy path and Close note. Delete joins this menu when its action is available.

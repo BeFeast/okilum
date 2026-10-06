@@ -1,6 +1,9 @@
 #[cfg(not(target_os = "macos"))]
 pub mod exact_wayland_clipboard;
 
+pub mod labels;
+pub mod reveal;
+
 use gpui::Global;
 use gpui_component::input::clipboard::ExactClipboardProvider;
 use std::sync::Arc;

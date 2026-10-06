@@ -1,5 +1,6 @@
 //! Reader source mode. No Brain enrollment or changes to the reader protocol.
 use super::*;
+use crate::platform::labels::Os;
 use gpui_component::input::projection::{
     ActiveSource, ProjectionProvider, SourceClick, SourceMutation, SourceProjection, SourceSnapshot,
 };
@@ -424,7 +425,7 @@ impl Reader {
         };
         let tooltip = match editing.saved_at {
             Some(at) => format!("Last saved at {:02}:{:02}:{:02}. Changes also save when you leave the editor or switch apps.", at.hour(), at.minute(), at.second()),
-            None => "Changes save with ⌘S, when you leave the editor, or when you switch apps.".into(),
+            None => format!("Changes save with {}, when you leave the editor, or when you switch apps.", Os::CURRENT.shortcut("secondary-s")),
         };
         let tooltip = format!("{} · {}", editing.status(), tooltip);
         div()

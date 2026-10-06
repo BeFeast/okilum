@@ -1,5 +1,6 @@
 //! Actions and empty selection for the document, separate from app controls.
 use super::*;
+use crate::platform::labels::Os;
 use gpui_component::WindowExt;
 
 impl Reader {
@@ -189,7 +190,7 @@ impl Reader {
                 (
                     "file-reveal",
                     IconName::FolderOpen,
-                    "Reveal in Finder",
+                    Os::CURRENT.reveal(),
                     reader_files::FileAction::Reveal,
                 ),
                 (
@@ -210,7 +211,7 @@ impl Reader {
                 (
                     "file-reveal",
                     IconName::FolderOpen,
-                    "Reveal in Files",
+                    Os::CURRENT.reveal(),
                     reader_files::FileAction::Reveal,
                 ),
                 (
@@ -252,14 +253,7 @@ impl Reader {
                                 .separator();
                         }
                         for (label, action) in [
-                            (
-                                if cfg!(target_os = "macos") {
-                                    "Reveal in Finder"
-                                } else {
-                                    "Reveal in Files"
-                                },
-                                reader_files::FileAction::Reveal,
-                            ),
+                            (Os::CURRENT.reveal(), reader_files::FileAction::Reveal),
                             ("Copy path", reader_files::FileAction::Absolute),
                         ] {
                             let root = root.clone();

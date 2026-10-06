@@ -1228,11 +1228,10 @@ impl Render for Workspace {
             }
             if let Some(path) = &self.exported_path {
                 let path = path.clone();
-                export = export.child(
-                    control("show-export", cx)
-                        .label("Show file")
-                        .on_click(move |_, _, cx| cx.reveal_path(&path)),
-                );
+                export =
+                    export.child(control("show-export", cx).label("Show file").on_click(
+                        move |_, window, cx| super::reader_files::reveal(&path, window, cx),
+                    ));
             }
             detail = detail.child(export);
         } else if self.showing_connectors {
