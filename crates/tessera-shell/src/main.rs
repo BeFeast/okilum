@@ -21,6 +21,7 @@ mod prepared_links;
 mod quick_open;
 #[cfg(not(all(unix, feature = "brain")))]
 mod reader_app_menu;
+mod reader_cache;
 mod reader_code;
 mod reader_code_language;
 #[cfg(unix)]
@@ -449,8 +450,11 @@ struct Opts {
     index_build_hook: Option<IndexBuildHook>,
     #[cfg(test)]
     search_publish_in_place: bool,
+    cache_lease: Option<Arc<reader_cache::Lease>>,
     /// Explicit search index override. Direct opens default to application cache.
     index_dir: Option<PathBuf>,
+    #[cfg(test)]
+    cache_base_override: Option<PathBuf>,
     use_html: bool,
     note: Option<String>,
     query: Option<String>,
@@ -1084,6 +1088,7 @@ struct Reader {
     session_records: Option<async_channel::Sender<reader_loading::SessionRecord>>,
     last_recorded_document: Option<(PathBuf, String, u64)>,
     index_dir: Option<PathBuf>,
+    cache_lease: Option<Arc<reader_cache::Lease>>,
     vault: Arc<Vault>,
     searcher: Option<Arc<Searcher>>,
     vault_root: PathBuf,
@@ -1293,6 +1298,7 @@ impl Reader {
             session_records: None,
             last_recorded_document: None,
             index_dir,
+            cache_lease: None,
             vault,
             searcher,
             vault_root: vault_root.clone(),

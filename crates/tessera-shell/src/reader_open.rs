@@ -321,6 +321,21 @@ pub(crate) fn cache_candidate_path(root: &Path) -> Result<PathBuf> {
     .cache_path(&cache_base()?))
 }
 
+pub(crate) fn cache_path_for(root: &Path, opts: &super::Opts) -> Result<PathBuf> {
+    if let Some(path) = &opts.index_dir {
+        return Ok(path.clone());
+    }
+    #[cfg(test)]
+    if let Some(base) = &opts.cache_base_override {
+        return Ok(OpenIntent {
+            root: root.to_owned(),
+            note: None,
+        }
+        .cache_path(base));
+    }
+    cache_candidate_path(root)
+}
+
 /// Compatibility seam for the session owner. Cache validation belongs to the
 /// background preparation job, never to creation of a Reader window.
 #[allow(dead_code)]

@@ -349,6 +349,7 @@ impl Reader {
                 root: self.vault_root.clone(),
                 document: String::new(),
                 cache: None,
+                cache_lease: None,
                 diagnostics: None,
             });
         }

@@ -79,6 +79,7 @@ impl Reader {
         let requested = std::time::Instant::now();
         let publish_trace = trace.clone();
         let cache = self.index_dir.clone();
+        let cache_lease = self.cache_lease.clone();
         let worker_cancel = cancel.clone();
         let worker_trace = trace.clone();
         #[cfg(test)]
@@ -118,6 +119,9 @@ impl Reader {
                 { #[cfg(unix)] { candidates } #[cfg(not(unix))] { None::<()> } }))
         });
         cx.spawn_in(window, async move |this, cx| {
+            // Pins this root through UI publication and subsequent persistence,
+            // including cancellation while a replacement vault is opening.
+            let _cache_lease = cache_lease;
             let result = task.await;
             let ready = this
                 .update_in(cx, |this, window, cx| {
