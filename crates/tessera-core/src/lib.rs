@@ -34,6 +34,7 @@ pub mod prose;
 pub mod quick_open;
 pub mod render;
 pub mod search;
+pub mod search_snippet;
 #[cfg(all(unix, feature = "brain"))]
 pub mod source;
 pub mod source_classifier;
