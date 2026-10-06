@@ -42,3 +42,26 @@ dialog{border:1px solid var(--line);border-radius:10px;background:var(--surface)
 #connection{display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;font-size:0;line-height:0}
 #connection:before{display:block;width:6px;height:6px;margin:0;background:var(--warning)}#connection[data-connected=true]:before{background:var(--success)}
 @media(max-width:760px){#connection{width:12px;height:40px}#mobile-settings-body #logout{gap:10px}#mobile-settings-body #logout:after{content:'Sign out';font-size:13px}}
+/* Detail views are conversations and decisions, not stacked settings forms. */
+#detail[open]{display:flex;flex-direction:column;padding:0;overflow:hidden}
+#detail .dialog-heading{position:static;flex-shrink:0;padding:18px 24px;margin:0;border-bottom:1px solid var(--line)}
+#detail .dialog-heading .section-label{margin-right:auto;font-size:12px}
+.thought-conversation{flex:1;min-height:0;overflow:auto;padding:28px 28px 20px;overscroll-behavior:contain}
+.original-thought{margin:0 0 36px}.original-thought #detail-text{font:400 22px/1.55 'Noto Sans',sans-serif;white-space:pre-wrap;overflow-wrap:anywhere;margin:0 0 14px}.original-thought #detail-status{font-size:11px;margin:0;color:var(--muted)}
+.chat-turn{display:flex;flex-direction:column;gap:12px;margin:24px 0}#exchanges .message-bubble{font:400 14px/1.7 'Noto Sans',sans-serif;white-space:pre-wrap;overflow-wrap:anywhere;margin:0;padding:14px 18px;max-width:92%;border-radius:18px}
+.message-bubble.from-you{align-self:flex-end;background:var(--selected);border-bottom-right-radius:5px}.message-bubble.from-ai{align-self:flex-start;background:var(--page);border-bottom-left-radius:5px}.chat-turn>button{align-self:flex-start;border:0;font-size:11px;padding:4px 8px;min-height:28px;margin:0}
+#discussion.chat-footer{flex-shrink:0;padding:12px 20px max(18px,env(safe-area-inset-bottom));border-top:1px solid var(--line);background:var(--surface)}
+#discussion-status:empty{display:none}#discussion-status{font-size:11px;margin:0 0 10px}#discussion-form.chat-composer{display:flex;align-items:flex-end;gap:8px;background:var(--page);border:1px solid var(--line);border-radius:24px;padding:5px 6px 5px 16px;margin:0}
+#discussion-form #question{flex:1;min-width:0;min-height:34px;max-height:160px;resize:none;overflow:auto;border:0;box-shadow:none;background:transparent;padding:6px 0;margin:0;font-size:14px;line-height:22px;border-radius:0}
+#discussion-form #ask{display:grid;place-items:center;flex-shrink:0;width:34px;height:34px;min-height:34px;border-radius:50%;padding:0;margin:0;font-size:22px}#discussion-form #ask:before{content:none}
+#executor-dialog .dialog-heading{margin-bottom:34px}#executor-source{margin:0 0 14px;font-size:11px}
+#executor-answer-fields .answer-card{border:0;padding:0;margin:0 0 28px}
+#executor-answer-fields .answer-card h3{font-size:26px;line-height:1.4;font-weight:600;margin:0 0 30px;letter-spacing:-.5px}
+#executor-answer-fields .answer-choice{display:block;width:100%;margin:12px 0;padding:18px 20px;min-height:56px;text-align:left;border:1px solid var(--line);border-radius:14px;background:var(--surface);color:var(--ink);font-size:15px;font-weight:400}
+#executor-answer-fields .answer-choice[aria-pressed=true]{border-color:var(--accent);background:var(--selected);color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+#executor-answer-fields .other-choice{border-color:transparent;color:var(--muted)}#executor-answer-fields .other-answer{border:0;border-bottom:1px solid var(--line);border-radius:0;padding:14px 0;font-size:16px;background:transparent}
+#executor-answer-status{display:inline-block;background:var(--page);color:var(--muted);font-size:11px;border-radius:20px;padding:5px 10px;margin:4px 0 16px;max-width:100%}
+#executor-answer-form .dialog-actions{margin:8px 0;gap:12px}#executor-send{min-width:110px}#executor-retry,#executor-discard{font-size:11px}
+.publication-sheet{position:fixed;inset:auto 0 0;margin:0 auto;width:640px;max-width:100%;max-height:90dvh;border-radius:22px 22px 0 0;padding:24px 28px max(24px,env(safe-area-inset-bottom));overflow:auto}
+.publication-sheet .dialog-heading{margin:0 0 24px}.publication-sheet .project-choices{margin-bottom:24px}.publication-sheet #filename{font-size:20px;font-weight:600;border:0;border-bottom:1px solid var(--line);border-radius:0;background:transparent;padding:12px 0;margin:8px 0 16px}.publication-sheet #draft{background:var(--page);border:0;border-radius:12px;line-height:1.7;font-size:14px;padding:16px;min-height:220px}.publication-sheet .dialog-actions{justify-content:flex-end}.publication-sheet #publication-help:empty,.publication-sheet #publication-status:empty{display:none}
+@media(max-width:760px){.thought-conversation{padding:24px 22px}.original-thought #detail-text{font-size:21px}.message-bubble{font-size:14px;max-width:94%}#discussion-form #question{font-size:16px}#executor-dialog{padding:18px 24px}#executor-dialog .dialog-heading{margin-bottom:32px}#executor-answer-fields .answer-card h3{font-size:26px}.publication-sheet{padding:22px 22px max(24px,env(safe-area-inset-bottom))}.publication-sheet #draft{font-size:16px}}

@@ -5,7 +5,9 @@ Playwright context on the shared Forge CDP browser. No source actions, owner
 cookies or existing tabs are used. Screenshots are design fixtures, not proof
 of live passkey/backend acceptance. Tests cover 390/1280 light/dark, project
 chips, inline status edits, filters/details, guarded reply, capture and offline
-outbox synchronization. Native API/auth/store tests remain a separate gate.
+outbox synchronization. Detail checks cover tap choices/custom answers, automatic source
+refresh without duplicate sends, chat message sending, and the publication sheet:
+no initial errors, explicit validation on Publish, and a guarded publication. Native API/auth/store tests remain a separate gate.
 
 Install with `npm ci` in `web/inbox`. Serve that directory from a temporary LAN
 HTTPS server (a self-signed certificate is accepted by this isolated context).

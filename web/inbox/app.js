@@ -12,7 +12,7 @@ const $ = id => document.getElementById(id);
 let enrollmentToken = new URLSearchParams(location.hash.slice(1)).get('enroll');
 if (location.hash) history.replaceState(null, '', location.pathname); // Never retain bootstrap in history.
 let outbox, rememberedOwner = null, sessionOwner = null, online = navigator.onLine;
-let filenameSuggestion = '';
+let filenameSuggestion = '', publicationAttempted = false;
 let selectedItem = null, discussionBusy = false, publicationBusy = false;
 let publicationFolders = [], publicationReady = false, discussionRendered = null, publicationRecovery = false, publicationConflict = false;
 let syncing = false, captures = new Map(), page = null, synchronizedThrough = 0;
@@ -20,7 +20,7 @@ const forgejoUI = mountForgejo({api, owner: () => sessionOwner});
 const launchesUI = mountLaunches({api, post, owner: () => sessionOwner, online: () => online && navigator.onLine});
 const questionsUI = mountQuestions({api, post, owner: () => sessionOwner, online: () => online && navigator.onLine});
 const projectsUI = mountProjects({api,post,owner:()=>sessionOwner,online:()=>online&&navigator.onLine,openQuestion:id=>questionsUI.open(id)});
-function clearRemote() { projectsUI.reset(); forgejoUI.reset(); launchesUI.reset(); questionsUI.reset(); captures.clear(); page = null; synchronizedThrough = 0; selectedItem = null; $('discussion').hidden = true; }
+function clearRemote() { projectsUI.reset(); forgejoUI.reset(); launchesUI.reset(); questionsUI.reset(); captures.clear(); page = null; synchronizedThrough = 0; selectedItem = null; $('discussion').hidden = true; $('publication-sheet').close(); }
 function notice(message) { $('notice').textContent = message; $('notice').hidden = !message; }
 function message(error) {
   if (error.name === 'NotAllowedError') return 'Passkey request cancelled or unavailable. You can try again.';
@@ -63,7 +63,8 @@ async function verifySession() {
   rememberedOwner = identity.owner_id;
   await outbox.setOwner(rememberedOwner);
 }
-function showDetail(text, status, itemId) {
+function showDetail(text, status, itemId, time) {
+  publicationAttempted = false; $('publication-sheet').close();
   selectedItem = itemId || null;
   discussionRendered = null;
   $('question').value = '';
@@ -78,7 +79,8 @@ function showDetail(text, status, itemId) {
   $('publication-status').textContent = '';
   if (selectedItem && sessionOwner) refreshPublication(true).catch(error => { $('publication-status').textContent = message(error); });
   $('detail-text').textContent = text;
-  $('detail-status').textContent = status;
+  $('detail-status').textContent = time ? new Date(time).toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}) : status;
+  $('open-publication').hidden = !selectedItem || !sessionOwner;
   $('detail').showModal();
   if (selectedItem && sessionOwner) refreshDiscussion().catch(error => { $('discussion-status').textContent = message(error); });
 }
@@ -110,7 +112,7 @@ async function render() {
     const meta = document.createElement('span');
     meta.className = `thought-meta${row.pending ? ' pending' : ''}`;
     meta.textContent = `${row.status} · ${new Date(row.time).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
-    button.append(preview, meta); button.onclick = () => showDetail(row.text, row.status, row.id);
+    button.append(preview, meta); button.onclick = () => showDetail(row.text, row.status, row.id, row.time);
     li.append(button); $('thoughts').append(li);
   }
   $('count').textContent = rows.length ? `${rows.length}${page?.has_more ? '+' : ''}` : '';
@@ -192,6 +194,12 @@ $('sync').onclick = sync;
 $('more').onclick = async () => { try { await fetchItems(); await render(); } catch (e) { notice(message(e)); } };
 $('export').onclick = () => exportUnsent().catch(error => notice(message(error)));
 $('close-detail').onclick = () => $('detail').close();
+$('open-publication').onclick = () => { if(selectedItem && sessionOwner) $('publication-sheet').showModal(); };
+$('close-publication').onclick = () => { if(!publicationBusy) $('publication-sheet').close(); };
+$('publication-sheet').addEventListener('cancel',event=>{if(publicationBusy)event.preventDefault();});
+function resizeComposer(){const input=$('question');input.style.height='auto';input.style.height=`${Math.min(input.scrollHeight,160)}px`;}
+$('question').addEventListener('input',resizeComposer);
+$('question').addEventListener('keydown',event=>{if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing){event.preventDefault();if(!$('ask').disabled)$('discussion-form').requestSubmit();}});
 $('logout').onclick = async () => {
   try { if ((await outbox.forOwner(rememberedOwner)).length) $('signout-dialog').showModal(); else await signOut(); }
   catch (error) { notice(message(error)); }
@@ -226,13 +234,13 @@ async function refreshDiscussion() {
   $('exchanges').replaceChildren();
   for (const turn of turns) {
     const section = document.createElement('section');
-    const question = document.createElement('pre'); question.textContent = `You: ${turn.prompt}`;
+    const question = document.createElement('pre'); question.textContent = turn.prompt; question.className='message-bubble from-you';
     const answer = document.createElement('pre');
-    answer.textContent = turn.state === 'succeeded' ? `AI (${turn.model}): ${turn.answer}` : turn.state === 'running' ? 'AI is working. You can close this page.' : 'Outcome uncertain. This request will not be sent again automatically. You can ask again explicitly.';
-    section.append(question, answer);
+    answer.textContent = turn.state === 'succeeded' ? turn.answer : turn.state === 'running' ? 'Thinking…' : 'Outcome uncertain. This request will not be sent again automatically. You can ask again explicitly.';
+    section.className='chat-turn'; answer.className='message-bubble from-ai'; section.append(question, answer);
     if (turn.state === 'succeeded') {
-      const use = document.createElement('button'); use.type = 'button'; use.className = 'quiet'; use.textContent = 'Use answer as document draft';
-      use.onclick = () => { if (!$('draft').readOnly) { $('draft').value = turn.answer; if (!$('filename').value || $('filename').value === filenameSuggestion) { filenameSuggestion = suggestedFilename(turn.answer); $('filename').value = filenameSuggestion; } updatePublicationForm(); ($('destination').value ? $('filename') : $('destination')).focus(); } };
+      const use = document.createElement('button'); use.type = 'button'; use.className = 'quiet'; use.textContent = 'Publish this answer ↗';
+      use.onclick = () => { if (!$('draft').readOnly) { $('draft').value = turn.answer; if (!$('filename').value || $('filename').value === filenameSuggestion) { filenameSuggestion = suggestedFilename(turn.answer); $('filename').value = filenameSuggestion; } publicationAttempted=false; updatePublicationForm(); $('publication-sheet').showModal(); } };
       section.append(use);
     }
     $('exchanges').append(section);
@@ -240,7 +248,8 @@ async function refreshDiscussion() {
   }
   const running = turns.some(turn => turn.state === 'running');
   $('ask').disabled = discussionBusy || running;
-  $('ask').textContent = pending ? 'Check / retry same request' : 'Send to AI';
+  $('ask').textContent = '↑'; $('ask').title = pending ? 'Retry same message' : 'Send message'; $('ask').setAttribute('aria-label',$('ask').title);
+  resizeComposer();
   $('question').readOnly = Boolean(pending);
   $('forget-question').hidden = !pending;
   $('forget-question').disabled = discussionBusy;
@@ -304,7 +313,7 @@ async function refreshPublication(restoreDraft = false) {
   publicationRecovery = Boolean(malformed);
   publicationConflict = pending && rows.find(row => row.operation_id === pending.operation_id)?.conflict || false;
   const locked = Boolean(pending && !malformed);
-  $('publish').textContent = locked ? 'Retry same publication' : 'Create new Markdown file';
+  $('publish').textContent = locked ? 'Retry same publication' : 'Publish';
   $('forget-publication').hidden = !pending || publicationConflict;
   $('forget-publication').textContent = malformed ? 'Start over (keep text)' : 'Forget local publication retry';
   $('destination').disabled = locked; $('filename').readOnly = locked; $('draft').readOnly = locked;
@@ -343,6 +352,7 @@ $('publish-form').onsubmit = async event => {
   event.preventDefault();
   const item = selectedItem, owner = sessionOwner;
   if (!item || !owner || publicationBusy) return;
+  publicationAttempted = true;
   const payload = publicationPayload();
   const problem = !publicationReady ? 'Wait for destination folders to load.' : publicationProblem(payload, publicationFolders);
   if (problem) { $('publication-status').textContent = problem; updatePublicationForm(); return; }
@@ -389,13 +399,13 @@ function updatePublicationForm() {
   const errors = publicationReady ? publicationProblems(publicationPayload(), publicationFolders) : {};
   const problem = publicationReady ? Object.values(errors)[0] || '' : 'Loading destination folders…';
   for (const id of ['destination', 'filename', 'draft']) {
-    $(id).setAttribute('aria-invalid', String(Boolean(errors[id])));
+    $(id).setAttribute('aria-invalid', String(publicationAttempted && Boolean(errors[id])));
     $(`${id}-error`).textContent = errors[id] || '';
-    $(`${id}-error`).hidden = !errors[id];
+    $(`${id}-error`).hidden = !publicationAttempted || !errors[id];
   }
   if (publicationRecovery) $('publication-status').textContent = problem ? `Your previous draft is preserved. ${problem} Or use Start over to discard only the failed retry.` : 'Your previous draft is ready to publish.';
-  $('publish').disabled = publicationBusy || publicationConflict || Boolean(problem);
-  $('publication-help').textContent = publicationConflict ? `${publicationLabel({ conflict: publicationConflict })}. Choose another name or Forget below.` : problem || 'Ready to create this new file. Existing files will not be overwritten.';
+  $('publish').disabled = publicationBusy || publicationConflict || !publicationReady;
+  $('publication-help').textContent = publicationConflict ? `${publicationLabel({ conflict: publicationConflict })}. Choose another name or Forget below.` : '';
 }
 for (const id of ['destination', 'filename', 'draft']) $(id).addEventListener('input', updatePublicationForm);
 $('destination').addEventListener('change', updatePublicationForm);

@@ -21,7 +21,7 @@ export function mountShell(){
  document.querySelectorAll('[data-nav]').forEach(b=>{b.prepend(icon(b.dataset.nav));b.onclick=()=>{history.replaceState(null,'',`?view=${b.dataset.nav}`);route(b.dataset.nav);};});
  route(new URL(location.href).searchParams.get('view'));
  for(const [id,name,label] of [['logout','logout','Sign out'],['theme-toggle','theme','Switch color theme'],['project-refresh','refresh','Refresh project'],['executor-refresh','refresh','Refresh questions'],['forgejo-refresh','refresh','Refresh overview'],['launch-refresh','refresh','Refresh execution'],['close-detail','back','Back to Inbox'],['executor-close','back','Back to questions'],['overview-close','back','Back to overview']])glyph($(id),name,label);
- for(const id of ['project-select','executor-project','forgejo-project','launch-project'])projectChoices($(id));
+ for(const id of ['project-select','executor-project','forgejo-project','launch-project','destination'])projectChoices($(id));
  const preferred=()=>matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';let theme;try{theme=localStorage.getItem('tessera-theme');}catch{}document.documentElement.dataset.theme=theme||preferred();
  const syncIcons=()=>{const dark=document.documentElement.dataset.theme==='dark';document.querySelector('.brand img').src=dark?'/icon-dark.svg':'/icon.svg';document.querySelectorAll('link[rel=icon]').forEach(link=>{link.media='all';link.href=dark?'/icon-dark.svg':'/icon.svg';});};syncIcons();
  $('theme-toggle').onclick=()=>{const t=document.documentElement.dataset.theme==='dark'?'light':'dark';document.documentElement.dataset.theme=t;syncIcons();try{localStorage.setItem('tessera-theme',t);}catch{}};
@@ -45,7 +45,7 @@ export function projectChoices(select){
  if(label)label.hidden=true;select.hidden=true;select.before(group);
  function render(){
   const focused=group.contains(document.activeElement)?document.activeElement.dataset.value:null;
-  group.replaceChildren(...[...select.options].map(option=>{
+  group.replaceChildren(...[...select.options].filter(option=>select.id!=='destination'||option.value).map(option=>{
    const button=document.createElement('button');button.type='button';button.textContent=option.textContent;button.dataset.value=option.value;
    button.setAttribute('aria-pressed',String(option.value===select.value));button.disabled=select.disabled||option.disabled;
    button.onclick=()=>{if(select.disabled)return;select.value=option.value;select.dispatchEvent(new Event('change',{bubbles:true}));render();};return button;
