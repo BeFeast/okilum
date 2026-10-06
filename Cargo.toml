@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/tessera-core", "crates/tessera-cored", "crates/tessera-shell", "crates/tessera-brain", "crates/tessera-sync"]
+members = ["crates/tessera-core", "crates/tessera-cored", "crates/tessera-shell", "crates/tessera-brain", "crates/tessera-sync", "crates/tessera-sync-controller"]
 # The vendored gpui-kit clone is its own Cargo workspace. Excluding it
 # keeps its members inheriting from their own root while we path-depend into it.
 exclude = ["vendor", "inbox"]
