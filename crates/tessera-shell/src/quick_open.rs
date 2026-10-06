@@ -640,7 +640,7 @@ canaryhidden [[Target]]",
                         .expect("live watcher")
                         .wait(Duration::from_secs(3))
                         .expect("directory arrival must trigger reconciliation");
-                    assert!(changes.rescan);
+                    assert!(!changes.rescan && changes.directories.contains("_Incoming"));
                     v.apply_vault_changes(changes, window, cx);
                 });
                 visual.run_until_parked();

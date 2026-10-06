@@ -73,3 +73,15 @@ for Finder launch verification.
 Windows packaging/runtime support is not introduced here. Existing `Vault::scan`
 uses platform separators for keys while suffix/relative resolution assumes `/`;
 that pre-existing normalization gap is tracked separately from #327.
+
+Known create/delete/move/Undo mutations update the reconciled inventory, affected
+link referrers and search rows incrementally (#545), like save. Watcher directory
+notifications are scope hints: the worker checks their immediate children, reads
+only changed notes, and discovers new or removed subtrees. Existing subtrees are
+not walked for an ordinary parent hint; native dropped-event/MustScan signals
+still run a complete reconcile. Unsafe or uncertain non-note topology retains
+the background fallback, including case-only renames and topology batches of
+50 or more entries. Known iCloud placeholders retain their warning without
+reopening notes or triggering reconcile. An unchanged directory echo neither
+rebuilds nor checkpoints search; an empty folder checkpoints inventory only.
+Inventory and indexing filesystem work runs off the UI thread.

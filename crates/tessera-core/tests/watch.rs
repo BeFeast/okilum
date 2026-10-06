@@ -182,7 +182,7 @@ fn new_cyrillic_note_in_hidden_folder_is_reported_but_service_notes_are_not() {
 }
 
 #[test]
-fn note_rename_and_atomic_save_are_incremental_but_directory_move_requires_rescan() {
+fn note_rename_atomic_save_and_directory_move_report_incremental_hints() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("vault");
     fs::create_dir_all(root.join("notes")).unwrap();
@@ -202,7 +202,9 @@ fn note_rename_and_atomic_save_are_incremental_but_directory_move_requires_resca
     fs::rename(root.join("notes"), root.join("moved")).unwrap();
     let changes = watcher.wait(WAIT).unwrap();
     assert!(
-        changes.rescan,
-        "directory event is the positive rescan control: {changes:?}"
+        !changes.rescan
+            && changes.directories.contains("notes")
+            && changes.directories.contains("moved"),
+        "directory endpoints are topology hints: {changes:?}"
     );
 }

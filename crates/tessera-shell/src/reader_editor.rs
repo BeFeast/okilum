@@ -821,6 +821,15 @@ impl Reader {
                 self.toggle_source(window, cx);
             }
         }
+        if result.is_ok() && same_move_root(&self.vault_root, &operation.root) {
+            let mut changes = tessera_core::Changes {
+                changed: operation.files.keys().cloned().collect(),
+                removed: std::collections::BTreeSet::from([operation.to]),
+                ..Default::default()
+            };
+            changes.changed.insert(operation.from);
+            self.queue_vault_mutation(changes, cx);
+        }
         result
     }
     pub(super) fn sync_move_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {

@@ -1443,7 +1443,7 @@ impl Reader {
     }
 
     /// Drain/coalesce notifications off the UI thread. Known note batches use
-    /// the reconciled baseline; topology/overflow needs background reconciliation.
+    /// the reconciled baseline, including directory hints. Overflow needs reconcile.
     fn poll_vault(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.loading.as_ref().is_some_and(|l| l.active)
             || self.incremental_active
@@ -1486,6 +1486,9 @@ impl Reader {
                 if let Some(changes) = changes {
                     if this.loading.as_ref().is_some_and(|load| load.active) {
                         this.deferred_vault_changes.rescan |= changes.rescan;
+                        this.deferred_vault_changes
+                            .directories
+                            .extend(changes.directories);
                         this.deferred_vault_changes.changed.extend(changes.changed);
                         this.deferred_vault_changes.removed.extend(changes.removed);
                     } else {
@@ -1506,6 +1509,9 @@ impl Reader {
         reader_drawing::invalidate(&self.vault_root, cx);
         if self.incremental_active || self.incremental_initializing {
             self.deferred_vault_changes.rescan |= changes.rescan;
+            self.deferred_vault_changes
+                .directories
+                .extend(changes.directories);
             self.deferred_vault_changes.changed.extend(changes.changed);
             self.deferred_vault_changes.removed.extend(changes.removed);
             return;

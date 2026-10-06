@@ -190,6 +190,7 @@ impl Reader {
         })();
         match result {
             Ok((rel, Some(source))) => {
+                let created = rel.clone();
                 self.creation = None;
                 // Publish the successful create before the watcher catches up.
                 // Its ancestors must exist in the tree for an immediate Cmd-N
@@ -219,6 +220,13 @@ impl Reader {
                     cx,
                 );
                 self.toggle_source(window, cx);
+                self.queue_vault_mutation(
+                    tessera_core::Changes {
+                        changed: std::collections::BTreeSet::from([created]),
+                        ..Default::default()
+                    },
+                    cx,
+                );
             }
             Ok((rel, None)) => {
                 self.creation = None;
@@ -226,6 +234,13 @@ impl Reader {
                 self.tree
                     .entry_created(&rel, tessera_core::vault::EntryKind::Directory);
                 self.reveal_in_tree(&rel, window, cx);
+                self.queue_vault_mutation(
+                    tessera_core::Changes {
+                        directories: std::collections::BTreeSet::from([rel]),
+                        ..Default::default()
+                    },
+                    cx,
+                );
             }
             Err(error) => {
                 if let Some(create) = self.creation.as_mut() {
@@ -241,6 +256,61 @@ impl Reader {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+    #[gpui::test]
+    fn empty_folder_persists_inventory_without_forking_or_copying_search(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        let cache = temp.path().join("cache");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("Start.md"), "# Start").unwrap();
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("Start.md".into()),
+                        index_dir: Some(cache.clone()),
+                        session_directory: Some(temp.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        visual.run_until_parked();
+        let search = reader.read_with(visual, |v, _| v.searcher.clone().unwrap());
+        let before = tessera_core::vault::warm::Snapshot::load_checked(&cache, &root).unwrap();
+        assert!(before.search_generation.is_some());
+        reader.update_in(visual, |v, window, cx| {
+            v.new_folder(Some(""), window, cx);
+            let input = v.creation.as_ref().unwrap().input.clone();
+            input.update(cx, |input, cx| input.set_value("Empty", window, cx));
+            v.commit_creation(window, cx);
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |v, _| {
+            assert!(Arc::ptr_eq(v.searcher.as_ref().unwrap(), &search));
+            assert!(v.vault.entries.iter().any(|entry| entry.path == "Empty"));
+        });
+        let after = tessera_core::vault::warm::Snapshot::load_checked(&cache, &root).unwrap();
+        assert_eq!(before.search_generation, after.search_generation);
+        assert!(after
+            .vault()
+            .entries
+            .iter()
+            .any(|entry| entry.path == "Empty"
+                && entry.kind == tessera_core::vault::EntryKind::Directory));
+    }
+
     #[gpui::test]
     fn inline_create_templates_nested_paths_collision_and_cancel(cx: &mut TestAppContext) {
         cx.update(|cx| {
@@ -276,6 +346,9 @@ mod tests {
         });
         let reader = reader.unwrap();
         visual.run_until_parked();
+        let generation = reader.read_with(visual, |reader, _| {
+            reader.loading.as_ref().unwrap().generation
+        });
         reader.update_in(visual, |reader, window, cx| {
             reader.new_note(Some("Selected/Target"), window, cx);
             assert!(reader.sidebar_items().windows(2).any(
@@ -293,6 +366,32 @@ mod tests {
         visual.run_until_parked();
         reader.read_with(visual, |reader, _| {
             assert_eq!(reader.current_rel, "Selected/Target/a/Новая 🧠.md");
+            assert_eq!(
+                reader.loading.as_ref().unwrap().generation,
+                generation,
+                "create must not enter full prepare"
+            );
+            assert!(reader
+                .vault
+                .notes
+                .iter()
+                .any(|note| note.path == reader.current_rel));
+            assert_eq!(
+                reader
+                    .searcher
+                    .as_ref()
+                    .unwrap()
+                    .search("Новая", 10)
+                    .unwrap()
+                    .len(),
+                1
+            );
+            assert!(reader
+                .vault
+                .entries
+                .iter()
+                .any(|entry| entry.path == "Selected/Target/a"
+                    && entry.kind == tessera_core::vault::EntryKind::Directory));
             assert!(reader.editing.is_some());
             assert_eq!(
                 reader.history.last().map(String::as_str),

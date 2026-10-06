@@ -2,6 +2,29 @@
 use super::*;
 
 impl Reader {
+    /// A successful local mutation already knows its endpoints. Queue it even
+    /// while another batch/checkpoint is running; watcher hints may follow.
+    #[cfg(unix)]
+    pub(super) fn queue_vault_mutation(
+        &mut self,
+        changes: tessera_core::Changes,
+        cx: &mut Context<Self>,
+    ) {
+        self.deferred_vault_changes.changed.extend(changes.changed);
+        self.deferred_vault_changes.removed.extend(changes.removed);
+        self.deferred_vault_changes
+            .directories
+            .extend(changes.directories);
+        self.deferred_vault_changes.rescan |= changes.rescan;
+        let handle = self.reader_window;
+        cx.spawn(async move |this, cx| {
+            let _ = handle.update(cx, |_, window, cx| {
+                let _ = this.update(cx, |this, cx| this.poll_vault(window, cx));
+            });
+        })
+        .detach();
+    }
+
     #[cfg(unix)]
     pub(super) fn queue_saved_source(&mut self, cx: &mut Context<Self>) {
         if let Some(trace) = self
@@ -14,18 +37,13 @@ impl Reader {
                 serde_json::json!({"path":self.current_rel}),
             );
         }
-        self.deferred_vault_changes
-            .changed
-            .insert(self.current_rel.clone());
-        let handle = self.reader_window;
-        cx.spawn(async move |this, cx| {
-            let _ = handle.update(cx, |_, window, cx| {
-                let _ = this.update(cx, |this, cx| {
-                    this.poll_vault(window, cx);
-                });
-            });
-        })
-        .detach();
+        self.queue_vault_mutation(
+            tessera_core::Changes {
+                changed: std::collections::BTreeSet::from([self.current_rel.clone()]),
+                ..Default::default()
+            },
+            cx,
+        );
     }
 
     pub(super) fn start_incremental(
@@ -36,6 +54,9 @@ impl Reader {
     ) {
         if self.incremental_active || self.incremental_initializing {
             self.deferred_vault_changes.rescan |= changes.rescan;
+            self.deferred_vault_changes
+                .directories
+                .extend(changes.directories);
             self.deferred_vault_changes.changed.extend(changes.changed);
             self.deferred_vault_changes.removed.extend(changes.removed);
             return;
@@ -91,7 +112,7 @@ impl Reader {
             let start = std::time::Instant::now();
             let batch = state.apply(&worker_changes, &mut |_, _| worker_cancel.check())?;
             let source_ms = start.elapsed().as_secs_f64() * 1000.;
-            let searcher = if old_searcher.is_session() { old_searcher } else { Arc::new(old_searcher.fork_session()?) };
+            let searcher = if batch.affected.is_empty() || old_searcher.is_session() { old_searcher } else { Arc::new(old_searcher.fork_session()?) };
             let mut sources = std::collections::HashMap::new();
             let mut titles = std::collections::HashMap::new();
             let mut documents = Vec::new();
@@ -105,7 +126,7 @@ impl Reader {
                 } else { removed.push(path.clone()); }
             }
             worker_cancel.check()?;
-            searcher.update_snapshot_batch(&state.vault, &documents, &removed)?;
+            if !batch.affected.is_empty() { searcher.update_snapshot_batch(&state.vault, &documents, &removed)?; }
             worker_cancel.check()?;
             working.store(false, std::sync::atomic::Ordering::Release);
             let published = Arc::new(state.vault.clone());
@@ -113,7 +134,7 @@ impl Reader {
             #[cfg(unix)]
             let candidates = Some(state.candidates.clone());
             if let Some(trace) = &worker_trace {
-                trace.event("incremental_update", serde_json::json!({"changed": batch.changed.len(), "removed": batch.removed.len(), "read": batch.read, "affected": batch.affected.len(), "source_graph_ms":source_ms, "duration_ms":start.elapsed().as_secs_f64()*1000.}));
+                trace.event("incremental_update", serde_json::json!({"directory_hints":worker_changes.directories.len(), "topology_changed":batch.topology_changed, "changed": batch.changed.len(), "removed": batch.removed.len(), "read": batch.read, "affected": batch.affected.len(), "source_graph_ms":source_ms, "duration_ms":start.elapsed().as_secs_f64()*1000.}));
             }
             Ok::<_, anyhow::Error>((state, searcher, sources, titles, batch, published, inventory,
                 { #[cfg(unix)] { candidates } #[cfg(not(unix))] { None::<()> } }))
@@ -171,7 +192,7 @@ impl Reader {
                                 trace.event("incremental_ui_publish", serde_json::json!({"duration_ms":requested.elapsed().as_secs_f64()*1000.,"epoch":epoch}));
                             }
                             cx.notify();
-                            Some((state, searcher))
+                            Some((state, searcher, !batch.affected.is_empty() || batch.topology_changed, !batch.affected.is_empty()))
                         }
                         Err(error) => {
                             if let Some(trace) = this
@@ -199,7 +220,7 @@ impl Reader {
                 })
                 .ok()
                 .flatten();
-            let Some((mut state, searcher)) = ready else {
+            let Some((mut state, searcher, persist, search_changed)) = ready else {
                 return;
             };
             // Publish committed search/graph first; checkpoint persistence has
@@ -207,8 +228,9 @@ impl Reader {
             let persist_task = cx.background_executor().spawn(async move {
                 cancel.check()?;
                 let start = std::time::Instant::now();
-                if let Some(cache) = &cache {
+                if let Some(cache) = cache.as_ref().filter(|_| persist) {
                     cancel.check()?;
+                    if search_changed {
                     let persisted_search = (|| -> anyhow::Result<String> {
                         use sha2::{Digest, Sha256};
                         reader_loading::validate_external_cache(cache, &state.vault.root)?;
@@ -240,6 +262,7 @@ impl Reader {
                                 );
                             }
                         }
+                    }
                     }
                     if let Err(error) = state.persist_delta(cache) {
                         if let Some(trace) = &trace {
