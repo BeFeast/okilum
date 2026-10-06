@@ -212,14 +212,15 @@ on `surface` and `canvas`; `text` on `code-bg`, `surface-raised`, `selected` and
 AAA (7:1) for High contrast. `on-accent` on `accent` is 4.5:1 and `text-faint`
 3:1 (4.5:1 for High contrast). A new theme that fails is fixed, not exempted.
 
-**Settings → Appearance:** a *Mode* segmented control of glyph buttons (monitor,
-sun, moon; tooltips «Match system», «Light», «Dark») and a *Theme* row of
-compact swatch cards (120 px). Each card previews the theme's sidebar, surface,
-text, muted text, link and accent in the variant currently shown. The selected
-card has a 2 px `focus` ring and a check glyph; ring and glyph space are always
-laid out, so selection never moves anything. Cards are keyboard stops (Enter
-or Space selects). The choice applies live and is stored once for the whole
-app (`appearance.json`, key `theme`), never per vault or in notes.
+**Theme picker** (`theme_picker.rs`): a self-contained row of compact swatch
+cards (120 px). Each card previews the theme's sidebar, surface, text, muted
+text, link and accent in the variant currently shown. The selected card has a
+2 px `focus` ring and a check glyph; ring and glyph space are always laid out,
+so selection never moves anything. Cards are keyboard stops (Enter or Space
+selects). The choice applies live and is stored once for the whole app
+(`appearance.json`, key `theme`), never per vault or in notes. It is not yet
+placed in Settings → Appearance: that layout is being redesigned in #623, which
+hosts the picker.
 
 The brand mark keeps its brand colors under every theme. The `highlight` color
 is resolved when a block is parsed, so an open note picks up a new theme's

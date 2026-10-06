@@ -34,8 +34,7 @@ pub const READER_PIN_ICON: &str = "icons/pin.svg";
 pub const READER_CLOCK_ICON: &str = "icons/clock.svg";
 pub const READER_COLLAPSE_ICON: &str = "icons/chevrons-down-up.svg";
 pub const READER_FOCUS_ICON: &str = "icons/locate-fixed.svg";
-pub const SYSTEM_APPEARANCE_ICON: &str = "icons/monitor.svg";
-const IMAGES: [(&str, &[u8]); 19] = [
+const IMAGES: [(&str, &[u8]); 18] = [
     (
         "icons/trash.svg",
         include_bytes!("../assets/icons/trash.svg"),
@@ -74,10 +73,6 @@ const IMAGES: [(&str, &[u8]); 19] = [
         include_bytes!("../assets/icons/folder-plus.svg"),
     ),
     (READER_PIN_ICON, include_bytes!("../assets/icons/pin.svg")),
-    (
-        SYSTEM_APPEARANCE_ICON,
-        include_bytes!("../assets/icons/monitor.svg"),
-    ),
     (
         READER_CLOCK_ICON,
         include_bytes!("../assets/icons/clock.svg"),
@@ -180,6 +175,10 @@ impl ThemeId {
         }
     }
 
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "used by theme_picker, hosted after #623")
+    )]
     pub fn name(self) -> &'static str {
         match self {
             Self::Tessera => "Tessera",
@@ -366,6 +365,10 @@ fn tokens(theme: ThemeId, dark: bool) -> (Palette, ReaderPalette) {
 }
 
 /// Both variants of a theme, for previews that must not depend on the live mode.
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "used by theme_picker, hosted after #623")
+)]
 pub fn theme_palette(theme: ThemeId, dark: bool) -> Palette {
     tokens(theme, dark).0
 }

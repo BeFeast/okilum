@@ -77,6 +77,7 @@ mod reader_trash;
 mod reader_trash_fs;
 mod reader_tree;
 mod text_ranges;
+mod theme_picker;
 mod updater;
 mod window_state;
 #[cfg(all(unix, feature = "brain"))]
@@ -337,6 +338,10 @@ fn set_appearance(
     save_appearance(vault, cx);
 }
 /// One app-wide color theme (#349); Light/Dark/System stays a separate choice.
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "used by theme_picker, hosted after #623")
+)]
 fn set_theme(theme: brand::ThemeId, vault: Option<&Path>, window: &mut Window, cx: &mut App) {
     cx.set_global(brand::ThemeChoice(theme));
     sync_appearance(window, cx);
