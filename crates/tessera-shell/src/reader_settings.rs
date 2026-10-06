@@ -1,6 +1,6 @@
 //! Explicit, lazily opened user settings. No vault scans or startup reads.
 use super::*;
-use gpui_component::ThemeMode;
+use gpui_component::{button::ButtonGroup, ThemeMode};
 
 gpui::actions!(tessera_settings, [OpenSettings, CloseSettings]);
 
@@ -353,27 +353,54 @@ impl Settings {
             }
             Section::Updates => {
                 let content = content.child(format!(
-                    "Version {} · Build {}",
+                    "Version {} · Build {} · Channel: {}",
                     env!("TESSERA_RELEASE_VERSION"),
-                    env!("TESSERA_BUILD_VERSION")
+                    env!("TESSERA_BUILD_VERSION"),
+                    updater::channel()
                 ));
                 if updater::available() {
                     let beta = updater::channel() == "Beta";
                     content
                         .child(
-                            h_flex().gap_2().children(
+                            ButtonGroup::new("settings-update-channel").children(
                                 [
-                                    ("settings-stable", "Stable", false),
-                                    ("settings-beta", "Beta", true),
+                                    (
+                                        "settings-stable",
+                                        "Stable",
+                                        false,
+                                        "icons/channel-stable.svg",
+                                    ),
+                                    ("settings-beta", "Beta", true, "icons/channel-beta.svg"),
                                 ]
-                                .map(|(id, label, value)| {
+                                .map(|(id, label, value, icon)| {
+                                    let selected = beta == value;
                                     Button::new(id)
+                                        .debug_selector(move || id.into())
                                         .label(label)
-                                        .selected(beta == value)
+                                        .icon(Icon::default().path(icon))
+                                        .selected(selected)
+                                        .when(selected, |button| button.primary())
+                                        .child(
+                                            div().w(px(16.)).child(
+                                                Icon::new(IconName::Check)
+                                                    .size(px(16.))
+                                                    .opacity(if selected { 1. } else { 0. }),
+                                            ),
+                                        )
+                                        .tooltip(if value {
+                                            "Beta: preview new features and fixes"
+                                        } else {
+                                            "Stable: receive approved releases"
+                                        })
                                         .on_click(move |_, _, cx| updater::set_beta(value, cx))
                                 }),
                             ),
                         )
+                        .child(div().text_sm().text_color(p.text_muted).child(if beta {
+                            "Beta selected — preview new features and fixes."
+                        } else {
+                            "Stable selected — receive approved releases."
+                        }))
                         .child(
                             Button::new("settings-check-updates")
                                 .label("Check for Updates…")
@@ -391,6 +418,15 @@ impl Settings {
                     };
                     content
                         .child(message)
+                        .when(cfg!(target_os = "linux"), |content| {
+                            content.child(
+                                Button::new("settings-linux-channels")
+                                    .label("Stable / Beta repository setup")
+                                    .on_click(|_, _, cx| {
+                                        cx.open_url("https://github.com/BeFeast/tessera/blob/main/docs/linux-releases.md")
+                                    }),
+                            )
+                        })
                         .child(
                             Button::new("settings-releases")
                                 .label("Release notes")

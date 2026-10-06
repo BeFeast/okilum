@@ -449,8 +449,12 @@ A left list selects Appearance, Files, Updates and Inbox. Changes apply immediat
 through the existing user appearance, per-vault sidebar and Sparkle preferences.
 Files identifies the originating vault; opening Settings from another Reader
 retargets that section. Without a vault it explains that a vault must be opened.
-Updates offers Beta/Stable and Check for Updates when Sparkle is available;
-Linux explains system-package updates and Windows links to releases.
+Updates shows the installed version/build and selected update channel. macOS and
+Windows use a joined Stable/Beta control: shield/flask glyphs, accent fill and a
+checkmark on the selected segment, with immediate persisted changes. Check for
+Updates uses the installed updater. Linux identifies system-package management
+and links to Stable/Beta repository setup; it does not pretend to switch pacman
+repositories. Unpackaged builds explain updater availability.
 Inbox shows “Not connected”; no connection controls are enabled in this slice.
 The deferred local Excalidraw editor needs no editor-URL setting.
 
