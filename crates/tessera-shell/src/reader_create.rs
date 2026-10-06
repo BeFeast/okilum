@@ -25,6 +25,7 @@ impl Reader {
         tessera_core::note_templates::Catalog::load_with_folder(&self.vault_root, folder.as_deref())
     }
 
+    #[cfg(unix)]
     pub(super) fn create_missing_note(
         &mut self,
         url: &str,

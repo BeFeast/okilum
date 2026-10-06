@@ -505,7 +505,7 @@ impl Reader {
 
 #[cfg(unix)]
 fn missing_path(from: &str, target: &str) -> Option<String> {
-    let note = target.split('#').next()?.trim();
+    let note = target.split(['#', '^']).next()?.trim();
     if note.is_empty() || note.contains(':') {
         return None;
     }
@@ -625,6 +625,10 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn missing_paths_follow_authored_target_without_alias_or_escape() {
+        assert_eq!(
+            missing_path("Work/Start.md", "Новая 🧠^block"),
+            Some("Work/Новая 🧠.md".into())
+        );
         assert_eq!(
             missing_path("Work/Start.md", "Новая 🧠#Intro"),
             Some("Work/Новая 🧠.md".into())
