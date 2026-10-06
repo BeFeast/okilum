@@ -1,0 +1,26 @@
+# Closing a Forgejo PR retires only its temporary public native-check refs.
+name: github-macos-cleanup
+
+on:
+  pull_request_target:
+    types: [closed]
+
+permissions:
+  contents: read
+
+jobs:
+  cleanup:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: light
+    timeout-minutes: 5
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          # Never execute the closed PR's code in this privileged event.
+          ref: main
+          persist-credentials: false
+      - name: Delete this PR's GitHub native-check refs
+        env:
+          MIRROR_TOKEN: ${{ secrets.TESSERA_GITHUB_MIRROR }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: python3 scripts/ci/github-macos.py cleanup
