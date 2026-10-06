@@ -427,3 +427,20 @@ While notifications are present, Reader, source and historical previews gain
 additional scrollable end space (65% of the window height). The viewport/layout
 stays fixed, and the last lines can scroll above the overlay. When the notification
 list empties, the normal end space returns.
+
+## Folder rename and tree keys (#578)
+
+F2 or Enter opens inline rename for a Markdown note or a real folder. A folder's
+name is not suffixed with `.md`; submitting the same path quietly ends rename.
+Right/Left expand/collapse, with Left selecting the parent from a child. Clicking a
+folder label selects it; its disclosure arrow or a double-click toggles it.
+⌘↓ on macOS / Ctrl↓ on Linux opens the selected item or toggles a folder.
+
+Folder moves use the existing background link preview and explicit update/without
+update choice. All descendant identities are mapped together, including relative
+links within moved notes and links to moved assets. Only link-target bytes change;
+non-UTF-8 notes are listed as skipped and moved intact. Dirty descendant editors,
+changed previews, existing destinations and orphaned destination drafts block the
+move. One atomic non-replacing directory rename moves the subtree; durable
+preimages support Recover link moves after partial link updates. Recovery refuses
+later external changes, including changes to binary assets.

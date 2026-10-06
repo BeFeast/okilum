@@ -126,8 +126,17 @@ impl CandidateIndex {
             root.canonicalize()? == self.root,
             "Link index belongs to another vault"
         );
-        let mut selected = BTreeSet::from([from.to_owned()]);
-        for target in [from, to] {
+        let mut selected = BTreeSet::new();
+        let mut targets = BTreeSet::from([from.to_owned(), to.to_owned()]);
+        for entry in &vault.entries {
+            let next = crate::link_rewrite::moved_path(&entry.path, from, to);
+            if next != entry.path {
+                selected.insert(entry.path.clone());
+                targets.insert(entry.path.clone());
+                targets.insert(next);
+            }
+        }
+        for target in &targets {
             if let Some(key) = path_key(target) {
                 for (path, line) in &self.fallback_lines {
                     if line.contains(&key) {

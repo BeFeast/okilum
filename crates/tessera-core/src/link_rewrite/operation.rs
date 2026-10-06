@@ -9,6 +9,8 @@ use std::{fs::File, io::Write, path::PathBuf};
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Operation {
     pub root: PathBuf,
+    #[serde(default)]
+    pub directory: Option<crate::note_move::DirectorySnapshot>,
     pub from: String,
     pub to: String,
     pub files: BTreeMap<String, Versions>,
@@ -30,6 +32,16 @@ pub struct Applied {
     pub warning: Option<String>,
 }
 impl Operation {
+    fn directory_rewrites(&self) -> Vec<String> {
+        self.files
+            .keys()
+            .filter_map(|p| {
+                p.strip_prefix(&format!("{}/", self.from))
+                    .map(str::to_owned)
+            })
+            .collect()
+    }
+
     fn persist(&self, path: &Path) -> Result<()> {
         let parent = path.parent().context("Missing operation directory")?;
         fs::create_dir_all(parent)?;
@@ -49,7 +61,7 @@ impl Operation {
         ensure!(
             operation.root.is_absolute()
                 && operation.from != operation.to
-                && operation.files.contains_key(&operation.from),
+                && (operation.directory.is_some() || operation.files.contains_key(&operation.from)),
             "Invalid recovery operation identity"
         );
         for name in operation
@@ -63,12 +75,19 @@ impl Operation {
                     && name
                         .components()
                         .all(|c| matches!(c, std::path::Component::Normal(_)))
-                    && name
-                        .extension()
-                        .is_some_and(|e| e.eq_ignore_ascii_case("md")),
+                    && (operation.directory.is_some()
+                        || name
+                            .extension()
+                            .is_some_and(|e| e.eq_ignore_ascii_case("md"))),
                 "Invalid recovery note path"
             );
         }
+        ensure!(
+            operation.files.keys().all(|p| Path::new(p)
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("md"))),
+            "Invalid recovery source path"
+        );
         Ok(operation)
     }
     /// All retained operations are discoverable, including a crash before the
@@ -131,15 +150,25 @@ impl Operation {
         let moved = !operation.root.join(&operation.from).exists()
             && operation.root.join(&operation.to).exists();
         ensure!(!(operation.root.join(&operation.from).exists() && operation.root.join(&operation.to).exists()), "Both source and destination exist; recovery will not guess which belongs to the operation");
-        let mut editors = BTreeMap::new();
-        for (original, versions) in &operation.files {
-            let current = if moved && original == &operation.from {
+        if let Some(snapshot) = &operation.directory {
+            let location = if moved {
                 &operation.to
             } else {
-                original
+                &operation.from
+            };
+            let current =
+                crate::note_move::DirectorySnapshot::read(&operation.root, Path::new(location))?;
+            snapshot.validate_except(&current, &operation.directory_rewrites())?;
+        }
+        let mut editors = BTreeMap::new();
+        for (original, versions) in &operation.files {
+            let current = if moved {
+                moved_path(original, &operation.from, &operation.to)
+            } else {
+                original.clone()
             };
             let mut editor =
-                FileEditor::open(&operation.root.join(current), &state.join("editor-drafts"))?;
+                FileEditor::open(&operation.root.join(&current), &state.join("editor-drafts"))?;
             ensure!(
                 !editor.dirty()
                     || editor.text() == versions.after
@@ -161,6 +190,18 @@ impl Operation {
         } else {
             None
         };
+        let mut destination_children = vec![];
+        if moved && operation.directory.is_some() {
+            for original in operation.files.keys() {
+                if moved_path(original, &operation.from, &operation.to) != *original {
+                    destination_children.push(FileEditor::reserve_future_destination(
+                        &operation.root,
+                        Path::new(original),
+                        &state.join("editor-drafts"),
+                    )?);
+                }
+            }
+        }
         // A failed/partial revert is protected from retention until completed.
         operation.complete = false;
         operation.persist(path)?;
@@ -177,13 +218,28 @@ impl Operation {
             );
         }
         if moved {
-            let moved = MovePlan::prepare_exact(
-                &operation.root,
-                Path::new(&operation.to),
-                Path::new(&operation.from),
-                operation.files[&operation.from].before.as_bytes(),
-            )?
-            .commit()?;
+            let moved = if let Some(snapshot) = &operation.directory {
+                let current = crate::note_move::DirectorySnapshot::read(
+                    &operation.root,
+                    Path::new(&operation.to),
+                )?;
+                snapshot.validate_except(&current, &operation.directory_rewrites())?;
+                crate::note_move::DirectoryMovePlan::prepare(
+                    &operation.root,
+                    Path::new(&operation.to),
+                    Path::new(&operation.from),
+                    &current,
+                )?
+                .commit()?
+            } else {
+                MovePlan::prepare_exact(
+                    &operation.root,
+                    Path::new(&operation.to),
+                    Path::new(&operation.from),
+                    operation.files[&operation.from].before.as_bytes(),
+                )?
+                .commit()?
+            };
             ensure!(
                 moved.warning.is_none(),
                 "Revert moved the file, but verification requires attention: {}",
@@ -214,6 +270,27 @@ impl Preview {
     ) -> Result<Applied> {
         let _destination =
             FileEditor::reserve_destination(&root.join(&self.to), &state.join("editor-drafts"))?;
+        let mut destination_children = vec![];
+        if self.directory.is_some() {
+            let writable = self.affected_paths();
+            for path in self.editor_paths() {
+                let next = moved_path(&path, &self.from, &self.to);
+                if next != path {
+                    if !writable.contains(&path) {
+                        // Skipped/non-UTF-8 sources still protect old drafts and writers.
+                        destination_children.push(FileEditor::reserve_destination(
+                            &root.join(&path),
+                            &state.join("editor-drafts"),
+                        )?);
+                    }
+                    destination_children.push(FileEditor::reserve_future_destination(
+                        root,
+                        Path::new(&next),
+                        &state.join("editor-drafts"),
+                    )?);
+                }
+            }
+        }
         let mut owned = BTreeMap::new();
         for path in self.affected_paths() {
             if !open.contains_key(&path) {
@@ -239,6 +316,7 @@ impl Preview {
         self.validate(root)?;
         let mut operation = Operation {
             root: root.canonicalize()?,
+            directory: self.directory.clone(),
             from: self.from.clone(),
             to: self.to.clone(),
             files: BTreeMap::new(),
@@ -278,18 +356,33 @@ impl Preview {
                     );
                 }
             }
-            // Fresh inode after source rewrite, but still the exact approved bytes.
-            ensure!(
-                fs::read(root.join(&self.from))? == operation.files[&self.from].after.as_bytes(),
-                "Moved note changed during application"
-            );
-            let moved = MovePlan::prepare_exact(
-                root,
-                Path::new(&self.from),
-                Path::new(&self.to),
-                operation.files[&self.from].after.as_bytes(),
-            )?
-            .commit()?;
+            let moved = if let Some(snapshot) = &self.directory {
+                let current =
+                    crate::note_move::DirectorySnapshot::read(root, Path::new(&self.from))?;
+                snapshot.validate_except(&current, &operation.directory_rewrites())?;
+                // Rewritten notes must still contain the approved bytes at rename time.
+                for (path, versions) in &operation.files {
+                    ensure!(
+                        fs::read(root.join(path))? == versions.after.as_bytes(),
+                        "Source changed during folder application"
+                    );
+                }
+                crate::note_move::DirectoryMovePlan::prepare(
+                    root,
+                    Path::new(&self.from),
+                    Path::new(&self.to),
+                    &current,
+                )?
+                .commit()?
+            } else {
+                MovePlan::prepare_exact(
+                    root,
+                    Path::new(&self.from),
+                    Path::new(&self.to),
+                    operation.files[&self.from].after.as_bytes(),
+                )?
+                .commit()?
+            };
             Ok(moved.warning)
         })();
         match result {
@@ -328,6 +421,42 @@ impl Preview {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn interrupted_directory_apply_retains_preimages_and_reverts_without_moving() {
+        let root = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("Dir")).unwrap();
+        fs::write(root.path().join("Dir/a.md"), "# A\r\n").unwrap();
+        fs::write(root.path().join("0.md"), "[[Dir/a|alias]]\r\n").unwrap();
+        let preview = Preview::prepare(root.path(), "Dir", "Renamed").unwrap();
+        let partial = preview
+            .apply_with(root.path(), state.path(), &mut BTreeMap::new(), |path| {
+                if path == "Dir/a.md" {
+                    anyhow::bail!("Injected interruption after first link rewrite");
+                }
+                Ok(())
+            })
+            .unwrap();
+        assert!(!partial.moved);
+        assert!(partial.warning.is_some());
+        assert_eq!(
+            fs::read_to_string(root.path().join("0.md")).unwrap(),
+            "[[Renamed/a|alias]]\r\n"
+        );
+        assert!(root.path().join("Dir/a.md").exists());
+        assert!(!root.path().join("Renamed").exists());
+        assert!(Operation::list(state.path(), root.path())
+            .unwrap()
+            .operations
+            .contains(&partial.journal));
+        Operation::revert(&partial.journal, state.path()).unwrap();
+        assert_eq!(
+            fs::read(root.path().join("0.md")).unwrap(),
+            b"[[Dir/a|alias]]\r\n"
+        );
+        assert_eq!(fs::read(root.path().join("Dir/a.md")).unwrap(), b"# A\r\n");
+    }
+
     #[test]
     fn interrupted_apply_is_discoverable_and_revertible_after_restart() {
         let fixture = super::super::tests::fixture();

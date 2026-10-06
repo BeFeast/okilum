@@ -277,6 +277,10 @@ fn bind_keys(cx: &mut App) {
         #[cfg(unix)]
         KeyBinding::new("enter", RenameTreeNote, Some("ReaderTree && !Input")),
         KeyBinding::new("space", TreeOpen, Some("ReaderTree && !Input")),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-down", TreeOpen, Some(TREE_KEYS)),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-down", TreeOpen, Some(TREE_KEYS)),
         KeyBinding::new(TREE_EXPAND_SUBTREE_KEY, TreeExpandSubtree, Some(TREE_KEYS)),
         KeyBinding::new(
             TREE_COLLAPSE_SUBTREE_KEY,
@@ -2357,7 +2361,11 @@ impl Reader {
             for row in self.tree.rows.iter() {
                 #[cfg(unix)]
                 if let Some(rename) = self.renaming.as_ref().filter(|r| r.path == row.path) {
-                    items.push(SideItem::Rename(rename.input.clone(), row.depth));
+                    items.push(SideItem::Rename(
+                        rename.input.clone(),
+                        row.depth,
+                        row.kind == tessera_core::vault::EntryKind::Directory,
+                    ));
                     if let Some(error) = &rename.error {
                         items.push(SideItem::CreateError(error.clone()));
                     }
@@ -3152,7 +3160,7 @@ impl Reader {
             };
             match item {
                 #[cfg(unix)]
-                SideItem::Rename(input, depth) => row_base("inline-rename-row".into())
+                SideItem::Rename(input, depth, directory) => row_base("inline-rename-row".into())
                     .debug_selector(|| "inline-rename-row".into())
                     .key_context("InlineRename")
                     // Consume Input's propagated submit before text fallback can
@@ -3161,7 +3169,14 @@ impl Reader {
                         cx.stop_propagation();
                     })
                     .pl(px(18. + depth as f32 * 14.))
-                    .child(Icon::new(IconName::FileText).small())
+                    .child(
+                        Icon::new(if directory {
+                            IconName::Folder
+                        } else {
+                            IconName::FileText
+                        })
+                        .small(),
+                    )
                     .child(div().flex_1().min_w_0().child(Input::new(&input).small()))
                     .into_any_element(),
                 #[cfg(unix)]
@@ -3602,14 +3617,32 @@ impl Reader {
                             d.text_color(p.text_muted).opacity(0.75)
                         })
                         .child(if directory {
-                            Icon::new(if row.expanded {
-                                IconName::ChevronDown
-                            } else {
-                                IconName::ChevronRight
-                            })
-                            .xsmall()
-                            .text_color(tokens.text_faint)
-                            .into_any_element()
+                            let toggle_entity = entity.clone();
+                            let toggle_row = row.clone();
+                            div()
+                                .id(SharedString::from(format!(
+                                    "folder-disclosure-{}",
+                                    row.path
+                                )))
+                                .on_click(move |event, window, cx| {
+                                    cx.stop_propagation();
+                                    if event.click_count() != 1 {
+                                        return;
+                                    }
+                                    let _ = toggle_entity.update(cx, |this, cx| {
+                                        this.activate_tree_row(&toggle_row, window, cx)
+                                    });
+                                })
+                                .child(
+                                    Icon::new(if row.expanded {
+                                        IconName::ChevronDown
+                                    } else {
+                                        IconName::ChevronRight
+                                    })
+                                    .xsmall()
+                                    .text_color(tokens.text_faint),
+                                )
+                                .into_any_element()
                         } else {
                             div().w(px(14.)).flex_none().into_any_element()
                         })
@@ -3655,6 +3688,10 @@ impl Reader {
                                             window,
                                             cx,
                                         )
+                                    } else if directory && event.click_count() != 2 {
+                                        this.tree.cursor = Some(row.path.clone());
+                                        this.tree_focus.focus(window, cx);
+                                        cx.notify();
                                     } else {
                                         this.activate_tree_row(&row, window, cx)
                                     }
@@ -4998,7 +5035,7 @@ enum SideItem {
     #[cfg(unix)]
     CreateError(String),
     #[cfg(unix)]
-    Rename(Entity<InputState>, usize),
+    Rename(Entity<InputState>, usize, bool),
 }
 
 #[cfg(unix)]

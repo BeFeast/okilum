@@ -63,6 +63,7 @@ pub(super) struct Renaming {
     pub input: Entity<InputState>,
     pub error: Option<String>,
     error_input: Option<String>,
+    directory: bool,
     _subscription: Subscription,
 }
 
@@ -111,11 +112,7 @@ impl Reader {
 
     pub(super) fn rename_tree_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(path) = self.tree.cursor.clone() {
-            if self.tree.cursor_folder().as_deref() == Some(path.as_str()) {
-                self.tree_key(TreeKey::Open, window, cx);
-            } else {
-                self.begin_rename(path, window, cx);
-            }
+            self.begin_rename(path, window, cx);
         }
     }
 
@@ -128,13 +125,16 @@ impl Reader {
         if self.note_move_pending || self.trash_pending {
             return;
         }
-        if !Path::new(&path)
-            .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("md"))
+        let directory =
+            std::fs::symlink_metadata(self.vault_root.join(&path)).is_ok_and(|m| m.is_dir());
+        if (!directory
+            && !Path::new(&path)
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("md")))
             || self.loading.as_ref().is_some_and(|l| l.active)
         {
             self.link_notice =
-                Some("Select a Markdown note and wait for loading to finish.".into());
+                Some("Select a note or folder and wait for loading to finish.".into());
             cx.notify();
             return;
         }
@@ -144,7 +144,16 @@ impl Reader {
             return;
         }
         self.creation = None;
+        let was_expanded = self
+            .tree
+            .rows
+            .iter()
+            .any(|row| row.path == path && row.expanded);
         self.reveal_in_tree(&path, window, cx);
+        if directory && !was_expanded {
+            self.tree.toggle(&path);
+        }
+        self.tree_revealed = path.clone();
         let input = cx.new(|cx| {
             let mut input = InputState::new(window, cx).placeholder("Path inside vault");
             input.set_value(path.clone(), window, cx);
@@ -178,6 +187,7 @@ impl Reader {
             input,
             error: None,
             error_input: None,
+            directory,
             _subscription: subscription,
         });
         cx.notify();
@@ -185,6 +195,9 @@ impl Reader {
 
     pub(super) fn cancel_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.renaming = None;
+        // Ending an inline rename is not document navigation. Keep the selected
+        // folder's expansion instead of revealing its open descendant again.
+        self.tree_revealed = self.selected_file().to_owned();
         self.tree_focus.focus(window, cx);
         cx.notify();
     }
@@ -196,7 +209,7 @@ impl Reader {
         let from = rename.path.clone();
         let value = rename.input.read(cx).value().to_string();
         let mut destination = PathBuf::from(&value);
-        if destination.extension().is_none() {
+        if !rename.directory && destination.extension().is_none() {
             destination.set_extension("md");
         }
         if rename.root == self.vault_root && destination == Path::new(&from) {
@@ -220,6 +233,17 @@ impl Reader {
         cx.notify();
     }
 
+    pub(super) fn remap_move_sidebar(&mut self, from: &str, to: &str, cx: &mut Context<Self>) {
+        for path in &mut self.sidebar.pinned {
+            *path = tessera_core::link_rewrite::moved_path(path, from, to);
+        }
+        for (path, _) in &mut self.sidebar.recent {
+            *path = tessera_core::link_rewrite::moved_path(path, from, to);
+        }
+        self.tree_revealed = tessera_core::link_rewrite::moved_path(&self.tree_revealed, from, to);
+        self.save_sidebar(cx);
+    }
+
     fn start_move_preview(
         &mut self,
         destination: &Path,
@@ -232,12 +256,15 @@ impl Reader {
             "Wait for loading to finish"
         );
         self.check_move_editors(&[from.to_owned()], cx)?;
+        let directory = std::fs::symlink_metadata(self.vault_root.join(from))?.is_dir();
         let other_source_editor = from == self.current_rel && self.source_has_other_editor(cx);
         let state = self
             .session_directory
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("No recovery storage is available"))?;
-        let guard = if (from != self.current_rel || self.editing.is_none()) && !other_source_editor
+        let guard = if !directory
+            && (from != self.current_rel || self.editing.is_none())
+            && !other_source_editor
         {
             let editor =
                 FileEditor::open(&self.vault_root.join(from), &state.join("editor-drafts"))?;
@@ -249,8 +276,8 @@ impl Reader {
         } else {
             None
         };
-        let mut path = destination.to_path_buf();
-        if path.extension().is_none() {
+        let mut path: PathBuf = destination.components().collect();
+        if !directory && path.extension().is_none() {
             path.set_extension("md");
         }
         let to = path
@@ -259,7 +286,9 @@ impl Reader {
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("Use a UTF-8 filename"))?
             .to_owned();
-        MovePlan::prepare(&self.vault_root, Path::new(from), Path::new(&to))?;
+        if !directory {
+            MovePlan::prepare(&self.vault_root, Path::new(from), Path::new(&to))?;
+        }
         let destination_guard =
             FileEditor::reserve_destination(&path, &state.join("editor-drafts"))?;
         let root = self.vault_root.clone();
@@ -361,7 +390,7 @@ impl Reader {
                                 && this.editing.is_some() == was_editing,
                             "The open note changed; preview again"
                         );
-                        this.check_move_editors(&links.affected_paths(), cx)?;
+                        this.check_move_editors(&links.editor_paths(), cx)?;
                         Ok(PendingMove {
                             links,
                             root,
@@ -415,7 +444,11 @@ impl Reader {
             let close = send.clone();
             let enter = send.clone();
             dialog
-                .title("Rename / move note")
+                .title(if display.directory.is_some() {
+                    "Rename / move folder"
+                } else {
+                    "Rename / move note"
+                })
                 .on_ok(move |_, _, _| {
                     let _ = enter.try_send(Some(true));
                     true
@@ -461,6 +494,7 @@ impl Reader {
                         .gap_2()
                         .child(
                             Button::new("move-update")
+                                .debug_selector(|| "move-update".into())
                                 .primary()
                                 .label(move_confirmation_label(&display))
                                 .on_click(move |_, window, cx| {
@@ -507,7 +541,7 @@ impl Reader {
                 !self.loading.as_ref().is_some_and(|l| l.active),
                 "Loading changed. Preview again"
             );
-            self.check_move_editors(&pending.links.affected_paths(), cx)?;
+            self.check_move_editors(&pending.links.editor_paths(), cx)?;
             drop(pending.guard.take());
             drop(pending.destination_guard.take());
             let mut selected = pending.links.clone();
@@ -526,9 +560,14 @@ impl Reader {
             }
         };
         self.note_move_pending = true;
-        window.open_dialog(cx, |dialog, _, _| {
+        let directory = pending.links.directory.is_some();
+        window.open_dialog(cx, move |dialog, _, _| {
             dialog
-                .title("Moving note…")
+                .title(if directory {
+                    "Moving folder…"
+                } else {
+                    "Moving note…"
+                })
                 .overlay_closable(false)
                 .close_button(false)
                 .keyboard(false)
@@ -581,10 +620,25 @@ impl Reader {
                     removed: std::collections::BTreeSet::from([pending.from.clone()]),
                     ..Default::default()
                 };
+                if pending.links.directory.is_some() {
+                    changes.directories.insert(pending.from.clone());
+                    changes.directories.insert(pending.to.clone());
+                    changes
+                        .changed
+                        .extend(pending.links.affected_paths().iter().map(|p| {
+                            tessera_core::link_rewrite::moved_path(p, &pending.from, &pending.to)
+                        }));
+                }
                 if update {
                     changes
                         .changed
-                        .extend(pending.links.changes.iter().map(|c| c.path.clone()));
+                        .extend(pending.links.changes.iter().map(|c| {
+                            tessera_core::link_rewrite::moved_path(
+                                &c.path,
+                                &pending.from,
+                                &pending.to,
+                            )
+                        }));
                 }
                 if self.vault_root == pending.root {
                     self.queue_vault_mutation(changes, cx);
@@ -593,22 +647,31 @@ impl Reader {
                 drop(pending.guard);
                 drop(pending.destination_guard);
                 for path in &mut self.history {
-                    if *path == pending.from {
-                        *path = pending.to.clone();
+                    *path =
+                        tessera_core::link_rewrite::moved_path(path, &pending.from, &pending.to);
+                }
+                self.remap_move_sidebar(&pending.from, &pending.to, cx);
+                let next_current = tessera_core::link_rewrite::moved_path(
+                    &self.current_rel,
+                    &pending.from,
+                    &pending.to,
+                );
+                let showing_file = self.file_preview.is_some();
+                if let Some(file) = &self.file_preview {
+                    let next = tessera_core::link_rewrite::moved_path(
+                        &file.rel,
+                        &pending.from,
+                        &pending.to,
+                    );
+                    if next != file.rel {
+                        self.preview_file(&next, window, cx);
                     }
                 }
-                for path in &mut self.sidebar.pinned {
-                    if *path == pending.from {
-                        *path = pending.to.clone();
-                    }
+                if showing_file {
+                    self.current_rel = next_current.clone();
+                    self.current_title = self.vault.note_title(&next_current);
                 }
-                for (path, _) in &mut self.sidebar.recent {
-                    if *path == pending.from {
-                        *path = pending.to.clone();
-                    }
-                }
-                self.save_sidebar(cx);
-                if self.current_rel != pending.from {
+                if showing_file || next_current == self.current_rel {
                     self.sync_move_input(window, cx);
                     if let Some(warning) = moved.warning {
                         self.link_notice = Some(warning);
@@ -631,22 +694,20 @@ impl Reader {
                     self.document_preparation_generation.wrapping_add(1);
                 let success_message =
                     move_message(&pending.from, &pending.to, update.then_some(&pending.links));
-                let document =
-                    tessera_core::render::reader_document(&self.vault, &pending.to).map(|d| {
-                        prepared_links::PreparedDocument {
-                            source: d.rendered,
-                            original: Some(d.original_body),
-                            identities: d.links,
-                            frontmatter: d.frontmatter,
-                        }
+                let document = tessera_core::render::reader_document(&self.vault, &next_current)
+                    .map(|d| prepared_links::PreparedDocument {
+                        source: d.rendered,
+                        original: Some(d.original_body),
+                        identities: d.links,
+                        frontmatter: d.frontmatter,
                     });
                 // Even a concurrent deletion/read failure must not leave the UI
                 // pointing at the old path after a successful rename.
-                self.current_rel = pending.to.clone();
-                self.current_title = self.vault.note_title(&pending.to);
+                self.current_rel = next_current.clone();
+                self.current_title = self.vault.note_title(&next_current);
                 self.accept_prepared_document(
                     prepared_links::DocumentRequest {
-                        rel: pending.to,
+                        rel: next_current,
                         jump: None,
                         heading: None,
                         history_index: None,
@@ -1234,5 +1295,215 @@ mod tests {
             assert!(reader.editing.is_some());
         });
         std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[gpui::test]
+    fn folder_keys_rename_without_toggling_and_move_updates_descendant_links(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            cx.set_reduce_motion(true);
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir_all(root.join("Folder/sub")).unwrap();
+        let root = root.canonicalize().unwrap();
+        std::fs::write(root.join("Folder/a.md"), "# A\r\nExact bytes\r\n").unwrap();
+        std::fs::write(root.join("Ref.md"), "[[Folder/a|alias]]").unwrap();
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        open_path: Some(root.join("Folder/a.md")),
+                        index_dir: Some(temp.path().join("index")),
+                        session_directory: Some(temp.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            r.reveal_in_tree("Folder", window, cx);
+            r.tree.set_subtree("Folder", false);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        for key in ["f2", "enter"] {
+            visual.simulate_keystrokes(key);
+            visual.run_until_parked();
+            reader.read_with(visual, |r, _| {
+                assert!(r.renaming.as_ref().unwrap().directory);
+                assert!(
+                    !r.tree
+                        .rows
+                        .iter()
+                        .find(|row| row.path == "Folder")
+                        .unwrap()
+                        .expanded
+                );
+            });
+            visual.simulate_keystrokes("enter");
+            visual.run_until_parked();
+            reader.read_with(visual, |r, _| {
+                assert!(r.renaming.is_none());
+                assert!(!r.note_move_pending);
+            });
+        }
+        assert!(!root.join("Folder.md").exists());
+        visual.simulate_keystrokes("right");
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert!(
+                r.tree
+                    .rows
+                    .iter()
+                    .find(|row| row.path == "Folder")
+                    .unwrap()
+                    .expanded
+            )
+        });
+        visual.simulate_keystrokes("right left");
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert_eq!(r.tree.cursor.as_deref(), Some("Folder"))
+        });
+        visual.simulate_keystrokes("left");
+        visual.run_until_parked();
+        #[cfg(target_os = "macos")]
+        visual.simulate_keystrokes("cmd-down");
+        #[cfg(not(target_os = "macos"))]
+        visual.simulate_keystrokes("ctrl-down");
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert!(
+                r.tree
+                    .rows
+                    .iter()
+                    .find(|row| row.path == "Folder")
+                    .unwrap()
+                    .expanded
+            )
+        });
+        let row = visual.debug_bounds("tree-row-Folder").unwrap();
+        let point = point(row.left() + px(65.), row.center().y);
+        visual.simulate_click(point, Modifiers::default());
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert!(
+                r.tree
+                    .rows
+                    .iter()
+                    .find(|row| row.path == "Folder")
+                    .unwrap()
+                    .expanded,
+                "single folder click only selects"
+            )
+        });
+        visual.simulate_event(MouseDownEvent {
+            position: point,
+            modifiers: Modifiers::default(),
+            button: MouseButton::Left,
+            click_count: 2,
+            first_mouse: false,
+        });
+        visual.simulate_event(MouseUpEvent {
+            position: point,
+            modifiers: Modifiers::default(),
+            button: MouseButton::Left,
+            click_count: 2,
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert!(
+                !r.tree
+                    .rows
+                    .iter()
+                    .find(|row| row.path == "Folder")
+                    .unwrap()
+                    .expanded,
+                "double click toggles once"
+            )
+        });
+        reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
+        visual.run_until_parked();
+        visual.simulate_input("Unsaved descendant");
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            r.begin_rename("Folder".into(), window, cx);
+            assert!(r.renaming.is_none());
+            assert!(r.link_notice.as_ref().unwrap().contains("unsaved edits"));
+            assert!(root.join("Folder/a.md").exists());
+        });
+        #[cfg(target_os = "macos")]
+        visual.simulate_keystrokes("cmd-z");
+        #[cfg(not(target_os = "macos"))]
+        visual.simulate_keystrokes("ctrl-z");
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            assert!(r.save_source(cx));
+            r.toggle_source(window, cx);
+            r.link_notice = None;
+            r.reveal_in_tree("Folder", window, cx);
+        });
+        visual.run_until_parked();
+        visual.simulate_keystrokes("f2");
+        visual.run_until_parked();
+        visual.simulate_input("Новое 🧠//");
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        if let Some(scan) = visual.debug_bounds("scan-move-links") {
+            visual.simulate_click(scan.center(), Modifiers::default());
+            visual.run_until_parked();
+        }
+        let confirm = visual
+            .debug_bounds("move-update")
+            .expect("folder link preview");
+        visual.simulate_click(confirm.center(), Modifiers::default());
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert!(!r.note_move_pending, "{:?}", r.link_notice);
+            assert_eq!(r.current_rel, "Новое 🧠/a.md", "{:?}", r.link_notice);
+        });
+        assert!(!root.join("Folder").exists());
+        assert!(root.join("Новое 🧠/sub").is_dir());
+        assert_eq!(
+            std::fs::read(root.join("Новое 🧠/a.md")).unwrap(),
+            b"# A\r\nExact bytes\r\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("Ref.md")).unwrap(),
+            "[[Новое 🧠/a|alias]]"
+        );
+        std::fs::write(root.join("Новое 🧠/asset.bin"), [0, 255, 128]).unwrap();
+        reader.update_in(visual, |r, window, cx| {
+            r.preview_file("Новое 🧠/asset.bin", window, cx);
+            r.begin_rename("Новое 🧠".into(), window, cx);
+        });
+        visual.run_until_parked();
+        visual.simulate_input("Again");
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        let confirm = visual
+            .debug_bounds("move-update")
+            .expect("second folder preview");
+        visual.simulate_click(confirm.center(), Modifiers::default());
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert_eq!(r.selected_file(), "Again/asset.bin", "{:?}", r.link_notice);
+            assert!(r.file_preview.is_some());
+        });
+        assert_eq!(
+            std::fs::read(root.join("Again/asset.bin")).unwrap(),
+            [0, 255, 128]
+        );
     }
 }

@@ -9,16 +9,23 @@ use std::{
     path::{Component, Path},
 };
 
+mod directory;
+pub use directory::{DirectoryMovePlan, DirectorySnapshot};
+
 fn parent(root: &Path, relative: &Path) -> Result<(File, OsString)> {
-    let parts: Vec<_> = relative.components().collect();
-    if parts.is_empty() || parts.iter().any(|p| !matches!(p, Component::Normal(_))) {
-        bail!("Choose a note inside the open folder");
-    }
     if !relative
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("md"))
     {
         bail!("Use a Markdown (.md) filename");
+    }
+    parent_any(root, relative)
+}
+
+fn parent_any(root: &Path, relative: &Path) -> Result<(File, OsString)> {
+    let parts: Vec<_> = relative.components().collect();
+    if parts.is_empty() || parts.iter().any(|p| !matches!(p, Component::Normal(_))) {
+        bail!("Choose a note inside the open folder");
     }
     let mut dir = open(
         root,
