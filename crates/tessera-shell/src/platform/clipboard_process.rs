@@ -15,7 +15,13 @@ impl Drop for Reap {
     fn drop(&mut self) {
         // Kill is harmless after a successful wait; wait also reaps every early return.
         let _ = self.0.kill();
-        let _ = self.0.wait();
+        let status = self.0.wait();
+        #[cfg(all(test, target_os = "linux"))]
+        tests::REAPED.with(|reaped| {
+            *reaped.borrow_mut() = Some((self.0.id(), status));
+        });
+        #[cfg(not(all(test, target_os = "linux")))]
+        let _ = status;
     }
 }
 
@@ -103,6 +109,12 @@ fn decode(bytes: &[u8]) -> Result<Option<String>, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Capture the actual child handle's wait result, not a reusable /proc PID.
+    // read and its RAII cleanup are synchronous; parallel tests use separate slots.
+    #[cfg(target_os = "linux")]
+    thread_local! {
+        pub(super) static REAPED: std::cell::RefCell<Option<(u32, std::io::Result<std::process::ExitStatus>)>> = const { std::cell::RefCell::new(None) };
+    }
     fn shell(script: &str) -> Command {
         let mut command = Command::new("/bin/sh");
         command.args(["-c", script]);
@@ -133,10 +145,30 @@ mod tests {
         } else {
             TIMEOUT
         };
+        REAPED.with(|reaped| *reaped.borrow_mut() = None);
         let result = read(&mut command, start + duration, || cancel && marker.exists());
-        assert_eq!(result, Err(expected));
-        let pid = std::fs::read_to_string(&marker).unwrap();
-        assert!(!std::path::Path::new(&format!("/proc/{}", pid.trim())).exists());
+        assert_eq!(result.as_ref(), Err(&expected));
+        let pid: u32 = std::fs::read_to_string(&marker)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let (reaped_pid, status) = REAPED
+            .with(|reaped| reaped.borrow_mut().take())
+            .expect("read must run the child cleanup before returning");
+        assert_eq!(
+            reaped_pid, pid,
+            "observe the spawned reader, not another child"
+        );
+        let status = status.expect("wait must successfully reap the reader");
+        if matches!(expected, Error::Timeout | Error::Cancelled) {
+            use std::os::unix::process::ExitStatusExt as _;
+            assert_eq!(
+                status.signal(),
+                Some(9),
+                "the sleeping reader must be killed"
+            );
+        }
         std::fs::remove_file(marker).unwrap();
         assert!(start.elapsed() < Duration::from_secs(3));
     }
