@@ -93,11 +93,15 @@ pub fn destination(target: &str, wiki: bool) -> Destination {
             decode(f).trim().to_owned()
         }
     });
-    if heading.as_ref().is_some_and(|h| h.starts_with('^')) || path.contains('^') {
+    // `note#^id` lands on a block (#651); a `^` in the path is not Obsidian's.
+    if path.contains('^') {
         return Destination::Unsupported("Block references are not supported.");
     }
     if heading.as_ref().is_some_and(String::is_empty) {
         return Destination::Unsupported("The heading target is empty.");
+    }
+    if heading.as_deref() == Some("^") {
+        return Destination::Unsupported("The block target is empty.");
     }
     if !wiki && (path.contains(':') || path.contains('\\') || path.starts_with('!')) {
         return Destination::Unsupported("This URI or filesystem link is not supported.");
@@ -448,9 +452,19 @@ pub struct HeadingEntry {
     pub supported_container: bool,
 }
 
+/// A block ID (`^id`) and the top-level block a link to it lands on (#651).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockEntry {
+    pub id: String,
+    pub target: HeadingTarget,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HeadingInventory {
     pub entries: Vec<HeadingEntry>,
+    /// Block IDs, from the markers [`crate::obsidian::rewrite_block_ids`]
+    /// leaves in the Reader source. Empty for a source without them.
+    pub blocks: Vec<BlockEntry>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -458,6 +472,8 @@ pub enum HeadingFailure {
     Missing,
     Ambiguous,
     Unsupported,
+    MissingBlock,
+    AmbiguousBlock,
 }
 
 impl HeadingFailure {
@@ -466,6 +482,8 @@ impl HeadingFailure {
             Self::Missing => "No matching heading exists in the current document.",
             Self::Ambiguous => "Multiple headings have that name. Use a unique heading.",
             Self::Unsupported => "This heading is inside an unsupported container.",
+            Self::MissingBlock => "No block with that ID exists in the current document.",
+            Self::AmbiguousBlock => "Multiple blocks have that ID. Use a unique block ID.",
         }
     }
 }
@@ -479,9 +497,30 @@ impl HeadingInventory {
             .chain(source.match_indices('\n').map(|(i, _)| i + 1))
             .collect();
         let mut entries = Vec::new();
+        let mut blocks = Vec::new();
+        let mut previous_offset = 0;
         for (block, top) in root.children().enumerate() {
+            let top_offset = offsets[top.data.borrow().sourcepos.start.line.saturating_sub(1)];
             for node in top.descendants() {
                 let data = node.data.borrow();
+                let marker = match &data.value {
+                    NodeValue::HtmlBlock(h) => crate::obsidian::marker_id(&h.literal),
+                    NodeValue::HtmlInline(h) => crate::obsidian::marker_id(h),
+                    _ => None,
+                };
+                if let Some(id) = marker {
+                    // An ID alone on its line names the block before it.
+                    let alone = std::ptr::eq(node, top) && block > 0;
+                    blocks.push(BlockEntry {
+                        id: id.to_owned(),
+                        target: HeadingTarget {
+                            block: if alone { block - 1 } else { block },
+                            offset: if alone { previous_offset } else { top_offset },
+                            setext: false,
+                        },
+                    });
+                    continue;
+                }
                 let NodeValue::Heading(h) = &data.value else {
                     continue;
                 };
@@ -505,13 +544,22 @@ impl HeadingInventory {
                     supported_container: std::ptr::eq(node, top),
                 });
             }
+            previous_offset = top_offset;
         }
-        Self { entries }
+        Self { entries, blocks }
     }
 
     pub fn locate(&self, target: &str) -> Result<HeadingTarget, HeadingFailure> {
-        if target.starts_with('^') {
-            return Err(HeadingFailure::Unsupported);
+        if let Some(id) = target.strip_prefix('^') {
+            let mut matches = self
+                .blocks
+                .iter()
+                .filter(|b| b.id.eq_ignore_ascii_case(id.trim()));
+            let first = matches.next().ok_or(HeadingFailure::MissingBlock)?;
+            if matches.next().is_some() {
+                return Err(HeadingFailure::AmbiguousBlock);
+            }
+            return Ok(first.target.clone());
         }
         let mut matches = self
             .entries
@@ -531,9 +579,6 @@ impl HeadingInventory {
 /// Inventory all real headings before selecting a surface-supported landing.
 /// Duplicates, including headings in unsupported containers, never pick a winner.
 pub fn heading(source: &str, target: &str) -> Result<HeadingTarget, &'static str> {
-    if target.starts_with('^') {
-        return Err("Block references are not supported.");
-    }
     HeadingInventory::new(source)
         .locate(target)
         .map_err(HeadingFailure::reason)

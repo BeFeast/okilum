@@ -103,15 +103,23 @@ fn portable_corpus_has_exact_paths_fragments_and_scoped_outcomes() {
         assert_eq!(resolved.url, format!("tessera://attachment/{path}"));
         assert_eq!(resolved.heading, None);
     }
-    for target in ["../other/target", "../other/target.md#^sample-block"] {
-        assert_eq!(
-            links::resolve(target, false, &vault, "notes/start.md").status,
-            "unsupported"
-        );
+    assert_eq!(
+        links::resolve("../other/target", false, &vault, "notes/start.md").status,
+        "unsupported"
+    );
+    // Block references land on a block (#651), in both link grammars.
+    for (target, wiki) in [
+        ("../other/target.md#^sample-block", false),
+        ("other/target#^sample-block", true),
+    ] {
+        let resolved = links::resolve(target, wiki, &vault, "notes/start.md");
+        assert_eq!(resolved.status, "resolved", "{target}");
+        assert_eq!(resolved.heading.as_deref(), Some("^sample-block"));
     }
     assert_eq!(
-        links::resolve("other/target#^sample-block", true, &vault, "notes/start.md").status,
-        "unsupported"
+        links::resolve("other/target#^", true, &vault, "notes/start.md").status,
+        "unsupported",
+        "an empty block target is not a link to the note"
     );
     assert_eq!(
         std::fs::read_to_string(root.join("notes/start.md")).unwrap(),

@@ -495,7 +495,7 @@ pub fn reader_document(vault: &Vault, rel: &str) -> anyhow::Result<ReaderDocumen
 pub fn reader_document_from_source(vault: &Vault, from: &str, raw: &str) -> ReaderDocument {
     let body = without_frontmatter(raw);
     let mut links = Vec::new();
-    let rendered = process_source_collect(body, vault, from, true, &mut links);
+    let rendered = process_source_collect(body, vault, from, true, true, &mut links);
     ReaderDocument {
         rendered,
         original_body: body.to_string(),
@@ -623,34 +623,49 @@ fn read_source<'a>(vault: &Vault, rel: &'a str) -> anyhow::Result<(String, &'a s
 /// [`preprocess`] turns whatever is left into a plain link, which is also
 /// how an embed inside an embedded body becomes a link (depth 1).
 fn process_source(body: &str, vault: &Vault, from: &str, expand: bool) -> String {
-    process_source_collect(body, vault, from, expand, &mut Vec::new())
+    process_source_collect(body, vault, from, expand, false, &mut Vec::new())
 }
 
+/// `reader` adds the Obsidian presentation passes (#651): comments hidden,
+/// math as source, footnotes numbered, block IDs marked. The MCP source keeps
+/// the note as written.
 fn process_source_collect(
     body: &str,
     vault: &Vault,
     from: &str,
     expand: bool,
+    reader: bool,
     identities: &mut Vec<crate::document_links::prepared::LinkIdentity>,
 ) -> String {
-    let s = if expand {
-        expand_embeds_collect(body, vault, from, identities)
+    let body = if reader {
+        std::borrow::Cow::Owned(crate::obsidian::before_links(body))
     } else {
-        body.to_string()
+        std::borrow::Cow::Borrowed(body)
+    };
+    let s = if expand {
+        expand_embeds_collect(&body, vault, from, identities)
+    } else {
+        body.into_owned()
     };
     let s = preprocess(&s);
     let s = rewrite_source_images(&s, vault, from);
     let s = rewrite_source_links_collect(&s, vault, from, identities);
-    rewrite_highlights(&s)
+    let s = rewrite_highlights(&s);
+    if reader {
+        crate::obsidian::after_links(&s)
+    } else {
+        s
+    }
 }
 
 /// Heading-relevant Reader transforms over an already-read source snapshot.
 /// Standalone embeds retain the same fenced block boundaries as rendering, but
 /// their bodies are not read: fenced contents contribute no document anchors.
 pub fn reader_heading_source(vault: &Vault, rel: &str, raw: &str) -> String {
-    let structural =
-        expand_embeds_structure(without_frontmatter(raw), vault, rel, &mut Vec::new(), false);
-    process_source(&structural, vault, rel, false)
+    let body = crate::obsidian::before_links(without_frontmatter(raw));
+    let structural = expand_embeds_structure(&body, vault, rel, &mut Vec::new(), false);
+    let s = process_source(&structural, vault, rel, false);
+    crate::obsidian::after_links(&s)
 }
 
 /// Info-string tag of the fence an expanded embed is wrapped in. The shell's
@@ -710,6 +725,12 @@ fn expand_embeds_structure(
             let inner = cap[1].trim();
             let target = inner.split('|').next().unwrap_or("").trim();
             let (base, heading) = split_fragment(target);
+            // `![[note#^id]]` embeds one block (#651); split_fragment drops it.
+            let block = target
+                .split_once('#')
+                .and_then(|(_, f)| f.trim().strip_prefix('^'))
+                .filter(|id| !id.is_empty());
+            let heading = block.map_or(heading, |_| "");
             let ext = base.rsplit('.').next().unwrap_or("").to_lowercase();
             if crate::excalidraw::is_drawing(base)
                 || (!base.is_empty() && base.contains('.') && ext != "md")
@@ -749,7 +770,9 @@ fn expand_embeds_structure(
             } else {
                 vault.read_note(&path).ok().and_then(|raw| {
                     let body = without_frontmatter(&raw);
-                    if heading.is_empty() {
+                    if let Some(id) = block {
+                        crate::obsidian::block_section(body, id)
+                    } else if heading.is_empty() {
                         Some(body.to_string())
                     } else {
                         heading_section(body, heading)
@@ -758,12 +781,16 @@ fn expand_embeds_structure(
             };
             match body {
                 Some(body) => {
-                    let body = process_source_collect(&body, vault, &path, false, identities);
+                    let body = process_source_collect(&body, vault, &path, false, true, identities);
                     let fence = "~".repeat(tilde_fence_len(&body));
+                    let fragment = match block {
+                        Some(id) => format!("#^{id}"),
+                        None => fragment_suffix(heading),
+                    };
                     out.push_str(&format!(
                         "\n{fence}{EMBED_LANG} {}{}\n{}\n{fence}\n\n",
                         path.replace(' ', "%20"),
-                        fragment_suffix(heading),
+                        fragment,
                         body.trim_end_matches('\n')
                     ));
                 }
