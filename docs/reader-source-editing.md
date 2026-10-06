@@ -444,3 +444,19 @@ changed previews, existing destinations and orphaned destination drafts block th
 move. One atomic non-replacing directory rename moves the subtree; durable
 preimages support Recover link moves after partial link updates. Recovery refuses
 later external changes, including changes to binary assets.
+
+## Inline rename and Undo (#614)
+
+Enter in the tree commits ordinary note/folder renames directly. The field shows
+only the name, preserving the current parent; a typed folder/name chooses another
+vault-relative destination. Link discovery and application run in the background.
+The result replaces progress with one eight-second bottom toast and a glyph Undo.
+Undo uses that operation's retained preimages and refuses newer edits or another
+vault. Previous operations remain available through Recover link moves.
+
+Only changes affecting more than twenty notes, or containing unresolved links or
+unreadable sources, open the compact confirmation sheet. It shows five affected
+note names, an expandable remainder, and the unchanged entries. Cancel writes
+nothing; commit revalidates the preview. Name collisions, dirty editors and stale
+previews remain under the inline field. The existing revision checks, locks,
+non-overwrite writes and journals are unchanged.

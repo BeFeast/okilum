@@ -855,7 +855,7 @@ mod tests {
             assert!(!r
                 .sidebar_items()
                 .iter()
-                .any(|row| matches!(row, SideItem::CreateError(_))));
+                .any(|row| matches!(row, SideItem::CreateError(..))));
         });
         visual.update(|window, cx| {
             use gpui_component::WindowExt;
