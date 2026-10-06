@@ -36,3 +36,9 @@ dialog{border:1px solid var(--line);border-radius:10px;background:var(--surface)
  #mobile-settings-body button{display:flex;width:100%;min-height:44px;justify-content:flex-start;margin:0;padding:10px;border:0;font-size:13px}#mobile-settings-body #theme-toggle{width:100%;gap:10px}#mobile-settings-body #theme-toggle:after{content:'Appearance';font-size:13px}
  main{padding:16px 20px calc(84px + env(safe-area-inset-bottom))}.page-heading{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);padding:0;margin:0}
 }
+
+/* Header utilities share one centered hit area, independent of text metrics. */
+.account{gap:6px}.account #logout{display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;min-height:34px;padding:8px}
+#connection{display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;font-size:0;line-height:0}
+#connection:before{display:block;width:6px;height:6px;margin:0;background:var(--warning)}#connection[data-connected=true]:before{background:var(--success)}
+@media(max-width:760px){#connection{width:12px;height:40px}#mobile-settings-body #logout{gap:10px}#mobile-settings-body #logout:after{content:'Sign out';font-size:13px}}

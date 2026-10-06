@@ -4,6 +4,7 @@ const paths = {
  projects:'M3 6h7l2 2h9v12H3z',
  overview:'M4 4h6v6H4z M14 4h6v6h-6z M4 14h6v6H4z M14 14h6v6h-6z',
  plus:'M12 5v14 M5 12h14', refresh:'M20 7v5h-5 M4 17v-5h5 M6 7a7 7 0 0 1 12-1l2 6 M4 12l2 6a7 7 0 0 0 12-1',
+ logout:'M9 4H4v16h5 M10 12h11 M17 8l4 4-4 4',
  close:'M6 6l12 12 M6 18L18 6', theme:'M20 14A8 8 0 0 1 10 4a8 8 0 1 0 10 10',
  arrow:'M7 17L17 7 M7 7h10v10', back:'M19 12H5 M11 6l-6 6 6 6',
  issue:'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18',
@@ -19,7 +20,7 @@ export function mountShell(){
  function route(view){if(!['inbox','questions','projects','overview'].includes(view))view='inbox';document.body.dataset.view=view;window.scrollTo({top:0});document.title=`${view[0].toUpperCase()+view.slice(1)} · Tessera`;document.querySelectorAll('[data-nav]').forEach(b=>{b.setAttribute('aria-current',b.dataset.nav===view?'page':'false');});document.querySelectorAll('[data-screen]').forEach(s=>s.hidden=s.dataset.screen!==view);$('screen-title').textContent={inbox:'Inbox',questions:'Questions',projects:'Projects',overview:'Overview'}[view];}
  document.querySelectorAll('[data-nav]').forEach(b=>{b.prepend(icon(b.dataset.nav));b.onclick=()=>{history.replaceState(null,'',`?view=${b.dataset.nav}`);route(b.dataset.nav);};});
  route(new URL(location.href).searchParams.get('view'));
- for(const [id,name,label] of [['theme-toggle','theme','Switch color theme'],['project-refresh','refresh','Refresh project'],['executor-refresh','refresh','Refresh questions'],['forgejo-refresh','refresh','Refresh overview'],['launch-refresh','refresh','Refresh execution'],['close-detail','back','Back to Inbox'],['executor-close','back','Back to questions'],['overview-close','back','Back to overview']])glyph($(id),name,label);
+ for(const [id,name,label] of [['logout','logout','Sign out'],['theme-toggle','theme','Switch color theme'],['project-refresh','refresh','Refresh project'],['executor-refresh','refresh','Refresh questions'],['forgejo-refresh','refresh','Refresh overview'],['launch-refresh','refresh','Refresh execution'],['close-detail','back','Back to Inbox'],['executor-close','back','Back to questions'],['overview-close','back','Back to overview']])glyph($(id),name,label);
  for(const id of ['project-select','executor-project','forgejo-project','launch-project'])projectChoices($(id));
  const preferred=()=>matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';let theme;try{theme=localStorage.getItem('tessera-theme');}catch{}document.documentElement.dataset.theme=theme||preferred();
  const syncIcons=()=>{const dark=document.documentElement.dataset.theme==='dark';document.querySelector('.brand img').src=dark?'/icon-dark.svg':'/icon.svg';document.querySelectorAll('link[rel=icon]').forEach(link=>{link.media='all';link.href=dark?'/icon-dark.svg':'/icon.svg';});};syncIcons();
