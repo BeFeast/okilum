@@ -46,6 +46,7 @@ pub(super) fn plugins(view: TextView, reader: WeakEntity<Reader>) -> TextView {
             .id(("tasks-block", block.offset))
             .child(TasksList {
                 query: block.query.clone(),
+                offset: block.offset,
                 reader: reader.clone(),
             })
             .into_any_element()
@@ -55,6 +56,7 @@ pub(super) fn plugins(view: TextView, reader: WeakEntity<Reader>) -> TextView {
 #[derive(IntoElement)]
 struct TasksList {
     query: String,
+    offset: usize,
     reader: WeakEntity<Reader>,
 }
 struct Results {
@@ -64,6 +66,21 @@ struct Results {
     tasks: Vec<Task>,
     unsupported: Vec<String>,
     shown: usize,
+}
+impl Results {
+    fn refresh(&mut self, index: Arc<Index>, now: time::Date, source: &str) {
+        if !Arc::ptr_eq(&self.index, &index) || self.today != now || self.query != source {
+            let query = Query::parse(source, now);
+            self.tasks = index.query(&query);
+            self.unsupported = query.unsupported;
+            self.index = index;
+            self.today = now;
+            if self.query != source {
+                self.shown = 50;
+            }
+            self.query = source.to_owned();
+        }
+    }
 }
 fn today() -> time::Date {
     use chrono::Datelike;
@@ -92,8 +109,30 @@ impl RenderOnce for TasksList {
             return div().into_any_element();
         };
         let Some(index) = reader.read(cx).tasks_index.clone() else {
-            return div().text_sm().child("Indexing tasks…").into_any_element();
+            let loading = reader.read(cx).incremental_initializing
+                || reader
+                    .read(cx)
+                    .loading
+                    .as_ref()
+                    .is_some_and(|load| load.active);
+            return div()
+                .text_sm()
+                .debug_selector(move || {
+                    if loading {
+                        "tasks-indexing"
+                    } else {
+                        "tasks-unavailable"
+                    }
+                    .into()
+                })
+                .child(if loading {
+                    "Indexing tasks…"
+                } else {
+                    "Tasks unavailable: vault indexing did not complete. Reopen the vault to retry."
+                })
+                .into_any_element();
         };
+        let offset = self.offset;
         let now = today();
         let state = window.use_keyed_state("tasks-results", cx, |_, _cx| {
             #[cfg(not(test))]
@@ -113,17 +152,7 @@ impl RenderOnce for TasksList {
                 shown: 50,
             }
         });
-        state.update(cx, |s, _| {
-            if !Arc::ptr_eq(&s.index, &index) || s.today != now || s.query != self.query {
-                let query = Query::parse(&self.query, now);
-                s.tasks = index.query(&query);
-                s.unsupported = query.unsupported;
-                s.index = index;
-                s.today = now;
-                s.query = self.query;
-                s.shown = 50;
-            }
-        });
+        state.update(cx, |s, _| s.refresh(index, now, &self.query));
         let results = state.read(cx);
         let muted = cx.theme().muted_foreground;
         let mut list = v_flex().gap_2().py_2().w_full();
@@ -183,7 +212,7 @@ impl RenderOnce for TasksList {
                             .xsmall()
                             .ghost()
                             .label(format!("{}:{}", task.path, task.line))
-                            .debug_selector(move || format!("task-source-{ix}"))
+                            .debug_selector(move || format!("task-source-{offset}-{ix}"))
                             .on_click(move |_, window, cx| {
                                 let _ = reader.update(cx, |this, cx| {
                                     if this.vault_root == root {
@@ -218,11 +247,13 @@ impl Reader {
     /// an explicit notice instead of selecting another task's first match.
     pub(super) fn land_task_text(&mut self, text: String, cx: &mut Context<Self>) {
         let generation = self.navigation_generation;
+        let landing = self.landing_generation;
         cx.spawn(async move |reader, cx| {
             for _ in 0..100 {
                 cx.background_executor().timer(Duration::from_millis(50)).await;
                 let done = reader.update(cx, |this, cx| {
-                    if this.navigation_generation != generation { return true; }
+                    if this.navigation_generation != generation || this.landing_generation != landing { return true; }
+                    if this.link_notice.is_some() { return true; }
                     if this.pending_landing.is_some() { return false; }
                     let unique = this.content.update(cx, |state, cx| {
                         state.set_search_query(text.clone(), cx);
@@ -245,6 +276,25 @@ impl Reader {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    #[test]
+    fn index_refresh_keeps_expanded_pagination() {
+        let mut results = Results {
+            index: Arc::default(),
+            today: today(),
+            query: "not done".into(),
+            tasks: Vec::new(),
+            unsupported: Vec::new(),
+            shown: 150,
+        };
+        let mut index = Index::default();
+        index.replace("new.md", "- [ ] New task");
+        results.refresh(Arc::new(index), today(), "not done");
+        assert_eq!(results.tasks.len(), 1);
+        assert_eq!(results.shown, 150);
+        results.refresh(results.index.clone(), today(), "done");
+        assert_eq!(results.shown, 50);
+    }
 
     #[gpui::test]
     fn native_queries_refresh_incrementally_and_open_source_without_writes(
@@ -281,15 +331,17 @@ mod tests {
             Root::new(reader, window, cx)
         });
         let reader = entity.unwrap();
+        let open_source = "task-source-9-0";
+        let done_source = "task-source-32-0";
         visual.run_until_parked();
         assert!(
-            visual.debug_bounds("task-source-0").is_some(),
+            visual.debug_bounds(open_source).is_some(),
             "positive control: a real query result rendered"
         );
         assert!(visual.debug_bounds("tasks-count-1").is_some());
         assert!(visual.debug_bounds("tasks-count-0").is_some());
         assert!(visual.debug_bounds("tasks-unsupported").is_some());
-        let button = visual.debug_bounds("task-source-0").unwrap();
+        let button = visual.debug_bounds(open_source).unwrap();
         visual.simulate_click(button.center(), Modifiers::default());
         visual.run_until_parked();
         visual.executor().advance_clock(Duration::from_millis(300));
@@ -326,7 +378,7 @@ mod tests {
             assert_eq!(index.query(&Query::parse("done", today())).len(), 1);
         });
         assert!(
-            visual.debug_bounds("task-source-0").is_some(),
+            visual.debug_bounds(done_source).is_some(),
             "completed query now renders its result"
         );
         std::fs::remove_file(root.join("Work.md")).unwrap();
@@ -342,12 +394,31 @@ mod tests {
         });
         visual.run_until_parked();
         assert!(
-            visual.debug_bounds("task-source-0").is_none(),
+            visual.debug_bounds(done_source).is_none(),
             "removal invalidates visible results"
         );
         assert_eq!(
             std::fs::read_to_string(root.join("Dashboard.md")).unwrap(),
             dashboard
         );
+        reader.update(visual, |r, cx| {
+            r.tasks_index = None;
+            assert!(!r.loading.as_ref().unwrap().active && !r.incremental_initializing);
+            r.link_notice =
+                Some("The document did not finish rendering at the requested position.".into());
+            r.land_task_text("missing".into(), cx);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_millis(300));
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("tasks-unavailable").is_some());
+        assert!(visual.debug_bounds("tasks-indexing").is_none());
+        reader.update(visual, |r, _| {
+            assert_eq!(
+                r.link_notice.as_deref(),
+                Some("The document did not finish rendering at the requested position.")
+            )
+        });
     }
 }

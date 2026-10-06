@@ -112,11 +112,14 @@ impl Reader {
             worker_cancel.check()?;
             let start = std::time::Instant::now();
             let batch = state.apply(&worker_changes, &mut |_, _| worker_cancel.check())?;
-            for path in &batch.removed { Arc::make_mut(&mut tasks).remove(path); }
+            let mut next_tasks = (*tasks).clone();
+            let mut tasks_changed = false;
+            for path in &batch.removed { tasks_changed |= next_tasks.remove(path); }
             for path in &batch.changed {
-                if let Some(raw) = state.snapshot.source(path) { Arc::make_mut(&mut tasks).replace(path, &raw); }
-                else { Arc::make_mut(&mut tasks).remove(path); }
+                tasks_changed |= if let Some(raw) = state.snapshot.source(path) { next_tasks.replace(path, &raw) }
+                    else { next_tasks.remove(path) };
             }
+            if tasks_changed { tasks = Arc::new(next_tasks); }
             let source_ms = start.elapsed().as_secs_f64() * 1000.;
             let searcher = if batch.affected.is_empty() || old_searcher.is_session() { old_searcher } else { Arc::new(old_searcher.fork_session()?) };
             let mut sources = std::collections::HashMap::new();

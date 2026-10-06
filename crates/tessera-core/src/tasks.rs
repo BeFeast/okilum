@@ -114,16 +114,25 @@ pub struct Index {
     notes: BTreeMap<String, Arc<Vec<Task>>>,
 }
 impl Index {
-    pub fn replace(&mut self, path: &str, source: &str) {
+    /// Returns whether the projected task set changed (ordinary prose edits
+    /// must not invalidate every visible query).
+    pub fn replace(&mut self, path: &str, source: &str) -> bool {
         let tasks = parse(path, source);
         if tasks.is_empty() {
-            self.remove(path);
+            self.remove(path)
+        } else if self
+            .notes
+            .get(path)
+            .is_some_and(|old| old.as_ref() == &tasks)
+        {
+            false
         } else {
             self.notes.insert(path.to_owned(), Arc::new(tasks));
+            true
         }
     }
-    pub fn remove(&mut self, path: &str) {
-        self.notes.remove(path);
+    pub fn remove(&mut self, path: &str) -> bool {
+        self.notes.remove(path).is_some()
     }
     pub fn query(&self, query: &Query) -> Vec<Task> {
         if !query.unsupported.is_empty() {
@@ -381,6 +390,20 @@ mod tests {
         i.replace("a.md", "No tasks now");
         assert!(run(&i, "").is_empty());
     }
+    #[test]
+    fn unchanged_projection_does_not_invalidate_queries() {
+        let mut index = Index::default();
+        assert!(!index.replace("prose.md", "Ordinary prose"));
+        assert!(!index.remove("missing.md"));
+        assert!(index.replace("task.md", "- [ ] Task\n\nProse"));
+        assert!(!index.replace("task.md", "- [ ] Task\n\nChanged prose"));
+        assert!(
+            index.replace("task.md", "New paragraph\n\n- [ ] Task\n"),
+            "source line changed"
+        );
+        assert!(index.remove("task.md"));
+    }
+
     #[test]
     fn navigation_uses_rendered_inline_text_and_rejects_lossy_projection() {
         let source = "- [ ] Use `code` and **bold**\n";
