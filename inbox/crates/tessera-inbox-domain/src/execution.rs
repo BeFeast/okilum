@@ -87,6 +87,9 @@ pub struct QuestionField {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Question {
+    /// Display metadata, never part of source identity or reply revision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_title: Option<String>,
     pub id: Uuid,
     pub project_id: Uuid,
     pub source: QuestionSource,
@@ -161,7 +164,11 @@ impl SaveBrief {
 impl Question {
     pub fn validate(&self) -> Result<(), InvalidExecution> {
         let s = &self.source;
-        if self.id.is_nil()
+        if self
+            .thread_title
+            .as_ref()
+            .is_some_and(|title| !bounded(title, 1024, true))
+            || self.id.is_nil()
             || self.project_id.is_nil()
             || ![
                 &s.instance_id,

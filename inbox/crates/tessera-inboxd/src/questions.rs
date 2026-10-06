@@ -126,10 +126,13 @@ impl Store {
                 return Err(Error::OperationConflict);
             }
             if sequence == cursor {
-                if body != prior {
+                // A bridge upgrade may enrich display metadata at the same source cursor.
+                let mut comparable = question.clone();
+                comparable.thread_title = previous.thread_title.clone();
+                if comparable != previous {
                     return Err(Error::OperationConflict);
                 }
-                tx.execute("UPDATE execution_questions SET observed_at=?1 WHERE owner_id=?2 AND question_id=?3", params![seconds(),who,question.id.to_string()])?;
+                tx.execute("UPDATE execution_questions SET observed_at=?1,body=?4 WHERE owner_id=?2 AND question_id=?3", params![seconds(),who,question.id.to_string(),body])?;
                 tx.commit()?;
                 return Ok(());
             }

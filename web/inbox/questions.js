@@ -46,3 +46,13 @@ export function replyJournal(storage, owner) {
     clear(id) { storage.removeItem(prefix + id); },
   };
 }
+
+// Old bridge observations combined label and description. Keep meaningful detail,
+// but remove a repeated label or a redundant "Choose X" instruction at display time.
+export function optionLabel(label) {
+  const parts = label.split(' — ');
+  if (parts.length !== 2) return label;
+  const normalize = value => value.trim().replace(/[.!]+$/, '').toLocaleLowerCase();
+  const [name, description] = parts;
+  return [normalize(name), `choose ${normalize(name)}`].includes(normalize(description)) ? name : label;
+}

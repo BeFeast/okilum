@@ -20,6 +20,7 @@ fn fixture(store: &mut Store) -> (OwnerId, Question, Reply) {
         )
         .unwrap();
     let q = Question {
+        thread_title: None,
         id: Uuid::new_v4(),
         project_id: project,
         source: QuestionSource {
@@ -313,4 +314,32 @@ fn stale_source_blocks_new_answers_but_exact_replay_survives_and_observation_ref
         store.execution_reply(who, r.operation_id).unwrap().unwrap(),
         original
     );
+}
+
+#[test]
+fn display_title_enrichment_keeps_cursor_and_reply_snapshot_guards() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&dir.path().join("db")).unwrap();
+    let (who, mut q, reply) = fixture(&mut store);
+    let original = store.prepare_execution_reply(who, &reply).unwrap();
+    q.thread_title = Some("Inbox execution pilot".into());
+    store.observe_execution_question(who, &q, 1).unwrap();
+    assert_eq!(
+        store
+            .execution_question(who, q.id)
+            .unwrap()
+            .unwrap()
+            .question
+            .thread_title,
+        q.thread_title
+    );
+    assert_eq!(
+        store.prepare_execution_reply(who, &reply).unwrap(),
+        original
+    );
+    q.fields[0].prompt = "Changed consent".into();
+    assert!(matches!(
+        store.observe_execution_question(who, &q, 1),
+        Err(Error::OperationConflict)
+    ));
 }

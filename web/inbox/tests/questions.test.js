@@ -29,3 +29,10 @@ test('storage failure does not return a saved intent',()=>{
   const journal=replyJournal({getItem:()=>null,setItem:()=>{throw new Error('quota');}},'owner');
   assert.throws(()=>journal.put(buildReply(question(),values,'op')),/quota/);
 });
+
+ test('option display removes redundant descriptions without changing meaningful detail', async () => {
+ const {optionLabel} = await import('../questions.js');
+ assert.equal(optionLabel('Blue — Choose Blue.'), 'Blue');
+ assert.equal(optionLabel('Blue — Blue'), 'Blue');
+ assert.equal(optionLabel('Blue — Recommended for the pilot'), 'Blue — Recommended for the pilot');
+ });

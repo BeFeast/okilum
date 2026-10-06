@@ -22,7 +22,8 @@ export function mountShell(){
  for(const [id,name,label] of [['theme-toggle','theme','Switch color theme'],['project-refresh','refresh','Refresh project'],['executor-refresh','refresh','Refresh questions'],['forgejo-refresh','refresh','Refresh overview'],['launch-refresh','refresh','Refresh execution'],['close-detail','back','Back to Inbox'],['executor-close','back','Back to questions'],['overview-close','back','Back to overview']])glyph($(id),name,label);
  for(const id of ['project-select','executor-project','forgejo-project','launch-project'])projectChoices($(id));
  const preferred=()=>matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';let theme;try{theme=localStorage.getItem('tessera-theme');}catch{}document.documentElement.dataset.theme=theme||preferred();
- $('theme-toggle').onclick=()=>{const t=document.documentElement.dataset.theme==='dark'?'light':'dark';document.documentElement.dataset.theme=t;try{localStorage.setItem('tessera-theme',t);}catch{}};
+ const syncIcons=()=>{const dark=document.documentElement.dataset.theme==='dark';document.querySelector('.brand img').src=dark?'/icon-dark.svg':'/icon.svg';document.querySelectorAll('link[rel=icon]').forEach(link=>{link.media='all';link.href=dark?'/icon-dark.svg':'/icon.svg';});};syncIcons();
+ $('theme-toggle').onclick=()=>{const t=document.documentElement.dataset.theme==='dark'?'light':'dark';document.documentElement.dataset.theme=t;syncIcons();try{localStorage.setItem('tessera-theme',t);}catch{}};
  $('new-thought').prepend(icon('plus'));$('new-thought').onclick=()=>{route('inbox');$('capture-compose').open=true;$('thought').focus();};
  document.querySelectorAll('dialog.drawer').forEach(dialog=>{dialog.addEventListener('click',e=>{if(e.target===dialog){const r=dialog.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)dialog.close();}});});
 }

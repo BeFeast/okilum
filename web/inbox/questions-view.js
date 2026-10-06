@@ -1,4 +1,4 @@
-import { buildReply, questionStatus, replyJournal } from './questions.js';
+import { buildReply, questionStatus, replyJournal, optionLabel } from './questions.js';
 
 export function mountQuestions({ api, post, owner, online, storage = localStorage }) {
   const $ = id => document.getElementById(id);
@@ -96,15 +96,16 @@ export function mountQuestions({ api, post, owner, online, storage = localStorag
     const saved = operation?.request || pending;
     const display = saved || { answers: drafts.get(q.id) || [] };
     for (const field of q.fields) {
-      const group = el('fieldset'); group.dataset.fieldId = field.id;
-      group.append(el('legend',field.prompt));
+      const group = el('section',null,'answer-card'); group.dataset.fieldId = field.id;
+      const heading = el('h3',field.prompt); heading.id = `question-field-${q.fields.indexOf(field)}`;
+      group.setAttribute('role','group'); group.setAttribute('aria-labelledby',heading.id); group.append(heading);
       for (const option of field.options) {
         const label = el('label',null,'answer-option'), input = el('input');
         input.type = field.multiple ? 'checkbox' : 'radio'; input.name = `answer-${field.id}`;
         input.value = option.id;
         input.checked = display.answers.find(a => a.id === field.id)?.option_ids.includes(option.id) || false;
         input.disabled = Boolean(saved) || !q.can_reply || !q.source_fresh;
-        label.append(input,el('span',option.label)); group.append(label);
+        label.append(input,el('span',optionLabel(option.label))); group.append(label);
       }
       if (field.allow_text) {
         const label = el('label','Or write your answer'), input = el('textarea'); input.rows = 3;
@@ -114,7 +115,9 @@ export function mountQuestions({ api, post, owner, online, storage = localStorag
       }
       $('executor-answer-fields').append(group);
     }
-    $('executor-source').textContent = `${q.source.kind.toUpperCase()} · thread ${q.source.thread_id}`;
+    const projectName = projects.find(p => p.id === q.project_id)?.draft.title || 'Project';
+    $('executor-source').textContent = `${projectName} · ${q.thread_title || 'T3 conversation'}`;
+    $('executor-source').title = `${q.source.kind.toUpperCase()} · ${q.source.thread_id}`;
     $('executor-answer-status').textContent = pending && !operation ? 'The previous send is unconfirmed. Check status or retry the exact saved answer; no new answer will be created.' : questionStatus(q,operation,online());
     $('executor-send').disabled = !online() || !q.source_fresh || !q.can_reply || Boolean(saved) || sending;
     $('executor-retry').hidden = !pending || Boolean(operation);

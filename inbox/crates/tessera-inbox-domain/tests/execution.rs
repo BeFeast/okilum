@@ -3,6 +3,7 @@ use uuid::Uuid;
 #[test]
 fn replies_bind_exact_fields_revision_and_capability() {
     let q = Question {
+        thread_title: None,
         id: Uuid::new_v4(),
         project_id: Uuid::new_v4(),
         source: QuestionSource {

@@ -125,6 +125,9 @@ def project(snapshot, config, thread):
                        'expired': 'withdrawn', 'cancelled': 'withdrawn'}[status],
              'fields': fields, 'can_reply': status == 'pending' and live and
                  p['thread'].get('archivedAt') is None and p['thread'].get('deletedAt') is None}
+        title = p['thread'].get('title')
+        if isinstance(title, str) and title.strip() and len(title.encode()) <= 1024:
+            q['thread_title'] = title
         result[q['id']] = (q, request.get('answers'))
     return sequence, result
 
@@ -184,7 +187,13 @@ class Journal:
         old = self.db.execute('SELECT sequence,body FROM observations WHERE thread=?', (thread,)).fetchone()
         if old:
             require(sequence >= old[0], 'source_cursor_regressed')
-            require(sequence != old[0] or body == old[1], 'source_cursor_conflict')
+            # Titles are display metadata; source identity/fields/answers stay exact.
+            def without_titles(value):
+                rows = json.loads(value)
+                for question, _ in rows.values():
+                    question.pop('thread_title', None)
+                return rows
+            require(sequence != old[0] or without_titles(body) == without_titles(old[1]), 'source_cursor_conflict')
         with self.db:
             self.db.execute('INSERT INTO observations VALUES(?,?,?) ON CONFLICT(thread) DO UPDATE SET sequence=excluded.sequence,body=excluded.body', (thread, sequence, body))
 
