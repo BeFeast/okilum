@@ -195,8 +195,8 @@ fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("alt-cmd-r", RevealFile, Some(READER_CONTEXT)),
         KeyBinding::new("alt-cmd-c", CopyVaultPath, Some(READER_CONTEXT)),
-        KeyBinding::new("space", QuickLookFile, Some("ReaderFile")),
-        KeyBinding::new("space", QuickLookFile, Some("ReaderTree")),
+        KeyBinding::new("space", QuickLookFile, Some("ReaderFile && !Input")),
+        KeyBinding::new("space", QuickLookFile, Some("ReaderTree && !Input")),
     ]);
 
     cx.bind_keys([
@@ -3107,6 +3107,11 @@ impl Reader {
                 SideItem::Rename(input, depth) => row_base("inline-rename-row".into())
                     .debug_selector(|| "inline-rename-row".into())
                     .key_context("InlineRename")
+                    // Consume Input's propagated submit before text fallback can
+                    // replace a selected filename with an empty newline.
+                    .on_action(|_: &gpui_component::input::Enter, _, cx| {
+                        cx.stop_propagation();
+                    })
                     .pl(px(18. + depth as f32 * 14.))
                     .child(Icon::new(IconName::FileText).small())
                     .child(div().flex_1().min_w_0().child(Input::new(&input).small()))
@@ -3116,6 +3121,11 @@ impl Reader {
                     row_base("inline-create-row".into())
                         .debug_selector(|| "inline-create-row".into())
                         .key_context("InlineCreate")
+                        // Consume Input's propagated submit before text fallback can
+                        // replace a selected filename with an empty newline.
+                        .on_action(|_: &gpui_component::input::Enter, _, cx| {
+                            cx.stop_propagation();
+                        })
                         .pl(px(18. + depth as f32 * 14.))
                         .child(
                             Icon::new(if directory {

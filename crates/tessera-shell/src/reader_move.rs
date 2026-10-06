@@ -122,6 +122,14 @@ impl Reader {
         };
         let from = rename.path.clone();
         let value = rename.input.read(cx).value().to_string();
+        let mut destination = PathBuf::from(&value);
+        if destination.extension().is_none() {
+            destination.set_extension("md");
+        }
+        if rename.root == self.vault_root && destination == Path::new(&from) {
+            self.cancel_rename(window, cx);
+            return;
+        }
         let result = if rename.root != self.vault_root {
             Err(anyhow::anyhow!("The open vault changed; start again"))
         } else {
@@ -690,6 +698,88 @@ impl Reader {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+    #[gpui::test]
+    fn inline_names_receive_tree_keys_and_same_name_is_noop(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_reduce_motion(true);
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("notes")).unwrap();
+        let root = dir.path().join("notes").canonicalize().unwrap();
+        std::fs::write(root.join("start.md"), "Original bytes").unwrap();
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        open_path: Some(root.join("start.md")),
+                        index_dir: Some(dir.path().join("index")),
+                        session_directory: Some(dir.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        for rename in [false, true] {
+            reader.update_in(visual, |r, window, cx| {
+                if rename {
+                    r.rename_note(window, cx);
+                } else {
+                    r.new_note(Some(""), window, cx);
+                }
+            });
+            visual.run_until_parked();
+            visual.simulate_input("two words");
+            visual.simulate_keystrokes("left delete f2 down up");
+            reader.read_with(visual, |r, cx| {
+                let input = if rename {
+                    &r.renaming.as_ref().unwrap().input
+                } else {
+                    &r.creation.as_ref().unwrap().input
+                };
+                assert_eq!(input.read(cx).value().as_ref(), "two word");
+                assert!(!r.note_move_pending);
+                assert!(!r.trash_pending);
+                assert_eq!(r.current_rel, "start.md");
+            });
+            visual.simulate_keystrokes("escape");
+        }
+        // Positive control: F2 still starts rename when the tree itself owns focus.
+        visual.simulate_keystrokes("f2");
+        reader.read_with(visual, |r, _| assert!(r.renaming.is_some()));
+        // The suggested full name is selected. Enter must not erase it or start a move.
+        visual.simulate_keystrokes("enter");
+        reader.update_in(visual, |r, window, cx| {
+            assert!(r.renaming.is_none());
+            assert!(!r.note_move_pending);
+            assert!(r.link_notice.is_none());
+            assert!(r.tree_focus.is_focused(window));
+            r.rename_note(window, cx);
+        });
+        visual.run_until_parked();
+        visual.simulate_input("start");
+        visual.simulate_keystrokes("enter");
+        reader.read_with(visual, |r, _| {
+            assert!(r.renaming.is_none());
+            assert!(!r.note_move_pending);
+            assert!(r.link_notice.is_none());
+        });
+        assert_eq!(
+            std::fs::read_to_string(root.join("start.md")).unwrap(),
+            "Original bytes"
+        );
+        assert!(!root.join("two word.md").exists());
+    }
+
     #[gpui::test]
     fn native_preview_cancel_move_and_recovery_guard(cx: &mut TestAppContext) {
         cx.update(|cx| {
