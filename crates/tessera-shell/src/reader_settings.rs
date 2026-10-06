@@ -426,7 +426,7 @@ impl Settings {
                 } else {
                     let _ = window;
                     let message = if cfg!(target_os = "linux") {
-                        "Updates are managed by your system package manager. On Arch Linux, run pacman -Syu."
+                        "Updates are managed by your system package manager."
                     } else if cfg!(target_os = "windows") {
                         "Download a new Windows ZIP from Releases to update."
                     } else {
