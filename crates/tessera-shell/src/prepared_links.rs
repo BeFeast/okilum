@@ -251,7 +251,7 @@ impl Reader {
                     let mut preparation = LinkPreparation::new(&vault, &from, |target| {
                         let (raw, heading_source) = if target == from {
                             (original.clone(), rendered.clone())
-                        } else if !vault.inventory_complete {
+                        } else if !vault.inventory_complete && !vault.single_file {
                             return Err(
                                 "Link destination is pending background inventory verification."
                                     .into(),

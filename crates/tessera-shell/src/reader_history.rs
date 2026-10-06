@@ -71,6 +71,8 @@ pub(crate) struct ReadingHistory {
     #[serde(default)]
     last_documents: BTreeMap<PathBuf, String>,
     #[serde(default)]
+    quick_roots: std::collections::BTreeSet<PathBuf>,
+    #[serde(default)]
     recent_roots: Vec<PathBuf>,
 }
 impl ReadingHistory {
@@ -178,27 +180,34 @@ impl ReadingHistory {
     }
     /// #338 supplies a validated, already published usable document, not a pending
     /// request or full-index completion. Callers surface I/O failures explicitly.
+    #[cfg(test)]
     pub fn record_usable_document(directory: &Path, root: &Path, document: &str) -> Result<()> {
         validate_document(root, document)?;
         if document.is_empty() {
             return Ok(());
         }
-        Self::record_selection(directory, root, document)
+        Self::record_document_mode(directory, root, document, false)
     }
 
-    /// An explicit empty selection is different from having no saved selection.
-    pub fn record_empty_vault(directory: &Path, root: &Path) -> Result<()> {
-        validate_document(root, "")?;
-        Self::record_selection(directory, root, "")
-    }
-
-    fn record_selection(directory: &Path, root: &Path, document: &str) -> Result<()> {
+    pub fn record_document_mode(
+        directory: &Path,
+        root: &Path,
+        document: &str,
+        single_file: bool,
+    ) -> Result<()> {
+        validate_document(root, document)?;
         let _lock = Self::lock(directory, std::iter::once(root))?;
         let mut state = Self::load(directory)?.unwrap_or(Self {
             schema: SCHEMA,
             last_documents: BTreeMap::new(),
+            quick_roots: Default::default(),
             recent_roots: Vec::new(),
         });
+        if single_file {
+            state.quick_roots.insert(root.to_owned());
+        } else {
+            state.quick_roots.remove(root);
+        }
         state
             .last_documents
             .insert(root.to_path_buf(), document.into());
@@ -207,6 +216,16 @@ impl ReadingHistory {
         state.persist(directory)
     }
     /// Older history has no ordering: only a single root can be restored without guessing.
+    pub fn quick_document(directory: &Path, root: &Path) -> Result<Option<String>> {
+        Ok(Self::load(directory)?.and_then(|state| {
+            if state.quick_roots.contains(root) {
+                state.last_documents.get(root).cloned()
+            } else {
+                None
+            }
+        }))
+    }
+
     pub fn startup_roots(directory: &Path) -> Result<(Option<PathBuf>, Vec<PathBuf>)> {
         let Some(state) = Self::load(directory)? else {
             return Ok((None, Vec::new()));

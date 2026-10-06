@@ -279,6 +279,8 @@ impl Resolution {
 
 #[derive(Clone)]
 pub struct Vault {
+    /// Explicit quick-view scope: direct document links can be checked without a recursive inventory.
+    pub single_file: bool,
     /// No entries were skipped during enumeration or source reads.
     pub inventory_complete: bool,
     /// Enumeration has finished, including a usable partial inventory.
@@ -542,6 +544,7 @@ impl Vault {
         }
 
         Ok(Vault {
+            single_file: false,
             inventory_complete,
             inventory_scanned: true,
             unreadable,
@@ -635,6 +638,7 @@ impl Vault {
     /// Build only note identity from an already accepted inventory; performs no I/O.
     pub fn from_note_paths(paths: impl IntoIterator<Item = String>) -> Self {
         let mut vault = Self {
+            single_file: false,
             inventory_complete: false,
             inventory_scanned: false,
             unreadable: Vec::new(),
@@ -807,6 +811,27 @@ impl Vault {
                 _ => Resolution::Ambiguous { candidates },
             }
         };
+        if self.single_file {
+            let candidate = if path.starts_with('/') {
+                self.root.join(path.trim_start_matches('/'))
+            } else {
+                self.root
+                    .join(Path::new(from).parent().unwrap_or(Path::new("")))
+                    .join(path)
+            };
+            if candidate
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+            {
+                if let Ok(canonical) = candidate.canonicalize() {
+                    if canonical.is_file() && canonical.starts_with(&self.root) {
+                        return Resolution::Resolved {
+                            path: note_path(canonical.strip_prefix(&self.root).unwrap()),
+                        };
+                    }
+                }
+            }
+        }
         if path.starts_with('/') {
             return self
                 .walk_relative(key.trim_start_matches('/'), "")
@@ -964,7 +989,7 @@ impl Vault {
         if t.is_empty() {
             return None;
         }
-        if !self.inventory_complete {
+        if !self.inventory_complete && !self.single_file {
             let find = |key: &str| {
                 self.entries
                     .iter()

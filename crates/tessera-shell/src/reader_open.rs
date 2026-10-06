@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct OpenIntent {
     pub root: PathBuf,
+    pub single_file: bool,
     pub note: Option<String>,
 }
 
@@ -59,6 +60,7 @@ impl OpenIntent {
             }
             return Ok(Self {
                 root: path,
+                single_file: false,
                 note: None,
             });
         }
@@ -79,19 +81,17 @@ impl OpenIntent {
         let reusable = reusable_root
             .and_then(|root| root.canonicalize().ok())
             .filter(|root| root.is_dir() && path.starts_with(root));
-        let root = explicit_root.or(reusable).unwrap_or_else(|| {
-            parent
-                .ancestors()
-                .find(|root| root.join(".obsidian").is_dir())
-                .unwrap_or(parent)
-                .to_path_buf()
-        });
+        let single_file = explicit_root.is_none() && reusable.is_none();
+        let root = explicit_root
+            .or(reusable)
+            .unwrap_or_else(|| parent.to_path_buf());
         let relative = path.strip_prefix(&root)?;
         relative
             .to_str()
             .context("The document path is not valid UTF-8")?;
         let note = tessera_core::vault::note_path(relative);
         Ok(Self {
+            single_file,
             root,
             note: Some(note),
         })
@@ -141,13 +141,14 @@ mod tests {
         assert_eq!(alone.note.as_deref(), Some("Заметка.md"));
         std::fs::create_dir(f.0.join(".obsidian")).unwrap();
         let hinted = OpenIntent::validate(&file, None, None).unwrap();
-        assert_eq!(hinted.root, f.0);
-        assert_eq!(hinted.note.as_deref(), Some("notes space/Заметка.md"));
+        assert_eq!(hinted, alone);
+        assert!(hinted.single_file);
         let explicit = OpenIntent::validate(&file, Some(&alone.root), Some(&f.0)).unwrap();
-        assert_eq!(explicit, alone);
+        assert!(!explicit.single_file);
+        assert_eq!(explicit.root, alone.root);
         assert_eq!(
             OpenIntent::validate(&file, None, Some(&alone.root)).unwrap(),
-            alone
+            explicit
         );
         assert_eq!(std::fs::read(file).unwrap(), before);
         assert!(!f.0.join(".tessera-index").exists());
@@ -316,6 +317,7 @@ fn cache_base() -> Result<PathBuf> {
 pub(crate) fn cache_candidate_path(root: &Path) -> Result<PathBuf> {
     Ok(OpenIntent {
         root: root.to_path_buf(),
+        single_file: false,
         note: None,
     }
     .cache_path(&cache_base()?))
@@ -329,6 +331,7 @@ pub(crate) fn cache_path_for(root: &Path, opts: &super::Opts) -> Result<PathBuf>
     if let Some(base) = &opts.cache_base_override {
         return Ok(OpenIntent {
             root: root.to_owned(),
+            single_file: false,
             note: None,
         }
         .cache_path(base));
@@ -386,7 +389,7 @@ fn reusable_roots(cx: &App) -> Vec<PathBuf> {
                 .0
                 .iter()
                 .rev()
-                .filter(|(reader, _)| reader.upgrade().is_some())
+                .filter(|(reader, _)| reader.upgrade().is_some_and(|r| !r.read(cx).single_file))
                 .map(|(_, root)| root.clone())
                 .collect()
         })
@@ -524,6 +527,51 @@ pub(crate) fn dispatch_urls(urls: Vec<String>, cx: &mut App) {
 }
 
 fn dispatch_path(path: &Path, cx: &mut App) {
+    super::reader_startup::supersede(cx);
+    // Canonicalization is deliberately off the UI thread, including network paths.
+    let path = path.to_owned();
+    cx.spawn(async move |cx| {
+        let (canonical, is_file) = cx
+            .background_executor()
+            .spawn(async move {
+                let canonical = path.canonicalize().unwrap_or(path);
+                let is_file = canonical.is_file();
+                (canonical, is_file)
+            })
+            .await;
+        cx.update(|cx| dispatch_canonical_path(&canonical, is_file, cx));
+    })
+    .detach();
+}
+
+fn dispatch_canonical_path(path: &Path, is_file: bool, cx: &mut App) {
+    let existing = cx.try_global::<Readers>().and_then(|readers| {
+        readers.0.iter().rev().find_map(|(weak, root)| {
+            let reader = weak.upgrade()?;
+            let state = reader.read(cx);
+            if !is_file
+                || !path
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+                || state.single_file
+                || !path.starts_with(root)
+            {
+                return None;
+            }
+            let relative = path.strip_prefix(root).ok()?;
+            relative.to_str()?;
+            let rel = tessera_core::vault::note_path(relative);
+            Some((reader.clone(), state.reader_window, rel))
+        })
+    });
+    if let Some((reader, window, rel)) = existing {
+        let _ = window.update(cx, |_, window, cx| {
+            reader.update(cx, |reader, cx| reader.open_note(&rel, None, window, cx));
+            window.activate_window();
+        });
+        cx.activate(true);
+        return;
+    }
     let opts = super::Opts {
         open_path: Some(path.to_path_buf()),
         reusable_roots: reusable_roots(cx),
@@ -703,6 +751,42 @@ mod entry_tests {
             assert_eq!(reader.read(cx).vault_root, root);
             assert!(reader.read(cx).document_ready());
         });
+        std::fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[gpui::test]
+    fn restored_quick_session_does_not_index_its_folder(cx: &mut TestAppContext) {
+        use super::super::{reader_history::ReadingHistory, reader_startup, Opts};
+        let fixture =
+            std::env::temp_dir().join(format!("tessera-quick-restore-{}", uuid::Uuid::new_v4()));
+        let root = fixture.join("notes");
+        let state = fixture.join("state");
+        let cache = fixture.join("cache");
+        std::fs::create_dir_all(root.join(".obsidian")).unwrap();
+        std::fs::write(root.join("last.md"), "# Restored quick document").unwrap();
+        ReadingHistory::record_document_mode(&state, &root, "last.md", true).unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            install(cx);
+            reader_startup::launch(
+                Opts {
+                    session_directory: Some(state),
+                    index_dir: Some(cache.clone()),
+                    ..Default::default()
+                },
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let readers = &cx.global::<Readers>().0;
+            assert_eq!(readers.len(), 1);
+            let reader = readers[0].0.upgrade().unwrap();
+            assert!(reader.read(cx).single_file);
+            assert!(reader.read(cx).document_ready());
+            assert_eq!(reader.read(cx).current_rel, "last.md");
+        });
+        assert!(!cache.exists());
         std::fs::remove_dir_all(fixture).unwrap();
     }
 
@@ -905,9 +989,7 @@ mod entry_tests {
         let (sender, receiver) = async_channel::unbounded();
         // Delivery before app initialization must not be lost.
         sender
-            .try_send(vec![url::Url::from_file_path(root.join("start.md"))
-                .unwrap()
-                .into()])
+            .try_send(vec![url::Url::from_file_path(&root).unwrap().into()])
             .unwrap();
         cx.update(|cx| {
             gpui_component::init(cx);
@@ -916,17 +998,13 @@ mod entry_tests {
             receive_events(receiver, cx);
         });
         cx.run_until_parked();
-        let (first, content, history) = cx.update(|cx| {
+        let first = cx.update(|cx| {
             assert_eq!(cx.global::<Readers>().0.len(), 1);
             let first = cx.global::<Readers>().0[0].0.upgrade().unwrap();
             let reader = first.read(cx);
             assert_eq!(reader.current_rel, "start.md");
             assert_eq!(reader.vault_root, root);
-            (
-                first.clone(),
-                reader.content.entity_id(),
-                reader.history.clone(),
-            )
+            first.clone()
         });
         sender
             .try_send(vec![url::Url::from_file_path(root.join("sub/Ю.md"))
@@ -935,17 +1013,10 @@ mod entry_tests {
             .unwrap();
         cx.run_until_parked();
         cx.update(|cx| {
-            assert_eq!(cx.global::<Readers>().0.len(), 2);
-            let second = cx.global::<Readers>().0[1].0.upgrade().unwrap();
-            assert_eq!(second.read(cx).current_rel, "sub/Ю.md");
-            assert_eq!(
-                second.read(cx).vault_root,
-                root,
-                "reuse containing Reader root"
-            );
-            assert_eq!(first.read(cx).current_rel, "start.md");
-            assert_eq!(first.read(cx).content.entity_id(), content);
-            assert_eq!(first.read(cx).history, history);
+            assert_eq!(cx.global::<Readers>().0.len(), 1);
+            assert_eq!(first.read(cx).current_rel, "sub/Ю.md");
+            assert_eq!(first.read(cx).vault_root, root);
+            assert!(!first.read(cx).single_file);
         });
         // Exercise the actual watcher batch handler with enough entries for a bulk rebuild.
         let window = cx.windows()[0];
@@ -989,7 +1060,7 @@ mod entry_tests {
         cx.update(|cx| {
             assert_eq!(
                 cx.global::<Readers>().0.len(),
-                3,
+                2,
                 "refusal must not open a namesake"
             )
         });
