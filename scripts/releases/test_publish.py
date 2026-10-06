@@ -250,6 +250,22 @@ class GitHubTests(unittest.TestCase):
         self.assertEqual(publish['tag_name'], 'beta')
         self.assertEqual(publish['target_commitish'], SOURCE)
 
+    def test_duplicate_temporary_betas_removed_only_after_verified_publication(self):
+        calls = []
+        class API:
+            def call(self, method, path, body=None, **kwargs):
+                calls.append((method, path, body))
+                if method == 'GET' and '/tags/' not in path:
+                    return [{'id': n, 'name': 'Beta', 'tag_name': f'untagged-{n}',
+                             'prerelease': True, 'assets': []} for n in [43, 42]]
+                if method == 'GET':
+                    return {'id': 42, 'tag_name': 'beta', 'draft': False,
+                            'prerelease': True, 'assets': []}
+        p.github_release(API(), 'beta', {'build': 700, 'source': SOURCE}, {}, 'notes', False)
+        self.assertEqual(calls[-2][:2], ('GET', '/releases/tags/beta'))
+        self.assertEqual(calls[-1][:2], ('DELETE', '/releases/43'))
+        self.assertFalse(any(c[0] == 'DELETE' and c[1] == '/releases/42' for c in calls))
+
     def test_draft_retry_reuses_release_and_sets_latest_after_publication(self):
         calls = []
         class API:

@@ -113,19 +113,25 @@ def mirror_tag(release, stable):
 def github_release(github, tag, release, files, body, stable):
     # List includes authenticated drafts, including an interrupted replacement.
     current = None
+    matches = []
     page = 1
     while True:
         candidates = github.call('GET', f'/releases?per_page=100&page={page}')
         matching = [r for r in candidates if r['tag_name'] == tag or (
             not stable and r.get('name') == 'Beta' and r.get('prerelease')
             and r['tag_name'].startswith('untagged-'))]
-        if matching:
-            if current is not None or len(matching) != 1:
-                raise ValueError('Duplicate releases for tag; reconcile drafts before retrying')
-            current = matching[0]
+        matches.extend(matching)
         if len(candidates) < 100:
             break
         page += 1
+    exact = [r for r in matches if r['tag_name'] == tag]
+    if len(exact) > 1:
+        raise ValueError('Duplicate releases for exact tag; reconcile before retrying')
+    # Earlier publications could produce more than one temporary Beta. Keep the
+    # exact tagged release, or the oldest Beta identity, and clean up only after
+    # its replacement has been published and verified successfully.
+    if matches:
+        current = exact[0] if exact else min(matches, key=lambda r: r['id'])
     if current is None:
         current = github.call('POST', '/releases', {'tag_name': tag, 'draft': True,
                               'name': 'Beta' if not stable else f'Tessera 0.1.{release["build"]}',
@@ -146,6 +152,9 @@ def github_release(github, tag, release, files, body, stable):
             or published['tag_name'] != tag or published['prerelease'] != (not stable)
             or {a['name'] for a in published['assets']} != set(files)):
         raise ValueError('Published GitHub release does not match the requested tag/assets')
+    for duplicate in matches:
+        if duplicate['id'] != rid:
+            github.call('DELETE', f'/releases/{duplicate["id"]}')
     if stable:
         github.call('PATCH', f'/releases/{rid}', {'make_latest': 'true'})
 
