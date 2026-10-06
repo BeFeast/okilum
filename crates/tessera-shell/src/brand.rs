@@ -34,7 +34,11 @@ pub const READER_PIN_ICON: &str = "icons/pin.svg";
 pub const READER_CLOCK_ICON: &str = "icons/clock.svg";
 pub const READER_COLLAPSE_ICON: &str = "icons/chevrons-down-up.svg";
 pub const READER_FOCUS_ICON: &str = "icons/locate-fixed.svg";
-const IMAGES: [(&str, &[u8]); 17] = [
+const IMAGES: [(&str, &[u8]); 18] = [
+    (
+        "icons/trash.svg",
+        include_bytes!("../assets/icons/trash.svg"),
+    ),
     ("icons/save.svg", include_bytes!("../assets/icons/save.svg")),
     (
         "icons/channel-stable.svg",

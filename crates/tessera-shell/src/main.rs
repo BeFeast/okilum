@@ -133,6 +133,7 @@ actions!(
         RenameNote,
         RenameTreeNote,
         DeleteNote,
+        UndoTrash,
         RecoverLinkMoves,
         NoteSourceHistory,
         HistoryVersionNext,
@@ -195,8 +196,8 @@ fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("alt-cmd-r", RevealFile, Some(READER_CONTEXT)),
         KeyBinding::new("alt-cmd-c", CopyVaultPath, Some(READER_CONTEXT)),
-        KeyBinding::new("space", QuickLookFile, Some("ReaderFile")),
-        KeyBinding::new("space", QuickLookFile, Some("ReaderTree")),
+        KeyBinding::new("space", QuickLookFile, Some("ReaderFile && !Input")),
+        KeyBinding::new("space", QuickLookFile, Some("ReaderTree && !Input")),
     ]);
 
     cx.bind_keys([
@@ -231,6 +232,8 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-n", NewNote, ctx),
         #[cfg(unix)]
         KeyBinding::new("secondary-backspace", DeleteNote, Some("Reader && !Input")),
+        #[cfg(unix)]
+        KeyBinding::new("secondary-z", UndoTrash, Some("Reader && !Input")),
         KeyBinding::new("secondary-w", CloseNote, ctx),
         KeyBinding::new("secondary-w", CloseNote, Some("Reader > Input")),
         KeyBinding::new("secondary-[", HistoryBack, ctx),
@@ -1075,6 +1078,8 @@ struct Reader {
     #[cfg(unix)]
     trash_pending: bool,
     #[cfg(unix)]
+    trash_undo: reader_trash::UndoHistory,
+    #[cfg(unix)]
     move_index: Option<Arc<tessera_core::link_rewrite::CandidateIndex>>,
     recovery_offer: bool,
     recovery_checked: bool,
@@ -1330,6 +1335,8 @@ impl Reader {
             move_applying: false,
             #[cfg(unix)]
             trash_pending: false,
+            #[cfg(unix)]
+            trash_undo: reader_trash::UndoHistory::default(),
             #[cfg(unix)]
             move_index: None,
             recovery_offer: false,
@@ -1894,6 +1901,10 @@ impl Reader {
                     .update(cx, |input, cx| input.set_value("", window, cx));
                 self.run_find(window, cx);
             }
+            return;
+        }
+        #[cfg(unix)]
+        if self.dismiss_trash_toast(window, cx) {
             return;
         }
         if self.find_open {
@@ -2483,12 +2494,15 @@ impl Reader {
                 self.tree_focus.focus(window, cx);
             }
             EntryKind::Markdown => {
-                self.select_panel_note(reader_layout::Panel::Notes, &row.path, None, window, cx)
+                self.open_note(&row.path, None, window, cx);
             }
             EntryKind::Attachment => {
                 self.preview_file(&row.path, window, cx);
             }
         }
+        // Tree activation keeps keyboard navigation/rename in the navigator.
+        // Async document replacement only transfers focus from the old content.
+        self.tree_focus.focus(window, cx);
         cx.notify();
     }
 
@@ -3107,6 +3121,11 @@ impl Reader {
                 SideItem::Rename(input, depth) => row_base("inline-rename-row".into())
                     .debug_selector(|| "inline-rename-row".into())
                     .key_context("InlineRename")
+                    // Consume Input's propagated submit before text fallback can
+                    // replace a selected filename with an empty newline.
+                    .on_action(|_: &gpui_component::input::Enter, _, cx| {
+                        cx.stop_propagation();
+                    })
                     .pl(px(18. + depth as f32 * 14.))
                     .child(Icon::new(IconName::FileText).small())
                     .child(div().flex_1().min_w_0().child(Input::new(&input).small()))
@@ -3116,6 +3135,11 @@ impl Reader {
                     row_base("inline-create-row".into())
                         .debug_selector(|| "inline-create-row".into())
                         .key_context("InlineCreate")
+                        // Consume Input's propagated submit before text fallback can
+                        // replace a selected filename with an empty newline.
+                        .on_action(|_: &gpui_component::input::Enter, _, cx| {
+                            cx.stop_propagation();
+                        })
                         .pl(px(18. + depth as f32 * 14.))
                         .child(
                             Icon::new(if directory {
@@ -3437,6 +3461,10 @@ impl Reader {
                     let open_entity = entity.clone();
                     let open_act = act.clone();
                     row_base(group.clone())
+                        .debug_selector({
+                            let group = group.clone();
+                            move || group.to_string()
+                        })
                         .group(group.clone())
                         .pl(px(10.))
                         .cursor_pointer()
@@ -3519,6 +3547,10 @@ impl Reader {
                     let on = pinned.contains(&row.path);
                     let path = row.path.clone();
                     row_base(group.clone())
+                        .debug_selector({
+                            let group = group.clone();
+                            move || group.to_string()
+                        })
                         .group(group.clone())
                         .pl(px(4. + row.depth as f32 * 14.))
                         .cursor_pointer()
@@ -5183,6 +5215,8 @@ impl Render for Reader {
                             "reader-backlinks-panel".into()
                         }
                     })
+                    // Overlay panel clicks must not reach the dismiss backdrop.
+                    .occlude()
                     .w(px(panel_widths.get(panel)))
                     .absolute()
                     .top_0()
@@ -5332,6 +5366,12 @@ impl Render for Reader {
             .on_action(cx.listener(|this, _: &FindInNote, window, cx| this.open_find(window, cx)))
             .on_action(cx.listener(|this, _: &FindNext, _, cx| this.find_step(1, cx)))
             .on_action(cx.listener(|this, _: &FindPrev, _, cx| this.find_step(-1, cx)))
+            .on_action(cx.listener(|this, _: &UndoTrash, window, cx| {
+                #[cfg(unix)]
+                this.undo_last_trash(window, cx);
+                #[cfg(not(unix))]
+                let _ = (this, window, cx);
+            }))
             .on_action(cx.listener(|this, _: &Dismiss, window, cx| this.dismiss(window, cx)))
             .on_action(cx.listener(|this, _: &TreeDown, w, cx| this.tree_key(TreeKey::Down, w, cx)))
             .on_action(cx.listener(|this, _: &TreeUp, w, cx| this.tree_key(TreeKey::Up, w, cx)))

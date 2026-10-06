@@ -4,6 +4,16 @@ use gpui_component::{notification::Notification, WindowExt};
 use std::os::unix::fs::MetadataExt;
 use tessera_core::file_editor::FileEditor;
 
+#[derive(Default)]
+pub(super) struct UndoHistory {
+    items: Vec<reader_trash_fs::Trashed>,
+    generation: u64,
+    visible: std::rc::Rc<std::cell::Cell<bool>>,
+}
+struct TrashToast;
+
+const TRASH_TOAST_LIFETIME: std::time::Duration = std::time::Duration::from_secs(8);
+
 type Inventory = Vec<(PathBuf, u64, u64, u64, i64, i64)>;
 fn inventory(path: &Path) -> anyhow::Result<Inventory> {
     let mut pending = vec![path.to_owned()];
@@ -120,17 +130,17 @@ impl Reader {
                 let (send, receive) = async_channel::bounded(1);
                 let shown = this.update_in(cx, |this, window, cx| {
                     if this.vault_root != root { this.trash_pending = false; return false; }
-                    let message = format!("Move {relative} to system Trash? {count} files; {incoming} incoming links in the current index. Links will remain unchanged. You can Undo from the notification.");
-                    window.open_dialog(cx, move |dialog, _, _| {
+                    let message = format!("{relative}\n{count} files · {incoming} incoming links. Links stay unchanged.");
+                    window.open_dialog(cx, move |dialog, _, cx| {
                         let yes = send.clone(); let no = send.clone(); let close = send.clone();
                         dialog.title("Move to Trash").child(message.clone())
                             .on_ok(move |_, _, _| { let _ = yes.try_send(true); true })
                             .on_cancel(move |_, _, _| { let _ = no.try_send(false); true })
-                            .child({
+                            .footer({
                                 let yes = send.clone(); let no = send.clone();
-                                h_flex().gap_2()
-                                    .child(Button::new("confirm-trash").debug_selector(|| "confirm-trash".into()).label("Move to Trash").on_click(move |_, window, cx| { let _ = yes.try_send(true); window.close_dialog(cx); }))
-                                    .child(Button::new("cancel-trash").debug_selector(|| "cancel-trash".into()).label("Cancel").on_click(move |_, window, cx| { let _ = no.try_send(false); window.close_dialog(cx); }))
+                                h_flex().justify_end().gap_2()
+                                    .child(Button::new("cancel-trash").debug_selector(|| "cancel-trash".into()).ghost().label("Cancel").on_click(move |_, window, cx| { let _ = no.try_send(false); window.close_dialog(cx); }))
+                                    .child(reader_icon_button("confirm-trash", Icon::default().path("icons/trash.svg"), "Move to Trash", cx).danger().debug_selector(|| "confirm-trash".into()).on_click(move |_, window, cx| { let _ = yes.try_send(true); window.close_dialog(cx); }))
                             })
                             .on_close(move |_, _, _| { let _ = close.try_send(false); })
                     }); true
@@ -172,13 +182,8 @@ impl Reader {
                             this.editing = None;
                             this.show_empty_vault(window, cx);
                         }
-                        let reader = cx.entity().downgrade();
-                        window.push_notification(Notification::new().message("Moved to Trash").action(move |_, _, _| {
-                            let trashed = trashed.clone(); let reader = reader.clone();
-                            Button::new("undo-trash").debug_selector(|| "undo-trash".into()).label("Undo").on_click(move |_, window, cx| {
-                                let _ = reader.update(cx, |this, cx| this.undo_trash(trashed.clone(), window, cx));
-                            })
-                        }), cx);
+                        this.trash_undo.items.push(trashed);
+                        this.show_trash_toast(window, cx);
                     }
                     Err(error) => {
                         if this.vault_root == root && held_path.as_ref() == Some(&root.join(this.selected_file())) && this.editing.is_none() {
@@ -192,12 +197,66 @@ impl Reader {
         }).detach();
     }
 
-    fn undo_trash(
+    fn show_trash_toast(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.dismiss_trash_toast(window, cx);
+        self.trash_undo.generation = self.trash_undo.generation.wrapping_add(1);
+        let generation = self.trash_undo.generation;
+        let visible = std::rc::Rc::new(std::cell::Cell::new(true));
+        self.trash_undo.visible = visible.clone();
+        let reader = cx.entity().downgrade();
+        window.push_notification(
+            Notification::new()
+                .id::<TrashToast>()
+                .message("Moved to Trash")
+                .py_2()
+                .placement(Anchor::BottomRight)
+                .on_close(move |_, _| visible.set(false))
+                .action(move |_, _, cx| {
+                    let reader = reader.clone();
+                    reader_icon_button(
+                        "undo-trash",
+                        IconName::Undo2,
+                        if cfg!(target_os = "macos") {
+                            "Undo (⌘Z)"
+                        } else {
+                            "Undo (Ctrl+Z)"
+                        },
+                        cx,
+                    )
+                    .debug_selector(|| "undo-trash".into())
+                    .on_click(move |_, window, cx| {
+                        let _ = reader.update(cx, |this, cx| this.undo_last_trash(window, cx));
+                    })
+                }),
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(TRASH_TOAST_LIFETIME).await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.trash_undo.generation == generation {
+                    this.dismiss_trash_toast(window, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub(super) fn dismiss_trash_toast(
         &mut self,
-        trashed: reader_trash_fs::Trashed,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
+        if !self.trash_undo.visible.replace(false) {
+            return false;
+        }
+        window.remove_notification::<TrashToast>(cx);
+        true
+    }
+
+    pub(super) fn undo_last_trash(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(trashed) = self.trash_undo.items.last().cloned() else {
+            return;
+        };
         if self.trash_pending {
             return;
         }
@@ -206,6 +265,7 @@ impl Reader {
         };
         let restored_root = trashed.root.clone();
         let restored_path = trashed.relative.clone();
+        self.dismiss_trash_toast(window, cx);
         self.trash_pending = true;
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
@@ -247,7 +307,10 @@ impl Reader {
                 }
                 window.push_notification(
                     match result {
-                        Ok(_) => "Restored from Trash".into(),
+                        Ok(_) => {
+                            this.trash_undo.items.pop();
+                            "Restored from Trash".into()
+                        }
                         Err(error) => format!("Cannot Undo: {error:#}"),
                     },
                     cx,
@@ -347,6 +410,102 @@ mod tests {
             std::fs::read_to_string(root.join("New.md")).unwrap(),
             "uniquetrashword"
         );
+    }
+
+    #[gpui::test]
+    fn trash_toast_expires_at_bottom_and_keyboard_undo_survives_dismissal(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_reduce_motion(true);
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        std::fs::write(root.join("start.md"), "Keep open").unwrap();
+        std::fs::write(root.join("gone.md"), "Exact bytes\r\n").unwrap();
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        open_path: Some(root.join("start.md")),
+                        index_dir: Some(temp.path().join("index")),
+                        session_directory: Some(temp.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        for dismissal in ["timer", "escape", "close"] {
+            let trashed = reader_trash_fs::Trashed::test_move(
+                &root,
+                Path::new("gone.md"),
+                &temp.path().join("Trash"),
+            );
+            reader.update_in(visual, |r, window, cx| {
+                r.trash_undo.items.push(trashed);
+                r.show_trash_toast(window, cx);
+                r.reveal_in_tree("start.md", window, cx);
+            });
+            visual.run_until_parked();
+            let bounds = visual
+                .debug_bounds("undo-trash")
+                .expect("visible Undo action");
+            visual.update(|window, _| {
+                assert!(bounds.center().y > window.viewport_size().height / 2.)
+            });
+            match dismissal {
+                "timer" => {
+                    visual
+                        .executor()
+                        .advance_clock(std::time::Duration::from_secs(7));
+                    visual.run_until_parked();
+                    reader.read_with(visual, |r, _| assert!(r.trash_undo.visible.get()));
+                    visual
+                        .executor()
+                        .advance_clock(std::time::Duration::from_secs(1));
+                    visual.run_until_parked();
+                }
+                "escape" => visual.simulate_keystrokes("escape"),
+                _ => {
+                    // The stock notification close button invokes this same dismiss method.
+                    visual.update(|window, cx| {
+                        for note in window.notifications(cx).iter() {
+                            note.update(cx, |n, cx| n.dismiss(window, cx));
+                        }
+                    });
+                    visual.run_until_parked();
+                    // Notification removal completes after its exit transition.
+                    visual
+                        .executor()
+                        .advance_clock(std::time::Duration::from_secs(1));
+                    visual.run_until_parked();
+                }
+            }
+            reader.read_with(visual, |r, _| {
+                assert!(!r.trash_undo.visible.get(), "{dismissal}");
+                assert_eq!(r.trash_undo.items.len(), 1);
+            });
+            #[cfg(target_os = "macos")]
+            visual.simulate_keystrokes("cmd-z");
+            #[cfg(not(target_os = "macos"))]
+            visual.simulate_keystrokes("ctrl-z");
+            visual.run_until_parked();
+            assert_eq!(
+                std::fs::read_to_string(root.join("gone.md")).unwrap(),
+                "Exact bytes\r\n"
+            );
+            reader.read_with(visual, |r, _| assert!(r.trash_undo.items.is_empty()));
+        }
     }
 
     #[gpui::test]
