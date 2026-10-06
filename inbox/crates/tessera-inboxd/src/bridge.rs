@@ -1,4 +1,4 @@
-//! Optional machine-only question transport. No source calls or launch authority.
+//! Optional scoped machine transport. Source calls stay in the external bridge.
 use crate::{
     http::{blocking, guard, ApiError, Shared},
     questions::ReplyOperation,
@@ -27,6 +27,8 @@ pub struct Scope {
     pub source_project_id: String,
     pub ingest: bool,
     pub replies: bool,
+    #[serde(default)]
+    pub launches: bool,
 }
 impl Scope {
     fn permits(&self, question: &Question) -> bool {
@@ -38,7 +40,7 @@ impl Scope {
     fn validate(&self) -> bool {
         !self.owner_id.is_nil()
             && !self.project_id.is_nil()
-            && (self.ingest || self.replies)
+            && (self.ingest || self.replies || self.launches)
             && [&self.instance_id, &self.source_project_id]
                 .into_iter()
                 .all(|s| !s.trim().is_empty() && s.len() <= 512 && !s.chars().any(char::is_control))
@@ -46,7 +48,8 @@ impl Scope {
 }
 // Deliberately no Debug/Serialize: credentials cannot leak through logs or API.
 pub struct Bridge {
-    scope: Scope,
+    pub(crate) scope: Scope,
+    pub(crate) targets: Vec<crate::launch::TargetSnapshot>,
     token_hash: [u8; 32],
 }
 #[derive(Deserialize)]
@@ -54,6 +57,8 @@ pub struct Bridge {
 struct Credential {
     scope: Scope,
     token: String,
+    #[serde(default)]
+    launch_targets: Vec<crate::launch::Target>,
 }
 impl Bridge {
     pub fn from_credential(path: &FilePath, owner: OwnerId) -> Result<Self, &'static str> {
@@ -78,12 +83,38 @@ impl Bridge {
         {
             return Err("invalid bridge configuration");
         }
+        if credential.launch_targets.len() > 10
+            || credential.launch_targets.iter().any(|t| !t.validate())
+        {
+            return Err("invalid launch target");
+        }
+        let mut ids = std::collections::HashSet::new();
+        if credential.launch_targets.iter().any(|t| !ids.insert(&t.id))
+            || (!credential.scope.launches && !credential.launch_targets.is_empty())
+        {
+            return Err("invalid launch scope");
+        }
+        let targets = credential
+            .launch_targets
+            .into_iter()
+            .map(|target| crate::launch::TargetSnapshot {
+                project_id: credential.scope.project_id,
+                instance_id: credential.scope.instance_id.clone(),
+                source_project_id: credential.scope.source_project_id.clone(),
+                target,
+            })
+            .collect();
         Ok(Self {
+            targets,
             scope: credential.scope,
             token_hash: Sha256::digest(credential.token.as_bytes()).into(),
         })
     }
-    fn authenticate(&self, headers: &HeaderMap, write_reply: bool) -> Result<Scope, ApiError> {
+    pub(crate) fn authenticate(
+        &self,
+        headers: &HeaderMap,
+        action: &str,
+    ) -> Result<Scope, ApiError> {
         // Machine transport must never accept ambient browser credentials.
         if headers.contains_key(header::COOKIE) || headers.contains_key(header::ORIGIN) {
             return Err(ApiError(StatusCode::FORBIDDEN, "bridge_browser_rejected"));
@@ -108,32 +139,32 @@ impl Bridge {
                 "bridge_authentication_failed",
             ));
         }
-        if if write_reply {
-            !self.scope.replies
-        } else {
-            !self.scope.ingest
-        } {
+        let allowed = match action {
+            "replies" => self.scope.replies,
+            "ingest" => self.scope.ingest,
+            "launches" => self.scope.launches,
+            _ => false,
+        };
+        if !allowed {
             return Err(ApiError(StatusCode::FORBIDDEN, "bridge_scope_rejected"));
         }
         Ok(self.scope.clone())
     }
 }
 #[derive(Clone)]
-struct BridgeState {
-    auth: Shared,
-    bridge: Arc<Bridge>,
+pub(crate) struct BridgeState {
+    pub(crate) auth: Shared,
+    pub(crate) bridge: Arc<Bridge>,
 }
-pub(crate) fn router(auth: Shared, bridge: Bridge) -> Router {
+pub(crate) fn router(auth: Shared, bridge: Arc<Bridge>) -> Router {
     Router::new()
+        .merge(crate::launch_http::machine())
         .route("/api/bridge/v1/questions", post(observe))
         .route("/api/bridge/v1/replies", get(replies))
         .route("/api/bridge/v1/replies/{id}", get(reply).post(advance))
         .layer(DefaultBodyLimit::max(128 * 1024))
         .layer(middleware::from_fn_with_state(None::<String>, guard))
-        .with_state(BridgeState {
-            auth,
-            bridge: Arc::new(bridge),
-        })
+        .with_state(BridgeState { auth, bridge })
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -146,7 +177,7 @@ async fn observe(
     headers: HeaderMap,
     Json(body): Json<Observation>,
 ) -> Result<Response, ApiError> {
-    let scope = state.bridge.authenticate(&headers, false)?;
+    let scope = state.bridge.authenticate(&headers, "ingest")?;
     if !scope.permits(&body.question) {
         return Err(ApiError(StatusCode::FORBIDDEN, "bridge_scope_rejected"));
     }
@@ -182,7 +213,7 @@ async fn replies(
     headers: HeaderMap,
     Query(page): Query<Page>,
 ) -> Result<Response, ApiError> {
-    let scope = state.bridge.authenticate(&headers, true)?;
+    let scope = state.bridge.authenticate(&headers, "replies")?;
     if page.limit == 0 || page.limit > 100 || page.after > i64::MAX as u64 {
         return Err(ApiError(StatusCode::BAD_REQUEST, "invalid_page"));
     }
@@ -243,7 +274,7 @@ async fn reply(
     headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<Response, ApiError> {
-    let scope = state.bridge.authenticate(&headers, true)?;
+    let scope = state.bridge.authenticate(&headers, "replies")?;
     blocking(state.auth, move |auth| {
         let op = scoped_operation(&auth.store, &scope, id)?;
         Ok(Json(op).into_response())
@@ -274,7 +305,7 @@ async fn advance(
     Path(id): Path<Uuid>,
     Json(body): Json<Advance>,
 ) -> Result<Response, ApiError> {
-    let scope = state.bridge.authenticate(&headers, true)?;
+    let scope = state.bridge.authenticate(&headers, "replies")?;
     blocking(state.auth, move |auth| {
         scoped_operation(&auth.store, &scope, id)?;
         let op = auth.store.advance_execution_reply(

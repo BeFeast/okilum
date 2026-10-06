@@ -253,7 +253,7 @@ fn only_definite_rejection_releases_reservation_and_v6_migrates() {
     drop(store);
     let db = rusqlite::Connection::open(&path).unwrap();
     db.execute_batch(
-        "DROP TABLE execution_replies; DROP TABLE execution_questions; PRAGMA user_version=6;",
+        "DROP TABLE IF EXISTS execution_launches; DROP TABLE execution_replies; DROP TABLE execution_questions; PRAGMA user_version=6;",
     )
     .unwrap();
     drop(db);
@@ -297,7 +297,7 @@ fn stale_source_blocks_new_answers_but_exact_replay_survives_and_observation_ref
     drop(store);
     // Schema 7 recovery never treats migrated observations as fresh.
     db.execute_batch(
-        "ALTER TABLE execution_questions DROP COLUMN observed_at; PRAGMA user_version=7;",
+        "DROP TABLE execution_launches; ALTER TABLE execution_questions DROP COLUMN observed_at; PRAGMA user_version=7;",
     )
     .unwrap();
     drop(db);

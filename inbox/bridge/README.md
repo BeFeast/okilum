@@ -1,9 +1,10 @@
-# T3 question bridge (slice 2, PR 2b)
+# T3 question and explicit launch bridge
 
 An optional Python process beside T3 connects outbound to the detached Inbox.
 It supports only protocol-2 native user-input requests in explicitly allowlisted
-pilot threads. It never creates threads, dispatches ordinary messages, executes
-shell commands, prepares worktrees or connects Maestro. The LAN backend stays on
+pilot threads. An independently enabled launch target permits explicit native
+executor launches. It never executes shell commands, prepares worktrees itself
+or connects Maestro. The LAN backend stays on
 CT119; the real vault is not used. Nothing starts automatically on merge.
 
 ## Private operator configuration
@@ -84,3 +85,26 @@ and deployed end-to-end pilot are the next PR; this adapter alone is not slice-2
 acceptance.
 
 Tests: `python3 -m unittest discover -s inbox/bridge -p 'test_*.py' -v`.
+
+
+## Explicit launches
+
+Copy `t3_launch.py` beside `t3_questions.py`. To enable launching, add
+`launch_targets` to the private local config: an array of exact target snapshots
+returned by the authenticated Inbox target endpoint. Each contains `project_id`,
+`instance_id`, `source_project_id` and `target`; every field is checked against
+operator configuration before source I/O. Keep the native T3 credential local.
+
+T3 `orchestration.launchThread` receives durable command/thread/message IDs,
+exact brief and pinned base commit, with app-owned worktree preparation. This is
+not the non-idempotent high-level MCP launch wrapper. The bridge journals consent
+and commits Inbox uncertainty before calling T3 once. A receipt means accepted;
+only a matching source thread/message/run/worktree observation advances progress.
+The launch branch is `inbox-<operation UUID>`; the resulting path comes from T3.
+
+At startup, already queued work is quarantined. Lost acknowledgements, restart,
+restore and missing source records trigger read-only reconciliation, never an
+automatic replacement launch. A late preparation result may fill previously
+unknown run/path fields; established identity cannot change. Large/truncated source
+snapshots remain unconfirmed. Launches do not broaden the question thread allowlist;
+question discovery for newly launched threads is a separate follow-up.

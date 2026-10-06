@@ -122,3 +122,15 @@ Merge this contract/evidence independently of enabling connectors. Proceed with
 T3 through the approved sequence while Maestro remains disabled: durable
 store/API, question bridge/web, explicit brief launch, Forgejo aggregation, project
 screen and LAN pilot acceptance. Product code remains absent from this PR.
+
+
+## New-worktree launch probe, 2026-10-06 (PR 3)
+
+On the isolated seeded pilot repository, the native `orchestration.launchThread`
+RPC prepared a new app-owned worktree at a pinned commit. Repeating the same
+command/thread/message IDs returned `resumed: true`; the source retained exactly
+one initial user message and one completed run. The executor returned the requested
+`INBOX_LAUNCH_PILOT_READY` marker without file, shell or service actions. This closes
+the native preparation/binding probe gap above, not Oleg's web acceptance gate.
+PR 3 adds journal/restart/restore tests and the separately confirmed web launch.
+Maestro remains disconnected regardless of the source API's availability.

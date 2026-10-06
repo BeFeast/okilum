@@ -533,3 +533,115 @@ fn credential_is_private_bounded_and_bound_to_existing_owner() {
     std::fs::write(&path, b"not json").unwrap();
     assert!(Bridge::from_credential(&path, f.owner).is_err());
 }
+
+#[tokio::test]
+async fn launch_transport_requires_separate_scope_and_preserves_source_identity() {
+    use tessera_inboxd::launch::{Launch, Target, TargetSnapshot};
+    let f = Fixture::new();
+    let target = TargetSnapshot {
+        project_id: f.project,
+        instance_id: "pilot-instance".into(),
+        source_project_id: "pilot-project".into(),
+        target: Target {
+            id: "pilot".into(),
+            label: "Pilot".into(),
+            repository: "fixture".into(),
+            base_commit: "a".repeat(40),
+            model_selection: json!({"instanceId":"codex","model":"test"}),
+            runtime_mode: "approval-required".into(),
+            interaction_mode: "default".into(),
+        },
+    };
+    let mut store = Store::open(&f.dir.path().join("db")).unwrap();
+    let brief = Uuid::new_v4();
+    store
+        .save_execution_brief(
+            f.owner,
+            &SaveBrief {
+                operation_id: Uuid::new_v4(),
+                project_id: f.project,
+                brief_id: brief,
+                expected_revision: 0,
+                title: "Pilot".into(),
+                text: "Exact brief".into(),
+                target_id: "pilot".into(),
+            },
+        )
+        .unwrap();
+    let request = Launch {
+        operation_id: Uuid::new_v4(),
+        brief_id: brief,
+        expected_revision: 1,
+        target_revision: target.revision(),
+    };
+    store
+        .prepare_execution_launch(f.owner, &request, &target)
+        .unwrap();
+    let path = format!("/api/bridge/v1/launches/{}", request.operation_id);
+    let app = f.app(true);
+    assert_eq!(
+        call(&app, "GET", &path, Value::Null, Some(KEY), None)
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    let cred = f.dir.path().join("credential");
+    let mut config: Value = serde_json::from_slice(&std::fs::read(&cred).unwrap()).unwrap();
+    config["scope"]["launches"] = json!(true);
+    config["launch_targets"] = json!([target.target]);
+    std::fs::write(&cred, serde_json::to_vec(&config).unwrap()).unwrap();
+    let app = f.app(true);
+    assert_eq!(
+        call(&app, "GET", &path, Value::Null, None, None).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        call(&app, "GET", &path, Value::Null, Some(KEY), None)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    let p = json!({"expected":"queued","next":"uncertain","run_id":null,"worktree_path":null,"error_code":null});
+    assert_eq!(
+        call(&app, "POST", &path, p.clone(), Some(KEY), None)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(&app, "POST", &path, p, Some(KEY), None).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &path,
+            json!({"expected":"uncertain","next":"queued"}),
+            Some(KEY),
+            None
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    config["scope"]["instance_id"] = json!("replacement-source");
+    std::fs::write(&cred, serde_json::to_vec(&config).unwrap()).unwrap();
+    let app = f.app(true);
+    assert_eq!(
+        call(&app, "GET", &path, Value::Null, Some(KEY), None)
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    let (_, list) = call(
+        &app,
+        "GET",
+        "/api/bridge/v1/launches",
+        Value::Null,
+        Some(KEY),
+        None,
+    )
+    .await;
+    assert!(list["operations"].as_array().unwrap().is_empty());
+}
