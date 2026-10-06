@@ -586,7 +586,7 @@ fn prepare_rest_with_io_and_snapshot(
         }
         drop(reconcile_phase);
         if let Some(trace) = &opts.diagnostics {
-            trace.event("reconcile_stats", serde_json::json!({ "notes": vault.notes.len(), "read": stats.read, "reused": stats.reused, "unreadable": vault.unreadable.len(), "replay_force_all": replay.force_all, "manual_force_read": opts.force_source_read, "reuse": stats.reuse, "graph_reused": stats.graph_reused }));
+            trace.event("reconcile_stats", serde_json::json!({ "notes": vault.notes.len(), "read": stats.read, "reused": stats.reused, "unreadable": vault.unreadable.len(), "replay_force_all": replay.force_all, "manual_force_read": opts.force_source_read, "reuse": stats.reuse, "graph_reused": stats.graph_reused, "graph_updated_sources":stats.affected.len() }));
         }
         let search_phase = opts
             .diagnostics
@@ -639,14 +639,55 @@ fn prepare_rest_with_io_and_snapshot(
             hook();
         }
         let fingerprint = format!("{:x}", fingerprint.finalize());
-        let generation = if stats.graph_reused {
-            snapshot.search_generation.clone().unwrap_or(fingerprint)
-        } else {
-            fingerprint
-        };
-        let destination = base.join("generations").join(&generation);
+        let mut generation = fingerprint;
         let mut searcher = None;
-        if disk_search {
+        if disk_search && stats.graph_reused {
+            if let Some(old_generation) = &snapshot.search_generation {
+                let prior = base.join("generations").join(old_generation);
+                if stats.affected.is_empty() {
+                    generation = old_generation.clone();
+                } else {
+                    let updated: Vec<_> = documents
+                        .iter()
+                        .filter(|document| stats.affected.contains(&document.path))
+                        .map(|document| tessera_core::search::SearchDocument {
+                            path: document.path.clone(),
+                            title: document.title.clone(),
+                            text: document.text.clone(),
+                        })
+                        .collect();
+                    let source_paths: std::collections::HashSet<_> =
+                        snapshot.source_paths().collect();
+                    let removed: Vec<_> = stats
+                        .affected
+                        .iter()
+                        .filter(|path| !source_paths.contains(path.as_str()))
+                        .cloned()
+                        .collect();
+                    match prepare_search_batch(&vault, &updated, &removed, &base, &prior, cancel) {
+                        Ok(Some((prepared, published))) => {
+                            searcher = Some(prepared);
+                            generation = published;
+                            if let Some(trace) = &opts.diagnostics {
+                                trace.event("search_incremental_prepare", serde_json::json!({"updated":updated.len(),"removed":removed.len(),"baseline_hit":true}));
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            cancel.check()?;
+                            if let Some(trace) = &opts.diagnostics {
+                                trace.event(
+                                    "search_incremental_fallback",
+                                    serde_json::json!({"cause":format!("{error:#}")}),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let destination = base.join("generations").join(&generation);
+        if disk_search && searcher.is_none() {
             match prepare_search_generation(
                 &vault,
                 &documents,
@@ -682,6 +723,7 @@ fn prepare_rest_with_io_and_snapshot(
             }
         }
         drop(search_phase);
+        snapshot.search_generation = disk_search.then_some(generation);
         cancel.check()?;
         if let Some(changes) = watcher
             .as_mut()
@@ -698,7 +740,6 @@ fn prepare_rest_with_io_and_snapshot(
             progress(send, "Updating changed notes".into())?;
             continue;
         }
-        snapshot.search_generation = disk_search.then_some(generation);
         if disk_cache && vault.inventory_scanned {
             let _phase = opts
                 .diagnostics
@@ -769,6 +810,39 @@ fn preparation_warning(
         operation,
         error: tessera_core::vault::display_error(&format!("{error:#}")),
     }
+}
+
+/// Fork a completed immutable baseline; never mutate an index used by First or
+/// another Reader. Publication uses the same complete-marker scheme as save.
+fn prepare_search_batch(
+    vault: &Vault,
+    documents: &[tessera_core::search::SearchDocument],
+    removed: &[String],
+    base: &Path,
+    prior: &Path,
+    cancel: &Cancellation,
+) -> Result<Option<(Searcher, String)>> {
+    let Some(old) = open_completed_generation(prior) else {
+        return Ok(None);
+    };
+    cancel.check()?;
+    let searcher = old.fork_session()?;
+    searcher.update_snapshot_batch(vault, documents, removed)?;
+    cancel.check()?;
+    use sha2::{Digest, Sha256};
+    let generation = format!("{:x}", Sha256::digest(uuid::Uuid::new_v4().as_bytes()));
+    let repairs = base
+        .join("generations")
+        .join(format!("{generation}.repairs"));
+    std::fs::create_dir_all(&repairs)?;
+    let owned = tempfile::Builder::new()
+        .prefix("session-")
+        .tempdir_in(&repairs)?;
+    searcher.copy_committed_to(owned.path())?;
+    cancel.check()?;
+    std::fs::write(owned.path().join("complete"), b"1")?;
+    let _ = owned.keep();
+    Ok(Some((searcher, generation)))
 }
 
 fn prepare_search_generation(
@@ -4435,15 +4509,22 @@ mod tests {
     /// Each launch is a new process with only the persisted snapshot/search bank.
     #[test]
     fn second_unchanged_relaunch_reuses_sources_and_graph() {
-        unchanged_relaunch_fixture(false);
+        unchanged_relaunch_fixture(false, 0);
     }
 
     #[test]
     fn second_unchanged_relaunch_after_topology_delta_reuses_sources_and_graph() {
-        unchanged_relaunch_fixture(true);
+        unchanged_relaunch_fixture(true, 0);
     }
 
-    fn unchanged_relaunch_fixture(topology_delta: bool) {
+    #[test]
+    fn persisted_relaunch_with_small_source_batch_refreshes_graph_and_search() {
+        for changed in [1, 10] {
+            unchanged_relaunch_fixture(false, changed);
+        }
+    }
+
+    fn unchanged_relaunch_fixture(topology_delta: bool, changed_sources: usize) {
         let fixture = tempfile::Builder::new()
             .prefix("tessera-unchanged-relaunch-")
             .tempdir()
@@ -4472,6 +4553,12 @@ mod tests {
                 .unwrap();
         }
         for launch in 0..=2 {
+            if launch == 1 {
+                for n in 0..changed_sources {
+                    std::fs::write(root.join(format!("notes/note-{n}.md")),
+                        format!("# Changed {n}\n\nnewbatchcanary\n[[notes/note-4999]]\n[New](note-4999.md)")).unwrap();
+                }
+            }
             let status = std::process::Command::new(std::env::current_exe().unwrap())
                 .args([
                     "reader_loading::tests::unchanged_relaunch_probe_child",
@@ -4481,6 +4568,10 @@ mod tests {
                 ])
                 .env("TESSERA_UNCHANGED_RELAUNCH_FIXTURE", fixture.path())
                 .env("TESSERA_UNCHANGED_RELAUNCH_NUMBER", launch.to_string())
+                .env(
+                    "TESSERA_RELAUNCH_CHANGED_SOURCES",
+                    changed_sources.to_string(),
+                )
                 .env(
                     "TESSERA_RELAUNCH_TOPOLOGY_DELTA",
                     if topology_delta { "1" } else { "0" },
@@ -4500,6 +4591,10 @@ mod tests {
         let root = fixture.join("vault").canonicalize().unwrap();
         let launch: usize = std::env::var("TESSERA_UNCHANGED_RELAUNCH_NUMBER")
             .unwrap()
+            .parse()
+            .unwrap();
+        let changed_sources: usize = std::env::var("TESSERA_RELAUNCH_CHANGED_SOURCES")
+            .unwrap_or_else(|_| "0".into())
             .parse()
             .unwrap();
         #[cfg(target_os = "linux")]
@@ -4569,7 +4664,6 @@ mod tests {
                 "persisted search generation must open before reconcile"
             );
         }
-        drop(first_searcher);
         let (send, _receive) = async_channel::unbounded();
         let ready = prepare_rest_with_snapshot(
             &root,
@@ -4635,7 +4729,37 @@ mod tests {
             state.set_search_generation(Some(generation));
             state.persist_delta(&cache).unwrap();
         } else {
-            assert!(matches!(ready, Event::Ready { .. }));
+            let Event::Ready {
+                vault,
+                searcher: Some(searcher),
+                ..
+            } = ready
+            else {
+                panic!("ready search");
+            };
+            if changed_sources > 0 && launch > 0 {
+                assert_eq!(
+                    searcher.search("newbatchcanary", 20).unwrap().len(),
+                    changed_sources
+                );
+                assert_eq!(
+                    vault.backlinks("notes/note-4999.md").len(),
+                    2 * changed_sources
+                );
+                assert_eq!(
+                    vault.backlinks("last.md").len(),
+                    2 * (5000 - changed_sources)
+                );
+                // First's prior generation stays immutable while reconcile commits.
+                assert_eq!(
+                    first_searcher
+                        .unwrap()
+                        .search("newbatchcanary", 20)
+                        .unwrap()
+                        .len(),
+                    if launch == 1 { 0 } else { changed_sources }
+                );
+            }
         }
         trace.event("unchanged_relaunch_probe_done", serde_json::json!({}));
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
@@ -4673,7 +4797,40 @@ mod tests {
             assert_eq!(stats[0]["read"], 5001, "cold read counter positive control");
             assert_eq!(stats[0]["reused"], 0);
         }
-        if launch > 0 {
+        if launch == 1 && changed_sources > 0 {
+            let batch = events
+                .iter()
+                .find(|event| event["phase"] == "search_incremental_prepare")
+                .expect("incremental search must run against persisted generation");
+            assert_eq!(batch["details"]["updated"], changed_sources);
+            let graph = events
+                .iter()
+                .find(|event| {
+                    event["phase"] == "reconcile_phase"
+                        && event["details"]["name"] == "Preparing backlinks"
+                })
+                .expect("graph refresh positive control");
+            if std::env::var_os("TESSERA_SLOW_FS_MS").is_some() {
+                assert!(
+                    graph["details"]["duration_ms"].as_f64().unwrap() < 300.,
+                    "bounded graph refresh budget"
+                );
+            }
+            eprintln!(
+                "CHANGED_RELAUNCH graph_ms={} search_ms={}",
+                graph["details"]["duration_ms"],
+                events
+                    .iter()
+                    .find(|e| e["phase"] == "background_search_prepare")
+                    .unwrap()["details"]["duration_ms"]
+            );
+            for s in &stats {
+                assert_eq!(s["read"], changed_sources);
+                assert_eq!(s["reused"], 5001 - changed_sources);
+                assert_eq!(s["graph_reused"], true);
+                assert_eq!(s["graph_updated_sources"], changed_sources);
+            }
+        } else if launch > 0 {
             let search_lookups: Vec<_> = events
                 .iter()
                 .filter(|event| event["phase"] == "search_generation_cache")

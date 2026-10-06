@@ -427,7 +427,10 @@ pub struct ReconcileStats {
     pub read: usize,
     pub reused: usize,
     pub reuse: ReuseDiagnostics,
+    /// True when the previous graph was retained, including bounded refreshes.
     pub graph_reused: bool,
+    /// Sources whose graph/search rows changed relative to the retained baseline.
+    pub affected: std::collections::BTreeSet<String>,
 }
 
 /// Counts only; no source contents or additional filesystem probes.
@@ -682,6 +685,7 @@ pub fn reconcile_with_reader(
         previous,
         bank.sources,
         bank.stats,
+        force_read,
         checkpoint,
     )
 }
@@ -810,6 +814,7 @@ fn reconcile_parallel_prioritized_with_reader(
         previous,
         bank.sources,
         bank.stats,
+        force_read,
         checkpoint,
     )
 }
@@ -926,14 +931,60 @@ fn finish_reconcile(
     previous: Option<&Snapshot>,
     sources: BTreeMap<String, Source>,
     mut stats: ReconcileStats,
+    force_read: bool,
     checkpoint: &mut impl FnMut(&str, usize) -> Result<()>,
 ) -> Result<(Vault, Snapshot, ReconcileStats)> {
     vault.finish_scan_report();
-    let same = stats.read == 0
-        && previous.is_some_and(|p| p.entries == vault.entries && p.sources.len() == sources.len());
-    stats.graph_reused = same;
-    if same {
+    // A reread is not necessarily a content change (replay/metadata may have
+    // invalidated a stamp). Compare cached bytes, including readable membership.
+    let mut affected = std::collections::BTreeSet::new();
+    if let Some(old) = previous {
+        for path in old.sources.keys().chain(sources.keys()) {
+            if old.sources.get(path).map(|s| &s.bytes) != sources.get(path).map(|s| &s.bytes) {
+                affected.insert(path.clone());
+            }
+        }
+    }
+    // Inventory changes can alter unresolved/ambiguous destinations in otherwise
+    // unchanged sources. Include conservative syntax candidates only for those
+    // identities; ordinary content edits never build a second all-source index.
+    let topology: std::collections::BTreeSet<_> = previous.map_or_else(Default::default, |old| {
+        let old_entries: std::collections::BTreeSet<_> = old
+            .entries
+            .iter()
+            .map(|entry| (&entry.path, entry.kind as u8))
+            .collect();
+        let new_entries: std::collections::BTreeSet<_> = vault
+            .entries
+            .iter()
+            .map(|entry| (&entry.path, entry.kind as u8))
+            .collect();
+        old_entries
+            .symmetric_difference(&new_entries)
+            .map(|(path, _)| (*path).clone())
+            .collect()
+    });
+    let bounded = !force_read
+        && previous.is_some()
+        && affected.len() + topology.len() < crate::watch::BULK_THRESHOLD;
+    if bounded && !topology.is_empty() {
+        let candidates = crate::link_candidates::CandidateIndex::from_snapshot(previous.unwrap());
+        for path in &topology {
+            affected.extend(candidates.referrers_for(path));
+        }
+    }
+    // A topology with many referrers is deliberately the bulk/rescan path.
+    stats.graph_reused = bounded && affected.len() < crate::watch::BULK_THRESHOLD;
+    if stats.graph_reused {
         vault.backlink_map = previous.unwrap().links.clone();
+        if !affected.is_empty() {
+            checkpoint("Preparing backlinks", 0)?;
+            vault.refresh_backlinks_from(&affected, checkpoint, |path| {
+                let bytes = STANDARD.decode(&sources.get(path)?.bytes).ok()?;
+                Some(String::from_utf8_lossy(&bytes).into_owned())
+            })?;
+        }
+        stats.affected = affected;
     } else {
         vault.build_backlinks_from(checkpoint, |path| {
             let bytes = STANDARD.decode(&sources.get(path)?.bytes).ok()?;
@@ -956,7 +1007,7 @@ fn finish_reconcile(
                 error: item.error.clone(),
             })
             .collect(),
-        search_generation: if same {
+        search_generation: if stats.graph_reused {
             previous.and_then(|p| p.search_generation.clone())
         } else {
             None
@@ -2201,6 +2252,80 @@ mod tests {
         warm_times.sort();
         println!("5000 notes, inventory+graph (search excluded), same-process OS-warm files: cold {cold_times:?}ms p50={}ms; snapshot-load+reconcile warm {warm_times:?}ms p50={}ms", cold_times[2], warm_times[2]);
     }
+    #[test]
+    fn warm_small_changes_match_full_graph_including_topology_and_unreadable_sources() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        let cache = fixture.path().join("cache");
+        std::fs::create_dir_all(root.join("folder")).unwrap();
+        for (path, text) in [
+            (
+                "a.md",
+                "[[missing]] [[target]] [Target](target.md) ![[folder/target]]",
+            ),
+            ("b.md", "---\nlink: '[[target]]'\n---\n[[target]]"),
+            ("target.md", "# Target"),
+            ("folder/target.md", "# Duplicate"),
+        ] {
+            std::fs::write(root.join(path), text).unwrap();
+        }
+        let (vault, snapshot, _) = reconcile(&root, None, false, &mut |_, _| Ok(())).unwrap();
+        save_complete(&snapshot, &vault, &cache).unwrap();
+        let mut previous = Snapshot::load_checked(&cache, &root).unwrap();
+        for step in 0..5 {
+            match step {
+                0 => std::fs::write(root.join("b.md"), "[[a]] changed").unwrap(),
+                1 => std::fs::write(root.join("missing.md"), "[[a]]").unwrap(),
+                2 => std::fs::remove_file(root.join("target.md")).unwrap(),
+                3 => {} // existing readable source becomes inaccessible
+                4 => {} // and recovers on the next persisted launch
+                _ => unreachable!(),
+            }
+            if step == 3 {
+                previous.invalidate_paths(&["a.md".into()]);
+            }
+            let read = |path: &Path| {
+                if step == 3 && path.ends_with("a.md") {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "injected denied",
+                    ))
+                } else {
+                    read_source(path).map(String::into_bytes)
+                }
+            };
+            let (vault, updated, stats) = reconcile_with_reader(
+                &root,
+                Some(&previous),
+                false,
+                &mut |_, _| Ok(()),
+                &mut |path| read(path),
+            )
+            .unwrap();
+            let (full, _, _) =
+                reconcile_with_reader(&root, None, true, &mut |_, _| Ok(()), &mut |path| {
+                    read(path)
+                })
+                .unwrap();
+            assert!(stats.graph_reused, "step {step}");
+            assert_eq!(
+                serde_json::to_value(&vault.backlink_map).unwrap(),
+                serde_json::to_value(&full.backlink_map).unwrap(),
+                "step {step}"
+            );
+            save_provisional(&updated, &vault, &cache, Some("b.md")).unwrap();
+            previous = Snapshot::load_checked(&cache, &root).unwrap();
+        }
+        // Invalidated metadata with identical bytes needs no graph/search update.
+        previous.invalidate_paths(&["b.md".into()]);
+        let (_, _, stats) = reconcile(&root, Some(&previous), false, &mut |_, _| Ok(())).unwrap();
+        assert_eq!(stats.read, 1);
+        assert!(stats.graph_reused);
+        assert!(stats.affected.is_empty());
+        let (_, _, forced) = reconcile(&root, Some(&previous), true, &mut |_, _| Ok(())).unwrap();
+        assert!(!forced.graph_reused);
+    }
+
     #[test]
     fn priority_schedules_current_folder_links_and_recent_before_rest_without_reordering_inventory()
     {
