@@ -135,9 +135,21 @@ pub struct Snapshot {
     unreadable: Vec<CachedUnreadable>,
     /// Basename of an immutable, completed Tantivy generation, never a path.
     pub search_generation: Option<String>,
+    /// Set while every field except `search_generation` equals a source bank
+    /// file on disk. Derived bookkeeping only; never serialised.
+    #[serde(skip)]
+    persisted: Option<Persisted>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+/// The source bank file this in-memory snapshot was decoded from, unmodified.
+#[derive(Clone)]
+struct Persisted {
+    path: PathBuf,
+    file: SourceRevision,
+    search_generation: Option<String>,
+}
+
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 struct CachedUnreadable {
     path: PathBuf,
     operation: String,
@@ -151,6 +163,8 @@ pub struct StartupSnapshot {
     schema: u32,
     root: PathBuf,
     entries: Vec<VaultEntry>,
+    // Sorted so an unchanged manifest serialises to identical bytes.
+    #[serde(serialize_with = "sorted_links")]
     links: HashMap<String, Vec<Backlink>>,
     unreadable: Vec<CachedUnreadable>,
     primary: Option<(String, Source)>,
@@ -161,6 +175,13 @@ pub struct StartupSnapshot {
     previous: Option<Box<Snapshot>>,
     #[serde(skip)]
     latest: Option<(String, Source)>,
+}
+
+fn sorted_links<S: serde::Serializer>(
+    links: &HashMap<String, Vec<Backlink>>,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    serializer.collect_map(links.iter().collect::<BTreeMap<_, _>>())
 }
 
 #[derive(Serialize, Deserialize)]
@@ -534,10 +555,14 @@ impl Snapshot {
             meta.is_file() && meta.len() <= MAX_BYTES,
             "Invalid source bank size/type"
         );
+        let before = SourceRevision::read(&path).ok();
         let mut bytes = Vec::new();
-        std::fs::File::open(path)?
+        std::fs::File::open(&path)?
             .take(MAX_BYTES + 1)
             .read_to_end(&mut bytes)?;
+        // A file replaced during the read is decoded but never trusted as persisted.
+        let file =
+            before.filter(|before| SourceRevision::read(&path).ok().as_ref() == Some(before));
         ensure!(
             bytes.len() as u64 <= MAX_BYTES,
             "Reader source bank exceeds size limit"
@@ -554,6 +579,12 @@ impl Snapshot {
         );
         if let Some(delta) = incremental::Delta::load(base, &snapshot.root, Some(&snapshot.id))? {
             delta.apply_snapshot(&mut snapshot);
+        } else if let Some(file) = file {
+            snapshot.persisted = Some(Persisted {
+                path,
+                file,
+                search_generation: snapshot.search_generation.clone(),
+            });
         }
         validate_inventory(
             &snapshot.root,
@@ -601,8 +632,19 @@ impl Snapshot {
                 dirty.is_empty() || path == dirty || path.starts_with(&format!("{dirty}/"))
             }) {
                 source.stamp = None;
+                self.persisted = None;
             }
         }
+    }
+
+    /// True only when `base` already holds exactly this snapshot: same decoded
+    /// fields, same search generation, and the file is unchanged since load.
+    pub fn is_persisted_in(&self, base: &Path) -> bool {
+        self.persisted.as_ref().is_some_and(|persisted| {
+            persisted.search_generation == self.search_generation
+                && persisted.path == base.join("reader-snapshot.json")
+                && SourceRevision::read(&persisted.path).is_ok_and(|now| now == persisted.file)
+        })
     }
 
     pub fn source_revision(&self, path: &str) -> Option<&SourceRevision> {
@@ -965,6 +1007,7 @@ fn finish_reconcile(
             .map(|(path, _)| (*path).clone())
             .collect()
     });
+    let content_unchanged = affected.is_empty();
     let bounded = !force_read
         && previous.is_some()
         && affected.len() + topology.len() < crate::watch::BULK_THRESHOLD;
@@ -992,27 +1035,45 @@ fn finish_reconcile(
             Some(String::from_utf8_lossy(&bytes).into_owned())
         })?;
     }
+    let unreadable: Vec<_> = vault
+        .unreadable
+        .iter()
+        .map(|item| CachedUnreadable {
+            path: item.path.clone(),
+            operation: item.operation.into(),
+            error: item.error.clone(),
+        })
+        .collect();
+    // An unchanged vault keeps the persisted snapshot's identity, so the source
+    // bank need not be re-serialised. Identical bytes alone are not enough:
+    // inventory, revisions and unreadable entries must also match.
+    let unchanged = previous.filter(|old| {
+        old.persisted.is_some()
+            && stats.graph_reused
+            && content_unchanged
+            && old.root == canonical
+            && old.entries == vault.entries
+            && old.unreadable == unreadable
+            && old
+                .sources
+                .iter()
+                .zip(&sources)
+                .all(|((old_path, old), (path, new))| old_path == path && old.stamp == new.stamp)
+    });
     let snapshot = Snapshot {
         schema: SCHEMA,
         root: canonical,
-        id: uuid::Uuid::new_v4().to_string(),
+        id: unchanged.map_or_else(|| uuid::Uuid::new_v4().to_string(), |old| old.id.clone()),
         entries: vault.entries.clone(),
         links: vault.backlink_map.clone(),
         sources,
-        unreadable: vault
-            .unreadable
-            .iter()
-            .map(|item| CachedUnreadable {
-                path: item.path.clone(),
-                operation: item.operation.into(),
-                error: item.error.clone(),
-            })
-            .collect(),
+        unreadable,
         search_generation: if stats.graph_reused {
             previous.and_then(|p| p.search_generation.clone())
         } else {
             None
         },
+        persisted: unchanged.and_then(|old| old.persisted.clone()),
     };
     Ok((vault, snapshot, stats))
 }
@@ -1036,7 +1097,9 @@ pub fn save_provisional(
         vault.inventory_scanned && vault.root.canonicalize()? == snapshot.root,
         "Cannot cache unfinished/foreign inventory"
     );
-    snapshot.save(base)?;
+    if !snapshot.is_persisted_in(base) {
+        snapshot.save(base)?;
+    }
     let startup = StartupSnapshot {
         schema: SCHEMA,
         root: snapshot.root.clone(),
@@ -1055,14 +1118,23 @@ pub fn save_provisional(
         previous: None,
         latest: None,
     };
-    let mut file = tempfile::NamedTempFile::new_in(base)?;
-    write_json(file.as_file_mut(), &startup)?;
+    let bytes = serde_json::to_vec(&startup)?;
     ensure!(
-        file.as_file().metadata()?.len() <= MAX_BYTES,
+        bytes.len() as u64 <= MAX_BYTES,
         "Startup snapshot exceeds size limit"
     );
+    let path = base.join("reader-startup.json");
+    // The small manifest also carries the primary note; rewrite only on change.
+    if std::fs::symlink_metadata(&path)
+        .is_ok_and(|meta| meta.is_file() && meta.len() == bytes.len() as u64)
+        && std::fs::read(&path).is_ok_and(|existing| existing == bytes)
+    {
+        return Ok(());
+    }
+    let mut file = tempfile::NamedTempFile::new_in(base)?;
+    file.write_all(&bytes)?;
     file.flush()?;
-    file.persist(base.join("reader-startup.json"))?;
+    file.persist(path)?;
     Ok(())
 }
 
@@ -2409,6 +2481,72 @@ mod tests {
         assert_eq!(
             serde_json::to_value(vault.backlink_map).unwrap(),
             serde_json::to_value(serial.backlink_map).unwrap()
+        );
+    }
+
+    /// #652: only a snapshot proven identical to the bank file skips the write.
+    #[test]
+    fn unchanged_reconcile_keeps_identity_only_for_untouched_persisted_bank() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        let cache = temp.path().join("cache");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("a.md"), "# A\n[[b]]").unwrap();
+        std::fs::write(root.join("b.md"), "# B").unwrap();
+        let checkpoint = &mut |_: &str, _| Ok(());
+        let (vault, cold, _) = reconcile(&root, None, false, checkpoint).unwrap();
+        assert!(
+            !cold.is_persisted_in(&cache),
+            "fresh reconcile is never persisted"
+        );
+        save_provisional(&cold, &vault, &cache, Some("a.md")).unwrap();
+
+        let loaded = Snapshot::load_checked(&cache, &root).unwrap();
+        assert!(loaded.is_persisted_in(&cache));
+        let (_, warm, stats) = reconcile(&root, Some(&loaded), false, checkpoint).unwrap();
+        assert_eq!((stats.read, stats.reused), (0, 2));
+        assert_eq!(warm.id, cold.id);
+        assert!(warm.is_persisted_in(&cache));
+        assert!(!warm.is_persisted_in(&temp.path().join("other")));
+        let mut regenerated = warm.clone();
+        regenerated.search_generation = Some("a".repeat(64));
+        assert!(
+            !regenerated.is_persisted_in(&cache),
+            "new generation is saved"
+        );
+
+        // Invalidated revisions and a replaced bank are never assumed persisted.
+        let mut invalidated = Snapshot::load_checked(&cache, &root).unwrap();
+        invalidated.invalidate_paths(&["a.md".into()]);
+        let (_, reread, stats) = reconcile(&root, Some(&invalidated), false, checkpoint).unwrap();
+        assert_eq!(stats.read, 1, "invalidation positive control");
+        assert_ne!(reread.id, cold.id);
+        assert!(!reread.is_persisted_in(&cache));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        cold.save(&cache).unwrap();
+        assert!(!warm.is_persisted_in(&cache), "rewritten bank file");
+
+        // A changed note gets a new identity and is saved.
+        std::fs::write(root.join("b.md"), "# B changed").unwrap();
+        let loaded = Snapshot::load_checked(&cache, &root).unwrap();
+        let (vault, changed, _) = reconcile(&root, Some(&loaded), false, checkpoint).unwrap();
+        assert_ne!(changed.id, cold.id);
+        assert!(!changed.is_persisted_in(&cache));
+        save_provisional(&changed, &vault, &cache, Some("a.md")).unwrap();
+        let saved = Snapshot::load_checked(&cache, &root).unwrap();
+        assert_eq!(saved.id, changed.id);
+        assert_eq!(saved.source("b.md").as_deref(), Some("# B changed"));
+
+        // A bank completed by an incremental delta differs from its file.
+        let state = incremental::State::new(vault, saved);
+        assert!(!state.snapshot.is_persisted_in(&cache));
+        state.persist_delta(&cache).unwrap();
+        let with_delta = Snapshot::load_checked(&cache, &root).unwrap();
+        assert!(!with_delta.is_persisted_in(&cache));
+        let (_, after_delta, _) = reconcile(&root, Some(&with_delta), false, checkpoint).unwrap();
+        assert_ne!(
+            after_delta.id, changed.id,
+            "delta-applied bank is rewritten"
         );
     }
 }

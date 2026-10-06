@@ -21,7 +21,9 @@ pub struct Batch {
 
 impl State {
     /// Build after Reader Ready on the background worker, never a publication gate.
-    pub fn new(vault: Vault, snapshot: Snapshot) -> Self {
+    pub fn new(vault: Vault, mut snapshot: Snapshot) -> Self {
+        // Batches mutate this baseline; it no longer describes the source bank file.
+        snapshot.persisted = None;
         let delta = Delta {
             schema: SCHEMA,
             root: snapshot.root.clone(),

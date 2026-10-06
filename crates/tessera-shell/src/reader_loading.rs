@@ -652,33 +652,52 @@ fn prepare_rest_with_io_and_snapshot(
         // Concurrent attempts may reuse the same completed bytes, never delete an
         // active index, or publish an older generation over newer data.
         use sha2::{Digest, Sha256};
-        let mut fingerprint = Sha256::new();
-        fingerprint.update(b"reader-search-v2");
+        // An unchanged graph keeps its completed generation; hashing every
+        // source byte would only produce a name that is then discarded.
+        let reuse_generation = disk_search
+            && stats.graph_reused
+            && stats.affected.is_empty()
+            && snapshot.search_generation.is_some();
+        let mut fingerprint = (disk_search && !reuse_generation).then(|| {
+            let mut fingerprint = Sha256::new();
+            fingerprint.update(b"reader-search-v2");
+            fingerprint
+        });
         let mut documents = Vec::with_capacity(vault.notes.len());
         for note in &vault.notes {
             cancel.check()?;
             // Unreadable identities still affect link resolution in the index.
-            fingerprint.update(note.path.len().to_le_bytes());
-            fingerprint.update(note.path.as_bytes());
+            if let Some(fingerprint) = &mut fingerprint {
+                fingerprint.update(note.path.len().to_le_bytes());
+                fingerprint.update(note.path.as_bytes());
+            }
             let Some(source) = source_snapshot.remove(&note.path) else {
-                fingerprint.update([0]);
+                if let Some(fingerprint) = &mut fingerprint {
+                    fingerprint.update([0]);
+                }
                 continue;
             };
-            fingerprint.update([1]);
-            fingerprint.update(source.len().to_le_bytes());
-            fingerprint.update(&source);
+            if let Some(fingerprint) = &mut fingerprint {
+                fingerprint.update([1]);
+                fingerprint.update(source.len().to_le_bytes());
+                fingerprint.update(&source);
+            }
             documents.push(tessera_core::search::SearchDocument {
                 path: note.path.clone(),
                 title: note.title.clone(),
-                text: String::from_utf8_lossy(&source).into_owned(),
+                // Cached sources are validated UTF-8; avoid copying each one.
+                text: String::from_utf8(source)
+                    .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned()),
             });
         }
         #[cfg(test)]
         if let Some(hook) = &opts.rest_snapshot_hook {
             hook();
         }
-        let fingerprint = format!("{:x}", fingerprint.finalize());
-        let mut generation = fingerprint;
+        // Without a disk cache the generation name is never used or persisted.
+        let mut generation = fingerprint
+            .map(|fingerprint| format!("{:x}", fingerprint.finalize()))
+            .unwrap_or_default();
         let mut searcher = None;
         if disk_search && stats.graph_reused {
             if let Some(old_generation) = &snapshot.search_generation {
@@ -5025,6 +5044,303 @@ mod tests {
             );
         }
         eprintln!("UNCHANGED_RELAUNCH launch={launch} first_ms={first_ms:.2} ready_ms={ready_ms:.2} stats={} replay={replay}",serde_json::to_string(&stats).unwrap());
+    }
+
+    /// Generated vault for the warm startup tail (#652): 5000 notes in 50
+    /// folders (~7 KiB each), every third with a frontmatter title, plus `last.md`.
+    fn warm_tail_fixture(root: &Path, notes: usize) {
+        std::fs::create_dir_all(root).unwrap();
+        std::fs::write(root.join("last.md"), "# Last\n\nwarmtailcanary").unwrap();
+        for n in 0..notes {
+            let folder = root.join(format!("area-{}", n % 50));
+            std::fs::create_dir_all(&folder).unwrap();
+            let frontmatter = if n % 3 == 0 {
+                format!("---\ntitle: Titled {n}\ntags: [generated]\n---\n")
+            } else {
+                String::new()
+            };
+            std::fs::write(
+                folder.join(format!("note-{n}.md")),
+                format!(
+                    "{frontmatter}# Note {n}\n\n[[last]] [[note-{}]] [Last](../last.md)\n\n{}",
+                    (n + 1) % notes,
+                    "A stable generated paragraph with ordinary words for search.\n\n".repeat(110)
+                ),
+            )
+            .unwrap();
+        }
+    }
+
+    /// Positive-controlled trace reader: waits for `sentinel`, which is
+    /// enqueued after every phase of interest has been dropped.
+    fn trace_events(state: &Path, trace: &reader_diagnostics::Trace) -> Vec<serde_json::Value> {
+        trace.event("warm_tail_probe_done", serde_json::json!({}));
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let events: Vec<serde_json::Value> =
+                std::fs::read_to_string(state.join("reader-diagnostic.log"))
+                    .unwrap_or_default()
+                    .lines()
+                    .filter_map(|line| serde_json::from_str(line).ok())
+                    .collect();
+            if events
+                .iter()
+                .any(|event| event["phase"] == "warm_tail_probe_done")
+            {
+                return events;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "diagnostic delivery positive control"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn phase_ms(events: &[serde_json::Value], phase: &str) -> Option<f64> {
+        events
+            .iter()
+            .find(|event| event["phase"] == phase)
+            .and_then(|event| event["details"]["duration_ms"].as_f64())
+    }
+
+    struct WarmLaunch {
+        events: Vec<serde_json::Value>,
+        rest_ms: f64,
+        sources: std::collections::HashMap<String, String>,
+        titles: Vec<(String, String)>,
+        id: String,
+        generation: Option<String>,
+    }
+
+    /// One complete launch as the desktop worker runs it: First, then Ready.
+    fn warm_tail_launch(root: &Path, cache: &Path, state: PathBuf) -> WarmLaunch {
+        let trace = reader_diagnostics::Trace::new(Some(state.clone()), Some(root.to_path_buf()));
+        let opts = Opts {
+            vault: Some(root.to_path_buf()),
+            note: Some("last.md".into()),
+            index_dir: Some(cache.to_path_buf()),
+            diagnostics: Some(trace.clone()),
+            ..Default::default()
+        };
+        let Event::First { snapshot, .. } = prepare_first(&opts, &Cancellation::default()).unwrap()
+        else {
+            panic!("first publication")
+        };
+        let (send, _receive) = async_channel::unbounded();
+        let started = std::time::Instant::now();
+        let ready = prepare_rest_with_snapshot(
+            root,
+            &opts,
+            &Cancellation::default(),
+            &send,
+            snapshot.map(|snapshot| *snapshot),
+        )
+        .unwrap();
+        let rest_ms = started.elapsed().as_secs_f64() * 1000.;
+        let Event::Ready {
+            move_snapshot,
+            sources,
+            titles,
+            searcher: Some(searcher),
+            ..
+        } = ready
+        else {
+            panic!("ready with search")
+        };
+        assert_eq!(searcher.search("warmtailcanary", 5).unwrap().len(), 1);
+        let mut titles: Vec<_> = titles.into_iter().collect();
+        titles.sort();
+        WarmLaunch {
+            events: trace_events(&state, &trace),
+            rest_ms,
+            sources,
+            titles,
+            id: move_snapshot.id.clone(),
+            generation: move_snapshot.search_generation.clone(),
+        }
+    }
+
+    fn file_identity(path: &Path) -> (u64, std::time::SystemTime, Vec<u8>) {
+        let metadata = std::fs::metadata(path).unwrap();
+        (
+            metadata.len(),
+            metadata.modified().unwrap(),
+            std::fs::read(path).unwrap(),
+        )
+    }
+
+    /// #652: an unchanged warm relaunch publishes identical Ready data without
+    /// rewriting the source bank; a changed note still rewrites it.
+    #[test]
+    fn unchanged_warm_relaunch_keeps_persisted_snapshot_and_ready_data() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        let cache = fixture.path().join("cache");
+        warm_tail_fixture(&root, 60);
+        let root = root.canonicalize().unwrap();
+        let cold = warm_tail_launch(&root, &cache, fixture.path().join("trace-cold"));
+        let bank = cache.join("reader-snapshot.json");
+        let startup = cache.join("reader-startup.json");
+        let (bank_before, startup_before) = (file_identity(&bank), file_identity(&startup));
+        // Coarse filesystem timestamps must not hide a rewrite.
+        std::thread::sleep(Duration::from_millis(20));
+
+        let warm = warm_tail_launch(&root, &cache, fixture.path().join("trace-warm"));
+        let stats = &warm
+            .events
+            .iter()
+            .find(|event| event["phase"] == "reconcile_stats")
+            .unwrap()["details"];
+        assert_eq!(
+            (stats["read"].clone(), stats["reused"].clone()),
+            (0.into(), 61.into())
+        );
+        assert_eq!(stats["graph_reused"], true);
+        assert!(
+            phase_ms(&warm.events, "snapshot_persist").is_some(),
+            "persist phase still runs and decides"
+        );
+        assert_eq!(
+            file_identity(&bank),
+            bank_before,
+            "unchanged bank is not rewritten"
+        );
+        assert_eq!(
+            file_identity(&startup),
+            startup_before,
+            "unchanged manifest is not rewritten"
+        );
+        assert_eq!(
+            warm.id, cold.id,
+            "identical content keeps its snapshot identity"
+        );
+        assert_eq!(warm.generation, cold.generation);
+        assert_eq!(warm.sources, cold.sources);
+        assert_eq!(warm.titles, cold.titles);
+        assert!(warm
+            .titles
+            .contains(&("area-0/note-0.md".into(), "Note 0".into())));
+
+        // Positive control: the same probe observes a rewrite after an edit.
+        std::fs::write(
+            root.join("area-1/note-1.md"),
+            "# Edited\n\n[[last]] warmtailedit",
+        )
+        .unwrap();
+        let edited = warm_tail_launch(&root, &cache, fixture.path().join("trace-edit"));
+        assert_ne!(
+            file_identity(&bank),
+            bank_before,
+            "edited vault rewrites the bank"
+        );
+        assert_ne!(edited.id, cold.id);
+        let saved = tessera_core::vault::warm::Snapshot::load_checked(&cache, &root).unwrap();
+        assert_eq!(saved.id, edited.id);
+        assert!(saved
+            .source("area-1/note-1.md")
+            .unwrap()
+            .contains("warmtailedit"));
+
+        // A different primary note changes only the small startup manifest.
+        let startup_edited = file_identity(&startup);
+        let bank_edited = file_identity(&bank);
+        std::thread::sleep(Duration::from_millis(20));
+        let trace = reader_diagnostics::Trace::new(None, Some(root.clone()));
+        let opts = Opts {
+            vault: Some(root.clone()),
+            note: Some("area-2/note-2.md".into()),
+            index_dir: Some(cache.clone()),
+            diagnostics: Some(trace),
+            ..Default::default()
+        };
+        let (send, _receive) = async_channel::unbounded();
+        prepare_rest_with_snapshot(&root, &opts, &Cancellation::default(), &send, None).unwrap();
+        assert_eq!(file_identity(&bank), bank_edited);
+        assert_ne!(
+            file_identity(&startup),
+            startup_edited,
+            "new primary is persisted"
+        );
+        let manifest = tessera_core::vault::warm::StartupSnapshot::load(&cache, &root).unwrap();
+        assert!(manifest.source("area-2/note-2.md").is_some());
+    }
+
+    /// #652 benchmark. Run in the release profile on one host:
+    /// `cargo test --release --locked -p tessera-shell warm_startup_tail_profile -- --ignored --nocapture --test-threads=1`
+    #[test]
+    #[ignore = "release-profile benchmark; run explicitly"]
+    fn warm_startup_tail_profile() {
+        // Release budget for the unchanged-vault tail after document publication
+        // (search prepare + snapshot persist + titles). Calibrated on the Linux
+        // host in docs/reader-startup-diagnostics.md: ~460-520 ms before #652,
+        // ~100-200 ms after. Override only for a slower host, never to pass.
+        let budget_ms: f64 = std::env::var("TESSERA_WARM_TAIL_BUDGET_MS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(400.);
+        let samples: usize = std::env::var("TESSERA_WARM_TAIL_SAMPLES")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(3);
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        let cache = fixture.path().join("cache");
+        warm_tail_fixture(&root, 5000);
+        let root = root.canonicalize().unwrap();
+        let cold = warm_tail_launch(&root, &cache, fixture.path().join("trace-cold"));
+        let bytes = std::fs::metadata(cache.join("reader-snapshot.json"))
+            .unwrap()
+            .len();
+        eprintln!(
+            "WARM_TAIL cold rest_ms={:.2} bank_bytes={bytes} notes={}",
+            cold.rest_ms,
+            cold.sources.len()
+        );
+        let phases = [
+            "background_reconcile",
+            "background_search_prepare",
+            "search_generation_lookup",
+            "snapshot_persist",
+            "cached_backlink_titles",
+        ];
+        for sample in 0..samples {
+            let warm = warm_tail_launch(
+                &root,
+                &cache,
+                fixture.path().join(format!("trace-{sample}")),
+            );
+            let stats = &warm
+                .events
+                .iter()
+                .find(|event| event["phase"] == "reconcile_stats")
+                .unwrap()["details"];
+            // Positive controls: this is the unchanged warm path, not a rebuild.
+            assert_eq!(stats["read"], 0, "{stats}");
+            assert_eq!(stats["reused"], 5001);
+            assert_eq!(stats["graph_reused"], true);
+            assert_eq!(warm.sources, cold.sources);
+            assert_eq!(warm.titles, cold.titles);
+            let mut tail = 0.;
+            let mut line = format!("WARM_TAIL sample={sample} rest_ms={:.2}", warm.rest_ms);
+            for phase in phases {
+                let ms = phase_ms(&warm.events, phase);
+                if matches!(
+                    phase,
+                    "background_search_prepare" | "snapshot_persist" | "cached_backlink_titles"
+                ) {
+                    tail += ms.expect("tail phase recorded");
+                }
+                line.push_str(&format!(" {phase}={:.2}", ms.unwrap_or(f64::NAN)));
+            }
+            eprintln!("{line} tail_ms={tail:.2}");
+            if !cfg!(debug_assertions) {
+                assert!(
+                    tail < budget_ms,
+                    "warm tail {tail:.2} ms exceeds {budget_ms} ms"
+                );
+            }
+        }
     }
 
     #[test]

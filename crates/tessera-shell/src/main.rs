@@ -5009,7 +5009,6 @@ fn display_title_bytes(head: &[u8]) -> Option<String> {
     let text = String::from_utf8_lossy(head);
     let mut lines = text.lines();
     let mut frontmatter_title = None;
-    let mut body: Vec<&str> = Vec::new();
     if text.starts_with("---") {
         lines.next();
         for line in lines.by_ref() {
@@ -5024,9 +5023,9 @@ fn display_title_bytes(head: &[u8]) -> Option<String> {
             }
         }
     }
-    body.extend(lines);
     let mut fenced = false;
-    for line in body {
+    // Stop at the first H1 instead of collecting the whole head.
+    for line in lines {
         if line.trim_start().starts_with("```") {
             fenced = !fenced;
             continue;

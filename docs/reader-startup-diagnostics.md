@@ -358,3 +358,56 @@ was not controlled; builds/tests in this executor worktree had finished.
 This measures core reconcile, excluding cache persistence/search construction,
 native SMB transport and native Windows/macOS GUI presentation. Native #516
 acceptance, including mapped paths, disconnect/reconnect and safe-save, remains open.
+
+## Warm startup tail on an unchanged vault (#652)
+
+After the document is visible, an unchanged warm relaunch still spent most of
+its background time in `background_search_prepare` ("Checking search data")
+and `snapshot_persist`. Three pieces of work were avoidable:
+
+- The search fingerprint hashed every source byte with SHA-256 even when the
+  retained graph keeps the completed search generation, so the hash was
+  discarded. It is now computed only when a new generation name can be used.
+  Cached sources are moved into search documents instead of being copied.
+- Every reconcile minted a new snapshot ID, so the full source bank (48 MB of
+  JSON here) was re-serialised and rewritten. A snapshot decoded from an
+  untouched bank file (no incremental delta applied, file revision unchanged
+  across the read) now keeps its ID when reconciliation proves the same
+  inventory, source bytes, revisions, unreadable entries and retained graph.
+  The bank write is skipped only while its search generation and on-disk file
+  revision still match; replay invalidation, incremental batches and any edit
+  still save.
+- The startup manifest is compared byte-for-byte and rewritten only on change.
+  Its graph map is serialised in sorted key order so identical content gives
+  identical bytes across processes. Title extraction stops at the first H1.
+
+No cache write in this path calls `fsync`; persistence remains a buffered
+temporary file plus rename. Published Ready data (sources, titles, search
+generation, graph) is unchanged; the regression
+`unchanged_warm_relaunch_keeps_persisted_snapshot_and_ready_data` asserts this
+and that the bank and manifest files are untouched, with an edited-note
+positive control that does rewrite them.
+
+Benchmark (release profile, 5001 generated notes, 48.45 MB source bank; every
+warm sample asserts zero source reads, 5001 reused and a retained graph):
+
+```sh
+cargo test --release --locked -p tessera-shell --bin tessera --no-run
+target/release/deps/tessera-<hash> warm_startup_tail_profile \
+  --ignored --nocapture --test-threads=1
+```
+
+Same Linux container and session, paired binaries, five samples each (ms):
+
+| phase | before | after |
+|---|---|---|
+| `background_search_prepare` | 260.7–290.4 | 69.7–156.9 |
+| `snapshot_persist` | 124.0–182.2 | 9.3–22.7 |
+| `cached_backlink_titles` | 44.7–82.5 | 18.8–28.9 |
+| tail (sum of the three) | 459.8–521.6 | 98.0–198.7 |
+| reconcile start to Ready | 754.7–847.9 | 405.1–560.4 |
+
+The test asserts a 400 ms tail budget in release builds;
+`TESSERA_WARM_TAIL_BUDGET_MS` overrides it for a slower host. `vault_ready` is
+a UI-thread event: this probe measures the worker up to the Ready event, not
+native window/GPU presentation. Native macOS/iCloud timings remain owner QA.
