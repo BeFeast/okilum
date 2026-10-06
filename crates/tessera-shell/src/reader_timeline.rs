@@ -689,9 +689,9 @@ impl Reader {
 
 #[cfg(test)]
 mod tests {
-    use gpui_component::WindowExt;
     use super::*;
     use ::core::prelude::v1::test;
+    use gpui_component::WindowExt;
 
     #[test]
     fn comparison_handles_insertions_deletions_and_empty_files() {
