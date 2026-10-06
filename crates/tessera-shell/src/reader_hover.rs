@@ -398,7 +398,13 @@ impl Reader {
             .into_any_element()
         } else {
             div()
+                .id("note-hover-message")
+                .debug_selector(|| "note-hover-message".into())
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
                 .p_3()
+                .text_sm()
                 .child(
                     h.message
                         .clone()
@@ -425,6 +431,7 @@ impl Reader {
                         .w(width)
                         .h(height)
                         .rounded_lg()
+                        .overflow_hidden()
                         .bg(palette.surface)
                         .text_color(palette.text)
                         .border_1()
@@ -440,6 +447,11 @@ impl Reader {
                         .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                         .child(
                             h_flex()
+                                .id("note-hover-header")
+                                .debug_selector(|| "note-hover-header".into())
+                                .flex_none()
+                                .min_h(px(44.))
+                                .text_sm()
                                 .px_3()
                                 .py_2()
                                 .gap_2()
@@ -447,7 +459,9 @@ impl Reader {
                                 .border_color(palette.border)
                                 .child(
                                     div()
+                                        .debug_selector(|| "note-hover-title".into())
                                         .flex_1()
+                                        .min_w_0()
                                         .overflow_hidden()
                                         .text_ellipsis()
                                         .child(title),
@@ -666,12 +680,16 @@ mod tests {
             "# {{title}}\nDefault body",
         )
         .unwrap();
+        std::fs::create_dir(root.join("Life")).unwrap();
         let source = "[[Новая 🧠|Alias]]\n";
-        std::fs::write(root.join("Start.md"), source).unwrap();
+        std::fs::write(root.join("Life/Start.md"), source).unwrap();
         let state = tempfile::tempdir().unwrap();
         reader.update_in(visual, |r, window, cx| {
             r.session_directory = Some(state.path().to_owned());
-            r.prepare_document("Start.md", None, None, window, cx);
+            r.tree
+                .entry_created("Life/Start.md", tessera_core::vault::EntryKind::Markdown);
+            Arc::make_mut(&mut r.vault).register_created_note("Life/Start.md");
+            r.prepare_document("Life/Start.md", None, None, window, cx);
         });
         visual.run_until_parked();
         let url = reader.read_with(visual, |r, _| r.link_identities[0].url.clone());
@@ -690,11 +708,23 @@ mod tests {
         let button = visual
             .debug_bounds("create-hover-note")
             .expect("missing hover offers create");
+        let card = visual.debug_bounds("note-hover-preview").unwrap();
+        let title = visual.debug_bounds("note-hover-title").unwrap();
+        let message = visual.debug_bounds("note-hover-message").unwrap();
+        assert!(title.top() > card.top() && title.bottom() < card.bottom());
+        assert!(message.top() >= title.bottom() && message.bottom() <= card.bottom());
         visual.simulate_click(button.center(), Modifiers::default());
         visual.run_until_parked();
         reader.read_with(visual, |r, cx| {
             let creation = r.creation.as_ref().expect("inline creation");
             assert_eq!(creation.input.read(cx).value().as_ref(), "Новая 🧠.md");
+            assert_eq!(creation.folder, "Life");
+            let rows = r.sidebar_items();
+            let folder = rows
+                .iter()
+                .position(|row| matches!(row, SideItem::Tree(r) if r.path == "Life"))
+                .unwrap();
+            assert!(matches!(&rows[folder + 1], SideItem::Create(_, 1, ..)));
             assert_eq!(creation.selected_template.as_deref(), Some("Note.md"));
         });
         assert!(!visual.did_prompt_for_new_path());
@@ -718,7 +748,7 @@ mod tests {
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
             assert!(
-                root.join("Новая 🧠.md").exists(),
+                root.join("Life/Новая 🧠.md").exists(),
                 "creation exists={}, current={}, error={:?}, notice={:?}",
                 r.creation.is_some(),
                 r.current_rel,
@@ -727,17 +757,17 @@ mod tests {
             );
         });
         assert_eq!(
-            std::fs::read_to_string(root.join("Новая 🧠.md")).unwrap(),
+            std::fs::read_to_string(root.join("Life/Новая 🧠.md")).unwrap(),
             "# Новая 🧠\nDefault body"
         );
         reader.update_in(visual, |r, window, cx| {
-            assert_eq!(r.current_rel, "Новая 🧠.md");
+            assert_eq!(r.current_rel, "Life/Новая 🧠.md");
             // Resolver has the created identity even before watcher delivery.
             assert!(matches!(
-                r.vault.resolve_from("Новая 🧠", "Start.md"),
+                r.vault.resolve_from("Новая 🧠", "Life/Start.md"),
                 tessera_core::vault::Resolution::Resolved { .. }
             ));
-            r.open_note("Start.md", None, window, cx);
+            r.open_note("Life/Start.md", None, window, cx);
         });
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
@@ -779,6 +809,17 @@ mod tests {
         visual.simulate_keystrokes("enter");
         reader.read_with(visual, |r, _| {
             assert!(r.creation.as_ref().unwrap().error.is_some());
+            assert!(!r
+                .sidebar_items()
+                .iter()
+                .any(|row| matches!(row, SideItem::CreateError(_))));
+        });
+        visual.update(|window, cx| {
+            use gpui_component::WindowExt;
+            assert!(
+                !window.notifications(cx).is_empty(),
+                "collision is visible in the overlay"
+            );
         });
         assert_eq!(
             std::fs::read_to_string(root.join("Missing.md")).unwrap(),

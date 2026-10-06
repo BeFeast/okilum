@@ -41,12 +41,21 @@ impl Reader {
             return;
         }
         self.clear_hover(cx);
-        // Keep the complete proposed path editable in an existing root row;
-        // create-only validation checks every segment again on submission.
-        self.new_note(Some(""), window, cx);
+        // Place the input under the nearest existing real parent. Any not-yet-
+        // created subdirectories remain editable as a relative suffix.
+        let folder = self.tree.creation_parent(Path::new(&path));
+        self.new_note(Some(&folder), window, cx);
         if let Some(create) = &self.creation {
+            // begin_create may redirect away from the templates directory. Keep
+            // the authored destination intact so create-only validation rejects
+            // protected targets instead of silently creating a different note.
+            let name = Path::new(&path)
+                .strip_prefix(&create.folder)
+                .unwrap_or(Path::new(&path))
+                .to_string_lossy()
+                .into_owned();
             create.input.update(cx, |input, cx| {
-                input.set_value(path, window, cx);
+                input.set_value(name, window, cx);
                 input.focus(window, cx);
                 input.select_all(window, cx);
             });
@@ -144,6 +153,9 @@ impl Reader {
             selected_template,
             _subscription: subscription,
         });
+        if let Some(error) = self.creation.as_ref().and_then(|c| c.error.clone()) {
+            reader_toast::error(error, window, cx);
+        }
         self.scroll_tree_to(insertion);
         cx.notify();
     }
@@ -274,6 +286,7 @@ impl Reader {
                 );
             }
             Err(error) => {
+                reader_toast::error(format!("{error:#}"), window, cx);
                 if let Some(create) = self.creation.as_mut() {
                     create.error = Some(format!("{error:#}"));
                 }

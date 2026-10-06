@@ -327,6 +327,18 @@ impl Tree {
         self.flatten();
     }
 
+    /// Closest existing directory for a proposed new path, including collapsed branches.
+    #[cfg(unix)]
+    pub fn creation_parent(&self, path: &Path) -> String {
+        path.parent()
+            .into_iter()
+            .flat_map(Path::ancestors)
+            .filter_map(Path::to_str)
+            .find(|p| self.kinds.get(*p) == Some(&EntryKind::Directory))
+            .unwrap_or("")
+            .to_owned()
+    }
+
     /// The folder ⌥→/⌥← act on: the cursor folder, or a note's parent.
     pub fn cursor_folder(&self) -> Option<String> {
         let cursor = self.cursor.as_deref()?;

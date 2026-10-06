@@ -403,3 +403,15 @@ launch-marker directories are cleared on deliberate shutdown when all drafts are
 protected; a failed draft write or an in-flight move retains the safety marker.
 Unresolved conflicts retain their durable drafts and are still discovered per note. SIGKILL, panic and
 power loss leave their markers for conservative startup; no-draft recovery is silent.
+
+## Missing-link creation placement (#591)
+
+Create note in a missing-link hover places the focused inline name beneath the
+nearest existing target folder, expanding/revealing its branch. The input contains
+only the name (or remaining not-yet-created directory suffix), not the redundant
+vault-relative parent path. Standard single-line input scrolling keeps long names
+editable. Create-only validation still checks the complete authored destination.
+Creation/template errors use readable bottom overlay notifications, leaving the
+input available for correction without an error row constrained by sidebar width.
+The hover header has a nonshrinking height; long fallback messages scroll inside
+the bounded card rather than compressing its title into the border.
