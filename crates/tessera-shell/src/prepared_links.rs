@@ -178,6 +178,26 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.prepare_document_target(rel, (jump, heading), None, window, cx);
+    }
+
+    pub(crate) fn prepare_task_document(
+        &mut self,
+        task: &tessera_core::tasks::Task,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.prepare_document_target(&task.path, (None, None), Some(task.clone()), window, cx);
+    }
+
+    fn prepare_document_target(
+        &mut self,
+        rel: &str,
+        location: (Option<&str>, Option<&str>),
+        task: Option<tessera_core::tasks::Task>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !self.leave_source(cx) {
             return;
         }
@@ -186,8 +206,8 @@ impl Reader {
         let generation = self.document_preparation_generation;
         let request = DocumentRequest {
             rel: rel.to_owned(),
-            jump: jump.map(str::to_owned),
-            heading: heading.map(str::to_owned),
+            jump: location.0.map(str::to_owned),
+            heading: location.1.map(str::to_owned),
             history_index: self.history_nav,
             restore_position: self.history_nav.map(|index| self.history_positions[index]),
         };
@@ -198,7 +218,7 @@ impl Reader {
             let document = cx
                 .background_executor()
                 .spawn(async move {
-                    if html && !Path::new(&rel).is_absolute() {
+                    let document = if html && !Path::new(&rel).is_absolute() {
                         tessera_core::render_html(&vault, &rel, "InspiredGitHub").map(|html| {
                             PreparedDocument {
                                 source: html,
@@ -216,14 +236,43 @@ impl Reader {
                                 frontmatter: document.frontmatter,
                             }
                         })
-                    }
+                    };
+                    document.and_then(|document| {
+                        let target = if let Some(task) = task {
+                            let original = document.original.as_deref().ok_or_else(|| {
+                                anyhow::anyhow!("Task navigation is unavailable in HTML mode")
+                            })?;
+                            let target =
+                                tessera_core::tasks::target(&task, original, &document.source)?;
+                            Some((target.block, target.text.unwrap_or_default()))
+                        } else {
+                            None
+                        };
+                        Ok((document, target))
+                    })
                 })
                 .await;
+            let mut request = request;
+            let mut task_text = None;
+            let document = document.map(|(document, target)| {
+                if let Some((block, text)) = target {
+                    task_text = Some(text);
+                    request.restore_position = Some(ListOffset {
+                        item_ix: block,
+                        offset_in_item: px(0.),
+                    });
+                }
+                document
+            });
             let _ = this.update_in(cx, |this, window, cx| {
                 if this.document_preparation_generation != generation {
                     return;
                 }
+                let task_landing = document.is_ok().then_some(task_text).flatten();
                 this.accept_prepared_document(request, document, window, cx);
+                if let Some(text) = task_landing {
+                    this.land_task_text(text, cx);
+                }
             });
         })
         .detach();

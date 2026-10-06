@@ -7716,6 +7716,7 @@ dependencies = [
  "anyhow",
  "async-channel",
  "base64 0.22.1",
+ "chrono",
  "core-foundation-sys",
  "dirs 6.0.0",
  "embed-resource",

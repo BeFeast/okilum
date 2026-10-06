@@ -40,6 +40,7 @@ pub mod source_classifier;
 #[cfg(unix)]
 pub mod source_history;
 pub mod source_projection;
+pub mod tasks;
 pub mod vault;
 pub mod watch;
 
