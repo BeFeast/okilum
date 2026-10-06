@@ -353,7 +353,9 @@ while those inputs are focused. Submitting the current rename destination simply
 closes the row without moving a file. Clicking a tree row opens its note while
 keeping keyboard focus in the tree, so F2 or Enter can immediately start rename.
 
-The Trash Undo notification appears at the bottom right and hides after eight
+Trash confirmation uses a trash-glyph action and plain Cancel. The compact Undo
+notification uses an undo glyph with a keyboard-shortcut tooltip. It appears at
+the bottom right and hides after eight
 seconds or with its close button / Escape. Hiding it does not discard the session's
 Trash history: Cmd-Z (Ctrl-Z on Linux) in the Reader/tree restores the latest
 trashed item, with the same collision and identity checks. Text inputs retain their

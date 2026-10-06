@@ -130,17 +130,17 @@ impl Reader {
                 let (send, receive) = async_channel::bounded(1);
                 let shown = this.update_in(cx, |this, window, cx| {
                     if this.vault_root != root { this.trash_pending = false; return false; }
-                    let message = format!("Move {relative} to system Trash? {count} files; {incoming} incoming links in the current index. Links will remain unchanged. You can Undo from the notification.");
-                    window.open_dialog(cx, move |dialog, _, _| {
+                    let message = format!("{relative}\n{count} files · {incoming} incoming links. Links stay unchanged.");
+                    window.open_dialog(cx, move |dialog, _, cx| {
                         let yes = send.clone(); let no = send.clone(); let close = send.clone();
                         dialog.title("Move to Trash").child(message.clone())
                             .on_ok(move |_, _, _| { let _ = yes.try_send(true); true })
                             .on_cancel(move |_, _, _| { let _ = no.try_send(false); true })
-                            .child({
+                            .footer({
                                 let yes = send.clone(); let no = send.clone();
-                                h_flex().gap_2()
-                                    .child(Button::new("confirm-trash").debug_selector(|| "confirm-trash".into()).label("Move to Trash").on_click(move |_, window, cx| { let _ = yes.try_send(true); window.close_dialog(cx); }))
-                                    .child(Button::new("cancel-trash").debug_selector(|| "cancel-trash".into()).label("Cancel").on_click(move |_, window, cx| { let _ = no.try_send(false); window.close_dialog(cx); }))
+                                h_flex().justify_end().gap_2()
+                                    .child(Button::new("cancel-trash").debug_selector(|| "cancel-trash".into()).ghost().label("Cancel").on_click(move |_, window, cx| { let _ = no.try_send(false); window.close_dialog(cx); }))
+                                    .child(reader_icon_button("confirm-trash", Icon::default().path("icons/trash.svg"), "Move to Trash", cx).danger().debug_selector(|| "confirm-trash".into()).on_click(move |_, window, cx| { let _ = yes.try_send(true); window.close_dialog(cx); }))
                             })
                             .on_close(move |_, _, _| { let _ = close.try_send(false); })
                     }); true
@@ -208,16 +208,25 @@ impl Reader {
             Notification::new()
                 .id::<TrashToast>()
                 .message("Moved to Trash")
+                .py_2()
                 .placement(Anchor::BottomRight)
                 .on_close(move |_, _| visible.set(false))
-                .action(move |_, _, _| {
+                .action(move |_, _, cx| {
                     let reader = reader.clone();
-                    Button::new("undo-trash")
-                        .debug_selector(|| "undo-trash".into())
-                        .label("Undo")
-                        .on_click(move |_, window, cx| {
-                            let _ = reader.update(cx, |this, cx| this.undo_last_trash(window, cx));
-                        })
+                    reader_icon_button(
+                        "undo-trash",
+                        IconName::Undo2,
+                        if cfg!(target_os = "macos") {
+                            "Undo (⌘Z)"
+                        } else {
+                            "Undo (Ctrl+Z)"
+                        },
+                        cx,
+                    )
+                    .debug_selector(|| "undo-trash".into())
+                    .on_click(move |_, window, cx| {
+                        let _ = reader.update(cx, |this, cx| this.undo_last_trash(window, cx));
+                    })
                 }),
             cx,
         );
