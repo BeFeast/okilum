@@ -1015,9 +1015,10 @@ fn markdown_plugins(
                         .child(node.render_part("title", |style| style, _window, cx)),
                 );
             if !data.body.is_empty() {
+                let font_size = reader_ui_state::font_size(cx);
                 el = el.child(node.render_part(
                     "body",
-                    |style| style.with_heading_base_font_size(px(BODY_FONT_SIZE)),
+                    |style| style.with_heading_base_font_size(px(font_size)),
                     _window,
                     cx,
                 ));
@@ -1047,6 +1048,7 @@ fn markdown_plugins(
                     .child(node.render_part("title", |style| style, _window, cx))
                     .into_any_element();
             }
+            let font_size = reader_ui_state::font_size(cx);
             let embed_link = embed_link_handler.clone();
             let open_url = match &data.heading {
                 Some(h) => format!("{WIKI_SCHEME}{}#{h}", data.path),
@@ -1077,7 +1079,7 @@ fn markdown_plugins(
                 )
                 .child(div().px_3().py_2().child(node.render_part(
                     "body",
-                    |style| style.with_heading_base_font_size(px(BODY_FONT_SIZE)),
+                    |style| style.with_heading_base_font_size(px(font_size)),
                     _window,
                     cx,
                 )))

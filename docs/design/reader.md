@@ -535,15 +535,17 @@ Tessera restores the last reading environment without an inheritance setting.
 Appearance (System/Light/Dark), reading text size (12–24, default 15.5) and reading
 width (Narrow 620 / Comfort 740 / Wide 960 logical pixels) are global. Appearance
 uses a segmented control; text size uses quiet minus/plus glyphs with tooltips.
-Source text scales with the reading size. Every open vault uses the same global
-values and new windows start with those values.
+Source text scales with the reading size. Windows in the running application
+share these values live; new application instances restore the latest persisted
+preferences. Independently edited fields merge without replacing other preferences.
 
 Each canonical vault remembers independent panel visibility and preferred widths,
 collapsed sidebar sections, expanded tree folders, tree cursor/scroll, Properties
 presentation, source/preview mode, the current note (including the empty vault),
 reading scroll and Back/Forward entries with their offsets. Window geometry,
 display, maximized and fullscreen state are vault-specific and still clamped to
-an available display. A previously unseen vault inherits the last active window's
+an available display. Native window managers/compositors retain control of placement
+(e.g. Wayland tiling and X11 automatic placement). A previously unseen vault inherits the last active window's
 presentation and geometry, without copying its note paths or navigation history.
 Transient menus, hover previews, notifications and dialogs do not reopen.
 

@@ -52,6 +52,7 @@ struct State {
     next: BTreeMap<String, usize>,
     pending: Option<gpui::Task<()>>,
     dirty: bool,
+    windows: Vec<(String, gpui::AnyWindowHandle)>,
 }
 impl Global for State {}
 
@@ -67,8 +68,13 @@ pub(crate) fn install(directory: PathBuf, cx: &mut App) {
         next: BTreeMap::new(),
         pending: None,
         dirty: false,
+        windows: Vec::new(),
     });
     cx.on_app_quit(|cx| {
+        let windows = cx.global::<State>().windows.clone();
+        for (key, handle) in windows {
+            let _ = handle.update(cx, |_, window, cx| record(&key, window, cx));
+        }
         flush(cx);
         async {}
     })
@@ -117,6 +123,7 @@ pub(crate) fn prepare(
     let key_with_slot = format!("{key}#{slot}");
     let saved = super::reader_ui_state::window_frame(&key_with_slot, cx)
         .or_else(|| state.saved.frames.get(&key_with_slot).cloned())
+        .or_else(|| super::reader_ui_state::inherited_window_frame(&key_with_slot, cx))
         .filter(Frame::valid);
     cx.global_mut::<State>().next.insert(key.into(), slot + 1);
     if let Some(frame) = saved {
@@ -144,13 +151,22 @@ pub(crate) fn prepare(
         if let Some(display) = target {
             let bounds = frame.fitted(display.visible_bounds());
             options.display_id = Some(display.id());
-            options.window_bounds = Some(if frame.fullscreen {
-                WindowBounds::Fullscreen(bounds)
-            } else if frame.maximized {
-                WindowBounds::Maximized(bounds)
-            } else {
-                WindowBounds::Windowed(bounds)
-            });
+            // X11 ignores state messages sent before the window is mapped.
+            // Apply Linux fullscreen/maximize after the first frame in track().
+            #[cfg(target_os = "linux")]
+            {
+                options.window_bounds = Some(WindowBounds::Windowed(bounds));
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                options.window_bounds = Some(if frame.fullscreen {
+                    WindowBounds::Fullscreen(bounds)
+                } else if frame.maximized {
+                    WindowBounds::Maximized(bounds)
+                } else {
+                    WindowBounds::Windowed(bounds)
+                });
+            }
         }
     }
     (options, Some(key_with_slot))
@@ -168,8 +184,8 @@ fn record(key: &str, window: &Window, cx: &mut App) {
             .display(cx)
             .and_then(|d| d.uuid().ok())
             .map(|u| u.to_string()),
-        fullscreen: matches!(bounds, WindowBounds::Fullscreen(_)),
-        maximized: matches!(bounds, WindowBounds::Maximized(_)),
+        fullscreen: window.is_fullscreen(),
+        maximized: window.is_maximized(),
     };
     if !saved.valid() {
         return;
@@ -223,10 +239,45 @@ fn flush(cx: &mut App) {
     }
 }
 
+/// Snapshot native flags at close as well as bounds/activation changes. A WM
+/// can change fullscreen without resizing an already maximized window.
+pub(crate) fn record_window(window: &Window, cx: &mut App) {
+    let key = cx.try_global::<State>().and_then(|state| {
+        state
+            .windows
+            .iter()
+            .find(|(_, handle)| *handle == window.window_handle())
+            .map(|(key, _)| key.clone())
+    });
+    if let Some(key) = key {
+        record(&key, window, cx);
+    }
+}
+
 pub(crate) fn track(root: &Entity<Root>, key: Option<String>, window: &mut Window, cx: &mut App) {
     let Some(key) = key else {
         return;
     };
+    let open_windows = cx.windows();
+    let tracked = &mut cx.global_mut::<State>().windows;
+    tracked.retain(|(_, handle)| open_windows.contains(handle));
+    tracked.push((key.clone(), window.window_handle()));
+    #[cfg(target_os = "linux")]
+    if let Some(frame) = super::reader_ui_state::window_frame(&key, cx)
+        .or_else(|| cx.global::<State>().saved.frames.get(&key).cloned())
+        .or_else(|| super::reader_ui_state::inherited_window_frame(&key, cx))
+        .filter(Frame::valid)
+    {
+        window.on_next_frame(move |window, _| {
+            if frame.fullscreen {
+                if !window.is_fullscreen() {
+                    window.toggle_fullscreen();
+                }
+            } else if frame.maximized && !window.is_maximized() {
+                window.zoom_window();
+            }
+        });
+    }
     record(&key, window, cx);
     root.update(cx, |_, cx| {
         let active_key = key.clone();
@@ -276,9 +327,17 @@ mod tests {
             let (first, key) = prepare(WindowOptions::default(), "root", cx);
             assert_eq!(key.as_deref(), Some("root#0"));
             assert_eq!(first.display_id, Some(display.id()));
+            #[cfg(not(target_os = "linux"))]
             assert!(matches!(
                 first.window_bounds,
                 Some(WindowBounds::Fullscreen(_))
+            ));
+            // Linux must map the window before requesting fullscreen. The
+            // persisted intent remains true and track applies it after paint.
+            #[cfg(target_os = "linux")]
+            assert!(matches!(
+                first.window_bounds,
+                Some(WindowBounds::Windowed(_))
             ));
             let (second, key) = prepare(WindowOptions::default(), "root", cx);
             assert_eq!(key.as_deref(), Some("root#1"));

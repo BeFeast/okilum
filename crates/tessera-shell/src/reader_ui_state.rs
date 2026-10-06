@@ -139,7 +139,9 @@ struct Store {
     path: PathBuf,
     saved: Saved,
     changed: BTreeSet<PathBuf>,
-    global_changed: bool,
+    appearance_changed: bool,
+    font_changed: bool,
+    width_changed: bool,
     frames_changed: BTreeSet<String>,
     last_changed: bool,
     last_frame_changed: bool,
@@ -193,7 +195,9 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         path: path.clone(),
         saved,
         changed: Default::default(),
-        global_changed: !path.exists(),
+        appearance_changed: !path.exists(),
+        font_changed: !path.exists(),
+        width_changed: !path.exists(),
         frames_changed: Default::default(),
         last_changed: false,
         last_frame_changed: false,
@@ -264,7 +268,7 @@ pub(crate) fn set_appearance(mode: Option<ThemeMode>, cx: &mut App) -> bool {
         None => "system",
     }
     .into();
-    state.global_changed = true;
+    state.appearance_changed = true;
     schedule(cx);
     true
 }
@@ -296,7 +300,9 @@ struct WriteJob {
     path: PathBuf,
     saved: Saved,
     changed: BTreeSet<PathBuf>,
-    global_changed: bool,
+    appearance_changed: bool,
+    font_changed: bool,
+    width_changed: bool,
     serial: Arc<AtomicU64>,
     generation: u64,
 }
@@ -328,9 +334,13 @@ impl WriteJob {
                 latest.vaults.insert(root.clone(), layout.clone());
             }
         }
-        if self.global_changed {
+        if self.appearance_changed {
             latest.appearance = self.saved.appearance.clone();
+        }
+        if self.font_changed {
             latest.font_size = self.saved.font_size;
+        }
+        if self.width_changed {
             latest.reading_width = self.saved.reading_width;
         }
         if self.last_changed {
@@ -363,7 +373,9 @@ fn job(cx: &App) -> Option<WriteJob> {
     if state.blocked
         || (state.changed.is_empty()
             && state.frames_changed.is_empty()
-            && !state.global_changed
+            && !state.appearance_changed
+            && !state.font_changed
+            && !state.width_changed
             && !state.last_changed
             && !state.last_frame_changed)
     {
@@ -376,7 +388,9 @@ fn job(cx: &App) -> Option<WriteJob> {
         path: state.path.clone(),
         saved: state.saved.clone(),
         changed: state.changed.clone(),
-        global_changed: state.global_changed,
+        appearance_changed: state.appearance_changed,
+        font_changed: state.font_changed,
+        width_changed: state.width_changed,
         serial: state.serial.clone(),
         generation: state.serial.load(Ordering::SeqCst),
     })
@@ -464,7 +478,11 @@ impl Reader {
         self.show_hidden_properties = saved.hidden_properties;
         self.ui_state.tree = Some(saved.clone());
         if saved.source {
-            self.ui_state.source = Some(saved.source_scroll);
+            self.ui_state.source = Some(if saved.note == self.current_rel {
+                saved.source_scroll
+            } else {
+                [0.; 2]
+            });
         }
         let explicit = self.loading.as_ref().is_some_and(|load| {
             load.opts.note.is_some()
@@ -475,7 +493,7 @@ impl Reader {
                     .is_some_and(|path| path.extension().is_some())
         });
         if known && saved.note.is_empty() && !explicit {
-            self.close_note(window, cx);
+            self.show_empty_vault(window, cx);
         }
         if known && saved.note == self.current_rel {
             let visits: Vec<_> = saved
@@ -630,12 +648,16 @@ fn frame_key(key: &str) -> &str {
     }
 }
 pub(crate) fn window_frame(key: &str, cx: &App) -> Option<window_state::Frame> {
-    let state = cx.try_global::<Store>()?;
-    let direct = state.saved.frames.get(frame_key(key)).cloned();
-    if !key.starts_with("reader:") {
-        return direct;
-    }
-    direct.or_else(|| state.saved.last_frame.clone())
+    cx.try_global::<Store>()?
+        .saved
+        .frames
+        .get(frame_key(key))
+        .cloned()
+}
+pub(crate) fn inherited_window_frame(key: &str, cx: &App) -> Option<window_state::Frame> {
+    key.starts_with("reader:")
+        .then(|| cx.try_global::<Store>()?.saved.last_frame.clone())
+        .flatten()
 }
 pub(crate) fn record_frame(
     key: &str,
@@ -749,9 +771,12 @@ pub(crate) fn set_reading(font: f32, width: f32, cx: &mut App) {
         return;
     }
     let state = cx.global_mut::<Store>();
-    state.saved.font_size = font.clamp(12., 24.);
-    state.saved.reading_width = width.clamp(560., 1200.);
-    state.global_changed = true;
+    let font = font.clamp(12., 24.);
+    let width = width.clamp(560., 1200.);
+    state.font_changed |= state.saved.font_size != font;
+    state.width_changed |= state.saved.reading_width != width;
+    state.saved.font_size = font;
+    state.saved.reading_width = width;
     schedule(cx);
     cx.refresh_windows();
 }
@@ -764,7 +789,9 @@ fn mark_saved(generation: u64, cx: &mut App) {
     if state.serial.load(Ordering::SeqCst) == generation {
         state.changed.clear();
         state.frames_changed.clear();
-        state.global_changed = false;
+        state.appearance_changed = false;
+        state.font_changed = false;
+        state.width_changed = false;
         state.last_changed = false;
         state.last_frame_changed = false;
     }
@@ -854,6 +881,7 @@ mod tests {
             record(&first, closed.clone(), true, cx);
             let current = job(cx).unwrap();
             current.run().unwrap();
+            mark_saved(current.generation, cx);
             stale.run().unwrap();
             assert_eq!(read(&current.path).unwrap().vaults[&first], closed);
             // Simulate an independent process that started before the first write.
@@ -861,11 +889,14 @@ mod tests {
                 changed: BTreeSet::from([second.clone()]),
                 saved: Saved {
                     vaults: BTreeMap::from([(second.clone(), Layout::default())]),
+                    font_size: 22.,
                     ..Default::default()
                 },
                 serial: Arc::new(AtomicU64::new(1)),
                 generation: 1,
-                global_changed: false,
+                appearance_changed: false,
+                font_changed: true,
+                width_changed: false,
                 frames_changed: Default::default(),
                 last_changed: false,
                 last_frame_changed: false,
@@ -875,6 +906,14 @@ mod tests {
             let merged = read(&current.path).unwrap();
             assert_eq!(merged.vaults[&first], closed);
             assert!(merged.vaults.contains_key(&second));
+            set_appearance(Some(ThemeMode::Dark), cx);
+            flush(cx);
+            let merged = read(&current.path).unwrap();
+            assert_eq!(merged.appearance, "dark");
+            assert_eq!(
+                merged.font_size, 22.,
+                "unrelated global edits merge per field"
+            );
         });
     }
 
@@ -911,6 +950,53 @@ mod tests {
             flush(cx);
         });
         assert!(!directory.exists());
+    }
+
+    #[gpui::test]
+    fn restoring_closed_note_keeps_the_vault_window_open(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("note.md"), "# Note").unwrap();
+        let directory = fixture.path().join("state");
+        reader_history::ReadingHistory::record_usable_document(&directory, &root, "").unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            install(&directory, cx);
+            record(&root, Layout::default(), true, cx);
+            flush(cx);
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root),
+                        session_directory: Some(directory),
+                        index_dir: Some(fixture.path().join("index")),
+                        panel_settings_override: Some(fixture.path().join("legacy-widths.json")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        visual.run_until_parked();
+        reader.unwrap().read_with(visual, |reader, cx| {
+            assert!(
+                reader.ui_state.ready,
+                "positive control: vault state was restored"
+            );
+            assert!(reader.current_rel.is_empty());
+            assert_eq!(
+                cx.windows().len(),
+                1,
+                "empty selection is not a close-window action"
+            );
+        });
     }
 
     #[gpui::test]

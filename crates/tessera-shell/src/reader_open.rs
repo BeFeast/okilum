@@ -600,7 +600,8 @@ pub(crate) fn open_window(opts: super::Opts, cx: &mut App) -> Result<()> {
         window.set_window_title("Tessera — Opening document");
         let reader = cx.new(|cx| super::Reader::new(opts, window, cx));
         let weak = reader.downgrade();
-        window.on_window_should_close(cx, move |_, cx| {
+        window.on_window_should_close(cx, move |window, cx| {
+            super::window_state::record_window(window, cx);
             weak.update(cx, |reader, cx| {
                 if !reader.save_source(cx) {
                     return false;
