@@ -9,6 +9,7 @@ pub(super) struct SessionRecord {
     pub(super) root: PathBuf,
     pub(super) document: String,
     pub(super) cache: Option<PathBuf>,
+    pub(super) cache_lease: Option<Arc<reader_cache::Lease>>,
     pub(super) diagnostics: Option<reader_diagnostics::Trace>,
 }
 
@@ -46,6 +47,7 @@ impl Drop for Loading {
 enum Event {
     First {
         intent: reader_open::OpenIntent,
+        cache_lease: Option<Arc<reader_cache::Lease>>,
         vault: Vault,
         searcher: Option<Box<Searcher>>,
         snapshot: Option<Box<tessera_core::vault::warm::Snapshot>>,
@@ -143,13 +145,14 @@ fn prepare_first_with_last_document(
     if let (Some(trace), Some(root)) = (&opts.diagnostics, &candidate_root) {
         scoped_opts.diagnostics = Some(trace.for_root(root.clone()));
     }
+    if opts.index_dir.is_none() {
+        if let Some(root) = &candidate_root {
+            scoped_opts.cache_lease = acquire_cache_lease(root, opts);
+        }
+    }
     let opts = &scoped_opts;
     let snapshot = candidate_root.as_ref().and_then(|root| {
-        let base = opts
-            .index_dir
-            .clone()
-            .map(Ok)
-            .unwrap_or_else(|| reader_open::cache_candidate_path(root))
+        let base = reader_open::cache_path_for(root, opts)
             .ok()?;
         validate_external_cache(&base, root).ok()?;
         let _phase = opts.diagnostics.as_ref().map(|trace| trace.phase("startup_snapshot_load"));
@@ -185,6 +188,9 @@ fn prepare_first_with_last_document(
     let mut validated_opts = opts.clone();
     if let Some(trace) = &opts.diagnostics {
         validated_opts.diagnostics = Some(trace.for_root(intent.root.clone()));
+    }
+    if validated_opts.index_dir.is_none() && validated_opts.cache_lease.is_none() {
+        validated_opts.cache_lease = acquire_cache_lease(&intent.root, opts);
     }
     let opts = &validated_opts;
     cancel.check()?;
@@ -294,12 +300,7 @@ fn prepare_first_with_last_document(
         .map(|trace| trace.phase("saved_search_index_open"));
     let searcher = snapshot.as_ref().and_then(|snapshot| {
         let generation = snapshot.search_generation.as_ref()?;
-        let base = opts
-            .index_dir
-            .clone()
-            .map(Ok)
-            .unwrap_or_else(|| reader_open::cache_candidate_path(&intent.root))
-            .ok()?;
+        let base = reader_open::cache_path_for(&intent.root, opts).ok()?;
         open_completed_generation(&base.join("generations").join(generation))
     });
     drop(search_phase);
@@ -307,6 +308,7 @@ fn prepare_first_with_last_document(
         trace.event("first_worker_ready", serde_json::json!({ "notes": vault.notes.len(), "warm": snapshot.is_some(), "cached_search": searcher.is_some() }));
     }
     Ok(Event::First {
+        cache_lease: opts.cache_lease.clone(),
         intent,
         vault,
         searcher: searcher.map(Box::new),
@@ -315,6 +317,28 @@ fn prepare_first_with_last_document(
         published: None,
         recovery_notice: None,
     })
+}
+
+fn acquire_cache_lease(root: &Path, opts: &Opts) -> Option<Arc<reader_cache::Lease>> {
+    let result = reader_open::cache_path_for(root, opts).and_then(|path| {
+        if let Some(lease) = opts
+            .cache_lease
+            .as_ref()
+            .filter(|lease| lease.root == root && lease.path == path)
+        {
+            return Ok(lease.clone());
+        }
+        reader_cache::Lease::acquire(path, root).map(Arc::new)
+    });
+    if let Some(trace) = &opts.diagnostics {
+        trace.event(
+            "vault_cache_lease",
+            serde_json::json!({
+                "acquired":result.is_ok(), "error":result.as_ref().err().map(|e| format!("{e:#}")),
+            }),
+        );
+    }
+    result.ok()
 }
 
 #[cfg(test)]
@@ -410,12 +434,8 @@ fn prepare_rest_with_io_and_snapshot(
     cancel.check()?;
     send.send_blocking(Event::Progress("Watching for changes".into()))
         .map_err(|_| anyhow::anyhow!("Reader closed"))?;
-    let base = opts
-        .index_dir
-        .clone()
-        .map(Ok)
-        .unwrap_or_else(|| reader_open::cache_candidate_path(root))
-        .context("Choose external Reader search cache")?;
+    let base =
+        reader_open::cache_path_for(root, opts).context("Choose external Reader search cache")?;
     let mut warnings = Vec::new();
     let disk_cache = match validate_external_cache(&base, root) {
         Ok(()) => true,
@@ -979,6 +999,7 @@ impl Reader {
             if let Some(load) = &mut self.loading {
                 load.phase = "This folder contains no readable Markdown documents.".into();
                 load.active = false;
+                load.opts.cache_lease = None;
                 load.cancellation.cancel();
             }
             drop(published);
@@ -1058,6 +1079,9 @@ impl Reader {
             self.creation = None;
         }
         self.vault_root = pending.intent.root.clone();
+        let opts = &self.loading.as_ref().unwrap().opts;
+        self.index_dir = reader_open::cache_path_for(&self.vault_root, opts).ok();
+        self.cache_lease = opts.cache_lease.clone();
         // No predecessor-root capability survives publication. Eligibility is
         // installed only by the matching background preference result.
         self.panel_settings = None;
@@ -1243,6 +1267,7 @@ impl Reader {
                 root,
                 document,
                 cache,
+                cache_lease,
                 diagnostics,
             }) = receive.recv().await
             {
@@ -1252,6 +1277,7 @@ impl Reader {
                 let result = cx
                     .background_executor()
                     .spawn(async move {
+                        let _cache_lease = cache_lease;
                         let result = if document.is_empty() {
                             crate::reader_history::ReadingHistory::record_empty_vault(
                                 &directory, &root,
@@ -1314,16 +1340,17 @@ impl Reader {
             return;
         }
         if let Some(send) = &self.session_records {
+            // A pending candidate's options do not own the displayed document.
             let cache = self
-                .loading
-                .as_ref()
-                .and_then(|load| load.opts.index_dir.clone())
+                .index_dir
+                .clone()
                 .or_else(|| reader_open::cache_candidate_path(&identity.0).ok());
             if send
                 .try_send(SessionRecord {
                     root: identity.0.clone(),
                     document: identity.1.clone(),
                     cache,
+                    cache_lease: self.cache_lease.clone(),
                     diagnostics: self
                         .loading
                         .as_ref()
@@ -1346,6 +1373,7 @@ impl Reader {
             self.pending_open_document = None;
             load.active = false;
             load.phase = "Preparation cancelled".into();
+            load.opts.cache_lease = None;
             self.document_preparation_generation =
                 self.document_preparation_generation.wrapping_add(1);
             cx.notify();
@@ -1393,6 +1421,7 @@ impl Reader {
                 .as_ref()
                 .and_then(|load| load.opts.diagnostics.clone()),
             index_dir: self.index_dir.clone(),
+            cache_lease: self.cache_lease.clone(),
             use_html: self.use_html,
             ..Default::default()
         };
@@ -1481,6 +1510,7 @@ impl Reader {
                         }
                         let Event::First {
                             ref intent,
+                            ref cache_lease,
                             ref mut published,
                             ref mut snapshot,
                             ..
@@ -1489,6 +1519,7 @@ impl Reader {
                             unreachable!()
                         };
                         let root = intent.root.clone();
+                        opts.cache_lease = cache_lease.clone();
                         if let Some(trace) = &opts.diagnostics {
                             opts.diagnostics = Some(trace.for_root(root.clone()));
                         }
@@ -1504,6 +1535,20 @@ impl Reader {
                         (root, previous)
                     };
                     cancel.check()?;
+                    if let Some(lease) = &opts.cache_lease {
+                        let started = std::time::Instant::now();
+                        let result = lease.prune();
+                        if let Some(trace) = &opts.diagnostics {
+                            trace.event(
+                                "cache_retention",
+                                serde_json::json!({
+                                    "duration_ms":started.elapsed().as_secs_f64()*1000.,
+                                    "evicted":result.as_ref().ok().map(Vec::len),
+                                    "error":result.as_ref().err().map(|e| format!("{e:#}")),
+                                }),
+                            );
+                        }
+                    }
                     if prepare_preferences {
                         // First usable publication never waits for preference I/O.
                         // This is the existing worker, not a second scan/job.
@@ -1604,6 +1649,7 @@ impl Reader {
                         match event {
                             Event::First {
                                 intent,
+                                cache_lease,
                                 vault,
                                 document,
                                 searcher,
@@ -1612,6 +1658,7 @@ impl Reader {
                                 recovery_notice,
                             } => {
                                 if let Some(trace) = &this.loading.as_ref().unwrap().opts.diagnostics { trace.event("first_event_received", serde_json::json!({})); }
+                                this.loading.as_mut().unwrap().opts.cache_lease = cache_lease;
                                 this.stage_first_document(
                                     intent, vault, document, searcher, published, window, cx,
                                 );
@@ -1710,6 +1757,7 @@ impl Reader {
                             Event::Failed(error) => {
                                 this.loading.as_mut().unwrap().active = false;
                                 this.loading.as_mut().unwrap().phase = error;
+                                this.loading.as_mut().unwrap().opts.cache_lease = None;
                             }
                         }
                         cx.notify();
@@ -1849,6 +1897,171 @@ mod tests {
     impl Drop for TestDirectory {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[gpui::test]
+    fn cache_is_bound_to_new_vault_before_background_ready(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = TestDirectory::new();
+        let a = temp.path().join("a");
+        let b = temp.path().join("b");
+        for root in [&a, &b] {
+            std::fs::create_dir(root).unwrap();
+            std::fs::write(root.join("start.md"), "# Start").unwrap();
+        }
+        let a = a.canonicalize().unwrap();
+        let b = b.canonicalize().unwrap();
+        let opts_for = |root: &Path| Opts {
+            vault: Some(root.to_owned()),
+            cache_base_override: Some(temp.path().join("os-cache")),
+            session_directory: Some(temp.path().join("state")),
+            ..Default::default()
+        };
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let v = cx.new(|cx| Reader::new(opts_for(&a), window, cx));
+            reader = Some(v.clone());
+            Root::new(v, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        let old_cache = reader.read_with(visual, |v, _| v.index_dir.clone().unwrap());
+        let (release, hold) = async_channel::bounded(1);
+        let mut opts = opts_for(&b);
+        opts.preparation_hold = Some(hold);
+        let new_cache = reader_open::cache_path_for(&b, &opts).unwrap();
+        reader.update_in(visual, |v, window, cx| v.start_loading(opts, window, cx));
+        visual.run_until_parked();
+        reader.read_with(visual, |v, _| {
+            assert!(v.document_ready() && v.loading.as_ref().unwrap().active);
+            assert_eq!(v.vault_root, b);
+            assert_ne!(
+                old_cache, new_cache,
+                "positive control: vault-scoped cache paths"
+            );
+            assert_eq!(
+                v.index_dir.as_ref(),
+                Some(&new_cache),
+                "Retry/Rescan must not reuse the previous vault's cache before Ready"
+            );
+        });
+        release.try_send(()).unwrap();
+        visual.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn switching_vaults_reuses_each_tree_last_document_and_search_before_reconcile(
+        cx: &mut TestAppContext,
+    ) {
+        warm_switch_fixture(cx, 16);
+    }
+
+    #[gpui::test]
+    #[ignore = "same-host 5001-note warm-switch profile"]
+    fn five_thousand_note_warm_switch_profile(cx: &mut TestAppContext) {
+        warm_switch_fixture(cx, 5001);
+    }
+
+    fn warm_switch_fixture(cx: &mut TestAppContext, count: usize) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = TestDirectory::new();
+        let roots: Vec<_> = ["a", "b"]
+            .into_iter()
+            .map(|name| {
+                let root = temp.path().join(name);
+                std::fs::create_dir(&root).unwrap();
+                for n in 0..count {
+                    std::fs::write(
+                        root.join(format!("{n:05}.md")),
+                        format!(
+                            "# {name} {n}\n\n{}",
+                            if name == "a" {
+                                "orchardvaultsentinel"
+                            } else {
+                                "mountainvaultsentinel"
+                            }
+                        ),
+                    )
+                    .unwrap();
+                }
+                root.canonicalize().unwrap()
+            })
+            .collect();
+        let opts_for = |root: &Path, note: Option<String>| Opts {
+            vault: Some(root.to_owned()),
+            note,
+            cache_base_override: Some(temp.path().join("os-cache")),
+            session_directory: Some(temp.path().join("state")),
+            ..Default::default()
+        };
+        let note = format!("{:05}.md", count - 1);
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let v = cx.new(|cx| Reader::new(opts_for(&roots[0], Some(note.clone())), window, cx));
+            reader = Some(v.clone());
+            Root::new(v, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        reader.update_in(visual, |v, window, cx| {
+            v.start_loading(opts_for(&roots[1], Some("00000.md".into())), window, cx)
+        });
+        visual.run_until_parked();
+        for index in [0, 1, 0] {
+            let root = &roots[index];
+            let expected = if index == 0 { &note } else { "00000.md" };
+            let (release, hold) = async_channel::bounded(1);
+            let mut opts = opts_for(root, None);
+            opts.preparation_hold = Some(hold);
+            let started = std::time::Instant::now();
+            reader.update_in(visual, |v, window, cx| v.start_loading(opts, window, cx));
+            visual.run_until_parked();
+            let first = started.elapsed();
+            reader.read_with(visual, |v, cx| {
+                assert!(
+                    v.document_ready()
+                        && v.loading.as_ref().unwrap().warm
+                        && v.loading.as_ref().unwrap().active
+                );
+                assert_eq!(v.vault_root, *root);
+                assert_eq!(v.current_rel, expected);
+                assert_eq!(
+                    v.vault.notes.len(),
+                    count,
+                    "full cached tree before reconcile"
+                );
+                assert!(v.vault.inventory_scanned);
+                assert_eq!(v.content.read(cx).preparation_status(), Some(Ok(())));
+                let own = if index == 0 {
+                    "orchardvaultsentinel"
+                } else {
+                    "mountainvaultsentinel"
+                };
+                let other = if index == 0 {
+                    "mountainvaultsentinel"
+                } else {
+                    "orchardvaultsentinel"
+                };
+                let search = v
+                    .searcher
+                    .as_ref()
+                    .expect("saved search available before reconcile");
+                assert!(!search.search(own, 1).unwrap().is_empty());
+                assert!(
+                    search.search(other, 1).unwrap().is_empty(),
+                    "no predecessor-root results"
+                );
+            });
+            eprintln!("{count}-note warm switch to vault {index}: first_usable={first:?}; background held; native timing NOT_RUN");
+            release.try_send(()).unwrap();
+            visual.run_until_parked();
         }
     }
 
@@ -2777,6 +2990,7 @@ mod tests {
         visual.run_until_parked();
         let (release_poll, hold_poll) = async_channel::bounded(1);
         let (release_validation, hold_validation) = async_channel::bounded(1);
+        let published_cache = reader.read_with(visual, |v, _| v.index_dir.clone());
         let (content, epoch) = reader.update_in(visual, |v, window, cx| {
             assert!(v.watcher.is_some());
             assert_eq!(
@@ -2848,6 +3062,11 @@ mod tests {
             assert!(v.watcher.is_some());
             assert_eq!(v.content.entity_id(), content);
             assert_eq!(v.vault_root, temp.path().join("a"));
+            assert_eq!(v.index_dir, published_cache);
+            assert!(
+                v.loading.as_ref().unwrap().opts.cache_lease.is_none(),
+                "failed candidate no longer pins an unused cache"
+            );
             assert_eq!(
                 v.content.read(cx).list_state().logical_scroll_top().item_ix,
                 5
