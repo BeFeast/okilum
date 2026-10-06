@@ -53,6 +53,16 @@ pub struct Tree {
 }
 
 impl Tree {
+    pub(crate) fn expanded_paths(&self) -> &BTreeSet<String> {
+        &self.expanded
+    }
+
+    pub(crate) fn restore_expanded(&mut self, expanded: BTreeSet<String>, cursor: Option<String>) {
+        self.expanded = expanded;
+        self.cursor = cursor;
+        self.flatten();
+    }
+
     /// Keep consecutive local operations visible until the watcher catches up.
     #[cfg(unix)]
     pub fn entry_created(&mut self, path: &str, kind: EntryKind) {
