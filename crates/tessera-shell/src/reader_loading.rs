@@ -1212,6 +1212,15 @@ impl Reader {
         {
             self.creation = None;
         }
+        // Upgrading the displayed quick-view folder changes its capabilities,
+        // not its document. A cold candidate has no attachment inventory yet;
+        // replacing the render would drop images and reset the viewport (#593).
+        // Ready reconciles any source edits against the complete inventory.
+        let preserve_document = self.single_file
+            && !pending.intent.single_file
+            && self.vault_root == pending.intent.root
+            && self.current_rel == pending.rel
+            && self.document_ready();
         self.vault_root = pending.intent.root.clone();
         let opts = &self.loading.as_ref().unwrap().opts;
         self.single_file = pending.intent.single_file;
@@ -1247,24 +1256,32 @@ impl Reader {
         self.watcher = None;
         self.watcher_generation = self.watcher_generation.wrapping_add(1);
         self.deferred_vault_changes = Default::default();
-        self.history.clear();
-        self.history_positions.clear();
-        self.history_ix = 0;
+        if !preserve_document {
+            self.history.clear();
+            self.history_positions.clear();
+            self.history_ix = 0;
+        }
         self.loading.as_mut().unwrap().published = true;
         reader_open::register(cx.entity().downgrade(), pending.intent.root, cx);
-        self.accept_prepared_document_using(
-            prepared_links::DocumentRequest {
-                rel: pending.rel,
-                jump: None,
-                heading: None,
-                history_index: None,
-                restore_position: None,
-            },
-            Ok(pending.document),
-            Some(pending.content),
-            window,
-            cx,
-        );
+        if preserve_document {
+            self.link_notice = None;
+            self.last_recorded_document = None;
+            self.record_usable_document(cx);
+        } else {
+            self.accept_prepared_document_using(
+                prepared_links::DocumentRequest {
+                    rel: pending.rel,
+                    jump: None,
+                    heading: None,
+                    history_index: None,
+                    restore_position: None,
+                },
+                Ok(pending.document),
+                Some(pending.content),
+                window,
+                cx,
+            );
+        }
         self.refresh_quick_open(cx);
         if let Some(trace) = &self.loading.as_ref().unwrap().opts.diagnostics {
             trace.event("document_published", serde_json::json!({ "notes": self.vault.notes.len(), "warm": warm, "unreadable": self.vault.unreadable.len() }));
@@ -5597,6 +5614,127 @@ mod quick_view_tests {
         assert_eq!(vault.unreadable.len(), 1);
         assert!(!vault.inventory_complete);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[gpui::test]
+    fn quick_upgrade_preserves_relative_image_and_viewport(cx: &mut TestAppContext) {
+        check_quick_upgrade(cx, false);
+    }
+
+    #[gpui::test]
+    fn quick_upgrade_reconciles_edits_without_losing_image_or_viewport(cx: &mut TestAppContext) {
+        check_quick_upgrade(cx, true);
+    }
+
+    fn check_quick_upgrade(cx: &mut TestAppContext, edit_during_scan: bool) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let directory =
+            std::env::temp_dir().join(format!("tessera-upgrade-{}", uuid::Uuid::new_v4()));
+        let root = directory.join("notes");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("img.png"), b"image resolution fixture").unwrap();
+        std::fs::write(
+            root.join("start.md"),
+            format!(
+                "# Start\n\n![image](./img.png)\n\n{}",
+                "Paragraph.\n\n".repeat(80)
+            ),
+        )
+        .unwrap();
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        open_path: Some(root.join("start.md")),
+                        session_directory: Some(directory.join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        visual.run_until_parked();
+        let (content, source) = reader.read_with(visual, |reader, cx| {
+            assert!(reader.single_file);
+            assert!(reader.note_source.contains("file://"));
+            assert!(reader.note_source.contains("img.png"));
+            reader.content.read(cx).list_state().scroll_to(ListOffset {
+                item_ix: 12,
+                offset_in_item: px(3.),
+            });
+            (reader.content.clone(), reader.note_source.clone())
+        });
+        assert_eq!(
+            crate::reader_history::ReadingHistory::quick_document(&directory.join("state"), &root)
+                .unwrap()
+                .as_deref(),
+            Some("start.md")
+        );
+        let (release, hold) = async_channel::bounded(1);
+        reader.update_in(visual, |reader, window, cx| {
+            reader.start_loading(
+                Opts {
+                    vault: Some(root.clone()),
+                    note: Some("start.md".into()),
+                    index_dir: Some(directory.join("cache")),
+                    preparation_hold: Some(hold),
+                    ..Default::default()
+                },
+                window,
+                cx,
+            )
+        });
+        visual.run_until_parked();
+        for ready in [false, true] {
+            if ready {
+                if edit_during_scan {
+                    let path = root.join("start.md");
+                    let raw = std::fs::read_to_string(&path).unwrap();
+                    std::fs::write(path, format!("{raw}\nScan edit positive control\n")).unwrap();
+                }
+                release.try_send(()).unwrap();
+                visual.run_until_parked();
+                // Source replacement restores its viewport after parser readiness.
+                visual.executor().advance_clock(Duration::from_millis(300));
+                visual.run_until_parked();
+            }
+            reader.read_with(visual, |reader, cx| {
+                assert!(!reader.single_file);
+                assert_eq!(reader.searcher.is_some(), ready);
+                if ready && edit_during_scan {
+                    assert!(reader.note_source.contains("Scan edit positive control"));
+                    assert!(reader.note_source.contains("file://"));
+                    assert!(reader.note_source.contains("img.png"));
+                } else {
+                    assert_eq!(
+                        reader.content, content,
+                        "upgrade retains the rendered document"
+                    );
+                    assert_eq!(
+                        reader.note_source, source,
+                        "relative image survives publication and inventory"
+                    );
+                }
+                let position = reader.content.read(cx).list_state().logical_scroll_top();
+                assert_eq!(position.item_ix, 12);
+                assert_eq!(position.offset_in_item, px(3.));
+            });
+        }
+        assert_eq!(
+            crate::reader_history::ReadingHistory::quick_document(&directory.join("state"), &root)
+                .unwrap(),
+            None,
+            "upgrade persists vault mode even when keeping the rendered document"
+        );
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[gpui::test]
