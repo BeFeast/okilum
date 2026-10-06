@@ -20,8 +20,28 @@ export function mountShell(){
  document.querySelectorAll('[data-nav]').forEach(b=>{b.prepend(icon(b.dataset.nav));b.onclick=()=>{history.replaceState(null,'',`?view=${b.dataset.nav}`);route(b.dataset.nav);};});
  route(new URL(location.href).searchParams.get('view'));
  for(const [id,name,label] of [['theme-toggle','theme','Switch color theme'],['project-refresh','refresh','Refresh project'],['executor-refresh','refresh','Refresh questions'],['forgejo-refresh','refresh','Refresh overview'],['launch-refresh','refresh','Refresh execution'],['close-detail','back','Back to Inbox'],['executor-close','back','Back to questions'],['overview-close','back','Back to overview']])glyph($(id),name,label);
+ for(const id of ['project-select','executor-project','forgejo-project','launch-project'])projectChoices($(id));
  const preferred=()=>matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';let theme;try{theme=localStorage.getItem('tessera-theme');}catch{}document.documentElement.dataset.theme=theme||preferred();
  $('theme-toggle').onclick=()=>{const t=document.documentElement.dataset.theme==='dark'?'light':'dark';document.documentElement.dataset.theme=t;try{localStorage.setItem('tessera-theme',t);}catch{}};
  $('new-thought').prepend(icon('plus'));$('new-thought').onclick=()=>{route('inbox');$('capture-compose').open=true;$('thought').focus();};
  document.querySelectorAll('dialog.drawer').forEach(dialog=>{dialog.addEventListener('click',e=>{if(e.target===dialog){const r=dialog.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)dialog.close();}});});
+}
+
+// Keep the existing guarded controllers as the selection authority. Only the
+// presentation changes: named project buttons replace the native select popup.
+export function projectChoices(select){
+ const group=document.createElement('div');group.className='project-choices';group.setAttribute('role','group');
+ const label=document.querySelector(`label[for="${select.id}"]`);group.setAttribute('aria-label',label?.textContent||'Projects');
+ if(label)label.hidden=true;select.hidden=true;select.before(group);
+ function render(){
+  const focused=group.contains(document.activeElement)?document.activeElement.dataset.value:null;
+  group.replaceChildren(...[...select.options].map(option=>{
+   const button=document.createElement('button');button.type='button';button.textContent=option.textContent;button.dataset.value=option.value;
+   button.setAttribute('aria-pressed',String(option.value===select.value));button.disabled=select.disabled||option.disabled;
+   button.onclick=()=>{if(select.disabled)return;select.value=option.value;select.dispatchEvent(new Event('change',{bubbles:true}));render();};return button;
+  }));
+  if(focused!==null)[...group.children].find(button=>button.dataset.value===focused)?.focus({preventScroll:true});
+ }
+ new MutationObserver(render).observe(select,{childList:true,subtree:true,attributes:true,attributeFilter:['disabled','selected']});
+ select.addEventListener('change',render);render();return group;
 }

@@ -23,16 +23,16 @@
     <div id="notice" role="status" aria-live="polite" hidden></div>
     <section id="enrollment" class="card" hidden><h2>Make this Inbox yours</h2><p>Create a passkey to sign in from your phone and Mac.</p><button id="register">Create passkey</button></section>
     <section data-screen="inbox" class="screen">
-      <div class="page-heading"><div><p class="eyebrow">A little room to think</p><h1>Inbox</h1><p>Catch a thought. Give it a next step.</p></div><span id="count" class="count"></span></div>
+      <div class="page-heading"><div><h1>Inbox</h1></div><span id="count" class="count"></span></div>
       <details id="capture-compose" class="compose"><summary><span class="compose-plus">＋</span> What's on your mind?<span class="key-hint">New thought</span></summary><form id="capture-form" class="card"><label for="thought">What's on your mind?</label><textarea id="thought" rows="7" placeholder="An idea, a question, something to come back to…" required></textarea><div class="form-footer"><span id="capture-help">Sign in once to capture on this device.</span><button id="save" type="submit" disabled>Save thought <span aria-hidden="true">↗</span></button></div></form><p class="storage-note">Unsent thoughts stay on this device. Export them before clearing browser data.</p></details>
       <div class="list-toolbar"><span class="section-label" id="list-title">Your thoughts</span><div class="local-tools"><button id="sync" class="quiet">Sync now</button><button id="export" class="quiet" hidden>Export unsent</button></div></div>
       <ul id="thoughts" class="primary-list"></ul><p id="empty" class="empty">Nothing waiting here.<br><span>Capture a thought whenever it comes.</span></p><button id="more" class="quiet" hidden>Load more</button>
     </section>
-    <section data-screen="projects" class="screen" hidden><div class="page-heading"><div><p class="eyebrow">Make room for progress</p><h1>Projects</h1><p>Decisions, work in motion, and what comes next.</p></div></div>
+    <section data-screen="projects" class="screen" hidden><div class="page-heading"><div><h1>Projects</h1></div></div>
     <section id="project-panel" class="card executor-panel" hidden aria-labelledby="project-heading">
       <div class="list-heading"><h2 id="project-heading">Your project</h2><button id="project-refresh" class="quiet">Refresh</button></div>
       <label for="project-select">Choose project</label><select id="project-select"></select>
-      <div class="project-brief"><h2 id="project-state"></h2><p id="project-next-summary"></p></div><details class="status-editor"><summary>Edit status & next step</summary><form id="project-form"><label for="project-summary">Status</label><input id="project-summary" maxlength="256"><label for="project-next">Next step</label><textarea id="project-next" maxlength="4096" rows="3"></textarea><button id="project-save">Save status</button><button id="project-clear-status" type="button" class="quiet" hidden>Clear saved request · keep text</button></form></details><p id="project-status" role="status"></p>
+      <div class="project-brief"><form id="project-form"><label for="project-summary">Status</label><input id="project-summary" maxlength="256"><label for="project-next">Next step</label><textarea id="project-next" maxlength="4096" rows="3"></textarea><button id="project-save">Save status</button><button id="project-clear-status" type="button" class="quiet" hidden>Clear saved request · keep text</button></form></div><p id="project-status" role="status"></p>
       <div class="project-grid"><section><h3>Questions for you</h3><p id="project-question-status" role="status"></p><div id="project-questions"></div></section><section><h3>Who is doing what</h3><div id="project-executors"></div></section></div>
       <h3>Results and QA</h3><div id="project-results"></div>
       <details><summary>Record a publication result</summary><p>Record what was published and what to check. This does not publish or run anything; the report is attributed to you.</p>
@@ -58,14 +58,14 @@
       <ul id="launch-list"></ul>
     </section></details>
     </section>
-    <section data-screen="questions" class="screen" hidden><div class="page-heading"><div><p class="eyebrow">Keep the work moving</p><h1>Questions</h1><p>A decision from you. A next step for your executor.</p></div></div>
+    <section data-screen="questions" class="screen" hidden><div class="page-heading"><div><h1>Questions</h1></div></div>
     <section id="executor-panel" class="card executor-panel" hidden aria-labelledby="executor-title">
       <div class="list-heading"><h2 id="executor-title">Questions for you</h2><button id="executor-refresh" class="quiet">Refresh</button></div>
       <label for="executor-project">Project</label><select id="executor-project"></select>
       <p id="executor-status" class="muted" role="status"></p><ul id="executor-questions"></ul>
     </section>
     </section>
-    <section data-screen="overview" class="screen wide-screen" hidden><div class="page-heading"><div><p class="eyebrow">Across your repositories</p><h1>Overview</h1><p>The work in progress, all in one place.</p></div></div>
+    <section data-screen="overview" class="screen wide-screen" hidden><div class="page-heading"><div><h1>Overview</h1></div></div>
     <section id="forgejo-panel" class="card executor-panel" hidden aria-labelledby="forgejo-heading">
       <div class="list-heading"><h2 id="forgejo-heading">Work overview</h2><button id="forgejo-refresh" class="quiet">Refresh</button></div>
       <label for="forgejo-project">Project filter</label><select id="forgejo-project"><option value="">All accessible repositories</option></select>
