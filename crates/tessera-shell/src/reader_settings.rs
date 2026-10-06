@@ -1,6 +1,6 @@
 //! Explicit, lazily opened user settings. No vault scans or startup reads.
 use super::*;
-use gpui_component::{button::ButtonGroup, ThemeMode};
+use gpui_component::{button::ButtonGroup, switch::Switch, ThemeMode};
 
 gpui::actions!(tessera_settings, [OpenSettings, CloseSettings]);
 
@@ -51,10 +51,10 @@ pub(crate) fn show(reader: Option<WeakEntity<Reader>>, cx: &mut App) {
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                 None,
-                size(px(700.), px(480.)),
+                size(px(780.), px(520.)),
                 cx,
             ))),
-            window_min_size: Some(size(px(600.), px(400.))),
+            window_min_size: Some(size(px(700.), px(440.))),
             ..Default::default()
         };
         match cx.open_window(options, move |window, cx| {
@@ -69,6 +69,49 @@ pub(crate) fn show(reader: Option<WeakEntity<Reader>>, cx: &mut App) {
     });
 }
 
+fn setting_row(
+    label: &'static str,
+    help: &'static str,
+    control: impl IntoElement,
+    cx: &App,
+) -> impl IntoElement {
+    h_flex()
+        .w_full()
+        .justify_between()
+        .gap_4()
+        .py_2()
+        .child(
+            v_flex().flex_1().min_w_0().gap_1().child(label).child(
+                div()
+                    .text_sm()
+                    .text_color(brand::palette(cx).text_muted)
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .whitespace_nowrap()
+                    .child(help),
+            ),
+        )
+        .child(div().flex_none().child(control))
+}
+
+fn compact_vault_path(root: &Path) -> String {
+    let home =
+        std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from);
+    let display = home
+        .as_ref()
+        .and_then(|home| root.strip_prefix(home).ok())
+        .map(|relative| format!("~/{}", relative.to_string_lossy()))
+        .unwrap_or_else(|| root.to_string_lossy().into_owned());
+    if display.chars().count() <= 36 {
+        return display;
+    }
+    let name = root.file_name().unwrap_or_default().to_string_lossy();
+    format!(
+        "{}…/{name}",
+        if display.starts_with("~/") { "~/" } else { "" }
+    )
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Section {
     Appearance,
@@ -77,12 +120,12 @@ enum Section {
     Inbox,
 }
 impl Section {
-    fn icon(self) -> IconName {
+    fn icon(self) -> Icon {
         match self {
-            Self::Appearance => IconName::Palette,
-            Self::Files => IconName::Folder,
-            Self::Updates => IconName::RotateCw,
-            Self::Inbox => IconName::Inbox,
+            Self::Appearance => Icon::new(IconName::Palette),
+            Self::Files => Icon::new(IconName::Folder),
+            Self::Updates => Icon::default().path("icons/arrow-down-circle.svg"),
+            Self::Inbox => Icon::new(IconName::Inbox),
         }
     }
     fn label(self) -> &'static str {
@@ -284,22 +327,40 @@ impl Settings {
             let has_storage = self
                 .vault(cx)
                 .is_some_and(|reader| reader.read(cx).session_directory.is_some());
+            let folder = if self.template_pending {
+                "Loading…".to_owned()
+            } else {
+                self.template_folder.clone()
+            };
             v_flex()
                 .gap_2()
-                .child("Templates folder")
-                .child(if self.template_pending {
-                    "Loading…".into()
-                } else {
-                    self.template_folder.clone()
-                })
-                .child(
-                    Button::new("settings-template-folder")
-                        .label("Choose folder…")
-                        .disabled(self.template_pending || !has_storage)
-                        .on_click(cx.listener(|this, _, _, cx| this.choose_template_folder(cx))),
-                )
-                .child(div().text_sm().child(
-                    "Use New note from template in the document menu. Templates support {{title}} and {{date}}.",
+                .child(setting_row(
+                    "Templates folder",
+                    "Used when creating a note from a template.",
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            div()
+                                .max_w(px(160.))
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .whitespace_nowrap()
+                                .text_sm()
+                                .text_color(brand::palette(cx).text_muted)
+                                .child(folder.clone()),
+                        )
+                        .child(
+                            Button::new("settings-template-folder")
+                                .ghost()
+                                .icon(IconName::FolderOpen)
+                                .accessibility_label("Change templates folder")
+                                .tooltip(format!("Change templates folder ({folder})"))
+                                .disabled(self.template_pending || !has_storage)
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.choose_template_folder(cx)),
+                                ),
+                        ),
+                    cx,
                 ))
                 .children(self.template_error.as_ref().map(|error| {
                     div()
@@ -330,51 +391,125 @@ impl Settings {
                     .vault(cx)
                     .map(|reader| reader.read(cx).vault_root.clone());
                 content
-                    .child("Choose how Tessera looks.")
-                    .child(
-                        h_flex().gap_2().children(
+                    .child(setting_row(
+                        "Theme",
+                        "Choose a light or dark appearance.",
+                        ButtonGroup::new("settings-theme").flex_none().children(
                             [
-                                ("settings-system", "System", None),
-                                ("settings-light", "Light", Some(ThemeMode::Light)),
-                                ("settings-dark", "Dark", Some(ThemeMode::Dark)),
+                                (
+                                    "settings-system",
+                                    "System",
+                                    Icon::default().path("icons/monitor.svg"),
+                                    None,
+                                ),
+                                (
+                                    "settings-light",
+                                    "Light",
+                                    Icon::new(IconName::Sun),
+                                    Some(ThemeMode::Light),
+                                ),
+                                (
+                                    "settings-dark",
+                                    "Dark",
+                                    Icon::new(IconName::Moon),
+                                    Some(ThemeMode::Dark),
+                                ),
                             ]
-                            .map(|(id, label, mode)| {
+                            .map(|(id, label, icon, mode)| {
                                 let vault = vault.clone();
+                                let selected = current == mode;
                                 Button::new(id)
+                                    .ghost()
                                     .debug_selector(move || id.into())
                                     .label(label)
-                                    .selected(current == mode)
+                                    .icon(icon)
+                                    .selected(selected)
+                                    .when(selected, |button| button.primary())
                                     .on_click(move |_, window, cx| {
                                         set_appearance(mode, vault.as_deref(), window, cx)
                                     })
                             }),
                         ),
-                    )
+                        cx,
+                    ))
+                    // #349 inserts its swatch row here, using the same setting_row layout.
                     .into_any_element()
             }
             Section::Files => {
                 if let Some(reader) = self.vault(cx) {
                     let state = reader.read(cx);
                     let hidden = state.sidebar.show_hidden;
-                    let root = state.vault_root.to_string_lossy().into_owned();
+                    let root = state.vault_root.clone();
+                    let name = root
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned();
+                    let full_path = root.to_string_lossy().into_owned();
+                    let short_path = compact_vault_path(&root);
                     let weak = reader.downgrade();
                     content
-                        .child(div().text_sm().text_color(p.text_muted).child(root))
                         .child(
-                            Button::new("settings-hidden-files")
+                            h_flex()
+                                .gap_3()
+                                .child(Icon::new(IconName::Folder).size_5())
+                                .child(
+                                    v_flex()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .gap_1()
+                                        .child(div().font_weight(FontWeight::MEDIUM).child(name))
+                                        .child(
+                                            div()
+                                                .id("settings-vault-path")
+                                                .text_sm()
+                                                .text_color(p.text_muted)
+                                                .overflow_hidden()
+                                                .text_ellipsis()
+                                                .whitespace_nowrap()
+                                                .child(short_path)
+                                                .tooltip(move |window, cx| {
+                                                    gpui_component::tooltip::Tooltip::new(
+                                                        full_path.clone(),
+                                                    )
+                                                    .build(window, cx)
+                                                }),
+                                        ),
+                                )
+                                .child(
+                                    Button::new("settings-reveal-vault")
+                                        .ghost()
+                                        .icon(IconName::ExternalLink)
+                                        .accessibility_label("Reveal vault")
+                                        .tooltip(if cfg!(target_os = "macos") {
+                                            "Reveal in Finder"
+                                        } else if cfg!(target_os = "windows") {
+                                            "Reveal in Explorer"
+                                        } else {
+                                            "Reveal in File Manager"
+                                        })
+                                        .on_click(move |_, window, cx| {
+                                            reader_files::reveal(&root, window, cx)
+                                        }),
+                                ),
+                        )
+                        .child(setting_row(
+                            "Show hidden files",
+                            "Include hidden files in this vault’s sidebar.",
+                            div()
                                 .debug_selector(|| "settings-hidden-files".into())
-                                .label("Show hidden files")
-                                .selected(hidden)
-                                .on_click(move |_, _, cx| {
-                                    let _ = weak
-                                        .update(cx, |reader, cx| reader.toggle_hidden_files(cx));
-                                }),
-                        )
-                        .child(
-                            div().text_sm().text_color(p.text_muted).child(
-                                "Applies to this vault. Also available in the document menu.",
-                            ),
-                        )
+                                .child(
+                                    Switch::new("settings-hidden-files-switch")
+                                        .accessibility_label("Show hidden files")
+                                        .checked(hidden)
+                                        .on_click(move |_, _, cx| {
+                                            let _ = weak.update(cx, |reader, cx| {
+                                                reader.toggle_hidden_files(cx)
+                                            });
+                                        }),
+                                ),
+                            cx,
+                        ))
                         .child(self.template_controls(cx))
                         .into_any_element()
                 } else {
@@ -547,8 +682,6 @@ impl Render for Settings {
                     .flex_none()
                     .p_3()
                     .gap_1()
-                    .border_r_1()
-                    .border_color(p.border)
                     .children(
                         [
                             Section::Appearance,
@@ -570,7 +703,7 @@ impl Render for Settings {
                                             h_flex()
                                                 .w_full()
                                                 .gap_2()
-                                                .child(Icon::new(section.icon()).size_4())
+                                                .child(section.icon().size_4())
                                                 .child(section.label()),
                                         )
                                         .selected(self.section == section)
