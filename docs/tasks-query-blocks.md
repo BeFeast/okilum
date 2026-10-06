@@ -57,3 +57,7 @@ the repeated source name; clicking the task title still opens that exact task.
 Expanded copies and other grouping modes retain source backlinks. Dataview and
 DataviewJS blocks show a collapsed unsupported placeholder with an explicit
 Show source action. Their code is never executed.
+
+Empty sections retain their document heading without a zero-count badge. Source
+group headings align with the task text column; priority uses SVG indicators at
+secondary-text scale, including double chevrons for highest/lowest priority.
