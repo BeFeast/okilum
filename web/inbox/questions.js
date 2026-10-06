@@ -43,7 +43,9 @@ export function replyJournal(storage, owner) {
       if (previous && previous !== JSON.stringify(body)) throw new Error('An answer is already saved on this device. Check status before sending another.');
       storage.setItem(prefix + body.question_id, JSON.stringify(body));
     },
-    clear(id) { storage.removeItem(prefix + id); },
+    refuse(id, operationId) { storage.setItem(prefix + 'refused:' + id,operationId); },
+    isRefused(id, operationId) { return storage.getItem(prefix + 'refused:' + id) === operationId; },
+    clear(id) { storage.removeItem(prefix + id); storage.removeItem(prefix + 'refused:' + id); },
   };
 }
 

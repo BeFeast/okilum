@@ -2,7 +2,7 @@ import { buildReply, questionStatus, replyJournal, optionLabel } from './questio
 
 export function mountQuestions({ api, post, owner, online, storage = localStorage }) {
   const $ = id => document.getElementById(id);
-  let generation = 0, busy = false, sending = false, selected = null, loadedAt = 0, checking = false, refused = false, lastCheckAt = 0;
+  let generation = 0, busy = false, sending = false, selected = null, loadedAt = 0, checking = false, refused = false, lastCheckAt = 0, refusalWarning = '';
   const drafts = new Map();
   let projects = [], rows = new Map(), operation = null, pending = null, currentOwner = null;
   const el = (tag, text, cls) => { const node = document.createElement(tag); if (text) node.textContent = text; if (cls) node.className = cls; return node; };
@@ -68,7 +68,7 @@ export function mountQuestions({ api, post, owner, online, storage = localStorag
     if (sending) return;
     if (selected && !pending && !operation) drafts.set(selected.id, readAnswers());
     const epoch = ++generation, who = currentOwner;
-    selected = null; operation = null; pending = null; loadedAt = 0; refused = false;
+    selected = null; operation = null; pending = null; loadedAt = 0; refused = false; refusalWarning = '';
     $('executor-answer-fields').replaceChildren(); $('executor-send').disabled = true;
     $('executor-retry').hidden = true; $('executor-discard').hidden = true;
     $('executor-answer-status').textContent = 'Checking the original question…';
@@ -77,6 +77,7 @@ export function mountQuestions({ api, post, owner, online, storage = localStorag
       const q = await api(`/questions/${encodeURIComponent(id)}`);
       if (!validSession(who,epoch)) return;
       selected = q; loadedAt = Date.now(); pending = journal().get(q.id);
+      refused = Boolean(pending && journal().isRefused(q.id,pending.operation_id));
       const operationId = q.pending_operation_id || pending?.operation_id;
       if (operationId) {
         try {
@@ -120,10 +121,10 @@ export function mountQuestions({ api, post, owner, online, storage = localStorag
   }
   function updateStatus(){
     if(!selected)return;
-    const full=pending&&!operation?'Delivery unconfirmed — retry the same saved answer':questionStatus(selected,operation,online());
-    const short=operation?({queued:'Sending',uncertain:'Unconfirmed',accepted:'Accepted by T3',delivered:'Received',rejected:'Not sent'})[operation.state]:pending?'Unconfirmed':selected.state==='answered'?'Answered':selected.state==='withdrawn'?'Withdrawn':!online()?'Offline':!selected.source_fresh?'Reconnecting':!selected.can_reply?'Unavailable':'Awaiting answer';
+    const full=refused?`Not sent — the source refused this answer. Clear this refused draft to choose again. ${refusalWarning}`:pending&&!operation?'Delivery unconfirmed — retry the same saved answer':questionStatus(selected,operation,online());
+    const short=refused?'Not sent':operation?({queued:'Sending',uncertain:'Unconfirmed',accepted:'Accepted by T3',delivered:'Received',rejected:'Not sent'})[operation.state]:pending?'Unconfirmed':selected.state==='answered'?'Answered':selected.state==='withdrawn'?'Withdrawn':!online()?'Offline':!selected.source_fresh?'Reconnecting':!selected.can_reply?'Unavailable':'Awaiting answer';
     $('executor-answer-status').textContent=short;$('executor-answer-status').title=full;
-    $('executor-retry').hidden=!pending||Boolean(operation);$('executor-retry').disabled=!online()||sending;
+    $('executor-retry').hidden=refused||!pending||Boolean(operation);$('executor-retry').disabled=!online()||sending;
     $('executor-discard').hidden=!refused&&operation?.state!=='rejected';updateSend();
   }
   function readAnswers() {
@@ -135,7 +136,7 @@ export function mountQuestions({ api, post, owner, online, storage = localStorag
   function updateSend(){
     let ready=false;
     if(selected)try{buildReply(selected,Object.fromEntries(readAnswers().map(a=>[a.id,a])),'preview');ready=true;}catch{}
-    $('executor-send').disabled=!ready||!online()||sending||Boolean(pending)||Boolean(operation)||Date.now()-loadedAt>20000;
+    $('executor-send').disabled=!ready||!online()||sending||refused||Boolean(pending)||Boolean(operation)||Date.now()-loadedAt>20000;
   }
   async function checkSelected(){
     if(checking||sending||!selected||!$('executor-dialog').open||document.hidden||!online())return;
@@ -157,7 +158,7 @@ export function mountQuestions({ api, post, owner, online, storage = localStorag
     finally{checking=false;}
   }
   async function send(event) {
-    event.preventDefault(); if (sending || !selected || !online()) return;
+    event.preventDefault(); if (sending || refused || !selected || !online()) return;
     const q = selected, who = currentOwner, epoch = generation;
     sending = true; $('executor-send').disabled = true; $('executor-retry').disabled = true;
     try {
@@ -177,10 +178,11 @@ export function mountQuestions({ api, post, owner, online, storage = localStorag
       // fetch current source before allowing a separately confirmed new answer.
       if (error.status === 409) {
         refused = true;
+        try { journal().refuse(q.id,pending.operation_id); } catch { refusalWarning='Keep this page open until you clear the draft.'; }
         $('executor-discard').hidden = false;
-        $('executor-answer-status').textContent = 'The question changed or another answer was reserved. Your answer is preserved. Clear this refused draft to choose again.';
+        updateStatus();
       } else $('executor-answer-status').textContent = error.message;
-      $('executor-retry').hidden = !pending;
+      $('executor-retry').hidden = refused || !pending;
     } finally {
       sending = false;
       if (validSession(who,epoch)) {
