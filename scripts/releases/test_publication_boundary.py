@@ -35,7 +35,7 @@ class PublicationBoundary(unittest.TestCase):
         from unittest.mock import Mock
         for state, sha in [('cancelled', 'latest'), ('success', 'old')]:
             api = Mock()
-            api.call.side_effect = [{'status': state, 'commit_sha': sha}, {'commit': {'id': 'latest'}}]
+            api.call.side_effect = [{'status': state, 'commit_sha': sha, 'trigger_event': 'push'}, {'commit': {'id': 'latest'}}]
             with patch.object(publication.subprocess, 'run') as launch:
                 publication.publish(api, 'windows', 12)
                 launch.assert_not_called()
@@ -85,6 +85,51 @@ class PublicationBoundary(unittest.TestCase):
             publication.publish(api, 'linux', 12)
             launch.assert_not_called()
             self.assertEqual(api.call.call_count, 2)
+
+    def test_hourly_and_manual_snapshots_publish_after_main_advances(self):
+        import publication
+        import io
+        import zipfile
+        from unittest.mock import Mock
+        data = io.BytesIO()
+        with zipfile.ZipFile(data, 'w') as archive:
+            archive.writestr('payload.zip', b'archive')
+        for platform in ['macos', 'windows']:
+            for event in ['schedule', 'workflow_dispatch']:
+                run = {'workflow_id': publication.WORKFLOWS[platform], 'prettyref': 'main',
+                       'is_fork_pull_request': False, 'trigger_event': event,
+                       'status': 'success', 'commit_sha': 'selected-main', 'index_in_repo': 42}
+                names = list(publication.ARTIFACTS[platform])
+                artifacts = [{'id': i, 'name': name, 'expired': False, 'run_id': 12}
+                             for i, name in enumerate(names)]
+                api = Mock()
+                api.call.side_effect = [run, {'commit': {'id': 'new-main'}}, artifacts,
+                                       *[data.getvalue() for _ in names], {'commit': {'id': 'newer-main'}}]
+                with patch.object(publication, 'R2') as store, patch.object(publication.subprocess, 'run') as launch:
+                    store.return_value.call.return_value = None
+                    publication.publish(api, platform, 12)
+                    launch.assert_called_once()
+                    self.assertEqual(launch.call_args.kwargs['env']['GITHUB_SHA'], 'selected-main')
+                    self.assertEqual(launch.call_args.kwargs['env']['GITHUB_RUN_NUMBER'], '42')
+
+    def test_each_feed_prevents_an_older_snapshot_from_publishing(self):
+        import publication
+        from unittest.mock import Mock
+        feeds = {'linux': b'{"build": 5043}',
+                 'windows': b'{"Assets": [{"Version": "0.1.5043"}]}',
+                 'macos': b'<rss xmlns:s="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><item><s:version>5043</s:version></item></channel></rss>'}
+        for platform, feed in feeds.items():
+            run = {'workflow_id': publication.WORKFLOWS[platform], 'prettyref': 'main',
+                   'is_fork_pull_request': False, 'trigger_event': 'schedule',
+                   'status': 'success', 'commit_sha': 'old-main', 'index_in_repo': 42}
+            api = Mock()
+            api.call.side_effect = [run, {'commit': {'id': 'new-main'}}]
+            with patch.object(publication, 'R2') as store, patch.object(publication.subprocess, 'run') as launch:
+                store.return_value.call.return_value = feed
+                self.assertEqual(publication.published_build(store(), platform), 5043)
+                publication.publish(api, platform, 12)
+                launch.assert_not_called()
+                self.assertEqual(api.call.call_count, 2)
 
 
 class MacOSArtifact(unittest.TestCase):
