@@ -819,7 +819,22 @@ fn reader_plugins(
     entity: WeakEntity<Reader>,
     sel_format: SelectionFormat,
     states: prepared_links::States,
+    identities: &[tessera_core::document_links::prepared::LinkIdentity],
 ) -> TextView {
+    // Use exactly the same eligibility as the Create note hover action.
+    #[cfg(unix)]
+    let missing_cards = identities
+        .iter()
+        .filter_map(|identity| {
+            reader_hover::missing_note_target(&identity.url, &states, identities)
+                .map(|_| identity.url.clone())
+        })
+        .collect();
+    #[cfg(not(unix))]
+    let missing_cards = {
+        let _ = identities;
+        std::collections::BTreeSet::new()
+    };
     let hover_entity = entity.clone();
     let tasks_entity = entity.clone();
     let view = markdown_plugins(
@@ -862,13 +877,7 @@ fn reader_plugins(
             this.hover_link(url, active, position, window, cx)
         });
     })
-    .link_presentation(move |url| {
-        let mut presentation = prepared_links::presentation(url, &states);
-        if reader_hover::resolved_target(url, &states, "").is_some() {
-            presentation.tooltip = None;
-        }
-        presentation
-    });
+    .link_presentation(move |url| reader_hover::link_presentation(url, &states, &missing_cards));
     reader_tasks::plugins(view, tasks_entity)
 }
 
@@ -1694,6 +1703,7 @@ impl Reader {
             cx.entity().downgrade(),
             self.sel_format,
             self.link_presentations.clone(),
+            &self.link_identities,
         );
         self.content.update(cx, |s, cx| {
             configured.prepare_state(s, cx);
@@ -3925,6 +3935,7 @@ impl Reader {
                             entity.clone(),
                             self.sel_format,
                             self.link_presentations.clone(),
+                            &self.link_identities,
                         )
                         .table_actions(move |data, _, _| {
                             // #368: only a table wider than the column offers it.
@@ -3961,6 +3972,7 @@ impl Reader {
             entity,
             self.sel_format,
             self.link_presentations.clone(),
+            &self.link_identities,
         );
         let markdown = markdown.to_owned();
         let sel_format = self.sel_format;
@@ -4065,6 +4077,7 @@ impl Reader {
                                 entity,
                                 self.sel_format,
                                 self.link_presentations.clone(),
+                                &self.link_identities,
                             )),
                         ),
                 )

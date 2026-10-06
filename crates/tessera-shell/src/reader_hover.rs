@@ -65,17 +65,37 @@ pub(super) fn resolved_target(
         .then_some(Target { path, heading })
 }
 
+#[cfg(unix)]
+pub(super) fn missing_note_target(
+    url: &str,
+    states: &prepared_links::States,
+    identities: &[document_links::prepared::LinkIdentity],
+) -> Option<String> {
+    if states.get(url)?.status != LinkStatus::MissingDocument {
+        return None;
+    }
+    let identity = identities
+        .iter()
+        .find(|link| link.url == url && link.wiki)?;
+    missing_path(&identity.from, &identity.target)
+}
+
+pub(super) fn link_presentation(
+    url: &str,
+    states: &prepared_links::States,
+    missing_cards: &std::collections::BTreeSet<String>,
+) -> gpui_component::text::LinkPresentation {
+    let mut presentation = prepared_links::presentation(url, states);
+    if resolved_target(url, states, "").is_some() || missing_cards.contains(url) {
+        presentation.tooltip = None;
+    }
+    presentation
+}
+
 impl Reader {
     #[cfg(unix)]
     pub(super) fn missing_note_path(&self, url: &str) -> Option<String> {
-        if self.prepared_links.get(url)?.status != LinkStatus::MissingDocument {
-            return None;
-        }
-        let identity = self
-            .link_identities
-            .iter()
-            .find(|link| link.url == url && link.wiki)?;
-        missing_path(&identity.from, &identity.target)
+        missing_note_target(url, &self.prepared_links, &self.link_identities)
     }
 
     pub(super) fn clear_hover(&mut self, cx: &mut Context<Self>) {
@@ -695,6 +715,29 @@ mod tests {
         let url = reader.read_with(visual, |r, _| r.link_identities[0].url.clone());
         reader.read_with(visual, |r, _| {
             assert_eq!(r.prepared_links[&url].status, LinkStatus::MissingDocument);
+            let plain = prepared_links::presentation(&url, &r.prepared_links);
+            assert!(
+                plain.tooltip.is_some(),
+                "tooltip positive control without a card"
+            );
+            assert!(missing_note_target(&url, &r.prepared_links, &r.link_identities).is_some());
+            let cards = std::collections::BTreeSet::from([url.clone()]);
+            let card = link_presentation(&url, &r.prepared_links, &cards);
+            assert!(
+                card.tooltip.is_none(),
+                "Create note card owns the explanation"
+            );
+            assert!(card.inert && card.style.underline.is_some());
+            assert!(
+                link_presentation(&url, &r.prepared_links, &Default::default())
+                    .tooltip
+                    .is_some()
+            );
+            assert!(
+                link_presentation("https://example.org", &r.prepared_links, &cards)
+                    .tooltip
+                    .is_some()
+            );
         });
         let bounds = reader.read_with(visual, |r, cx| r.content.read(cx).bounds());
         visual.simulate_mouse_move(

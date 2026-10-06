@@ -257,6 +257,7 @@ impl Reader {
                             cx.entity().downgrade(),
                             r.sel_format,
                             states.clone(),
+                            &r.link_identities,
                         );
                         let content = cx.new(|cx| {
                             let mut text = TextViewState::markdown("", cx)
@@ -567,6 +568,7 @@ impl Reader {
                                     cx.weak_entity(),
                                     self.sel_format,
                                     t.states.clone(),
+                                    &self.link_identities,
                                 ),
                             ),
                         )
