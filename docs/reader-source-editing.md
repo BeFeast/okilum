@@ -345,3 +345,15 @@ retained across the worker; affected windows cannot navigate/save or start anoth
 move during application. Dirty affected editors still block before application.
 Writes are not cancellable mid-transaction; interrupted operations retain their
 existing recovery journal and exact source preimages.
+
+## Inline names and Trash feedback (#547)
+
+Inline filename inputs own Space and editing keys; tree shortcuts do not run
+while those inputs are focused. Submitting the current rename destination simply
+closes the row without moving a file.
+
+The Trash Undo notification appears at the bottom right and hides after eight
+seconds or with its close button / Escape. Hiding it does not discard the session's
+Trash history: Cmd-Z (Ctrl-Z on Linux) in the Reader/tree restores the latest
+trashed item, with the same collision and identity checks. Text inputs retain their
+normal text Undo. A failed restore remains available to retry.

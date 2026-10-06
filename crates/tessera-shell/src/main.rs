@@ -133,6 +133,7 @@ actions!(
         RenameNote,
         RenameTreeNote,
         DeleteNote,
+        UndoTrash,
         RecoverLinkMoves,
         NoteSourceHistory,
         HistoryVersionNext,
@@ -231,6 +232,8 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-n", NewNote, ctx),
         #[cfg(unix)]
         KeyBinding::new("secondary-backspace", DeleteNote, Some("Reader && !Input")),
+        #[cfg(unix)]
+        KeyBinding::new("secondary-z", UndoTrash, Some("Reader && !Input")),
         KeyBinding::new("secondary-w", CloseNote, ctx),
         KeyBinding::new("secondary-w", CloseNote, Some("Reader > Input")),
         KeyBinding::new("secondary-[", HistoryBack, ctx),
@@ -1075,6 +1078,8 @@ struct Reader {
     #[cfg(unix)]
     trash_pending: bool,
     #[cfg(unix)]
+    trash_undo: reader_trash::UndoHistory,
+    #[cfg(unix)]
     move_index: Option<Arc<tessera_core::link_rewrite::CandidateIndex>>,
     recovery_offer: bool,
     recovery_checked: bool,
@@ -1330,6 +1335,8 @@ impl Reader {
             move_applying: false,
             #[cfg(unix)]
             trash_pending: false,
+            #[cfg(unix)]
+            trash_undo: reader_trash::UndoHistory::default(),
             #[cfg(unix)]
             move_index: None,
             recovery_offer: false,
@@ -1894,6 +1901,10 @@ impl Reader {
                     .update(cx, |input, cx| input.set_value("", window, cx));
                 self.run_find(window, cx);
             }
+            return;
+        }
+        #[cfg(unix)]
+        if self.dismiss_trash_toast(window, cx) {
             return;
         }
         if self.find_open {
@@ -5342,6 +5353,12 @@ impl Render for Reader {
             .on_action(cx.listener(|this, _: &FindInNote, window, cx| this.open_find(window, cx)))
             .on_action(cx.listener(|this, _: &FindNext, _, cx| this.find_step(1, cx)))
             .on_action(cx.listener(|this, _: &FindPrev, _, cx| this.find_step(-1, cx)))
+            .on_action(cx.listener(|this, _: &UndoTrash, window, cx| {
+                #[cfg(unix)]
+                this.undo_last_trash(window, cx);
+                #[cfg(not(unix))]
+                let _ = (this, window, cx);
+            }))
             .on_action(cx.listener(|this, _: &Dismiss, window, cx| this.dismiss(window, cx)))
             .on_action(cx.listener(|this, _: &TreeDown, w, cx| this.tree_key(TreeKey::Down, w, cx)))
             .on_action(cx.listener(|this, _: &TreeUp, w, cx| this.tree_key(TreeKey::Up, w, cx)))

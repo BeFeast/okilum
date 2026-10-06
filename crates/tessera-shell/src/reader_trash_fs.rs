@@ -57,6 +57,19 @@ pub fn move_to_trash(root: &Path, relative: &Path) -> Result<Trashed> {
 }
 
 impl Trashed {
+    #[cfg(test)]
+    pub(super) fn test_move(root: &Path, relative: &Path, trash: &Path) -> Self {
+        let (location, info) = freedesktop_trash(&root.join(relative), trash).unwrap();
+        let meta = fs::metadata(&location).unwrap();
+        Self {
+            root: root.to_owned(),
+            relative: relative.to_owned(),
+            location,
+            info,
+            identity: (meta.dev(), meta.ino()),
+        }
+    }
+
     pub fn restore(&self) -> Result<()> {
         let metadata =
             fs::symlink_metadata(&self.location).context("The item is no longer in Trash")?;
