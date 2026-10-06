@@ -552,6 +552,8 @@ acknowledging the maximized flag (observed in Hyprland). Tessera records the
 compositor's actual state rather than claiming a rejected request succeeded.
 Source restoration keeps the document hidden until its source viewport is ready;
 the preview and the source's initial top position must not flash on startup.
+The published document's source viewport must become usable independently of
+background search validation; “Checking search data” cannot keep it blank.
 A previously unseen vault inherits the last active window's
 presentation and geometry, without copying its note paths or navigation history.
 Transient menus, hover previews, notifications and dialogs do not reopen.

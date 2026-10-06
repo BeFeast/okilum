@@ -543,7 +543,14 @@ impl Reader {
     }
 
     pub(crate) fn restore_ui_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.loading.as_ref().is_some_and(|load| load.active) || self.pending_landing.is_some() {
+        // The selected document is usable before background search validation
+        // finishes. Only its publication/viewport may delay source restoration.
+        if self
+            .loading
+            .as_ref()
+            .is_some_and(|load| load.active && !load.published)
+            || self.pending_landing.is_some()
+        {
             return;
         }
         let Some(offset) = self.ui_state.source.take() else {
@@ -1096,6 +1103,7 @@ mod tests {
             flush(cx);
             install(&directory, cx);
         });
+        let (release_search, hold_search) = async_channel::bounded(1);
         let mut reader = None;
         let (_, visual) = cx.add_window_view(|window, cx| {
             let view = cx.new(|cx| {
@@ -1103,6 +1111,7 @@ mod tests {
                     Opts {
                         vault: Some(root.clone()),
                         note: None,
+                        preparation_hold: source.then_some(hold_search),
                         session_directory: Some(directory.clone()),
                         index_dir: Some(fixture.path().join("index")),
                         panel_settings_override: Some(fixture.path().join("legacy-widths.json")),
@@ -1119,6 +1128,30 @@ mod tests {
         visual.run_until_parked();
         visual.executor().advance_clock(Duration::from_millis(100));
         visual.run_until_parked();
+        if source {
+            // Search preparation is deliberately held indefinitely. The
+            // published source document must still reach its saved viewport.
+            for _ in 0..5 {
+                visual.update(|window, cx| {
+                    window.simulate_next_frame(cx);
+                    window.draw(cx).clear(cx);
+                });
+                visual.executor().advance_clock(Duration::from_millis(20));
+                visual.run_until_parked();
+            }
+            reader.read_with(visual, |reader, cx| {
+                let load = reader.loading.as_ref().unwrap();
+                assert!(load.active && load.published, "search remains unfinished");
+                assert!(reader.editing.is_some(), "source must not wait for search");
+                assert!(
+                    !reader.restoring_source(),
+                    "source viewport must be visible"
+                );
+                assert_eq!(reader.source_scroll_offset(cx).unwrap().y, px(-400.));
+            });
+            release_search.try_send(()).unwrap();
+            visual.run_until_parked();
+        }
         reader.update(visual, |reader, _| {
             // Native startup can publish state between sync_tree's reveal and
             // the list's first layout. Exercise that ordering explicitly.

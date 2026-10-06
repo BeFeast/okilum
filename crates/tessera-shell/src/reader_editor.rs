@@ -221,7 +221,12 @@ impl Reader {
             self.focus_handle.focus(window, cx);
             return;
         }
-        if self.current_rel.is_empty() || self.loading.as_ref().is_some_and(|l| l.active) {
+        if self.current_rel.is_empty()
+            || self
+                .loading
+                .as_ref()
+                .is_some_and(|l| l.active && !l.published)
+        {
             return;
         }
         let result = (|| -> anyhow::Result<FileEditor> {
