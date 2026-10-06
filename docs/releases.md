@@ -81,12 +81,16 @@ appcast publication lock; scheduled Beta does not block the macOS release queue.
 
 ## Superseded main builds (#562)
 
-The three platform build workflows cancel obsolete main pushes within their own
-platform group. They only upload private Actions artifacts and dispatch
+The macOS and Windows build workflows cancel obsolete main pushes within their
+platform group. Linux finishes queued builds even while main advances, so frequent
+merges cannot repeatedly discard useful compilation. A successful trusted main
+Linux build can publish after a newer merge; a newer already-published beta makes
+an older completion a no-op. The Arch publisher also retains its rollback guard. They only upload private Actions artifacts and dispatch
 `release-publish`; they do not modify public update channels. The publisher waits
 for the source run to finish successfully, checks trusted main provenance, and
-checks current main again after downloading the artifacts. Cancelled, failed or
-superseded builds publish nothing. Versions retain the source build's original
+checks current main again after downloading the artifacts for macOS/Windows.
+Cancelled and failed builds publish nothing; Linux uses the monotonic completion
+policy above instead of discarding a build merely because main advanced. Versions retain the source build's original
 `5000 + run number`; the publication workflow's number is never used.
 
 Forgejo concurrency is workflow-wide. Publication therefore runs in a separate,

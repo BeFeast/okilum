@@ -52,17 +52,39 @@ class PublicationBoundary(unittest.TestCase):
         run = {'workflow_id': 'linux-release.yml', 'prettyref': 'main',
                'is_fork_pull_request': False, 'trigger_event': 'push',
                'status': 'success', 'commit_sha': 'source', 'index_in_repo': 42}
-        for final_head, expected in [('source', True), ('newer', False)]:
+        for final_head, expected in [('source', True), ('newer', True)]:
             api = Mock()
             api.call.side_effect = [run, {'commit': {'id': 'source'}},
                 [{'id': 9, 'name': 'arch-publication', 'expired': False, 'run_id': 12}],
                 data.getvalue(), {'commit': {'id': final_head}}]
-            with patch.object(publication.subprocess, 'run') as launch:
+            with patch.object(publication.subprocess, 'run') as launch, patch.object(publication, 'R2') as store:
+                store.return_value.call.return_value = None
                 publication.publish(api, 'linux', 12)
                 self.assertEqual(launch.called, expected)
                 if expected:
                     self.assertIn('5042', launch.call_args.args[0])
                     self.assertEqual(launch.call_args.kwargs['env']['GITHUB_RUN_NUMBER'], '42')
+
+    def test_linux_finishes_after_new_merge_but_rejects_newer_published_beta(self):
+        import publication
+        from unittest.mock import Mock
+        run = {'workflow_id': 'linux-release.yml', 'prettyref': 'main',
+               'is_fork_pull_request': False, 'trigger_event': 'push',
+               'status': 'success', 'commit_sha': 'previous-main', 'index_in_repo': 42}
+        self.assertTrue(publication.eligible(run, 'linux', 'new-main'))
+        for changes in [{'prettyref': 'feature'}, {'is_fork_pull_request': True},
+                        {'trigger_event': 'pull_request'}, {'workflow_id': 'ci.yml'}]:
+            with self.assertRaises(ValueError):
+                publication.eligible({**run, **changes}, 'linux', 'new-main')
+        for status in ['failure', 'cancelled', 'running']:
+            self.assertFalse(publication.eligible({**run, 'status': status}, 'linux', 'new-main'))
+        api = Mock()
+        api.call.side_effect = [run, {'commit': {'id': 'new-main'}}]
+        with patch.object(publication, 'R2') as store, patch.object(publication.subprocess, 'run') as launch:
+            store.return_value.call.return_value = json.dumps({'build': 5043}).encode()
+            publication.publish(api, 'linux', 12)
+            launch.assert_not_called()
+            self.assertEqual(api.call.call_count, 2)
 
 
 class MacOSArtifact(unittest.TestCase):
