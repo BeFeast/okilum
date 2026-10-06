@@ -61,3 +61,23 @@ The `github-mirror` job only pushes `main` and the selected reachable `v0.1.*` o
 Secrets are the existing R2, Arch signing and `TESSERA_GITHUB_MIRROR` credentials;
 `FORGEJO_TOKEN` comes from the Actions token. Stable promotion shares the macOS
 appcast publication lock; scheduled Beta does not block the macOS release queue.
+
+## Superseded main builds (#562)
+
+The three platform build workflows cancel obsolete main pushes within their own
+platform group. They only upload private Actions artifacts and dispatch
+`release-publish`; they do not modify public update channels. The publisher waits
+for the source run to finish successfully, checks trusted main provenance, and
+checks current main again after downloading the artifacts. Cancelled, failed or
+superseded builds publish nothing. Versions retain the source build's original
+`5000 + run number`; the publication workflow's number is never used.
+
+Forgejo concurrency is workflow-wide. Publication therefore runs in a separate,
+serialized workflow with cancellation disabled, sharing the stable-promotion lock.
+A main push during an already-started publication lets that short transaction
+finish; the newer successful build follows it. Automatic cancellation cannot
+interrupt public metadata writes. Existing feed-last/hash/signature checks remain;
+this is not a claim of cross-object atomicity under a network failure or manual
+cancellation. A publication error is visible in `release-publish`, separately from
+the platform build status. Manual recovery can dispatch it with the source run ID
+and platform; the same current-main/provenance checks still apply.
