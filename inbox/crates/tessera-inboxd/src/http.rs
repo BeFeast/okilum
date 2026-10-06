@@ -22,8 +22,8 @@ use uuid::Uuid;
 use webauthn_rs::prelude::{PublicKeyCredential, RegisterPublicKeyCredential};
 
 pub(crate) type Shared = Arc<Mutex<Auth>>;
-const SESSION: &str = "__Host-inbox-session";
-const FLOW: &str = "__Host-inbox-flow";
+pub(crate) const SESSION: &str = "__Host-inbox-session";
+pub(crate) const FLOW: &str = "__Host-inbox-flow";
 
 pub fn router(auth: Auth) -> Router {
     router_with_ai(auth, None)
@@ -65,6 +65,7 @@ pub fn router_with_forgejo(
         .merge(crate::launch_http::browser())
         .merge(crate::forgejo::routes())
         .merge(crate::results::routes())
+        .merge(crate::devices_http::routes())
         .route("/health", get(|| async { "ok" }))
         .route("/api/v1/auth/register/start", post(register_start))
         .route("/api/v1/auth/register/finish", post(register_finish))
@@ -231,6 +232,11 @@ impl From<auth::Error> for ApiError {
             auth::Error::Limited => {
                 Self(StatusCode::TOO_MANY_REQUESTS, "authentication_rate_limited")
             }
+            auth::Error::InvalidName => Self(StatusCode::BAD_REQUEST, "invalid_passkey_name"),
+            auth::Error::LastKey => Self(StatusCode::CONFLICT, "last_passkey"),
+            auth::Error::RecentRequired => {
+                Self(StatusCode::FORBIDDEN, "recent_authentication_required")
+            }
             auth::Error::Enrolled => Self(StatusCode::CONFLICT, "already_enrolled"),
             _ => Self(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -305,10 +311,10 @@ pub(crate) fn token(headers: &HeaderMap, name: &str) -> Result<String, ApiError>
         "authentication_required",
     ))
 }
-fn cookie(name: &str, token: &str, seconds: i64) -> String {
+pub(crate) fn cookie(name: &str, token: &str, seconds: i64) -> String {
     format!("{name}={token}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age={seconds}")
 }
-fn response(body: Value, cookies: &[String]) -> Response {
+pub(crate) fn response(body: Value, cookies: &[String]) -> Response {
     let mut response = Json(body).into_response();
     for cookie in cookies {
         response

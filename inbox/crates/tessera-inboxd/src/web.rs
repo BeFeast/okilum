@@ -17,6 +17,12 @@ pub(crate) fn routes<S: Clone + Send + Sync + 'static>() -> Router<S> {
         };
     }
     let router = Router::new();
+    let router = asset!(
+        router,
+        "/devices.js",
+        "text/javascript; charset=utf-8",
+        "devices.js"
+    );
     let router = asset!(router, "/icon-dark.svg", "image/svg+xml", "icon-dark.svg");
     let router = asset!(router, "/", "text/html; charset=utf-8", "index.html");
     let router = asset!(

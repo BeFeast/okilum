@@ -1,3 +1,4 @@
+import { mountDevices } from './devices.js';
 import { mountShell } from './ui.js';
 mountShell();
 import { mountProjects } from './projects.js';
@@ -9,6 +10,7 @@ import { openOutbox, flushOutbox } from './outbox.js';
 import { creationOptions, requestOptions, credentialJSON } from './webauthn.js';
 
 const $ = id => document.getElementById(id);
+const deviceToken = new URLSearchParams(location.hash.slice(1)).get('device');
 let enrollmentToken = new URLSearchParams(location.hash.slice(1)).get('enroll');
 if (location.hash) history.replaceState(null, '', location.pathname); // Never retain bootstrap in history.
 let outbox, rememberedOwner = null, sessionOwner = null, online = navigator.onLine;
@@ -16,11 +18,12 @@ let filenameSuggestion = '', publicationAttempted = false;
 let selectedItem = null, discussionBusy = false, publicationBusy = false;
 let publicationFolders = [], publicationReady = false, discussionRendered = null, publicationRecovery = false, publicationConflict = false;
 let syncing = false, captures = new Map(), page = null, synchronizedThrough = 0;
+const devicesUI = mountDevices({api,post,owner:()=>sessionOwner,joinToken:deviceToken,signIn:()=>signIn(false)});
 const forgejoUI = mountForgejo({api, owner: () => sessionOwner});
 const launchesUI = mountLaunches({api, post, owner: () => sessionOwner, online: () => online && navigator.onLine});
 const questionsUI = mountQuestions({api, post, owner: () => sessionOwner, online: () => online && navigator.onLine});
 const projectsUI = mountProjects({api,post,owner:()=>sessionOwner,online:()=>online&&navigator.onLine,openQuestion:id=>questionsUI.open(id)});
-function clearRemote() { projectsUI.reset(); forgejoUI.reset(); launchesUI.reset(); questionsUI.reset(); captures.clear(); page = null; synchronizedThrough = 0; selectedItem = null; $('discussion').hidden = true; $('publication-sheet').close(); }
+function clearRemote() { devicesUI.reset(); projectsUI.reset(); forgejoUI.reset(); launchesUI.reset(); questionsUI.reset(); captures.clear(); page = null; synchronizedThrough = 0; selectedItem = null; $('discussion').hidden = true; $('publication-sheet').close(); }
 function notice(message) { $('notice').textContent = message; $('notice').hidden = !message; }
 function message(error) {
   if (error.name === 'NotAllowedError') return 'Passkey request cancelled or unavailable. You can try again.';
@@ -40,6 +43,9 @@ async function api(path, options = {}) {
   if (!response.ok) {
     if (response.status === 401) { sessionOwner = null; clearRemote(); }
     const errors = {
+      invalid_passkey_name: 'Enter a name of up to 100 characters.',
+      last_passkey: 'Add another passkey before revoking this one.',
+      recent_authentication_required: 'Confirm with your passkey, then try again.',
       publication_conflict: 'This path is occupied or changed. Nothing was overwritten. Keep the saved request for checking, or explicitly forget it and choose another filename.',
       vault_unavailable: 'Fixture vault is unavailable. The publication is not confirmed; retry the same request later.',
       invalid_publication: 'Choose an allowed folder, a relative Markdown filename and up to 64 KB of Markdown.',

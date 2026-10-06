@@ -21,3 +21,14 @@ test('base64url binary fields survive registration and assertion conversion', ()
   assert.equal(assertion.response.userHandle, null);
   assert.throws(() => credentialJSON(null));
 });
+
+test('optional credential properties do not turn a valid browser response into a parse error', () => {
+ const binary = new Uint8Array([1,2]).buffer;
+ const credential = {id:'AQI',rawId:binary,type:'public-key',response:{clientDataJSON:binary,attestationObject:binary}};
+ for (const rk of [undefined,false,true]) {
+  const extensions={credProps:rk===undefined?{}:{rk}};
+  const result=credentialJSON({...credential,getClientExtensionResults:()=>extensions});
+  assert.deepEqual(result.extensions,rk===undefined?{}:{credProps:{rk}});
+  assert.deepEqual(extensions,{credProps:rk===undefined?{}:{rk}});
+ }
+});

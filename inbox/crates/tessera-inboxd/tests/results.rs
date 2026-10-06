@@ -190,7 +190,7 @@ fn schema_nine_upgrade_preserves_launches() {
     drop(s);
     let db = rusqlite::Connection::open(&path).unwrap();
     db.execute_batch(
-        "DROP TABLE execution_outputs; DROP TABLE execution_results; PRAGMA user_version=9;",
+        "DROP TABLE execution_outputs; DROP TABLE execution_results; DROP TABLE auth_passkeys; PRAGMA user_version=9;",
     )
     .unwrap();
     drop(db);

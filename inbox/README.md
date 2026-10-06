@@ -375,3 +375,31 @@ clearing a saved request keeps text and does not delete a committed record.
 Back up schema-10 DB and the bridge journal using SQLite online backup. Image
 rollback must retain newer operations; old binaries reject newer schema rather
 than resetting it. Maestro and broader execution remain gated separately.
+
+## Passkeys and devices (#575)
+
+Settings → Passkeys & devices lists the owner's keys and their last use. Adding a
+key here, creating an invitation, approving a device, and revocation require a
+passkey confirmation within five minutes. A synchronized Bitwarden/iCloud key is
+one credential: revoking it revokes every synchronized copy and its sessions.
+The last credential cannot be removed; enroll another working key first.
+
+Add another device displays a five-minute invitation link. The new device creates
+its own key and displays a comparison code. The owner compares that code on both
+devices and explicitly approves it. Until approval the key cannot log in. A link
+alone never creates a session. Invitations and ceremonies are memory-only and
+expire on restart; ask for a new link if interrupted. Do not put links in logs or
+issue comments. The browser strips the fragment immediately and does not persist it.
+
+Schema 11 migrates the existing credential without changing the owner or Inbox
+contents. Existing sessions expire on deployment (as before); sign in with the
+same passkey. Before deployment keep an online SQLite backup plus the old image
+and source. Rolling back to schema 10 requires stopping the service and restoring
+that database backup as well as the previous image; do not downgrade the schema
+number or re-run bootstrap on an enrolled owner.
+
+`qa/devices.mjs` in web/inbox verifies real WebAuthn with two independent CDP virtual
+authenticators and an isolated backend. Supply QA_BACKEND, QA_ENROLLMENT_FILE and
+QA_CDP_ENDPOINT. It forwards requests to that backend without mocking API results;
+never use the live database. It captures Settings and enrollment at 390/1280 in
+light/dark and verifies approval-before-login, revoked sessions and last-key refusal.

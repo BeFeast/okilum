@@ -31,6 +31,10 @@ export function credentialJSON(credential) {
     response.signature = encode(r.signature);
     response.userHandle = r.userHandle ? encode(r.userHandle) : null;
   }
+  const extensions = structuredClone(credential.getClientExtensionResults());
+  // credProps.rk is optional in WebAuthn. The pinned server type expects it
+  // whenever credProps is present; omit only an unknown client-side hint.
+  if (extensions.credProps && typeof extensions.credProps.rk !== 'boolean') delete extensions.credProps;
   return { id: credential.id, rawId: encode(credential.rawId), type: credential.type,
-    response, extensions: credential.getClientExtensionResults() };
+    response, extensions };
 }
