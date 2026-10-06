@@ -431,7 +431,8 @@ and a quiet unsaved dot; conflict recovery actions remain explicit glyphs with
 tooltips. Attachment headers use the same language: Quick Look (macOS), Open,
 Reveal and Copy path glyphs alongside More.
 
-Document More contains Edit/Preview, Rename/move, Note history, Reveal,
+Document More contains Reveal in sidebar (the sidebar crosshair action),
+Edit/Preview, Rename/move, Note history, Reveal,
 Copy path and Close note. Delete joins this menu when its action is available.
 The app More menu contains New note, Open file/folder, recovery, appearance,
 hidden files, About and Quit. Editing actions are absent in Windows diagnostic.
@@ -462,14 +463,18 @@ preferences and template contents are read only for these explicit user actions.
 ### Note history (#475)
 
 Note More → Note history replaces the right panel with a timeline for the current
-note. Each row shows relative age, an explicit UTC date, byte/line delta against
-the reviewed current file, and the protected marker where applicable. Loading and
-read errors stay in the panel. “On this page” returns to Contents and Linked from.
+note. Compact rows (minimum 36px) show relative age, a quiet byte/line delta badge
+(`B` / `L`) against the reviewed current file, and a star for protected versions.
+The row tooltip preserves the exact UTC timestamp, save reason and protected
+status. Loading and read errors stay in the panel. An arrow button with the
+“On this page” tooltip returns to Contents and Linked from.
 
 Selecting a version previews it in the document area without replacing the live
 Reader or editor buffer. The banner identifies the version and offers Restore,
 Show changes, Source/Preview, Back to current, and Save as recovered note. Link-move
-versions also offer Recover whole link move. Up/Down selects adjacent versions;
+versions also offer Recover whole link move. These actions use the same 28px
+ghost glyph buttons and tooltips as the document header (#548); active comparison
+and source modes remain visibly selected. Up/Down selects adjacent versions;
 Escape or Back to current returns to the live document without closing the panel.
 Source is read-only; Show changes compares the replaced line span to the reviewed
 current file. Switching notes clears the historical preview.
@@ -500,3 +505,6 @@ asynchronous. The file revision is checked before publishing the result; a chang
 or missing source yields the unavailable state. Reopening always requests a fresh
 preview. Thumbnails are memory-only derived data; they never write to the vault.
 The preview is a GPUI image, so palettes and menus retain normal overlay ordering.
+
+“Reveal in sidebar” opens the Notes panel if hidden, expands Folders and focuses
+the current note or file using the same action as the sidebar crosshair.

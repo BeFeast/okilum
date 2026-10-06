@@ -232,6 +232,13 @@ impl Reader {
             reader_icon_button("document-more", IconName::Ellipsis, "Document actions", cx)
                 .debug_selector(|| "document-more".into())
                 .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, _| {
+                    menu = menu
+                        .menu_with_icon(
+                            "Reveal in sidebar",
+                            Icon::default().path(brand::READER_FOCUS_ICON),
+                            Box::new(FocusCurrentFolder),
+                        )
+                        .separator();
                     if !is_file {
                         #[cfg(unix)]
                         {

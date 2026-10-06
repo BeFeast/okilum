@@ -2444,6 +2444,8 @@ impl Reader {
         if self.selected_file().is_empty() {
             return;
         }
+        self.resizing_panel = None;
+        self.panels.open(reader_layout::Panel::Notes);
         if self
             .sidebar
             .collapsed
