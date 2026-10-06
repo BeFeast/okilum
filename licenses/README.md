@@ -25,7 +25,7 @@ components; this is a conservative superset of any individual release.
   Reserved Font Names; format conversion/merging is documented, not relicensed.
   Font family names and trademarks are not an endorsement by their authors.
 - Shell icons: Lucide ISC, plus Feather MIT for inherited icons (including
-  arrow-up-right, clock, link, list and monitor). Lucide.txt retains both notices.
+  arrow-up-right, clock, link and list). Lucide.txt retains both notices.
   Source: https://github.com/lucide-icons/lucide/blob/main/LICENSE
 - PDF standard fonts: hayro-interpret embeds PDFium's Foxit fonts (BSD-3-Clause)
   and a CC0 CMYK profile. Foxit-PDFium.txt retains the PDFium/Foxit notice;
