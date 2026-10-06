@@ -217,7 +217,6 @@ pub struct ReaderPalette {
     pub code_bg: Hsla,
     pub code_border: Hsla,
     pub callout_question: Hsla,
-    pub notice: Hsla,
 }
 
 fn reader_palettes() -> &'static [ReaderPalette; 2] {
@@ -242,7 +241,6 @@ fn reader_palettes() -> &'static [ReaderPalette; 2] {
                 code_bg: color("codeBg"),
                 code_border: color("codeBorder"),
                 callout_question: color("calloutQuestion"),
-                notice: color("notice"),
             }
         })
     })

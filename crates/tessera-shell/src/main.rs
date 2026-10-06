@@ -70,6 +70,7 @@ mod reader_timeline;
 #[cfg(windows)]
 #[path = "reader_timeline_windows.rs"]
 mod reader_timeline;
+mod reader_toast;
 #[cfg(unix)]
 mod reader_trash;
 #[cfg(unix)]
@@ -1128,6 +1129,12 @@ struct Reader {
     current_title: String,
     document_header_hidden: Pixels,
     link_notice: Option<String>,
+    displayed_notice: Option<String>,
+    displayed_choices: Vec<(String, Option<String>)>,
+    displayed_recovery: Option<(String, u64)>,
+    displayed_history_notice: Option<(uuid::Uuid, uuid::Uuid, String)>,
+    history_notice_generation: u64,
+    notice_generation: u64,
     link_choices: Vec<(String, Option<String>)>,
     navigation_generation: u64,
     pending_landing: Option<ListOffset>,
@@ -1358,6 +1365,12 @@ impl Reader {
             current_title: String::new(),
             document_header_hidden: px(0.),
             link_notice: None,
+            displayed_notice: None,
+            displayed_choices: Vec::new(),
+            displayed_recovery: None,
+            displayed_history_notice: None,
+            history_notice_generation: 0,
+            notice_generation: 0,
             link_choices: Vec::new(),
             navigation_generation: 0,
             pending_landing: None,
@@ -1913,6 +1926,9 @@ impl Reader {
         }
         #[cfg(unix)]
         if self.dismiss_trash_toast(window, cx) {
+            return;
+        }
+        if reader_toast::dismiss(window, cx) {
             return;
         }
         if self.find_open {
@@ -2850,73 +2866,6 @@ impl Reader {
         } else {
             format!("{label} · partial")
         }
-    }
-
-    /// Link notices and ambiguous-link choices, one quiet strip under the header.
-    fn render_notice(&self, cx: &mut Context<Self>) -> AnyElement {
-        h_flex()
-            .id("reader-notice")
-            .w_full()
-            .flex_none()
-            .flex_wrap()
-            .gap_2()
-            .px_3()
-            .py_1p5()
-            .bg(brand::reader_palette(cx).notice)
-            .text_size(px(brand::READER_CHROME_FONT_SIZE))
-            .when(
-                self.recovery_startup && !self.recovery_dismissed && self.editing.is_none(),
-                |row| {
-                    row.child(if self.recovery_error {
-                        "Tessera closed unexpectedly. Saved edits could not be checked; recovery files are preserved."
-                    } else if !self.recovery_checked {
-                        "Tessera closed unexpectedly. Checking for unsaved edits…"
-                    } else if self.recovery_offer {
-                        "Tessera closed unexpectedly. Unsaved edits are ready to restore."
-                    } else {
-                        "Tessera closed unexpectedly. No unsaved edits were lost for this note."
-                    })
-                    .child(
-                        Button::new("dismiss-recovery")
-                            .small()
-                            .label("Dismiss")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.recovery_dismissed = true;
-                                cx.notify();
-                            })),
-                    )
-                },
-            )
-            .when(
-                self.recovery_offer && !self.recovery_dismissed && self.editing.is_none(),
-                |row| {
-                    row.child(
-                        Button::new("restore-unsaved-edits")
-                            .small()
-                            .label("Restore unsaved edits")
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.toggle_source(window, cx)),
-                            ),
-                    )
-                },
-            )
-            .when_some(self.link_notice.clone(), |row, notice| row.child(notice))
-            .children(
-                self.link_choices
-                    .iter()
-                    .enumerate()
-                    .map(|(index, (path, heading))| {
-                        let path = path.clone();
-                        let heading = heading.clone();
-                        Button::new(("reader-link-choice", index))
-                            .small()
-                            .label(path.clone())
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_note_at(&path, None, heading.as_deref(), window, cx)
-                            }))
-                    }),
-            )
-            .into_any_element()
     }
 
     /// Panel title row: name and count, with compact quick-open in Notes.
@@ -4099,12 +4048,6 @@ impl Reader {
                                     )),
                                 ),
                         )
-                        // Link notices raised from the table show here, not
-                        // under the scrim.
-                        .when(
-                            self.link_notice.is_some() || !self.link_choices.is_empty(),
-                            |panel| panel.child(self.render_notice(cx)),
-                        )
                         .child(
                             div().flex_1().min_h_0().child(reader_plugins(
                                 self.vault_root.clone(),
@@ -5228,6 +5171,7 @@ impl Render for ReaderPanelDrag {
 
 impl Render for Reader {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_notice_toast(window, cx);
         // Root owns overlay state, but the window content renders these layers.
         let dialog_layer = Root::render_dialog_layer(window, cx);
         let notification_layer = Root::render_notification_layer(window, cx);
@@ -5527,14 +5471,6 @@ impl Render for Reader {
                     )
                 }
             })
-            .when(
-                self.link_notice.is_some()
-                    || !self.link_choices.is_empty()
-                    || ((self.recovery_startup || self.recovery_offer)
-                        && !self.recovery_dismissed
-                        && self.editing.is_none()),
-                |view| view.child(self.render_notice(cx)),
-            )
             .child(
                 h_flex()
                     .id("reader-body")

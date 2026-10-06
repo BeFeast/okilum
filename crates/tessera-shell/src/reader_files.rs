@@ -1,9 +1,6 @@
 //! Explicit attachment previews and file actions; no external app opens on selection.
 use super::*;
-use gpui_component::{
-    menu::{PopupMenu, PopupMenuItem},
-    WindowExt as _,
-};
+use gpui_component::menu::{PopupMenu, PopupMenuItem};
 
 #[derive(Clone, Copy)]
 pub(crate) enum FileAction {
@@ -68,12 +65,12 @@ pub(crate) fn run(action: FileAction, root: &Path, rel: &str, window: &mut Windo
         };
         if let Some(text) = copied {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
-            window.push_notification("Copied", cx);
+            reader_toast::transient("Copied", window, cx);
         }
         Ok(())
     })();
     if let Err(error) = result {
-        window.push_notification(format!("File action failed: {error}"), cx);
+        reader_toast::error(format!("File action failed: {error}"), window, cx);
     }
 }
 
@@ -178,7 +175,7 @@ impl Reader {
             .item(
                 PopupMenuItem::new("Copy absolute path").on_click(move |_, window, cx| {
                     cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));
-                    window.push_notification("Copied", cx);
+                    reader_toast::transient("Copied", window, cx);
                 }),
             )
         });
@@ -299,7 +296,7 @@ impl Reader {
                 window.set_window_title(&format!("Tessera — {rel}"));
                 self.focus_handle.focus(window, cx);
             }
-            Err(error) => window.push_notification(format!("Cannot preview file: {error}"), cx),
+            Err(error) => reader_toast::error(format!("Cannot preview file: {error}"), window, cx),
         }
         cx.notify();
     }

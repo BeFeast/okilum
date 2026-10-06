@@ -88,9 +88,12 @@ Find, right-panel toggle, More.
 Idle status is never shown. «Ready» and «Document not yet available» labels
 disappear. While loading is active, the header shows a 14 px spinner and the
 phase text (`text-muted`, 12 px) after the breadcrumbs, plus Cancel. A failed
-load shows the phase text in `danger` plus Retry. Link notices and ambiguous
-link choices render as a dismissible strip under the header using the `notice`
-surface, not as bare text rows.
+load shows the phase text in `danger` plus Retry. Operation feedback uses the bottom notification overlay without reflow (#576):
+four seconds for ordinary feedback, eight seconds with Undo, ×/Esc to close.
+Errors and ambiguous-link choices persist in the overlay until dismissed. Recovery
+offers use a four-second toast only when a newer draft exists; entering source mode
+can still restore it later. An unclean launch with no unsaved draft is silent. No
+notification adds a full-width row. History actions use a compact floating toolbar.
 
 ## Typography
 
@@ -167,7 +170,6 @@ Reader tokens (new `reader-tokens.json`, loaded the same way):
 | `find-match` | `#fde68a` | `#5c4f1c` | find marks |
 | `find-current` | `#fbbf24` | `#8a7420` | current find mark |
 | `find-current-ring` | `#d97706` | `#facc15` | |
-| `notice` | `#eef4fc` | `#303b4c` | notice strip |
 | `hover` | `#eff0f2` | `#2a2d33` | row and icon-button hover |
 | `selection` | `accent` @ 22 % | `accent` @ 35 % | text selection |
 
@@ -474,7 +476,7 @@ status. Loading and read errors stay in the panel. An arrow button with the
 “On this page” tooltip returns to Contents and Linked from.
 
 Selecting a version previews it in the document area without replacing the live
-Reader or editor buffer. The banner identifies the version and offers Restore,
+Reader or editor buffer. A compact bottom overlay identifies the version and offers Restore,
 Show changes, Source/Preview, Back to current, and Save as recovered note. Link-move
 versions also offer Recover whole link move. These actions use the same 28px
 ghost glyph buttons and tooltips as the document header (#548); active comparison
@@ -484,9 +486,9 @@ Source is read-only; Show changes compares the replaced line span to the reviewe
 current file. Switching notes clears the historical preview.
 
 Restore has no confirmation dialog. It preserves the replaced current bytes in
-history and offers Undo in a persistent toast. Both restore and undo retain the
+history and offers Undo in an eight-second toast. Both restore and undo retain the
 existing dirty-editor and exact-current-byte guards; a racing edit is never silently
-overwritten. Restore failures appear in the banner. Recovery of unsaved drafts
+overwritten. Restore failures appear in a dismissible toast. Recovery of unsaved drafts
 continues to use its existing dialog.
 
 ### macOS file previews (#477, step 1)
