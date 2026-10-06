@@ -89,11 +89,27 @@ class CatalogTests(unittest.TestCase):
              patch.object(p, 'github_release') as github, \
              patch.object(p, 'preflight_stable') as preflight:
             p.execute(store, None, None)
-            p.execute(store, None, None)
+            from unittest.mock import Mock
+            api = Mock()
+            api.call.return_value = {'tag_name': 'beta'}
+            p.execute(store, api, None)
             mirror.assert_called_once_with(release, False)
             github.assert_called_once()
             preflight.assert_not_called()
             self.assertEqual(store.writes, [f'{catalog.PREFIX}/beta.json'])
+
+    def test_completed_marker_with_missing_beta_release_is_repaired(self):
+        from unittest.mock import Mock
+        store = Store()
+        release = fixture(store)
+        store.data[f'{catalog.PREFIX}/beta.json'] = catalog.encode(release)
+        api = Mock()
+        api.call.return_value = None
+        with patch.object(p, 'mirror_tag', return_value='beta'), \
+             patch.object(p, 'notes', return_value='Notes'), \
+             patch.object(p, 'github_release') as publish:
+            p.execute(store, api, None)
+            publish.assert_called_once()
 
     def test_upload_failure_retries_same_beta(self):
         store = Store()
@@ -204,28 +220,51 @@ class GitHubTests(unittest.TestCase):
         class API:
             def call(self, method, path, body=None, **kwargs):
                 calls.append((method, path, body))
+                if method == 'GET' and '/tags/' in path:
+                    return {'id': 42, 'tag_name': 'beta', 'draft': False, 'prerelease': True,
+                            'assets': [{'name': 'x.zip'}, {'name': 'SHA256SUMS'}]}
                 if method == 'GET':
                     return [{'id': 42, 'tag_name': 'beta', 'draft': True,
                              'assets': [{'id': 9, 'name': 'obsolete.zip'}]}]
-        p.github_release(API(), 'beta', {'build': 700}, {'x.zip': b'ZIP', 'SHA256SUMS': b'hash'}, 'notes', False)
+        p.github_release(API(), 'beta', {'build': 700, 'source': SOURCE}, {'x.zip': b'ZIP', 'SHA256SUMS': b'hash'}, 'notes', False)
         self.assertEqual(calls[1], ('PATCH', '/releases/42', {'draft': True}))
         self.assertEqual(calls[2][:2], ('DELETE', '/releases/42/assets/9'))
-        self.assertFalse(calls[-1][2]['draft'])
-        self.assertTrue(calls[-1][2]['prerelease'])
-        self.assertNotIn('make_latest', calls[-1][2])
+        self.assertFalse(calls[-2][2]['draft'])
+        self.assertTrue(calls[-2][2]['prerelease'])
+        self.assertNotIn('make_latest', calls[-2][2])
         self.assertFalse(any(c[0] == 'POST' and c[1] == '/releases' for c in calls))
+    def test_untagged_beta_recovery_publishes_explicit_tag_and_checks_result(self):
+        calls = []
+        class API:
+            def call(self, method, path, body=None, **kwargs):
+                calls.append((method, path, body))
+                if method == 'GET' and '/tags/' not in path:
+                    return [{'id': 42, 'name': 'Beta', 'prerelease': True,
+                             'tag_name': 'untagged-old', 'assets': []}]
+                if method == 'GET':
+                    return None
+        with self.assertRaisesRegex(ValueError, 'requested tag/assets'):
+            p.github_release(API(), 'beta', {'build': 700, 'source': SOURCE}, {}, 'notes', False)
+        self.assertFalse(any(c[0] == 'POST' and c[1] == '/releases' for c in calls))
+        publish = calls[-2][2]
+        self.assertEqual(publish['tag_name'], 'beta')
+        self.assertEqual(publish['target_commitish'], SOURCE)
+
     def test_draft_retry_reuses_release_and_sets_latest_after_publication(self):
         calls = []
         class API:
             def call(self, method, path, body=None, **kwargs):
                 calls.append((method, path, body))
+                if method == 'GET' and '/tags/' in path:
+                    return {'id': 7, 'tag_name': 'v0.1.700', 'draft': False, 'prerelease': False,
+                            'assets': [{'name': 'x.zip'}]}
                 if method == 'GET':
                     return [{'id': 7, 'tag_name': 'v0.1.700', 'draft': True, 'assets': []}]
-        p.github_release(API(), 'v0.1.700', {'build': 700}, {'x.zip': b'ZIP'}, 'notes', True)
+        p.github_release(API(), 'v0.1.700', {'build': 700, 'source': SOURCE}, {'x.zip': b'ZIP'}, 'notes', True)
         self.assertFalse(any(c[0] == 'POST' and c[1] == '/releases' for c in calls))
         self.assertEqual(calls[-1], ('PATCH', '/releases/7', {'make_latest': 'true'}))
-        self.assertFalse(calls[-2][2]['draft'])
-        self.assertNotIn('make_latest', calls[-2][2])
+        self.assertFalse(calls[-3][2]['draft'])
+        self.assertNotIn('make_latest', calls[-3][2])
 
 
 
