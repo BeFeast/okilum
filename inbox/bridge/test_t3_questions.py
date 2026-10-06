@@ -219,6 +219,19 @@ class RecoveryTests(unittest.TestCase):
         with self.assertRaises(Unavailable):self.runner.step()
         self.assertEqual(len(self.source.sent),1)
 
+    def test_title_enrichment_keeps_revision_and_exact_cursor_guard(self):
+        _, before = project(self.source.value, CONFIG, 'pilot-thread')
+        self.runner.observe('pilot-thread')
+        self.source.value['projection']['thread']['title'] = 'Inbox execution pilot'
+        _, after = project(self.source.value, CONFIG, 'pilot-thread')
+        q = next(iter(after.values()))[0]
+        self.assertEqual(q['thread_title'], 'Inbox execution pilot')
+        self.assertEqual(q['source_revision'], next(iter(before.values()))[0]['source_revision'])
+        self.runner.observe('pilot-thread')
+        self.source.value['projection']['turnItems'][0]['questions'][0]['question'] = 'Changed'
+        with self.assertRaises(Unavailable):
+            self.runner.observe('pilot-thread')
+
     def test_cursor_and_instance_binding_prevent_restore_confusion(self):
         self.source.value['snapshotSequence']=9
         with self.assertRaises(Unavailable):self.runner.step()

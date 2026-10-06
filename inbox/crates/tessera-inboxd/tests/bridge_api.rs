@@ -68,6 +68,7 @@ impl Fixture {
     }
     fn question(&self) -> Question {
         Question {
+            thread_title: None,
             id: Uuid::new_v4(),
             project_id: self.project,
             source: QuestionSource {

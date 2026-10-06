@@ -29,3 +29,18 @@ test('storage failure does not return a saved intent',()=>{
   const journal=replyJournal({getItem:()=>null,setItem:()=>{throw new Error('quota');}},'owner');
   assert.throws(()=>journal.put(buildReply(question(),values,'op')),/quota/);
 });
+
+ test('option display removes redundant descriptions without changing meaningful detail', async () => {
+ const {optionLabel} = await import('../questions.js');
+ assert.equal(optionLabel('Blue — Choose Blue.'), 'Blue');
+ assert.equal(optionLabel('Blue — Blue'), 'Blue');
+ assert.equal(optionLabel('Blue — Recommended for the pilot'), 'Blue — Recommended for the pilot');
+ });
+
+test('explicit refusal persists for the exact operation until its draft is cleared',()=>{
+ const data=new Map();const storage={getItem:k=>data.get(k)??null,setItem:(k,v)=>data.set(k,v),removeItem:k=>data.delete(k)};
+ const body=buildReply(question(),values,'refused-op');const journal=replyJournal(storage,'oleg');journal.put(body);journal.refuse(body.question_id,body.operation_id);
+ const reopened=replyJournal(storage,'oleg');assert(reopened.isRefused(body.question_id,body.operation_id));assert.deepEqual(reopened.get(body.question_id),body);
+ assert.equal(reopened.isRefused(body.question_id,'other-op'),false);assert.equal(replyJournal(storage,'other-owner').isRefused(body.question_id,body.operation_id),false);
+ reopened.clear(body.question_id);assert.equal(reopened.isRefused(body.question_id,body.operation_id),false);
+});

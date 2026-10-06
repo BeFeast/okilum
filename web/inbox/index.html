@@ -6,7 +6,8 @@
   <meta name="theme-color" content="#F2F6FC">
   <meta name="referrer" content="no-referrer">
   <title>Inbox · Tessera</title>
-  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml" media="(prefers-color-scheme: light)">
+  <link rel="icon" href="/icon-dark.svg" type="image/svg+xml" media="(prefers-color-scheme: dark)">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="stylesheet" href="/style.css">
   <script type="module" src="/app.js"></script>
@@ -14,11 +15,11 @@
 <body>
   <aside class="sidebar">
     <a class="brand" href="/" aria-label="Tessera home"><img src="/icon.svg" alt="" width="28" height="28"><span>Tessera</span><span class="edition">Inbox</span></a>
-    <button id="new-thought" class="new-thought">New thought</button>
+    <button id="new-thought" class="new-thought" aria-label="New thought">New thought</button>
     <nav aria-label="Main navigation"><button data-nav="inbox">Inbox</button><button data-nav="questions">Questions</button><button data-nav="projects">Projects</button><button data-nav="overview">Overview</button></nav>
     <div class="sidebar-bottom"><span class="workspace-mark">T</span><div>Your workspace<small>Personal · LAN</small></div><button id="theme-toggle"></button></div>
   </aside>
-  <div class="app-frame"><header class="topbar"><div class="breadcrumb">Workspace <span>/</span> <strong id="screen-title">Inbox</strong></div><div class="account"><span id="connection" role="status">Connecting…</span><button id="login" class="quiet">Sign in</button><button id="logout" class="quiet" hidden>Sign out</button></div></header>
+  <div class="app-frame"><header class="topbar"><div class="breadcrumb"><span class="breadcrumb-prefix">Workspace <span>/</span></span> <strong id="screen-title">Inbox</strong></div><div class="account"><span id="connection" role="status" tabindex="0">Connecting…</span><button id="login" class="quiet">Sign in</button><button id="logout" class="quiet" hidden>Sign out</button></div><div id="mobile-actions" class="mobile-only"><details id="mobile-settings"><summary aria-label="Settings">⋯</summary><div id="mobile-settings-body"></div></details></div></header>
   <main>
     <div id="notice" role="status" aria-live="polite" hidden></div>
     <section id="enrollment" class="card" hidden><h2>Make this Inbox yours</h2><p>Create a passkey to sign in from your phone and Mac.</p><button id="register">Create passkey</button></section>
@@ -35,7 +36,7 @@
       <div class="project-brief"><form id="project-form"><label for="project-summary">Status</label><input id="project-summary" maxlength="256"><label for="project-next">Next step</label><textarea id="project-next" maxlength="4096" rows="3"></textarea><button id="project-save">Save status</button><button id="project-clear-status" type="button" class="quiet" hidden>Clear saved request · keep text</button></form></div><p id="project-status" role="status"></p>
       <div class="project-grid"><section><h3>Questions for you</h3><p id="project-question-status" role="status"></p><div id="project-questions"></div></section><section><h3>Who is doing what</h3><div id="project-executors"></div></section></div>
       <h3>Results and QA</h3><div id="project-results"></div>
-      <details><summary>Record a publication result</summary><p>Record what was published and what to check. This does not publish or run anything; the report is attributed to you.</p>
+      <details><summary>Record a publication result</summary><p>Record a published result and what to check.</p>
       <form id="result-form"><label for="result-launch">Completed executor run</label><select id="result-launch" required></select>
       <label for="result-commit">Exact commit (40 characters)</label><input id="result-commit" required pattern="[a-fA-F0-9]{40}" maxlength="40">
       <label for="result-platform">Platform (for example web, macOS, Arch)</label><input id="result-platform" required maxlength="128">
@@ -49,7 +50,7 @@
     </section>
     <details class="launch-disclosure"><summary>New execution brief</summary><section id="launch-panel" class="card executor-panel" hidden aria-labelledby="launch-heading">
       <div class="list-heading"><h2 id="launch-heading">Start from a brief</h2><button id="launch-refresh" class="quiet">Refresh</button></div>
-      <p>Save a preview, then explicitly start one executor in a new worktree. AI cannot start it for you.</p>
+      <p>Preview the brief before starting an executor in a new worktree.</p>
       <form id="launch-form"><label for="launch-project">Project</label><select id="launch-project"></select><label for="launch-target">Execution target</label><select id="launch-target"></select>
         <label for="launch-title">Brief title</label><input id="launch-title" required><label for="launch-text">Exact brief</label><textarea id="launch-text" rows="7" required></textarea><button id="launch-save" type="submit">Save preview</button>
       </form>
@@ -74,13 +75,21 @@
 
     </section>
   </main></div>
-  <dialog id="executor-dialog" class="drawer"><div class="dialog-heading"><h2>Answer the executor</h2><button id="executor-close" class="quiet">Close</button></div>
-    <p id="executor-source" class="muted"></p><p>Send an answer to the original T3 question. Opening it does not answer it.</p>
+  <dialog id="executor-dialog" class="drawer"><div class="dialog-heading"><button id="executor-close" class="quiet">Close</button><span class="section-label">Question</span></div>
+    <p id="executor-source" class="muted"></p>
     <form id="executor-answer-form"><div id="executor-answer-fields"></div><p id="executor-answer-status" role="status"></p>
-      <div class="dialog-actions"><button id="executor-send" type="submit" disabled>Send answer</button><button id="executor-retry" type="button" hidden>Retry exact saved answer</button><button id="executor-check" type="button" class="quiet">Check status</button><button id="executor-discard" type="button" class="quiet" hidden>Clear refused request · keep text</button></div>
+      <div class="dialog-actions"><button id="executor-send" type="submit" disabled>Send</button><button id="executor-retry" type="button" hidden>Retry exact saved answer</button><button id="executor-discard" type="button" class="quiet" hidden>Clear refused request · keep text</button></div>
     </form>
   </dialog>
-  <dialog id="detail" class="drawer"><div class="dialog-heading"><h2>Thought</h2><button id="close-detail" class="quiet" aria-label="Close thought">Close</button></div><p id="detail-status" class="muted"></p><pre id="detail-text"></pre><section id="discussion" hidden><h3>Discuss this thought</h3><p class="muted">Only this original thought and completed exchanges below are sent to AI. AI cannot publish or change files.</p><div id="exchanges"></div><p id="discussion-status" role="status"></p><form id="discussion-form"><label for="question">Your question</label><textarea id="question" rows="3" required></textarea><button id="ask" type="submit">Send to AI</button><button id="forget-question" type="button" class="quiet" hidden>Forget local retry</button></form><h3>Publish a Markdown document</h3><p class="muted">Preview and edit the exact text below. This demo creates a new file in the server's fixture vault; it does not change your original thought.</p><form id="publish-form"><label for="destination">PARA folder</label><select id="destination" required aria-describedby="destination-error publication-help"><option value="">Choose a PARA folder…</option></select><p id="destination-error" class="field-error" hidden></p><label for="filename">New filename or subfolder/name (.md added automatically)</label><input id="filename" required placeholder="tessera/My idea" aria-describedby="filename-error"><p id="filename-error" class="field-error" hidden></p><label for="draft">Document preview / edit</label><textarea id="draft" rows="8" required aria-describedby="draft-error"></textarea><p id="draft-error" class="field-error" hidden></p><p id="publication-help" role="status"></p><button id="publish" type="submit" disabled>Create new Markdown file</button><button id="forget-publication" type="button" class="quiet" hidden>Forget local publication retry</button></form><p id="publication-status" role="status"></p><ul id="publications"></ul></section></dialog>
+  <dialog id="detail" class="drawer chat-detail">
+    <div class="dialog-heading"><button id="close-detail" aria-label="Back to Inbox"></button><span class="section-label">Thought</span><button id="open-publication" class="icon-button" aria-label="Publish to vault" title="Publish to vault">↗</button></div>
+    <div class="thought-conversation"><article class="original-thought"><pre id="detail-text"></pre><p id="detail-status" class="muted"></p></article><div id="exchanges" aria-live="polite"></div></div>
+    <section id="discussion" class="chat-footer" hidden><p id="discussion-status" role="status"></p><form id="discussion-form" class="chat-composer"><textarea id="question" rows="1" aria-label="Ask about this thought" placeholder="Ask about this thought…" required></textarea><button id="ask" type="submit" aria-label="Send message" title="Send message">↑</button></form><button id="forget-question" type="button" class="quiet" hidden>Forget local retry</button></section>
+  </dialog>
+  <dialog id="publication-sheet" class="publication-sheet" aria-labelledby="publication-title">
+    <div class="dialog-heading"><h2 id="publication-title">Publish to vault</h2><button id="close-publication" class="icon-button" aria-label="Close publication">×</button></div>
+    <form id="publish-form" novalidate><label for="destination" class="sr-only">Destination</label><select id="destination" required aria-describedby="destination-error"><option value="">Choose a folder</option></select><p id="destination-error" class="field-error" hidden></p><input id="filename" aria-label="Document name" required placeholder="Document name" aria-describedby="filename-error"><p id="filename-error" class="field-error" hidden></p><textarea id="draft" aria-label="Document preview" rows="8" required aria-describedby="draft-error"></textarea><p id="draft-error" class="field-error" hidden></p><p id="publication-help" role="status"></p><div class="dialog-actions"><button id="publish" type="submit" disabled>Publish</button><button id="forget-publication" type="button" class="quiet" hidden>Start over</button></div></form><p id="publication-status" role="status"></p><ul id="publications"></ul>
+  </dialog>
   <dialog id="overview-detail" class="drawer"><div class="dialog-heading"><button id="overview-close"></button><span class="section-label">Repository activity</span></div><div id="overview-detail-body"></div></dialog>
   <dialog id="signout-dialog"><h2>Keep your unsent thoughts</h2><p>Some thoughts are still on this device. Export a copy before signing out. The local originals will stay here for this account.</p><div class="dialog-actions"><button id="cancel-signout" class="quiet">Stay signed in</button><button id="export-signout">Export and sign out</button></div></dialog>
   <noscript>This Inbox needs JavaScript for passkey sign-in and local offline capture. Tessera Reader remains available separately.</noscript>

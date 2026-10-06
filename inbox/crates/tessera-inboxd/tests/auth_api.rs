@@ -103,6 +103,7 @@ async fn real_webauthn_session_capture_restart_login_and_lost_response_replay() 
         )
         .unwrap();
     let source_question = Question {
+        thread_title: None,
         id: Uuid::new_v4(),
         project_id: source_project,
         source: QuestionSource {

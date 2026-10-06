@@ -43,6 +43,18 @@ export function replyJournal(storage, owner) {
       if (previous && previous !== JSON.stringify(body)) throw new Error('An answer is already saved on this device. Check status before sending another.');
       storage.setItem(prefix + body.question_id, JSON.stringify(body));
     },
-    clear(id) { storage.removeItem(prefix + id); },
+    refuse(id, operationId) { storage.setItem(prefix + 'refused:' + id,operationId); },
+    isRefused(id, operationId) { return storage.getItem(prefix + 'refused:' + id) === operationId; },
+    clear(id) { storage.removeItem(prefix + id); storage.removeItem(prefix + 'refused:' + id); },
   };
+}
+
+// Old bridge observations combined label and description. Keep meaningful detail,
+// but remove a repeated label or a redundant "Choose X" instruction at display time.
+export function optionLabel(label) {
+  const parts = label.split(' — ');
+  if (parts.length !== 2) return label;
+  const normalize = value => value.trim().replace(/[.!]+$/, '').toLocaleLowerCase();
+  const [name, description] = parts;
+  return [normalize(name), `choose ${normalize(name)}`].includes(normalize(description)) ? name : label;
 }

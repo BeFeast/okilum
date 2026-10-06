@@ -57,7 +57,7 @@ export function mountProjects({api,post,owner,online,openQuestion,storage=localS
   if(ls.status==='fulfilled'){
    launches=ls.value;
    $('project-executors').replaceChildren(...[...launches].reverse().map(op=>{
-    const d=el('details','');d.append(el('summary',`${op.brief.title} · ${launchLabel(op)}`),el('p',`Executor: ${op.target.target.model_selection.model} · ${op.target.target.label}`),el('p',`Thread: ${op.thread_id}`));
+    const d=el('details','');d.append(el('summary',`${op.brief.title} · ${launchLabel(op)}`),el('p',`Executor: ${op.target.target.model_selection.model} · ${op.target.target.label}`),Object.assign(el('p','T3 executor'),{title:op.thread_id}));
     if(op.worktree_path)d.append(el('p',`Worktree: ${op.worktree_path}`));
     const result=el('pre',op.state==='completed'?'Result not yet received from T3.':'');d.append(result);
     if(op.state==='completed')d.addEventListener('toggle',()=>{if(!d.open||d.dataset.loaded)return;d.dataset.loaded='1';api(`/launches/${op.request.operation_id}/output`).then(v=>{if(valid(mine,e)&&id===project?.id)result.textContent=v.output?.text??'Result not yet received from T3.';}).catch(()=>{if(valid(mine,e))result.textContent='Source result unavailable.';delete d.dataset.loaded;});});
@@ -79,7 +79,7 @@ export function mountProjects({api,post,owner,online,openQuestion,storage=localS
   else $('project-repo-status').textContent=fs.status==='fulfilled'?'Forgejo is not connected.':'Forgejo unavailable; previous observations may be stale.';
   renderPendingResult();
  }
- function resultCard(row){const r=row.report,d=el('article','');d.className='project-result';d.append(el('strong',`${r.platform} / ${r.channel} · ${r.version} · ${r.publication}`),el('p',`Reported by you · ${new Date(row.recorded_at*1000).toLocaleString()}`),el('p',r.what_to_check));const a=el('a','Open result / source');const url=safeResultURL(r.url);if(url){a.href=url;a.target='_blank';a.rel='noopener noreferrer';}const source=el('details','');source.append(el('summary','Execution details'),el('p',`Commit: ${r.commit}`),el('p',`Run: ${r.run_id}`));d.append(a,source);return d;}
+ function resultCard(row){const r=row.report,d=el('article','');d.className='project-result';d.append(el('strong',`${r.platform} / ${r.channel} · ${r.version} · ${r.publication}`),el('p',`Reported by you · ${new Date(row.recorded_at*1000).toLocaleString()}`),el('p',r.what_to_check));const a=el('a','Open result / source');const url=safeResultURL(r.url);if(url){a.href=url;a.target='_blank';a.rel='noopener noreferrer';}const source=el('details','');source.append(el('summary','Execution details'),el('p',`Commit: ${r.commit}`),Object.assign(el('p','Executor run'),{title:r.run_id}));d.append(a,source);return d;}
  const resultFields=['launch','commit','platform','channel','version','publication','url','qa'];
  function renderPendingResult(){const pending=journal('result').get();for(const field of resultFields)$('result-'+field).disabled=Boolean(pending);if(pending){for(const field of resultFields)$('result-'+field).value=pending[field==='launch'?'launch_id':field==='qa'?'what_to_check':field];}$('result-save').textContent=pending?'Retry exact saved report':'Record result';$('result-clear').hidden=!pending;}
  async function saveStatus(event){event.preventDefault();if(writing||busy||!project||!online())return;const mine=who,e=epoch;writing=true;$('project-select').disabled=true;const j=journal('status');

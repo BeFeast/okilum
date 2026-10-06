@@ -73,7 +73,7 @@ export function mountLaunches({api,post,owner,online,storage=localStorage}) {
       if(data.next_cursor<=after||page===99)throw new Error('Launch history is incomplete.');after=data.next_cursor;
     }
     $('launch-list').replaceChildren(...all.reverse().map(op=>{
-      const li=el('li');li.append(el('strong',op.brief.title),el('p',launchLabel(op)),el('p',`T3 thread: ${op.thread_id}`));
+      const li=el('li');li.append(el('strong',op.brief.title),el('p',launchLabel(op)),Object.assign(el('p','T3 executor'),{title:op.thread_id}));
       if(op.worktree_path)li.append(el('p',`Worktree: ${op.worktree_path}`));return li;
     }));
   }
