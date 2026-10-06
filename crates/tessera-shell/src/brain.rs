@@ -588,6 +588,7 @@ pub struct BrainView {
     source_loading: bool,
     preview: Value,
     preview_images: BTreeMap<String, Arc<Image>>,
+    attachment_preview: Option<(String, Arc<Image>)>,
     preview_generation: u64,
     preview_loading: bool,
     preview_error: Option<String>,
@@ -757,6 +758,7 @@ impl BrainView {
             source_loading: false,
             preview: Value::Null,
             preview_images: BTreeMap::new(),
+            attachment_preview: None,
             preview_generation: 0,
             preview_loading: false,
             preview_error: None,
@@ -1954,6 +1956,7 @@ impl BrainView {
         cx.notify();
     }
     fn preview_link(&mut self, url: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.attachment_preview = None;
         if self.preview_loading {
             return;
         }
@@ -2011,6 +2014,9 @@ impl BrainView {
         }
         let link = matching.into_iter().next();
         match link.as_ref().and_then(|link| link["status"].as_str()) {
+            Some("attachment") => {
+                self.open_preview_attachment(link.as_ref().unwrap(), cx);
+            }
             Some("resolved" | "resolved_heading") => {
                 let candidates = array(&link.as_ref().unwrap()["candidates"]);
                 if candidates.len() == 1 {
@@ -2040,6 +2046,28 @@ impl BrainView {
                         .into(),
                 )
             }
+        }
+        cx.notify();
+    }
+    fn open_preview_attachment(&mut self, row: &Value, cx: &mut Context<Self>) {
+        self.attachment_preview = None;
+        let asset_url = text(&row["asset_url"]);
+        let revision = text(&row["asset_revision"]);
+        let image = self.preview_images.get(&asset_url).cloned();
+        if self.preview["attachment_links_version"] != 1
+            || revision
+                .strip_prefix("sha256:")
+                .is_none_or(|hash| asset_url != format!("tessera-asset://{hash}"))
+        {
+            self.error =
+                Some("This image preview is unavailable. Refresh the note to try again.".into());
+        } else if let Some(image) = image {
+            let title = row["candidates"][0]["title"].as_str().unwrap_or("Image");
+            self.attachment_preview = Some((title.to_owned(), image));
+            self.error = None;
+        } else {
+            self.error =
+                Some("This image preview is unavailable. Refresh the note to try again.".into());
         }
         cx.notify();
     }
@@ -3314,7 +3342,30 @@ impl BrainView {
                     .child("Choose a destination for this ambiguous note link."),
             );
         }
-        preview_panel = preview_panel.child(preview);
+        if let Some((title, image)) = &self.attachment_preview {
+            preview_panel = preview_panel.child(
+                v_flex()
+                    .gap_3()
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Button::new("preview-image-back")
+                                    .ghost()
+                                    .icon(gpui_component::IconName::ArrowLeft)
+                                    .tooltip("Back to note")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.attachment_preview = None;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(div().text_sm().child(title.clone())),
+                    )
+                    .child(img(image.clone()).w_full().object_fit(ObjectFit::Contain)),
+            );
+        } else {
+            preview_panel = preview_panel.child(preview);
+        }
         let editor = v_flex()
             .when_some(open_link_panel, |panel, chooser| panel.child(chooser))
             .when(self.source.managed().is_some(), |panel| {

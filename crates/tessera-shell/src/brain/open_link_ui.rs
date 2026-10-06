@@ -49,7 +49,17 @@ fn link_target(link: &NoteLink) -> Result<(String, Option<String>), &'static str
             heading,
         )),
         tessera_core::document_links::Destination::External(_) => Ok((link.target.clone(), None)),
-        tessera_core::document_links::Destination::Unsupported(reason) => Err(reason),
+        tessera_core::document_links::Destination::Unsupported(reason) => {
+            let path = tessera_core::document_links::decode(
+                link.target.split('#').next().unwrap_or_default(),
+            );
+            let image = tessera_core::document_links::image_media_type(&path).is_some();
+            if image {
+                Ok((link.target.clone(), None))
+            } else {
+                Err(reason)
+            }
+        }
     }
 }
 
@@ -121,6 +131,7 @@ impl BrainView {
         self.open_link.generation = self.open_link.generation.wrapping_add(1);
     }
     pub(super) fn clear_open_link_preview(&mut self) {
+        self.attachment_preview = None;
         self.open_link.epoch = self.open_link.epoch.wrapping_add(1);
         self.open_link.proof = None;
         self.open_link.chooser = None;
@@ -181,6 +192,7 @@ impl BrainView {
         Ok(())
     }
     pub(super) fn open_link_at_caret(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.attachment_preview = None;
         self.open_link.chooser = None;
         self.open_link.generation = self.open_link.generation.wrapping_add(1);
         let result = (|| {
@@ -219,6 +231,8 @@ impl BrainView {
             .any(|c| c["path"].as_str().is_none_or(str::is_empty))
         {
             self.error = Some("The linked-note candidates are incomplete.".into());
+        } else if row["status"] == "attachment" {
+            self.open_preview_attachment(&row, cx);
         } else if row["status"] == "external" {
             if let Some(url) = row["url"]
                 .as_str()
@@ -408,6 +422,51 @@ mod tests {
             std::fs::remove_dir_all(directory).unwrap();
         }
     }
+    #[gpui::test]
+    fn managed_image_links_open_supplied_bytes_and_refuse_stale_preview(cx: &mut TestAppContext) {
+        let (view, visual, directory) = setup(cx);
+        let raw = "# Source\n\n[Picture](./image.png)\n";
+        view.update_in(visual, |v, window, cx| {
+            let source = json!({"schema":SCHEMA,"brain_id":v.source_snapshot.as_ref().unwrap()["brain_id"],
+                "path":"notes/a.md","revision":note_link::digest(raw.as_bytes()),
+                "content_base64":STANDARD.encode(raw),"media_type":"text/markdown"});
+            v.load_source(source, window, cx);
+            v.source_projection.live = true;
+            v.schedule_source_projection(window, cx);
+            v.source.managed().unwrap().update(cx, |state, cx| state.set_selected_range(15..15, cx));
+        });
+        visual.run_until_parked();
+        view.update_in(visual, |v, window, cx| {
+            ready(v, cx);
+            let bytes = STANDARD.decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==").unwrap();
+            let revision = note_link::digest(&bytes);
+            let url = format!("tessera-asset://{}", revision.strip_prefix("sha256:").unwrap());
+            let image = Arc::new(Image::from_bytes(ImageFormat::Png, bytes.clone()));
+            v.preview_images.insert(url.clone(), image);
+            let link_url = "tessera://attachment/notes/image.png";
+            let row = json!({"authored_target":"./image.png","wiki":false,"url":link_url,"status":"attachment",
+                "candidates":[{"path":"notes/image.png","title":"Picture"}],"asset_url":url,"asset_revision":revision});
+            v.preview["attachment_links_version"] = json!(1);
+            v.preview["links"] = json!([row]);
+            let source_before = v.source.value(cx);
+            v.preview_link(link_url, window, cx);
+            assert_eq!(v.attachment_preview.as_ref().unwrap().1.bytes, bytes);
+            assert_eq!(v.attachment_preview.as_ref().unwrap().0, "Picture");
+            v.attachment_preview = None;
+            v.open_link_at_caret(window, cx);
+            assert!(v.attachment_preview.is_some(), "Source/Live Preview explicit action uses the same bytes");
+            assert_eq!(v.source.value(cx), source_before);
+            v.attachment_preview = None;
+            v.preview["revision"] = json!("stale");
+            v.preview_link(link_url, window, cx);
+            assert!(v.attachment_preview.is_none());
+            assert!(v.error.as_ref().unwrap().contains("stale"));
+            v.clear_open_link_preview();
+            assert!(v.attachment_preview.is_none());
+        });
+        cleanup(directory);
+    }
+
     #[test]
     fn open_link_half_open_selection_and_preview_metadata_are_exact() {
         let link = NoteLink {

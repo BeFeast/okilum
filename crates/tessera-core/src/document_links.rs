@@ -65,6 +65,24 @@ pub fn encode(value: &str) -> String {
     out
 }
 
+/// Image types supported by Reader and managed opaque-byte preview.
+pub fn image_media_type(path: &str) -> Option<&'static str> {
+    match std::path::Path::new(path)
+        .extension()?
+        .to_str()?
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "svg" => Some("image/svg+xml"),
+        "bmp" => Some("image/bmp"),
+        _ => None,
+    }
+}
+
 /// Protocols the desktop Reader can hand to the system URL handler.
 pub fn is_external_url(target: &str) -> bool {
     target.split_once(':').is_some_and(|(scheme, _)| {
@@ -260,7 +278,7 @@ fn attachment(target: &str, wiki: bool, vault: &Vault, from: &str) -> Option<Res
     if ext.eq_ignore_ascii_case("md") {
         return None;
     }
-    if !vault.inventory_complete || vault.graph_root.is_some() {
+    if (!vault.inventory_complete && !vault.single_file) || vault.graph_root.is_some() {
         return Some(ResolvedLink {
             url: format!("{}{}", render::UNRESOLVED_SCHEME, encode(target)),
             status: "unresolved",
@@ -286,8 +304,13 @@ fn attachment(target: &str, wiki: bool, vault: &Vault, from: &str) -> Option<Res
     };
     let mut existing = false;
     for candidate in lookups {
+        // Only lexical absence permits redirecting to a root/suffix namesake.
+        // Dangling symlinks, denied paths and non-directory ancestors count as occupied.
+        match std::fs::symlink_metadata(&candidate) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            _ => existing = true,
+        }
         if let Ok(candidate) = candidate.canonicalize() {
-            existing = true;
             if candidate.is_file() && candidate.starts_with(&root) {
                 candidates.push(
                     candidate
@@ -297,9 +320,8 @@ fn attachment(target: &str, wiki: bool, vault: &Vault, from: &str) -> Option<Res
                         .replace(std::path::MAIN_SEPARATOR, "/"),
                 );
             }
-            // An existing invalid target must not redirect to a different file.
-            break;
         }
+        break;
     }
     if !existing && candidates.is_empty() && !explicit_relative && !path.starts_with('/') {
         candidates = vault

@@ -540,3 +540,113 @@ fn prepared_heading_respects_actual_managed_navigation_limits() {
         "supported link formatting remains supported"
     );
 }
+
+#[test]
+fn adjacent_image_links_and_embeds_share_exact_bytes_and_relative_identity() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("brain");
+    let runner = fixture(&root, &temp.path().join("runtime"));
+    let source = concat!(
+        "# Attachments\n\n",
+        "[Sibling](image.png) ![Sibling](image.png)\n\n",
+        "[Parent](../image.png) ![Parent](../image.png)\n\n",
+        "[Unicode](<Схема%20%2520.svg>) ![Unicode](<Схема%20%2520.svg>)\n\n",
+        "[Root compatibility](attachments/root.png) ![Root compatibility](attachments/root.png)\n\n",
+        "[Repeat](image.png)\n\n",
+        "[Missing](./missing.png) [Unsupported](../book.pdf)\n\n",
+        "[Reference][picture] ![Reference][picture]\n\n[picture]: ./image.png\n",
+    );
+    fs::write(root.join("notes/current.md"), source).unwrap();
+    for (path, bytes) in [
+        ("image.png", b"root bytes".as_slice()),
+        ("notes/image.png", b"sibling bytes".as_slice()),
+        ("notes/Схема %20.svg", b"<svg>unicode</svg>".as_slice()),
+        ("attachments/root.png", b"compatible root bytes".as_slice()),
+        ("book.pdf", b"%PDF fixture".as_slice()),
+    ] {
+        fs::write(root.join(path), bytes).unwrap();
+    }
+    let preview = source_preview(&runner, "notes/current.md", None).unwrap();
+    assert_eq!(preview["attachment_links_version"], 1);
+    let vault = Vault::scan_metadata(&root).unwrap();
+    for (authored, path) in [
+        ("image.png", "notes/image.png"),
+        ("../image.png", "image.png"),
+        ("Схема%20%2520.svg", "notes/Схема %20.svg"),
+        ("attachments/root.png", "attachments/root.png"),
+        ("./image.png", "notes/image.png"),
+    ] {
+        let row = preview["links"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["authored_target"] == authored)
+            .unwrap();
+        assert_eq!(row["status"], "attachment", "{authored}");
+        assert_eq!(row["candidates"][0]["path"], path);
+        assert_eq!(
+            tessera_core::document_links::resolve(authored, false, &vault, "notes/current.md")
+                .candidates,
+            [path]
+        );
+        let url = row["asset_url"].as_str().unwrap();
+        assert!(
+            preview["markdown"].as_str().unwrap().contains(url),
+            "embed must share bytes"
+        );
+        let asset = preview["assets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|asset| asset["url"] == url)
+            .unwrap();
+        assert_eq!(
+            STANDARD
+                .decode(asset["content_base64"].as_str().unwrap())
+                .unwrap(),
+            fs::read(root.join(path)).unwrap()
+        );
+        assert_eq!(row["prepared"]["target_revision"], row["asset_revision"]);
+    }
+    assert_eq!(preview["assets"].as_array().unwrap().len(), 4);
+    assert_eq!(candidate(&preview, "../book.pdf")["status"], "unsupported");
+    assert_eq!(candidate(&preview, "./missing.png")["status"], "unresolved");
+    assert_eq!(
+        fs::read_to_string(root.join("notes/current.md")).unwrap(),
+        source
+    );
+}
+
+#[test]
+fn invalid_adjacent_image_never_redirects_and_ambiguous_images_explain_scope() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("brain");
+    let runner = fixture(&root, &temp.path().join("runtime"));
+    fs::create_dir(root.join("a")).unwrap();
+    fs::create_dir(root.join("b")).unwrap();
+    fs::write(root.join("a/shared.png"), "a").unwrap();
+    fs::write(root.join("b/shared.png"), "b").unwrap();
+    fs::write(root.join("blocked.png"), "root must not win").unwrap();
+    fs::create_dir(root.join("notes/blocked.png")).unwrap();
+    fs::write(
+        root.join("notes/current.md"),
+        "[Blocked](blocked.png) ![](blocked.png)\n\n[Ambiguous](shared.png) ![](shared.png)",
+    )
+    .unwrap();
+    let preview = source_preview(&runner, "notes/current.md", None).unwrap();
+    assert!(preview["assets"].as_array().unwrap().is_empty());
+    assert_eq!(candidate(&preview, "blocked.png")["status"], "unresolved");
+    assert_eq!(candidate(&preview, "shared.png")["status"], "unsupported");
+    assert!(candidate(&preview, "shared.png")["reason"]
+        .as_str()
+        .unwrap()
+        .contains("Several images"));
+    #[cfg(unix)]
+    {
+        fs::remove_dir(root.join("notes/blocked.png")).unwrap();
+        std::os::unix::fs::symlink("missing.png", root.join("notes/blocked.png")).unwrap();
+        let preview = source_preview(&runner, "notes/current.md", None).unwrap();
+        assert_eq!(candidate(&preview, "blocked.png")["status"], "unresolved");
+        assert!(preview["assets"].as_array().unwrap().is_empty());
+    }
+}
