@@ -46,8 +46,12 @@ override is honored. Watcher bulk rebuilds retain the same index path.
 Default caches retain three recently opened vaults (#513). Open Readers and their
 workers hold shared cache leases across processes; if more than three vaults are
 active, their caches remain until a later open can prune them. Eviction runs on
-the background worker after first-document publication and skips symlink and
-unrelated directories. Older caches join retention when next opened. Durable history and recovery drafts are outside retention.
+the background worker after Ready is sent; source refreshes do not run eviction.
+Symlinks and unrelated directories are skipped. Only accepted opens update
+`.usage/<hash>.opened` publication markers; older caches without markers are not
+counted or evicted until next opened. Interrupted `.evicted-*` cleanup is retried
+independently; an antivirus cleanup hold is logged and cannot stop other retention.
+Durable history and recovery drafts are outside retention.
 Explicit `--index-dir` remains an exact override and is excluded from managed LRU.
 The published vault owns its cache path immediately, so Retry/Rescan during
 background preparation cannot write into the previous vault's cache. Returning

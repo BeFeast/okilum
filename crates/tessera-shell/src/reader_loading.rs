@@ -189,7 +189,7 @@ fn prepare_first_with_last_document(
     if let Some(trace) = &opts.diagnostics {
         validated_opts.diagnostics = Some(trace.for_root(intent.root.clone()));
     }
-    if validated_opts.index_dir.is_none() && validated_opts.cache_lease.is_none() {
+    if validated_opts.index_dir.is_none() {
         validated_opts.cache_lease = acquire_cache_lease(&intent.root, opts);
     }
     let opts = &validated_opts;
@@ -331,7 +331,7 @@ fn acquire_cache_lease(root: &Path, opts: &Opts) -> Option<Arc<reader_cache::Lea
         reader_cache::Lease::acquire(path, root).map(Arc::new)
     });
     if let Some(trace) = &opts.diagnostics {
-        trace.event(
+        trace.for_root(root.to_owned()).event(
             "vault_cache_lease",
             serde_json::json!({
                 "acquired":result.is_ok(), "error":result.as_ref().err().map(|e| format!("{e:#}")),
@@ -1532,23 +1532,15 @@ impl Reader {
                             .recv()
                             .await
                             .map_err(|_| anyhow::anyhow!("Reader closed before publication"))?;
+                        if let Some(lease) = &opts.cache_lease {
+                            let result = lease.mark_published();
+                            if let Some(trace) = &opts.diagnostics {
+                                trace.event("vault_cache_published", serde_json::json!({"saved":result.is_ok(), "error":result.as_ref().err().map(|e| format!("{e:#}"))}));
+                            }
+                        }
                         (root, previous)
                     };
                     cancel.check()?;
-                    if let Some(lease) = &opts.cache_lease {
-                        let started = std::time::Instant::now();
-                        let result = lease.prune();
-                        if let Some(trace) = &opts.diagnostics {
-                            trace.event(
-                                "cache_retention",
-                                serde_json::json!({
-                                    "duration_ms":started.elapsed().as_secs_f64()*1000.,
-                                    "evicted":result.as_ref().ok().map(Vec::len),
-                                    "error":result.as_ref().err().map(|e| format!("{e:#}")),
-                                }),
-                            );
-                        }
-                    }
                     if prepare_preferences {
                         // First usable publication never waits for preference I/O.
                         // This is the existing worker, not a second scan/job.
@@ -1604,6 +1596,23 @@ impl Reader {
                     }
                     send.send_blocking(ready)
                         .map_err(|_| anyhow::anyhow!("Reader closed"))?;
+                    if !refresh_worker {
+                        if let Some(lease) = &opts.cache_lease {
+                            let started = std::time::Instant::now();
+                            let result = lease.prune();
+                            if let Some(trace) = &opts.diagnostics {
+                                trace.event(
+                                    "cache_retention",
+                                    serde_json::json!({
+                                        "duration_ms":started.elapsed().as_secs_f64()*1000.,
+                                        "evicted":result.as_ref().ok().map(|report| report.removed.len()),
+                                        "cleanup_errors":result.as_ref().ok().map(|report| &report.cleanup_errors),
+                                        "error":result.as_ref().err().map(|e| format!("{e:#}")),
+                                    }),
+                                );
+                            }
+                        }
+                    }
                     Ok::<_, anyhow::Error>(())
                 }
                 .await;
@@ -1929,6 +1938,13 @@ mod tests {
         });
         let reader = reader.unwrap();
         visual.run_until_parked();
+        let old_lease = reader.read_with(visual, |v, _| {
+            Arc::downgrade(v.cache_lease.as_ref().unwrap())
+        });
+        assert!(
+            old_lease.upgrade().is_some(),
+            "positive control: published old-root lease"
+        );
         let old_cache = reader.read_with(visual, |v, _| v.index_dir.clone().unwrap());
         let (release, hold) = async_channel::bounded(1);
         let mut opts = opts_for(&b);
@@ -1939,6 +1955,13 @@ mod tests {
         reader.read_with(visual, |v, _| {
             assert!(v.document_ready() && v.loading.as_ref().unwrap().active);
             assert_eq!(v.vault_root, b);
+            let lease = v.cache_lease.as_ref().unwrap();
+            assert_eq!(lease.root, b);
+            assert_eq!(lease.path, new_cache);
+            assert!(
+                old_lease.upgrade().is_none(),
+                "new publication releases predecessor lease"
+            );
             assert_ne!(
                 old_cache, new_cache,
                 "positive control: vault-scoped cache paths"
@@ -1951,6 +1974,61 @@ mod tests {
         });
         release.try_send(()).unwrap();
         visual.run_until_parked();
+        let published_lease = reader.read_with(visual, |v, _| {
+            Arc::downgrade(v.cache_lease.as_ref().unwrap())
+        });
+        let empty = temp.path().join("empty");
+        std::fs::create_dir(&empty).unwrap();
+        let empty = empty.canonicalize().unwrap();
+        let opts = opts_for(&empty);
+        let unused_cache = reader_open::cache_path_for(&empty, &opts).unwrap();
+        reader.update_in(visual, |v, window, cx| v.start_loading(opts, window, cx));
+        visual.run_until_parked();
+        reader.read_with(visual, |v, _| {
+            assert_eq!(v.vault_root, b);
+            assert_eq!(v.index_dir.as_ref(), Some(&new_cache));
+            assert!(published_lease.upgrade().is_some());
+            assert!(v.loading.as_ref().unwrap().opts.cache_lease.is_none());
+        });
+        assert!(
+            !unused_cache.exists(),
+            "failed candidate creates no empty recent cache"
+        );
+    }
+
+    #[test]
+    fn exact_file_open_replaces_a_foreign_candidate_lease() {
+        let temp = TestDirectory::new();
+        let a = temp.path().join("a");
+        let b = temp.path().join("b");
+        for root in [&a, &b] {
+            std::fs::create_dir(root).unwrap();
+            std::fs::write(root.join("start.md"), "# Start").unwrap();
+        }
+        let a = a.canonicalize().unwrap();
+        let b = b.canonicalize().unwrap();
+        let mut opts = Opts {
+            open_path: Some(b.join("start.md")),
+            cache_base_override: Some(temp.path().join("os-cache")),
+            ..Default::default()
+        };
+        let old_path = reader_open::cache_path_for(&a, &opts).unwrap();
+        opts.cache_lease = Some(Arc::new(
+            reader_cache::Lease::acquire(old_path.clone(), &a).unwrap(),
+        ));
+        let Event::First {
+            intent,
+            cache_lease,
+            ..
+        } = prepare_first_with_last_document(&opts, &Cancellation::default(), |_| Ok(None))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let lease = cache_lease.unwrap();
+        assert_eq!(intent.root, b);
+        assert_eq!(lease.root, b);
+        assert_ne!(lease.path, old_path);
     }
 
     #[gpui::test]

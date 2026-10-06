@@ -10,6 +10,12 @@ use anyhow::{ensure, Context as _, Result};
 
 const RETAINED_VAULTS: usize = 3;
 
+#[derive(Debug, Default)]
+pub(crate) struct PruneReport {
+    pub removed: Vec<PathBuf>,
+    pub cleanup_errors: Vec<String>,
+}
+
 #[derive(Debug)]
 pub(crate) struct Lease {
     pub root: PathBuf,
@@ -51,8 +57,6 @@ impl Lease {
         // Eviction holds this exclusive lock only while renaming the directory,
         // never during recursive cleanup. Multiple readers share a vault lease.
         lock.lock_shared()?;
-        lock.set_modified(SystemTime::now())?;
-        fs::create_dir_all(&path)?;
         Ok(Self {
             root: root.to_owned(),
             path,
@@ -60,16 +64,34 @@ impl Lease {
         })
     }
 
-    /// Called after first-document publication on the background worker.
-    pub fn prune(&self) -> Result<Vec<PathBuf>> {
+    /// Candidate acquisition pins existing files but does not count a failed
+    /// or cancelled open as recent. Only the accepted document marks usage.
+    pub fn mark_published(&self) -> Result<()> {
+        fs::create_dir_all(&self.path)?;
+        let parent = self.path.parent().context("Reader cache has no parent")?;
+        let name = cache_name(&self.path).unwrap();
+        usage_file(parent, &format!("{name}.opened"))?.set_modified(SystemTime::now())?;
+        Ok(())
+    }
+
+    /// Called after Ready publication, never in a source refresh.
+    pub fn prune(&self) -> Result<PruneReport> {
+        self.prune_with_cleanup(&mut |path| fs::remove_dir_all(path))
+    }
+
+    fn prune_with_cleanup(
+        &self,
+        cleanup: &mut impl FnMut(&Path) -> std::io::Result<()>,
+    ) -> Result<PruneReport> {
         let parent = self.path.parent().context("Reader cache has no parent")?;
         // Two collectors must not both subtract the same oldest cache from
         // stale counts and evict more than needed. Acquisition uses per-vault
         // locks, so this background-only gate never stalls an opening Reader.
         let maintenance = usage_file(parent, "retention")?;
         if maintenance.try_lock().is_err() {
-            return Ok(Vec::new());
+            return Ok(PruneReport::default());
         }
+        let mut report = PruneReport::default();
         let mut candidates = Vec::new();
         for entry in fs::read_dir(parent)? {
             let entry = entry?;
@@ -82,7 +104,12 @@ impl Lease {
                     .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
             {
                 // Finish a cleanup interrupted after its atomic retirement.
-                fs::remove_dir_all(&path)?;
+                if let Err(error) = cleanup(&path) {
+                    report.cleanup_errors.push(format!(
+                        "Remove retired cache {}: {error}",
+                        tessera_core::vault::display_path(&path)
+                    ));
+                }
                 continue;
             }
             let Some(name) = cache_name(&path) else {
@@ -91,7 +118,7 @@ impl Lease {
             if !entry.file_type()?.is_dir() {
                 continue;
             }
-            let usage = parent.join(".usage").join(name);
+            let usage = parent.join(".usage").join(format!("{name}.opened"));
             let age = match fs::symlink_metadata(&usage) {
                 Ok(meta) if meta.is_file() => meta.modified()?,
                 Ok(_) => continue,
@@ -103,7 +130,6 @@ impl Lease {
         }
         candidates.sort();
         let mut retained = candidates.len();
-        let mut removed = Vec::new();
         for (age, path) in candidates {
             if retained <= RETAINED_VAULTS {
                 break;
@@ -120,7 +146,9 @@ impl Lease {
             }
             // A vault reopened after enumeration must not be evicted using its
             // old age, even if its last Reader has already closed again.
-            let current = lock.metadata()?.modified()?;
+            let current =
+                fs::symlink_metadata(parent.join(".usage").join(format!("{name}.opened")))?
+                    .modified()?;
             if current > age {
                 continue;
             }
@@ -133,11 +161,16 @@ impl Lease {
             }
             drop(lock);
             // Canonical/durable files are never under this managed namespace.
-            fs::remove_dir_all(&discarded)?;
+            if let Err(error) = cleanup(&discarded) {
+                report.cleanup_errors.push(format!(
+                    "Remove retired cache {}: {error}",
+                    tessera_core::vault::display_path(&discarded)
+                ));
+            }
             retained -= 1;
-            removed.push(path);
+            report.removed.push(path);
         }
-        Ok(removed)
+        Ok(report)
     }
 }
 
@@ -148,7 +181,10 @@ mod tests {
     fn lease(base: &Path, number: usize) -> Lease {
         let root = base.join(format!("vault-{number}"));
         fs::create_dir_all(&root).unwrap();
-        Lease::acquire(base.join("reader").join(format!("{number:064x}")), &root).unwrap()
+        let lease =
+            Lease::acquire(base.join("reader").join(format!("{number:064x}")), &root).unwrap();
+        lease.mark_published().unwrap();
+        lease
     }
 
     #[test]
@@ -159,7 +195,7 @@ mod tests {
         let also_first = lease(base, 1);
         for n in 2..=4 {
             let entry = lease(base, n);
-            let usage = base.join("reader/.usage").join(format!("{n:064x}"));
+            let usage = base.join("reader/.usage").join(format!("{n:064x}.opened"));
             fs::OpenOptions::new()
                 .write(true)
                 .open(usage)
@@ -169,9 +205,12 @@ mod tests {
             fs::write(entry.path.join("reader-startup.json"), "derived cache").unwrap();
         }
         // Make the pinned vault the oldest: protection must come from the lock.
-        first._lock.set_modified(SystemTime::UNIX_EPOCH).unwrap();
+        usage_file(first.path.parent().unwrap(), &format!("{:064x}.opened", 1))
+            .unwrap()
+            .set_modified(SystemTime::UNIX_EPOCH)
+            .unwrap();
         let latest = lease(base, 4);
-        let removed = latest.prune().unwrap();
+        let removed = latest.prune().unwrap().removed;
         assert_eq!(removed, [base.join("reader").join(format!("{:064x}", 2))]);
         assert!(first.path.exists() && latest.path.exists());
         drop(first);
@@ -183,6 +222,7 @@ mod tests {
         assert!(fifth
             .prune()
             .unwrap()
+            .removed
             .iter()
             .all(|path| path != &also_first.path));
         drop(also_first);
@@ -190,11 +230,79 @@ mod tests {
         assert!(sixth
             .prune()
             .unwrap()
+            .removed
             .iter()
             .any(|path| path == &base.join("reader").join(format!("{:064x}", 1))));
         assert!(
             base.join("vault-1").exists(),
             "canonical vault never removed"
+        );
+    }
+
+    #[test]
+    fn failed_retired_cleanup_does_not_stop_eviction_or_retry() {
+        let temp = tempfile::tempdir().unwrap();
+        for n in 1..=4 {
+            drop(lease(temp.path(), n));
+        }
+        let latest = lease(temp.path(), 4);
+        let retired = latest
+            .path
+            .parent()
+            .unwrap()
+            .join(format!(".evicted-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&retired).unwrap();
+        let report = latest
+            .prune_with_cleanup(&mut |_| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "antivirus cleanup hold",
+                ))
+            })
+            .unwrap();
+        assert_eq!(
+            report.removed.len(),
+            1,
+            "successful retirement still reduces active caches to three"
+        );
+        assert_eq!(
+            report.cleanup_errors.len(),
+            2,
+            "both sweep and newly retired cleanup failures recorded"
+        );
+        assert!(latest.path.exists() && retired.exists());
+        let report = latest.prune().unwrap();
+        assert!(report.cleanup_errors.is_empty() && report.removed.is_empty());
+        assert!(
+            !retired.exists(),
+            "retry completes cleanup without evicting more caches"
+        );
+    }
+
+    #[test]
+    fn candidate_acquisition_does_not_replace_a_recent_published_vault() {
+        let temp = tempfile::tempdir().unwrap();
+        for n in 1..=3 {
+            drop(lease(temp.path(), n));
+        }
+        let root = temp.path().join("candidate");
+        fs::create_dir(&root).unwrap();
+        let candidate = Lease::acquire(
+            temp.path().join("reader").join(format!("{:064x}", 4)),
+            &root,
+        )
+        .unwrap();
+        assert!(
+            !candidate.path.exists(),
+            "pinning an unaccepted open creates no cache directory"
+        );
+        let current = lease(temp.path(), 3);
+        assert!(current.prune().unwrap().removed.is_empty());
+        candidate.mark_published().unwrap();
+        assert_eq!(
+            candidate.prune().unwrap().removed.len(),
+            1,
+            "positive control: accepted fourth vault enters retention"
         );
     }
 
@@ -208,7 +316,7 @@ mod tests {
         fs::write(retired.join("reader-snapshot.json"), "derived old bank").unwrap();
         let unrelated = parent.join(".evicted-unrelated");
         fs::create_dir(&unrelated).unwrap();
-        assert!(latest.prune().unwrap().is_empty());
+        assert!(latest.prune().unwrap().removed.is_empty());
         assert!(!retired.exists() && unrelated.exists() && latest.path.exists());
     }
 
@@ -221,10 +329,10 @@ mod tests {
         let latest = lease(temp.path(), 4);
         let maintenance = usage_file(latest.path.parent().unwrap(), "retention").unwrap();
         maintenance.try_lock().unwrap();
-        assert!(latest.prune().unwrap().is_empty());
+        assert!(latest.prune().unwrap().removed.is_empty());
         drop(maintenance);
         assert_eq!(
-            latest.prune().unwrap().len(),
+            latest.prune().unwrap().removed.len(),
             1,
             "positive control: idle collector prunes exactly one of four caches"
         );
@@ -236,8 +344,8 @@ mod tests {
         let base = temp.path();
         for n in 1..=3 {
             let entry = lease(base, n);
-            entry
-                ._lock
+            usage_file(entry.path.parent().unwrap(), &format!("{n:064x}.opened"))
+                .unwrap()
                 .set_modified(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(n as u64))
                 .unwrap();
         }
@@ -261,7 +369,7 @@ mod tests {
         }
         let newest = lease(base, 4);
         assert_eq!(
-            newest.prune().unwrap(),
+            newest.prune().unwrap().removed,
             [base.join("reader").join(format!("{:064x}", 2))]
         );
         assert!(
