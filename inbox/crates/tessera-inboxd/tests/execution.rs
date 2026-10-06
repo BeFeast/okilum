@@ -153,7 +153,7 @@ fn schema_five_upgrade_preserves_capture_and_operation() {
     let original = store.capture(who, &request, 1).unwrap();
     drop(store);
     let db = rusqlite::Connection::open(&path).unwrap();
-    db.execute_batch("DROP TABLE IF EXISTS execution_outputs; DROP TABLE IF EXISTS execution_results; DROP TABLE IF EXISTS execution_launches; DROP TABLE execution_replies; DROP TABLE execution_questions; DROP TABLE execution_mutations; DROP TABLE execution_briefs; DROP TABLE execution_projects; DROP TABLE auth_passkeys; PRAGMA user_version=5;").unwrap();
+    db.execute_batch("DROP TABLE IF EXISTS execution_outputs; DROP TABLE IF EXISTS execution_results; DROP TABLE IF EXISTS execution_launches; DROP TABLE execution_replies; DROP TABLE execution_questions; DROP TABLE execution_mutations; DROP TABLE execution_briefs; DROP TABLE execution_projects; DROP TABLE auth_passkeys; DROP TABLE sync_scopes; DROP TABLE sync_requests; DROP TABLE sync_grants; PRAGMA user_version=5;").unwrap();
     drop(db);
     let mut store = Store::open(&path).unwrap();
     assert_eq!(store.capture(who, &request, 999).unwrap(), original);

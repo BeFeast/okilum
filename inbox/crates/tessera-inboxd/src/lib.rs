@@ -47,3 +47,8 @@ pub mod vault {
 pub mod forgejo;
 
 pub mod results;
+
+pub mod sync;
+mod sync_http;
+#[cfg(unix)]
+pub mod sync_hub;

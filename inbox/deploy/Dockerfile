@@ -2,6 +2,7 @@ FROM rust:1.96.1-slim-bookworm AS build
 RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev
 WORKDIR /source
 COPY inbox inbox
+COPY crates/tessera-sync crates/tessera-sync
 COPY web/inbox web/inbox
 ENV CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 CARGO_PROFILE_RELEASE_DEBUG=0
 RUN cargo build --manifest-path inbox/Cargo.toml --locked --release -p tessera-inboxd

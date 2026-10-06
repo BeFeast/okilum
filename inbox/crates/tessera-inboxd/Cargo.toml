@@ -5,6 +5,8 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+anyhow = "1"
+tessera-sync = { path = "../../../crates/tessera-sync" }
 tessera-inbox-domain = { path = "../tessera-inbox-domain" }
 rusqlite = { version = "=0.37.0", features = ["bundled"] }
 uuid.workspace = true

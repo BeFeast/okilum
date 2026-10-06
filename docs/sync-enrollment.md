@@ -9,7 +9,9 @@ indexes remain disposable, identity/grants/operation journals do not.
 
 - After Enable Sync, a managed user background service continues after closing the
   window and starts at login. Logout/sleep/offline is not loss of the local vault.
-  Linux packages depend on Syncthing but installation never starts it. macOS and
+  Linux packages depend on Syncthing but installation never starts it or registers
+  any service/autostart. Registration starts only on Enable Sync; Disable/Remove
+  unregister Tessera-owned services, preserving externally owned services. macOS and
   Windows bundle an unchanged sidecar with matching MPL notices/source access.
 - Offer reuse of an existing daemon after confirming identity, path, and user
   consent. Never take over its lifecycle or replace its complete configuration.
@@ -54,7 +56,8 @@ clients never supply a server path or arbitrary REST target. A host hub adapter 
 the sole reader of the hub REST key. It offers scoped add/remove/status, not a
 REST proxy. Operations persist requested → approved → hub_added → local_prepared
 → syncing → active with read-back and idempotent retry; removal has a durable
-pending state. Native service enrollment and adapters are subsequent slices.
+pending state. Service pairing and the isolated adapter are defined in [slice 2](sync-pairing.md);
+  native local preparation and service lifecycle remain subsequent slices.
 
 Settings must distinguish preparing/syncing/idle/paused/offline/error, report
 conflict files and folder errors, and show device/path and managed/reused mode.
@@ -69,7 +72,7 @@ session; no desktop/platform behavior is inferred from a Linux container test.
 
 ## Slice 1 compatibility boundary
 
-`tessera-sync` is a small independent crate with no application consumers. It
+`tessera-sync` is a small independent crate consumed by the opt-in host adapter. It
 uses scoped REST endpoints, authenticated identity/version inspection, explicit
 paused folder creation, scoped folder patch/read-back, ignore read-back, scan and
 status/error inspection. It never PUTs the whole configuration. The controller

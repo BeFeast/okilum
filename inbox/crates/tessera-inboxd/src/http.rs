@@ -57,6 +57,17 @@ pub fn router_with_forgejo(
     bridge: Option<crate::bridge::Bridge>,
     forgejo: Option<crate::forgejo::Cache>,
 ) -> Router {
+    router_with_sync(auth, provider, vault, bridge, forgejo, None)
+}
+
+pub fn router_with_sync(
+    auth: Auth,
+    provider: Option<Arc<crate::provider::Provider>>,
+    vault: Option<Arc<crate::vault::Vault>>,
+    bridge: Option<crate::bridge::Bridge>,
+    forgejo: Option<crate::forgejo::Cache>,
+    sync: Option<Arc<crate::sync::Config>>,
+) -> Router {
     let bridge = bridge.map(Arc::new);
     let origin = Some(auth.origin.clone());
     let shared = Arc::new(Mutex::new(auth));
@@ -66,6 +77,7 @@ pub fn router_with_forgejo(
         .merge(crate::forgejo::routes())
         .merge(crate::results::routes())
         .merge(crate::devices_http::routes())
+        .merge(crate::sync_http::browser())
         .route("/health", get(|| async { "ok" }))
         .route("/api/v1/auth/register/start", post(register_start))
         .route("/api/v1/auth/register/finish", post(register_finish))
@@ -104,6 +116,7 @@ pub fn router_with_forgejo(
             "/api/v1/items/{id}/publications",
             get(publications).post(publish),
         )
+        .layer(Extension(sync.clone()))
         .layer(Extension(forgejo))
         .layer(Extension(bridge.clone()))
         .layer(Extension(vault))
@@ -111,8 +124,15 @@ pub fn router_with_forgejo(
         .layer(DefaultBodyLimit::max(128 * 1024))
         .layer(middleware::from_fn_with_state(origin, guard))
         .with_state(shared.clone());
-    match bridge {
-        Some(bridge) => browser.merge(crate::bridge::router(shared, bridge)),
+    let browser = match bridge {
+        Some(bridge) => browser.merge(crate::bridge::router(shared.clone(), bridge)),
+        None => browser,
+    };
+    match sync {
+        Some(config) => {
+            crate::sync::start_worker(shared.clone(), config.clone());
+            browser.merge(crate::sync_http::native(shared, config))
+        }
         None => browser,
     }
 }

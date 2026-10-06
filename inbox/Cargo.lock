@@ -53,6 +53,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "anyhow"
+version = "1.0.104"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
+
+[[package]]
 name = "asn1-rs"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1266,7 +1272,9 @@ checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
 dependencies = [
  "base64 0.22.1",
  "bytes",
+ "futures-channel",
  "futures-core",
+ "futures-util",
  "http",
  "http-body",
  "http-body-util",
@@ -1631,6 +1639,7 @@ dependencies = [
 name = "tessera-inboxd"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "axum",
  "clap",
  "http-body-util",
@@ -1642,6 +1651,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "tessera-inbox-domain",
+ "tessera-sync",
  "thiserror 2.0.21",
  "tokio",
  "tower",
@@ -1649,6 +1659,15 @@ dependencies = [
  "uuid",
  "webauthn-authenticator-rs",
  "webauthn-rs",
+]
+
+[[package]]
+name = "tessera-sync"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "reqwest",
+ "serde_json",
 ]
 
 [[package]]
