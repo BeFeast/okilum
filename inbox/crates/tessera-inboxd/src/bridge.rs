@@ -21,6 +21,10 @@ use uuid::Uuid;
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Scope {
+    #[serde(default)]
+    pub source_kind: SourceKind,
+    #[serde(default)]
+    pub approval_actions: Vec<String>,
     pub owner_id: Uuid,
     pub project_id: Uuid,
     pub instance_id: String,
@@ -33,14 +37,27 @@ pub struct Scope {
 impl Scope {
     fn permits(&self, question: &Question) -> bool {
         question.project_id == self.project_id
-            && question.source.kind == SourceKind::T3
+            && question.source.kind == self.source_kind
             && question.source.instance_id == self.instance_id
             && question.source.project_id == self.source_project_id
+            && question
+                .approval
+                .as_ref()
+                .is_none_or(|a| self.approval_actions.contains(&a.action))
     }
     fn validate(&self) -> bool {
         !self.owner_id.is_nil()
             && !self.project_id.is_nil()
             && (self.ingest || self.replies || self.launches)
+            && (self.source_kind == SourceKind::T3 || !self.launches)
+            && (self.source_kind == SourceKind::Maestro || self.approval_actions.is_empty())
+            && self.approval_actions.len() <= 20
+            && self.approval_actions.iter().all(|s| {
+                !s.is_empty()
+                    && s.len() <= 128
+                    && s != "stop_worker"
+                    && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            })
             && [&self.instance_id, &self.source_project_id]
                 .into_iter()
                 .all(|s| !s.trim().is_empty() && s.len() <= 512 && !s.chars().any(char::is_control))
@@ -51,6 +68,7 @@ pub struct Bridge {
     pub(crate) scope: Scope,
     pub(crate) targets: Vec<crate::launch::TargetSnapshot>,
     token_hash: [u8; 32],
+    maestro: Option<Box<Bridge>>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -59,11 +77,13 @@ struct Credential {
     token: String,
     #[serde(default)]
     launch_targets: Vec<crate::launch::Target>,
+    #[serde(default)]
+    maestro: Option<Box<Credential>>,
 }
 impl Bridge {
     pub fn from_credential(path: &FilePath, owner: OwnerId) -> Result<Self, &'static str> {
         let meta = std::fs::symlink_metadata(path).map_err(|_| "bridge credential unavailable")?;
-        if !meta.is_file() || meta.len() > 8192 {
+        if !meta.is_file() || meta.len() > 16384 {
             return Err("bridge credential must be a small regular file");
         }
         #[cfg(unix)]
@@ -76,6 +96,28 @@ impl Bridge {
         let bytes = std::fs::read(path).map_err(|_| "bridge credential unavailable")?;
         let credential: Credential =
             serde_json::from_slice(&bytes).map_err(|_| "invalid bridge configuration")?;
+        Self::from_config(credential, owner, false)
+    }
+    fn from_config(
+        mut credential: Credential,
+        owner: OwnerId,
+        nested: bool,
+    ) -> Result<Self, &'static str> {
+        if nested
+            && (credential.maestro.is_some() || credential.scope.source_kind != SourceKind::Maestro)
+        {
+            return Err("invalid Maestro bridge scope");
+        }
+        let maestro = credential
+            .maestro
+            .take()
+            .map(|c| {
+                if credential.scope.source_kind != SourceKind::T3 || c.token == credential.token {
+                    return Err("bridge tokens must have independent scopes");
+                }
+                Self::from_config(*c, owner, true).map(Box::new)
+            })
+            .transpose()?;
         if credential.scope.owner_id != owner.0
             || !credential.scope.validate()
             || credential.token.len() != 64
@@ -108,6 +150,7 @@ impl Bridge {
             targets,
             scope: credential.scope,
             token_hash: Sha256::digest(credential.token.as_bytes()).into(),
+            maestro,
         })
     }
     pub(crate) fn authenticate(
@@ -134,6 +177,9 @@ impl Bridge {
             .zip(self.token_hash)
             .fold(0u8, |acc, (a, b)| acc | (a ^ b));
         if difference != 0 {
+            if let Some(maestro) = &self.maestro {
+                return maestro.authenticate(headers, action);
+            }
             return Err(ApiError(
                 StatusCode::UNAUTHORIZED,
                 "bridge_authentication_failed",
@@ -227,7 +273,7 @@ async fn replies(
                 "SELECT r.sequence,r.operation_id FROM execution_replies r
              JOIN execution_questions q ON r.owner_id=q.owner_id AND r.question_id=q.question_id
              WHERE r.owner_id=?1 AND q.project_id=?2 AND r.sequence>?3
-             AND json_extract(q.body,'$.source.kind')='t3'
+             AND json_extract(q.body,'$.source.kind')=?7
              AND json_extract(q.body,'$.source.instance_id')=?4
              AND json_extract(q.body,'$.source.project_id')=?5
              ORDER BY r.sequence LIMIT ?6",
@@ -241,7 +287,11 @@ async fn replies(
                     page.after,
                     scope.instance_id,
                     scope.source_project_id,
-                    page.limit + 1
+                    page.limit + 1,
+                    match scope.source_kind {
+                        SourceKind::T3 => "t3",
+                        SourceKind::Maestro => "maestro",
+                    }
                 ],
                 |r| Ok((r.get::<_, u64>(0)?, r.get::<_, String>(1)?)),
             )
@@ -262,7 +312,9 @@ async fn replies(
                 .store
                 .execution_reply(OwnerId(scope.owner_id), id)?
                 .ok_or(crate::store::Error::MissingItem)?;
-            result.operations.push(op);
+            if scope.permits(&op.question) {
+                result.operations.push(op);
+            }
             result.next_cursor = seq;
         }
         Ok(Json(result).into_response())

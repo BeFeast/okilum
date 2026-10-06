@@ -121,7 +121,7 @@ impl Store {
             }
             let previous: Question = decode(prior.clone())?;
             if previous.source_revision == question.source_revision
-                && previous.fields != question.fields
+                && (previous.fields != question.fields || previous.approval != question.approval)
             {
                 return Err(Error::OperationConflict);
             }

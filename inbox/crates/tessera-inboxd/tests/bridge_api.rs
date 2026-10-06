@@ -68,10 +68,13 @@ impl Fixture {
     }
     fn question(&self) -> Question {
         Question {
+            approval: None,
             thread_title: None,
             id: Uuid::new_v4(),
             project_id: self.project,
             source: QuestionSource {
+                worker_id: None,
+                record_kind: SourceRecordKind::Question,
                 kind: SourceKind::T3,
                 instance_id: "pilot-instance".into(),
                 project_id: "pilot-project".into(),
@@ -694,4 +697,201 @@ async fn launch_transport_requires_separate_scope_and_preserves_source_identity(
     )
     .await;
     assert!(list["operations"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn independent_maestro_token_cannot_read_or_mutate_t3_operations() {
+    let f = Fixture::new();
+    let path = f.dir.path().join("credential");
+    let mut config: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let maestro_key = "b".repeat(64);
+    let mut peer = config.clone();
+    peer["token"] = json!(maestro_key);
+    peer["scope"]["source_kind"] = json!("maestro");
+    peer["scope"]["approval_actions"] = json!(["merge_pr"]);
+    config["maestro"] = peer;
+    std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+    let app = f.app(true);
+    let t3 = f.question();
+    let mut m = f.question();
+    m.source.kind = SourceKind::Maestro;
+    m.source.worker_id = Some("worker-1".into());
+    for (q, key) in [(&t3, KEY), (&m, maestro_key.as_str())] {
+        assert_eq!(
+            call(
+                &app,
+                "POST",
+                "/api/bridge/v1/questions",
+                json!({"question":q,"sequence":1}),
+                Some(key),
+                None
+            )
+            .await
+            .0,
+            StatusCode::NO_CONTENT
+        );
+    }
+    for (q, key) in [(&t3, maestro_key.as_str()), (&m, KEY)] {
+        assert_eq!(
+            call(
+                &app,
+                "POST",
+                "/api/bridge/v1/questions",
+                json!({"question":q,"sequence":2}),
+                Some(key),
+                None
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+    }
+    let t3_reply = f.enqueue(&t3, f.owner);
+    let maestro_reply = f.enqueue(&m, f.owner);
+    for (key, own, foreign) in [
+        (KEY, t3_reply.operation_id, maestro_reply.operation_id),
+        (
+            maestro_key.as_str(),
+            maestro_reply.operation_id,
+            t3_reply.operation_id,
+        ),
+    ] {
+        let (status, rows) = call(
+            &app,
+            "GET",
+            "/api/bridge/v1/replies",
+            Value::Null,
+            Some(key),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(rows["operations"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            rows["operations"][0]["request"]["operation_id"],
+            own.to_string()
+        );
+        assert_eq!(
+            call(
+                &app,
+                "GET",
+                &format!("/api/bridge/v1/replies/{foreign}"),
+                Value::Null,
+                Some(key),
+                None
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(call(&app,"POST",&format!("/api/bridge/v1/replies/{foreign}"),json!({"expected":"queued","next":"uncertain","delivery_id":null,"error_code":null}),Some(key),None).await.0,StatusCode::NOT_FOUND);
+    }
+    config["maestro"]["token"] = json!(KEY);
+    std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+    assert!(Bridge::from_credential(&path, f.owner).is_err());
+}
+
+#[tokio::test]
+async fn approvals_require_action_scope_and_freeze_exact_revision_and_target() {
+    let f = Fixture::new();
+    let path = f.dir.path().join("credential");
+    let mut config: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    config["scope"]["source_kind"] = json!("maestro");
+    config["scope"]["approval_actions"] = json!(["merge_pr"]);
+    std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+    let app = f.app(true);
+    let mut q = f.question();
+    q.source.kind = SourceKind::Maestro;
+    q.source.record_kind = SourceRecordKind::Approval;
+    q.approval = Some(Approval {
+        action: "merge_pr".into(),
+        target: json!({"repository":"fixture","number":1}),
+        summary: "Merge fixture".into(),
+        risk: "high".into(),
+        payload_hash: "payload".into(),
+        target_state_hash: Some("head-1".into()),
+    });
+    q.fields = vec![QuestionField {
+        id: "decision".into(),
+        prompt: "Merge fixture?".into(),
+        options: vec![
+            QuestionOption {
+                id: "approve".into(),
+                label: "Approve".into(),
+            },
+            QuestionOption {
+                id: "reject".into(),
+                label: "Reject".into(),
+            },
+        ],
+        allow_text: false,
+        multiple: false,
+    }];
+    let mut outside = q.clone();
+    outside.approval.as_mut().unwrap().action = "deploy".into();
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/bridge/v1/questions",
+            json!({"question":outside,"sequence":1}),
+            Some(KEY),
+            None
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/bridge/v1/questions",
+            json!({"question":q,"sequence":1}),
+            Some(KEY),
+            None
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    let mut changed = q.clone();
+    changed.approval.as_mut().unwrap().target = json!({"repository":"fixture","number":2});
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/bridge/v1/questions",
+            json!({"question":changed,"sequence":2}),
+            Some(KEY),
+            None
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    let mut store = Store::open(&f.dir.path().join("db")).unwrap();
+    let r = Reply {
+        operation_id: Uuid::new_v4(),
+        question_id: q.id,
+        expected_revision: q.source_revision.clone(),
+        answers: vec![AnswerField {
+            id: "decision".into(),
+            text: String::new(),
+            option_ids: vec!["approve".into()],
+        }],
+    };
+    let original = store.prepare_execution_reply(f.owner, &r).unwrap();
+    changed.source_revision = "new-revision".into();
+    store
+        .observe_execution_question(f.owner, &changed, 2)
+        .unwrap();
+    assert_eq!(
+        store.prepare_execution_reply(f.owner, &r).unwrap(),
+        original
+    );
+    assert_eq!(original.question.approval, q.approval);
+    let mut stale = r;
+    stale.operation_id = Uuid::new_v4();
+    assert!(store.prepare_execution_reply(f.owner, &stale).is_err());
 }

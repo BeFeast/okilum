@@ -20,10 +20,13 @@ fn fixture(store: &mut Store) -> (OwnerId, Question, Reply) {
         )
         .unwrap();
     let q = Question {
+        approval: None,
         thread_title: None,
         id: Uuid::new_v4(),
         project_id: project,
         source: QuestionSource {
+            worker_id: None,
+            record_kind: SourceRecordKind::Question,
             kind: SourceKind::T3,
             instance_id: "instance".into(),
             project_id: "project".into(),

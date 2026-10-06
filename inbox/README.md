@@ -403,3 +403,25 @@ authenticators and an isolated backend. Supply QA_BACKEND, QA_ENROLLMENT_FILE an
 QA_CDP_ENDPOINT. It forwards requests to that backend without mocking API results;
 never use the live database. It captures Settings and enrollment at 390/1280 in
 light/dark and verifies approval-before-login, revoked sessions and last-key refusal.
+
+## Maestro transport foundation (#601, PR 1)
+
+The existing bridge credential remains T3 by default. An optional `maestro` object
+in that private credential file has its own `token` and `scope`, with
+`source_kind: "maestro"`, a pinned source instance/project, and explicit
+`approval_actions` (for example `["merge_pr"]`). Its token must differ from T3's.
+Maestro scopes cannot launch T3 executors. No Maestro credential or process is
+installed by this foundation; the adapter/UI and isolated contract pilot follow.
+A Maestro-only deployment may use this scope as the top-level credential.
+
+Maestro question identity includes `worker_id` and the original generation/thread.
+Approvals set `source.record_kind: "approval"` and contain typed `approval` data:
+exact action, structured target, summary, risk, payload hash and optional target
+state hash. Their sole `decision` field permits only explicit `Approve`/`Reject`
+choices; free text cannot be interpreted as approval. `stop_worker` is unsupported.
+The stored consent snapshot includes these details: changing them under the same
+revision is rejected; an existing operation always replays its original snapshot.
+T3's persisted source identity JSON is unchanged. No database migration is needed.
+
+Live Maestro deployment/restart/fleet configuration requires a separately agreed
+window. This transport foundation is not evidence of live Maestro integration.
