@@ -20,7 +20,7 @@ pub struct CachedProvider {
 }
 
 impl CachedProvider {
-    /// The fixture calls this only from its background classification task.
+    /// Call only from a background classification task.
     pub fn classify(source: SourceSnapshot) -> Self {
         let snapshot = core_snapshot(&source);
         let links = if source.text.len() <= source_classifier::MAX_BYTES {
@@ -46,6 +46,17 @@ impl CachedProvider {
     #[allow(dead_code)]
     pub fn note_links(&self) -> &[source_classifier::NoteLink] {
         &self.links
+    }
+    // The isolated native example has no limit-status control.
+    #[allow(dead_code)]
+    pub fn limited(&self) -> bool {
+        self.classified.reasons().iter().any(|reason| {
+            matches!(
+                reason,
+                source_classifier::SourceReason::InputLimit
+                    | source_classifier::SourceReason::StructureLimit
+            )
+        })
     }
     pub fn source(&self) -> &SourceSnapshot {
         &self.source

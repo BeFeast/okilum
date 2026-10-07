@@ -1,4 +1,5 @@
 //! Reader source mode. No Brain enrollment or changes to the reader protocol.
+mod live_preview;
 use super::*;
 use crate::platform::labels::Os;
 use gpui_component::input::projection::{
@@ -27,6 +28,7 @@ use tessera_core::file_editor::{FileEditor, Save};
 
 pub(super) struct Editing {
     store: FileEditor,
+    live_preview: live_preview::LivePreview,
     input: Entity<EditorState>,
     conflict: Option<String>,
     conflict_detected: bool,
@@ -99,6 +101,7 @@ impl Editing {
             .update(cx, |input, cx| input.set_disabled(true, cx));
         let Self {
             store,
+            live_preview,
             input,
             conflict,
             conflict_detected,
@@ -113,6 +116,7 @@ impl Editing {
         } = self;
         (store, move |store| Self {
             store,
+            live_preview,
             input,
             conflict,
             conflict_detected,
@@ -334,6 +338,7 @@ impl Reader {
                     cx.notify();
                 });
             }).detach();
+            this.schedule_live_preview(cx);
             cx.notify();
         });
         let clicked = cx.subscribe_in(
@@ -416,6 +421,7 @@ impl Reader {
         }
         self.editing = Some(Editing {
             store,
+            live_preview: live_preview::LivePreview::default(),
             input: input.clone(),
             conflict: None,
             conflict_detected: false,
@@ -825,8 +831,16 @@ impl Reader {
             })
             .child(
                 Editor::new(&editing.input)
-                    .font_family("Cascadia Code")
-                    .text_size(px(13. * reader_ui_state::font_size(cx) / BODY_FONT_SIZE))
+                    .font_family(if editing.live_preview.enabled {
+                        crate::source_presentation::BODY_FONT
+                    } else {
+                        crate::source_presentation::CODE_FONT
+                    })
+                    .text_size(px(if editing.live_preview.enabled {
+                        reader_ui_state::font_size(cx)
+                    } else {
+                        13. * reader_ui_state::font_size(cx) / BODY_FONT_SIZE
+                    }))
                     .size_full(),
             )
             .into_any_element()

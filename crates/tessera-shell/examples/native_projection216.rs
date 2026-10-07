@@ -1,5 +1,5 @@
 //! Isolated native #216 fixture. No BrainView, RPC, persistence or live-note access.
-#[path = "../src/brain/source_projection.rs"]
+#[path = "../src/source_presentation.rs"]
 mod adapter;
 #[path = "../src/platform/exact_wayland_clipboard.rs"]
 mod exact_wayland_clipboard;
