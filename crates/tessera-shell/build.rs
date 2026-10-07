@@ -63,11 +63,11 @@ fn main() {
             .is_file(),
         "Run scripts/updater/sparkle.py prepare with the pinned archive before building macOS"
     );
-    assert_eq!(
-        env::var("CARGO_CFG_TARGET_ARCH").as_deref(),
-        Ok("aarch64"),
-        "Updater packaging currently supports macOS arm64 only"
-    );
+    let architecture = match env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
+        Ok("aarch64") => "arm64",
+        Ok("x86_64") => "x86_64",
+        other => panic!("Unsupported macOS architecture: {other:?}"),
+    };
     println!("cargo:rerun-if-changed=../../vendor/sparkle/Sparkle.framework");
     let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
     println!("cargo:rerun-if-changed=src/thumbnail/bridge.m");
@@ -80,7 +80,7 @@ fn main() {
             "-Wall",
             "-Werror",
             "-arch",
-            "arm64",
+            architecture,
             "-mmacosx-version-min=11.0",
             "-c",
             "src/thumbnail/bridge.m",
@@ -94,7 +94,7 @@ fn main() {
             "-fobjc-arc",
             "-fblocks",
             "-arch",
-            "arm64",
+            architecture,
             "-mmacosx-version-min=11.0",
             "-F",
         ])
