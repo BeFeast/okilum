@@ -173,9 +173,15 @@ impl Reader {
                             }
                             menu
                         });
-                        cx.subscribe(&popup, |this, _, _: &DismissEvent, cx| {
-                            this.file_menu = None;
-                            cx.notify();
+                        cx.subscribe(&popup, |this, dismissed, _: &DismissEvent, cx| {
+                            if this
+                                .file_menu
+                                .as_ref()
+                                .is_some_and(|(menu, _)| menu.entity_id() == dismissed.entity_id())
+                            {
+                                this.file_menu = None;
+                                cx.notify();
+                            }
                         })
                         .detach();
                         popup.focus_handle(cx).focus(window, cx);
