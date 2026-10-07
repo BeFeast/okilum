@@ -22,6 +22,17 @@ fn is_folder_note(path: &str) -> bool {
             .any(|name| stem.eq_ignore_ascii_case(name))
 }
 
+/// Excalidraw's compound extension identifies the format, not the drawing name.
+/// Keep canonical paths intact; use this only for display labels.
+pub(super) fn drawing_title(path: &str) -> Option<String> {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    let lower = name.to_ascii_lowercase();
+    [".excalidraw.md", ".excalidraw"]
+        .into_iter()
+        .find(|suffix| lower.ends_with(suffix))
+        .map(|suffix| name[..name.len() - suffix.len()].to_owned())
+}
+
 /// Folder title without filesystem reads, shared by search results and Inbox.
 pub(super) fn folder_note_title(vault_name: &str, path: &str) -> Option<String> {
     if !is_folder_note(path) {
@@ -43,6 +54,9 @@ pub(super) fn folder_note_title(vault_name: &str, path: &str) -> Option<String> 
 /// Called on the query worker, never during rendering.
 fn result_title(root: &Path, titles: &HashMap<String, String>, hit: &SearchHit) -> String {
     let path = root.join(&hit.path);
+    if let Some(title) = drawing_title(&hit.path) {
+        return title;
+    }
     if !is_markdown(&hit.path) {
         return hit.path.rsplit('/').next().unwrap_or(&hit.path).to_owned();
     }
@@ -514,6 +528,14 @@ mod tests {
             ("Memory/Scan.pdf", "%PDF", "Scan.pdf"),
             ("Memory/Board.canvas", "{}", "Board.canvas"),
             ("Memory/readme.txt", "# Not a note", "readme.txt"),
+            ("Memory/Схема.excalidraw.md", "# Internal metadata", "Схема"),
+            ("Memory/Board.excalidraw", "{}", "Board"),
+            ("Memory/Board.EXCALIDRAW.MD", "# Internal metadata", "Board"),
+            (
+                "Memory/Board.excalidraw.txt",
+                "Text",
+                "Board.excalidraw.txt",
+            ),
         ] {
             std::fs::write(root.join(path), body).unwrap();
             let hit = SearchHit {

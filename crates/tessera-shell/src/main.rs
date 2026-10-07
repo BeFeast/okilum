@@ -1781,7 +1781,7 @@ impl Reader {
         self.usable_document = true;
         self.record_usable_document(cx);
         self.refresh_link_preparation(cx);
-        self.current_title = self.vault.note_title(rel);
+        self.current_title = self.note_label(rel);
         self.backlinks = self.vault.backlinks(rel);
         window.set_window_title(&format!("Tessera — {}", self.current_title));
         if request.history_index.is_none()
@@ -2315,10 +2315,22 @@ impl Reader {
     }
 
     fn note_label(&self, path: &str) -> String {
+        if let Some(title) = quick_open::drawing_title(path) {
+            return title;
+        }
         if path.ends_with(".md") {
             self.vault.note_title(path)
         } else {
             path.rsplit('/').next().unwrap_or(path).to_owned()
+        }
+    }
+
+    /// The title shared by attachment breadcrumbs and the native window.
+    fn selected_title(&self) -> String {
+        if self.file_preview.is_some() {
+            self.note_label(self.selected_file())
+        } else {
+            self.current_title.clone()
         }
     }
 
@@ -2984,15 +2996,7 @@ impl Reader {
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.reveal_in_tree(&current, window, cx)
                     }))
-                    .child(if self.file_preview.is_some() {
-                        self.selected_file()
-                            .rsplit('/')
-                            .next()
-                            .unwrap_or("")
-                            .to_owned()
-                    } else {
-                        self.current_title.clone()
-                    })
+                    .child(self.selected_title())
                     .tooltip(move |window, cx| {
                         gpui_component::tooltip::Tooltip::new(root.clone()).build(window, cx)
                     })

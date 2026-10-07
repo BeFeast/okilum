@@ -310,7 +310,7 @@ impl Reader {
                 self.find_open = false;
                 self.link_notice = None;
                 self.editing = None;
-                window.set_window_title(&format!("Tessera — {rel}"));
+                window.set_window_title(&format!("Tessera — {}", self.selected_title()));
                 self.focus_handle.focus(window, cx);
             }
             Err(error) => reader_toast::error(format!("Cannot preview file: {error}"), window, cx),
@@ -535,6 +535,15 @@ mod tests {
             Root::new(reader, window, cx)
         });
         let reader = entity.unwrap();
+        let drawing_source =
+            include_str!("../../tessera-core/tests/fixtures/excalidraw/elements.excalidraw.md");
+        for path in [
+            "Схема.excalidraw.md",
+            "Board.excalidraw",
+            "Board.EXCALIDRAW.MD",
+        ] {
+            std::fs::write(root.join(path), drawing_source).unwrap();
+        }
         visual.run_until_parked();
         reader.update_in(visual, |reader, window, cx| {
             reader.preview_file("diagram.svg", window, cx);
@@ -555,6 +564,23 @@ mod tests {
             reader.preview_file("report.pdf", window, cx);
             assert!(!reader.file_preview.as_ref().unwrap().image);
             assert_eq!(reader.history.last().unwrap(), "report.pdf");
+            for (path, name) in [
+                ("Схема.excalidraw.md", "Схема"),
+                ("Board.excalidraw", "Board"),
+                ("Board.EXCALIDRAW.MD", "Board"),
+            ] {
+                reader.preview_file(path, window, cx);
+                assert_eq!(reader.selected_title(), name);
+                assert_eq!(reader.note_label(path), name);
+                assert_eq!(reader.selected_file(), path);
+                assert_eq!(reader.history.last().unwrap(), path);
+                reader.file_action(FileAction::Relative, window, cx);
+                assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), path);
+                assert_eq!(
+                    std::fs::read_to_string(root.join(path)).unwrap(),
+                    drawing_source
+                );
+            }
         });
         assert_eq!(visual.opened_url(), None);
         assert_eq!(
