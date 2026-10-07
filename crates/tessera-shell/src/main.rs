@@ -2322,7 +2322,7 @@ impl Reader {
         if self.single_file {
             let mut items = vec![SideItem::Header(
                 Section::Folders,
-                Some(self.vault.entries.len()),
+                reader_sidebar::section_count(self.vault.entries.len()),
             )];
             if !self
                 .scroll_sections
@@ -2349,7 +2349,10 @@ impl Reader {
         let pinned: Vec<_> = self.sidebar.pinned.iter().filter(|p| shown(p)).collect();
         let inbox: Vec<_> = self.inbox.iter().filter(|i| shown(&i.path)).collect();
         let mut items = Vec::new();
-        items.push(SideItem::Header(Section::Recent, Some(recent.len())));
+        items.push(SideItem::Header(
+            Section::Recent,
+            reader_sidebar::section_count(recent.len()),
+        ));
         if open(Section::Recent) {
             let visible = if self.recent_expanded {
                 recent.len()
@@ -2373,7 +2376,10 @@ impl Reader {
                 items.push(SideItem::More(recent.len() - visible));
             }
         }
-        items.push(SideItem::Header(Section::Pinned, Some(pinned.len())));
+        items.push(SideItem::Header(
+            Section::Pinned,
+            reader_sidebar::section_count(pinned.len()),
+        ));
         if open(Section::Pinned) {
             if pinned.is_empty() {
                 items.push(SideItem::Empty("Hover a note or folder to pin it."));
@@ -2389,7 +2395,10 @@ impl Reader {
                 });
             }
         }
-        items.push(SideItem::Header(Section::Inbox, Some(inbox.len())));
+        items.push(SideItem::Header(
+            Section::Inbox,
+            reader_sidebar::section_count(inbox.len()),
+        ));
         if open(Section::Inbox) {
             if inbox.is_empty() {
                 items.push(SideItem::Empty("No new unfiled notes."));
@@ -6857,6 +6866,66 @@ mod document_link_landing_tests {
             assert!(v.properties.as_ref().unwrap().is_empty(), "menu has none");
         });
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn empty_sidebar_sections_show_no_zero_count(cx: &mut gpui::TestAppContext) {
+        use reader_sidebar::Section;
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| Reader::new(Opts::default(), window, cx));
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let view = reader.unwrap();
+        visual.run_until_parked();
+        let counts = |v: &Reader| -> Vec<(Section, Option<usize>)> {
+            v.sidebar_items()
+                .into_iter()
+                .filter_map(|item| match item {
+                    SideItem::Header(section, count) => Some((section, count)),
+                    _ => None,
+                })
+                .collect()
+        };
+        view.update(visual, |v, _| {
+            v.loading = None;
+            v.vault = Arc::new(Vault::from_note_paths(["Work/Plan.md".to_string()]));
+            v.sidebar.recent.clear();
+            v.sidebar.pinned.clear();
+            v.inbox.clear();
+            assert_eq!(
+                counts(v),
+                [
+                    (Section::Recent, None),
+                    (Section::Pinned, None),
+                    (Section::Inbox, None),
+                    (Section::Folders, None),
+                ]
+            );
+            // Positive control: a filled section still carries its count.
+            v.sidebar.recent.push(("Work/Plan.md".into(), 0));
+            v.sidebar.pinned.push("Work/Plan.md".into());
+            v.inbox.push(reader_sidebar::InboxItem {
+                path: "Work/Plan.md".into(),
+                created: 0,
+                reason: reader_sidebar::InboxReason::NoIncomingLinks,
+                domain: None,
+            });
+            assert_eq!(
+                counts(v),
+                [
+                    (Section::Recent, Some(1)),
+                    (Section::Pinned, Some(1)),
+                    (Section::Inbox, Some(1)),
+                    (Section::Folders, None),
+                ]
+            );
+        });
     }
 
     #[gpui::test]
