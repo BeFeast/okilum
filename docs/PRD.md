@@ -25,6 +25,8 @@ provider jobs, canonical enrollment or deployment.
 
 **Sync extension (2026-10-06, #574):** [explicit Sync enrollment](sync-enrollment.md) defines the approved opt-in background/reuse contract. Slice 1 tests compatibility only; it does not enable Sync in the reader.
 
+**Typed note views extension (2026-10-07, #636):** [typed views and Tasks editing](typed-note-views.md) defines native views over plain Markdown, explicit revision-checked task edits and Undo. The reader/MCP protocol remains read-only.
+
 ## 1. What Tessera is
 
 A local-first desktop knowledge environment that replaces Obsidian without taking
