@@ -217,10 +217,58 @@ fn owned_folder_and_external_replica_keep_their_boundaries() -> Result<()> {
         }),
         removal: None,
     };
-    let controller = FolderController::new(root.path().join("controller"));
-    let s = controller
-        .enroll(&identity, &configs, &approval, &client.vault)
-        .context("initial enrollment")?;
+    let barrier = std::sync::Barrier::new(2);
+    let attempts = [
+        root.path().join("controller"),
+        root.path().join("competing"),
+    ];
+    let outcomes = thread::scope(|scope| {
+        let handles = attempts
+            .iter()
+            .map(|state| {
+                let barrier = &barrier;
+                let identity = &identity;
+                let configs = &configs;
+                let approval = &approval;
+                let vault = &client.vault;
+                scope.spawn(move || {
+                    barrier.wait();
+                    FolderController::new(state.clone()).enroll(identity, configs, approval, vault)
+                })
+            })
+            .collect::<Vec<_>>();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    let mut outcomes = outcomes
+        .into_iter()
+        .zip(&attempts)
+        .map(|(outcome, state)| {
+            match outcome {
+                Ok(status) => Ok(status),
+                Err(error) => {
+                    ensure!(
+                        error.to_string().contains("would block"),
+                        "unexpected failure: {error}"
+                    );
+                    // The nonblocking process lock reports busy; retry after the
+                    // winner commits must see a replica, never another owner.
+                    FolderController::new(state.clone()).enroll(
+                        &identity,
+                        &configs,
+                        &approval,
+                        &client.vault,
+                    )
+                }
+            }
+        })
+        .collect::<Result<Vec<_>>>()?;
+    assert_eq!(outcomes.iter().filter(|s| !s.reused).count(), 1);
+    let owner = outcomes.iter().position(|s| !s.reused).unwrap();
+    let controller_state = attempts[owner].clone();
+    let s = outcomes.swap_remove(owner);
     assert!(!s.reused && s.folder["type"] == "receiveonly");
     wait("owned folder receives canary", || {
         Ok(fs::read_to_string(client.vault.join("canary.md"))
@@ -230,13 +278,25 @@ fn owned_folder_and_external_replica_keep_their_boundaries() -> Result<()> {
     })?;
     assert!(!client.vault.join(".tessera-index/excluded").exists());
     assert_eq!(client.api.device(&hub.id)?["introducer"], true);
-    let reopened = FolderController::new(root.path().join("controller"));
+    let reopened = FolderController::new(controller_state.clone());
     assert!(
         !reopened
             .enroll(&identity, &configs, &approval, &client.vault)?
             .reused
     );
     assert_eq!(client.api.folder("unrelated")?, unrelated);
+    // A foreign operation cannot be adopted on replay, even if its path,
+    // folder ID and device configuration otherwise match.
+    let owned_label = client.api.folder("controller-fixture")?["label"].clone();
+    client
+        .api
+        .patch_folder("controller-fixture", &json!({"label":"another owner"}))?;
+    assert!(reopened
+        .enroll(&identity, &configs, &approval, &client.vault)
+        .is_err());
+    client
+        .api
+        .patch_folder("controller-fixture", &json!({"label":owned_label}))?;
     // Explicit reuse owns neither the existing folder nor the existing hub.
     let reuse = FolderController::new(root.path().join("reuse"));
     assert!(
@@ -305,7 +365,7 @@ fn owned_folder_and_external_replica_keep_their_boundaries() -> Result<()> {
     assert!(observed.is_some());
     // Offline Remove is journaled before REST, and restart cannot re-enroll.
     client.stop()?;
-    let offline = FolderController::new(root.path().join("controller"));
+    let offline = FolderController::new(controller_state.clone());
     assert_eq!(offline.last_connected_at()?, observed);
     assert!(offline.status().is_err());
     assert_eq!(offline.last_connected_at()?, observed);

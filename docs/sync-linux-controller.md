@@ -183,3 +183,13 @@ connection. Settings can read that Unix timestamp while REST is offline, without
 starting a process or registering a service. It means connection observed, not
 synchronization completed. A real fixture verifies that restart/offline reads
 retain it and failed status requests do not erase it.
+
+Review follow-up: enrollment takes one nonblocking process lock per OS user,
+independent of per-attempt state directories. Busy means retry, not permission
+to mutate using an old inventory. A random durable ownership marker in the new
+folder label prevents an interrupted intent from adopting another operation's
+folder on replay. External configuration edits still require coordination;
+Syncthing REST does not provide a transaction against unrelated administrators.
+The real fixture races two enrollment attempts and verifies exactly one owner,
+then verifies that replacing the ownership marker rejects replay. Connection
+history is checkpointed at most once per minute while connected.

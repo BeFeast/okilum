@@ -27,6 +27,7 @@ enum Phase {
 #[serde(deny_unknown_fields)]
 struct Journal {
     daemon: DaemonIdentity,
+    owner: Uuid,
     registration: Uuid,
     vault: Uuid,
     descriptor: Descriptor,
@@ -85,6 +86,13 @@ impl FolderController {
             .as_ref()
             .context("connection descriptor unavailable")?;
         descriptor.validate()?;
+        // Serialize all Tessera enrollment inventories for this OS user, even
+        // when independent attempts use different durable state directories.
+        // This lock is coordination only; durable authority stays in the journal.
+        let _enrollment_lock = private::lock(&Path::new("/tmp").join(format!(
+            "tessera-sync-enrollment-{}",
+            rustix::process::geteuid().as_raw()
+        )))?;
         let _lock = private::lock(&self.state)?;
         let inventory = discover(configs);
         let selected = inventory.select(&daemon.config_file)?;
@@ -144,6 +152,7 @@ impl FolderController {
             };
             let j = Journal {
                 daemon: daemon.clone(),
+                owner: Uuid::new_v4(),
                 registration: registration.id,
                 vault: registration.vault,
                 descriptor: descriptor.clone(),
@@ -190,7 +199,7 @@ impl FolderController {
                     j.path.read_dir()?.next().is_none(),
                     "destination changed before creation"
                 );
-                api.add_paused_folder(&json!({"id":j.descriptor.folder_id,"label":"Tessera Sync","path":j.path,"type":"receiveonly","paused":true,"devices":[{"deviceID":j.daemon.device_id},{"deviceID":j.descriptor.hub_device_id}]}))?;
+                api.add_paused_folder(&json!({"id":j.descriptor.folder_id,"label":owned_label(&j),"path":j.path,"type":"receiveonly","paused":true,"devices":[{"deviceID":j.daemon.device_id},{"deviceID":j.descriptor.hub_device_id}]}))?;
             }
             let folder = api.folder(&j.descriptor.folder_id)?;
             validate_owned(&j, &folder)?;
@@ -356,7 +365,9 @@ impl FolderController {
             .unwrap_or(false);
         if connected && !removed {
             let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-            if j.last_connected_at != Some(now) {
+            if j.last_connected_at
+                .is_none_or(|last| now.saturating_sub(last) >= 60)
+            {
                 j.last_connected_at = Some(now);
                 self.save(j)?;
             }
@@ -406,12 +417,16 @@ fn validate_path(folder: &Value, path: &Path) -> Result<()> {
 fn validate_owned(j: &Journal, folder: &Value) -> Result<()> {
     validate_path(folder, &j.path)?;
     ensure!(
-        folder["type"] == "receiveonly"
+        folder["label"] == owned_label(j)
+            && folder["type"] == "receiveonly"
             && shares(folder, &j.descriptor.hub_device_id)
             && shares(folder, &j.daemon.device_id),
         "owned folder configuration changed"
     );
     Ok(())
+}
+fn owned_label(j: &Journal) -> String {
+    format!("Tessera Sync {}", j.owner)
 }
 fn hub(j: &Journal) -> Value {
     json!({"deviceID":j.descriptor.hub_device_id,"addresses":[j.descriptor.hub_address],"introducer":true,"skipIntroductionRemovals":true,"autoAcceptFolders":false})
