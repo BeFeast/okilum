@@ -76,6 +76,7 @@ struct PendingMove {
 
 pub(super) struct Renaming {
     pub path: String,
+    pub in_header: bool,
     root: PathBuf,
     pub input: Entity<InputState>,
     pub error: Option<String>,
@@ -211,6 +212,20 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.begin_rename_at(path, false, window, cx);
+    }
+
+    pub(super) fn rename_note_title(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.begin_rename_at(self.current_rel.clone(), true, window, cx);
+    }
+
+    fn begin_rename_at(
+        &mut self,
+        path: String,
+        in_header: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.note_move_pending || self.trash_pending {
             return;
         }
@@ -233,7 +248,9 @@ impl Reader {
             .rows
             .iter()
             .any(|row| row.path == path && row.expanded);
-        self.reveal_in_tree(&path, window, cx);
+        if !in_header {
+            self.reveal_in_tree(&path, window, cx);
+        }
         if directory && !was_expanded {
             self.tree.toggle(&path);
         }
@@ -276,6 +293,7 @@ impl Reader {
         });
         self.renaming = Some(Renaming {
             path,
+            in_header,
             root: self.vault_root.clone(),
             input,
             error: None,
@@ -290,11 +308,16 @@ impl Reader {
         if self.note_move_pending {
             return;
         }
+        let in_header = self.renaming.as_ref().is_some_and(|r| r.in_header);
         self.renaming = None;
         // Ending an inline rename is not document navigation. Keep the selected
         // folder's expansion instead of revealing its open descendant again.
         self.tree_revealed = self.selected_file().to_owned();
-        self.tree_focus.focus(window, cx);
+        if in_header {
+            self.focus_handle.focus(window, cx);
+        } else {
+            self.tree_focus.focus(window, cx);
+        }
         cx.notify();
     }
 
@@ -1137,6 +1160,27 @@ mod tests {
                 visual.simulate_keystrokes("escape");
             }
         }
+        // The toolbar rename lives in the document header, without opening
+        // the compact navigator or changing bytes for a same-name submit.
+        reader.update_in(visual, |r, window, cx| {
+            r.close_panel(crate::reader_layout::Panel::Notes, window, cx);
+            r.rename_note_title(window, cx);
+        });
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("reader-notes-panel").is_none());
+        reader.read_with(visual, |r, _| {
+            assert!(r.renaming.as_ref().unwrap().in_header)
+        });
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert!(r.renaming.is_none());
+            assert!(!r.note_move_pending);
+        });
+        assert_eq!(
+            std::fs::read_to_string(root.join("start.md")).unwrap(),
+            "Original bytes"
+        );
     }
 
     #[gpui::test]
