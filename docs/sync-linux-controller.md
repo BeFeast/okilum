@@ -177,3 +177,9 @@ This increment deliberately leaves a new folder receive-only. Automatic promotio
 requires proof that the hub index was received, including for an empty vault;
 idle plus zero pending items alone is insufficient. Completion/promotion, durable
 connection/conflict reporting and Reader orchestration remain subsequent work.
+
+The folder journal also retains the last authenticated observation of a live hub
+connection. Settings can read that Unix timestamp while REST is offline, without
+starting a process or registering a service. It means connection observed, not
+synchronization completed. A real fixture verifies that restart/offline reads
+retain it and failed status requests do not erase it.

@@ -298,8 +298,17 @@ fn owned_folder_and_external_replica_keep_their_boundaries() -> Result<()> {
         .enroll(&identity, &configs, &changed_policy, &client.vault)
         .is_err());
     assert_eq!(client.api.folder("controller-fixture")?, before);
+    wait("authenticated hub connection observed", || {
+        Ok(reopened.status()?.hub_connected)
+    })?;
+    let observed = reopened.status()?.last_connected_at;
+    assert!(observed.is_some());
     // Offline Remove is journaled before REST, and restart cannot re-enroll.
     client.stop()?;
+    let offline = FolderController::new(root.path().join("controller"));
+    assert_eq!(offline.last_connected_at()?, observed);
+    assert!(offline.status().is_err());
+    assert_eq!(offline.last_connected_at()?, observed);
     assert!(reopened.remove().is_err());
     client.start()?;
     assert!(reopened

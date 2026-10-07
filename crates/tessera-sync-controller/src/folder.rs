@@ -9,7 +9,10 @@ use crate::{
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
+};
 use tessera_sync::{validate_destination, Destination, Syncthing};
 use uuid::Uuid;
 
@@ -35,6 +38,8 @@ struct Journal {
     desired_paused: bool,
     remove_requested: bool,
     phase: Phase,
+    #[serde(default)]
+    last_connected_at: Option<u64>,
 }
 #[derive(Clone, Debug)]
 pub struct LocalStatus {
@@ -46,6 +51,9 @@ pub struct LocalStatus {
     pub status: Value,
     pub errors: Value,
     pub hub_connected: bool,
+    /// Unix seconds of the last authenticated observation of a hub connection.
+    /// This is not a receipt of complete synchronization or peer availability.
+    pub last_connected_at: Option<u64>,
 }
 pub struct FolderController {
     state: PathBuf,
@@ -146,6 +154,7 @@ impl FolderController {
                 changed_pause: false,
                 desired_paused: original_paused,
                 remove_requested: false,
+                last_connected_at: None,
                 phase: if owns_folder {
                     Phase::Preparing
                 } else {
@@ -209,7 +218,7 @@ impl FolderController {
             );
             api.patch_folder(&j.descriptor.folder_id, &json!({"paused":j.desired_paused}))?;
         }
-        self.status_locked(&j, &api)
+        self.status_locked(&mut j, &api)
     }
     /// Explicit user action changes only the selected folder, across all peers.
     pub fn pause(&self, paused: bool) -> Result<LocalStatus> {
@@ -235,13 +244,13 @@ impl FolderController {
         j.changed_pause = true;
         self.save(&j)?;
         api.patch_folder(&j.descriptor.folder_id, &json!({"paused":paused}))?;
-        self.status_locked(&j, &api)
+        self.status_locked(&mut j, &api)
     }
     pub fn status(&self) -> Result<LocalStatus> {
         let _lock = private::lock(&self.state)?;
-        let j = self.load()?;
+        let mut j = self.load()?;
         let api = j.daemon.connect()?;
-        self.status_locked(&j, &api)
+        self.status_locked(&mut j, &api)
     }
     /// Persist cooperative removal even if the daemon is offline. Does not revoke
     /// the service grant: caller must also reconcile Enrollment::remove.
@@ -252,7 +261,8 @@ impl FolderController {
         // Repeating Remove must not restore its old pause state again after
         // the external owner has changed it.
         if j.phase == Phase::Removed {
-            return self.status_locked(&j, &j.daemon.connect()?);
+            let api = j.daemon.connect()?;
+            return self.status_locked(&mut j, &api);
         }
         j.remove_requested = true;
         self.save(&j)?;
@@ -303,9 +313,14 @@ impl FolderController {
         }
         j.phase = Phase::Removed;
         self.save(&j)?;
-        self.status_locked(&j, &api)
+        self.status_locked(&mut j, &api)
     }
-    fn status_locked(&self, j: &Journal, api: &Syncthing) -> Result<LocalStatus> {
+    /// Read the last observed connection even when REST is unavailable. No
+    /// daemon start, service registration or filesystem mutation is performed.
+    pub fn last_connected_at(&self) -> Result<Option<u64>> {
+        Ok(self.load()?.last_connected_at)
+    }
+    fn status_locked(&self, j: &mut Journal, api: &Syncthing) -> Result<LocalStatus> {
         let removed = j.phase == Phase::Removed;
         let exists = folders(&api.config()?)?
             .iter()
@@ -339,6 +354,13 @@ impl FolderController {
         let connected = api.connections()?["connections"][&j.descriptor.hub_device_id]["connected"]
             .as_bool()
             .unwrap_or(false);
+        if connected && !removed {
+            let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+            if j.last_connected_at != Some(now) {
+                j.last_connected_at = Some(now);
+                self.save(j)?;
+            }
+        }
         Ok(LocalStatus {
             reused: !j.owns_folder,
             removed,
@@ -347,6 +369,7 @@ impl FolderController {
             status,
             errors,
             hub_connected: connected,
+            last_connected_at: j.last_connected_at,
         })
     }
     fn file(&self) -> PathBuf {
