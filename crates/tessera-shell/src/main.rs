@@ -1112,6 +1112,8 @@ struct Reader {
     #[cfg(unix)]
     renaming: Option<reader_move::Renaming>,
     #[cfg(unix)]
+    move_picker: reader_move_picker::PickerState,
+    #[cfg(unix)]
     note_move_pending: bool,
     #[cfg(unix)]
     move_notice_generation: u64,
@@ -1381,6 +1383,8 @@ impl Reader {
             creation: None,
             #[cfg(unix)]
             renaming: None,
+            #[cfg(unix)]
+            move_picker: Default::default(),
             #[cfg(unix)]
             note_move_pending: false,
             #[cfg(unix)]
@@ -5906,6 +5910,11 @@ impl Render for Reader {
                 }
             }))
             .children(self.render_hover_preview(window, cx))
+            .map(|view| {
+                #[cfg(unix)]
+                let view = view.children(self.render_move_picker());
+                view
+            })
             .children(dialog_layer)
             .children(notification_layer)
             .children(
