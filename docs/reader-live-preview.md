@@ -110,6 +110,13 @@ from this PR's `linux-release` CI artifact before merge. First merge #699 / PR
 report the exact run number, artifact and source commit to the manager so the
 QA sub-session can start. Do not substitute the public beta or an older binary.
 
+The Linux workflow filters automatic PR runs to packaging/workflow changes.
+For S1, dispatch `linux-release.yml` explicitly on the published feature branch
+after its required checks finish. Its `arch-qa` artifact supplies the QA package;
+branch dispatch never enters the public beta publisher. Record that dispatch
+run number separately from the ordinary PR CI run. This uses the existing
+workflow and does not require a packaging-only change to trigger CI.
+
 Use a disposable vault copy. Record package version/commit, compositor, input
 engine, font, scale and window width. Repeat in Source and Live Preview on the
 same machine/session, at wide and narrow widths. The primary acceptance priority
@@ -134,3 +141,16 @@ All required rows must pass before merge; API-level tests alone do not close the
 Linux diagnostics: `~/.local/state/tessera/reader-diagnostic.log` (or the same
 path under `XDG_STATE_HOME`). Store captures/packages in
 `~/.cache/tessera-qa/359/`, never `/tmp`; remove scratch after merge.
+
+### Integration with directory-bound saves (#699)
+
+S1 was rebased locally onto PR #702 commit `b2d1fcf` (main base `98fdecb`).
+All 14 Reader editor tests, shell clippy --tests, fmt and vendor verification
+passed on that combined tree. The actual Linux/X11 lifecycle probe was rerun
+against the integrated binary: exact BOM/CRLF/Unicode clipboard, authored edits,
+Undo/redo across presentation toggles, explicit Save, external-conflict refusal,
+durable journal observed before SIGKILL, restart into Reader and exact draft
+restoration all passed. The external canonical hash and recovered-draft hash
+match the earlier evidence above. Logs and the probe live under
+`~/.cache/tessera-qa/359/integrated-*`. This closes the local integration check;
+it does not replace muninn's pending Wayland/IME acceptance or imply release.
