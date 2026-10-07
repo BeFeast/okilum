@@ -65,6 +65,10 @@ fn catalog() -> Vec<Entry> {
         entry::<SaveSource>("Save", Notes),
         entry::<CloseNote>("Close note", Notes),
         entry::<RenameTreeNote>("Rename", Notes),
+        entry::<reader_move_picker::FolderAccept>("Choose destination folder", Notes),
+        entry::<reader_move_picker::FolderNext>("Next destination folder", Notes),
+        entry::<reader_move_picker::FolderPrevious>("Previous destination folder", Notes),
+        entry::<reader_move_picker::CloseFolderPicker>("Close destination picker", Notes),
         entry::<DeleteNote>("Move to Trash", Notes),
         entry::<UndoTrash>("Undo Move to Trash", Notes),
         entry::<RevealFile>(Os::CURRENT.reveal(), Notes),
@@ -439,6 +443,13 @@ mod tests {
             [Os::CURRENT.shortcut("secondary-/")]
         );
         assert_eq!(row("Close or clear").keys, ["Esc"]);
+        assert_eq!(
+            row("Choose destination folder").keys,
+            [Os::CURRENT.shortcut("enter")]
+        );
+        assert_eq!(row("Next destination folder").keys, ["↓"]);
+        assert_eq!(row("Previous destination folder").keys, ["↑"]);
+        assert_eq!(row("Close destination picker").keys, ["Esc"]);
         // The two hidden-files bindings X11 needs (#395) read as one key.
         assert_eq!(row("Show hidden files").keys.len(), 1);
         #[cfg(not(target_os = "macos"))]
