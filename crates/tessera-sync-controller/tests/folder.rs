@@ -364,7 +364,19 @@ fn owned_folder_and_external_replica_keep_their_boundaries() -> Result<()> {
     let observed = reopened.status()?.last_connected_at;
     assert!(observed.is_some());
     // Offline Remove is journaled before REST, and restart cannot re-enroll.
+    let external_units = root.path().join("external-units-must-not-exist");
+    let runtime = tessera_sync_controller::runtime::Runtime::new(
+        root.path().join("reuse-runtime"),
+        external_units.clone(),
+    );
+    runtime.enable(
+        tessera_sync_controller::runtime::Selection::Reuse(identity.clone()),
+        &configs,
+    )?;
+    assert!(!external_units.exists());
     client.stop()?;
+    assert!(!runtime.disable()?.unwrap().desired_enabled);
+    assert!(!external_units.exists());
     let offline = FolderController::new(controller_state.clone());
     assert_eq!(offline.last_connected_at()?, observed);
     assert!(offline.status().is_err());
