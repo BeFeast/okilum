@@ -251,6 +251,7 @@ impl Reader {
             }
         }
         if is_file {
+            row = row.children(self.render_pdf_controls(cx));
             #[cfg(target_os = "macos")]
             let actions = vec![
                 (
