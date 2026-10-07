@@ -7266,6 +7266,7 @@ mod document_link_landing_tests {
                     (Section::Recent, None),
                     (Section::Pinned, None),
                     (Section::Inbox, None),
+                    (Section::Projects, None),
                     (Section::Folders, None),
                 ]
             );
@@ -7284,6 +7285,7 @@ mod document_link_landing_tests {
                     (Section::Recent, Some(1)),
                     (Section::Pinned, Some(1)),
                     (Section::Inbox, Some(1)),
+                    (Section::Projects, None),
                     (Section::Folders, None),
                 ]
             );
