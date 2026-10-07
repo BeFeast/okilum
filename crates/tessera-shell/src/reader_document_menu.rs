@@ -256,7 +256,8 @@ impl Reader {
                                     if editing { "Preview" } else { "Edit source" },
                                     Box::new(ToggleSource),
                                 )
-                                .menu("Rename / move…", Box::new(RenameNote))
+                                .menu("Rename…", Box::new(RenameNote))
+                                .menu("Move to…", Box::new(reader_move_picker::MoveToFolder))
                                 .menu("Note history", Box::new(NoteSourceHistory))
                                 .separator();
                         }

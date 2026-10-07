@@ -461,3 +461,19 @@ note names, an expandable remainder, and the unchanged entries. Cancel writes
 nothing; commit revalidates the preview. Name collisions, dirty editors and stale
 previews remain under the inline field. The existing revision checks, locks,
 non-overwrite writes and journals are unchanged.
+
+## Folder destinations (#625)
+
+Drag a note or folder onto a tree folder; the destination is highlighted. The
+Folders header is a drop target for the vault root. The document and tree menus
+also offer **Move to…**, with a searchable folder list and arrow/Enter/Esc control.
+The picker uses the loaded inventory, excludes the current parent and the source
+subtree, and checks the destination again before starting the shared revision-aware
+move. It never interprets a typed query as a new filesystem path.
+
+Both entry points preserve the source basename, use the existing link preview and
+safe application, and finish with the same bottom **Moved to…** toast and Undo.
+Large or ambiguous changes still require the existing risk sheet. Collisions,
+foreign-vault drops, active operations and unsaved source editors cannot bypass
+the move guards. Attachments can travel inside a moved folder; these commands do
+not introduce standalone attachment moves.

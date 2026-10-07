@@ -45,6 +45,8 @@ mod reader_layout;
 mod reader_loading;
 #[cfg(unix)]
 mod reader_move;
+#[cfg(unix)]
+mod reader_move_picker;
 mod reader_open;
 mod reader_properties;
 #[cfg(unix)]
@@ -199,6 +201,8 @@ const HIDDEN_FILES_KEYS: [&str; 2] = ["ctrl-shift-.", "ctrl->"];
 const HIDDEN_FILES_KEY_MAC: &str = "cmd->";
 
 fn bind_keys(cx: &mut App) {
+    #[cfg(unix)]
+    reader_move_picker::bind_keys(cx);
     cx.bind_keys([
         KeyBinding::new("alt-cmd-r", RevealFile, Some(READER_CONTEXT)),
         KeyBinding::new("alt-cmd-c", CopyVaultPath, Some(READER_CONTEXT)),
@@ -3170,6 +3174,8 @@ impl Reader {
                 }
             };
         let act = Rc::new(act);
+        #[cfg(unix)]
+        let drag_root = self.vault_root.clone();
         let render_row = Rc::new(move |item: SideItem, ix: usize| {
             let entity = entity.clone();
             let act = act.clone();
@@ -3481,6 +3487,20 @@ impl Reader {
                                     }),
                             )
                     })
+                    .map(|d| {
+                        #[cfg(unix)]
+                        let d = if section == Section::Folders {
+                            reader_move_picker::drop_target(
+                                d,
+                                entity.clone(),
+                                drag_root.clone(),
+                                String::new(),
+                            )
+                        } else {
+                            d
+                        };
+                        d
+                    })
                     .when_some(count, |d, count| {
                         d.child(
                             div()
@@ -3647,6 +3667,33 @@ impl Reader {
                     let on = pinned.contains(&row.path);
                     let path = row.path.clone();
                     row_base(group.clone())
+                        .map(|d| {
+                            #[cfg(unix)]
+                            let d = {
+                                let root = drag_root.clone();
+                                let d = if directory || row.kind == EntryKind::Markdown {
+                                    reader_move_picker::draggable(
+                                        d,
+                                        root.clone(),
+                                        row.path.clone(),
+                                        label.clone(),
+                                    )
+                                } else {
+                                    d
+                                };
+                                if directory {
+                                    reader_move_picker::drop_target(
+                                        d,
+                                        entity.clone(),
+                                        root,
+                                        row.path.clone(),
+                                    )
+                                } else {
+                                    d
+                                }
+                            };
+                            d
+                        })
                         .debug_selector({
                             let group = group.clone();
                             move || group.to_string()
@@ -5452,6 +5499,15 @@ impl Render for Reader {
                 cx.listener(|this, _: &NewFolder, window, cx| this.new_folder(None, window, cx)),
             )
             .on_action(cx.listener(|this, _: &RenameNote, window, cx| this.rename_note(window, cx)))
+            .map(|view| {
+                #[cfg(unix)]
+                let view = view.on_action(cx.listener(
+                    |this, _: &reader_move_picker::MoveToFolder, window, cx| {
+                        this.choose_move_folder(this.selected_file().to_owned(), window, cx);
+                    },
+                ));
+                view
+            })
             .when(cfg!(unix), |view| {
                 #[cfg(unix)]
                 let view = view.on_action(cx.listener(|this, _: &RenameTreeNote, window, cx| {
@@ -8153,24 +8209,36 @@ fn reader_item_menu(
     let menu = reader_files::menu(menu, reader.read(cx).vault_root.clone(), relative.clone());
     #[cfg(unix)]
     let menu = {
+        let movable =
+            reader.read(cx).vault.entries.iter().any(|e| {
+                e.path == relative && e.kind != tessera_core::vault::EntryKind::Attachment
+            });
         let rename_reader = reader.downgrade();
         let rename_path = relative.clone();
-        let menu = menu.when(
-            Path::new(&relative)
-                .extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("md")),
-            |menu| {
-                menu.item(
-                    gpui_component::menu::PopupMenuItem::new("Rename / move…").on_click(
-                        move |_, window, cx| {
-                            let _ = rename_reader.update(cx, |this, cx| {
-                                this.begin_rename(rename_path.clone(), window, cx)
-                            });
-                        },
-                    ),
-                )
-            },
-        );
+        let menu = menu.when(movable, |menu| {
+            menu.item(
+                gpui_component::menu::PopupMenuItem::new("Rename…").on_click(
+                    move |_, window, cx| {
+                        let _ = rename_reader.update(cx, |this, cx| {
+                            this.begin_rename(rename_path.clone(), window, cx)
+                        });
+                    },
+                ),
+            )
+        });
+        let move_reader = reader.downgrade();
+        let move_path = relative.clone();
+        let menu = menu.when(movable, |menu| {
+            menu.item(
+                gpui_component::menu::PopupMenuItem::new("Move to…").on_click(
+                    move |_, window, cx| {
+                        let _ = move_reader.update(cx, |r, cx| {
+                            r.choose_move_folder(move_path.clone(), window, cx)
+                        });
+                    },
+                ),
+            )
+        });
         let reader = reader.downgrade();
         menu.separator().item(
             gpui_component::menu::PopupMenuItem::new("Move to Trash").on_click(
