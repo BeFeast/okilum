@@ -356,6 +356,16 @@ impl Tree {
             .to_owned()
     }
 
+    /// Destination for creation from the selected tree row, even in a collapsed branch.
+    #[cfg(unix)]
+    pub fn selected_creation_folder(&self) -> Option<String> {
+        let cursor = self.cursor.as_deref()?;
+        match self.kinds.get(cursor)? {
+            EntryKind::Directory => Some(cursor.to_owned()),
+            _ => Some(parent(cursor).unwrap_or("").to_owned()),
+        }
+    }
+
     /// The folder ⌥→/⌥← act on: the cursor folder, or a note's parent.
     pub fn cursor_folder(&self) -> Option<String> {
         let cursor = self.cursor.as_deref()?;

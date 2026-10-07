@@ -95,13 +95,16 @@ impl Reader {
             return;
         }
         self.renaming = None;
-        let mut folder = folder.map(str::to_owned).unwrap_or_else(|| {
-            Path::new(&self.current_rel)
-                .parent()
-                .unwrap_or(Path::new(""))
-                .to_string_lossy()
-                .into_owned()
-        });
+        let mut folder = folder
+            .map(str::to_owned)
+            .or_else(|| self.tree.selected_creation_folder())
+            .unwrap_or_else(|| {
+                Path::new(&self.current_rel)
+                    .parent()
+                    .unwrap_or(Path::new(""))
+                    .to_string_lossy()
+                    .into_owned()
+            });
         let templates = self.creation_templates();
         // A template opened for inspection must not turn Cmd-N into a write
         // inside the templates collection.
@@ -261,7 +264,11 @@ impl Reader {
                     cx,
                 );
                 self.toggle_source(window, cx);
-                reader_toast::transient(format!("Created {created}"), window, cx);
+                reader_toast::transient(
+                    format!("Created {}", super::reader_move::display_name(&created)),
+                    window,
+                    cx,
+                );
                 self.queue_vault_mutation(
                     tessera_core::Changes {
                         changed: std::collections::BTreeSet::from([created]),
@@ -276,7 +283,17 @@ impl Reader {
                 self.tree
                     .entry_created(&rel, tessera_core::vault::EntryKind::Directory);
                 self.reveal_in_tree(&rel, window, cx);
-                reader_toast::transient(format!("Created {rel}"), window, cx);
+                reader_toast::transient(
+                    format!(
+                        "Created {}",
+                        Path::new(&rel)
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                    ),
+                    window,
+                    cx,
+                );
                 self.queue_vault_mutation(
                     tessera_core::Changes {
                         directories: std::collections::BTreeSet::from([rel]),
@@ -300,6 +317,66 @@ impl Reader {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+    #[gpui::test]
+    fn creation_prefers_tree_selection_then_open_note(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir_all(root.join("Open")).unwrap();
+        std::fs::create_dir_all(root.join("Selected/Nested")).unwrap();
+        std::fs::write(root.join("Open/Current.md"), "# Current").unwrap();
+        std::fs::write(root.join("Selected/Other.md"), "# Other").unwrap();
+        std::fs::write(root.join("Root.md"), "# Root").unwrap();
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("Open/Current.md".into()),
+                        index_dir: Some(temp.path().join("cache")),
+                        session_directory: Some(temp.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        visual.run_until_parked();
+        for directory in [false, true] {
+            for (selected, explicit, expected) in [
+                (Some("Selected/Nested"), None, "Selected/Nested"),
+                (Some("Selected/Other.md"), None, "Selected"),
+                (Some("Root.md"), None, ""),
+                (None, None, "Open"),
+                (Some("No longer exists.md"), None, "Open"),
+                (Some("Selected/Nested"), Some(""), ""),
+            ] {
+                reader.update_in(visual, |r, window, cx| {
+                    r.tree.cursor = selected.map(str::to_owned);
+                    if directory {
+                        r.new_folder(explicit, window, cx);
+                    } else {
+                        r.new_note(explicit, window, cx);
+                    }
+                    assert_eq!(
+                        r.creation.as_ref().unwrap().folder,
+                        expected,
+                        "directory={directory}, selected={selected:?}, explicit={explicit:?}"
+                    );
+                    r.cancel_creation(window, cx);
+                });
+            }
+        }
+    }
+
     #[gpui::test]
     fn empty_folder_persists_inventory_without_forking_or_copying_search(cx: &mut TestAppContext) {
         cx.update(|cx| {
@@ -503,6 +580,8 @@ mod tests {
         std::fs::create_dir_all(&templates).unwrap();
         std::fs::write(templates.join("Meeting.md"), "# {{title}}\n\nTemplate body").unwrap();
         reader.update_in(visual, |reader, window, cx| {
+            // No tree selection: template creation follows the open note.
+            reader.tree.cursor = None;
             reader.new_from_template(window, cx)
         });
         visual.run_until_parked();

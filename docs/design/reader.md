@@ -635,8 +635,11 @@ action stretches into a full-width text button.
 
 The window toolbar adds Appearance (sun/moon; System → Light → Dark, current
 mode in the tooltip) and Settings (gear). The sidebar header adds New note
-(`SquarePen`, current folder) and New folder (`FolderPlus`); both begin inline
-creation in the tree. The document header adds Reveal in sidebar (`Locate`),
+(`SquarePen`) and New folder (`FolderPlus`); both begin inline creation in
+the selected tree folder, or beside the selected note/file. With no tree
+selection, they use the open note’s folder (vault root if no note is open).
+Explicit context-menu destinations take precedence; template folders remain
+protected (#719). The document header adds Reveal in sidebar (`Locate`),
 Find in note (`TextSearch`) and Rename (`Pencil`). Rename edits the title in
 place with the existing revision-aware rename flow, inline errors and Escape
 to cancel. All actions remain in their existing menus, and use the shared glyph
