@@ -120,6 +120,47 @@ class MaestroTests(unittest.TestCase):
         self.assertEqual(op['state'],'accepted')
 
 
+class GlobalApprovalTests(unittest.TestCase):
+    def test_global_null_and_absent_project_and_recover_without_resending(self):
+        for absent in (False, True):
+            with self.subTest(absent=absent), tempfile.TemporaryDirectory() as d:
+                os.chmod(d,0o700);c=config();c['approval_actions']=['change_global_config']
+                source=SourceFixture(c);source.a['approval']['action']='change_global_config'
+                source.a['approval']['target']=None
+                if absent:source.a['approval'].pop('target')
+                j=Journal(Path(d)/'db',c);inbox=InboxFixture();runner=Runner(c,j,source,inbox)
+                try:
+                    runner.step();q=project(source.a,c,True)
+                    self.assertEqual(q['approval']['target'],{'scope':'global'})
+                    op=operation(q,'approve');inbox.ops=[op];source.lose=True
+                    with self.assertRaises(Unavailable):runner.step()
+                    self.assertEqual(op['state'],'uncertain')
+                    self.assertEqual(len(source.sent),1)
+                    self.assertNotIn('target',source.sent[0][1])
+                    key=op['request']['operation_id'];correct=copy.deepcopy(source.receipts[key])
+                    source.receipts[key][1]['current']['approval']['target']={'pr':99}
+                    with self.assertRaises(Unavailable):Runner(c,j,source,inbox).step()
+                    self.assertEqual(op['state'],'uncertain')
+                    source.receipts[key]=correct
+                    j.db.close();j=Journal(Path(d)/'db',c)
+                    restarted=Runner(c,j,source,inbox);restarted.step();restarted.step()
+                    self.assertEqual(op['state'],'delivered');self.assertEqual(len(source.sent),1)
+                finally:j.db.close()
+
+    def test_invalid_targets_and_scoped_missing_targets_still_fail_closed(self):
+        for action in ('change_global_config','merge_pr'):
+            c=config();c['approval_actions']=[action]
+            invalid=['global',[],1,True,{'too_large':'x'*16385}]
+            if action!='change_global_config':invalid.append(None)
+            for value in invalid:
+                with self.subTest(action=action,target_type=type(value).__name__):
+                    raw=approval();raw['approval'].update(action=action,target=value)
+                    with self.assertRaises(Unavailable):project(raw,c,True)
+            if action!='change_global_config':
+                raw=approval();raw['approval'].pop('target')
+                with self.assertRaises(Unavailable):project(raw,c,True)
+
+
 class PaginationTests(unittest.TestCase):
     def test_truncated_snapshot_replays_all_changes_and_rejects_partial_pages(self):
         c=config();source=Source(c,'fixture-secret');q=question();a=approval();calls=[]

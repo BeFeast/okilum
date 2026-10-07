@@ -170,3 +170,9 @@ gate requiring a manager-coordinated deployment window. The Rust `bridge_api`
 integration test additionally runs this Python adapter against a real HTTP Inbox
 and SQLite Store, recovers question/approval receipts after a journal restart,
 and verifies one source dispatch per operation.
+
+For Maestro `change_global_config` only, a native absent/null approval target means
+an explicit global target. The adapter represents it as `{"scope":"global"}` in
+Inbox and applies the same normalization when validating source receipts. Native
+revision/hash and the outbound decision body remain unchanged. Null/missing
+scoped targets, scalar/list targets, and mismatching receipt targets fail closed.
