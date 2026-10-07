@@ -227,11 +227,17 @@ jobs:
         shell: bash
         run: bash scripts/ci/check-macos.sh
       - name: Save native thumbnail evidence
+        id: thumbnail-evidence
+        # Diagnostic PNG transport must not mask the native compile/test result.
+        continue-on-error: true
         if: always()
         uses: https://code.forgejo.org/actions/upload-artifact@v3
         with:
           name: native-thumbnail-evidence
           path: ${{ runner.temp }}/thumbnail-evidence/
+      - name: Report missing diagnostic evidence
+        if: always() && steps.thumbnail-evidence.outcome == 'failure'
+        run: echo '::warning::Native thumbnail evidence upload failed; see upload logs. Compile/test results remain authoritative.'
 
   # This job preserves the required Forgejo `ci / macos` status. Only the
   # exact-head hosted success or an explicitly requested local fallback passes.
