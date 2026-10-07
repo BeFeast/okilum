@@ -7089,6 +7089,21 @@ mod document_link_landing_tests {
             v.toggle_hidden_files(cx);
             assert_eq!(section_paths(v, Section::Inbox).len(), notes.len());
             assert_eq!(header_count(v, Section::Pinned), Some(notes.len() + 1));
+            // Hidden-only collections are empty on screen: their headers stay
+            // present, but #687 must not show either zero or the raw hidden count.
+            v.sidebar.recent.retain(|(path, _)| path != "Visible.md");
+            v.sidebar.pinned.retain(|path| path != "Visible.md");
+            v.inbox.retain(|item| item.path != "Visible.md");
+            v.toggle_hidden_files(cx);
+            for section in [Section::Recent, Section::Pinned, Section::Inbox] {
+                assert!(section_paths(v, section).is_empty());
+                assert!(
+                    v.sidebar_items()
+                        .iter()
+                        .any(|item| { matches!(item, SideItem::Header(s, None) if *s == section) }),
+                    "{section:?} header remains without a count"
+                );
+            }
         });
     }
 
