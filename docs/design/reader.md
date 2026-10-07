@@ -74,8 +74,11 @@ Find, right-panel toggle, More.
 
 The main toolbar search glyph opens vault-wide **content search** (#624), with
 Ctrl+Shift+F / ⇧⌘F in its tooltip. **Find in note** lives in the document's **…**
-menu and retains Ctrl+F / ⌘F. Quick open (Ctrl+K / ⌘K) is unchanged; the document
-header has no duplicate search glyph.
+menu and in its header as a distinct `TextSearch` glyph, with Ctrl+F / ⌘F.
+Quick open (Ctrl+K / ⌘K) is unchanged. The same Find action works in preview
+and Edit source. Both match literal text without case by default, including
+Unicode letters. The optional Aa / Match case switch starts off; its explicit
+choice is remembered globally in the application UI store outside the vault (#682).
 
 - Hidden by default. ⌘F / Ctrl+F opens it; ✕ closes it and clears marks.
   Opening it keeps docked panels; only a compact overlay closes.
@@ -204,7 +207,7 @@ glyphs are added as Tessera assets under `icons/` and loaded with `Icon::path`.
 | --- | --- | --- |
 | Toggle sidebar | `PanelLeft` | «Notes ⌘\\» |
 | Back / Forward | `ArrowLeft` / `ArrowRight` | «Back ⌥←», «Forward ⌥→», disabled at the ends |
-| Find in note | `Search` | «Find in note ⌘F» |
+| Find in note | `TextSearch` | «Find in note ⌘F» |
 | Toggle right panel | `PanelRight` | «On this page ⌥⌘\\» |
 | More | `Ellipsis` | menu |
 | Close find | `Close` | «Close Esc» |
@@ -621,3 +624,14 @@ Files shows the vault name and shortened location, with the full path in a
 tooltip and an explicit platform Reveal action. Hidden-file visibility is a
 switch. Templates has an inline current value and folder action. No setting
 action stretches into a full-width text button.
+
+### Direct toolbar actions (#680)
+
+The window toolbar adds Appearance (sun/moon; System → Light → Dark, current
+mode in the tooltip) and Settings (gear). The sidebar header adds New note
+(`SquarePen`, current folder) and New folder (`FolderPlus`); both begin inline
+creation in the tree. The document header adds Reveal in sidebar (`Locate`),
+Find in note (`TextSearch`) and Rename (`Pencil`). Rename edits the title in
+place with the existing revision-aware rename flow, inline errors and Escape
+to cancel. All actions remain in their existing menus, and use the shared glyph
+control size and baseline. Contents preserves authored heading text verbatim.

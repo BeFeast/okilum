@@ -254,12 +254,14 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-s", SaveSource, ctx),
         KeyBinding::new("secondary-e", ToggleSource, Some("Reader > Input")),
         KeyBinding::new("secondary-s", SaveSource, Some("Reader > Input")),
+        #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-f", FindInNote, ctx),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-f", FindInNote, ctx),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-f", FindInNote, Some("Reader > Input")),
         // Reader commands outrank toolkit editing aliases only inside Reader inputs.
+        #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-f", FindInNote, Some("Reader > Input")),
         KeyBinding::new("ctrl-k", QuickOpen, Some("Reader > Input")),
         KeyBinding::new("escape", Dismiss, ctx),
@@ -1829,6 +1831,7 @@ impl Reader {
         self.quick_open.open = false;
         self.quick_open.invalidate();
         if self.editing.is_some() {
+            self.open_source_find(cx);
             return;
         }
         self.resizing_panel = None;
@@ -1854,8 +1857,11 @@ impl Reader {
     /// Recompute the matches for the find term and re-mark the note.
     fn run_find(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let term = self.find_input.read(cx).value().trim().to_string();
-        self.content
-            .update(cx, |s, cx| s.set_search_query(term, cx));
+        let sensitive = reader_ui_state::find_case_sensitive(cx);
+        self.content.update(cx, |s, cx| {
+            s.set_search_case_sensitive(sensitive, cx);
+            s.set_search_query(term, cx);
+        });
         cx.notify();
     }
 
@@ -2415,7 +2421,11 @@ impl Reader {
             }
             for row in self.tree.rows.iter() {
                 #[cfg(unix)]
-                if let Some(rename) = self.renaming.as_ref().filter(|r| r.path == row.path) {
+                if let Some(rename) = self
+                    .renaming
+                    .as_ref()
+                    .filter(|r| !r.in_header && r.path == row.path)
+                {
                     items.push(SideItem::Rename(
                         rename.input.clone(),
                         row.depth,
@@ -2826,6 +2836,34 @@ impl Reader {
                             this.toggle_panel(reader_layout::Panel::Backlinks, window, cx)
                         })),
                     ))
+                    .child(
+                        reader_icon_button(
+                            "reader-appearance",
+                            if appearance_label(cx) == "Dark" {
+                                IconName::Moon
+                            } else {
+                                IconName::Sun
+                            },
+                            match appearance_label(cx) {
+                                "Light" => "Appearance: Light",
+                                "Dark" => "Appearance: Dark",
+                                _ => "Appearance: System",
+                            },
+                            cx,
+                        )
+                        .on_click(|_, window, cx| cycle_appearance(window, cx)),
+                    )
+                    .child(
+                        reader_icon_button(
+                            "reader-settings",
+                            IconName::Settings,
+                            with_shortcut("Settings", "secondary-,"),
+                            cx,
+                        )
+                        .on_click(cx.listener(|_, _, _, cx| {
+                            reader_settings::show(Some(cx.entity().downgrade()), cx)
+                        })),
+                    )
                     .child(reader_more_menu(
                         self.vault_root.clone(),
                         self.selected_file().to_owned(),
@@ -2838,6 +2876,25 @@ impl Reader {
     }
 
     fn render_breadcrumbs(&self, cx: &mut Context<Self>) -> AnyElement {
+        #[cfg(unix)]
+        if let Some(rename) = self.renaming.as_ref().filter(|r| r.in_header) {
+            return v_flex()
+                .id("note-title-rename")
+                .key_context("InlineRename")
+                .flex_1()
+                .min_w_0()
+                .on_action(|_: &gpui_component::input::Enter, _, cx| cx.stop_propagation())
+                .child(Input::new(&rename.input).small().appearance(false))
+                .when_some(rename.error.clone(), |view, error| {
+                    view.child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(cx.theme().danger)
+                            .child(error),
+                    )
+                })
+                .into_any_element();
+        }
         let p = brand::palette(cx);
         let faint = brand::reader_palette(cx).text_faint;
         // Each folder crumb carries its root-relative path (#366).
@@ -3018,6 +3075,30 @@ impl Reader {
                     .child(count),
             )
             .when(left, |header| {
+                #[cfg(unix)]
+                let header = header
+                    .child(
+                        reader_icon_button(
+                            "sidebar-new-note",
+                            Icon::default().path("icons/square-pen.svg"),
+                            with_shortcut("New note", "secondary-n"),
+                            cx,
+                        )
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.new_note(None, window, cx)),
+                        ),
+                    )
+                    .child(
+                        reader_icon_button(
+                            "sidebar-new-folder",
+                            Icon::default().path("icons/folder-plus.svg"),
+                            "New folder",
+                            cx,
+                        )
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.new_folder(None, window, cx)),
+                        ),
+                    );
                 header.child(
                     h_flex()
                         .id("sidebar-search")
@@ -3104,6 +3185,19 @@ impl Reader {
                     .text_color(muted)
                     .min_w(px(56.))
                     .child(count),
+            )
+            .child(
+                Button::new("find-case-sensitive")
+                    .ghost()
+                    .small()
+                    .icon(IconName::CaseSensitive)
+                    .selected(reader_ui_state::find_case_sensitive(cx))
+                    .tooltip("Match case")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        let sensitive = !reader_ui_state::find_case_sensitive(cx);
+                        reader_ui_state::set_find_case_sensitive(sensitive, cx);
+                        this.run_find(window, cx);
+                    })),
             )
             .child(
                 Button::new("find-prev")
@@ -8312,7 +8406,10 @@ mod document_link_landing_tests {
                 .focus_handle(cx)
                 .is_focused(window));
         });
+        #[cfg(not(target_os = "macos"))]
         visual.simulate_keystrokes("ctrl-f");
+        #[cfg(target_os = "macos")]
+        visual.simulate_keystrokes("cmd-f");
         visual.run_until_parked();
         view.update_in(visual, |v, window, cx| {
             assert_eq!(

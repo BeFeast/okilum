@@ -175,6 +175,43 @@ impl Reader {
                 .on_click(cx.listener(|this, _, window, cx| this.toggle_source(window, cx))),
             );
         }
+        if !is_file {
+            row = row
+                .child(
+                    reader_icon_button(
+                        "note-reveal",
+                        Icon::default().path(brand::READER_FOCUS_ICON),
+                        "Reveal in sidebar",
+                        cx,
+                    )
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.focus_current_folder(window, cx)),
+                    ),
+                )
+                .child(
+                    reader_icon_button(
+                        "note-find",
+                        Icon::default().path("icons/text-search.svg"),
+                        with_shortcut("Find in note", "secondary-f"),
+                        cx,
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| this.open_find(window, cx))),
+                );
+            #[cfg(unix)]
+            {
+                row = row.child(
+                    reader_icon_button(
+                        "note-rename",
+                        Icon::default().path("icons/pencil.svg"),
+                        "Rename",
+                        cx,
+                    )
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.rename_note_title(window, cx)),
+                    ),
+                );
+            }
+        }
         if is_file {
             #[cfg(target_os = "macos")]
             let actions = vec![
@@ -246,7 +283,7 @@ impl Reader {
                     if !is_file {
                         menu = menu.menu_with_icon(
                             "Find in note",
-                            IconName::Search,
+                            Icon::default().path("icons/text-search.svg"),
                             Box::new(FindInNote),
                         );
                         #[cfg(unix)]
