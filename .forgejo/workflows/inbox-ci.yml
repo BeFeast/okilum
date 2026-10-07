@@ -5,12 +5,14 @@ on:
     paths:
       - 'inbox/**'
       - 'web/inbox/**'
+      - 'crates/tessera-sync/**'
       - '.forgejo/workflows/inbox-ci.yml'
   push:
     branches: [main]
     paths:
       - 'inbox/**'
       - 'web/inbox/**'
+      - 'crates/tessera-sync/**'
       - '.forgejo/workflows/inbox-ci.yml'
   workflow_dispatch:
 
@@ -23,7 +25,10 @@ permissions:
 
 jobs:
   inbox-tests:
-    runs-on: light
+    # Existing baldr Docker label: keep long builds off light/bridge waiters.
+    runs-on: docker
+    container:
+      image: ghcr.io/catthehacker/ubuntu:act-24.04
     timeout-minutes: 20
     # Not a required branch check; failures remain visible instead of being masked.
     # Inbox PRs must pass this job before their executor merges them.

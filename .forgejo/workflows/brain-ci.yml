@@ -26,7 +26,10 @@ permissions:
 
 jobs:
   brain-tests:
-    runs-on: light
+    # Existing baldr Docker label: keep long builds off light/bridge waiters.
+    runs-on: docker
+    container:
+      image: ghcr.io/catthehacker/ubuntu:act-24.04
     timeout-minutes: 45
     continue-on-error: true
     # Shared sccache on the LAN S3 backend (private runner operations runbook,
