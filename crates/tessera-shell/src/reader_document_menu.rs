@@ -12,6 +12,17 @@ impl Reader {
         offset.item_ix == 0 && offset.offset_in_item <= px(0.5)
     }
 
+    pub(super) fn reader_top_inset(&self, cx: &App) -> Pixels {
+        // TextView padding belongs to its stationary clip, not the scrollable
+        // document. Keep the opening breathing room only while the header is
+        // visible; otherwise it leaves a blank band above every scrolled row.
+        if self.restored_document_header() || self.document_at_top(cx) {
+            (px(44.) - self.document_header_hidden).max(px(0.))
+        } else {
+            px(0.)
+        }
+    }
+
     pub(super) fn render_document_surface(
         &self,
         window: &mut Window,
@@ -29,19 +40,45 @@ impl Reader {
         } else {
             height
         };
+        let header = self.render_document_header(cx);
+        let viewport = div()
+            .debug_selector(|| "document-header-viewport".into())
+            .flex_none()
+            .overflow_hidden();
+        // A wheel detent can consume all 48px at once. Animate presentation,
+        // not source offsets: caret, selection and saved scroll stay exact.
+        // A new note/mode mounts at its target (including restored sessions).
+        let header = if self.source_scroll_offset(cx).is_some() {
+            // The component spring uses GPUI's executor clock in both native
+            // frames and deterministic tests; with_spring uses wall-clock time.
+            let displayed = gpui_base::motion::spring(
+                SharedString::from(format!("source-header-motion:{}", self.current_rel)),
+                hidden,
+                // Same physical spring: omega=20, stiffness=400, damping=40.
+                gpui_base::motion::Spring::new(Duration::from_secs_f32(
+                    std::f32::consts::TAU / 20.,
+                ))
+                .with_epsilon(0.1),
+                window,
+                cx,
+            )
+            .clamp(px(0.), height);
+            viewport
+                .h(height - displayed)
+                .child(header.relative().top(-displayed))
+                .into_any_element()
+        } else {
+            viewport
+                .h(height - hidden)
+                .child(header.relative().top(-hidden))
+                .into_any_element()
+        };
         let view = cx.entity().downgrade();
         v_flex()
             .size_full()
             .min_h_0()
             .relative()
-            .child(
-                div()
-                    .debug_selector(|| "document-header-viewport".into())
-                    .flex_none()
-                    .h(height - hidden)
-                    .overflow_hidden()
-                    .child(self.render_document_header(cx).relative().top(-hidden)),
-            )
+            .child(header)
             .child(div().flex_1().min_h_0().child(self.render_main(window, cx)))
             .child(
                 canvas(
@@ -610,6 +647,11 @@ mod tests {
         visual.run_until_parked();
         let wheel = |visual: &mut VisualTestContext, delta| {
             visual.update(|window, cx| window.draw(cx).clear(cx));
+            let before = visual
+                .debug_bounds("document-header-viewport")
+                .unwrap()
+                .size
+                .height;
             let body = visual.debug_bounds("reader-document").unwrap();
             visual.simulate_event(ScrollWheelEvent {
                 position: point(body.center().x, body.top() + px(130.)),
@@ -617,6 +659,59 @@ mod tests {
                 ..Default::default()
             });
             visual.run_until_parked();
+            let (source, target, reduced) = reader.read_with(visual, |r, cx| {
+                (
+                    r.source_scroll_offset(cx).is_some(),
+                    if r.document_at_top(cx) {
+                        px(48.) - r.document_header_hidden
+                    } else {
+                        px(0.)
+                    },
+                    cx.reduce_motion(),
+                )
+            });
+            if source && reduced {
+                assert_eq!(
+                    visual
+                        .debug_bounds("document-header-viewport")
+                        .unwrap()
+                        .size
+                        .height,
+                    target,
+                    "Reduce Motion snaps without scheduling transition frames"
+                );
+            }
+            if source && !reduced && before != target {
+                let first = visual
+                    .debug_bounds("document-header-viewport")
+                    .unwrap()
+                    .size
+                    .height;
+                assert_ne!(
+                    first, target,
+                    "source header must not snap in the event frame"
+                );
+                visual.executor().advance_clock(Duration::from_millis(40));
+                visual.update(|window, cx| {
+                    window.simulate_next_frame(cx);
+                    window.draw(cx).clear(cx);
+                });
+                let middle = visual
+                    .debug_bounds("document-header-viewport")
+                    .unwrap()
+                    .size
+                    .height;
+                assert!(middle > before.min(target) && middle < before.max(target),
+                    "actual header has an intermediate frame: {before:?} -> {middle:?} -> {target:?}");
+            }
+            // Deterministic frame clock, not a wall-clock sleep.
+            for _ in 0..30 {
+                visual.executor().advance_clock(Duration::from_millis(20));
+                visual.update(|window, cx| {
+                    window.simulate_next_frame(cx);
+                    window.draw(cx).clear(cx);
+                });
+            }
         };
         for source in [false, true]
             .into_iter()
@@ -672,6 +767,16 @@ mod tests {
                     "remaining motion scrolls actual content"
                 )
             });
+            if !source {
+                let document = visual.debug_bounds("reader-document").unwrap();
+                reader.read_with(visual, |this, cx| {
+                    let viewport = this.content.read(cx).list_state().viewport_bounds();
+                    assert!(
+                        (viewport.top() - document.top()).abs() < px(1.),
+                        "collapsed Reader viewport must reach the document top: {viewport:?} vs {document:?}"
+                    );
+                });
+            }
             wheel(visual, 10000.);
             wheel(visual, 100.);
             assert_eq!(
@@ -683,6 +788,22 @@ mod tests {
                 px(48.)
             );
         }
+        if cfg!(unix) {
+            visual.update(|_, cx| cx.set_reduce_motion(true));
+            wheel(visual, -80.);
+            assert_eq!(
+                visual
+                    .debug_bounds("document-header-viewport")
+                    .unwrap()
+                    .size
+                    .height,
+                px(0.)
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(root.join("Long.md")).unwrap(),
+            format!("# Long\n\n{}", "Paragraph text.\n\n".repeat(150))
+        );
         std::fs::remove_dir_all(fixture).unwrap();
     }
 }

@@ -1374,6 +1374,15 @@ mod tests {
                     ..Default::default()
                 });
                 visual.run_until_parked();
+                // Source header presentation settles over animation frames;
+                // advancing the injected clock must not change source offsets.
+                for _ in 0..30 {
+                    visual.executor().advance_clock(Duration::from_millis(20));
+                    visual.update(|window, cx| {
+                        window.simulate_next_frame(cx);
+                        window.draw(cx).clear(cx);
+                    });
+                }
                 visual.update(|window, cx| window.draw(cx).clear(cx));
                 assert_eq!(
                     visual

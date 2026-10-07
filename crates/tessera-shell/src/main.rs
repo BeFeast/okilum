@@ -4186,7 +4186,7 @@ impl Reader {
                                 .style(style)
                                 .text_size(px(reader_ui_state::font_size(cx)))
                                 .px(px(READER_SIDE_PADDING))
-                                .pt(px(44.))
+                                .pt(self.reader_top_inset(cx))
                                 .w_full()
                                 .flex_1()
                                 .min_h_0(),
