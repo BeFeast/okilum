@@ -1088,14 +1088,25 @@ mod tests {
                 last_frame_changed: false,
                 path: current.path.clone(),
             };
+            set_find_case_sensitive(true, cx);
+            flush(cx);
             independent.run().unwrap();
             let merged = read(&current.path).unwrap();
             assert_eq!(merged.vaults[&first], closed);
             assert!(merged.vaults.contains_key(&second));
+            assert!(
+                merged.find_case_sensitive,
+                "view preferences preserve newer search settings"
+            );
+            set_find_case_sensitive(false, cx);
             set_appearance(Some(ThemeMode::Dark), cx);
             flush(cx);
             let merged = read(&current.path).unwrap();
             assert_eq!(merged.appearance, "dark");
+            assert!(
+                !merged.find_case_sensitive,
+                "positive control: the search setting was saved"
+            );
             assert_eq!(
                 merged.typed_views, independent.saved.typed_views,
                 "unrelated writes preserve mappings, defaults and unknown view IDs"
