@@ -2,7 +2,7 @@
 # Source from the build user's shell. Cache failures must not prevent compilation.
 # Missing credentials (including fork PRs) use the normal compiler.
 # Never inherit a stale wrapper from a previous runner environment.
-unset RUSTC_WRAPPER
+unset RUSTC_WRAPPER SCCACHE_SERVER_UDS SCCACHE_IDLE_TIMEOUT SCCACHE_IGNORE_SERVER_IO_ERROR
 _enable_release_cache() {
   local cache_target cache_hash cache_dir cache_stage
   [[ -n ${AWS_ACCESS_KEY_ID:-} && -n ${SCCACHE_ENDPOINT:-} ]] || return 1
@@ -64,7 +64,7 @@ PY
 }
 
 if ! _enable_release_cache; then
-  unset RUSTC_WRAPPER
+  unset RUSTC_WRAPPER SCCACHE_SERVER_UDS SCCACHE_IDLE_TIMEOUT SCCACHE_IGNORE_SERVER_IO_ERROR
   echo '::warning::Shared compiler cache unavailable; building without sccache'
 fi
 unset -f _enable_release_cache _install_release_cache

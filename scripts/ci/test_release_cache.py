@@ -57,10 +57,12 @@ class CacheFallbackTests(unittest.TestCase):
                        'TESSERA_SCCACHE_HOME': str(root / 'cache'),
                        'RUSTC_WRAPPER': '/stale/wrapper', 'PROBE_ARGS': str(root / 'args')}
                 result = subprocess.run(['bash', '-eu', '-c',
-                    'source "$1"; printf "wrapper=%s\\n" "${RUSTC_WRAPPER:-}"; echo compiler-continues',
+                    'source "$1"; printf "wrapper=%s\\n" "${RUSTC_WRAPPER:-}"; printf "socket=%s\\n" "${SCCACHE_SERVER_UDS:-}"; echo compiler-continues',
                     'test', str(SCRIPT)], env=env, capture_output=True, text=True, timeout=8)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn('compiler-continues', result.stdout)
                 self.assertIn('wrapper=' + (str(cache) if enabled else '') + '\n', result.stdout)
                 self.assertEqual('::warning::' in result.stdout, not enabled)
+                if not enabled:
+                    self.assertIn('socket=\n', result.stdout)
                 self.assertIn('--connect-timeout 3 --max-time 3', (root / 'args').read_text())
