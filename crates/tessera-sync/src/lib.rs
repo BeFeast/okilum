@@ -194,6 +194,42 @@ impl Syncthing {
             None,
         )
     }
+    pub fn connections(&self) -> Result<Value> {
+        self.request(Method::GET, "/rest/system/connections", None)
+    }
+    /// Caller must establish ownership before deleting either scoped record.
+    pub fn remove_folder(&self, id: &str) -> Result<()> {
+        self.request(
+            Method::DELETE,
+            &format!("/rest/config/folders/{}", segment(id)?),
+            None,
+        )?;
+        ensure!(
+            !self.config()?["folders"]
+                .as_array()
+                .context("invalid folders")?
+                .iter()
+                .any(|f| f["id"] == id),
+            "folder removal read-back failed"
+        );
+        Ok(())
+    }
+    pub fn remove_device(&self, id: &str) -> Result<()> {
+        self.request(
+            Method::DELETE,
+            &format!("/rest/config/devices/{}", segment(id)?),
+            None,
+        )?;
+        ensure!(
+            !self.config()?["devices"]
+                .as_array()
+                .context("invalid devices")?
+                .iter()
+                .any(|d| d["deviceID"] == id),
+            "device removal read-back failed"
+        );
+        Ok(())
+    }
     pub fn scan(&self, id: &str) -> Result<()> {
         self.request(
             Method::POST,

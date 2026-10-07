@@ -144,3 +144,36 @@ The real Linux regression test replaces the package after preparation, rejects
 both an unsupported version and changed same-version bytes, restores the original
 package, and verifies that unlinking the running executable does not hide its
 custom-home configuration. User-service disable/re-enable still preserves identity.
+
+## Scoped folder enrollment and external reuse (next increment)
+
+`folder::FolderController` binds a HubReady grant to the selected authenticated
+2.1.6 daemon, canonical destination and approved hub descriptor. It requires a
+complete fresh inventory: unavailable daemons, overlapping paths and unknown
+nonempty destinations prevent enrollment. A known replica must belong to the
+selected daemon, share the approved hub and already have the approved ignore
+policy. Reuse preserves its configuration rather than replacing it.
+
+A new folder is created paused and receive-only. Ignore policy is written and
+read back before unpausing. The durable journal precedes each owned mutation,
+so replay does not create a second folder or adopt a changed destination. A new
+hub record uses one-way introduction; existing hub configuration is preserved.
+Pause affects only the selected folder. Remove persists terminal intent even
+when the daemon is offline, removes only owned folder/device configuration and
+retains all canonical files. For reuse, Remove restores any controller-owned
+pause change once, then relinquishes authority; repeated Remove cannot override
+subsequent external changes. It reports that external synchronization remains.
+Service grant revocation and managed service shutdown remain separate operations
+that the desktop orchestrator must reconcile.
+
+The isolated test uses a real 1.29.5 hub and 2.1.6 client with loopback-only
+transport, independent identities and temporary data. It verifies real content
+receipt, index exclusions, restart replay, reuse preservation, folder pause,
+offline removal recovery and survival of unrelated configuration and local files.
+No production hub is contacted. Folder status exposes unavailable paused-folder
+errors as null, rather than claiming zero errors.
+
+This increment deliberately leaves a new folder receive-only. Automatic promotion
+requires proof that the hub index was received, including for an empty vault;
+idle plus zero pending items alone is insufficient. Completion/promotion, durable
+connection/conflict reporting and Reader orchestration remain subsequent work.

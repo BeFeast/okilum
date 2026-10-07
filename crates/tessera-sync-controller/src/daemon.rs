@@ -17,7 +17,7 @@ use xmltree::{Element, XMLNode};
 
 pub const CLIENT_VERSION: &str = "v2.1.6";
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct DaemonIdentity {
     pub config_file: PathBuf,
