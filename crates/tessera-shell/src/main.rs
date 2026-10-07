@@ -1831,6 +1831,7 @@ impl Reader {
         self.quick_open.open = false;
         self.quick_open.invalidate();
         if self.editing.is_some() {
+            self.open_source_find(cx);
             return;
         }
         self.resizing_panel = None;
@@ -1856,8 +1857,11 @@ impl Reader {
     /// Recompute the matches for the find term and re-mark the note.
     fn run_find(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let term = self.find_input.read(cx).value().trim().to_string();
-        self.content
-            .update(cx, |s, cx| s.set_search_query(term, cx));
+        let sensitive = reader_ui_state::find_case_sensitive(cx);
+        self.content.update(cx, |s, cx| {
+            s.set_search_case_sensitive(sensitive, cx);
+            s.set_search_query(term, cx);
+        });
         cx.notify();
     }
 
@@ -3181,6 +3185,19 @@ impl Reader {
                     .text_color(muted)
                     .min_w(px(56.))
                     .child(count),
+            )
+            .child(
+                Button::new("find-case-sensitive")
+                    .ghost()
+                    .small()
+                    .icon(IconName::CaseSensitive)
+                    .selected(reader_ui_state::find_case_sensitive(cx))
+                    .tooltip("Match case")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        let sensitive = !reader_ui_state::find_case_sensitive(cx);
+                        reader_ui_state::set_find_case_sensitive(sensitive, cx);
+                        this.run_find(window, cx);
+                    })),
             )
             .child(
                 Button::new("find-prev")
@@ -8389,7 +8406,10 @@ mod document_link_landing_tests {
                 .focus_handle(cx)
                 .is_focused(window));
         });
+        #[cfg(not(target_os = "macos"))]
         visual.simulate_keystrokes("ctrl-f");
+        #[cfg(target_os = "macos")]
+        visual.simulate_keystrokes("cmd-f");
         visual.run_until_parked();
         view.update_in(visual, |v, window, cx| {
             assert_eq!(

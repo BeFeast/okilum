@@ -116,6 +116,7 @@ struct Saved {
     appearance: String,
     font_size: f32,
     reading_width: f32,
+    find_case_sensitive: bool,
     vaults: BTreeMap<PathBuf, Layout>,
     last_layout: Option<Layout>,
     frames: BTreeMap<String, window_state::Frame>,
@@ -128,6 +129,7 @@ impl Default for Saved {
             appearance: "system".into(),
             font_size: BODY_FONT_SIZE,
             reading_width: READER_MAX_WIDTH,
+            find_case_sensitive: false,
             vaults: Default::default(),
             last_layout: None,
             frames: Default::default(),
@@ -142,6 +144,7 @@ struct Store {
     appearance_changed: bool,
     font_changed: bool,
     width_changed: bool,
+    find_changed: bool,
     frames_changed: BTreeSet<String>,
     last_changed: bool,
     last_frame_changed: bool,
@@ -198,6 +201,7 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         appearance_changed: !path.exists(),
         font_changed: !path.exists(),
         width_changed: !path.exists(),
+        find_changed: false,
         frames_changed: Default::default(),
         last_changed: false,
         last_frame_changed: false,
@@ -303,6 +307,7 @@ struct WriteJob {
     appearance_changed: bool,
     font_changed: bool,
     width_changed: bool,
+    find_changed: bool,
     serial: Arc<AtomicU64>,
     generation: u64,
 }
@@ -343,6 +348,9 @@ impl WriteJob {
         if self.width_changed {
             latest.reading_width = self.saved.reading_width;
         }
+        if self.find_changed {
+            latest.find_case_sensitive = self.saved.find_case_sensitive;
+        }
         if self.last_changed {
             latest.last_layout = self.saved.last_layout.clone();
         }
@@ -376,6 +384,7 @@ fn job(cx: &App) -> Option<WriteJob> {
             && !state.appearance_changed
             && !state.font_changed
             && !state.width_changed
+            && !state.find_changed
             && !state.last_changed
             && !state.last_frame_changed)
     {
@@ -391,6 +400,7 @@ fn job(cx: &App) -> Option<WriteJob> {
         appearance_changed: state.appearance_changed,
         font_changed: state.font_changed,
         width_changed: state.width_changed,
+        find_changed: state.find_changed,
         serial: state.serial.clone(),
         generation: state.serial.load(Ordering::SeqCst),
     })
@@ -826,6 +836,22 @@ pub(crate) fn capture_scroll(reader: WeakEntity<Reader>) -> impl IntoElement {
     .size_full()
 }
 
+pub(crate) fn find_case_sensitive(cx: &App) -> bool {
+    cx.try_global::<Store>()
+        .is_some_and(|state| state.saved.find_case_sensitive)
+}
+
+pub(crate) fn set_find_case_sensitive(value: bool, cx: &mut App) {
+    if !installed(cx) || find_case_sensitive(cx) == value {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.find_case_sensitive = value;
+    state.find_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
 pub(crate) fn font_size(cx: &App) -> f32 {
     cx.try_global::<Store>().map_or(BODY_FONT_SIZE, |state| {
         state.saved.font_size.clamp(12., 24.)
@@ -864,6 +890,7 @@ fn mark_saved(generation: u64, cx: &mut App) {
         state.appearance_changed = false;
         state.font_changed = false;
         state.width_changed = false;
+        state.find_changed = false;
         state.last_changed = false;
         state.last_frame_changed = false;
     }
@@ -906,6 +933,8 @@ mod tests {
             install(&directory, cx);
             set_appearance(Some(ThemeMode::Dark), cx);
             set_reading(19.5, 960., cx);
+            assert!(!find_case_sensitive(cx));
+            set_find_case_sensitive(true, cx);
             record(&root, saved.clone(), true, cx);
             assert!(
                 !directory.join("reader-ui.json").exists(),
@@ -916,6 +945,10 @@ mod tests {
             assert!(matches!(appearance(cx).unwrap().0, Some(ThemeMode::Dark)));
             assert_eq!(font_size(cx), 19.5);
             assert_eq!(reading_width(cx), 960.);
+            assert!(
+                find_case_sensitive(cx),
+                "Match case survives relaunch outside the vault"
+            );
             let (restored, known) = layout(&root, cx).unwrap();
             assert!(known);
             assert_eq!(restored, saved);
@@ -969,6 +1002,7 @@ mod tests {
                 appearance_changed: false,
                 font_changed: true,
                 width_changed: false,
+                find_changed: false,
                 frames_changed: Default::default(),
                 last_changed: false,
                 last_frame_changed: false,

@@ -1,0 +1,251 @@
+--- a/crates/base/src/text/node.rs
++++ b/crates/base/src/text/node.rs
+@@ -1347,13 +1347,18 @@
+             return;
+         }
+         if self.language_cache.lock().is_ok_and(|cache| {
+-            cache.as_ref().is_some_and(|cached| Arc::ptr_eq(&cached.resolver, resolver))
++            cache
++                .as_ref()
++                .is_some_and(|cached| Arc::ptr_eq(&cached.resolver, resolver))
+         }) {
+             return;
+         }
+         let language = resolver(self);
+         if let Ok(mut cache) = self.language_cache.lock() {
+-            *cache = Some(CachedCodeLanguage { resolver: resolver.clone(), language });
++            *cache = Some(CachedCodeLanguage {
++                resolver: resolver.clone(),
++                language,
++            });
+         }
+     }
+ 
+@@ -1467,41 +1472,37 @@
+     pub(super) block: usize,
+ }
+ 
+-pub(super) fn search_matches(blocks: &[BlockNode], query: &str) -> Vec<SearchMatch> {
++pub(super) fn search_matches(
++    blocks: &[BlockNode],
++    query: &str,
++    case_sensitive: bool,
++) -> Vec<SearchMatch> {
+     if query.is_empty() {
+         return Vec::new();
+     }
++    let Ok(query) = regex::RegexBuilder::new(&regex::escape(query))
++        .case_insensitive(!case_sensitive)
++        .build()
++    else {
++        return Vec::new();
++    };
+     fn segment(
+         text: &str,
+         state: &Arc<Mutex<InlineState>>,
+-        query: &str,
++        query: &regex::Regex,
+         block: usize,
+         out: &mut Vec<SearchMatch>,
+     ) {
+-        if query.is_empty() {
+-            return;
+-        }
+-        let mut start = 0;
+-        while start + query.len() <= text.len() {
+-            let Some(relative) = text.as_bytes()[start..]
+-                .windows(query.len())
+-                .position(|candidate| candidate.eq_ignore_ascii_case(query.as_bytes()))
+-            else {
+-                break;
+-            };
+-            let position = start + relative;
+-            let end = position + query.len();
+-            if text.is_char_boundary(position) && text.is_char_boundary(end) {
+-                out.push(SearchMatch {
+-                    segment: Arc::as_ptr(state) as usize,
+-                    range: position..end,
+-                    block,
+-                });
+-            }
+-            start = end;
+-        }
+-    }
+-    fn paragraph(p: &Paragraph, query: &str, block: usize, out: &mut Vec<SearchMatch>) {
++        for hit in query.find_iter(text) {
++            out.push(SearchMatch {
++                segment: Arc::as_ptr(state) as usize,
++                range: hit.range(),
++                block,
++            });
++        }
++    }
++
++    fn paragraph(p: &Paragraph, query: &regex::Regex, block: usize, out: &mut Vec<SearchMatch>) {
+         let mut text = String::new();
+         for child in &p.children {
+             text.push_str(&child.text);
+@@ -1512,7 +1513,7 @@
+         }
+         segment(&text, &p.state, query, block, out);
+     }
+-    fn visit(node: &BlockNode, query: &str, block: usize, out: &mut Vec<SearchMatch>) {
++    fn visit(node: &BlockNode, query: &regex::Regex, block: usize, out: &mut Vec<SearchMatch>) {
+         match node {
+             BlockNode::Paragraph(p) | BlockNode::Heading { children: p, .. } => {
+                 paragraph(p, query, block, out)
+@@ -1545,7 +1546,7 @@
+     }
+     let mut out = Vec::new();
+     for (block, node) in blocks.iter().enumerate() {
+-        visit(node, query, block, &mut out);
++        visit(node, &query, block, &mut out);
+     }
+     out
+ }
+@@ -1759,7 +1760,15 @@
+                             let aux_link_click_handler = link_click_handler.clone();
+                             this.cursor_pointer()
+                                 .on_hover(move |active, window, cx| {
+-                                    if let Some(handler) = &hover_handler { handler(&hover_url, *active, window.mouse_position(), window, cx); }
++                                    if let Some(handler) = &hover_handler {
++                                        handler(
++                                            &hover_url,
++                                            *active,
++                                            window.mouse_position(),
++                                            window,
++                                            cx,
++                                        );
++                                    }
+                                 })
+                                 .on_click(move |event, window, cx| {
+                                     crate::TextSelection::end(window, cx);
+--- a/crates/base/src/text/state.rs
++++ b/crates/base/src/text/state.rs
+@@ -124,6 +124,7 @@
+     pub(super) selection_adapter: TextViewSelectionAdapter,
+ 
+     search_query: String,
++    search_case_sensitive: bool,
+     search_matches: Arc<Vec<node::SearchMatch>>,
+     search_segments: Arc<std::collections::HashMap<usize, Vec<usize>>>,
+     search_current: usize,
+@@ -240,6 +241,7 @@
+             auto_scroll: AutoScroll::default(),
+             selection_adapter,
+             search_query: String::new(),
++            search_case_sensitive: false,
+             search_matches: Arc::default(),
+             search_segments: Arc::default(),
+             search_current: 0,
+@@ -266,7 +268,7 @@
+     }
+ 
+     /// Search visible text in Markdown and HTML without rewriting source.
+-    /// Matches are ASCII-case-insensitive and never span separate text blocks
++    /// Matches are Unicode-case-insensitive by default and never span separate text blocks
+     /// or an inline image. An empty query clears only search decoration.
+     pub fn set_search_query(&mut self, query: impl Into<String>, cx: &mut Context<Self>) {
+         let query = query.into();
+@@ -282,6 +284,17 @@
+         cx.notify();
+     }
+ 
++    /// Select literal matching mode without rewriting the document.
++    pub fn set_search_case_sensitive(&mut self, sensitive: bool, cx: &mut Context<Self>) {
++        if self.search_case_sensitive == sensitive {
++            return;
++        }
++        self.search_case_sensitive = sensitive;
++        self.search_current = 0;
++        self.refresh_search();
++        cx.notify();
++    }
++
+     /// Zero-based current match and total; current is zero when none match.
+     pub fn search_status(&self) -> (usize, usize) {
+         (self.search_current, self.search_matches.len())
+@@ -307,6 +320,7 @@
+         self.search_matches = Arc::new(node::search_matches(
+             &self.parsed_content.document.blocks,
+             &self.search_query,
++            self.search_case_sensitive,
+         ));
+         let mut segments = std::collections::HashMap::<usize, Vec<usize>>::new();
+         for (index, hit) in self.search_matches.iter().enumerate() {
+@@ -409,16 +423,16 @@
+         if self.prepared_revision != self.revision {
+             return None;
+         }
+-        Some(self.parsed_error.as_ref().map_or(Ok(()), |error| Err(error.to_string())))
++        Some(
++            self.parsed_error
++                .as_ref()
++                .map_or(Ok(()), |error| Err(error.to_string())),
++        )
+     }
+ 
+     /// Resolve code languages off the UI thread before publishing a prepared
+     /// document. Ordinary TextViews retain their lazy, visible-only resolution.
+-    pub fn prepare_code_languages(
+-        &self,
+-        resolver: Arc<CodeBlockLanguageFn>,
+-        cx: &App,
+-    ) -> Task<()> {
++    pub fn prepare_code_languages(&self, resolver: Arc<CodeBlockLanguageFn>, cx: &App) -> Task<()> {
+         let blocks = self.parsed_content.document.blocks.clone();
+         cx.background_executor().spawn(async move {
+             fn visit(blocks: &[node::BlockNode], resolver: &Arc<CodeBlockLanguageFn>) {
+--- a/crates/base/src/input/editor/search.rs
++++ b/crates/base/src/input/editor/search.rs
+@@ -1,6 +1,6 @@
+ use crate::input::InputModeKind;
+-use aho_corasick::AhoCorasick;
+ use gpui::{Context, Window};
++use regex::Regex;
+ use ropey::Rope;
+ use std::{ops::Range, rc::Rc};
+ 
+@@ -10,7 +10,7 @@
+ #[derive(Debug, Clone)]
+ pub struct SearchMatcher {
+     text: Rope,
+-    pub query: Option<AhoCorasick>,
++    pub query: Option<Regex>,
+     matched_ranges: Rc<Vec<Range<usize>>>,
+     current_match_ix: usize,
+     replacing: bool,
+@@ -263,12 +263,14 @@
+     }
+ 
+     pub fn update_query(&mut self, query: &str, case_insensitive: bool) {
+-        self.query = (!query.is_empty()).then(|| {
+-            AhoCorasick::builder()
+-                .ascii_case_insensitive(case_insensitive)
+-                .build([query])
+-                .expect("failed to build input search query")
+-        });
++        self.query = if query.is_empty() {
++            None
++        } else {
++            regex::RegexBuilder::new(&regex::escape(query))
++                .case_insensitive(case_insensitive)
++                .build()
++                .ok()
++        };
+         self.update_matches();
+     }
+ 
+@@ -337,11 +339,7 @@
+         let mut ranges = Vec::new();
+         if let Some(query) = &self.query {
+             let text = self.text.to_string();
+-            ranges.extend(
+-                query
+-                    .stream_find_iter(text.as_bytes())
+-                    .map(|result| result.expect("input search match").range()),
+-            );
++            ranges.extend(query.find_iter(&text).map(|hit| hit.range()));
+         }
+         self.matched_ranges = Rc::new(ranges);
+         if !self.replacing || self.is_empty() {

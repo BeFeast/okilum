@@ -143,6 +143,17 @@ impl Editing {
 }
 
 impl Reader {
+    pub(super) fn open_source_find(&mut self, cx: &mut Context<Self>) {
+        if let Some(editing) = &self.editing {
+            let sensitive = reader_ui_state::find_case_sensitive(cx);
+            editing.input.update(cx, |input, cx| {
+                let query = input.search_session().query.clone();
+                input.set_search_query(query, !sensitive, cx);
+                input.open_search(false, cx);
+            });
+        }
+    }
+
     pub(super) fn discover_source_recovery(&mut self, cx: &mut Context<Self>) {
         self.recovery_offer = false;
         self.recovery_checked = false;
@@ -258,10 +269,11 @@ impl Reader {
                 .language("markdown")
                 .line_number(false)
                 .folding(false)
-                .searchable(false)
+                .searchable(true)
                 .replaceable(false)
                 .soft_wrap(true)
                 .wrapping_indent(WrappingIndent::None);
+            input.set_search_query("", !reader_ui_state::find_case_sensitive(cx), cx);
             input.set_projection_provider(Some(Arc::new(ExactSource)), cx);
             input.set_exact_clipboard_provider(clipboard, cx);
             input.set_value(store.text().to_owned(), window, cx);
@@ -279,7 +291,16 @@ impl Reader {
             input.set_readonly(true, cx);
             input
         });
-        let highlighting = cx.observe(&input, |this, input, cx| {
+        let mut last_find_case = reader_ui_state::find_case_sensitive(cx);
+        let highlighting = cx.observe(&input, move |this, input, cx| {
+            if input.read(cx).search_session().open {
+                let sensitive = !input.read(cx).search_session().case_insensitive;
+                if sensitive != last_find_case {
+                    last_find_case = sensitive;
+                    reader_ui_state::set_find_case_sensitive(sensitive, cx);
+                }
+            }
+
             if this.ui_state.source_highlight_pending
                 && this
                     .editing
@@ -1222,6 +1243,96 @@ impl Reader {
 
 #[cfg(test)]
 mod tests {
+
+    #[gpui::test]
+    fn find_menu_action_matches_case_insensitively_in_preview_and_source(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("vault");
+        let state = dir.path().join("state");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        let text = "# Example\n\nTessera tessera TESSERA\n\nЗаметка заметка ЗАМЕТКА\n";
+        std::fs::write(root.join("note.md"), text).unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+            reader_ui_state::install(&state, cx);
+            assert!(!reader_ui_state::find_case_sensitive(cx));
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        open_path: Some(root.join("note.md")),
+                        session_directory: Some(state.clone()),
+                        index_dir: Some(dir.path().join("index")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        for source in [false, true] {
+            reader.update_in(visual, |r, window, cx| {
+                if source {
+                    r.toggle_source(window, cx);
+                }
+                r.focus_handle.focus(window, cx);
+                window.dispatch_action(Box::new(FindInNote), cx);
+            });
+            visual.run_until_parked();
+            reader.read_with(visual, |r, cx| {
+                if source {
+                    assert!(
+                        r.editing
+                            .as_ref()
+                            .unwrap()
+                            .input
+                            .read(cx)
+                            .search_session()
+                            .open
+                    );
+                } else {
+                    assert!(r.find_open);
+                }
+            });
+            visual.simulate_input("tessera");
+            visual.run_until_parked();
+            reader.update_in(visual, |r, window, cx| {
+                if source {
+                    let input = r.editing.as_ref().unwrap().input.clone();
+                    assert_eq!(input.read(cx).search_session().matcher.len(), 3);
+                    input.update(cx, |s, cx| s.set_search_query("заметка", true, cx));
+                    assert_eq!(input.read(cx).search_session().matcher.len(), 3);
+                    input.update(cx, |s, cx| s.set_search_query("заметка", false, cx));
+                    assert_eq!(input.read(cx).search_session().matcher.len(), 1);
+                    assert_eq!(input.read(cx).value().as_ref(), text);
+                } else {
+                    assert_eq!(r.content.read(cx).search_status().1, 3);
+                    r.find_input
+                        .update(cx, |s, cx| s.set_value("заметка", window, cx));
+                    r.run_find(window, cx);
+                    assert_eq!(r.content.read(cx).search_status().1, 3);
+                    reader_ui_state::set_find_case_sensitive(true, cx);
+                    r.run_find(window, cx);
+                    assert_eq!(r.content.read(cx).search_status().1, 1);
+                    reader_ui_state::set_find_case_sensitive(false, cx);
+                }
+            });
+            visual.run_until_parked();
+        }
+        reader.read_with(visual, |_, cx| {
+            assert!(reader_ui_state::find_case_sensitive(cx))
+        });
+        assert_eq!(std::fs::read_to_string(root.join("note.md")).unwrap(), text);
+    }
 
     #[gpui::test]
     fn initial_source_highlighting_prepares_without_a_typing_debounce(cx: &mut TestAppContext) {
