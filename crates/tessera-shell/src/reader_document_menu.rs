@@ -29,19 +29,41 @@ impl Reader {
         } else {
             height
         };
+        let header = self.render_document_header(cx);
+        let viewport = div()
+            .debug_selector(|| "document-header-viewport".into())
+            .flex_none()
+            .overflow_hidden();
+        // A wheel detent can consume all 48px at once. Animate presentation,
+        // not source offsets: caret, selection and saved scroll stay exact.
+        // A new note/mode mounts at its target (including restored sessions).
+        let header = if self.source_scroll_offset(cx).is_some() {
+            viewport
+                .with_spring(
+                    SharedString::from(format!("source-header-motion:{}", self.current_rel)),
+                    SpringAnimation::new(SpringConfig::new(1600., 80., 1.))
+                        .to(hidden)
+                        .with_epsilon(0.1),
+                    move |viewport, displayed| {
+                        let displayed = displayed.clamp(px(0.), height);
+                        viewport
+                            .h(height - displayed)
+                            .child(header.relative().top(-displayed))
+                    },
+                )
+                .into_any_element()
+        } else {
+            viewport
+                .h(height - hidden)
+                .child(header.relative().top(-hidden))
+                .into_any_element()
+        };
         let view = cx.entity().downgrade();
         v_flex()
             .size_full()
             .min_h_0()
             .relative()
-            .child(
-                div()
-                    .debug_selector(|| "document-header-viewport".into())
-                    .flex_none()
-                    .h(height - hidden)
-                    .overflow_hidden()
-                    .child(self.render_document_header(cx).relative().top(-hidden)),
-            )
+            .child(header)
             .child(div().flex_1().min_h_0().child(self.render_main(window, cx)))
             .child(
                 canvas(
@@ -610,6 +632,11 @@ mod tests {
         visual.run_until_parked();
         let wheel = |visual: &mut VisualTestContext, delta| {
             visual.update(|window, cx| window.draw(cx).clear(cx));
+            let before = visual
+                .debug_bounds("document-header-viewport")
+                .unwrap()
+                .size
+                .height;
             let body = visual.debug_bounds("reader-document").unwrap();
             visual.simulate_event(ScrollWheelEvent {
                 position: point(body.center().x, body.top() + px(130.)),
@@ -617,6 +644,59 @@ mod tests {
                 ..Default::default()
             });
             visual.run_until_parked();
+            let (source, target, reduced) = reader.read_with(visual, |r, cx| {
+                (
+                    r.source_scroll_offset(cx).is_some(),
+                    if r.document_at_top(cx) {
+                        px(48.) - r.document_header_hidden
+                    } else {
+                        px(0.)
+                    },
+                    cx.reduce_motion(),
+                )
+            });
+            if source && reduced {
+                assert_eq!(
+                    visual
+                        .debug_bounds("document-header-viewport")
+                        .unwrap()
+                        .size
+                        .height,
+                    target,
+                    "Reduce Motion snaps without scheduling transition frames"
+                );
+            }
+            if source && !reduced && before != target {
+                let first = visual
+                    .debug_bounds("document-header-viewport")
+                    .unwrap()
+                    .size
+                    .height;
+                assert_ne!(
+                    first, target,
+                    "source header must not snap in the event frame"
+                );
+                visual.executor().advance_clock(Duration::from_millis(40));
+                visual.update(|window, cx| {
+                    window.simulate_next_frame(cx);
+                    window.draw(cx).clear(cx);
+                });
+                let middle = visual
+                    .debug_bounds("document-header-viewport")
+                    .unwrap()
+                    .size
+                    .height;
+                assert!(middle > before.min(target) && middle < before.max(target),
+                    "actual header has an intermediate frame: {before:?} -> {middle:?} -> {target:?}");
+            }
+            // Deterministic frame clock, not a wall-clock sleep.
+            for _ in 0..30 {
+                visual.executor().advance_clock(Duration::from_millis(20));
+                visual.update(|window, cx| {
+                    window.simulate_next_frame(cx);
+                    window.draw(cx).clear(cx);
+                });
+            }
         };
         for source in [false, true]
             .into_iter()
@@ -683,6 +763,22 @@ mod tests {
                 px(48.)
             );
         }
+        if cfg!(unix) {
+            visual.update(|_, cx| cx.set_reduce_motion(true));
+            wheel(visual, -80.);
+            assert_eq!(
+                visual
+                    .debug_bounds("document-header-viewport")
+                    .unwrap()
+                    .size
+                    .height,
+                px(0.)
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(root.join("Long.md")).unwrap(),
+            format!("# Long\n\n{}", "Paragraph text.\n\n".repeat(150))
+        );
         std::fs::remove_dir_all(fixture).unwrap();
     }
 }
