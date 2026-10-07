@@ -90,46 +90,73 @@ impl Preimage {
         );
         Ok(entry)
     }
-    pub(crate) fn finish(path: &Path) -> Result<()> {
-        Self::finish_with(path, |source, target| fs::rename(source, target))
+    /// Archive the displaced inode through the editor's pinned directory. Its
+    /// old absolute name may now resolve to an entirely different directory.
+    pub(crate) fn finish_bound(path: &Path, source_directory: &File) -> Result<()> {
+        Self::finish_bound_with(path, source_directory, |source, name, target, archived| {
+            rustix::fs::renameat(source, name, target, archived).map_err(Into::into)
+        })
     }
-    fn finish_with(
+    fn finish_bound_with(
         path: &Path,
-        rename: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+        source_directory: &File,
+        rename: impl FnOnce(&File, &std::ffi::OsStr, &File, &std::ffi::OsStr) -> std::io::Result<()>,
     ) -> Result<()> {
-        use std::os::unix::fs::MetadataExt;
+        use std::{io::Read, os::unix::fs::MetadataExt};
         let mut entry = Self::load(path)?;
+        let name = entry
+            .displaced
+            .file_name()
+            .context("Missing displaced filename")?;
+        let mut source = crate::file_editor::open_regular_at(source_directory, name)?;
+        let metadata = source.metadata()?;
+        let mut bytes = Vec::new();
+        source.read_to_end(&mut bytes)?;
         ensure!(
-            fs::read(&entry.displaced)? == entry.text.as_bytes(),
+            bytes == entry.text.as_bytes(),
             "Displaced source changed; recovery is protected"
         );
+        let archive_directory = File::open(path.parent().context("Missing history folder")?)?;
         let archived = path.with_extension("source");
-        // Preserve the inode, including writes through an already-open external
-        // descriptor. On EXDEV the durable JSON is the archive copy, while the
-        // original inode stays beside the note until its verified retention end.
-        match rename(&entry.displaced, &archived) {
+        match rename(
+            source_directory,
+            name,
+            &archive_directory,
+            archived.file_name().unwrap(),
+        ) {
             Ok(()) => {
-                File::open(entry.displaced.parent().context("Missing source folder")?)?
-                    .sync_all()?;
-                File::open(archived.parent().unwrap())?.sync_all()?;
+                source_directory.sync_all()?;
+                archive_directory.sync_all()?;
                 entry.displaced = archived;
             }
             Err(error) if error.raw_os_error() == Some(rustix::io::Errno::XDEV.raw_os_error()) => {
-                let metadata = fs::symlink_metadata(&entry.displaced)?;
-                ensure!(
-                    metadata.is_file() && metadata.nlink() == 1,
-                    "Displaced identity changed; recovery is protected"
-                );
+                // Keep the inode and its identity beside the original note.
+                // If the folder moved, history remains protected and the JSON
+                // still contains the exact preimage, never redirected bytes.
                 entry.external_inode = Some((metadata.dev(), metadata.ino()));
-                ensure!(
-                    fs::read(&entry.displaced)? == entry.text.as_bytes(),
-                    "Displaced bytes changed; recovery is protected"
-                );
             }
             Err(error) => return Err(error.into()),
         }
         entry.pending = false;
         persist(path, &entry)
+    }
+
+    #[cfg(test)]
+    fn finish(path: &Path) -> Result<()> {
+        let entry = Self::load(path)?;
+        let directory = File::open(entry.displaced.parent().context("Missing source folder")?)?;
+        Self::finish_bound(path, &directory)
+    }
+    #[cfg(test)]
+    fn finish_with(
+        path: &Path,
+        rename: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+    ) -> Result<()> {
+        let entry = Self::load(path)?;
+        let directory = File::open(entry.displaced.parent().context("Missing source folder")?)?;
+        Self::finish_bound_with(path, &directory, |_, _, _, _| {
+            rename(&entry.displaced, &path.with_extension("source"))
+        })
     }
 }
 
@@ -583,6 +610,52 @@ mod tests {
             "failed journal cleanup must not stop normal history expiry"
         );
         assert!(state.join("unreadable.json").exists());
+    }
+
+    #[test]
+    fn cross_device_fallback_keeps_the_pinned_inode_when_the_parent_is_replaced() {
+        use std::os::unix::fs::{symlink, MetadataExt};
+        let root = tempfile::tempdir().unwrap();
+        let original = root.path().join("original");
+        let other = root.path().join("other");
+        fs::create_dir(&original).unwrap();
+        fs::create_dir(&other).unwrap();
+        let backup = original.join(".tessera-save-exdev");
+        fs::write(&backup, "base").unwrap();
+        fs::write(other.join(".tessera-save-exdev"), "base").unwrap();
+        let metadata = fs::metadata(&backup).unwrap();
+        let pinned = File::open(&original).unwrap();
+        let record = Preimage::begin(
+            &root.path().join("state"),
+            &original.join("note.md"),
+            "base",
+            &backup,
+        )
+        .unwrap();
+        Preimage::finish_bound_with(&record, &pinned, |_, _, _, _| {
+            fs::rename(&original, root.path().join("moved"))?;
+            symlink(&other, &original)?;
+            Err(std::io::Error::from_raw_os_error(
+                rustix::io::Errno::XDEV.raw_os_error(),
+            ))
+        })
+        .unwrap();
+        let entry = Preimage::load(&record).unwrap();
+        assert_eq!(entry.external_inode, Some((metadata.dev(), metadata.ino())));
+        assert!(
+            protected(&entry),
+            "redirected path must pin retention, even with matching bytes"
+        );
+        assert_eq!(
+            fs::metadata(root.path().join("moved/.tessera-save-exdev"))
+                .unwrap()
+                .ino(),
+            metadata.ino()
+        );
+        assert_eq!(
+            fs::read_to_string(other.join(".tessera-save-exdev")).unwrap(),
+            "base"
+        );
     }
 
     #[test]

@@ -477,3 +477,20 @@ Large or ambiguous changes still require the existing risk sheet. Collisions,
 foreign-vault drops, active operations and unsaved source editors cannot bypass
 the move guards. Attachments can travel inside a moved folder; these commands do
 not introduce standalone attachment moves.
+
+## Parent-directory identity (#699)
+
+An open FileEditor pins the real parent directory and records every canonical
+ancestor identity. Reads, temporary-file creation, atomic exchange, rollback and
+preimage archival use directory-relative handles. A parent/ancestor rename or
+replacement makes Save, reload and conflict resolution refuse the stale path;
+the durable draft is retained. Restoring the original directory allows recovery.
+
+A directory swap racing after the final identity check cannot redirect writes or
+archive a sibling's matching file. The exchange can complete only in the pinned
+original directory; history retains its displaced inode, and the stale visible
+path is reported as an error without acknowledging the draft as saved. This also
+applies when Undo submits previous bytes through an already-open FileEditor.
+Callers reopening an editor for a later Undo must still validate their own stored
+path/revision identity before opening; FileEditor cannot infer a past session's
+intended path from a new open.
