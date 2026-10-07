@@ -51,6 +51,21 @@ fn same_vault(trashed_root: &Path, vault_root: &Path) -> bool {
             .is_ok_and(|root| root == trashed_root)
 }
 
+/// The name the tree shows for a trashed item: a note's title (file stem), or
+/// the folder or attachment name as is. Never a path or a `.md` suffix.
+fn trashed_title(relative: &Path) -> String {
+    let name = if relative
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("md"))
+    {
+        relative.file_stem()
+    } else {
+        relative.file_name()
+    };
+    name.map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| relative.display().to_string())
+}
+
 /// Undo never restores into a vault other than the open one (#561). The item
 /// stays in system Trash and the user is told how to get it back.
 fn foreign_vault_notice(trashed: &reader_trash_fs::Trashed) -> String {
@@ -59,15 +74,10 @@ fn foreign_vault_notice(trashed: &reader_trash_fs::Trashed) -> String {
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| trashed.root.display().to_string());
-    let trash = if cfg!(target_os = "macos") {
-        "the Trash in Finder"
-    } else {
-        "the Trash in your file manager"
-    };
     format!(
-        "Nothing to Undo in this vault. \u{201c}{}\u{201d} from vault \u{201c}{vault}\u{201d} \
-         remains in system Trash. Reopen that vault to Undo, or restore it from {trash}.",
-        trashed.relative.display()
+        "\u{201c}{}\u{201d} is in system Trash (from vault \u{201c}{vault}\u{201d}). \
+         Open that vault to Undo.",
+        trashed_title(&trashed.relative)
     )
 }
 
@@ -549,8 +559,19 @@ impl Reader {
             return;
         };
         let message = foreign_vault_notice(trashed);
-        self.dismiss_trash_toast(window, cx);
-        reader_toast::error(message, window, cx);
+        // The explanation takes the Trash toast's slot: it replaces the
+        // Moved to Trash/Undo toast and any earlier explanation (#626).
+        self.trash_undo.visible.set(false);
+        self.trash_undo.generation = self.trash_undo.generation.wrapping_add(1);
+        window.push_notification(
+            Notification::new()
+                .id::<TrashToast>()
+                .message(message)
+                .placement(Anchor::BottomRight)
+                .py_2()
+                .autohide(false),
+            cx,
+        );
         cx.notify();
     }
 }
@@ -766,13 +787,24 @@ mod tests {
             &temp.path().join("Trash"),
         );
         let notice = foreign_vault_notice(&trashed);
-        for part in [
-            "gone.md",
-            "Vault A",
-            "remains in system Trash",
-            "Reopen that vault",
+        assert_eq!(
+            notice,
+            "\u{201c}gone\u{201d} is in system Trash (from vault \u{201c}Vault A\u{201d}). \
+             Open that vault to Undo."
+        );
+        assert!(!notice.contains(".md"), "{notice}");
+    }
+
+    #[test]
+    fn trashed_title_is_the_tree_name_without_md() {
+        for (relative, title) in [
+            ("Release plan.md", "Release plan"),
+            ("Projects/Release plan.MD", "Release plan"),
+            ("Projects", "Projects"),
+            ("Archive/v1.2", "v1.2"),
+            ("Assets/diagram.png", "diagram.png"),
         ] {
-            assert!(notice.contains(part), "{part}: {notice}");
+            assert_eq!(trashed_title(Path::new(relative)), title, "{relative}");
         }
     }
 
@@ -851,14 +883,31 @@ mod tests {
             r.reveal_in_tree("start.md", window, cx);
         });
         visual.run_until_parked();
-        // Both the still-visible toast button and the keyboard refuse to cross vaults.
-        for keyboard in [false, true] {
-            let before = notices(visual);
+        // Both the still-visible toast button and the keyboard refuse to cross
+        // vaults. The explanation replaces the Undo toast and any earlier
+        // explanation (#626): one toast, never a stack.
+        let with_toast = notices(visual);
+        assert!(with_toast >= 1, "positive control: the Undo toast is shown");
+        for keyboard in [false, true, true] {
             undo(visual, keyboard);
+            // Let a dismissed toast finish its exit transition before counting.
+            visual
+                .executor()
+                .advance_clock(std::time::Duration::from_secs(1));
+            visual.run_until_parked();
             assert!(!a.join("gone.md").exists(), "keyboard={keyboard}");
             assert!(!b.join("gone.md").exists(), "keyboard={keyboard}");
             assert_eq!(in_trash("gone.md"), ["A bytes\r\n"], "keyboard={keyboard}");
-            assert!(notices(visual) > before, "keyboard={keyboard}: explained");
+            assert_eq!(
+                notices(visual),
+                with_toast,
+                "keyboard={keyboard}: explained in place of the Undo toast"
+            );
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            assert!(
+                visual.debug_bounds("undo-trash").is_none(),
+                "keyboard={keyboard}: the Undo toast was replaced"
+            );
             reader.read_with(visual, |r, _| {
                 assert!(!r.trash_pending);
                 assert!(!r.trash_undo.visible.get());
