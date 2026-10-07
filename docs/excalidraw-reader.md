@@ -20,7 +20,20 @@ No gpui core changes are required. A dedicated resvg font database loads bundled
 
 Parsing is bounded and returns an explicit unavailable view for corrupt input.
 Deleted elements do not draw; groups retain scene ordering. Reading a drawing
-never rewrites its source. The explicit Open in Excalidraw action copies the scene
+never rewrites its source.
+
+Editing (#478) writes through `excalidraw::write`, a pure function from the
+opened bytes, the editor's post-load baseline and the edited scene to new bytes.
+Unchanged elements keep the file's JSON object (so the plugin's `rawText`
+survives), and `## Text Elements` / `## Element Links` entries are rewritten only
+for elements whose text or link changed, because the plugin reads those entries
+as authoritative over the JSON. Deletions are written as tombstones with a
+bumped `version`. The Drawing block keeps its encoding; compressed scenes use an
+LZ-string encoder that is byte-identical to JS lz-string. Everything else,
+including `## Embedded Files`, is copied byte-for-byte, and a save with no change
+writes nothing. New text elements with upstream's 21-character ids get no
+Markdown entry: the plugin's block refs are 8 characters, and it adopts such
+elements from the JSON on load. The explicit Open in Excalidraw action copies the scene
 JSON and opens the owner-approved https://draw.oklabs.uk editor; it is not part of normal rendering.
 
 Decoded scenes use a 16-entry LRU. Raster variants share a 128 MiB / 64-entry
