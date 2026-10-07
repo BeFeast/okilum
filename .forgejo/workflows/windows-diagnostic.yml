@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   select:
-    runs-on: light
+    runs-on: ${{ github.event_name == 'pull_request' && 'light' || 'publish' }}
     timeout-minutes: 3
     outputs:
       build: ${{ steps.select.outputs.build }}
