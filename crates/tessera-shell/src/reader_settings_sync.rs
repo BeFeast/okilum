@@ -489,12 +489,12 @@ impl Render for SyncSettings {
             "Needs attention"
         } else if self.busy {
             "Working…"
+        } else if removal.is_some_and(|r| r.complete()) {
+            // Completion retires the setup/runtime before this snapshot is read.
+            // Confirm removal while allowing a fresh explicit connection below.
+            "Removed"
         } else if removed {
-            if removal.is_some_and(|r| r.complete()) {
-                "Removed"
-            } else {
-                "Removal pending"
-            }
+            "Removal pending"
         } else if !enabled {
             "Off"
         } else if self.output.as_ref().is_some_and(|o| o.approval.is_some()) {
@@ -515,6 +515,8 @@ impl Render for SyncSettings {
                             || !self.loaded
                             || removed
                             || (!enabled && needs_package)
+                            // Missing inventory means we cannot exclude folder overlap,
+                            // even when the requested daemon would be a new managed one.
                             || (saved.is_none() && self.unavailable),
                     )
                     .on_click(cx.listener(|this, checked, _, cx| {
