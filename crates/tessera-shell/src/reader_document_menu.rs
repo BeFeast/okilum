@@ -41,7 +41,7 @@ impl Reader {
             viewport
                 .with_spring(
                     SharedString::from(format!("source-header-motion:{}", self.current_rel)),
-                    SpringAnimation::new(SpringConfig::new(1600., 80., 1.))
+                    SpringAnimation::new(SpringConfig::new(400., 40., 1.))
                         .to(hidden)
                         .with_epsilon(0.1),
                     move |viewport, displayed| {
