@@ -24,3 +24,6 @@ pub mod presentation;
 
 #[cfg(target_os = "linux")]
 pub mod removal;
+
+#[cfg(target_os = "linux")]
+pub mod desktop;

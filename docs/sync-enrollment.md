@@ -141,3 +141,29 @@ again through its old journal. Disable remains reversible and preserves identity
 a new connection after Remove requires a fresh explicit enrollment. The real
 CT141 user-systemd fixture verifies stop-before-revoke during a simulated service
 outage, later revocation, and no restart or certificate replacement on retry.
+
+### Settings integration boundary
+
+The Linux Sync section is a separate GPUI component, created only when the user
+opens that section. Discovery and every blocking controller operation run on the
+background executor. Its initial read cannot prepare/register/start Syncthing.
+Explicit Enable persists the chosen HTTPS service, computer name, folder and
+managed/reused runtime before effects. Browser approval shows a grouped matching
+code. A bounded refresh continues pairing and scoped first receipt; local idle
+never substitutes for the readiness predicate. Status distinguishes Preparing,
+paused, hub offline, local errors and caught up with the hub; the last observed
+hub connection remains available offline. It does not claim all computers are
+online or that conflict copies have been resolved.
+
+Disable keeps identity for re-enable. Remove attempts local stop independently of
+remote availability and displays pending until required reconciliation completes.
+Once removal completes, a private generation record retires that connection;
+explicit new setup allocates new journals. Retired authority is never silently
+reused and canonical files are never deleted. Unknown nonempty folders still
+require a separately approved adoption flow. Per-generation records stay outside
+the vault/index; no marker is added to the vault.
+
+Native Linux light/dark before/after evidence and browser-to-daemon end-to-end QA
+are required before publishing the Settings UI. Development still uses only the
+CT141 sandbox. The optional QA trust certificate is compiled only into the
+non-publishing settings harness; shipping builds use system certificate trust.

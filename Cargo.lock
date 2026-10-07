@@ -7742,6 +7742,7 @@ dependencies = [
  "similar",
  "tempfile",
  "tessera-core",
+ "tessera-sync-controller",
  "time",
  "unicode-linebreak",
  "unicode-segmentation",
