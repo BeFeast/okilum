@@ -33,10 +33,10 @@ acceptance gate, now exercised through the ordinary Reader editor:
 | Save/conflict/durable draft | Integration regression plus real Linux explicit Save, external rewrite and rejected overwrite |
 | Mouse reveal/drag, grapheme arrows, Home/End | Native integration regression; real Linux input capture pending |
 | IME | Native UTF-16 bridge regression; real compositor IME preedit/commit/cancel pending |
-| Narrow/wide styled wraps and candidate geometry | Existing shared provider foundation; ordinary Reader native acceptance pending |
+| Narrow/wide styled wraps and candidate geometry | Actual X11 click after inline code/bold at 1,240 and 900 px returns canonical W offset 4 after reveal, checked through external clipboard; IME candidate geometry remains pending |
 | Restore/reopen and crash recovery | Real Linux SIGKILL after observing the durable journal, restart in Reader, explicit edit restores the exact draft; external file hash unchanged |
 | Large/unsupported notes | Source fallback integration regression |
-| Responsiveness | Off-thread classification and coalescing verified; same-host native input/paint timing pending |
+| Responsiveness | Same-host Xvfb input-to-framebuffer probe below; actual compositor acceptance remains pending |
 | UI rules | Linux light/dark before/after captured on the same fixture/window; compact existing glyph control, no new surfaces or notices |
 
 An API-level IME test is supporting evidence, not a claim of real IME acceptance.
@@ -57,3 +57,39 @@ matched before/after SIGKILL. External disk bytes stayed at
 
 Publication remains gated on the executor CI slot, #699's save fix and completion
 of the pending native acceptance rows. This is not a released-build claim.
+
+### Additional native geometry and timing evidence (2026-10-07)
+
+The geometry fixture uses inline code followed by bold `WWWWWW` and a long
+wrapping paragraph. At both 1,240 and 900 px window widths, a click on the fourth
+painted W, followed by selection to document start, copies exactly the canonical
+prefix ending at W offset 4 after reveal. A sentinel replaces the external
+clipboard before each copy, preventing old clipboard bytes from passing the
+check. Neither run changed the fixture file. Narrow windows hide the sidebars;
+the probe uses their actual editor and toolbar positions.
+
+A paired 20-input Source / 20-input Live Preview run on the same host, debug
+binary, 1,240 × 800 window and Xvfb display observed glyph pixels after real X11
+key events. It measured the glyph interior, excluding caret columns; typing and
+Undo first proved that the sampled pixels change and return. All 40 Undo cycles
+restored the exact source, checked through the external clipboard.
+
+| Mode | Median | p95 | Maximum |
+| --- | ---: | ---: | ---: |
+| Source | 83.4 ms | 139.7 ms | 146.6 ms |
+| Live Preview | 66.6 ms | 97.7 ms | 108.9 ms |
+
+These are input-dispatch-to-observed-Xvfb-framebuffer measurements, including
+xdotool and screenshot sampling overhead. They are not compositor presentation
+latencies or evidence that Live Preview is faster. The small fixture and sequential
+mode order do not establish large-note performance. Scripts and raw logs are
+`/tmp/tessera359-ui/native-geometry.py`,
+`/tmp/tessera359-ui/native-timing.py`,
+`/tmp/tessera359-native-geometry.log` and
+`/tmp/tessera359-native-timing.log` in the development environment.
+
+The available environment has Xvfb but no installed IBus/Fcitx or Wayland
+compositor. Real IME preedit/update/commit/cancel and candidate-window geometry
+must still be exercised in a suitable native session. Existing API-level tests
+must not substitute for that evidence. The remaining real-input movement/drag
+matrix also stays pending; only the specific geometry probe above is accepted.
