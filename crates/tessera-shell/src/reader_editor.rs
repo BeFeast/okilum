@@ -719,6 +719,7 @@ impl Reader {
     }
 
     pub(super) fn render_source(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        self.refresh_live_preview_colors(cx);
         if let Some(editing) = &self.editing {
             // Use measured leading rather than accumulating an estimated row-height error.
             let line_height = editing.input.read(cx).line_height().unwrap_or(px(20.));

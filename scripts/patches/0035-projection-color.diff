@@ -1,0 +1,69 @@
+--- a/crates/base/src/input/projection.rs
++++ b/crates/base/src/input/projection.rs
+@@ -79,11 +79,12 @@
+ }
+
+-/// Metric-changing styles supported by the first candidate. All runs share the
+-/// editor's font size and line height. Color-only decoration is intentionally
+-/// outside this metric contract.
+-#[derive(Clone, Debug, PartialEq, Eq)]
++/// Presentation styles over exact source. All runs share the editor's font
++/// size and line height; optional color does not alter those metrics.
++#[derive(Clone, Debug, PartialEq)]
+ pub struct ProjectionStyle {
+     pub range: Range<ProjectedByte>,
+     pub font_family: Option<String>,
++    /// None inherits the editor foreground. Used consistently by layout and paint.
++    pub color: Option<gpui::Hsla>,
+     pub bold: bool,
+     pub italic: bool,
+--- a/crates/base/src/input/projection_layout.rs
++++ b/crates/base/src/input/projection_layout.rs
+@@ -25,4 +25,5 @@
+             let mut actual_font = font.clone();
+             let mut strike = false;
++            let mut actual_color = color;
+             for style in projection
+                 .styles()
+@@ -39,4 +40,7 @@
+                     actual_font.style = FontStyle::Italic;
+                 }
++                if let Some(color) = style.color {
++                    actual_color = color;
++                }
+                 strike |= style.strikethrough;
+             }
+@@ -44,10 +48,10 @@
+                 len: r[1] - r[0],
+                 font: actual_font,
+-                color,
++                color: actual_color,
+                 background_color: None,
+                 underline: None,
+                 strikethrough: strike.then_some(StrikethroughStyle {
+                     thickness: px(1.),
+-                    color: Some(color),
++                    color: Some(actual_color),
+                 }),
+             }
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -3410,4 +3410,5 @@
+     fn projection_multiline_run_coverage_and_marked_fonts() {
+         let text = "a\n\nbc\r\nd";
++        let tint: Hsla = gpui::rgb(0x3478c6).into();
+         let fixture = StyledFixture {
+             source: SourceSnapshot {
+@@ -3421,4 +3422,5 @@
+                 range: ProjectedByte(3)..ProjectedByte(5),
+                 font_family: Some("monospace".into()),
++                color: Some(tint),
+                 bold: true,
+                 italic: false,
+@@ -3450,4 +3452,6 @@
+                 && r.font.weight == gpui::FontWeight::BOLD)
+         );
++        assert!(code.iter().all(|run| run.color == tint));
++        assert!(first.iter().all(|run| run.color == gpui::black()));
+         assert!(code[0].underline.is_none());
+         assert!(code[1].underline.is_some());

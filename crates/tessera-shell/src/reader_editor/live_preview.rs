@@ -1,6 +1,6 @@
 //! Opt-in presentation over the existing exact Reader editor and FileEditor.
 use super::*;
-use crate::source_presentation::CachedProvider;
+use crate::source_presentation::{CachedProvider, ProjectionColors};
 use std::cell::Cell;
 
 #[derive(Default)]
@@ -9,9 +9,43 @@ pub(super) struct LivePreview {
     in_flight: Rc<Cell<bool>>,
     queued: bool,
     accepted: Option<Arc<CachedProvider>>,
+    colors: Cell<Option<ProjectionColors>>,
+}
+
+fn projection_colors(cx: &App) -> ProjectionColors {
+    let palette = brand::palette(cx);
+    ProjectionColors {
+        heading: palette.text,
+        link: palette.link,
+    }
 }
 
 impl Reader {
+    pub(super) fn refresh_live_preview_colors(&self, cx: &mut Context<Self>) {
+        let Some(editing) = self.editing.as_ref().filter(|e| e.live_preview.enabled) else {
+            return;
+        };
+        let colors = projection_colors(cx);
+        if editing.live_preview.colors.get() == Some(colors) {
+            return;
+        }
+        let Some(provider) = editing
+            .live_preview
+            .accepted
+            .as_ref()
+            .filter(|p| p.source().stamp == editing.input.read(cx).source_stamp())
+        else {
+            return;
+        };
+        // Publish the palette before notifying the input: the resulting render
+        // observes it and cannot reinstall the same provider recursively.
+        editing.live_preview.colors.set(Some(colors));
+        let provider = provider.clone().with_colors(colors);
+        editing.input.update(cx, |input, cx| {
+            input.set_projection_provider(Some(provider), cx)
+        });
+    }
+
     pub(crate) fn render_live_preview_control(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(editing) = &self.editing else {
             return div().into_any_element();
@@ -43,9 +77,11 @@ impl Reader {
     }
 
     pub(crate) fn toggle_live_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let colors = projection_colors(cx);
         let Some(editing) = &mut self.editing else {
             return;
         };
+        editing.live_preview.colors.set(Some(colors));
         editing.live_preview.enabled = !editing.live_preview.enabled;
         let input = editing.input.clone();
         let enabled = editing.live_preview.enabled;
@@ -63,7 +99,7 @@ impl Reader {
                 .accepted
                 .as_ref()
                 .filter(|p| p.source().stamp == input.read(cx).source_stamp())
-                .map(|p| p.clone() as Arc<dyn ProjectionProvider>)
+                .map(|p| p.clone().with_colors(colors))
         } else {
             None
         };
@@ -117,6 +153,7 @@ impl Reader {
             // Their marker must still settle, so a later edit can schedule again.
             marker.set(false);
             let _ = this.update(cx, |this, cx| {
+                let colors = projection_colors(cx);
                 let Some(editing) = &mut this.editing else {
                     return;
                 };
@@ -129,8 +166,9 @@ impl Reader {
                 {
                     editing.live_preview.accepted = Some(provider.clone());
                     if editing.live_preview.enabled {
+                        editing.live_preview.colors.set(Some(colors));
                         input.update(cx, |input, cx| {
-                            input.set_projection_provider(Some(provider), cx)
+                            input.set_projection_provider(Some(provider.with_colors(colors)), cx)
                         });
                     }
                 }
@@ -218,6 +256,69 @@ mod tests {
             assert_eq!(input.read(cx).source_stamp(), stamp);
             assert_eq!(input.read(cx).value().as_ref(), ORIGINAL);
         });
+    }
+
+    #[gpui::test]
+    fn theme_changes_reuse_classification_without_editing_source(cx: &mut TestAppContext) {
+        let (reader, visual, directory) = fixture(cx, ORIGINAL);
+        reader.update_in(visual, |r, window, cx| r.toggle_live_preview(window, cx));
+        visual.run_until_parked();
+        let (accepted, stamp, height) = reader.read_with(visual, |r, cx| {
+            let editing = r.editing.as_ref().unwrap();
+            (
+                editing.live_preview.accepted.clone().unwrap(),
+                editing.input.read(cx).source_stamp(),
+                editing.input.read(cx).line_height(),
+            )
+        });
+        for mode in [
+            gpui_component::ThemeMode::Dark,
+            gpui_component::ThemeMode::Light,
+        ] {
+            visual.update(|window, cx| set_appearance(Some(mode), None, window, cx));
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            reader.read_with(visual, |r, cx| {
+                let editing = r.editing.as_ref().unwrap();
+                assert!(Arc::ptr_eq(
+                    &accepted,
+                    editing.live_preview.accepted.as_ref().unwrap()
+                ));
+                assert_eq!(
+                    editing.live_preview.colors.get(),
+                    Some(projection_colors(cx))
+                );
+                assert_eq!(editing.input.read(cx).source_stamp(), stamp);
+                assert_eq!(editing.input.read(cx).value().as_ref(), ORIGINAL);
+                assert_eq!(editing.input.read(cx).line_height(), height);
+                assert!(!editing.store.dirty());
+            });
+            let epoch = reader.read_with(visual, |r, cx| {
+                r.editing
+                    .as_ref()
+                    .unwrap()
+                    .input
+                    .read(cx)
+                    .presentation_epoch()
+            });
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            reader.read_with(visual, |r, cx| {
+                assert_eq!(
+                    r.editing
+                        .as_ref()
+                        .unwrap()
+                        .input
+                        .read(cx)
+                        .presentation_epoch(),
+                    epoch,
+                    "unchanged palette must not reinstall its provider on redraw"
+                );
+            });
+        }
+        assert_eq!(
+            std::fs::read(directory.path().join("vault/note.md")).unwrap(),
+            ORIGINAL.as_bytes()
+        );
     }
 
     #[gpui::test]
