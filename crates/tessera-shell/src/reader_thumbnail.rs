@@ -1,44 +1,190 @@
-//! A selection-owned bitmap: dropping the view cancels native provider work.
+//! A selection-owned bitmap: dropping the view cancels decoding or native
+//! provider work. Ordinary raster images are decoded in-process, bounded and
+//! downscaled off the UI thread; other formats use Quick Look on macOS.
 use super::*;
-use std::os::unix::fs::MetadataExt;
+use image::{AnimationDecoder, ImageDecoder};
+use std::io::BufReader;
 
+/// Longest edge of a decoded preview: the Reader column on a 2x display.
 const MAX_PIXELS: u32 = 2048;
+/// Sources beyond these bounds are refused before a full-size frame exists.
+const MAX_SOURCE_EDGE: u32 = 20_000;
+const MAX_SOURCE_PIXELS: u64 = 100_000_000;
+const MAX_DECODE_ALLOC: u64 = 512 * 1024 * 1024;
+/// Downscaled animation budget; past it only the first frame is shown.
+const MAX_ANIMATION_BYTES: usize = 256 * 1024 * 1024;
+const MAX_ANIMATION_FRAMES: usize = 1_000;
 const TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, PartialEq, Eq)]
 struct Revision {
     path: PathBuf,
-    device: u64,
-    inode: u64,
     size: u64,
-    modified: (i64, i64),
-    changed: (i64, i64),
+    modified: Option<std::time::SystemTime>,
+    #[cfg(unix)]
+    identity: (u64, u64, i64, i64),
 }
 impl Revision {
     fn read(root: &Path, rel: &str) -> anyhow::Result<Self> {
         let path = reader_files::checked_path(root, rel)?;
         let meta = std::fs::metadata(&path)?;
         anyhow::ensure!(meta.is_file(), "Not a regular file");
+        #[cfg(unix)]
+        let identity = {
+            use std::os::unix::fs::MetadataExt;
+            (meta.dev(), meta.ino(), meta.ctime(), meta.ctime_nsec())
+        };
         Ok(Self {
             path,
-            device: meta.dev(),
-            inode: meta.ino(),
             size: meta.len(),
-            modified: (meta.mtime(), meta.mtime_nsec()),
-            changed: (meta.ctime(), meta.ctime_nsec()),
+            modified: meta.modified().ok(),
+            #[cfg(unix)]
+            identity,
         })
     }
 }
 
-pub(super) fn eligible(rel: &str) -> bool {
+/// Raster formats Tessera decodes itself on every platform, so an ordinary
+/// photo never depends on a thumbnail provider.
+pub(super) fn raster(rel: &str) -> bool {
     let ext = Path::new(rel)
         .extension()
         .and_then(|s| s.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
-    // Keep vector fidelity and animation in the existing image renderer.
-    !matches!(ext.as_str(), "svg" | "gif" | "webp" | "apng")
+    matches!(
+        ext.as_str(),
+        "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp"
+    )
+}
+
+pub(super) fn eligible(rel: &str) -> bool {
+    if raster(rel) {
+        return true;
+    }
+    let ext = Path::new(rel)
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    // Keep vector fidelity in the existing image renderer.
+    cfg!(target_os = "macos")
+        && !matches!(ext.as_str(), "svg" | "apng")
         && !tessera_core::excalidraw::is_drawing(rel)
+}
+
+fn fit(width: u32, height: u32) -> (u32, u32) {
+    let long = width.max(height);
+    if long <= MAX_PIXELS {
+        return (width, height);
+    }
+    let scale = |side: u32| ((side as u64 * MAX_PIXELS as u64 / long as u64) as u32).max(1);
+    (scale(width), scale(height))
+}
+
+/// GPUI frames are BGRA; the delay keeps animation timing.
+fn frame(image: image::RgbaImage, delay: image::Delay) -> image::Frame {
+    let (width, height) = fit(image.width(), image.height());
+    let mut image = if (width, height) == image.dimensions() {
+        image
+    } else {
+        image::imageops::thumbnail(&image, width, height)
+    };
+    for pixel in image.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+    }
+    image::Frame::from_parts(image, 0, 0, delay)
+}
+
+fn limits() -> image::Limits {
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_SOURCE_EDGE);
+    limits.max_image_height = Some(MAX_SOURCE_EDGE);
+    limits.max_alloc = Some(MAX_DECODE_ALLOC);
+    limits
+}
+
+fn check_geometry(decoder: &impl ImageDecoder) -> anyhow::Result<()> {
+    let (width, height) = decoder.dimensions();
+    anyhow::ensure!(
+        width > 0 && height > 0 && width as u64 * height as u64 <= MAX_SOURCE_PIXELS,
+        "Image dimensions exceed the limit"
+    );
+    Ok(())
+}
+
+fn animation<'a>(decoder: impl AnimationDecoder<'a>) -> anyhow::Result<Vec<image::Frame>> {
+    let mut frames = Vec::new();
+    let mut bytes = 0;
+    for source in decoder.into_frames() {
+        let source = source?;
+        let delay = source.delay();
+        let next = frame(source.into_buffer(), delay);
+        bytes += next.buffer().len();
+        frames.push(next);
+        if bytes > MAX_ANIMATION_BYTES || frames.len() > MAX_ANIMATION_FRAMES {
+            frames.truncate(1);
+            break;
+        }
+    }
+    anyhow::ensure!(!frames.is_empty(), "Image has no frames");
+    Ok(frames)
+}
+
+/// Decodes by content, not extension; corrupt or oversized input is an error
+/// the caller turns into the file card.
+fn decode_raster(path: &Path) -> anyhow::Result<RenderImage> {
+    let open = || -> anyhow::Result<BufReader<std::fs::File>> {
+        Ok(BufReader::new(std::fs::File::open(path)?))
+    };
+    let format = image::ImageReader::new(open()?)
+        .with_guessed_format()?
+        .format()
+        .ok_or_else(|| anyhow::anyhow!("Unrecognised image format"))?;
+    let frames = match format {
+        image::ImageFormat::Gif => {
+            let mut decoder = image::codecs::gif::GifDecoder::new(open()?)?;
+            decoder.set_limits(limits())?;
+            check_geometry(&decoder)?;
+            animation(decoder)?
+        }
+        image::ImageFormat::WebP => {
+            let mut decoder = image::codecs::webp::WebPDecoder::new(open()?)?;
+            decoder.set_limits(limits())?;
+            check_geometry(&decoder)?;
+            if decoder.has_animation() {
+                animation(decoder)?
+            } else {
+                still(decoder)?
+            }
+        }
+        format => {
+            let mut reader = image::ImageReader::with_format(open()?, format);
+            reader.limits(limits());
+            let decoder = reader.into_decoder()?;
+            check_geometry(&decoder)?;
+            still(decoder)?
+        }
+    };
+    Ok(RenderImage::new(frames))
+}
+
+fn still(mut decoder: impl ImageDecoder) -> anyhow::Result<Vec<image::Frame>> {
+    let orientation = decoder
+        .orientation()
+        .unwrap_or(image::metadata::Orientation::NoTransforms);
+    let mut image = image::DynamicImage::from_decoder(decoder)?;
+    // Shrink before converting so a large photo never exists twice at full size.
+    let (width, height) = fit(image.width(), image.height());
+    if (width, height) != (image.width(), image.height()) {
+        image = image.thumbnail(width, height);
+    }
+    // Phone photos store rotation as EXIF; show them the way they were taken.
+    image.apply_orientation(orientation);
+    Ok(vec![frame(
+        image.into_rgba8(),
+        image::Delay::from_numer_denom_ms(0, 1),
+    )])
 }
 
 enum State {
@@ -49,12 +195,57 @@ enum State {
 
 pub(super) struct Thumbnail {
     state: State,
+    card: reader_files::FileCard,
     _task: Option<Task<()>>,
 }
 impl Thumbnail {
-    pub(super) fn new(root: PathBuf, rel: String, cx: &mut Context<Self>) -> Self {
+    pub(super) fn new(
+        root: PathBuf,
+        rel: String,
+        card: reader_files::FileCard,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let task = if raster(&rel) {
+            Self::decode(root, rel, cx)
+        } else {
+            Self::native(root, rel, cx)
+        };
+        Self {
+            state: State::Loading,
+            card,
+            _task: Some(task),
+        }
+    }
+
+    fn finish(this: WeakEntity<Self>, result: anyhow::Result<Arc<RenderImage>>, cx: &mut AsyncApp) {
+        let _ = this.update(cx, |this, cx| {
+            this.state = match result {
+                Ok(image) => State::Ready(image),
+                Err(_) => State::Unavailable,
+            };
+            cx.notify();
+        });
+    }
+
+    fn decode(root: PathBuf, rel: String, cx: &mut Context<Self>) -> Task<()> {
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let before = Revision::read(&root, &rel)?;
+                    let image = decode_raster(&before.path)?;
+                    // A file replaced mid-decode must not show a mix of revisions.
+                    anyhow::ensure!(before == Revision::read(&root, &rel)?, "File changed");
+                    Ok(Arc::new(image))
+                })
+                .await;
+            Self::finish(this, result, cx);
+        })
+    }
+
+    fn native(root: PathBuf, rel: String, cx: &mut Context<Self>) -> Task<()> {
         let renderer = cx.svg_renderer();
-        let task = cx.spawn(async move |this, cx| {
+        cx.spawn(async move |this, cx| {
             let source_root = root.clone();
             let source_rel = rel.clone();
             let revision = cx
@@ -96,40 +287,25 @@ impl Thumbnail {
                     .await
             }
             .await;
-            let _ = this.update(cx, |this, cx| {
-                this.state = match result {
-                    Ok(image) => State::Ready(image),
-                    Err(_) => State::Unavailable,
-                };
-                cx.notify();
-            });
-        });
-        Self {
-            state: State::Loading,
-            _task: Some(task),
-        }
+            Self::finish(this, result, cx);
+        })
     }
 }
 impl Render for Thumbnail {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let content = match &self.state {
-            State::Ready(image) => {
-                reader_image::ReaderImage::new(image.clone().into()).into_any_element()
-            }
+            State::Ready(image) => v_flex()
+                .gap_3()
+                .child(reader_image::ReaderImage::new(image.clone().into()))
+                .child(self.card.render_details(cx))
+                .into_any_element(),
             State::Loading => div()
                 .id("file-preview-loading")
-                .p_6()
+                .py_6()
                 .text_color(cx.theme().muted_foreground)
                 .child("Loading preview…")
                 .into_any_element(),
-            State::Unavailable => v_flex()
-                .id("file-preview-unavailable")
-                .p_6()
-                .gap_3()
-                .text_color(cx.theme().muted_foreground)
-                .child(Icon::new(IconName::File).size(px(48.)))
-                .child("Preview unavailable. Press Space for Quick Look, or open the file.")
-                .into_any_element(),
+            State::Unavailable => self.card.render(cx),
         };
         div().w_full().flex_none().child(content)
     }
@@ -233,9 +409,9 @@ mod tests {
         }
         cx.update(gpui_component::init);
         let (host, visual) = cx.add_window_view(|_, cx| Host {
-            preview: Some(
-                cx.new(|cx| Thumbnail::new(PathBuf::from("/missing"), "file.pdf".into(), cx)),
-            ),
+            preview: Some(cx.new(|cx| {
+                Thumbnail::new(PathBuf::from("/missing"), "file.pdf".into(), card(), cx)
+            })),
             width: 640.,
         });
         // Cancel the real task; supply controlled completed states to test layout.
@@ -264,8 +440,10 @@ mod tests {
             visual.update(|window, cx| window.draw(cx).clear(cx));
             let bounds = visual.debug_bounds("thumbnail-box").unwrap();
             assert!((bounds.size.width - px(width)).abs() < px(1.));
+            // The image fills the column; one details line follows it.
+            let image = px(width * 1600. / 1200.);
             assert!(
-                (bounds.size.height - px(width * 1600. / 1200.)).abs() < px(1.),
+                bounds.size.height > image + px(8.) && bounds.size.height < image + px(48.),
                 "width={width}, bounds={bounds:?}"
             );
         }
@@ -289,6 +467,117 @@ mod tests {
         );
     }
 
+    fn card() -> reader_files::FileCard {
+        reader_files::FileCard {
+            kind: "JPG".into(),
+            size: 1_900_000,
+            modified: None,
+        }
+    }
+
+    /// Deterministic noise, so the JPEG cannot compress far below ~2 MB.
+    fn photo(path: &Path, width: u32, height: u32) {
+        let mut seed = 0x2545_f491_u32;
+        let image = image::RgbImage::from_fn(width, height, |x, y| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            let base = ((x / 40 + y / 40) % 2 * 120) as u8;
+            image::Rgb([
+                base.wrapping_add(seed as u8 % 40),
+                (seed >> 8) as u8 % 40,
+                200u8.wrapping_sub((seed >> 16) as u8 % 40),
+            ])
+        });
+        let file = std::io::BufWriter::new(std::fs::File::create(path).unwrap());
+        image::codecs::jpeg::JpegEncoder::new_with_quality(file, 80)
+            .encode_image(&image)
+            .unwrap();
+    }
+
+    fn load(cx: &mut TestAppContext, root: &Path, rel: &str) -> Entity<Thumbnail> {
+        let preview = cx.new(|cx| Thumbnail::new(root.to_path_buf(), rel.into(), card(), cx));
+        // Decoding is background work: the entity starts out loading.
+        assert!(preview.read_with(cx, |p, _| matches!(p.state, State::Loading)));
+        cx.run_until_parked();
+        preview
+    }
+
+    #[gpui::test]
+    fn ordinary_photo_renders_inline_downscaled(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Photo.JPG");
+        photo(&path, 3000, 2000);
+        let size = std::fs::metadata(&path).unwrap().len();
+        assert!(
+            (1_500_000..3_000_000).contains(&size),
+            "fixture must be a ~2 MB photo, was {size} bytes"
+        );
+        assert!(eligible("Photo.JPG"));
+        let preview = load(cx, dir.path(), "Photo.JPG");
+        preview.read_with(cx, |preview, _| match &preview.state {
+            State::Ready(image) => {
+                let size = image.size(0);
+                assert_eq!((size.width.0, size.height.0), (2048, 1365));
+                // BGRA order: the dominant blue channel sits at index 0.
+                let pixels = image.as_bytes(0).unwrap();
+                assert!(pixels[0] > pixels[2], "{:?}", &pixels[..4]);
+            }
+            State::Loading => panic!("decode never completed"),
+            State::Unavailable => panic!("a valid photo fell back to the card"),
+        });
+    }
+
+    #[gpui::test]
+    fn corrupt_photo_falls_back_to_the_card(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut bytes = Vec::new();
+        photo(&dir.path().join("whole.jpg"), 800, 600);
+        bytes.extend_from_slice(&std::fs::read(dir.path().join("whole.jpg")).unwrap()[..64]);
+        bytes.extend(std::iter::repeat_n(0x5a, 4096));
+        std::fs::write(dir.path().join("broken.jpg"), bytes).unwrap();
+        std::fs::write(dir.path().join("text.png"), b"not an image").unwrap();
+        for rel in ["broken.jpg", "text.png"] {
+            let preview = load(cx, dir.path(), rel);
+            preview.read_with(cx, |preview, _| {
+                assert!(matches!(preview.state, State::Unavailable), "{rel}");
+            });
+        }
+        // Positive control: the same harness decodes the intact source.
+        let preview = load(cx, dir.path(), "whole.jpg");
+        preview.read_with(cx, |preview, _| {
+            assert!(matches!(preview.state, State::Ready(_)));
+        });
+    }
+
+    #[test]
+    fn animation_keeps_frames_and_still_images_fit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("spinner.gif");
+        {
+            let file = std::fs::File::create(&path).unwrap();
+            let mut encoder = image::codecs::gif::GifEncoder::new(file);
+            for shade in [0u8, 255] {
+                encoder
+                    .encode_frame(image::Frame::from_parts(
+                        image::RgbaImage::from_pixel(64, 32, image::Rgba([shade, 0, 0, 255])),
+                        0,
+                        0,
+                        image::Delay::from_numer_denom_ms(100, 1),
+                    ))
+                    .unwrap();
+            }
+        }
+        let image = decode_raster(&path).unwrap();
+        assert_eq!(image.frame_count(), 2);
+        assert_eq!(image.size(0).width.0, 64);
+        assert_eq!(fit(4000, 1000), (2048, 512));
+        assert_eq!(fit(1000, 9000), (227, 2048));
+        assert_eq!(fit(20_000, 1), (2048, 1));
+        assert_eq!(fit(640, 480), (640, 480));
+    }
+
+    #[cfg(unix)]
     #[test]
     fn revision_rejects_replace_change_and_escape() {
         let dir = tempfile::tempdir().unwrap();
@@ -306,9 +595,10 @@ mod tests {
         std::fs::write(dir.path().join("outside.pdf"), b"outside").unwrap();
         std::os::unix::fs::symlink(dir.path().join("outside.pdf"), &path).unwrap();
         assert!(Revision::read(&root, "file.pdf").is_err());
-        assert!(eligible("report.pdf"));
-        assert!(eligible("deck.pptx"));
-        assert!(!eligible("animated.GIF"));
+        assert_eq!(eligible("report.pdf"), cfg!(target_os = "macos"));
+        assert_eq!(eligible("deck.pptx"), cfg!(target_os = "macos"));
+        assert!(eligible("animated.GIF"));
+        assert!(eligible("photo.jpeg"));
         assert!(!eligible("diagram.svg"));
     }
 }

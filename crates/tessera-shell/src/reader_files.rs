@@ -116,12 +116,92 @@ pub(crate) fn menu(mut menu: PopupMenu, root: PathBuf, rel: String) -> PopupMenu
     menu
 }
 
+/// What the file card says about a file: type, human size, local date.
+#[derive(Clone)]
+pub(crate) struct FileCard {
+    pub kind: String,
+    pub size: u64,
+    pub modified: Option<std::time::SystemTime>,
+}
+impl FileCard {
+    pub fn details(&self) -> String {
+        let mut parts = vec![self.kind.clone(), human_size(self.size)];
+        if let Some(modified) = self.modified {
+            let local = chrono::DateTime::<chrono::Local>::from(modified);
+            parts.push(format!("Modified {}", human_date(&local)));
+        }
+        parts.join(" · ")
+    }
+    pub fn render_details(&self, cx: &App) -> AnyElement {
+        div()
+            .text_sm()
+            .text_color(cx.theme().muted_foreground)
+            .child(self.details())
+            .into_any_element()
+    }
+    /// The fallback for a file Tessera cannot draw: no raw bytes, no UTC.
+    pub fn render(&self, cx: &App) -> AnyElement {
+        v_flex()
+            .id("file-preview-unavailable")
+            .py_6()
+            .gap_2()
+            .child(
+                Icon::new(IconName::File)
+                    .size(px(48.))
+                    .text_color(cx.theme().muted_foreground),
+            )
+            .child(self.render_details(cx))
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(Os::CURRENT.file_preview_hint()),
+            )
+            .into_any_element()
+    }
+}
+
+/// Decimal units, as Finder and most file managers show them.
+pub(crate) fn human_size(bytes: u64) -> String {
+    if bytes == 1 {
+        return "1 byte".into();
+    }
+    if bytes < 1000 {
+        return format!("{bytes} bytes");
+    }
+    let mut value = bytes as f64;
+    for unit in ["KB", "MB", "GB", "TB"] {
+        value /= 1000.;
+        // Round first so 999,950 bytes reads "1 MB", not "1000 KB".
+        let rounded = if value < 100. {
+            (value * 10.).round() / 10.
+        } else {
+            value.round()
+        };
+        if rounded < 1000. || unit == "TB" {
+            return if rounded.fract() == 0. {
+                format!("{rounded:.0} {unit}")
+            } else {
+                format!("{rounded:.1} {unit}")
+            };
+        }
+    }
+    unreachable!()
+}
+
+/// A date in the caller's zone, with no zone name: "7 Oct 2026, 14:05".
+pub(crate) fn human_date<Tz: chrono::TimeZone>(time: &chrono::DateTime<Tz>) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    time.format("%-d %b %Y, %H:%M").to_string()
+}
+
 pub(crate) struct FilePreview {
     pub rel: String,
     pub path: PathBuf,
-    pub details: String,
+    pub card: FileCard,
     pub image: bool,
-    #[cfg(any(target_os = "macos", all(test, unix)))]
     pub thumbnail: Option<Entity<reader_thumbnail::Thumbnail>>,
 }
 impl FilePreview {
@@ -134,27 +214,19 @@ impl FilePreview {
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
-        let modified = meta
-            .modified()
-            .ok()
-            .map(|t| {
-                let t: time::OffsetDateTime = t.into();
-                format!(
-                    "{} {} {} {:02}:{:02} UTC",
-                    t.day(),
-                    t.month(),
-                    t.year(),
-                    t.hour(),
-                    t.minute()
-                )
-            })
-            .unwrap_or_else(|| "Unknown modified date".into());
         Ok(Self {
-            #[cfg(any(target_os = "macos", all(test, unix)))]
             thumbnail: None,
             rel: rel.into(),
             path,
-            details: format!("{} · {} bytes · {modified}", ext.to_uppercase(), meta.len()),
+            card: FileCard {
+                kind: if ext.is_empty() {
+                    "File".into()
+                } else {
+                    ext.to_uppercase()
+                },
+                size: meta.len(),
+                modified: meta.modified().ok(),
+            },
             image: ["svg", "png", "jpg", "jpeg", "gif", "webp", "bmp"].contains(&ext.as_str())
                 || (cfg!(target_os = "macos") && ["heic", "heif"].contains(&ext.as_str())),
         })
@@ -292,20 +364,18 @@ impl Reader {
                     self.history_ix = self.history.len() - 1;
                 }
                 self.document_header_hidden = px(0.);
-                #[cfg(target_os = "macos")]
-                let preview = {
-                    let mut preview = preview;
-                    if reader_thumbnail::eligible(rel) {
-                        preview.thumbnail = Some(cx.new(|cx| {
-                            reader_thumbnail::Thumbnail::new(
-                                self.vault_root.clone(),
-                                rel.into(),
-                                cx,
-                            )
-                        }));
-                    }
-                    preview
-                };
+                let mut preview = preview;
+                if reader_thumbnail::eligible(rel) {
+                    let card = preview.card.clone();
+                    preview.thumbnail = Some(cx.new(|cx| {
+                        reader_thumbnail::Thumbnail::new(
+                            self.vault_root.clone(),
+                            rel.into(),
+                            card,
+                            cx,
+                        )
+                    }));
+                }
                 self.file_preview = Some(preview);
                 self.find_open = false;
                 self.link_notice = None;
@@ -340,71 +410,19 @@ impl Reader {
                 ))
                 .into_any_element();
         }
-        #[cfg(any(target_os = "macos", all(test, unix)))]
-        if let Some(thumbnail) = &preview.thumbnail {
-            return v_flex()
-                .id("reader-file-preview")
-                .key_context("ReaderFile")
-                .track_focus(&self.focus_handle)
-                .size_full()
-                .overflow_y_scroll()
+        let body = if let Some(thumbnail) = &preview.thumbnail {
+            thumbnail.clone().into_any_element()
+        } else if preview.image {
+            v_flex()
                 .gap_3()
-                .child(self.render_document_header(cx))
-                .child(
-                    v_flex()
-                        .flex_none()
-                        .px_6()
-                        .pb_6()
-                        .gap_3()
-                        .child(thumbnail.clone())
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(preview.details.clone()),
-                        )
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .child("Quick Look preview · Space to open"),
-                        ),
-                )
-                .into_any_element();
-        }
-        let mut view = v_flex()
-            .flex_none()
-            .px_6()
-            .pb_6()
-            .gap_3()
-            .child(
-                v_flex()
-                    .gap_1()
-                    .child(Icon::new(IconName::File).size(px(48.)))
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(
-                                preview
-                                    .path
-                                    .extension()
-                                    .and_then(|s| s.to_str())
-                                    .unwrap_or("FILE")
-                                    .to_uppercase(),
-                            ),
-                    ),
-            )
-            .child(
-                div()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(preview.details.clone()),
-            );
-        if preview.image {
-            view = view.child(super::reader_image::ReaderImage::new(image_source(
-                preview.path.clone(),
-            )));
-        }
+                .child(super::reader_image::ReaderImage::new(image_source(
+                    preview.path.clone(),
+                )))
+                .child(preview.card.render_details(cx))
+                .into_any_element()
+        } else {
+            preview.card.render(cx)
+        };
         v_flex()
             .id("reader-file-preview")
             .key_context("ReaderFile")
@@ -413,7 +431,7 @@ impl Reader {
             .overflow_y_scroll()
             .gap_3()
             .child(self.render_document_header(cx))
-            .child(view)
+            .child(v_flex().flex_none().px_6().pb_6().child(body))
             .into_any_element()
     }
 }
@@ -479,6 +497,9 @@ mod tests {
             std::fs::write(path.join("vault/start.md"), "# Original note").unwrap();
             std::fs::write(path.join("vault/diagram.svg"), r#"<svg xmlns="http://www.w3.org/2000/svg" width="2600" height="862"><rect width="2600" height="862" fill="red"/></svg>"#).unwrap();
             std::fs::write(path.join("vault/report.pdf"), b"%PDF-fixture").unwrap();
+            image::RgbImage::from_pixel(8, 6, image::Rgb([40, 100, 190]))
+                .save(path.join("vault/photo.png"))
+                .unwrap();
             Self(path)
         }
     }
@@ -494,16 +515,64 @@ mod tests {
         let root = fixture.0.join("vault");
         let svg = FilePreview::load(&root, "diagram.svg").unwrap();
         assert!(svg.image);
-        assert!(svg.details.contains("SVG"));
+        assert!(svg.card.details().starts_with("SVG · "));
         let pdf = FilePreview::load(&root, "report.pdf").unwrap();
         assert!(!pdf.image);
-        assert!(pdf.details.contains("12 bytes"));
+        let details = pdf.card.details();
+        assert!(
+            details.starts_with("PDF · 12 bytes · Modified "),
+            "{details}"
+        );
+        assert!(!details.contains("UTC"), "{details}");
         assert!(FilePreview::load(&root, "missing.svg").is_err());
         assert!(checked_path(&root, "../").is_err());
         assert_eq!(
             std::fs::read(root.join("report.pdf")).unwrap(),
             b"%PDF-fixture"
         );
+    }
+
+    #[test]
+    fn sizes_read_like_a_file_manager() {
+        assert_eq!(human_size(0), "0 bytes");
+        assert_eq!(human_size(1), "1 byte");
+        assert_eq!(human_size(999), "999 bytes");
+        assert_eq!(human_size(1000), "1 KB");
+        assert_eq!(human_size(1_536), "1.5 KB");
+        assert_eq!(human_size(999_950), "1 MB");
+        assert_eq!(human_size(1_900_000), "1.9 MB");
+        assert_eq!(human_size(1_949_999), "1.9 MB");
+        assert_eq!(human_size(12_345_678), "12.3 MB");
+        assert_eq!(human_size(123_456_789), "123 MB");
+        assert_eq!(human_size(5_000_000_000), "5 GB");
+        assert_eq!(human_size(u64::MAX), "18446744 TB");
+    }
+
+    #[test]
+    fn dates_are_local_and_carry_no_zone_name() {
+        use chrono::TimeZone;
+        let zone = chrono::FixedOffset::east_opt(3 * 3600).unwrap();
+        let time = zone.with_ymd_and_hms(2026, 10, 7, 9, 5, 0).unwrap();
+        assert_eq!(human_date(&time), "7 Oct 2026, 09:05");
+        // The same instant reads in the viewer's zone, not in UTC.
+        let utc = time.with_timezone(&chrono::Utc);
+        assert_eq!(human_date(&utc), "7 Oct 2026, 06:05");
+        let card = FileCard {
+            kind: "JPG".into(),
+            size: 1_900_000,
+            modified: Some(time.into()),
+        };
+        let local = chrono::DateTime::<chrono::Local>::from(std::time::SystemTime::from(time));
+        assert_eq!(
+            card.details(),
+            format!("JPG · 1.9 MB · Modified {}", human_date(&local))
+        );
+        assert!(!card.details().contains("UTC"));
+        let unknown = FileCard {
+            modified: None,
+            ..card
+        };
+        assert_eq!(unknown.details(), "JPG · 1.9 MB");
     }
 
     #[gpui::test]
@@ -552,6 +621,10 @@ mod tests {
                 cx.read_from_clipboard().unwrap().text().unwrap(),
                 "[[diagram.svg|diagram]]"
             );
+            assert!(reader.file_preview.as_ref().unwrap().thumbnail.is_none());
+            reader.preview_file("photo.png", window, cx);
+            // Raster images decode in-process on every platform.
+            assert!(reader.file_preview.as_ref().unwrap().thumbnail.is_some());
             reader.preview_file("report.pdf", window, cx);
             assert!(!reader.file_preview.as_ref().unwrap().image);
             assert_eq!(reader.history.last().unwrap(), "report.pdf");
