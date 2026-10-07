@@ -39,3 +39,19 @@ editor lock. A stale source or active editor/draft refuses the mutation. Snooze
 updates the scheduled date, not the due date. Every successful action gets one
 bottom toast and revision-checked Undo using retained preimages. Native dashboard
 activation waits for those safety and UI contracts, with Linux light/dark evidence.
+
+## Revision-bound task edit plans (#674)
+
+`task_edit::Target` captures a canonical relative path, full-source SHA-256,
+line and verified checkbox range from the displayed source snapshot. Plans refuse
+any source revision change and never relocate tasks by matching text. Checkbox
+changes preserve unrelated metadata; due edits reject duplicate, malformed or
+non-plain-text date metadata. BOM, CRLF, indentation and other task occurrences
+remain unchanged. New due metadata precedes a trailing Obsidian block ID.
+
+Plans produce exact before/after bytes, not filesystem writes. Future callers must
+commit through FileEditor with its lock, durable draft and atomic conflict checks.
+Undo checks the saved after-revision before proposing the exact preimage through
+the same safe-write path; it refuses intervening edits. Collapsed copies must be
+expanded to individual occurrences before editing. No source/MCP writes or native
+controls are activated by this core-only slice.
