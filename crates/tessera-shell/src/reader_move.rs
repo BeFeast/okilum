@@ -54,6 +54,14 @@ fn move_message(from: &str, to: &str, links: Option<&Preview>) -> String {
     message
 }
 
+fn undo_message(from: &str, to: &str) -> &'static str {
+    if Path::new(from).parent() == Path::new(to).parent() {
+        "Rename undone"
+    } else {
+        "Move undone"
+    }
+}
+
 fn needs_move_confirmation(preview: &Preview) -> bool {
     preview.affected_paths().len() > 20
         || !preview.skipped.is_empty()
@@ -124,6 +132,7 @@ impl Reader {
         &mut self,
         journal: PathBuf,
         message: String,
+        undone: &'static str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -168,7 +177,7 @@ impl Reader {
                                 match r.revert_link_move(&journal, &state, window, cx) {
                                     Ok(()) => {
                                         let _ = notice.update(cx, |n, cx| n.dismiss(window, cx));
-                                        reader_toast::transient("Rename undone", window, cx);
+                                        reader_toast::transient(undone, window, cx);
                                     }
                                     Err(error) => reader_toast::error(
                                         format!("Cannot undo: {error:#}"),
@@ -790,6 +799,7 @@ impl Reader {
                                 &pending.to,
                                 update.then_some(&pending.links),
                             ),
+                            undo_message(&pending.from, &pending.to),
                             window,
                             cx,
                         );
@@ -834,7 +844,13 @@ impl Reader {
                         None => warning,
                     });
                 } else {
-                    self.move_undo_toast(journal, success_message, window, cx);
+                    self.move_undo_toast(
+                        journal,
+                        success_message,
+                        undo_message(&pending.from, &pending.to),
+                        window,
+                        cx,
+                    );
                 }
             }
         }
@@ -945,6 +961,11 @@ mod tests {
     use ::core::prelude::v1::test;
     #[test]
     fn move_feedback_omits_empty_counts_and_keeps_real_updates() {
+        assert_eq!(undo_message("Source", "Target/Source"), "Move undone");
+        assert_eq!(
+            undo_message("Folder/Old.md", "Folder/New.md"),
+            "Rename undone"
+        );
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir(root.path().join("Folder")).unwrap();
         std::fs::write(root.path().join("Start.md"), "Body").unwrap();
