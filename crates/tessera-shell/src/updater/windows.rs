@@ -42,6 +42,7 @@ pub(super) fn restart(expected: Option<&str>, cx: &mut gpui::App) {
         })?;
         let id = identity(asset);
         if expected.is_some_and(|expected| expected != id) {
+            state().lock().unwrap().observe(Some(id));
             anyhow::bail!("The pending update changed. Check for updates again.");
         }
         {

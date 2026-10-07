@@ -59,6 +59,8 @@ mod tests {
         assert_eq!(state.package(), Some("package-1"));
         state.observe(Some("package-2".into()));
         assert_eq!(state.take_announcement().as_deref(), Some("package-2"));
+        assert!(!state.begin_restart("package-1"));
+        assert!(state.begin_restart("package-2"));
     }
 
     #[test]
