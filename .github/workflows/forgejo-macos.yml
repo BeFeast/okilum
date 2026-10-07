@@ -28,8 +28,8 @@ jobs:
           path: |
             ~/.cargo/registry/
             ~/.cargo/git/
-            ~/.cache/tessera-macos/1.96.1-arm64/
-          key: forgejo-native-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'scripts/ci/check-macos.sh', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff') }}
+            ~/.cache/tessera-macos/reader-arm64/
+          key: forgejo-native-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'scripts/ci/check-macos.sh', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff') }}
       - name: Compile Reader and run quick native regressions
         id: native
         if: github.ref != 'refs/heads/main' || steps.native-cache.outputs.cache-hit != 'true'
@@ -42,7 +42,7 @@ jobs:
           path: |
             ~/.cargo/registry/
             ~/.cargo/git/
-            ~/.cache/tessera-macos/1.96.1-arm64/
+            ~/.cache/tessera-macos/reader-arm64/
           key: ${{ steps.native-cache.outputs.cache-primary-key }}
       - name: Save native thumbnail evidence
         if: always() && steps.native.outcome != 'skipped'

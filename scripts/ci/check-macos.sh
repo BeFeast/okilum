@@ -6,11 +6,10 @@ if [ -f "$HOME/.cargo/env" ]; then . "$HOME/.cargo/env"; fi
 export CC=/usr/bin/clang CXX=/usr/bin/clang++
 export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
 # Same toolchain/profile/cache as main releases; the single runner serializes jobs.
-export CARGO_TARGET_DIR="$HOME/.cache/tessera-macos/1.96.1-arm64"
+export CARGO_TARGET_DIR="$HOME/.cache/tessera-macos/reader-arm64"
 export CARGO_INCREMENTAL=0
-if ! rustup run 1.96.1 rustc --version >/dev/null 2>&1; then
-    rustup toolchain install 1.96.1 --profile minimal --target aarch64-apple-darwin
-fi
+rustc --version
+rustup target add aarch64-apple-darwin
 source scripts/ci/release-cache.sh
 bash scripts/vendor-setup.sh
 bash scripts/vendor-setup.sh --verify
@@ -18,10 +17,10 @@ archive="${RUNNER_TEMP:?}/Sparkle-2.10.0.tar.xz"
 python3 scripts/updater/sparkle.py fetch "$archive"
 python3 scripts/updater/sparkle.py prepare --archive "$archive" --destination vendor/sparkle
 export DYLD_FRAMEWORK_PATH="$PWD/vendor/sparkle"
-cargo_args=(+1.96.1 test --release --locked --target aarch64-apple-darwin)
+cargo_args=(test --release --locked --target aarch64-apple-darwin)
 # Compile the production binary too: cargo test alone only builds the shell
 # with cfg(test), because this crate has no integration-test targets.
-cargo +1.96.1 build --release --locked --target aarch64-apple-darwin -p tessera-shell
+cargo build --release --locked --target aarch64-apple-darwin -p tessera-shell
 # Compile test-only cfg branches and integration tests.
 cargo "${cargo_args[@]}" -p tessera-core -p tessera-shell --no-run
 

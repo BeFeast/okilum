@@ -20,13 +20,12 @@ if [ -f "$HOME/.cargo/env" ]; then . "$HOME/.cargo/env"; fi
 export CC=/usr/bin/clang CXX=/usr/bin/clang++
 SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
 export SDKROOT
-if ! rustup run 1.96.1 rustc --version >/dev/null 2>&1; then
-    rustup toolchain install 1.96.1 --profile minimal --target aarch64-apple-darwin
-fi
+rustc --version
+rustup target add aarch64-apple-darwin
 bash scripts/vendor-setup.sh
 bash scripts/vendor-setup.sh --verify
 # Build cache lives outside the checkout.
-export CARGO_TARGET_DIR="$HOME/.cache/tessera-macos/1.96.1-arm64"
+export CARGO_TARGET_DIR="$HOME/.cache/tessera-macos/reader-arm64"
 export CARGO_INCREMENTAL=0
 source scripts/ci/release-cache.sh
 SPARKLE_ARCHIVE="$OUTPUT/Sparkle-2.10.0.tar.xz"
@@ -34,7 +33,7 @@ python3 scripts/updater/sparkle.py fetch "$SPARKLE_ARCHIVE"
 python3 scripts/updater/sparkle.py prepare --archive "$SPARKLE_ARCHIVE" --destination vendor/sparkle
 mkdir -p "$OUTPUT/sparkle-bin"
 tar -xJf "$SPARKLE_ARCHIVE" -C "$OUTPUT/sparkle-bin" --include='*bin/sign_update'
-cargo +1.96.1 build --release --locked --target aarch64-apple-darwin -p tessera-shell
+cargo build --release --locked --target aarch64-apple-darwin -p tessera-shell
 
 APP="$OUTPUT/Tessera.app"
 rm -rf "$APP"
@@ -45,7 +44,7 @@ python3 scripts/updater/sparkle.py verify "$APP/Contents/Frameworks"
 cp "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/tessera" "$APP/Contents/MacOS/tessera"
 python3 scripts/brand-assets.py verify
 # The example binary runs outside the bundle; point it at the source framework.
-env DYLD_FRAMEWORK_PATH="$PWD/vendor/sparkle" cargo +1.96.1 run --release --locked --target aarch64-apple-darwin -p tessera-shell --example macos_app_icon -- "$OUTPUT/icon-rasters"
+env DYLD_FRAMEWORK_PATH="$PWD/vendor/sparkle" cargo run --release --locked --target aarch64-apple-darwin -p tessera-shell --example macos_app_icon -- "$OUTPUT/icon-rasters"
 python3 scripts/macos-icon.py "$OUTPUT/icon-rasters" "$APP/Contents/Resources/Tessera.icns"
 cat >"$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

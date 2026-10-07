@@ -71,14 +71,15 @@ Tessera is under active development. Keep normal backups of your notes.
 ## Build from source
 
 See [platform prerequisites and build instructions](docs/building.md).
-With Rust 1.96.1 and your platform libraries installed:
+With rustup and your platform libraries installed, Cargo automatically selects
+the version and components in `rust-toolchain.toml` (currently Rust 1.99.0):
 
 ```sh
 git clone https://github.com/BeFeast/tessera.git
 cd tessera
 bash scripts/vendor-setup.sh
 bash scripts/vendor-setup.sh --verify
-cargo +1.96.1 build --release --locked -p tessera-shell
+cargo build --release --locked -p tessera-shell
 ./target/release/tessera --vault /path/to/notes
 ```
 

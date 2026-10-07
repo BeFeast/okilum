@@ -49,7 +49,8 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends clang lld llvm curl git python3-venv libcairo2
-          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.96.1 --target x86_64-pc-windows-msvc
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+          "$HOME/.cargo/bin/rustup" target add x86_64-pc-windows-msvc
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           python3 -m venv "$RUNNER_TEMP/icon-env"
           "$RUNNER_TEMP/icon-env/bin/pip" install CairoSVG==2.8.2
