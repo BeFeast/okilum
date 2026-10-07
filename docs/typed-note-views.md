@@ -55,3 +55,19 @@ Undo checks the saved after-revision before proposing the exact preimage through
 the same safe-write path; it refuses intervening edits. Collapsed copies must be
 expanded to individual occurrences before editing. No source/MCP writes or native
 controls are activated by this core-only slice.
+
+## Safe-write and Undo integration
+
+On Unix, `task_edit::write::apply` commits a captured occurrence through FileEditor.
+It validates the vault-relative path, refuses symlinks and hard links, acquires the
+same editor lock, and refuses retained dirty recovery drafts. The full captured
+revision must match before creating a durable draft; FileEditor performs its own
+atomic-save conflict check and archives the preimage outside the index.
+
+A successful change returns an opaque in-process receipt. Undo uses the same lock
+and save path and requires the same canonical vault and exact saved after-revision.
+It restores the exact preimage, including BOM and line endings. A no-op creates no
+save or receipt. Conflicts retain the recovery draft rather than overwriting newer
+source. Snooze edits scheduled metadata (`⏳`) while preserving due metadata (`📅`).
+This core-only slice does not activate dashboard controls or protocol writes;
+platforms without FileEditor retain read-only capability.

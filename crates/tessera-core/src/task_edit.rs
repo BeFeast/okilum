@@ -1,5 +1,5 @@
-//! Revision-bound task edits. Produces bytes only; callers must commit through
-//! the platform's safe editor and retain the preimage for revision-checked Undo.
+//! Revision-bound task edit plans and Unix safe-write/Undo integration.
+//! Native controls and reader protocols are activated separately.
 use comrak::{nodes::NodeValue, parse_document, Arena};
 use sha2::{Digest, Sha256};
 use std::ops::Range;
@@ -16,6 +16,8 @@ pub struct Target {
 pub enum Change {
     Checked(bool),
     Due(Date),
+    /// A snooze changes scheduled metadata, preserving the task deadline.
+    Scheduled(Date),
 }
 #[derive(Clone, Debug)]
 pub struct Plan {
@@ -90,9 +92,14 @@ impl Target {
                     after.replace_range(self.checkbox.clone(), if checked { "x" } else { " " });
                 }
             }
-            Change::Due(date) => {
+            Change::Due(date) | Change::Scheduled(date) => {
+                let marker = if matches!(change, Change::Scheduled(_)) {
+                    '⏳'
+                } else {
+                    '📅'
+                };
                 if !(1..=9999).contains(&date.year()) {
-                    return Err("Due date is outside the supported calendar".into());
+                    return Err("Task date is outside the supported calendar".into());
                 }
                 let value = format!(
                     "{:04}-{:02}-{:02}",
@@ -102,38 +109,43 @@ impl Target {
                 );
                 let range = line_range(source, self.line).ok_or("Task line is unavailable")?;
                 let raw = &source[range.clone()];
-                let markers: Vec<_> = raw.match_indices('📅').collect();
+                let markers: Vec<_> = raw.match_indices(marker).collect();
                 match markers.as_slice() {
                     [] => {
                         let trimmed = raw.trim_end_matches([' ', '\t']);
                         // Keep an Obsidian block ID at the end of its line.
                         let block = regex::Regex::new(r"[ \t]+\^[A-Za-z0-9-]+$").unwrap();
                         let end = block.find(trimmed).map_or(trimmed.len(), |m| m.start());
-                        after.insert_str(range.start + end, &format!(" 📅 {value}"));
+                        after.insert_str(range.start + end, &format!(" {marker} {value}"));
                     }
                     [(at, _)] => {
-                        let pattern =
-                            regex::Regex::new(r"^📅[ \t]+([0-9]{4}-[0-9]{2}-[0-9]{2})(?:[ \t]|$)")
-                                .unwrap();
+                        let pattern = regex::Regex::new(&format!(
+                            r"^{marker}[ \t]+([0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}})(?:[ \t]|$)"
+                        ))
+                        .unwrap();
                         let token = pattern
                             .captures(&raw[*at..])
                             .and_then(|c| c.get(1))
-                            .ok_or("The task has malformed due metadata")?;
+                            .ok_or("The task has malformed date metadata")?;
                         Date::parse(
                             token.as_str(),
                             &time::macros::format_description!("[year]-[month]-[day]"),
                         )
-                        .map_err(|_| "The task has an invalid due date")?;
+                        .map_err(|_| "The task has an invalid date")?;
                         let span = range.start + at..range.start + at + token.end();
                         if !plain_metadata(source, span) {
-                            return Err("Due metadata must be plain task text".into());
+                            return Err("Date metadata must be plain task text".into());
                         }
                         after.replace_range(
                             range.start + at + token.start()..range.start + at + token.end(),
                             &value,
                         );
                     }
-                    _ => return Err("The task has more than one due date".into()),
+                    _ => {
+                        return Err(
+                            "The task has more than one occurrence of this date marker".into()
+                        )
+                    }
                 }
             }
         }
@@ -200,6 +212,9 @@ fn plain_metadata(source: &str, span: Range<usize>) -> bool {
     })
 }
 
+#[cfg(unix)]
+pub mod write;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,6 +252,29 @@ mod tests {
         let s = "```md\n- [ ] example\n```\n";
         assert!(Target::capture("a.md", s, 2).is_err());
         assert!(Target::capture("../a.md", "- [ ] real", 1).is_err());
+    }
+    #[test]
+    fn scheduled_dates_preserve_due_and_refuse_ambiguous_metadata() {
+        let s = "- [ ] Task 📅 2026-10-10 ^id\r\n";
+        let t = Target::capture("a.md", s, 1).unwrap();
+        assert_eq!(
+            t.plan(s, Change::Scheduled(TOMORROW)).unwrap().after,
+            "- [ ] Task 📅 2026-10-10 ⏳ 2026-10-08 ^id\r\n"
+        );
+        for metadata in [
+            "⏳ nope",
+            "⏳ 2026-02-30",
+            "⏳ 2026-10-07 ⏳ 2026-10-08",
+            "`⏳ 2026-10-07`",
+            "[⏳ 2026-10-07](note.md)",
+        ] {
+            let s = format!("- [ ] Task {metadata}\n");
+            let t = Target::capture("a.md", &s, 1).unwrap();
+            assert!(
+                t.plan(&s, Change::Scheduled(TOMORROW)).is_err(),
+                "{metadata}"
+            );
+        }
     }
     #[test]
     fn insert_before_block_id_and_preserve_uppercase_status() {

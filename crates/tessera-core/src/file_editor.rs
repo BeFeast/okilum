@@ -217,6 +217,10 @@ impl FileEditor {
             writes: Arc::default(),
         })
     }
+    /// Canonical identity held by this editor, for root-bound mutation callers.
+    pub fn path(&self) -> &Path {
+        &self.draft.path
+    }
     pub fn text(&self) -> &str {
         &self.draft.text
     }
