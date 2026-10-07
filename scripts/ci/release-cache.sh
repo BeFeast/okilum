@@ -34,6 +34,33 @@ _enable_release_cache() {
   export SCCACHE_SERVER_UDS="$cache_dir/server.sock"
   export SCCACHE_IDLE_TIMEOUT=300
   export SCCACHE_IGNORE_SERVER_IO_ERROR=1
+  if [[ $cache_target == aarch64-apple-darwin ]]; then
+    # Job-local only. Restart the selected daemon so it inherits this shell's
+    # descriptor limit, rather than reusing the runner's low-limit daemon.
+    if ! { ulimit -n 8192 2>/dev/null || ulimit -n "$(ulimit -Hn)" 2>/dev/null; }; then
+      echo '::warning::Cannot raise macOS descriptor limit; building without sccache'
+      return 1
+    fi
+    local cache_nofile
+    cache_nofile=$(ulimit -Sn)
+    if [[ $cache_nofile != unlimited ]] && (( cache_nofile < 8192 )); then
+      echo '::warning::macOS descriptor limit remains below 8192; building without sccache'
+      return 1
+    fi
+    echo "macOS compiler cache descriptor limit: $cache_nofile"
+    python3 - "$cache_dir/sccache" <<'PYRESTART' || return 1
+import subprocess, sys
+try:
+    # Stop failure is harmless when no server was running.
+    subprocess.run([sys.argv[1], '--stop-server'], timeout=3,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    result = subprocess.run([sys.argv[1], '--start-server'], timeout=3,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    sys.exit(result.returncode)
+except (OSError, subprocess.TimeoutExpired):
+    sys.exit(1)
+PYRESTART
+  fi
   # A stats response is not proof that rustc can start. Bound the real wrapper
   # probe too, including daemon startup and authenticated storage initialization.
   python3 - "$cache_dir/sccache" "$(command -v rustc)" <<'PYPROBE' || return 1
