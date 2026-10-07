@@ -108,3 +108,19 @@ allocation has the normal release/bind race; startup failure fails the run.
 Evidence and limitations are in [the compatibility result](sync-compatibility.md).
 
 The first Linux controller component is documented in [Linux lifecycle ownership](sync-linux-controller.md). It is not yet connected to Reader or Settings.
+
+
+### Linux package boundary (#587)
+
+The Arch package declares `syncthing` as a runtime dependency. Tessera installs
+no service unit or package install hook; discovering the package does not run it.
+Only explicit Enable Sync may prepare Tessera's private instance and register
+its user service. Disable/Remove unregister that owned service. External reused
+instances keep their lifecycle.
+
+The controller currently accepts the tested client version 2.1.6 and reports an
+unsupported package version before preparation if Arch ships a different one.
+The dependency does not pin or downgrade the user's Syncthing package; support
+for another version requires updating the isolated compatibility evidence first.
+Arch package installation/lifecycle QA remains a native Linux check, separate
+from the controller's CT141 systemd and fixture tests.
