@@ -38,7 +38,29 @@ fn move_message(from: &str, to: &str, links: Option<&Preview>) -> String {
                 .to_string_lossy()
                 .into_owned()
         };
-        format!("Moved to {folder}")
+        let notes = links
+            .filter(|preview| preview.directory.is_some())
+            .map(|preview| {
+                preview
+                    .editor_paths()
+                    .iter()
+                    .filter(|path| {
+                        Path::new(path).starts_with(from)
+                            && Path::new(path)
+                                .extension()
+                                .is_some_and(|e| e.eq_ignore_ascii_case("md"))
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+        if notes > 0 {
+            format!(
+                "Moved {notes} {}",
+                if notes == 1 { "note" } else { "notes" }
+            )
+        } else {
+            format!("Moved to {folder}")
+        }
     };
     if let Some(links) = links.filter(|p| !p.changes.is_empty()) {
         message.push_str(&format!(
@@ -54,6 +76,32 @@ fn move_message(from: &str, to: &str, links: Option<&Preview>) -> String {
     message
 }
 
+fn move_link_review(preview: &Preview) -> Option<String> {
+    preview.directory.as_ref()?;
+    let paths: std::collections::BTreeSet<_> = preview
+        .skipped
+        .iter()
+        .map(|s| &s.path)
+        .chain(preview.skipped_files.iter().map(|s| &s.path))
+        .collect();
+    if paths.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "Some links could not be updated. Review these notes:\n{}",
+        paths
+            .iter()
+            .map(|path| Path::new(path)
+                .with_extension("")
+                .components()
+                .map(|part| part.as_os_str().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join(" › "))
+            .collect::<Vec<_>>()
+            .join("\n")
+    ))
+}
+
 fn undo_message(from: &str, to: &str) -> &'static str {
     if Path::new(from).parent() == Path::new(to).parent() {
         "Rename undone"
@@ -63,9 +111,13 @@ fn undo_message(from: &str, to: &str) -> &'static str {
 }
 
 fn needs_move_confirmation(preview: &Preview) -> bool {
-    preview.affected_paths().len() > 20
-        || !preview.skipped.is_empty()
-        || !preview.skipped_files.is_empty()
+    // Folder moves are reversible operations, including moves with unresolved
+    // links. Keep revision/lock checks in finish_move, but do not make users
+    // approve an inventory of unchanged links before moving a folder.
+    preview.directory.is_none()
+        && (preview.affected_paths().len() > 20
+            || !preview.skipped.is_empty()
+            || !preview.skipped_files.is_empty())
 }
 
 struct MoveProgress;
@@ -134,6 +186,7 @@ impl Reader {
         journal: PathBuf,
         message: String,
         undone: &'static str,
+        link_review: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -150,7 +203,27 @@ impl Reader {
                 .placement(Anchor::BottomRight)
                 .py_2()
                 .autohide(false)
-                .message(message)
+                .when(link_review.is_none(), |notice| {
+                    notice.message(message.clone())
+                })
+                .when_some(link_review, |notice, details| {
+                    notice.content(move |_, _, cx| {
+                        h_flex()
+                            .gap_1()
+                            .child(div().text_sm().child(message.clone()))
+                            .child(
+                                reader_icon_button(
+                                    "move-link-review",
+                                    IconName::Info,
+                                    "Links needing review",
+                                    cx,
+                                )
+                                .tooltip(details.clone())
+                                .debug_selector(|| "move-link-review".into()),
+                            )
+                            .into_any_element()
+                    })
+                })
                 .action(move |_, _, cx| {
                     let notice = cx.weak_entity();
                     let reader = reader.clone();
@@ -850,6 +923,7 @@ impl Reader {
                                 update.then_some(&pending.links),
                             ),
                             undo_message(&pending.from, &pending.to),
+                            move_link_review(&pending.links),
                             window,
                             cx,
                         );
@@ -899,6 +973,7 @@ impl Reader {
                         journal,
                         success_message,
                         undo_message(&pending.from, &pending.to),
+                        move_link_review(&pending.links),
                         window,
                         cx,
                     );
@@ -1621,6 +1696,11 @@ mod tests {
         let root = root.canonicalize().unwrap();
         std::fs::write(root.join("Folder/a.md"), "# A\r\nExact bytes\r\n").unwrap();
         std::fs::write(root.join("Ref.md"), "[[Folder/a|alias]]").unwrap();
+        for index in 0..22 {
+            let folder = root.join(format!("Folder/Section {index}"));
+            std::fs::create_dir_all(&folder).unwrap();
+            std::fs::write(folder.join("_index.md"), "[[Missing note]]").unwrap();
+        }
         let mut reader = None;
         let (_, visual) = cx.add_window_view(|window, cx| {
             let view = cx.new(|cx| {
@@ -1827,5 +1907,19 @@ mod tests {
             std::fs::read(root.join("Again/asset.bin")).unwrap(),
             [0, 255, 128]
         );
+        let undo = visual
+            .debug_bounds("undo-move")
+            .expect("folder move offers Undo");
+        visual.simulate_click(undo.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(!root.join("Again").exists());
+        assert!(root.join("Новое 🧠/asset.bin").exists());
+        for index in 0..22 {
+            assert_eq!(
+                std::fs::read_to_string(root.join(format!("Новое 🧠/Section {index}/_index.md")))
+                    .unwrap(),
+                "[[Missing note]]"
+            );
+        }
     }
 }
