@@ -148,9 +148,12 @@ impl Editing {
 
 impl Reader {
     pub(super) fn open_source_find(&mut self, cx: &mut Context<Self>) {
-        if let Some(editing) = &self.editing {
+        if let Some(editing) = &mut self.editing {
+            editing.live_preview.enabled = false;
             let sensitive = reader_ui_state::find_case_sensitive(cx);
             editing.input.update(cx, |input, cx| {
+                input.set_projection_provider(None, cx);
+                input.set_searchable(true, cx);
                 let query = input.search_session().query.clone();
                 input.set_search_query(query, !sensitive, cx);
                 input.open_search(false, cx);

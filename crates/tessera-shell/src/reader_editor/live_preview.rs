@@ -48,7 +48,16 @@ impl Reader {
         };
         editing.live_preview.enabled = !editing.live_preview.enabled;
         let input = editing.input.clone();
-        let provider = if editing.live_preview.enabled {
+        let enabled = editing.live_preview.enabled;
+        input.update(cx, |input, cx| {
+            // Native search operates on source offsets and suppresses projection.
+            // Close it before adopting Live Preview; Find returns to Source.
+            if enabled {
+                input.close_search(cx);
+            }
+            input.set_searchable(!enabled, cx);
+        });
+        let provider = if enabled {
             editing
                 .live_preview
                 .accepted
@@ -180,6 +189,35 @@ mod tests {
         reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
         visual.run_until_parked();
         (reader, visual, directory)
+    }
+
+    #[gpui::test]
+    fn find_returns_to_source_and_live_preview_closes_source_search(cx: &mut TestAppContext) {
+        let (reader, visual, _) = fixture(cx, ORIGINAL);
+        reader.update_in(visual, |r, window, cx| {
+            r.open_source_find(cx);
+            assert!(
+                r.editing
+                    .as_ref()
+                    .unwrap()
+                    .input
+                    .read(cx)
+                    .search_session()
+                    .open
+            );
+            r.toggle_live_preview(window, cx);
+            let input = r.editing.as_ref().unwrap().input.clone();
+            assert!(!input.read(cx).search_session().open);
+            // Positive control: native search must be disabled while projected.
+            input.update(cx, |input, cx| input.open_search(false, cx));
+            assert!(!input.read(cx).search_session().open);
+            let stamp = input.read(cx).source_stamp();
+            r.open_source_find(cx);
+            assert!(!r.editing.as_ref().unwrap().live_preview.enabled);
+            assert!(input.read(cx).search_session().open);
+            assert_eq!(input.read(cx).source_stamp(), stamp);
+            assert_eq!(input.read(cx).value().as_ref(), ORIGINAL);
+        });
     }
 
     #[gpui::test]
