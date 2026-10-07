@@ -447,7 +447,7 @@ impl Reader {
                 d.child("Loading history…")
             })
             .when(!t.loading && t.versions.is_empty(), |d| {
-                d.child("No retained versions.")
+                d.child(div().text_sm().text_color(faint).child("—"))
             })
             .when_some(t.message.clone(), |d, m| d.child(div().text_sm().child(m)))
             .child(
@@ -459,10 +459,18 @@ impl Reader {
                     .gap_1()
                     .children(t.versions.iter().enumerate().map(|(index, v)| {
                         let details = format!(
-                            "{} · {}{}",
+                            "{} · {}{} · {}",
                             date(v.created),
                             v.label,
-                            if v.protected { " · Protected" } else { "" }
+                            if v.protected { " · Protected" } else { "" },
+                            t.current
+                                .as_deref()
+                                .map(|current| delta(&v.text, current))
+                                .unwrap_or_else(|| format!(
+                                    "{} B · {} L",
+                                    v.text.len(),
+                                    v.text.lines().count()
+                                ))
                         );
                         h_flex()
                             .id(("history-version", index))
@@ -490,28 +498,6 @@ impl Reader {
                             .when(v.protected, |d| {
                                 d.child(Icon::new(IconName::Star).size(px(12.)).text_color(faint))
                             })
-                            .child(
-                                div()
-                                    .flex_shrink_0()
-                                    .rounded(px(4.))
-                                    .px_1()
-                                    .py(px(2.))
-                                    .text_xs()
-                                    .text_color(faint)
-                                    .bg(cx.theme().muted)
-                                    .child(
-                                        t.current
-                                            .as_deref()
-                                            .map(|current| delta(&v.text, current))
-                                            .unwrap_or_else(|| {
-                                                format!(
-                                                    "{} B · {} L",
-                                                    v.text.len(),
-                                                    v.text.lines().count()
-                                                )
-                                            }),
-                                    ),
-                            )
                     })),
             )
             .into_any_element()
@@ -589,12 +575,10 @@ impl Reader {
                         .gap_1()
                         .px_4()
                         .py_2()
-                        .border_1()
-                        .border_color(cx.theme().border)
                         .child(div().min_w_0().text_sm().truncate().child(format!(
                             "{} · {}",
                             self.current_title,
-                            date(version.created)
+                            age(version.created)
                         )))
                         .child(
                             h_flex()
