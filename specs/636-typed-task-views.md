@@ -1,10 +1,13 @@
-# Typed Tasks edit plans (#636, follow-up to #670)
+# Typed Tasks safe-write and Undo (#636)
 
-The merged #670 owns typed_view selection and section parsing. This slice adds
-only revision-bound task_edit plans and guarded Undo preimages, with no UI or file
-writes. Native layout/Settings and safe-write integration remain later slices.
+The merged #670 owns typed_view selection and sections; #674 owns revision-bound
+edit plans. This slice commits plans through the existing Unix FileEditor and
+returns an opaque receipt for revision-checked Undo. Snooze changes scheduled date
+while preserving due. No-op actions do not save. Active editors, dirty recovery,
+invalid paths and stale revisions refuse the write. Native dashboard activation,
+Settings and UI remain subsequent slices.
 
-Test exact Unicode/BOM/CRLF, nested/quoted tasks, repeated occurrences, malformed
-metadata, external changes and stale Undo. fmt, core clippy, one PR-Agent review
-and required CI before merge. UI slices require Linux light/dark before/after.
-Owner vault stays untouched; native QA is manager-owned.
+Test exact Unicode/BOM/CRLF save and Undo, durable history, active locks, retained
+dirty recovery, external changes, vault binding, symlink replacement and malformed
+scheduled metadata. fmt, core clippy, one PR-Agent review and required CI before
+merge. Owner vault stays untouched; native QA is manager-owned.
