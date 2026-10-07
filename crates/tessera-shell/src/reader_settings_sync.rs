@@ -47,6 +47,13 @@ struct Output {
     approval: Option<Approval>,
     removal: Option<tessera_sync_controller::removal::Outcome>,
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ErrorField {
+    General,
+    Address,
+    Name,
+    Folder,
+}
 pub(super) struct SyncSettings {
     desktop: Option<Desktop>,
     address: Entity<InputState>,
@@ -59,6 +66,7 @@ pub(super) struct SyncSettings {
     busy: bool,
     refresh_epoch: u64,
     error: Option<String>,
+    error_field: ErrorField,
     output: Option<Output>,
 }
 impl SyncSettings {
@@ -97,6 +105,7 @@ impl SyncSettings {
             busy: false,
             refresh_epoch: 0,
             error: None,
+            error_field: ErrorField::General,
             output: None,
         };
         this.run(Operation::Read, cx);
@@ -113,6 +122,7 @@ impl SyncSettings {
         self.refresh_epoch += 1;
         self.busy = true;
         self.error = None;
+        self.error_field = ErrorField::General;
         cx.notify();
         cx.spawn(async move |this, cx| {
             let (result, recovered) = cx
@@ -175,13 +185,13 @@ impl SyncSettings {
         let Some(runtime) = &output.snapshot.runtime else {
             return;
         };
-        if !runtime.desired_enabled && !runtime.removed {
+        if !runtime.desired_enabled && !runtime.removed && output.removal.is_none() {
             return;
         }
         if output.removal.as_ref().is_some_and(|r| r.complete()) {
             return;
         }
-        let removing = runtime.removed;
+        let removing = runtime.removed || output.removal.is_some();
         let epoch = self.refresh_epoch;
         cx.spawn(async move |this, cx| {
             cx.background_executor()
@@ -213,12 +223,14 @@ impl SyncSettings {
             return;
         }
         let Some(destination) = self.destination.clone() else {
+            self.error_field = ErrorField::Folder;
             self.error = Some("Choose an empty folder or an existing copy of this vault.".into());
             cx.notify();
             return;
         };
         let name = self.name.read(cx).value().trim().to_owned();
         if name.trim().is_empty() {
+            self.error_field = ErrorField::Name;
             self.error = Some("Give this computer a name.".into());
             cx.notify();
             return;
@@ -231,11 +243,13 @@ impl SyncSettings {
             .trim_end_matches('/')
             .to_owned();
         let Ok(url) = url::Url::parse(&origin) else {
+            self.error_field = ErrorField::Address;
             self.error = Some("Enter your sync service’s HTTPS address.".into());
             cx.notify();
             return;
         };
         if url.scheme() != "https" || url.host_str().is_none() {
+            self.error_field = ErrorField::Address;
             self.error = Some("Enter your sync service’s HTTPS address.".into());
             cx.notify();
             return;
@@ -264,6 +278,14 @@ impl SyncSettings {
             })),
             cx,
         );
+    }
+    fn field_error(&self, field: ErrorField) -> Option<AnyElement> {
+        if self.error_field != field {
+            return None;
+        }
+        self.error
+            .as_ref()
+            .map(|error| div().text_sm().child(error.clone()).into_any_element())
     }
     fn choose_folder(&mut self, cx: &mut Context<Self>) {
         let picker = cx.prompt_for_paths(PathPromptOptions {
@@ -390,7 +412,11 @@ impl Render for SyncSettings {
             .as_ref()
             .and_then(|o| o.snapshot.runtime.as_ref());
         let enabled = runtime.is_some_and(|r| r.desired_enabled && !r.removed);
-        let removed = runtime.is_some_and(|r| r.removed);
+        let removed = runtime.is_some_and(|r| r.removed)
+            || self
+                .output
+                .as_ref()
+                .is_some_and(|o| o.removal.is_some() && o.snapshot.setup.is_some());
         let local = self.output.as_ref().and_then(|o| o.folder.as_ref());
         let reused = runtime.is_some_and(|r| matches!(r.selection, Selection::Reuse(_)));
         let paused = local.is_some_and(|s| s.folder["paused"] == true);
@@ -447,6 +473,7 @@ impl Render for SyncSettings {
                         .on_click(cx.listener(|this, _, _, cx| {
                             if this.output.as_ref().is_some_and(|o| {
                                 o.snapshot.runtime.as_ref().is_some_and(|r| r.removed)
+                                    || (o.removal.is_some() && o.snapshot.setup.is_some())
                             }) {
                                 this.run(Operation::Remove, cx);
                             } else {
@@ -474,11 +501,12 @@ impl Render for SyncSettings {
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "Choose a folder".into());
             content = content
-                .child(v_flex().gap_2().child("Sync service").child(Input::new(&self.address).disabled(self.busy)))
-                .child(v_flex().gap_2().child("This computer").child(Input::new(&self.name).disabled(self.busy)))
+                .child(v_flex().gap_2().child("Sync service").child(Input::new(&self.address).disabled(self.busy)).children(self.field_error(ErrorField::Address)))
+                .child(v_flex().gap_2().child("This computer").child(Input::new(&self.name).disabled(self.busy)).children(self.field_error(ErrorField::Name)))
                 .child(h_flex().justify_between().child(destination).child(Button::new("sync-folder")
                     .icon(IconName::Folder).ghost().disabled(self.busy).accessibility_label("Choose vault folder").tooltip("Choose an empty folder or a known copy")
                     .on_click(cx.listener(|this, _, _, cx| this.choose_folder(cx)))))
+                .children(self.field_error(ErrorField::Folder))
                 .child(div().text_sm().text_color(p.text_muted).child("Start with an empty folder, or reuse a known copy. Your files stay on this computer when Sync is removed."));
             if !self.candidates.is_empty() {
                 content = content
@@ -636,7 +664,11 @@ impl Render for SyncSettings {
             };
             content = content.child(div().text_sm().text_color(p.text_muted).child(age));
         }
-        if let Some(error) = &self.error {
+        if let Some(error) = self
+            .error
+            .as_ref()
+            .filter(|_| self.error_field == ErrorField::General || saved.is_some())
+        {
             content = content.child(div().text_sm().child(error.clone()));
         }
         content
