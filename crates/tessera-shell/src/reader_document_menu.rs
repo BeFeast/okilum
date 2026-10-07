@@ -38,19 +38,23 @@ impl Reader {
         // not source offsets: caret, selection and saved scroll stay exact.
         // A new note/mode mounts at its target (including restored sessions).
         let header = if self.source_scroll_offset(cx).is_some() {
+            // The component spring uses GPUI's executor clock in both native
+            // frames and deterministic tests; with_spring uses wall-clock time.
+            let displayed = gpui_base::motion::spring(
+                SharedString::from(format!("source-header-motion:{}", self.current_rel)),
+                hidden,
+                // Same physical spring: omega=20, stiffness=400, damping=40.
+                gpui_base::motion::Spring::new(Duration::from_secs_f32(
+                    std::f32::consts::TAU / 20.,
+                ))
+                .with_epsilon(0.1),
+                window,
+                cx,
+            )
+            .clamp(px(0.), height);
             viewport
-                .with_spring(
-                    SharedString::from(format!("source-header-motion:{}", self.current_rel)),
-                    SpringAnimation::new(SpringConfig::new(400., 40., 1.))
-                        .to(hidden)
-                        .with_epsilon(0.1),
-                    move |viewport, displayed| {
-                        let displayed = displayed.clamp(px(0.), height);
-                        viewport
-                            .h(height - displayed)
-                            .child(header.relative().top(-displayed))
-                    },
-                )
+                .h(height - displayed)
+                .child(header.relative().top(-displayed))
                 .into_any_element()
         } else {
             viewport
