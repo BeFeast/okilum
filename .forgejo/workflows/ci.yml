@@ -26,11 +26,31 @@ permissions:
   contents: read
 
 jobs:
+  # Select scope before either compiler job so native CI need not queue behind Linux.
+  native-scope:
+    if: github.event_name == 'pull_request'
+    runs-on: bridge
+    timeout-minutes: 3
+    outputs:
+      macos: ${{ steps.native-scope.outputs.macos }}
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Select native PR check
+        id: native-scope
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          needed=$(git diff --name-only -z "$BASE_SHA" HEAD | python3 scripts/ci/macos-scope.py)
+          echo "macos=$needed" >> "$GITHUB_OUTPUT"
+
   linux:
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    outputs:
-      macos: ${{ steps.native-scope.outputs.macos }}
     # Shared sccache on the LAN S3 backend (private runner operations runbook,
     # "CI pool expansion 2026-10-04"). The secrets are BeFeast org secrets; when
     # they are absent (fork PRs) the build simply runs without the wrapper.
@@ -51,17 +71,6 @@ jobs:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
           persist-credentials: false
-
-      - name: Select native PR check
-        id: native-scope
-        if: github.event_name == 'pull_request'
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          set -euo pipefail
-          git fetch --no-tags --depth=1 origin "$BASE_SHA"
-          needed=$(git diff --name-only -z "$BASE_SHA" HEAD | python3 scripts/ci/macos-scope.py)
-          echo "macos=$needed" >> "$GITHUB_OUTPUT"
 
       - name: Install system libraries (README "Building")
         run: |
@@ -164,11 +173,11 @@ jobs:
         run: if [ -n "${RUSTC_WRAPPER:-}" ]; then sccache --show-stats || true; fi
 
   macos-github:
-    needs: linux
+    needs: native-scope
     if: >-
       vars.TESSERA_MACOS_LANE != 'local' &&
       github.event_name == 'pull_request' &&
-      needs.linux.outputs.macos == 'true' &&
+      needs.native-scope.outputs.macos == 'true' &&
       github.event.pull_request.head.repo.full_name == github.repository
     # Configure only after the dedicated bridge runner is registered.
     runs-on: ${{ vars.MACOS_BRIDGE_RUNNER || 'light' }}
@@ -190,13 +199,13 @@ jobs:
         run: python3 scripts/ci/github-macos.py run
 
   macos-local:
-    needs: linux
+    needs: native-scope
     # The host runner has a signing keychain. Fork code must first be reviewed
     # and moved to a trusted same-repository branch; the final gate fails closed.
     if: >-
       vars.TESSERA_MACOS_LANE == 'local' &&
       github.event_name == 'pull_request' &&
-      needs.linux.outputs.macos == 'true' &&
+      needs.native-scope.outputs.macos == 'true' &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: macos
     timeout-minutes: 20
@@ -234,15 +243,16 @@ jobs:
   # This job preserves the required Forgejo `ci / macos` status. Only the
   # exact-head result from the selected lane passes; there is no failure fallback.
   macos:
-    needs: [linux, macos-github, macos-local]
+    needs: [linux, native-scope, macos-github, macos-local]
     if: always() && github.event_name == 'pull_request'
     runs-on: bridge
     timeout-minutes: 2
     steps:
       - name: Require a native result
         env:
+          SCOPE_RESULT: ${{ needs.native-scope.result }}
           LINUX_RESULT: ${{ needs.linux.result }}
-          MACOS_REQUIRED: ${{ needs.linux.outputs.macos }}
+          MACOS_REQUIRED: ${{ needs.native-scope.outputs.macos }}
           HOSTED_JOB: ${{ needs.macos-github.result }}
           HOSTED_RESULT: ${{ needs.macos-github.outputs.result }}
           LOCAL_RESULT: ${{ needs.macos-local.result }}
@@ -250,6 +260,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$LINUX_RESULT" = success
+          test "$SCOPE_RESULT" = success
           case "$MACOS_REQUIRED" in
             false) echo "Documentation-only PR: native runner not needed" ;;
             true)
@@ -272,7 +283,7 @@ jobs:
   # Keep the existing protected-branch context. Skipped/cancelled/failed native
   # jobs never pass a code PR; docs-only PRs and main retain Linux-only CI here.
   check:
-    needs: [linux, macos]
+    needs: [linux, native-scope, macos]
     if: always()
     runs-on: bridge
     timeout-minutes: 2
@@ -281,7 +292,7 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           LINUX_RESULT: ${{ needs.linux.result }}
-          MACOS_REQUIRED: ${{ needs.linux.outputs.macos }}
+          MACOS_REQUIRED: ${{ needs.native-scope.outputs.macos }}
           MACOS_RESULT: ${{ needs.macos.result }}
         run: |
           set -euo pipefail
