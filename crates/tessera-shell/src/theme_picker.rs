@@ -94,8 +94,6 @@ fn card(
                         .w_full()
                         .rounded(px(8.))
                         .overflow_hidden()
-                        .border_1()
-                        .border_color(t.border_subtle)
                         .child(div().w(px(22.)).h_full().flex_none().bg(t.sidebar))
                         .child(
                             v_flex()
