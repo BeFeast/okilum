@@ -28,7 +28,10 @@ permissions:
 jobs:
   # Select scope before either compiler job so native CI need not queue behind Linux.
   native-scope:
-    if: github.event_name == 'pull_request'
+    # This host coordinator must not execute scripts from untrusted forks.
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: bridge
     timeout-minutes: 3
     outputs:
