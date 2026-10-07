@@ -1091,10 +1091,11 @@ mod tests {
                 "dotted names must remain unchanged"
             );
         }
-        // A real click opens the note but leaves focus in the tree, including
-        // after asynchronous document replacement, at docked and overlay widths.
+        // A real click preserves docked tree focus, but dismisses a compact
+        // sidebar and focuses the document (#677), including after async load.
         for width in [1400., 800.] {
             visual.simulate_resize(size(px(width), px(860.)));
+            visual.run_until_parked();
             reader.update_in(visual, |r, window, cx| {
                 r.reveal_in_tree("start.md", window, cx);
                 r.show_empty_vault(window, cx);
@@ -1114,12 +1115,21 @@ mod tests {
                         "width={width}, key={key}, row={row:?}, cursor={:?}, notice={:?}",
                         r.tree.cursor, r.link_notice
                     );
-                    assert!(
-                        r.tree_focus.is_focused(window),
-                        "tree focus after click and load"
-                    );
-                    assert!(!r.content.read(cx).focus_handle().is_focused(window));
+                    if crate::reader_layout::overlay(width) {
+                        assert!(!r.panels.visible(crate::reader_layout::Panel::Notes, width));
+                        assert!(!r.tree_focus.is_focused(window));
+                        assert!(r.content.read(cx).focus_handle().is_focused(window));
+                        // Rename remains available after explicitly reopening the tree.
+                        r.reveal_in_tree("start.md", window, cx);
+                    } else {
+                        assert!(
+                            r.tree_focus.is_focused(window),
+                            "docked tree focus after load"
+                        );
+                        assert!(!r.content.read(cx).focus_handle().is_focused(window));
+                    }
                 });
+                visual.run_until_parked();
                 visual.simulate_keystrokes(key);
                 reader.read_with(visual, |r, _| {
                     assert!(r.renaming.is_some(), "{key} after click")

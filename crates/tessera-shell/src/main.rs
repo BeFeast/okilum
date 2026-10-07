@@ -2051,13 +2051,29 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // #363: choosing an item never closes its panel, docked or overlay.
-        // Panels close on a title-bar toggle, panel shortcut, or outside click in overlay mode.
-        let _ = panel;
         self.open_note(rel, jump, window, cx);
+        if panel == reader_layout::Panel::Notes {
+            self.dismiss_sidebar_after_selection(window, cx);
+        }
         let focus = self.content.read(cx).focus_handle().clone();
         focus.focus(window, cx);
         cx.notify();
+    }
+
+    /// Navigation dismisses a compact overlay without changing the wide layout.
+    fn dismiss_sidebar_after_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let width = f32::from(self.body_bounds.size.width);
+        if reader_layout::overlay(width) && self.panels.visible(reader_layout::Panel::Notes, width)
+        {
+            self.panels.active = reader_layout::Panel::Closed;
+            self.resizing_panel = None;
+            self.content
+                .read(cx)
+                .focus_handle()
+                .clone()
+                .focus(window, cx);
+            cx.notify();
+        }
     }
 
     fn scroll_tree_to(&self, ix: usize) {
@@ -2647,6 +2663,9 @@ impl Reader {
         // Tree activation keeps keyboard navigation/rename in the navigator.
         // Async document replacement only transfers focus from the old content.
         self.tree_focus.focus(window, cx);
+        if row.kind != EntryKind::Directory {
+            self.dismiss_sidebar_after_selection(window, cx);
+        }
         cx.notify();
     }
 
@@ -7128,7 +7147,7 @@ mod document_link_landing_tests {
         visual.run_until_parked();
         assert!(paths(visual).contains(&"Home/Empty".to_string()));
         // Automatic compact entry hides the dock; explicitly reopening it
-        // creates an overlay, and choosing a note keeps it open (#363).
+        // creates an overlay, and choosing a note dismisses it (#677).
         visual.simulate_resize(size(px(800.), px(860.)));
         visual.run_until_parked();
         view.update_in(visual, |v, window, cx| {
@@ -7148,10 +7167,31 @@ mod document_link_landing_tests {
         visual.run_until_parked();
         view.read_with(visual, |v, _| {
             assert_eq!(v.current_rel, "Work/Projects/Cafe/Plan.md");
-            assert!(v.panels.visible(
+            assert!(!v.panels.visible(
                 reader_layout::Panel::Notes,
                 f32::from(v.body_bounds.size.width)
             ));
+        });
+        view.update_in(visual, |v, window, cx| v.focus_sidebar_search(window, cx));
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("reader-notes-panel").is_some());
+        view.update_in(visual, |v, window, cx| {
+            let row = v
+                .tree
+                .rows
+                .iter()
+                .find(|r| r.path == "Work/Projects/Cafe/Menu.md")
+                .unwrap()
+                .clone();
+            v.activate_tree_row(&row, window, cx);
+        });
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("reader-notes-panel").is_none());
+        view.update_in(visual, |v, window, cx| {
+            assert_eq!(v.current_rel, "Work/Projects/Cafe/Menu.md");
+            assert!(v.content.read(cx).focus_handle().is_focused(window));
+            assert!(v.panels.notes, "wide sidebar preference survives selection");
+            v.open_note("Work/Projects/Cafe/Plan.md", None, window, cx);
         });
         // Breadcrumbs (#366): with the sidebar closed, a folder crumb
         // shows the tree, selects and expands the folder.
@@ -8139,7 +8179,7 @@ mod document_link_landing_tests {
         view.update_in(visual, |v, window, _| {
             assert!(v.sidebar_search_focus.is_focused(window));
         });
-        // Selecting from a compact panel keeps it open (#363) and leaves
+        // Selecting from a compact sidebar dismisses it (#677) and leaves
         // immediate history shortcuts live, with no search/focus workaround.
         let before = view.read_with(visual, |v, _| {
             v.panels.dismiss_target(f32::from(v.body_bounds.size.width))
@@ -8152,7 +8192,7 @@ mod document_link_landing_tests {
         view.update_in(visual, |v, window, cx| {
             assert_eq!(
                 v.panels.dismiss_target(f32::from(v.body_bounds.size.width)),
-                reader_layout::Panel::Notes
+                reader_layout::Panel::Closed
             );
             assert!(v.content.read(cx).focus_handle().is_focused(window));
         });
