@@ -123,10 +123,14 @@ pub fn summary(props: &[Property]) -> String {
     }
     if parts.is_empty() {
         let shown = props.iter().filter(|p| !p.hidden()).count();
-        parts.push(format!(
-            "{shown} {}",
-            if shown == 1 { "property" } else { "properties" }
-        ));
+        if shown == 0 {
+            parts.push("—".into());
+        } else {
+            parts.push(format!(
+                "{shown} {}",
+                if shown == 1 { "property" } else { "properties" }
+            ));
+        }
     }
     parts.join(" · ")
 }
@@ -179,5 +183,14 @@ mod tests {
             "1 property",
             "positive control: hidden keys not counted"
         );
+    }
+
+    #[test]
+    fn summary_never_reads_zero() {
+        let system = properties::parse("_id: x\n_rev: 2\n").unwrap();
+        assert_eq!(summary(&system), "—");
+        let one = properties::parse("_id: x\n").unwrap();
+        assert_eq!(summary(&one), "—");
+        assert_eq!(summary(&[]), "—");
     }
 }
