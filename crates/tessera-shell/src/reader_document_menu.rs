@@ -12,6 +12,17 @@ impl Reader {
         offset.item_ix == 0 && offset.offset_in_item <= px(0.5)
     }
 
+    pub(super) fn reader_top_inset(&self, cx: &App) -> Pixels {
+        // TextView padding belongs to its stationary clip, not the scrollable
+        // document. Keep the opening breathing room only while the header is
+        // visible; otherwise it leaves a blank band above every scrolled row.
+        if self.restored_document_header() || self.document_at_top(cx) {
+            (px(44.) - self.document_header_hidden).max(px(0.))
+        } else {
+            px(0.)
+        }
+    }
+
     pub(super) fn render_document_surface(
         &self,
         window: &mut Window,
@@ -756,6 +767,16 @@ mod tests {
                     "remaining motion scrolls actual content"
                 )
             });
+            if !source {
+                let document = visual.debug_bounds("reader-document").unwrap();
+                reader.read_with(visual, |this, cx| {
+                    let viewport = this.content.read(cx).list_state().viewport_bounds();
+                    assert!(
+                        (viewport.top() - document.top()).abs() < px(1.),
+                        "collapsed Reader viewport must reach the document top: {viewport:?} vs {document:?}"
+                    );
+                });
+            }
             wheel(visual, 10000.);
             wheel(visual, 100.);
             assert_eq!(
