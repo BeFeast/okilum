@@ -1,6 +1,7 @@
 //! Linux Sync settings. Blocking controller work stays off the GPUI thread.
 use super::*;
 use gpui_component::{
+    button::ButtonGroup,
     input::{Input, InputState},
     switch::Switch,
 };
@@ -509,38 +510,46 @@ impl Render for SyncSettings {
                 .children(self.field_error(ErrorField::Folder))
                 .child(div().text_sm().text_color(p.text_muted).child("Start with an empty folder, or reuse a known copy. Your files stay on this computer when Sync is removed."));
             if !self.candidates.is_empty() {
-                content = content
-                    .child(div().text_sm().text_color(p.text_muted).child(
-                        "Syncthing already exists on this computer. Choose which instance to use.",
-                    ))
-                    .child(
-                        Button::new("sync-managed")
-                            .ghost()
-                            .label("Tessera background service")
-                            .selected(self.selected.is_none())
-                            .disabled(self.busy)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.selected = None;
-                                cx.notify();
-                            })),
-                    );
+                let mut choices = vec![Button::new("sync-managed")
+                    .ghost()
+                    .label("Tessera")
+                    .selected(self.selected.is_none())
+                    .disabled(self.busy)
+                    .tooltip("Use Tessera’s background service")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.selected = None;
+                        cx.notify();
+                    }))];
                 for (index, candidate) in self.candidates.iter().enumerate() {
-                    content = content.child(
+                    choices.push(
                         Button::new(("sync-reuse", index))
                             .ghost()
                             .label(candidate.label.clone())
                             .selected(self.selected == Some(index))
                             .disabled(self.busy || !candidate.supported)
-                            .tooltip(format!(
-                                "Reuse {}",
-                                candidate.identity.config_file.display()
-                            ))
+                            .tooltip(if candidate.supported {
+                                format!("Reuse {}", candidate.identity.config_file.display())
+                            } else {
+                                "This instance needs Syncthing 2.1.6.".into()
+                            })
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.selected = Some(index);
                                 cx.notify();
                             })),
                     );
                 }
+                content = content
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(p.text_muted)
+                            .child("Choose Tessera or an existing Syncthing instance."),
+                    )
+                    .child(
+                        ButtonGroup::new("sync-runtime")
+                            .flex_wrap()
+                            .children(choices),
+                    );
             }
             if self.unavailable {
                 content = content.child(div().text_sm().text_color(p.text_muted)
