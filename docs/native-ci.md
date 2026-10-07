@@ -34,12 +34,10 @@ that can race a newer head.
 ## Fallback and cleanup
 
 Missing credentials, an API/push outage, runner startup failure, or eight minutes
-without a running GitHub job select the existing M4 gate. Cancellation of a queued GitHub run is best-effort before fallback (the optional
-Actions write permission allows cancellation; it is not needed to run the gate). A compile/test failure, cancellation,
-skipped/neutral result, or execution timeout fails the gate instead of retrying
-on another machine. Unknown bridge failures also fail closed. The same PR-head
-SHA is checked out for the M4 fallback. This does not authorize shell access to
-the M4.
+without a running GitHub job fail the hosted gate. No automatic M4 fallback is
+used. Cancellation, skipped/neutral results, execution timeouts and unknown
+bridge failures also fail closed. The explicit owner-approved local lane below
+checks out the same PR-head SHA; it does not authorize shell access to M4.
 
 Closing or merging a Forgejo PR runs `github-macos-cleanup` from trusted main.
 It deletes only refs under that PR's `refs/heads/forgejo-pr/<number>/` prefix;
@@ -53,4 +51,40 @@ force pushes and make stale results ineligible for a later attempt.
 matching, executed-step evidence, failed/queued/hung runs, API outages, cleanup
 boundaries and the Forgejo success/fallback/failure matrix. Workflow edits also
 need YAML/actionlint validation and a real hosted run before accepting this gate
-as operational. A green M4 fallback proves the PR, not the GitHub integration.
+as operational. A green local run does not prove the GitHub integration.
+
+### Temporary owner-approved local lane
+
+`TESSERA_MACOS_LANE=local` selects the trusted M4 native job directly after Linux.
+The GitHub bridge is skipped, so it occupies no `light` runner while that lane is
+selected. Unset the variable or set `hosted` to restore hosted-only checks; remote
+unavailability never silently falls back to M4. Both lanes retain the same native
+script and fail-closed aggregate checks. Fork PRs cannot run on M4. This switch
+does not change the shared mirror secret, mirroring or release workflows.
+
+Enable local only for an explicitly approved window, with a scheduled reset to
+`hosted` before morning. Existing PR heads must incorporate this workflow before
+the switch affects them; already-running jobs are not migrated or cancelled.
+
+### Hosted bridge capacity and shared cache
+
+`macos-github` waits for its exact remote invocation and must not share a scarce
+build/control slot. Register a dedicated runner with label `bridge` (baldr, capacity 8), then set the Forgejo repository variable
+`MACOS_BRIDGE_RUNNER=bridge`. Until provisioning is approved and complete, the
+variable is unset and the workflow retains `light`. The bridge lane only checks
+out trusted PR heads, pushes them and polls GitHub; it does not compile. Keep the
+existing publication lane separate. Existing runs keep their assigned runner;
+do not cancel or retry them merely to migrate labels.
+
+GitHub caches are scoped to a branch and the default branch. Unique
+`forgejo-pr/...` refs cannot restore caches saved by sibling refs. The hosted
+workflow therefore also runs on mirrored `main` to populate the native cache.
+Only `main` saves it; PRs restore it and always execute the native gate. A main
+run skips compilation when that exact dependency/toolchain/patch key is already
+cached. The first baseline fill is cold. Cache eviction remains safe: it causes
+a rebuild, never a skipped PR gate. No LAN cache credentials go to GitHub.
+
+Measure remote queue time separately from native step time. Two simultaneous
+observed macOS jobs are not proof of the account concurrency quota; confirm that
+quota in GitHub organization settings before requesting a plan change. Moving
+bridge waiters off `light` does not increase GitHub execution capacity.

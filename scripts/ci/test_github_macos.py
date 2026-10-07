@@ -155,18 +155,24 @@ class BridgeTests(unittest.TestCase):
         block = workflow.read_text().split('      - name: Require a native result\n', 1)[1]
         block = block.split('  # Keep the existing protected-branch context.', 1)[0]
         script = '\n'.join(line[10:] for line in block.split('        run: |\n', 1)[1].splitlines())
-        for required in ['true', 'false', '']:
-            for hosted_job in ['success', 'failure', 'cancelled', 'skipped']:
-                for hosted in ['success', 'failure', 'unavailable', '']:
-                    for local in ['success', 'failure', 'cancelled', 'skipped']:
-                        expected = required == 'false' or (required == 'true' and
-                            hosted_job == 'success' and ((hosted == 'success' and local == 'skipped') or
-                            (hosted == 'unavailable' and local == 'success')))
-                        result = subprocess.run(['bash', '-c', script], capture_output=True,
-                            env=dict(os.environ, LINUX_RESULT='success', MACOS_REQUIRED=required,
-                                     HOSTED_JOB=hosted_job, HOSTED_RESULT=hosted, LOCAL_RESULT=local))
-                        self.assertEqual(result.returncode == 0, expected,
-                                         (required, hosted_job, hosted, local))
+        import itertools
+        for lane, required, hosted_job, hosted, local, linux in itertools.product(
+                ['hosted', 'local', 'invalid'], ['true', 'false', ''],
+                ['success', 'failure', 'cancelled', 'skipped'],
+                ['success', 'failure', 'unavailable', ''],
+                ['success', 'failure', 'cancelled', 'skipped'], ['success', 'failure']):
+            expected = linux == 'success' and (required == 'false' or
+                (required == 'true' and (
+                    (lane == 'hosted' and hosted_job == 'success' and
+                     hosted == 'success' and local == 'skipped') or
+                    (lane == 'local' and hosted_job == 'skipped' and local == 'success'))))
+            result = subprocess.run(['bash', '-c', script], capture_output=True,
+                env=dict(os.environ, LINUX_RESULT=linux, MACOS_REQUIRED=required,
+                         MACOS_LANE=lane, HOSTED_JOB=hosted_job,
+                         HOSTED_RESULT=hosted, LOCAL_RESULT=local))
+            self.assertEqual(result.returncode == 0, expected,
+                             (lane, required, hosted_job, hosted, local, linux))
+
 
 
 if __name__ == '__main__':
