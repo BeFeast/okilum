@@ -20,6 +20,8 @@ use uuid::Uuid;
 enum Phase {
     Preparing,
     Receiving,
+    Promoting,
+    Active,
     Reused,
     Removed,
 }
@@ -270,8 +272,55 @@ impl FolderController {
             "first receive is not active"
         );
         let api = j.daemon.connect()?;
+        self.receive_ready_locked(&j, &api, &|| enrollment.readiness(service))
+    }
+    /// Explicit controller step after pairing. Only an owned new replica can
+    /// become bidirectional; external reused folders retain their mode.
+    pub fn promote(&self, source: &impl crate::readiness::Source) -> Result<bool> {
+        let _lock = private::lock(&self.state)?;
+        let mut j = self.load()?;
+        ensure!(
+            j.owns_folder
+                && !j.remove_requested
+                && matches!(j.phase, Phase::Receiving | Phase::Promoting | Phase::Active),
+            "promotion is not allowed"
+        );
+        let api = j.daemon.connect()?;
         let folder = api.folder(&j.descriptor.folder_id)?;
         validate_owned(&j, &folder)?;
+        if folder["type"] == "sendreceive" {
+            // A lost PATCH response can leave the durable intent behind the
+            // daemon. Read-back completes that operation without another PATCH.
+            j.phase = Phase::Active;
+            self.save(&j)?;
+            return Ok(true);
+        }
+        if !self.receive_ready_locked(&j, &api, source)? {
+            return Ok(false);
+        }
+        j.phase = Phase::Promoting;
+        self.save(&j)?;
+        // No mode change is retried from journal intent alone: if PATCH never
+        // happened, the next call obtains a fresh pair of observations above.
+        api.patch_folder(&j.descriptor.folder_id, &json!({"type":"sendreceive"}))?;
+        let promoted = api.folder(&j.descriptor.folder_id)?;
+        validate_owned(&j, &promoted)?;
+        ensure!(
+            promoted["type"] == "sendreceive",
+            "promotion was not applied"
+        );
+        j.phase = Phase::Active;
+        self.save(&j)?;
+        Ok(true)
+    }
+    fn receive_ready_locked(
+        &self,
+        j: &Journal,
+        api: &Syncthing,
+        source: &impl crate::readiness::Source,
+    ) -> Result<bool> {
+        let folder = api.folder(&j.descriptor.folder_id)?;
+        validate_owned(j, &folder)?;
         if folder["paused"] != false
             || !policy_matches(
                 &api.ignores(&j.descriptor.folder_id)?,
@@ -280,7 +329,7 @@ impl FolderController {
         {
             return Ok(false);
         }
-        let first = enrollment.readiness(service)?;
+        let first = source.observe()?;
         let observation = first.observation();
         ensure!(
             observation.registration_id == j.registration
@@ -291,10 +340,12 @@ impl FolderController {
             "folder and readiness scope differ"
         );
         api.scan(&j.descriptor.folder_id)?;
-        let second = enrollment.readiness(service)?;
+        let second = source.observe()?;
+        // Catch edits made while waiting for the second service observation.
+        api.scan(&j.descriptor.folder_id)?;
         let status = api.status(&j.descriptor.folder_id)?;
         let current = api.folder(&j.descriptor.folder_id)?;
-        validate_owned(&j, &current)?;
+        validate_owned(j, &current)?;
         if current != folder
             || !policy_matches(
                 &api.ignores(&j.descriptor.folder_id)?,
@@ -468,7 +519,12 @@ fn validate_owned(j: &Journal, folder: &Value) -> Result<()> {
     validate_path(folder, &j.path)?;
     ensure!(
         folder["label"] == owned_label(j)
-            && folder["type"] == "receiveonly"
+            && match j.phase {
+                Phase::Active => folder["type"] == "sendreceive",
+                Phase::Promoting =>
+                    folder["type"] == "receiveonly" || folder["type"] == "sendreceive",
+                _ => folder["type"] == "receiveonly",
+            }
             && shares(folder, &j.descriptor.hub_device_id)
             && shares(folder, &j.daemon.device_id),
         "owned folder configuration changed"

@@ -186,6 +186,16 @@ fn unix_now() -> Result<u64> {
     Ok(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs())
 }
 
+/// Authenticated observation provider. Kept injectable for isolated daemon tests.
+pub trait Source {
+    fn observe(&self) -> Result<Receipt>;
+}
+impl<F: Fn() -> Result<Receipt>> Source for F {
+    fn observe(&self) -> Result<Receipt> {
+        self()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

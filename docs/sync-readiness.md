@@ -2,8 +2,9 @@
 
 Approved direction: extend the pairing service and hub adapter with a scoped,
 read-only readiness observation. No marker is written to a vault. Development
-and proof use only the independent CT141 hub and synthetic data. The endpoint is implemented in this local increment; automatic promotion is
-not connected and no production deployment is implied. Until its acceptance gates pass, new folders
+and proof use only the independent CT141 hub and synthetic data. The endpoint and explicit controller promotion are implemented in this local
+increment; desktop orchestration is not connected and no production deployment
+is implied. Until its acceptance gates pass, new folders
 remain receive-only and Settings shows **Preparing**.
 
 ## Authority and endpoint
@@ -70,7 +71,8 @@ The ignored `readiness_boundaries_empty_and_large` controller fixture runs real
 vaults. It records the empty hub/client sequences, transfers 12,000 individually
 verified notes across multiple batches, rejects the old empty observation for
 the newer sequence, and observes a receive-only local edit without publishing it.
-This tests REST observability, not the unimplemented endpoint or promotion.
+This fixture tests REST observability; separate endpoint and promotion regressions
+exercise authority and durable transitions.
 
 Before enabling promotion, add endpoint/adapter tests for wrong or revoked grants,
 owner/vault/device substitution, offline/paused/scanning/error states, daemon and
@@ -94,7 +96,7 @@ client changes that field to paused even though completion remains 100 percent;
 resuming returns valid. This is a positive/negative control for empty-folder
 sharing, not proof that completion percentage alone is usable. Both fixtures
 leave the client receive-only. Endpoint authorization and restart/index reset evidence are recorded below;
-client-side freshness validation and promotion recovery remain outstanding.
+client-side freshness validation and explicit promotion recovery are described below.
 
 
 ### Scoped observation endpoint implementation
@@ -117,7 +119,7 @@ The new startup value differs even though sequence values may be reused. Reopeni
 the adapter changes adapter_generation independently. Wrong owner/unknown
 registration fail; existing revoke and unrelated-configuration regressions pass.
 
-This is evidence for generation fields, not yet a client receipt validator.
+This provides evidence for the generation fields used by the client validator.
 The client must reject expired observations and changed generations before any
 promotion. Known hub/global/local writes can still race separate REST calls;
 concurrent-change acceptance and crash recovery must precede enabling promotion.
@@ -138,8 +140,8 @@ Enrollment credentials, scans the authenticated client between them, rechecks
 folder ownership/configuration and ignores, and evaluates the interval. This is
 an observational API, not automatic promotion. Reused folders cannot enter this
 path. A concurrent external write after the last scan remains outside this
-interval evidence; promotion still needs its own journal, replay logic and race
-acceptance before it changes receive-only mode.
+interval evidence. The explicit promotion operation below journals its transition;
+the desktop does not invoke it yet.
 
 Unit regressions cover scope, expiration, revocation state, replay of one receipt,
 monotonic expiration, changed owner/generation/startup, partial index/content and
@@ -157,3 +159,26 @@ overflow or underflow fail closed. Hub-local versus hub-global bytes must still
 match before normalization, and pending/local-change/index checks remain required.
 This normalization is version-specific and must be revisited before upgrading
 either pinned endpoint. A unit regression covers both directories and symlinks.
+
+
+### Explicit promotion and recovery
+
+`FolderController::promote` accepts a scoped observation source, serializes with
+folder operations, and permits only its owned enrolled replica. It scans again
+after the second service observation to detect local edits made while that
+response was pending. A failed predicate leaves receive-only mode intact.
+The journal records `Promoting` before changing the daemon to `sendreceive`, then
+records `Active`. If restart finds receive-only mode, it requires fresh
+observations; saved intent alone never authorizes a new PATCH. If the daemon
+already committed the PATCH, matching ownership/configuration permits completion
+of the journal without another mutation. Reused or removed replicas cannot enter
+this transition.
+
+The real CT141 1.29.5/2.1.6 folder fixture covers pause blocking promotion, a local
+edit injected during the second observation (not published), interrupted intent
+before PATCH with service unavailable, and lost journal completion after PATCH.
+A new client file arriving at the hub after promotion is the positive control.
+These tests do not claim an atomic snapshot across independent filesystems:
+an external writer can still write after the final local scan. The endpoint,
+controller, and large fixture are tested separately; desktop scheduling and a
+full native HTTPS enrollment-to-promotion run remain integration work.
