@@ -22,6 +22,19 @@ fn result_title(root: &Path, hit: &SearchHit) -> String {
     display_title(&path).unwrap_or_else(|| hit.title.clone())
 }
 
+/// Keep the relative identity for duplicate titles without a Markdown suffix.
+fn result_location(path: &str) -> String {
+    let path = if Path::new(path)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+    {
+        &path[..path.len() - 3]
+    } else {
+        path
+    };
+    path.replace('/', " › ")
+}
+
 pub(super) struct Palette {
     pub open: bool,
     full_text: bool,
@@ -349,7 +362,7 @@ impl Reader {
                                 .overflow_hidden()
                                 .whitespace_nowrap()
                                 .text_ellipsis()
-                                .child(hit.path.clone()),
+                                .child(result_location(&hit.path)),
                         )
                         .when(full_text, |row| {
                             row.child(div().text_xs().overflow_hidden().child(TextView::html(
