@@ -103,6 +103,10 @@ pub struct Searcher {
     writer: std::sync::Mutex<Option<tantivy::IndexWriter>>,
     /// Drops after index and writer so Windows handles close before cleanup.
     session: Option<tempfile::TempDir>,
+    /// Caller-owned liveness pin for the directory this index was opened from.
+    /// Drops last, after every index handle, so a collector never sees the
+    /// directory unpinned while this searcher can still read it.
+    pin: Option<Box<dyn std::any::Any + Send + Sync>>,
 }
 
 /// How much of a body the snippet generator sees. Four times the snippet
@@ -334,6 +338,7 @@ impl Searcher {
             f,
             writer: std::sync::Mutex::new(Some(writer)),
             session: None,
+            pin: None,
         })
     }
 
@@ -457,6 +462,13 @@ impl Searcher {
 
     pub fn is_session(&self) -> bool {
         self.session.is_some()
+    }
+
+    /// Keep `pin` alive exactly as long as this searcher. Forks never inherit
+    /// it: a session owns a private copy of the committed files.
+    pub fn pinned(mut self, pin: impl std::any::Any + Send + Sync) -> Self {
+        self.pin = Some(Box::new(pin));
+        self
     }
 
     /// Commit exactly one source batch using already-read canonical bytes.
@@ -616,6 +628,7 @@ impl Searcher {
             f,
             writer: std::sync::Mutex::new(None),
             session: None,
+            pin: None,
         })
     }
 

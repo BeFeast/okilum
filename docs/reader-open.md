@@ -59,6 +59,26 @@ to a retained vault publishes its persisted tree, last note and search before
 reconciliation. The diagnostic log records `vault_cache_lease` and
 `cache_retention` events; failed cache maintenance cannot prevent reading.
 
+Search generations inside one vault cache are bounded too (#572). A generation
+family is one 64-hex name: `generations/<name>`, `generations/<name>.repairs/*`
+and `attempts/<name>.<uuid>`. Every Reader or worker that opens, forks from or
+publishes a family first takes a pin, an exclusively locked
+`generation-pins/<name>.<uuid>` file held for the searcher's lifetime (or, for a
+published checkpoint, until the persisted hint names it). After Ready and after
+each checkpoint persists, the collector retires every family that is neither
+pinned, in any process, nor named by `reader-startup.json`,
+`reader-snapshot.json` or `reader-delta.json`. It reads the hints unlocked, then
+takes the `generation-pins/gate` lock, which pin creation shares, and checks the
+pins and that no hint file was replaced since. If any changed, the run is skipped.
+Retirement renames each member into `retired-generations/<uuid>` (never a
+generation in use, so Windows' complete-marker publication is unaffected), and
+deletion happens afterwards outside the gate. An undecodable hint, a busy gate or
+collector, or a failed rename or deletion keeps the files and is retried on the
+next run. Interrupted cleanup is finished on the next run. A crashed
+holder's unlocked pin is reclaimed. Legacy unnamed `attempts/<uuid>` staging is
+never touched. Session forks are private copies and need no pin. The
+diagnostic log records `search_generation_retention`.
+
 No Markdown, attachments or Obsidian settings are written. Synthetic tests compare
 the complete canonical directory tree, not only existing note hashes.
 

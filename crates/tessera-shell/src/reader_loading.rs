@@ -373,6 +373,38 @@ fn prepare_first_with_last_document(
     })
 }
 
+/// Idle cleanup after the persisted hints name the published generation. A
+/// failure leaves derived generations in place and is retried next time.
+pub(super) fn collect_search_generations(root: &Path, opts: &Opts) {
+    let Ok(base) = reader_open::cache_path_for(root, opts) else {
+        return;
+    };
+    if validate_external_cache(&base, root).is_ok() {
+        collect_search_generations_at(&base, opts.diagnostics.as_ref());
+    }
+}
+
+pub(super) fn collect_search_generations_at(
+    base: &Path,
+    diagnostics: Option<&super::reader_diagnostics::Trace>,
+) {
+    let started = std::time::Instant::now();
+    let result = reader_cache::collect_generations(base);
+    if let Some(trace) = diagnostics {
+        trace.event(
+            "search_generation_retention",
+            serde_json::json!({
+                "duration_ms":started.elapsed().as_secs_f64()*1000.,
+                "retired":result.as_ref().ok().map(|report| report.retired.len()),
+                "retained":result.as_ref().ok().map(|report| report.retained),
+                "skipped":result.as_ref().ok().and_then(|report| report.skipped),
+                "cleanup_errors":result.as_ref().ok().map(|report| &report.cleanup_errors),
+                "error":result.as_ref().err().map(|e| format!("{e:#}")),
+            }),
+        );
+    }
+}
+
 fn acquire_cache_lease(root: &Path, opts: &Opts) -> Option<Arc<reader_cache::Lease>> {
     let result = reader_open::cache_path_for(root, opts).and_then(|path| {
         if let Some(lease) = opts
@@ -586,6 +618,9 @@ fn prepare_rest_with_io_and_snapshot(
         }
     }
     priority.extend(opts.reconcile_recent.iter().cloned());
+    // Checkpoint generations published here stay pinned until the persisted
+    // hints name them, so idle collection cannot retire them in between.
+    let mut publication_pins = Vec::new();
     loop {
         cancel.check()?;
         let mut last = std::time::Instant::now();
@@ -719,9 +754,10 @@ fn prepare_rest_with_io_and_snapshot(
                         .cloned()
                         .collect();
                     match prepare_search_batch(&vault, &updated, &removed, &base, &prior, cancel) {
-                        Ok(Some((prepared, published))) => {
+                        Ok(Some((prepared, published, pin))) => {
                             searcher = Some(prepared);
                             generation = published;
+                            publication_pins.push(pin);
                             if let Some(trace) = &opts.diagnostics {
                                 trace.event("search_incremental_prepare", serde_json::json!({"updated":updated.len(),"removed":removed.len(),"baseline_hit":true}));
                             }
@@ -841,6 +877,7 @@ fn prepare_rest_with_io_and_snapshot(
             })
             .collect();
         drop(title_phase);
+        drop(publication_pins);
         return Ok(Event::Ready {
             move_snapshot: Box::new(snapshot),
             vault,
@@ -875,7 +912,7 @@ fn prepare_search_batch(
     base: &Path,
     prior: &Path,
     cancel: &Cancellation,
-) -> Result<Option<(Searcher, String)>> {
+) -> Result<Option<(Searcher, String, reader_cache::GenerationPin)>> {
     // Repairs belong to this exact generation, never an older ID. Incremental
     // checkpoints (and Windows full builds) intentionally have no direct index.
     let Some(old) = open_completed_generation(prior) else {
@@ -883,10 +920,12 @@ fn prepare_search_batch(
     };
     cancel.check()?;
     let searcher = old.fork_session()?;
+    drop(old);
     searcher.update_snapshot_batch(vault, documents, removed)?;
     cancel.check()?;
     use sha2::{Digest, Sha256};
     let generation = format!("{:x}", Sha256::digest(uuid::Uuid::new_v4().as_bytes()));
+    let pin = reader_cache::GenerationPin::acquire(base, &generation)?;
     let repairs = base
         .join("generations")
         .join(format!("{generation}.repairs"));
@@ -898,10 +937,31 @@ fn prepare_search_batch(
     cancel.check()?;
     std::fs::write(owned.path().join("complete"), b"1")?;
     let _ = owned.keep();
-    Ok(Some((searcher, generation)))
+    Ok(Some((searcher, generation, pin)))
 }
 
+/// The pin is taken before lookup and staging and travels with the returned
+/// searcher, which reads the published directory for its whole lifetime.
 fn prepare_search_generation(
+    vault: &Vault,
+    documents: &[tessera_core::search::SearchDocument],
+    base: &Path,
+    destination: &Path,
+    opts: &Opts,
+    cancel: &Cancellation,
+    send: &async_channel::Sender<Event>,
+) -> Result<Searcher> {
+    let pin = pin_generation(destination).with_context(|| {
+        format!(
+            "Pin external search generation {}",
+            tessera_core::vault::display_path(destination)
+        )
+    })?;
+    prepare_search_generation_pinned(vault, documents, base, destination, opts, cancel, send)
+        .map(|searcher| searcher.pinned(pin))
+}
+
+fn prepare_search_generation_pinned(
     vault: &Vault,
     documents: &[tessera_core::search::SearchDocument],
     base: &Path,
@@ -916,7 +976,7 @@ fn prepare_search_generation(
             .diagnostics
             .as_ref()
             .map(|trace| trace.phase("search_generation_lookup"));
-        open_completed_generation(destination)
+        open_completed_unpinned(destination)
     };
     if let Some(trace) = &_opts.diagnostics {
         trace.event(
@@ -933,12 +993,22 @@ fn prepare_search_generation(
     let in_place = cfg!(windows);
     #[cfg(test)]
     let in_place = in_place || _opts.search_publish_in_place;
-    let directory = if in_place {
-        destination.with_extension("repairs")
-    } else {
-        base.join("attempts")
-    };
-    let mut owned = Staging(directory.join(uuid::Uuid::new_v4().to_string()), true);
+    let id = uuid::Uuid::new_v4();
+    let mut owned = Staging(
+        if in_place {
+            destination.with_extension("repairs").join(id.to_string())
+        } else {
+            // Named by family so collection can reclaim a crashed attempt.
+            base.join("attempts").join(format!(
+                "{}.{id}",
+                destination
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+            ))
+        },
+        true,
+    );
     progress(send, "Preparing search".into())?;
     let mut last = std::time::Instant::now();
     let built = Searcher::build_snapshot(vault, documents, &owned.0, &mut |phase, count| {
@@ -992,7 +1062,7 @@ fn prepare_search_generation(
             )
         }),
         Err(publish_error) => {
-            if let Some(searcher) = open_completed_generation(destination) {
+            if let Some(searcher) = open_completed_unpinned(destination) {
                 return Ok(searcher);
             }
             // Never delete a corrupt/concurrently published generation in use.
@@ -1028,7 +1098,27 @@ fn prepare_search_generation(
     }
 }
 
+fn pin_generation(destination: &Path) -> Result<reader_cache::GenerationPin> {
+    let name = destination
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("Invalid search generation path")?;
+    let base = destination
+        .parent()
+        .and_then(Path::parent)
+        .context("Search generation has no cache directory")?;
+    reader_cache::GenerationPin::acquire(base, name)
+}
+
+/// Open a completed generation pinned for the searcher's lifetime. Without a
+/// pin the generation is not used: collection could retire it under us.
 fn open_completed_generation(destination: &Path) -> Option<Searcher> {
+    let pin = pin_generation(destination).ok()?;
+    open_completed_unpinned(destination).map(|searcher| searcher.pinned(pin))
+}
+
+/// Callers must already hold a pin on the generation family.
+fn open_completed_unpinned(destination: &Path) -> Option<Searcher> {
     let open = |path: &Path| {
         path.join("complete")
             .is_file()
@@ -1781,6 +1871,7 @@ impl Reader {
                     }
                     send.send_blocking(ready)
                         .map_err(|_| anyhow::anyhow!("Reader closed"))?;
+                    collect_search_generations(&root, &opts);
                     if !refresh_worker {
                         if let Some(lease) = &opts.cache_lease {
                             let started = std::time::Instant::now();
@@ -2801,16 +2892,16 @@ mod tests {
         assert_eq!(searcher.search("positivecontrol", 10).unwrap().len(), 1);
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].path, cache);
+        // Pinning is the first cache write of a generation build.
+        assert!(warnings[0].error.contains("Pin external search generation"));
         assert!(warnings[0]
             .error
-            .contains("Build external search generation"));
-        assert!(warnings[0]
-            .error
-            .contains("Create search staging directory"));
+            .contains("Create search generation pin directory"));
         assert!(warnings[0].error.contains("blocked-cache"));
         let log = std::fs::read_to_string(state.join("reader-diagnostic.log")).unwrap();
         assert!(
-            log.contains("preparation_warnings") && log.contains("Create search staging directory")
+            log.contains("preparation_warnings")
+                && log.contains("Create search generation pin directory")
         );
         assert_eq!(
             std::fs::read_to_string(&cache).unwrap(),
@@ -2976,9 +3067,9 @@ mod tests {
         assert_eq!(vault.backlinks("target.md").len(), 1);
         assert!(searcher.is_none());
         assert!(
-            warnings
-                .iter()
-                .any(|issue| issue.error.contains("Create search staging directory")),
+            warnings.iter().any(|issue| issue
+                .error
+                .contains("Create search generation pin directory")),
             "A real cache failure precedes the budget guard"
         );
         assert!(warnings
@@ -4650,7 +4741,7 @@ mod tests {
             text: "updatedcanary".into(),
         }];
         let cancel = Cancellation::default();
-        let (first, generation) =
+        let (first, generation, _first_pin) =
             prepare_search_batch(&vault, &updated, &[], &base, &prior, &cancel)
                 .unwrap()
                 .unwrap();
@@ -4660,7 +4751,7 @@ mod tests {
         assert_eq!(baseline.search("initialcanary", 5).unwrap().len(), 1);
         let next = base.join("generations").join(generation);
         assert!(!next.exists());
-        let (second, _) =
+        let (second, _, _) =
             prepare_search_batch(&vault, &[], &["b.md".into()], &base, &next, &cancel)
                 .unwrap()
                 .unwrap();

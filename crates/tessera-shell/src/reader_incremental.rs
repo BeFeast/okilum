@@ -241,6 +241,8 @@ impl Reader {
                 let start = std::time::Instant::now();
                 if let Some(cache) = cache.as_ref().filter(|_| persist) {
                     cancel.check()?;
+                    // Held until the delta names the new generation.
+                    let mut pin = None;
                     if search_changed {
                     let persisted_search = (|| -> anyhow::Result<String> {
                         use sha2::{Digest, Sha256};
@@ -249,6 +251,7 @@ impl Reader {
                         // committed bytes; unchanged reconciliation can reuse its hint.
                         let generation =
                             format!("{:x}", Sha256::digest(uuid::Uuid::new_v4().as_bytes()));
+                        pin = Some(reader_cache::GenerationPin::acquire(cache, &generation)?);
                         let repairs = cache
                             .join("generations")
                             .join(format!("{generation}.repairs"));
@@ -283,6 +286,10 @@ impl Reader {
                             );
                         }
                     }
+                    drop(pin);
+                    // Older checkpoints are unreferenced now; Readers still
+                    // using one hold their own pin on it.
+                    reader_loading::collect_search_generations_at(cache, trace.as_ref());
                 }
 
                 if let Some(trace) = &trace {
@@ -441,6 +448,98 @@ mod tests {
                 1
             );
             assert_eq!(v.vault.backlinks("New.md").len(), 1);
+        });
+    }
+
+    #[gpui::test]
+    fn repeated_saves_retain_bounded_generations_and_reopen_warm(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        let cache = temp.path().join("cache");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("note.md"), "# Note\n\noriginalword").unwrap();
+        let opts = || Opts {
+            vault: Some(root.clone()),
+            note: Some("note.md".into()),
+            index_dir: Some(cache.clone()),
+            session_directory: Some(temp.path().join("state")),
+            ..Default::default()
+        };
+        let families = || {
+            std::fs::read_dir(cache.join("generations"))
+                .unwrap()
+                .map(|entry| {
+                    let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+                    name.trim_end_matches(".repairs").to_owned()
+                })
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| Reader::new(opts(), window, cx));
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        visual.run_until_parked();
+        let full = tessera_core::vault::warm::Snapshot::load_checked(&cache, &root)
+            .unwrap()
+            .search_generation
+            .unwrap();
+        let mut checkpoints = Vec::new();
+        for (n, word) in ["alphaword", "bravoword", "charlieword", "deltaword"]
+            .into_iter()
+            .enumerate()
+        {
+            reader.update_in(visual, |v, window, cx| {
+                if v.editing.is_none() {
+                    v.toggle_source(window, cx);
+                }
+                v.editing
+                    .as_ref()
+                    .unwrap()
+                    .set_value(&format!("# Note\n\n{word}"), window, cx);
+                assert!(v.save_source(cx));
+            });
+            visual.run_until_parked();
+            let saved = tessera_core::vault::warm::Snapshot::load_checked(&cache, &root).unwrap();
+            checkpoints.push(saved.search_generation.unwrap());
+            assert_eq!(
+                families(),
+                std::collections::BTreeSet::from([full.clone(), checkpoints[n].clone()]),
+                "only the source bank and current delta generations remain"
+            );
+        }
+        assert_eq!(
+            checkpoints
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            4,
+            "positive control: every save published a new generation"
+        );
+        reader.update_in(visual, |v, window, cx| {
+            v.start_loading(
+                Opts {
+                    index_build_hook: Some(Arc::new(|_| {
+                        panic!("persisted checkpoint generation must be opened, never rebuilt")
+                    })),
+                    ..opts()
+                },
+                window,
+                cx,
+            );
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |v, _| {
+            assert!(!v.loading.as_ref().unwrap().active);
+            let searcher = v.searcher.as_ref().unwrap();
+            assert_eq!(searcher.search("deltaword", 10).unwrap().len(), 1);
+            assert!(searcher.search("charlieword", 10).unwrap().is_empty());
         });
     }
 
