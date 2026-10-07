@@ -16,6 +16,8 @@ export TESSERA_SOURCE_COMMIT="$(git rev-parse HEAD)"
 mkdir -p "$HOME/.cache/tessera-qa/634"
 CARGO_TARGET_DIR=$(mktemp -d "$HOME/.cache/tessera-qa/634/intel-no-cache.XXXXXX")
 export CARGO_TARGET_DIR
+# This unique target belongs only to this job; retain compiler.log, not build artifacts.
+trap 'rm -rf -- "$CARGO_TARGET_DIR"' EXIT
 export CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_STRIP=none
 export CARGO_INCREMENTAL=0
 rustc --version

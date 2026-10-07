@@ -12,14 +12,6 @@ jobs:
   build:
     runs-on: macos
     timeout-minutes: 90
-    env:
-      SCCACHE_BUCKET: ${{ vars.SCCACHE_BUCKET }}
-      SCCACHE_ENDPOINT: ${{ vars.SCCACHE_ENDPOINT }}
-      SCCACHE_REGION: ${{ vars.SCCACHE_REGION }}
-      SCCACHE_S3_USE_SSL: "false"
-      SCCACHE_S3_KEY_PREFIX: rust
-      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
