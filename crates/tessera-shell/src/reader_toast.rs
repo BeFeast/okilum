@@ -178,6 +178,7 @@ impl Reader {
 
     /// Existing error producers retain their state; presentation never takes a layout row.
     pub(super) fn sync_notice_toast(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        crate::updater::ready_notice(window, cx);
         self.sync_recovery_toast(window, cx);
         let notice = self.link_notice.clone();
         let choices = self.link_choices.clone();

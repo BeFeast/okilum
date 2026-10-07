@@ -3,6 +3,8 @@
 //! the beta channel preference.
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(any(windows, test))]
+mod ready;
 #[cfg(windows)]
 mod windows;
 #[cfg(any(windows, test))]
@@ -46,7 +48,23 @@ fn macos_menu_items(quit: MenuItem) -> Vec<MenuItem> {
 pub(crate) fn install(_cx: &mut App) {
     crate::reader_settings::install(_cx);
     #[cfg(windows)]
-    windows::start();
+    {
+        windows::start();
+        _cx.spawn(async move |cx| {
+            let mut previous = None;
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(1))
+                    .await;
+                let current = windows::ready_package();
+                if current != previous {
+                    previous = current;
+                    cx.update(|cx| cx.refresh_windows());
+                }
+            }
+        })
+        .detach();
+    }
     #[cfg(target_os = "macos")]
     {
         macos::start();
@@ -118,4 +136,83 @@ pub(crate) fn set_beta(enabled: bool, cx: &mut App) {
     }
     #[cfg(not(any(target_os = "macos", windows)))]
     let _ = (enabled, cx);
+}
+
+/// The same explicit action is exposed in About, Settings and the ready toast.
+pub(crate) fn action_label() -> &'static str {
+    #[cfg(windows)]
+    if windows::ready() {
+        return "Restart to update";
+    }
+    "Check for Updates…"
+}
+pub(crate) fn activate(cx: &mut App) {
+    #[cfg(windows)]
+    if windows::ready() {
+        windows::restart(None, cx);
+        return;
+    }
+    let _ = cx;
+    check();
+}
+
+pub(crate) fn ready_notice(window: &mut gpui::Window, cx: &mut App) {
+    #[cfg(windows)]
+    if window.is_window_active() {
+        if let Some(id) = windows::take_announcement() {
+            show_ready_notice(window, cx, move |cx| windows::restart(Some(&id), cx));
+        }
+    }
+    #[cfg(all(target_os = "linux", feature = "updater-ui-harness"))]
+    {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static SHOWN: AtomicBool = AtomicBool::new(false);
+        if std::env::var_os("TESSERA_UPDATE_READY_FIXTURE").is_some()
+            && !SHOWN.swap(true, Ordering::SeqCst)
+        {
+            show_ready_notice(window, cx, |_| {});
+        }
+    }
+    let _ = (window, cx);
+}
+
+#[cfg(any(windows, all(target_os = "linux", feature = "updater-ui-harness")))]
+fn show_ready_notice(
+    window: &mut gpui::Window,
+    cx: &mut App,
+    restart: impl Fn(&mut App) + 'static,
+) {
+    use gpui::AppContext;
+    use gpui_component::button::Button;
+    use gpui_component::{notification::Notification, Sizable, WindowExt};
+    use std::rc::Rc;
+    struct UpdateNotice;
+    let restart = Rc::new(restart);
+    window.defer(cx, move |window, cx| {
+        window.push_notification(
+            Notification::new()
+                .id::<UpdateNotice>()
+                .message("Update ready")
+                .autohide(false)
+                .placement(gpui::Anchor::BottomRight)
+                .action(move |_, _, _| {
+                    let restart = restart.clone();
+                    Button::new("restart-update")
+                        .small()
+                        .label("Restart")
+                        .on_click(move |_, _, cx| restart(cx))
+                }),
+            cx,
+        );
+        let handle = window.window_handle();
+        cx.spawn(async move |cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(4))
+                .await;
+            let _ = cx.update_window(handle, |_, window, cx| {
+                window.remove_notification::<UpdateNotice>(cx);
+            });
+        })
+        .detach();
+    });
 }

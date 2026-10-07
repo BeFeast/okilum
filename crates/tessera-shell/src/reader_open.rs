@@ -1117,3 +1117,105 @@ pub(crate) fn reader_locations(cx: &App) -> Vec<(PathBuf, String)> {
         })
         .collect()
 }
+
+/// Reopen the actual current document, not the process's original CLI target.
+#[cfg(any(windows, test))]
+pub(crate) fn update_restart_args(cx: &App) -> anyhow::Result<Vec<std::ffi::OsString>> {
+    let readers: Vec<_> = cx
+        .try_global::<Readers>()
+        .into_iter()
+        .flat_map(|readers| readers.0.iter())
+        .filter_map(|(reader, _)| reader.upgrade())
+        .collect();
+    anyhow::ensure!(
+        readers.len() <= 1,
+        "Close other Tessera document windows before restarting to update."
+    );
+    let Some(reader) = readers.first() else {
+        return Ok(vec![]);
+    };
+    let reader = reader.read(cx);
+    if reader.single_file {
+        Ok(vec![
+            "--".into(),
+            reader
+                .vault_root
+                .join(reader.selected_file())
+                .into_os_string(),
+        ])
+    } else {
+        Ok(vec![
+            "--vault".into(),
+            reader.vault_root.clone().into_os_string(),
+            "--note".into(),
+            reader.current_rel.clone().into(),
+        ])
+    }
+}
+
+#[cfg(test)]
+mod update_restart_tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+    #[cfg(test)]
+    #[gpui::test]
+    fn update_restart_without_document_does_not_reuse_old_cli(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| assert!(update_restart_args(cx).unwrap().is_empty()));
+    }
+
+    #[cfg(test)]
+    #[gpui::test]
+    fn update_restart_tracks_current_note_and_refuses_multiple_windows(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("A.md"), "# A").unwrap();
+        std::fs::write(root.join("Б.md"), "# B").unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            install(cx);
+            cx.set_global(crate::reader_history::TestSessionDirectory(
+                temp.path().join("state"),
+            ));
+            open_window(
+                crate::Opts {
+                    vault: Some(root.clone()),
+                    note: Some("Б.md".into()),
+                    ..Default::default()
+                },
+                cx,
+            )
+            .unwrap();
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let args = update_restart_args(cx).unwrap();
+            assert_eq!(
+                args,
+                vec![
+                    std::ffi::OsString::from("--vault"),
+                    root.clone().into_os_string(),
+                    "--note".into(),
+                    "Б.md".into()
+                ]
+            );
+            let second = temp.path().join("other-vault");
+            std::fs::create_dir(&second).unwrap();
+            std::fs::write(second.join("Other.md"), "# Other").unwrap();
+            open_window(
+                crate::Opts {
+                    vault: Some(second),
+                    ..Default::default()
+                },
+                cx,
+            )
+            .unwrap();
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert!(update_restart_args(cx).is_err());
+        });
+    }
+}

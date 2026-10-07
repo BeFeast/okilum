@@ -22,8 +22,8 @@ pub(super) fn append(menu: PopupMenu) -> PopupMenu {
             #[cfg(windows)]
             let menu = if crate::updater::available() {
                 menu.item(
-                    PopupMenuItem::new("Check for Updates…")
-                        .on_click(|_, _, _| crate::updater::check()),
+                    PopupMenuItem::new(crate::updater::action_label())
+                        .on_click(|_, _, cx| crate::updater::activate(cx)),
                 )
             } else {
                 menu.label(UPDATE_NOTICE)

@@ -13,9 +13,9 @@ its result. Manual checks use a Win32 message box. `get_update_pending_restart()
 already identifies a downloaded package, so readiness must derive from that
 package, not from a successful feed check or an available-but-incomplete download.
 
-Introduce a small platform-independent update state model with a Windows backend:
-checking, downloading, ready(package identity), failed, idle. Publish background
-results onto the GPUI thread and refresh windows. Deduplicate notifications by
+Track downloaded-package identity in a small platform-independent ready-state
+model; retain the existing background check/download serialization. Publish ready
+changes onto the GPUI thread and refresh windows. Deduplicate notifications by
 package identity across checks and windows; render in the active Reader. A later
 Reader must still observe readiness if the download completed before it existed.
 Keep readiness after toast dismissal and clear it only when the package is no
@@ -23,7 +23,7 @@ longer pending. Never run package or network I/O in a render callback.
 
 Use the existing bottom notification layer, without shifting document layout or
 creating a second modal. Give the ready notification a stable identity and an
-explicit dismiss action; do not replace a Trash/Undo action or a recovery notice.
+explicit dismiss action and the normal four-second lifetime; do not replace a Trash/Undo action or a recovery notice.
 About and Check for Updates show **Restart to update** when ready. Errors remain
 visible on explicit interaction; failed background checks do not spam notices.
 
@@ -59,3 +59,10 @@ visible on explicit interaction; failed background checks do not spam notices.
 
 Estimate: 1–2 executor days plus installed Windows QA. The critical gate is a
 normal safe quit after arming the updater, not merely showing a clickable toast.
+
+Implementation finding: there is no general multi-window session relaunch protocol.
+The first implementation must refuse Restart while more than one document window
+is open, with an explicit instruction to close the others; normal manual quit
+remains available. It must reopen the current absolute vault/note or single file,
+not replay startup CLI arguments (their relative base can change on Windows).
+A future multi-window restart needs its own durable, consumable session contract.

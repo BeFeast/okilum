@@ -14,6 +14,8 @@ default = ["brain"]
 brain = ["tessera-core/brain"]
 # Non-publishing Linux visual QA harness; excluded from shipping builds.
 settings-ui-harness = []
+# Non-publishing downloaded-update visual fixture; never starts an updater.
+updater-ui-harness = []
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock"] }

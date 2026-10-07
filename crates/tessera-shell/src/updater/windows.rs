@@ -2,13 +2,93 @@
 //! Installation ID BeFeast.Tessera deliberately differs from Reader state `tessera`.
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    OnceLock,
+    Mutex, OnceLock,
 };
 use velopack::{sources::HttpSource, HttpOptions, UpdateCheck, UpdateManager, UpdateOptions};
 
 static AVAILABLE: OnceLock<bool> = OnceLock::new();
 static BETA: AtomicBool = AtomicBool::new(true);
 static BUSY: AtomicBool = AtomicBool::new(false);
+static READY: OnceLock<Mutex<super::ready::Ready>> = OnceLock::new();
+fn state() -> &'static Mutex<super::ready::Ready> {
+    READY.get_or_init(|| Mutex::new(super::ready::Ready::default()))
+}
+fn identity(asset: &velopack::VelopackAsset) -> String {
+    format!(
+        "{}:{}:{}:{}:{}",
+        asset.PackageId, asset.Version, asset.FileName, asset.Size, asset.SHA256
+    )
+}
+pub(super) fn ready_package() -> Option<String> {
+    state().lock().unwrap().package().map(str::to_owned)
+}
+pub(super) fn ready() -> bool {
+    ready_package().is_some()
+}
+pub(super) fn take_announcement() -> Option<String> {
+    state().lock().unwrap().take_announcement()
+}
+pub(super) fn restart(expected: Option<&str>, cx: &mut gpui::App) {
+    let result = (|| -> anyhow::Result<()> {
+        let manager = manager()?;
+        let pending = manager.get_update_pending_restart();
+        if pending.is_none() {
+            state().lock().unwrap().observe(None);
+        }
+        let asset = pending.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "The downloaded update is no longer available. Check for updates again."
+            )
+        })?;
+        let id = identity(asset);
+        if expected.is_some_and(|expected| expected != id) {
+            anyhow::bail!("The pending update changed. Check for updates again.");
+        }
+        {
+            let mut state = state().lock().unwrap();
+            if state.package() != Some(id.as_str()) {
+                state.observe(Some(id));
+                anyhow::bail!("The pending update changed. Choose Restart again.");
+            }
+            if !state.begin_restart(&id) {
+                return Ok(());
+            }
+        }
+        use super::ready::{restart_transaction, RestartStep};
+        let mut restart_args = Vec::new();
+        restart_transaction(|stage| -> anyhow::Result<()> {
+            match stage {
+                RestartStep::Arguments => {
+                    restart_args = crate::reader_open::update_restart_args(cx)?
+                }
+                RestartStep::ProtectEditors => anyhow::ensure!(
+                    crate::reader_editor::protect_all_for_quit(cx),
+                    "Your latest edits could not be protected. Tessera will stay open."
+                ),
+                RestartStep::PersistState => crate::reader_ui_state::prepare_for_restart(cx)?,
+                RestartStep::ArmUpdater => manager.wait_exit_then_apply_updates(
+                    asset,
+                    false,
+                    true,
+                    std::mem::take(&mut restart_args),
+                )?,
+                RestartStep::Quit => cx.quit(),
+            }
+            Ok(())
+        })
+    })();
+    if let Err(error) = result {
+        state().lock().unwrap().restart_failed();
+        let message = format!("Could not restart to update: {error}");
+        cx.defer(move |cx| {
+            if let Some(window) = cx.active_window() {
+                let _ = window.update(cx, |_, window, cx| {
+                    crate::reader_toast::error(message, window, cx)
+                });
+            }
+        });
+    }
+}
 
 fn manager() -> Result<UpdateManager, velopack::Error> {
     let (url, channel) = super::windows_feed::endpoint(beta());
@@ -83,22 +163,37 @@ pub(super) fn check(manual: bool) {
         BUSY.store(false, Ordering::Release);
         if manual {
             match result {
-                Ok(status) => message(status),
+                Ok(status) if !ready() => message(status),
+                Ok(_) => {},
                 Err(error) => message(&format!("Could not check or download updates. Your current version is unchanged.\n\n{error}")),
             }
         }
     });
 }
 
-fn check_and_download() -> Result<&'static str, velopack::Error> {
+fn check_and_download() -> anyhow::Result<&'static str> {
     let manager = manager()?;
-    if manager.get_update_pending_restart().is_some() {
-        return Ok("An update is ready. Quit Tessera and open it again to apply it.");
+    let pending = manager.get_update_pending_restart();
+    state()
+        .lock()
+        .unwrap()
+        .observe(pending.as_ref().map(identity));
+    if pending.is_some() {
+        return Ok("Update ready. Choose Restart to update.");
     }
     match manager.check_for_updates()? {
         UpdateCheck::UpdateAvailable(update) => {
             manager.download_updates(&update, None)?;
-            Ok("Update downloaded. Quit Tessera and open it again to apply it. Your vault and Reader settings will be preserved.")
+            let pending = manager.get_update_pending_restart();
+            state()
+                .lock()
+                .unwrap()
+                .observe(pending.as_ref().map(identity));
+            anyhow::ensure!(
+                pending.is_some(),
+                "The downloaded package is no longer available. Check for updates again."
+            );
+            Ok("Update ready. Choose Restart to update.")
         }
         UpdateCheck::NoUpdateAvailable => Ok("You are up to date on the selected channel."),
         UpdateCheck::RemoteIsEmpty => {

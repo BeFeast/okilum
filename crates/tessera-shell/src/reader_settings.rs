@@ -600,11 +600,11 @@ impl Settings {
                                         .flex_none()
                                         .icon(IconName::RotateCw)
                                         .ghost()
-                                        .accessibility_label("Check for updates")
-                                        .tooltip("Check for updates on the selected channel")
-                                        .on_click(cx.listener(|this, _, _, _| {
+                                        .accessibility_label(updater::action_label())
+                                        .tooltip(updater::action_label())
+                                        .on_click(cx.listener(|this, _, _, cx| {
                                             if this.preview_channel().is_none() {
-                                                updater::check();
+                                                updater::activate(cx);
                                             }
                                         })),
                                 ),

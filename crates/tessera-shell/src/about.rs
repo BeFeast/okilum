@@ -131,8 +131,8 @@ fn show_about_dialog(window: &mut Window, cx: &mut App, close_window: bool) {
                     .when(updater::available(), |view| {
                         view.child(
                             Button::new("about-check-updates")
-                                .label("Check for Updates…")
-                                .on_click(|_, _, _| updater::check()),
+                                .label(updater::action_label())
+                                .on_click(|_, _, cx| updater::activate(cx)),
                         )
                     })
                     .when(cfg!(target_os = "linux"), |view| {
