@@ -223,6 +223,21 @@ impl Enrollment {
     fn save(&self, j: &Journal) -> Result<()> {
         private::write(&self.file(), &serde_json::to_vec(j)?)
     }
+    /// A fresh scoped observation; secrets remain inside the enrollment journal.
+    pub fn readiness(&self, service: &Service) -> Result<crate::readiness::Receipt> {
+        let _lock = private::lock(&self.state)?;
+        let j = self.load(service)?;
+        ensure!(
+            j.intent == Intent::Pair && j.removal.is_none(),
+            "registration is being removed"
+        );
+        let registration = j
+            .registration
+            .as_ref()
+            .context("registration unavailable")?;
+        let descriptor = j.descriptor.as_ref().context("descriptor unavailable")?;
+        service.readiness(&j.session, registration, descriptor)
+    }
     pub fn state_directory(&self) -> &Path {
         &self.state
     }

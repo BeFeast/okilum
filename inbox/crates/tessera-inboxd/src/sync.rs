@@ -123,7 +123,7 @@ impl Config {
         }
         Ok(config)
     }
-    fn vault(&self, owner: Uuid, id: Uuid) -> Result<&Vault, Error> {
+    pub(crate) fn vault(&self, owner: Uuid, id: Uuid) -> Result<&Vault, Error> {
         if self.owner_id != owner {
             return Err(Error::Invalid);
         }

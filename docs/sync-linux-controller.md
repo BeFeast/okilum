@@ -193,3 +193,21 @@ Syncthing REST does not provide a transaction against unrelated administrators.
 The real fixture races two enrollment attempts and verifies exactly one owner,
 then verifies that replacing the ownership marker rejects replay. Connection
 history is checkpointed at most once per minute while connected.
+
+## Settings runtime selection (local follow-up)
+
+`runtime::Runtime` coordinates explicit managed/reuse selection. Reading an
+unconfigured runtime or disabling it creates no files and calls no service.
+Enable persists the selection and desired state before preparation/registration;
+identity is saved before the managed service starts. Reopening can reconcile the
+saved intent. Disable persists disabled intent before stop/unregister, and a
+later reconcile cannot silently turn it back on. Re-enable retains the identity.
+Reuse checks a fresh authenticated inventory and never enters the lifecycle
+manager, even when disabling an offline external daemon. Selection cannot be
+changed underneath an existing journal.
+
+This is orchestration groundwork, not the Settings screen or a completed pairing
+flow. Pairing, folder removal and runtime teardown still need a combined removal
+journal. The actual CT141 systemd regression verifies Enable, authenticated REST,
+Disable, disabled reconcile and identity-preserving re-enable. The folder fixture
+also verifies reuse can disable offline without creating a service directory.

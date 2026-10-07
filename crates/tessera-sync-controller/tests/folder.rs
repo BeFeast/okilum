@@ -304,6 +304,9 @@ fn owned_folder_and_external_replica_keep_their_boundaries() -> Result<()> {
             .enroll(&identity, &configs, &approval, &client.vault)?
             .reused
     );
+    assert!(reuse
+        .promote(&|| anyhow::bail!("reuse must not request readiness"))
+        .is_err());
     reuse.pause(true).context("pause reused replica")?;
     assert_eq!(client.api.folder("controller-fixture")?["paused"], true);
     let result = reuse.remove().context("remove reused replica")?;
@@ -363,8 +366,102 @@ fn owned_folder_and_external_replica_keep_their_boundaries() -> Result<()> {
     })?;
     let observed = reopened.status()?.last_connected_at;
     assert!(observed.is_some());
+    let readiness_owner = Uuid::new_v4();
+    let readiness_generation = Uuid::new_v4();
+    let source = || {
+        receipt_for(
+            &hub,
+            &client,
+            &approval,
+            readiness_owner,
+            readiness_generation,
+        )
+    };
+    reopened.pause(true)?;
+    assert!(!reopened.promote(&source)?);
+    reopened.pause(false)?;
+    let calls = std::cell::Cell::new(0);
+    let racing_source = || {
+        calls.set(calls.get() + 1);
+        let receipt = source()?;
+        if calls.get() == 2 {
+            write(&client.vault, "local-race.md", "must not publish")?;
+        }
+        Ok(receipt)
+    };
+    assert!(!reopened.promote(&racing_source)?);
+    assert_eq!(
+        client.api.folder("controller-fixture")?["type"],
+        "receiveonly"
+    );
+    assert!(!hub.vault.join("local-race.md").exists());
+    fs::remove_file(client.vault.join("local-race.md"))?;
+    client.api.scan("controller-fixture")?;
+    // Fault injection: intent was saved but PATCH never reached the daemon.
+    let journal_path = controller_state.join("folder.json");
+    let mut intent: serde_json::Value = serde_json::from_slice(&fs::read(&journal_path)?)?;
+    intent["phase"] = json!("Promoting");
+    fs::write(&journal_path, serde_json::to_vec(&intent)?)?;
+    assert!(reopened
+        .promote(&|| anyhow::bail!("service unavailable after restart"))
+        .is_err());
+    assert_eq!(
+        client.api.folder("controller-fixture")?["type"],
+        "receiveonly"
+    );
+    wait("fresh receive promotes owned replica", || {
+        reopened.promote(&source)
+    })?;
+    assert_eq!(
+        client.api.folder("controller-fixture")?["type"],
+        "sendreceive"
+    );
+    let promoted_status = reopened.status()?;
+    assert!(!promoted_status.preparing);
+    assert_eq!(
+        tessera_sync_controller::presentation::FolderState::from_local(&promoted_status),
+        tessera_sync_controller::presentation::FolderState::CaughtUp,
+        "real daemon status: {:?}",
+        promoted_status
+    );
+    // Fault injection: PATCH committed, but the completion journal was lost.
+    let journal_path = controller_state.join("folder.json");
+    let mut journal: serde_json::Value = serde_json::from_slice(&fs::read(&journal_path)?)?;
+    journal["phase"] = json!("Promoting");
+    fs::write(&journal_path, serde_json::to_vec(&journal)?)?;
+    let before_recovery = client.api.folder("controller-fixture")?;
+    assert!(reopened.promote(&|| anyhow::bail!(
+        "must recover committed PATCH without requesting new authority"
+    ))?);
+    assert_eq!(client.api.folder("controller-fixture")?, before_recovery);
+    write(
+        &client.vault,
+        "published-after-promotion.md",
+        "bidirectional positive control",
+    )?;
+    client.api.scan("controller-fixture")?;
+    wait("promoted replica publishes content", || {
+        Ok(
+            fs::read_to_string(hub.vault.join("published-after-promotion.md"))
+                .ok()
+                .as_deref()
+                == Some("bidirectional positive control"),
+        )
+    })?;
     // Offline Remove is journaled before REST, and restart cannot re-enroll.
+    let external_units = root.path().join("external-units-must-not-exist");
+    let runtime = tessera_sync_controller::runtime::Runtime::new(
+        root.path().join("reuse-runtime"),
+        external_units.clone(),
+    );
+    runtime.enable(
+        tessera_sync_controller::runtime::Selection::Reuse(identity.clone()),
+        &configs,
+    )?;
+    assert!(!external_units.exists());
     client.stop()?;
+    assert!(!runtime.disable()?.unwrap().desired_enabled);
+    assert!(!external_units.exists());
     let offline = FolderController::new(controller_state.clone());
     assert_eq!(offline.last_connected_at()?, observed);
     assert!(offline.status().is_err());
@@ -376,6 +473,9 @@ fn owned_folder_and_external_replica_keep_their_boundaries() -> Result<()> {
         .is_err());
     let removed = reopened.remove().context("remove owned folder")?;
     assert!(removed.removed && !removed.external_sync_retained);
+    assert!(reopened
+        .promote(&|| anyhow::bail!("removed enrollment must not request readiness"))
+        .is_err());
     assert!(client.api.folder("controller-fixture").is_err());
     assert!(client.api.device(&hub.id).is_err());
     assert_eq!(client.api.folder("unrelated")?, unrelated);
@@ -385,4 +485,265 @@ fn owned_folder_and_external_replica_keep_their_boundaries() -> Result<()> {
     );
     client.api.verify_identity(&client.id)?;
     Ok(())
+}
+
+/// Readiness protocol experiment only: never promotes the folder.
+#[test]
+#[ignore = "requires CT141 isolated hub/client binaries; synthetic large vault"]
+fn readiness_boundaries_empty_and_large() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let hub = Peer::new(
+        root.path(),
+        "hub",
+        std::env::var_os("TESSERA_SYNC_HUB")
+            .context("hub binary")?
+            .into(),
+    )?;
+    let client = Peer::new(
+        root.path(),
+        "client",
+        std::env::var_os("TESSERA_SYNC_CLIENT")
+            .context("client binary")?
+            .into(),
+    )?;
+    let id = "readiness-fixture";
+    hub.api.add_device(&device(&client, false))?;
+    client.api.add_device(&device(&hub, true))?;
+    hub.api
+        .add_paused_folder(&folder(&hub, &client, id, "sendreceive"))?;
+    client
+        .api
+        .add_paused_folder(&folder(&client, &hub, id, "receiveonly"))?;
+    hub.api.set_ignores(id, FIXTURE_IGNORES)?;
+    client.api.set_ignores(id, FIXTURE_IGNORES)?;
+    hub.api.patch_folder(id, &json!({"paused":false}))?;
+    client.api.patch_folder(id, &json!({"paused":false}))?;
+    hub.api.scan(id)?;
+    client.api.scan(id)?;
+    wait("empty hub/client connected and scanned", || {
+        Ok(
+            hub.api.connections()?["connections"][&client.id]["connected"] == true
+                && hub.api.status(id)?["state"] == "idle"
+                && client.api.status(id)?["state"] == "idle",
+        )
+    })?;
+    let empty = hub.api.status(id)?;
+    assert_eq!(empty["localTotalItems"], 0);
+    assert_eq!(empty["globalTotalItems"], 0);
+    let empty_client = client.api.status(id)?;
+    assert_eq!(empty_client["needTotalItems"], 0);
+    println!(
+        "empty: hub sequence={}, client remote sequence={}",
+        empty["sequence"], empty_client["remoteSequence"][&hub.id]
+    );
+    // Force multiple index batches; each file has independently checked bytes.
+    for i in 0..12_000 {
+        write(
+            &hub.vault,
+            &format!("notes/note-{i:05}.md"),
+            &format!("fixture content {i}"),
+        )?;
+    }
+    hub.api.scan(id)?;
+    let boundary = hub.api.status(id)?["sequence"]
+        .as_u64()
+        .context("hub sequence")?;
+    assert!(boundary > empty["sequence"].as_u64().context("empty sequence")?);
+    // Positive control: the old empty observation cannot satisfy the new boundary.
+    assert!(
+        empty_client["remoteSequence"][&hub.id]
+            .as_u64()
+            .unwrap_or(0)
+            < boundary
+    );
+    let receive_started = Instant::now();
+    loop {
+        let status = client.api.status(id)?;
+        if status["remoteSequence"][&hub.id]
+            .as_u64()
+            .is_some_and(|s| s >= boundary)
+            && status["state"] == "idle"
+            && status["needTotalItems"] == 0
+        {
+            break;
+        }
+        println!(
+            "receiving: state={}, remote={}, target={}, local={}, need={}",
+            status["state"],
+            status["remoteSequence"][&hub.id],
+            boundary,
+            status["localTotalItems"],
+            status["needTotalItems"]
+        );
+        ensure!(
+            receive_started.elapsed() < Duration::from_secs(180),
+            "large receive did not complete"
+        );
+        thread::sleep(Duration::from_secs(5));
+    }
+    for i in 0..12_000 {
+        assert_eq!(
+            fs::read_to_string(client.vault.join(format!("notes/note-{i:05}.md")))?,
+            format!("fixture content {i}")
+        );
+    }
+    let complete = client.api.status(id)?;
+    println!(
+        "large: hub boundary={boundary}, client remote sequence={}, local items={}",
+        complete["remoteSequence"][&hub.id], complete["localTotalItems"]
+    );
+    verify_live_readiness(&hub, &client, id)?;
+    // A user edit in receive-only mode must prevent promotion despite no download need.
+    write(&client.vault, "local-only.md", "must not be published")?;
+    client.api.scan(id)?;
+    wait("receive-only local edit detected", || {
+        Ok(client.api.status(id)?["receiveOnlyTotalItems"]
+            .as_u64()
+            .is_some_and(|n| n > 0))
+    })?;
+    assert!(!hub.vault.join("local-only.md").exists());
+    assert_eq!(client.api.folder(id)?["type"], "receiveonly");
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires CT141 isolated pinned hub/client binaries"]
+fn empty_readiness_requires_live_folder_connection() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let hub = Peer::new(
+        root.path(),
+        "hub",
+        std::env::var_os("TESSERA_SYNC_HUB")
+            .context("hub binary")?
+            .into(),
+    )?;
+    let client = Peer::new(
+        root.path(),
+        "client",
+        std::env::var_os("TESSERA_SYNC_CLIENT")
+            .context("client binary")?
+            .into(),
+    )?;
+    let id = "readiness-fixture";
+    hub.api.add_device(&device(&client, false))?;
+    client.api.add_device(&device(&hub, true))?;
+    hub.api
+        .add_paused_folder(&folder(&hub, &client, id, "sendreceive"))?;
+    client
+        .api
+        .add_paused_folder(&folder(&client, &hub, id, "receiveonly"))?;
+    hub.api.set_ignores(id, FIXTURE_IGNORES)?;
+    client.api.set_ignores(id, FIXTURE_IGNORES)?;
+    hub.api.patch_folder(id, &json!({"paused":false}))?;
+    client.api.patch_folder(id, &json!({"paused":false}))?;
+    hub.api.scan(id)?;
+    client.api.scan(id)?;
+    wait("empty hub/client connected and scanned", || {
+        Ok(
+            hub.api.connections()?["connections"][&client.id]["connected"] == true
+                && hub.api.status(id)?["state"] == "idle"
+                && client.api.status(id)?["state"] == "idle",
+        )
+    })?;
+    let empty = hub.api.status(id)?;
+    assert_eq!(empty["localTotalItems"], 0);
+    assert_eq!(empty["globalTotalItems"], 0);
+    let empty_client = client.api.status(id)?;
+    assert_eq!(empty_client["needTotalItems"], 0);
+    println!(
+        "empty: hub sequence={}, client remote sequence={}",
+        empty["sequence"], empty_client["remoteSequence"][&hub.id]
+    );
+    wait("empty remote folder valid", || {
+        Ok(hub.api.completion(id, &client.id)?["remoteState"] == "valid")
+    })?;
+    println!(
+        "empty remote folder: {}",
+        hub.api.completion(id, &client.id)?
+    );
+    verify_live_readiness(&hub, &client, id)?;
+    client.api.patch_folder(id, &json!({"paused":true}))?;
+    wait("paused empty remote folder not valid", || {
+        Ok(hub.api.completion(id, &client.id)?["remoteState"] != "valid")
+    })?;
+    println!(
+        "paused remote folder: {}",
+        hub.api.completion(id, &client.id)?
+    );
+    client.api.patch_folder(id, &json!({"paused":false}))?;
+    wait("empty remote folder valid again", || {
+        Ok(hub.api.completion(id, &client.id)?["remoteState"] == "valid")
+    })?;
+    assert_eq!(client.api.folder(id)?["type"], "receiveonly");
+    Ok(())
+}
+
+fn verify_live_readiness(hub: &Peer, client: &Peer, id: &str) -> Result<()> {
+    use tessera_sync_controller::readiness::{interval_complete, Observation, Receipt};
+    let registration = Registration {
+        id: Uuid::new_v4(),
+        vault: Uuid::new_v4(),
+        device_id: client.id.clone(),
+        name: "fixture".into(),
+        state: State::HubReady,
+        last_error: None,
+    };
+    let descriptor = Descriptor {
+        folder_id: id.into(),
+        hub_device_id: hub.id.clone(),
+        hub_address: format!("tcp://{}", hub.listen),
+        ignores: vec![],
+    };
+    let owner = Uuid::new_v4();
+    let generation = Uuid::new_v4();
+    let observe = || -> Result<Receipt> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs();
+        let observation: Observation = serde_json::from_value(json!({
+            "protocol":1,"observation_id":Uuid::new_v4(),"adapter_generation":generation,
+            "hub_started_at":hub.api.identity()?["startTime"],"expires_at":now+30,
+            "owner_id":owner,"vault_id":registration.vault,"registration_id":registration.id,
+            "device_id":client.id,"hub_device_id":hub.id,"folder_id":id,
+            "paused":hub.api.folder(id)?["paused"],
+            "connected":hub.api.connections()?["connections"][&client.id]["connected"],
+            "remote_state":hub.api.completion(id, &client.id)?["remoteState"],"hub":hub.api.status(id)?
+        }))?;
+        Receipt::new(observation, &registration, &descriptor)
+    };
+    let first = observe()?;
+    client.api.scan(id)?;
+    let status = client.api.status(id)?;
+    let second = observe()?;
+    ensure!(
+        interval_complete(&first, &second, &status)?,
+        "actual REST fields did not establish readiness: hub={:?}, client={status}",
+        second.observation().hub
+    );
+    Ok(())
+}
+
+fn receipt_for(
+    hub: &Peer,
+    client: &Peer,
+    approval: &Snapshot,
+    owner: Uuid,
+    generation: Uuid,
+) -> Result<tessera_sync_controller::readiness::Receipt> {
+    use tessera_sync_controller::readiness::{Observation, Receipt};
+    let r = approval.registration.as_ref().unwrap();
+    let d = approval.descriptor.as_ref().unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
+    let observation: Observation = serde_json::from_value(json!({
+        "protocol":1,"observation_id":Uuid::new_v4(),"adapter_generation":generation,
+        "hub_started_at":hub.api.identity()?["startTime"],"expires_at":now+30,
+        "owner_id":owner,"vault_id":r.vault,"registration_id":r.id,
+        "device_id":client.id,"hub_device_id":hub.id,"folder_id":d.folder_id,
+        "paused":hub.api.folder(&d.folder_id)?["paused"],
+        "connected":hub.api.connections()?["connections"][&client.id]["connected"],
+        "remote_state":hub.api.completion(&d.folder_id, &client.id)?["remoteState"],"hub":hub.api.status(&d.folder_id)?
+    }))?;
+    Receipt::new(observation, r, d)
 }

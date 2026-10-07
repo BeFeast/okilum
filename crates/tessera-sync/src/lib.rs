@@ -187,6 +187,19 @@ impl Syncthing {
             None,
         )
     }
+    /// Remote folder state is useful for readiness observations but completion
+    /// alone is not a receipt of the client's first index or file contents.
+    pub fn completion(&self, id: &str, device: &str) -> Result<Value> {
+        self.request(
+            Method::GET,
+            &format!(
+                "/rest/db/completion?folder={}&device={}",
+                segment(id)?,
+                segment(device)?
+            ),
+            None,
+        )
+    }
     pub fn errors(&self, id: &str) -> Result<Value> {
         self.request(
             Method::GET,

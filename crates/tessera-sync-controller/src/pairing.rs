@@ -237,6 +237,27 @@ impl Service {
             descriptor,
         })
     }
+    pub fn readiness(
+        &self,
+        s: &Session,
+        registration: &Registration,
+        descriptor: &Descriptor,
+    ) -> Result<crate::readiness::Receipt> {
+        check_registration(s, registration)?;
+        descriptor.validate()?;
+        let value = self.post("readiness", json!({}), Some(&s.grant_secret))?;
+        ensure!(
+            value["state"] == "observed",
+            "readiness observation unavailable"
+        );
+        let observation = serde_json::from_value(
+            value
+                .get("observation")
+                .context("missing readiness observation")?
+                .clone(),
+        )?;
+        crate::readiness::Receipt::new(observation, registration, descriptor)
+    }
     pub fn remove(&self, s: &Session) -> Result<State> {
         let value = self.post("remove", json!({}), Some(&s.grant_secret))?;
         let state: State =

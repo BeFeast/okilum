@@ -44,6 +44,7 @@ pub(crate) fn native(shared: Shared, config: Arc<Config>) -> Router {
         .route("/api/v1/sync/desktop/start", post(start))
         .route("/api/v1/sync/desktop/exchange", post(exchange))
         .route("/api/v1/sync/desktop/status", post(status))
+        .route("/api/v1/sync/desktop/readiness", post(readiness))
         .route("/api/v1/sync/desktop/remove", post(desktop_remove))
         .layer(Extension(config))
         .layer(DefaultBodyLimit::max(4096))
@@ -212,4 +213,84 @@ async fn desktop_remove(
         Ok(Json(json!({"state":state})).into_response())
     })
     .await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadinessRequest {}
+async fn readiness(
+    State(s): State<Shared>,
+    Extension(c): Extension<Arc<Config>>,
+    h: HeaderMap,
+    Json(_body): Json<ReadinessRequest>,
+) -> Result<Response, ApiError> {
+    let secret = bearer(&h)?;
+    tokio::task::spawn_blocking(move || -> Result<Response, ApiError> {
+        let (registration, vault) = {
+            let auth = s
+                .lock()
+                .map_err(|_| ApiError(StatusCode::SERVICE_UNAVAILABLE, "sync_unavailable"))?;
+            let r = auth.store.sync_grant(c.owner_id, &secret)?;
+            if r.state != "hub_ready" {
+                return Err(ApiError(StatusCode::CONFLICT, "sync_not_ready"));
+            }
+            let v = c.vault(c.owner_id, r.vault)?.clone();
+            (r, v)
+        };
+        // Release the auth lock during bounded socket I/O so passkey login and
+        // Remove remain available. Revalidate the grant before disclosing data.
+        #[cfg(unix)]
+        let reply = crate::sync_hub::call(
+            &vault.adapter_socket,
+            &crate::sync_hub::Request {
+                owner_id: c.owner_id,
+                vault_id: registration.vault,
+                registration_id: registration.id,
+                device_id: registration.device_id.clone(),
+                action: crate::sync_hub::Action::Readiness,
+            },
+        )
+        .map_err(|_| {
+            ApiError(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "sync_readiness_unavailable",
+            )
+        })?;
+        #[cfg(not(unix))]
+        {
+            let _ = (registration, vault);
+            return Err(ApiError(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "sync_readiness_unavailable",
+            ));
+        }
+        #[cfg(unix)]
+        {
+            let auth = s
+                .lock()
+                .map_err(|_| ApiError(StatusCode::SERVICE_UNAVAILABLE, "sync_unavailable"))?;
+            let current = auth.store.sync_grant(c.owner_id, &secret)?;
+            if current.state != "hub_ready"
+                || current.id != registration.id
+                || current.vault != registration.vault
+                || current.device_id != registration.device_id
+            {
+                return Err(ApiError(StatusCode::CONFLICT, "sync_not_ready"));
+            }
+            if reply.state != "observed" || reply.observation.is_none() {
+                return Err(ApiError(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "sync_readiness_unavailable",
+                ));
+            }
+            Ok(Json(reply).into_response())
+        }
+    })
+    .await
+    .map_err(|_| {
+        ApiError(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "sync_readiness_unavailable",
+        )
+    })?
 }

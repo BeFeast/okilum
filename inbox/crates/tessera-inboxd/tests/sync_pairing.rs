@@ -554,3 +554,119 @@ fn invalid_sync_configuration_preserves_existing_passkey_login() {
         .status()
         .is_success());
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn readiness_is_grant_scoped_and_rechecks_removal_after_socket_io() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use std::{
+        io::{BufRead, BufReader, Write},
+        os::unix::net::UnixListener,
+    };
+    use tower::ServiceExt;
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("db");
+    let mut auth = Auth::new(Store::open(&db_path).unwrap(), ORIGIN).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let (_, session) = enroll(&mut auth, now);
+    let mut c = config(auth.owner.0);
+    c.vaults[0].adapter_socket = dir.path().join("hub.sock");
+    let owner = auth.owner.0;
+    let vault = c.vaults[0].id;
+    let (r, exchange) = request();
+    let pending = auth.store.sync_start(owner, &r, now).unwrap();
+    auth.sync_approve(&c, &session, r.id, vault, &pending.code, now)
+        .unwrap();
+    auth.store.sync_exchange(owner, &exchange, now).unwrap();
+    auth.store
+        .sync_observed(owner, r.id, "provisioning", Some("hub_ready"))
+        .unwrap();
+    let listener = UnixListener::bind(&c.vaults[0].adapter_socket).unwrap();
+    let device = r.device_id.clone();
+    let worker = std::thread::spawn(move || {
+        let mut observations = 0;
+        while observations < 2 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            let actual: tessera_inboxd::sync_hub::Request = serde_json::from_str(&line).unwrap();
+            assert_eq!(actual.owner_id, owner);
+            assert_eq!(actual.vault_id, vault);
+            assert_eq!(actual.registration_id, r.id);
+            assert_eq!(actual.device_id, device);
+            if actual.action != tessera_inboxd::sync_hub::Action::Readiness {
+                // router_with_sync also starts the existing reconciliation worker.
+                let state = if actual.action == tessera_inboxd::sync_hub::Action::Remove {
+                    "revoked"
+                } else {
+                    "hub_ready"
+                };
+                writeln!(stream, "{}", serde_json::json!({"state":state})).unwrap();
+                continue;
+            }
+            observations += 1;
+            if observations == 2 {
+                Store::open(&db_path)
+                    .unwrap()
+                    .sync_remove(owner, r.id)
+                    .unwrap();
+            }
+            stream
+                .write_all(b"{\"state\":\"observed\",\"observation\":{\"protocol\":1}}\n")
+                .unwrap();
+        }
+    });
+    let app = http::router_with_sync(auth, None, None, None, None, Some(std::sync::Arc::new(c)));
+    for (secret, body, origin, expected) in [
+        ("wrong", "{}", false, StatusCode::NOT_FOUND),
+        (
+            exchange.grant_secret.as_str(),
+            "{\"vault_id\":\"override\"}",
+            false,
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            exchange.grant_secret.as_str(),
+            "{}",
+            true,
+            StatusCode::FORBIDDEN,
+        ),
+        (exchange.grant_secret.as_str(), "{}", false, StatusCode::OK),
+        (
+            exchange.grant_secret.as_str(),
+            "{}",
+            false,
+            StatusCode::CONFLICT,
+        ),
+        (
+            exchange.grant_secret.as_str(),
+            "{}",
+            false,
+            StatusCode::CONFLICT,
+        ),
+    ] {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri("/api/v1/sync/desktop/readiness")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {secret}"));
+        if origin {
+            builder = builder.header("origin", ORIGIN);
+        }
+        let response = app
+            .clone()
+            .oneshot(builder.body(Body::from(body)).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected);
+    }
+    worker.join().unwrap();
+}

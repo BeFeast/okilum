@@ -20,6 +20,8 @@ use uuid::Uuid;
 enum Phase {
     Preparing,
     Receiving,
+    Promoting,
+    Active,
     Reused,
     Removed,
 }
@@ -46,6 +48,9 @@ struct Journal {
 pub struct LocalStatus {
     pub reused: bool,
     pub removed: bool,
+    pub removal_pending: bool,
+    /// Durable first receive has not yet completed its promotion journal.
+    pub preparing: bool,
     /// True means external configuration remains; it is not a fleet isolation receipt.
     pub external_sync_retained: bool,
     pub folder: Value,
@@ -255,6 +260,105 @@ impl FolderController {
         api.patch_folder(&j.descriptor.folder_id, &json!({"paused":paused}))?;
         self.status_locked(&mut j, &api)
     }
+    /// Read-only first-receive gate for Settings. This does not change folder
+    /// type; crash-safe promotion is a separate operation. The gate always
+    /// obtains new service observations and scans the authenticated local daemon.
+    pub fn first_receive_ready(
+        &self,
+        enrollment: &crate::enrollment::Enrollment,
+        service: &crate::pairing::Service,
+    ) -> Result<bool> {
+        let _lock = private::lock(&self.state)?;
+        let j = self.load()?;
+        ensure!(
+            j.owns_folder && !j.remove_requested && j.phase == Phase::Receiving,
+            "first receive is not active"
+        );
+        let api = j.daemon.connect()?;
+        self.receive_ready_locked(&j, &api, &|| enrollment.readiness(service))
+    }
+    /// Explicit controller step after pairing. Only an owned new replica can
+    /// become bidirectional; external reused folders retain their mode.
+    pub fn promote(&self, source: &impl crate::readiness::Source) -> Result<bool> {
+        let _lock = private::lock(&self.state)?;
+        let mut j = self.load()?;
+        ensure!(
+            j.owns_folder
+                && !j.remove_requested
+                && matches!(j.phase, Phase::Receiving | Phase::Promoting | Phase::Active),
+            "promotion is not allowed"
+        );
+        let api = j.daemon.connect()?;
+        let folder = api.folder(&j.descriptor.folder_id)?;
+        validate_owned(&j, &folder)?;
+        if folder["type"] == "sendreceive" {
+            // A lost PATCH response can leave the durable intent behind the
+            // daemon. Read-back completes that operation without another PATCH.
+            j.phase = Phase::Active;
+            self.save(&j)?;
+            return Ok(true);
+        }
+        if !self.receive_ready_locked(&j, &api, source)? {
+            return Ok(false);
+        }
+        j.phase = Phase::Promoting;
+        self.save(&j)?;
+        // No mode change is retried from journal intent alone: if PATCH never
+        // happened, the next call obtains a fresh pair of observations above.
+        api.patch_folder(&j.descriptor.folder_id, &json!({"type":"sendreceive"}))?;
+        let promoted = api.folder(&j.descriptor.folder_id)?;
+        validate_owned(&j, &promoted)?;
+        ensure!(
+            promoted["type"] == "sendreceive",
+            "promotion was not applied"
+        );
+        j.phase = Phase::Active;
+        self.save(&j)?;
+        Ok(true)
+    }
+    fn receive_ready_locked(
+        &self,
+        j: &Journal,
+        api: &Syncthing,
+        source: &impl crate::readiness::Source,
+    ) -> Result<bool> {
+        let folder = api.folder(&j.descriptor.folder_id)?;
+        validate_owned(j, &folder)?;
+        if folder["paused"] != false
+            || !policy_matches(
+                &api.ignores(&j.descriptor.folder_id)?,
+                &j.descriptor.ignores,
+            )?
+        {
+            return Ok(false);
+        }
+        let first = source.observe()?;
+        let observation = first.observation();
+        ensure!(
+            observation.registration_id == j.registration
+                && observation.vault_id == j.vault
+                && observation.device_id == j.daemon.device_id
+                && observation.folder_id == j.descriptor.folder_id
+                && observation.hub_device_id == j.descriptor.hub_device_id,
+            "folder and readiness scope differ"
+        );
+        api.scan(&j.descriptor.folder_id)?;
+        let second = source.observe()?;
+        // Catch edits made while waiting for the second service observation.
+        api.scan(&j.descriptor.folder_id)?;
+        let status = api.status(&j.descriptor.folder_id)?;
+        let current = api.folder(&j.descriptor.folder_id)?;
+        validate_owned(j, &current)?;
+        if current != folder
+            || !policy_matches(
+                &api.ignores(&j.descriptor.folder_id)?,
+                &j.descriptor.ignores,
+            )?
+        {
+            return Ok(false);
+        }
+        crate::readiness::interval_complete(&first, &second, &status)
+    }
     pub fn status(&self) -> Result<LocalStatus> {
         let _lock = private::lock(&self.state)?;
         let mut j = self.load()?;
@@ -375,6 +479,8 @@ impl FolderController {
         Ok(LocalStatus {
             reused: !j.owns_folder,
             removed,
+            removal_pending: j.remove_requested && !removed,
+            preparing: j.owns_folder && !removed && j.phase != Phase::Active,
             external_sync_retained: removed && !j.owns_folder && exists,
             folder,
             status,
@@ -418,7 +524,12 @@ fn validate_owned(j: &Journal, folder: &Value) -> Result<()> {
     validate_path(folder, &j.path)?;
     ensure!(
         folder["label"] == owned_label(j)
-            && folder["type"] == "receiveonly"
+            && match j.phase {
+                Phase::Active => folder["type"] == "sendreceive",
+                Phase::Promoting =>
+                    folder["type"] == "receiveonly" || folder["type"] == "sendreceive",
+                _ => folder["type"] == "receiveonly",
+            }
             && shares(folder, &j.descriptor.hub_device_id)
             && shares(folder, &j.daemon.device_id),
         "owned folder configuration changed"
