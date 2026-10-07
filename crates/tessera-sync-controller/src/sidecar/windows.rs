@@ -171,3 +171,6 @@ impl<A: TaskApi> Platform for TaskScheduler<A> {
             .delete_owned(&task_name(binding), &xml, &binding.owner)
     }
 }
+
+#[cfg(target_os = "windows")]
+pub mod native;

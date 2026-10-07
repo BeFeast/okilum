@@ -116,3 +116,6 @@ impl<A: SmApi> Platform for SmAppService<A> {
         self.0.unregister(binding, PLIST)
     }
 }
+
+#[cfg(target_os = "macos")]
+pub mod native;

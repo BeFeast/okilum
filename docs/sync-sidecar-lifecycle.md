@@ -42,8 +42,13 @@ only XML formatting/comments. Extra actions, elevated privilege and modified fie
 fail closed. Creation must use TASK_CREATE without replace/update. Each native
 mutation must recheck the expected definition and owner; a name or PID is not an
 ownership token. stop_owned must terminate/await the owned Job Object tree before
-delete. The TaskApi port still needs COM bindings and the actual supervisor; this
-increment does not invoke schtasks or PowerShell and cannot create a live task.
+delete. A target-gated COM transport now connects to the local Task Scheduler using the
+current token, reads task XML/security descriptors and uses TASK_CREATE, Run, Stop
+and DeleteTask. It does not invoke schtasks or PowerShell. Its COM apartment is
+thread-bound and outlives the COM interfaces. Security-descriptor decoding/current
+SID, signed-payload verification, authenticated supervisor state and process-handle
+capture/exit confirmation remain mandatory injected guards, not default no-ops.
+The transport is not connected to Reader or installer hooks.
 
 Exported Task Scheduler definitions may contain platform-added defaults. Native
 acceptance must capture these and implement explicit semantic normalization if
@@ -65,9 +70,17 @@ bridge must await unregister completion and verify process exit, not report succ
 when an asynchronous request was merely dispatched. SMAppService Enabled is a
 registration status; supervisor liveness is checked separately.
 
-The native Objective-C/Swift binding and supervisor are subsequent work. These
-adapters cannot establish ownership for duplicate/moved bundles or guarantee cleanup
-on Trash by themselves. Those are explicit native gates, not inferred properties.
+The target-gated native transport uses objc2-service-management for actual
+agentServiceWithPlistName, status, registerAndReturnError and
+unregisterAndReturnError calls. Runtime macOS 13 checking precedes any SMAppService
+class reference. Registration errors are treated as approval-pending only when an
+independent status read confirms RequiresApproval. Apple documents that unregister
+does not reap the process: the owned supervisor guard must stop/reap first, and
+registration/liveness are checked again after unregister returns.
+
+Signature/bundle ownership, authenticated supervisor IPC and stop/reap guards still
+need native implementations. These transports alone cannot establish ownership for
+duplicate/moved bundles or guarantee cleanup on Trash. Those remain native gates.
 
 ## Validation and remaining delivery
 
@@ -76,7 +89,15 @@ journal flush; lost registration reply/restart; stop failure and recovery withou
 restart; terminal removal; changed identity/payload; task owner/privilege/collision;
 XML path escaping; macOS approval, missing helper and the macOS 13 boundary.
 
-Before native release, implement and test the native ports, locked state stores,
+`scripts/check-sync-sidecar-bindings.sh` cross-checks the actual transport source
+with clippy for aarch64-apple-darwin and x86_64-pc-windows-msvc on CT141. It uses a
+small generated probe and seeds dependency resolution from the repository lockfile;
+this avoids GPUI and unrelated native C dependencies. Install the two Rust 1.99.0
+standard-library targets first, and invoke the script inside `tessera-build`.
+Both target checks and the 26 Linux controller tests pass. This is type/lint
+validation, not linking a signed application or executing either native API.
+
+Before native release, implement and test the native ownership guards, locked state stores,
 supervisors and update/rollback journals; stage the pinned upstream payload with
 notices; sign/notarize distributions. Windows hooks must stay within their bounded
 callbacks and leave durable recovery intent on timeout. Test close Reader/login,
