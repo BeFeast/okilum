@@ -139,7 +139,10 @@ impl Reader {
             worker_cancel.check()?;
             working.store(false, std::sync::atomic::Ordering::Release);
             let published = Arc::new(state.vault.clone());
-            let inventory = Arc::new(state.vault.notes.clone());
+            let inventory = Arc::new(tessera_core::quick_open::inventory(
+                state.vault.notes.clone(),
+                &state.vault.entries,
+            ));
             #[cfg(unix)]
             let candidates = Some(state.candidates.clone());
             if let Some(trace) = &worker_trace {
