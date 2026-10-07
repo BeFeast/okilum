@@ -1,6 +1,6 @@
 --- a/crates/base/src/text/node.rs
 +++ b/crates/base/src/text/node.rs
-@@ -1347,13 +1347,18 @@
+@@
              return;
          }
          if self.language_cache.lock().is_ok_and(|cache| {
@@ -103,23 +103,6 @@
      }
      out
  }
-@@ -1759,7 +1760,15 @@
-                             let aux_link_click_handler = link_click_handler.clone();
-                             this.cursor_pointer()
-                                 .on_hover(move |active, window, cx| {
--                                    if let Some(handler) = &hover_handler { handler(&hover_url, *active, window.mouse_position(), window, cx); }
-+                                    if let Some(handler) = &hover_handler {
-+                                        handler(
-+                                            &hover_url,
-+                                            *active,
-+                                            window.mouse_position(),
-+                                            window,
-+                                            cx,
-+                                        );
-+                                    }
-                                 })
-                                 .on_click(move |event, window, cx| {
-                                     crate::TextSelection::end(window, cx);
 --- a/crates/base/src/text/state.rs
 +++ b/crates/base/src/text/state.rs
 @@ -124,6 +124,7 @@
@@ -173,29 +156,6 @@
          ));
          let mut segments = std::collections::HashMap::<usize, Vec<usize>>::new();
          for (index, hit) in self.search_matches.iter().enumerate() {
-@@ -409,16 +423,16 @@
-         if self.prepared_revision != self.revision {
-             return None;
-         }
--        Some(self.parsed_error.as_ref().map_or(Ok(()), |error| Err(error.to_string())))
-+        Some(
-+            self.parsed_error
-+                .as_ref()
-+                .map_or(Ok(()), |error| Err(error.to_string())),
-+        )
-     }
- 
-     /// Resolve code languages off the UI thread before publishing a prepared
-     /// document. Ordinary TextViews retain their lazy, visible-only resolution.
--    pub fn prepare_code_languages(
--        &self,
--        resolver: Arc<CodeBlockLanguageFn>,
--        cx: &App,
--    ) -> Task<()> {
-+    pub fn prepare_code_languages(&self, resolver: Arc<CodeBlockLanguageFn>, cx: &App) -> Task<()> {
-         let blocks = self.parsed_content.document.blocks.clone();
-         cx.background_executor().spawn(async move {
-             fn visit(blocks: &[node::BlockNode], resolver: &Arc<CodeBlockLanguageFn>) {
 --- a/crates/base/src/input/editor/search.rs
 +++ b/crates/base/src/input/editor/search.rs
 @@ -1,6 +1,6 @@
