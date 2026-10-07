@@ -710,3 +710,39 @@ are open to review; none changes the recommendation above.
   JSON-lines file (531,440 records) in 0.18 s on 4 threads and 0.41 s on one,
   with a 16.2 MiB index. Its counts match both the generator and an independent
   byte search.
+
+## Implementation notes (slice 3)
+
+Filter decisions in `tessera_core::log::filter` and the Reader's filter bar.
+Open to review; none changes the plan above.
+
+- **Combination.** Level, text, time window and field chips combine with AND.
+  The query language (slice 4) is not part of this slice.
+- **Levels.** The menu sets the lowest severity shown (All, Debug … Error and
+  above, Fatal only). Lines no severity can rank — no level field (`---`), an
+  unmapped value, an unparsed line (`RAW`) — follow one explicit toggle,
+  **Include lines without a level**, which is on by default. So a level filter
+  never hides Tessera's own diagnostic records silently; turning the toggle off
+  is a visible choice, and the button label says so.
+- **Text.** Case-insensitive contains, matched against each field as
+  `key=value` (decoded values, dotted keys), so `status=50` and `owner` both
+  work, and against the line as written when it is not a record. JSON syntax
+  itself never matches. A cheap check on the undecoded line skips the parse when
+  the term provably cannot occur.
+- **Time windows.** Last 5 minutes / hour / 24 hours end at the newest
+  timestamp in the file, not the wall clock. A line without its own timestamp
+  (a stack trace, a plain line) takes the timestamp of the nearest timestamped
+  entry above it; lines before the first timestamp cannot be placed and are left
+  out. A file with no timestamp at all has nothing to anchor a window to, so the
+  time menu is not offered.
+- **Chips.** `+` beside a field in the detail pane adds `key = value` (exact key
+  spelling and display value; any duplicate key may match). A chip's `×` removes
+  it. Chips sit in the bar's single row, which never changes height.
+- **Background runs.** Every change starts a new generation. Workers check
+  their ticket every 2,048 entries and stop once it is stale, and a finished
+  result is applied only while its generation is the latest, so an older filter
+  never replaces a newer one. Large indexes are split across threads.
+- **Counter.** "N of M" appears only while a filter is active and has matches.
+  An empty result shows a quiet "No records match these filters" with Clear
+  filters, never a zero count. ⌘F / Ctrl+F in the log view focuses the text
+  filter.

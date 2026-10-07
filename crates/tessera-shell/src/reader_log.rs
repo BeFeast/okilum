@@ -1,10 +1,14 @@
 //! Read-only structured log view (#602): virtualized one-line rows over a
-//! `tessera_core::log` index, a detail pane for the selected record, and a
-//! raw-line copy. Filters, query and follow mode are later slices.
+//! `tessera_core::log` index, a filter bar (level, text, time window, field
+//! chips) evaluated off the UI thread, a detail pane for the selected record,
+//! and a raw-line copy. Query and follow mode are later slices.
 use super::*;
 use gpui_component::scroll::ScrollableElement as _;
 use std::ops::Range;
-use tessera_core::log::{timestamp, Format, Level, LogFile, Record, Role, ValueKind};
+use tessera_core::log::{
+    filter, timestamp, FieldChip, FilterGenerations, Format, Level, LogFile, LogFilter, Record,
+    Role, TimeWindow, ValueKind,
+};
 
 const CONTEXT: &str = "ReaderLog";
 const ROW_HEIGHT: f32 = 24.;
@@ -14,10 +18,30 @@ const KEY_WIDTH: f32 = 168.;
 /// stay complete in the detail pane and the raw copy.
 const ROW_TEXT_LIMIT: usize = 480;
 const COPY_KEY: &str = "secondary-c";
+const FILTER_KEY: &str = "secondary-f";
+/// Filter bar controls follow the Reader's 28 px icon-button geometry.
+const BAR_CONTROL_HEIGHT: f32 = 28.;
+const BAR_HEIGHT: f32 = 40.;
+const TEXT_FILTER_WIDTH: f32 = 220.;
+const CHIP_MAX_WIDTH: f32 = 240.;
+/// Level menu choices: the lowest severity shown.
+const LEVEL_CHOICES: [(Option<Level>, &str); 6] = [
+    (None, "All levels"),
+    (Some(Level::Debug), "Debug and above"),
+    (Some(Level::Info), "Info and above"),
+    (Some(Level::Warn), "Warning and above"),
+    (Some(Level::Error), "Error and above"),
+    (Some(Level::Fatal), "Fatal only"),
+];
 
 actions!(
     reader_log,
-    [SelectPreviousRecord, SelectNextRecord, CopyRawLine]
+    [
+        SelectPreviousRecord,
+        SelectNextRecord,
+        CopyRawLine,
+        FocusLogFilter
+    ]
 );
 
 pub(crate) fn bind_keys(cx: &mut App) {
@@ -25,6 +49,7 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("up", SelectPreviousRecord, Some(CONTEXT)),
         KeyBinding::new("down", SelectNextRecord, Some(CONTEXT)),
         KeyBinding::new(COPY_KEY, CopyRawLine, Some(CONTEXT)),
+        KeyBinding::new(FILTER_KEY, FocusLogFilter, Some(CONTEXT)),
     ]);
 }
 
@@ -44,25 +69,68 @@ enum State {
 
 pub(crate) struct LogView {
     state: State,
+    /// Entry index (into the log index) of the selected record.
     selected: Option<usize>,
     scroll: UniformListScrollHandle,
     focus: FocusHandle,
+    filter: LogFilter,
+    generations: FilterGenerations,
+    /// Entry indices shown, ascending; `None` while every entry is shown.
+    rows: Option<Arc<Vec<u32>>>,
+    /// A run for the latest filter is under way; the previous rows stay up.
+    filtering: bool,
+    text_input: Entity<InputState>,
+    _text_input_events: Subscription,
+    _filtering: Option<Task<()>>,
     _indexing: Option<Task<()>>,
 }
 
 impl LogView {
-    pub(crate) fn ready(document: LogDocument, cx: &mut Context<Self>) -> Self {
+    fn new(state: State, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let text_input = cx.new(|cx| InputState::new(window, cx).placeholder("Filter text…"));
+        let events = cx.subscribe_in(
+            &text_input,
+            window,
+            |this: &mut Self, input, event: &InputEvent, window, cx| match event {
+                InputEvent::Change => {
+                    let text = input.read(cx).value().to_string();
+                    this.set_text(text, cx);
+                }
+                InputEvent::PressEnter { .. } => this.focus.focus(window, cx),
+                _ => {}
+            },
+        );
         Self {
-            state: State::Ready(document),
+            state,
             selected: None,
             scroll: UniformListScrollHandle::new(),
             focus: cx.focus_handle(),
+            filter: LogFilter::default(),
+            generations: FilterGenerations::default(),
+            rows: None,
+            filtering: false,
+            text_input,
+            _text_input_events: events,
+            _filtering: None,
             _indexing: None,
         }
     }
 
+    pub(crate) fn ready(
+        document: LogDocument,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::new(State::Ready(document), window, cx)
+    }
+
     /// Indexes `path` off the UI thread; the view says so meanwhile.
-    pub(crate) fn indexing(rel: String, path: PathBuf, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn indexing(
+        rel: String,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let task = cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -84,11 +152,8 @@ impl LogView {
             });
         });
         Self {
-            state: State::Indexing,
-            selected: None,
-            scroll: UniformListScrollHandle::new(),
-            focus: cx.focus_handle(),
             _indexing: Some(task),
+            ..Self::new(State::Indexing, window, cx)
         }
     }
 
@@ -103,28 +168,139 @@ impl LogView {
         }
     }
 
+    /// Rows currently listed.
+    fn visible_len(&self) -> usize {
+        match &self.rows {
+            Some(rows) => rows.len(),
+            None => self.file().map_or(0, |file| file.index().len()),
+        }
+    }
+
+    /// The entry shown at list position `row`.
+    fn entry_at(&self, row: usize) -> Option<usize> {
+        match &self.rows {
+            Some(rows) => rows.get(row).map(|entry| *entry as usize),
+            None => (row < self.visible_len()).then_some(row),
+        }
+    }
+
+    /// The list position of entry `index`, if it is listed.
+    fn row_of(&self, index: usize) -> Option<usize> {
+        match &self.rows {
+            Some(rows) => rows.binary_search(&(index as u32)).ok(),
+            None => (index < self.visible_len()).then_some(index),
+        }
+    }
+
     fn select(&mut self, index: usize, reveal: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.selected = Some(index);
-        if reveal {
-            self.scroll.scroll_to_item(index, ScrollStrategy::Nearest);
+        if let Some(row) = self.row_of(index).filter(|_| reveal) {
+            self.scroll.scroll_to_item(row, ScrollStrategy::Nearest);
         }
         self.focus.focus(window, cx);
         cx.notify();
     }
 
     fn step(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(count) = self.file().map(|file| file.index().len()) else {
-            return;
-        };
+        let count = self.visible_len();
         if count == 0 {
             return;
         }
-        let next = match self.selected {
-            Some(index) => (index as isize + delta).clamp(0, count as isize - 1) as usize,
+        let next = match self.selected.and_then(|index| self.row_of(index)) {
+            Some(row) => (row as isize + delta).clamp(0, count as isize - 1) as usize,
             None if delta < 0 => count - 1,
             None => 0,
         };
-        self.select(next, true, window, cx);
+        if let Some(index) = self.entry_at(next) {
+            self.select(index, true, window, cx);
+        }
+    }
+
+    fn update_filter(&mut self, change: impl FnOnce(&mut LogFilter), cx: &mut Context<Self>) {
+        let before = self.filter.clone();
+        change(&mut self.filter);
+        if self.filter != before {
+            self.refilter(cx);
+        }
+    }
+
+    fn set_text(&mut self, text: String, cx: &mut Context<Self>) {
+        self.update_filter(|filter| filter.text = text, cx);
+    }
+
+    fn add_chip(&mut self, chip: FieldChip, cx: &mut Context<Self>) {
+        self.update_filter(|filter| _ = filter.add_chip(chip), cx);
+    }
+
+    fn remove_chip(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.update_filter(|filter| _ = filter.remove_chip(index), cx);
+    }
+
+    fn clear_filters(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.text_input
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.update_filter(|filter| *filter = LogFilter::default(), cx);
+    }
+
+    /// Starts a run for the current filter. Every earlier run is cancelled by
+    /// the new generation, and a result that arrives late is dropped.
+    fn refilter(&mut self, cx: &mut Context<Self>) {
+        let ticket = self.generations.next();
+        let Some(file) = self.file().cloned() else {
+            return;
+        };
+        if !self.filter.is_active() {
+            self.rows = None;
+            self.filtering = false;
+            self._filtering = None;
+            self.after_rows_changed();
+            cx.notify();
+            return;
+        }
+        self.filtering = true;
+        let filter = self.filter.clone();
+        self._filtering = Some(cx.spawn(async move |this, cx| {
+            let outcome = cx
+                .background_executor()
+                .spawn(
+                    async move { filter::evaluate(&filter, file.index(), file.bytes(), &ticket) },
+                )
+                .await;
+            let Some(outcome) = outcome else {
+                return;
+            };
+            let _ = this.update(cx, |this, cx| {
+                if !this.generations.is_current(outcome.generation) {
+                    return;
+                }
+                this.rows = Some(Arc::new(outcome.rows));
+                this.filtering = false;
+                this.after_rows_changed();
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    /// Keeps a selection the new rows still list, in view; otherwise drops
+    /// it and returns to the top.
+    fn after_rows_changed(&mut self) {
+        match self.selected.and_then(|index| self.row_of(index)) {
+            Some(row) => self.scroll.scroll_to_item(row, ScrollStrategy::Nearest),
+            None => {
+                self.selected = None;
+                if self.visible_len() > 0 {
+                    self.scroll.scroll_to_item(0, ScrollStrategy::Top);
+                }
+            }
+        }
+    }
+
+    fn focus_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.file().is_some_and(|file| !file.index().is_empty()) {
+            self.text_input
+                .update(cx, |input, cx| input.focus(window, cx));
+        }
     }
 
     fn copy_raw(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -154,8 +330,11 @@ impl LogView {
         let muted = cx.theme().muted_foreground;
         let mono = cx.theme().mono_font_family.clone();
         range
-            .map(|index| {
-                let Some(entry) = file.index().get(index) else {
+            .map(|row| {
+                let Some((index, entry)) = self
+                    .entry_at(row)
+                    .and_then(|index| Some((index, file.index().get(index)?)))
+                else {
                     return div().into_any_element();
                 };
                 let level = entry.level();
@@ -280,8 +459,8 @@ impl LogView {
                     .text_color(muted)
                     .child(format!(
                         "Record {} of {} · line {}",
-                        grouped(index as u64 + 1),
-                        grouped(file.index().len() as u64),
+                        grouped(self.row_of(index).unwrap_or(index) as u64 + 1),
+                        grouped(self.visible_len() as u64),
                         grouped(entry.line())
                     )),
             )
@@ -303,34 +482,74 @@ impl LogView {
             .px_3()
             .pb_3()
             .text_sm();
+        let faint = brand::reader_palette(cx).text_faint;
         let body = match file.record(index) {
-            Some(record) => body.children(detail_rows(&record, entry.timestamp()).into_iter().map(
-                |(key, value, kind)| {
-                    h_flex()
-                        .items_start()
-                        .gap_3()
-                        .py(px(2.))
-                        .child(
-                            div()
-                                .flex_none()
-                                .w(px(KEY_WIDTH))
-                                .truncate()
-                                .font_family(mono.clone())
-                                .text_xs()
-                                .text_color(muted)
-                                .child(key),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .when(kind != ValueKind::String, |value| {
-                                    value.font_family(mono.clone()).text_xs()
-                                })
-                                .child(value),
-                        )
-                },
-            )),
+            Some(record) => body.children(
+                detail_rows(&record, entry.timestamp())
+                    .into_iter()
+                    .zip(&record.fields)
+                    .enumerate()
+                    .map(|(position, ((key, value, kind), field))| {
+                        let group = SharedString::from(format!("log-field-{position}"));
+                        let chip = FieldChip {
+                            key: field.key.clone(),
+                            value: field.value.clone(),
+                        };
+                        let present = self.filter.chips.contains(&chip);
+                        h_flex()
+                            .group(group.clone())
+                            .items_start()
+                            .gap_3()
+                            .py(px(2.))
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .w(px(KEY_WIDTH))
+                                    .truncate()
+                                    .font_family(mono.clone())
+                                    .text_xs()
+                                    .text_color(muted)
+                                    .child(key),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .when(kind != ValueKind::String, |value| {
+                                        value.font_family(mono.clone()).text_xs()
+                                    })
+                                    .child(value),
+                            )
+                            // A fixed slot, shown on hover, so rows never shift.
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .opacity(if present { 1. } else { 0. })
+                                    .group_hover(group, |s| s.opacity(1.))
+                                    .child(
+                                        Button::new(("log-add-chip", position))
+                                            .ghost()
+                                            .xsmall()
+                                            .icon(
+                                                Icon::new(if present {
+                                                    IconName::Check
+                                                } else {
+                                                    IconName::Plus
+                                                })
+                                                .text_color(faint),
+                                            )
+                                            .tooltip(if present {
+                                                "Filtered by this value"
+                                            } else {
+                                                "Show only records with this value"
+                                            })
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.add_chip(chip.clone(), cx)
+                                            })),
+                                    ),
+                            )
+                    }),
+            ),
             None => body
                 .child(
                     div()
@@ -346,6 +565,166 @@ impl LogView {
                 )),
         };
         pane.child(header).child(body).into_any_element()
+    }
+
+    /// One compact row above the list: text, level and time menus, chips,
+    /// and the match counter. Its height never changes, so filtering never
+    /// moves the rows.
+    fn render_filter_bar(&self, cx: &mut Context<Self>) -> AnyElement {
+        use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
+        let palette = brand::palette(cx);
+        let faint = brand::reader_palette(cx).text_faint;
+        let muted = cx.theme().muted_foreground;
+        let view = cx.entity().downgrade();
+        let level = self.filter.level;
+        let time = self.filter.time;
+        let timestamped = self
+            .file()
+            .is_some_and(|file| file.index().stats().timestamped > 0);
+        let text = div()
+            .flex_none()
+            .w(px(TEXT_FILTER_WIDTH))
+            .h(px(BAR_CONTROL_HEIGHT))
+            .flex()
+            .items_center()
+            .rounded(px(6.))
+            .bg(palette.surface_raised)
+            .child(
+                Input::new(&self.text_input)
+                    .appearance(false)
+                    .cleanable(true)
+                    .small()
+                    .prefix(Icon::new(IconName::Search).small().text_color(muted)),
+            );
+        let level_menu = {
+            let view = view.clone();
+            move |menu: gpui_component::menu::PopupMenu, _: &mut Window, _: &mut Context<_>| {
+                let mut menu = menu;
+                for (min, label) in LEVEL_CHOICES {
+                    let view = view.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(label)
+                            .checked(level.min == min)
+                            .on_click(move |_, _, cx| {
+                                let _ = view.update(cx, |this, cx| {
+                                    this.update_filter(|filter| filter.level.min = min, cx)
+                                });
+                            }),
+                    );
+                }
+                let view = view.clone();
+                menu.separator().item(
+                    PopupMenuItem::new("Include lines without a level")
+                        .checked(level.without_level)
+                        .on_click(move |_, _, cx| {
+                            let _ = view.update(cx, |this, cx| {
+                                this.update_filter(
+                                    |filter| {
+                                        filter.level.without_level = !filter.level.without_level
+                                    },
+                                    cx,
+                                )
+                            });
+                        }),
+                )
+            }
+        };
+        let level_button = bar_button("log-level", level.is_active())
+            .label(level_label(level))
+            .dropdown_caret(true)
+            .tooltip("Levels shown")
+            .debug_selector(|| "log-level".into())
+            .dropdown_menu_with_anchor(Anchor::TopLeft, level_menu);
+        let time_button = timestamped.then(|| {
+            let view = view.clone();
+            bar_button("log-time", time != TimeWindow::All)
+                .icon(Icon::default().path(brand::READER_CLOCK_ICON))
+                .label(time.label())
+                .dropdown_caret(true)
+                .tooltip("Time range, ending at the newest record")
+                .debug_selector(|| "log-time".into())
+                .dropdown_menu_with_anchor(Anchor::TopLeft, move |menu, _, _| {
+                    let mut menu = menu;
+                    for window in TimeWindow::ALL {
+                        let view = view.clone();
+                        menu = menu.item(
+                            PopupMenuItem::new(window.label())
+                                .checked(time == window)
+                                .on_click(move |_, _, cx| {
+                                    let _ = view.update(cx, |this, cx| {
+                                        this.update_filter(|filter| filter.time = window, cx)
+                                    });
+                                }),
+                        );
+                    }
+                    menu
+                })
+        });
+        let chips = h_flex()
+            .flex_1()
+            .min_w_0()
+            .overflow_hidden()
+            .gap_1()
+            .children(
+                self.filter
+                    .chips
+                    .iter()
+                    .enumerate()
+                    .map(|(position, chip)| {
+                        h_flex()
+                            .id(("log-chip", position))
+                            .flex_none()
+                            .max_w(px(CHIP_MAX_WIDTH))
+                            .h(px(24.))
+                            .pl_2()
+                            .gap_1()
+                            .rounded(px(6.))
+                            .bg(palette.selected)
+                            .text_xs()
+                            .child(div().min_w_0().truncate().child(chip_label(chip)))
+                            .child(
+                                Button::new(("log-chip-remove", position))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(Icon::new(IconName::Close).text_color(faint))
+                                    .tooltip("Remove filter")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.remove_chip(position, cx)
+                                    })),
+                            )
+                    }),
+            );
+        let counter = match_counter(
+            self.rows.as_ref().map(|rows| rows.len()),
+            self.file().map_or(0, |file| file.index().len()),
+            self.filtering,
+        );
+        h_flex()
+            .id("log-filter-bar")
+            .flex_none()
+            .h(px(BAR_HEIGHT))
+            .px_3()
+            .gap_2()
+            .border_b_1()
+            .border_color(palette.border_subtle)
+            .child(text)
+            .child(level_button)
+            .children(time_button)
+            .child(chips)
+            .child(
+                div()
+                    .flex_none()
+                    .text_xs()
+                    .text_color(muted)
+                    .debug_selector(|| "log-match-counter".into())
+                    .child(counter.unwrap_or_default()),
+            )
+            .child(
+                reader_icon_button("log-clear-filters", IconName::CircleX, "Clear filters", cx)
+                    .when(!self.filter.is_active(), |button| button.invisible())
+                    .on_click(cx.listener(|this, _, window, cx| this.clear_filters(window, cx))),
+            )
+            .into_any_element()
     }
 
     fn render_status(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -369,7 +748,8 @@ impl LogView {
 
 impl Render for LogView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let count = self.file().map_or(0, |file| file.index().len());
+        let count = self.visible_len();
+        let has_entries = self.file().is_some_and(|file| !file.index().is_empty());
         let list = div().relative().flex_1().min_h_0().w_full();
         let list = if count > 0 {
             list.child(
@@ -384,6 +764,33 @@ impl Render for LogView {
                 .size_full(),
             )
             .vertical_scrollbar(&self.scroll)
+        } else if has_entries {
+            // Everything is filtered out: a quiet state with the way back.
+            list.child(
+                v_flex()
+                    .size_full()
+                    .items_center()
+                    .justify_center()
+                    .gap_2()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(if self.filtering {
+                        "Filtering…"
+                    } else {
+                        "No records match these filters"
+                    })
+                    .when(!self.filtering, |state| {
+                        state.child(
+                            Button::new("log-clear-filters-empty")
+                                .ghost()
+                                .small()
+                                .label("Clear filters")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.clear_filters(window, cx)
+                                })),
+                        )
+                    }),
+            )
         } else {
             let message = match &self.state {
                 State::Ready(_) => "This log is empty",
@@ -410,6 +817,10 @@ impl Render for LogView {
                 cx.listener(|this, _: &SelectPreviousRecord, window, cx| this.step(-1, window, cx)),
             )
             .on_action(cx.listener(|this, _: &CopyRawLine, window, cx| this.copy_raw(window, cx)))
+            .on_action(
+                cx.listener(|this, _: &FocusLogFilter, window, cx| this.focus_filter(window, cx)),
+            )
+            .when(has_entries, |view| view.child(self.render_filter_bar(cx)))
             .child(list)
             .child(self.render_detail(cx))
             .child(self.render_status(cx))
@@ -425,6 +836,60 @@ fn level_color(level: Level, cx: &App) -> Hsla {
         Level::Info => palette.info,
         Level::Warn => palette.warning,
         Level::Error | Level::Fatal => palette.danger,
+    }
+}
+
+/// A filter bar menu button: Reader icon-button height and radius, quiet at
+/// rest, drawn in the accent color while it narrows the list.
+fn bar_button(id: &'static str, active: bool) -> Button {
+    Button::new(id)
+        .ghost()
+        .small()
+        .h(px(BAR_CONTROL_HEIGHT))
+        .rounded(px(6.))
+        .selected(active)
+}
+
+fn level_label(level: filter::LevelFilter) -> String {
+    let base = LEVEL_CHOICES
+        .iter()
+        .find(|(min, _)| *min == level.min)
+        .map_or("All levels", |(_, label)| label);
+    match (level.min, level.without_level) {
+        (_, true) => base.to_owned(),
+        (None, false) => "Records with a level".to_owned(),
+        (Some(_), false) => format!("{base}, with a level"),
+    }
+}
+
+/// `key = value` on one line, cut short for the bar; the chip filters on
+/// the whole value.
+fn chip_label(chip: &FieldChip) -> String {
+    const LIMIT: usize = 80;
+    let mut label = format!("{} = ", chip.key);
+    for (count, c) in chip.value.chars().enumerate() {
+        if count == LIMIT {
+            label.push('…');
+            break;
+        }
+        label.push(if c.is_control() { ' ' } else { c });
+    }
+    label
+}
+
+/// "N of M" once a filter has produced rows. Nothing while no filter runs,
+/// and nothing for an empty result: the list says that itself.
+fn match_counter(matched: Option<usize>, total: usize, filtering: bool) -> Option<String> {
+    if filtering {
+        return Some("Filtering…".into());
+    }
+    match matched? {
+        0 => None,
+        n => Some(format!(
+            "{} of {}",
+            grouped(n as u64),
+            grouped(total as u64)
+        )),
     }
 }
 
@@ -598,7 +1063,7 @@ impl Reader {
                 return;
             }
         };
-        let view = cx.new(|cx| LogView::ready(document, cx));
+        let view = cx.new(|cx| LogView::ready(document, window, cx));
         view.read(cx).focus_handle().clone().focus(window, cx);
         preview.log = Some(view);
         self.file_preview = Some(preview);
@@ -807,6 +1272,224 @@ mod tests {
             text
         );
         assert!(!root.join(".tessera-index").exists());
+    }
+
+    #[test]
+    fn counter_reads_n_of_m_and_never_shows_zero() {
+        assert_eq!(match_counter(None, 480_974, false), None, "no filter");
+        assert_eq!(
+            match_counter(Some(1_203), 480_974, false).as_deref(),
+            Some("1,203 of 480,974")
+        );
+        assert_eq!(match_counter(Some(0), 480_974, false), None);
+        assert_eq!(
+            match_counter(Some(0), 10, true).as_deref(),
+            Some("Filtering…")
+        );
+        let level = |min, without_level| filter::LevelFilter { min, without_level };
+        assert_eq!(level_label(level(None, true)), "All levels");
+        assert_eq!(
+            level_label(level(Some(Level::Warn), true)),
+            "Warning and above"
+        );
+        assert_eq!(
+            level_label(level(Some(Level::Error), false)),
+            "Error and above, with a level"
+        );
+        assert_eq!(level_label(level(None, false)), "Records with a level");
+        let chip = FieldChip {
+            key: "msg".into(),
+            value: format!("a\nb{}", "x".repeat(200)),
+        };
+        let label = chip_label(&chip);
+        assert!(label.starts_with("msg = a b"));
+        assert!(label.ends_with('…'));
+    }
+
+    fn open_log<'a>(
+        text: &str,
+        cx: &'a mut TestAppContext,
+    ) -> (tempfile::TempDir, Entity<Reader>, &'a mut VisualTestContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::bind_keys(cx);
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        std::fs::write(root.join("app.jsonl"), text).unwrap();
+        let state = root.join(".state");
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        open_path: Some(root.join("app.jsonl")),
+                        session_directory: Some(state.clone()),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        visual.run_until_parked();
+        (directory, entity.unwrap(), visual)
+    }
+
+    fn shown(view: &Entity<LogView>, visual: &mut VisualTestContext) -> Vec<usize> {
+        view.read_with(visual, |view, _| {
+            (0..view.visible_len())
+                .map(|row| view.entry_at(row).unwrap())
+                .collect()
+        })
+    }
+
+    fn counter(view: &Entity<LogView>, visual: &mut VisualTestContext) -> Option<String> {
+        view.read_with(visual, |view, _| {
+            match_counter(
+                view.rows.as_ref().map(|rows| rows.len()),
+                view.file().unwrap().index().len(),
+                view.filtering,
+            )
+        })
+    }
+
+    #[gpui::test]
+    fn filters_narrow_rows_in_the_background_and_keep_the_selection(cx: &mut TestAppContext) {
+        let text = concat!(
+            r#"{"ts":"2025-10-01T00:00:00Z","level":"info","msg":"boot","status":200}"#,
+            "\n",
+            r#"{"ts":"2025-10-01T00:50:00Z","level":"error","msg":"Cache miss","status":500}"#,
+            "\n",
+            "panicked at main.rs\n",
+            r#"{"ts":"2025-10-01T01:00:00Z","msg":"no level","status":500}"#,
+            "\n",
+        );
+        let (directory, reader, visual) = open_log(text, cx);
+        let view = log_view(&reader, visual);
+        assert_eq!(shown(&view, visual), [0, 1, 2, 3]);
+        assert_eq!(counter(&view, visual), None, "no counter without a filter");
+
+        // The keyboard shortcut reaches the filter field, and typing filters.
+        visual.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-f"
+        } else {
+            "ctrl-f"
+        });
+        visual.simulate_input("CACHE");
+        visual.run_until_parked();
+        view.read_with(visual, |view, _| assert_eq!(view.filter.text, "CACHE"));
+        assert_eq!(shown(&view, visual), [1]);
+        assert_eq!(counter(&view, visual).as_deref(), Some("1 of 4"));
+
+        // Clearing returns every row and hides the counter.
+        view.update_in(visual, |view, window, cx| view.clear_filters(window, cx));
+        visual.run_until_parked();
+        assert_eq!(shown(&view, visual), [0, 1, 2, 3]);
+        view.read_with(visual, |view, cx| {
+            assert!(view.text_input.read(cx).value().is_empty());
+            assert!(!view.filter.is_active());
+        });
+
+        // Level: lines without a level stay unless the toggle hides them.
+        view.update(visual, |view, cx| {
+            view.update_filter(|filter| filter.level.min = Some(Level::Error), cx)
+        });
+        visual.run_until_parked();
+        assert_eq!(shown(&view, visual), [1, 2, 3]);
+        assert_eq!(counter(&view, visual).as_deref(), Some("3 of 4"));
+        view.update(visual, |view, cx| {
+            view.update_filter(|filter| filter.level.without_level = false, cx)
+        });
+        visual.run_until_parked();
+        assert_eq!(shown(&view, visual), [1]);
+
+        // Selection and arrow keys walk the filtered rows.
+        view.update(visual, |view, cx| {
+            view.update_filter(|filter| filter.level = Default::default(), cx)
+        });
+        visual.run_until_parked();
+        view.update_in(visual, |view, window, cx| view.select(3, true, window, cx));
+        view.update(visual, |view, cx| {
+            view.add_chip(
+                FieldChip {
+                    key: "status".into(),
+                    value: "500".into(),
+                },
+                cx,
+            )
+        });
+        visual.run_until_parked();
+        assert_eq!(shown(&view, visual), [1, 3]);
+        view.read_with(visual, |view, _| {
+            assert_eq!(view.selected, Some(3), "the chip's own record stays");
+            assert_eq!(view.row_of(3), Some(1));
+        });
+        visual.simulate_keystrokes("up");
+        view.read_with(visual, |view, _| assert_eq!(view.selected, Some(1)));
+
+        // Time window from the newest record; a selection it hides is dropped.
+        view.update(visual, |view, cx| {
+            view.update_filter(|filter| filter.time = TimeWindow::Last5Minutes, cx)
+        });
+        visual.run_until_parked();
+        assert_eq!(shown(&view, visual), [3]);
+        view.read_with(visual, |view, _| assert_eq!(view.selected, None));
+
+        // Nothing matches: no zero count, a quiet empty state instead.
+        view.update(visual, |view, cx| {
+            view.set_text("nothing like it".into(), cx)
+        });
+        visual.run_until_parked();
+        assert!(shown(&view, visual).is_empty());
+        assert_eq!(counter(&view, visual), None);
+        view.update(visual, |view, cx| view.remove_chip(0, cx));
+        view.update(visual, |view, cx| view.set_text(String::new(), cx));
+        visual.run_until_parked();
+        assert_eq!(shown(&view, visual), [3], "only the time window is left");
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join("app.jsonl")).unwrap(),
+            text
+        );
+    }
+
+    #[gpui::test]
+    fn a_late_result_never_replaces_the_latest_filter(cx: &mut TestAppContext) {
+        let mut text = String::new();
+        for i in 0..40_000 {
+            text.push_str(&format!(
+                "{{\"level\":\"{}\",\"msg\":\"m{i}\"}}\n",
+                if i % 4 == 0 { "error" } else { "info" }
+            ));
+        }
+        let (_directory, reader, visual) = open_log(&text, cx);
+        let view = log_view(&reader, visual);
+        // Three changes before any run can finish; only the last may land.
+        view.update(visual, |view, cx| {
+            view.set_text("m1".into(), cx);
+            view.update_filter(|filter| filter.level.min = Some(Level::Error), cx);
+            view.set_text("m12".into(), cx);
+            assert!(view.filtering);
+        });
+        visual.run_until_parked();
+        let rows = shown(&view, visual);
+        let expected: Vec<usize> = (0..40_000)
+            .filter(|i| i % 4 == 0 && format!("m{i}").contains("m12"))
+            .collect();
+        assert!(!expected.is_empty());
+        assert_eq!(rows, expected);
+        view.read_with(visual, |view, _| assert!(!view.filtering));
+        // Removing every filter while a run is pending also wins.
+        view.update(visual, |view, cx| {
+            view.set_text("m3".into(), cx);
+            view.set_text(String::new(), cx);
+            view.update_filter(|filter| filter.level = Default::default(), cx);
+        });
+        visual.run_until_parked();
+        assert_eq!(shown(&view, visual).len(), 40_000);
+        assert_eq!(counter(&view, visual), None);
     }
 
     #[test]

@@ -315,7 +315,8 @@ impl Reader {
                     let mut preview = preview;
                     if self.single_file && tessera_core::log::is_log_path(&preview.path) {
                         let (rel, path) = (rel.to_owned(), preview.path.clone());
-                        let view = cx.new(|cx| reader_log::LogView::indexing(rel, path, cx));
+                        let view =
+                            cx.new(|cx| reader_log::LogView::indexing(rel, path, window, cx));
                         view.read(cx).focus_handle().clone().focus(window, cx);
                         preview.log = Some(view);
                     }
