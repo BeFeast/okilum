@@ -27,3 +27,6 @@ pub mod removal;
 
 #[cfg(target_os = "linux")]
 pub mod desktop;
+
+#[cfg(target_os = "linux")]
+pub mod conflicts;

@@ -69,6 +69,11 @@ pub(super) struct SyncSettings {
     error: Option<String>,
     error_field: ErrorField,
     output: Option<Output>,
+    conflicts_busy: bool,
+    conflicts: Option<(
+        PathBuf,
+        Result<tessera_sync_controller::conflicts::Inventory, String>,
+    )>,
 }
 impl SyncSettings {
     pub(super) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -108,6 +113,8 @@ impl SyncSettings {
             error: None,
             error_field: ErrorField::General,
             output: None,
+            conflicts_busy: false,
+            conflicts: None,
         };
         this.run(Operation::Read, cx);
         this
@@ -178,6 +185,38 @@ impl SyncSettings {
             });
         })
         .detach();
+    }
+    fn inspect_conflicts(&mut self, cx: &mut Context<Self>) {
+        if self.conflicts_busy {
+            return;
+        }
+        let Some(destination) = self
+            .output
+            .as_ref()
+            .and_then(|o| o.snapshot.setup.as_ref())
+            .map(|s| s.destination.clone())
+        else {
+            return;
+        };
+        self.conflicts_busy = true;
+        self.conflicts = None;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let root = destination.clone();
+            let result = cx.background_executor().spawn(async move {
+                tessera_sync_controller::conflicts::inspect(&root)
+                    .map_err(|_| "Could not inspect this folder. Check its location and access permissions.".to_string())
+            }).await;
+            let _ = this.update(cx, |this, cx| {
+                this.conflicts_busy = false;
+                // A finished scan belongs to the original folder, never a new setup.
+                if this.output.as_ref().and_then(|o| o.snapshot.setup.as_ref())
+                    .is_some_and(|s| s.destination == destination) {
+                    this.conflicts = Some((destination, result));
+                }
+                cx.notify();
+            });
+        }).detach();
     }
     fn schedule_refresh(&self, cx: &mut Context<Self>) {
         let Some(output) = &self.output else {
@@ -655,6 +694,86 @@ impl Render for SyncSettings {
                             ),
                     ),
             );
+        }
+        if let Some(setup) = saved.filter(|_| !removed) {
+            content = content.child(
+                h_flex().justify_between().child("Conflict copies").child(
+                    Button::new("sync-check-conflicts")
+                        .icon(IconName::Search)
+                        .ghost()
+                        .disabled(self.conflicts_busy)
+                        .accessibility_label("Check for conflict copies")
+                        .tooltip("Check this folder for possible conflict copies")
+                        .on_click(cx.listener(|this, _, _, cx| this.inspect_conflicts(cx))),
+                ),
+            );
+            if self.conflicts_busy {
+                content = content.child(
+                    div()
+                        .text_sm()
+                        .text_color(p.text_muted)
+                        .child("Checking local filenames…"),
+                );
+            } else if let Some((_, result)) = self
+                .conflicts
+                .as_ref()
+                .filter(|(root, _)| *root == setup.destination)
+            {
+                match result {
+                    Ok(found) => {
+                        if found.complete && found.copies.is_empty() {
+                            content = content.child(
+                                div()
+                                    .text_sm()
+                                    .text_color(p.text_muted)
+                                    .child("No conflict copies found in this check."),
+                            );
+                        }
+                        if !found.copies.is_empty() {
+                            content = content.child(div().text_sm().text_color(p.text_muted)
+                                .child("Possible conflict copies from this check. Both versions are kept; review them in File Manager."));
+                            for (index, relative) in found.copies.iter().enumerate() {
+                                let path = setup.destination.join(relative);
+                                let filename =
+                                    relative.file_name().unwrap_or_default().to_string_lossy();
+                                let label = filename
+                                    .split(".sync-conflict-")
+                                    .next()
+                                    .unwrap_or(&filename)
+                                    .to_string();
+                                let tooltip =
+                                    format!("Show in File Manager: {}", relative.display());
+                                content = content.child(
+                                    h_flex().justify_between().gap_2().child(label).child(
+                                        Button::new(("sync-conflict-copy", index))
+                                            .icon(IconName::Folder)
+                                            .ghost()
+                                            .accessibility_label(
+                                                "Show conflict copy in File Manager",
+                                            )
+                                            .tooltip(tooltip)
+                                            .on_click(move |_, window, cx| {
+                                                super::reader_files::reveal(&path, window, cx)
+                                            }),
+                                    ),
+                                );
+                            }
+                        }
+                        if !found.complete {
+                            content = content.child(div().text_sm().text_color(p.text_muted)
+                                .child("This check is incomplete: some locations were unavailable or the scan limit was reached. More copies may exist."));
+                        }
+                    }
+                    Err(message) => {
+                        content = content.child(
+                            div()
+                                .text_sm()
+                                .text_color(p.text_muted)
+                                .child(message.clone()),
+                        )
+                    }
+                }
+            }
         }
         if enabled && !removed {
             if let Some(local) = local {

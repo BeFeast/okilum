@@ -174,3 +174,14 @@ status/error snapshot and perform no additional file scan. Raw daemon paths and 
 text stay out of the Settings layout. Local edits during first receive report Needs
 attention rather than silently remaining Preparing. These messages never recreate a
 marker, revert local edits, or resolve conflict copies automatically.
+
+Conflict-copy inspection is an explicit Settings action, not a periodic vault scan.
+It checks local filenames using Syncthing's timestamp/device suffix convention,
+without reading contents or writing either version. Results are possible copies
+from that check, not proof of unresolved conflicts. File Manager reveal is explicit;
+there is no automatic resolve/delete. The walker does not follow directory symlinks,
+and omits Syncthing history/marker and Tessera index directories. Enumeration uses
+open directory descriptors and is limited to 100,000 entries, 50 results, 64 nested
+directories and a cooperative two-second budget. Unreadable entries or exhausted
+limits produce an incomplete result, never a false all-clear. Kernel filesystem
+calls may still block on an unavailable mount; the UI thread remains independent.
