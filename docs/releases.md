@@ -106,3 +106,22 @@ this is not a claim of cross-object atomicity under a network failure or manual
 cancellation. A publication error is visible in `release-publish`, separately from
 the platform build status. Manual recovery can dispatch it with the source run ID
 and platform; the same current-main/provenance checks still apply.
+
+
+### Reserved publication runner
+
+The `publish` label has a dedicated runner process with capacity 1. It must not
+also advertise `light`, `ubuntu-latest`, or any PR/build label. Publication,
+release mirroring, and scheduled/manual release selection use this slot; Windows
+PR selection stays on `light`. Rust compilation stays on the build runners.
+
+Provision this runner before deploying the workflows. Use its own service user,
+registration, work directory and container resource slice (1 CPU / 2 GiB per
+container; 2304 MiB slice ceiling), independently of the build pool. Disable its
+runner cache: publication does not compile. Merely adding a label to an existing
+capacity-1 build runner does not reserve a slot. Publication jobs still serialize
+with each other and retain their existing feed locks and monotonic guards.
+
+Verify the runner advertises only `publish`, then observe a main mirror and a
+release publisher start while a build runner remains occupied. Record queue wait
+and merge-to-feed separately; this removes PR queue starvation, not build time.

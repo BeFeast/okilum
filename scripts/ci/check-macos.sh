@@ -8,10 +8,10 @@ export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
 # Same toolchain/profile/cache as main releases; the single runner serializes jobs.
 export CARGO_TARGET_DIR="$HOME/.cache/tessera-macos/1.96.1-arm64"
 export CARGO_INCREMENTAL=0
-source scripts/ci/release-cache.sh
 if ! rustup run 1.96.1 rustc --version >/dev/null 2>&1; then
     rustup toolchain install 1.96.1 --profile minimal --target aarch64-apple-darwin
 fi
+source scripts/ci/release-cache.sh
 bash scripts/vendor-setup.sh
 bash scripts/vendor-setup.sh --verify
 archive="${RUNNER_TEMP:?}/Sparkle-2.10.0.tar.xz"

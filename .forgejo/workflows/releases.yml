@@ -24,7 +24,7 @@ concurrency:
 jobs:
   github-mirror:
     if: github.ref == 'refs/heads/main'
-    runs-on: light
+    runs-on: publish
     container:
       image: archlinux:base-devel@sha256:51dd3d24f7fba779e7c471caeee7804c50e8c134ad948e19685a1c83a42facc3
     timeout-minutes: 20

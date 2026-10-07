@@ -86,19 +86,11 @@ jobs:
       - name: Enable sccache
         run: |
           set -euo pipefail
-          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${SCCACHE_ENDPOINT:-}" ]; then
-            echo "sccache credentials not available; building without it"
-            exit 0
-          fi
-          curl -sSfL https://github.com/mozilla/sccache/releases/download/v0.18.0/sccache-v0.18.0-x86_64-unknown-linux-musl.tar.gz -o "$RUNNER_TEMP/sccache.tgz"
-          echo "45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89  $RUNNER_TEMP/sccache.tgz" | sha256sum -c -
-          tar -xzf "$RUNNER_TEMP/sccache.tgz" -C "$RUNNER_TEMP"
-          sudo install "$RUNNER_TEMP"/sccache-v0.18.0-x86_64-unknown-linux-musl/sccache /usr/local/bin/sccache
-          if sccache --start-server; then
-            echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
-          else
-            echo "sccache server did not start; building without it"
-          fi
+          source scripts/ci/release-cache.sh
+          for name in RUSTC_WRAPPER SCCACHE_SERVER_UDS SCCACHE_IDLE_TIMEOUT SCCACHE_IGNORE_SERVER_IO_ERROR; do
+            printf '%s=%s\n' "$name" "${!name:-}" >> "$GITHUB_ENV"
+          done
+          if [ -n "${RUSTC_WRAPPER:-}" ]; then dirname "$RUSTC_WRAPPER" >> "$GITHUB_PATH"; fi
 
       - name: Identify compatible Cargo cache
         id: cargo-cache-key
@@ -169,7 +161,7 @@ jobs:
 
       - name: sccache stats
         if: always()
-        run: if [ -n "${RUSTC_WRAPPER:-}" ]; then sccache --show-stats; fi
+        run: if [ -n "${RUSTC_WRAPPER:-}" ]; then sccache --show-stats || true; fi
 
   macos-github:
     needs: linux

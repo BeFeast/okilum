@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   select:
-    runs-on: light
+    runs-on: publish
     timeout-minutes: 3
     outputs:
       build: ${{ steps.select.outputs.build }}

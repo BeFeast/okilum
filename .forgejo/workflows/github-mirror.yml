@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   push:
-    runs-on: light
+    runs-on: publish
     timeout-minutes: 10
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4

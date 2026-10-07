@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
 # Source from the build user's shell. Cache failures must not prevent compilation.
 # Missing credentials (including fork PRs) use the normal compiler.
+# Never inherit a stale wrapper from a previous runner environment.
+unset RUSTC_WRAPPER SCCACHE_SERVER_UDS SCCACHE_IDLE_TIMEOUT SCCACHE_IGNORE_SERVER_IO_ERROR
 _enable_release_cache() {
   local cache_target cache_hash cache_dir cache_stage
   [[ -n ${AWS_ACCESS_KEY_ID:-} && -n ${SCCACHE_ENDPOINT:-} ]] || return 1
+  # S3 may return 403 for an unsigned request; any HTTP response proves network
+  # reachability. The compiler probe below verifies authenticated cache access.
+  curl --silent --show-error --connect-timeout 3 --max-time 3 \
+    --output /dev/null "$SCCACHE_ENDPOINT" || return 1
   case "$(uname -s)-$(uname -m)" in
     Linux-x86_64)
       cache_target=x86_64-unknown-linux-musl
@@ -28,11 +34,19 @@ _enable_release_cache() {
   export SCCACHE_SERVER_UDS="$cache_dir/server.sock"
   export SCCACHE_IDLE_TIMEOUT=300
   export SCCACHE_IGNORE_SERVER_IO_ERROR=1
-  if sccache --start-server || sccache --show-stats >/dev/null; then
-    export RUSTC_WRAPPER="$cache_dir/sccache"
-  else
-    return 1
-  fi
+  # A stats response is not proof that rustc can start. Bound the real wrapper
+  # probe too, including daemon startup and authenticated storage initialization.
+  python3 - "$cache_dir/sccache" "$(command -v rustc)" <<'PYPROBE' || return 1
+import subprocess, sys
+try:
+    result = subprocess.run([sys.argv[1], sys.argv[2], '-vV'],
+                            timeout=3, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL)
+    sys.exit(result.returncode)
+except (OSError, subprocess.TimeoutExpired):
+    sys.exit(1)
+PYPROBE
+  export RUSTC_WRAPPER="$cache_dir/sccache"
 }
 
 _install_release_cache() {
@@ -50,10 +64,11 @@ PY
 }
 
 if ! _enable_release_cache; then
-  echo 'Shared compiler cache unavailable; using the ordinary compiler'
+  unset RUSTC_WRAPPER SCCACHE_SERVER_UDS SCCACHE_IDLE_TIMEOUT SCCACHE_IGNORE_SERVER_IO_ERROR
+  echo '::warning::Shared compiler cache unavailable; building without sccache'
 fi
 unset -f _enable_release_cache _install_release_cache
 
 release_cache_stats() {
-  if [[ -n ${SCCACHE_SERVER_UDS:-} ]]; then sccache --show-stats || true; fi
+  if [[ -n ${RUSTC_WRAPPER:-} && -n ${SCCACHE_SERVER_UDS:-} ]]; then sccache --show-stats || true; fi
 }
