@@ -60,6 +60,8 @@ def main():
     args = parser.parse_args()
     artifact = args.output.resolve()
     artifact.mkdir(parents=True, exist_ok=True)
+    # A failed attempt must not leave a previous successful receipt at this path.
+    (artifact / "receipt.json").unlink(missing_ok=True)
     # All scratch is scoped to the caller-selected target/cache directory, never /tmp.
     version, base, toolchain_bytes = inputs(ROOT, RECIPE)
     revision = output("git", "-C", str(ROOT), "rev-parse", "HEAD")

@@ -3,6 +3,7 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 RECIPE = Path(__file__).with_name("reader-image")
 spec = importlib.util.spec_from_file_location("reader_image", RECIPE / "build.py")
@@ -49,6 +50,20 @@ class ReaderImageTests(unittest.TestCase):
         self.pin.unlink()
         with self.assertRaises(FileNotFoundError):
             image.inputs(self.root, RECIPE)
+
+    def test_failed_preflight_removes_old_success_receipt(self):
+        artifact = self.root / "output"
+        artifact.mkdir()
+        receipt = artifact / "receipt.json"
+        receipt.write_text('{"published":true,"digest":"old-success"}')
+        self.pin.unlink()
+        with mock.patch.object(image, "ROOT", self.root), \
+             mock.patch("sys.argv", ["build.py", "--output", str(artifact)]), \
+             mock.patch.object(image, "run") as docker:
+            with self.assertRaises(FileNotFoundError):
+                image.main()
+            docker.assert_not_called()
+        self.assertFalse(receipt.exists())
 
     def test_apt_manifest_matches_current_linux_gate(self):
         # Detect dependency drift before replacing the install step in a later PR.
