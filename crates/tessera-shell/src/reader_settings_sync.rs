@@ -41,6 +41,7 @@ enum Operation {
     Remove,
 }
 struct Output {
+    package_available: bool,
     snapshot: Snapshot,
     candidates: Option<Vec<Candidate>>,
     unavailable: bool,
@@ -166,6 +167,8 @@ impl SyncSettings {
                                 output.approval = None;
                             } else {
                                 this.output = Some(Output {
+                                    package_available: std::path::Path::new("/usr/bin/syncthing")
+                                        .is_file(),
                                     snapshot,
                                     candidates: None,
                                     unavailable: false,
@@ -225,6 +228,13 @@ impl SyncSettings {
         let Some(runtime) = &output.snapshot.runtime else {
             return;
         };
+        if !output.package_available
+            && matches!(runtime.selection, Selection::Managed(_))
+            && !runtime.removed
+            && output.removal.is_none()
+        {
+            return;
+        }
         if !runtime.desired_enabled && !runtime.removed && output.removal.is_none() {
             return;
         }
@@ -375,6 +385,7 @@ fn service(origin: &str) -> anyhow::Result<Service> {
 fn perform(desktop: &Desktop, operation: Operation) -> anyhow::Result<Output> {
     let mut snapshot = desktop.read()?;
     let mut output = Output {
+        package_available: std::path::Path::new("/usr/bin/syncthing").is_file(),
         snapshot: snapshot.clone(),
         candidates: None,
         unavailable: false,
@@ -416,6 +427,9 @@ fn perform(desktop: &Desktop, operation: Operation) -> anyhow::Result<Output> {
             let setup = setup
                 .or_else(|| snapshot.setup.take())
                 .ok_or_else(|| anyhow::anyhow!("setup missing"))?;
+            if matches!(setup.selection, Selection::Managed(_)) && !output.package_available {
+                return Ok(output);
+            }
             let service = service(&setup.origin)?;
             desktop.enable(setup, &service)?;
             let progress = desktop.refresh(&service)?;
@@ -425,6 +439,9 @@ fn perform(desktop: &Desktop, operation: Operation) -> anyhow::Result<Output> {
         }
         Operation::Refresh => {
             if let Some(setup) = snapshot.setup {
+                if matches!(setup.selection, Selection::Managed(_)) && !output.package_available {
+                    return Ok(output);
+                }
                 let progress = desktop.refresh(&service(&setup.origin)?)?;
                 output.snapshot = progress.snapshot;
                 output.approval = progress.approval;
@@ -462,7 +479,13 @@ impl Render for SyncSettings {
         let paused = local.is_some_and(|s| s.folder["paused"] == true);
         let state = local.map(FolderState::from_local);
         let removal = self.output.as_ref().and_then(|o| o.removal.as_ref());
-        let label = if self.error.is_some() {
+        let needs_package = self.output.as_ref().is_some_and(|o| !o.package_available)
+            && saved
+                .map(|s| matches!(s.selection, Selection::Managed(_)))
+                .unwrap_or(self.selected.is_none());
+        let label = if needs_package && !removed {
+            "Install Syncthing to enable Sync"
+        } else if self.error.is_some() {
             "Needs attention"
         } else if self.busy {
             "Working…"
@@ -491,6 +514,7 @@ impl Render for SyncSettings {
                         self.busy
                             || !self.loaded
                             || removed
+                            || (!enabled && needs_package)
                             || (saved.is_none() && self.unavailable),
                     )
                     .on_click(cx.listener(|this, checked, _, cx| {
@@ -617,6 +641,13 @@ impl Render for SyncSettings {
                     "Using existing Syncthing. It may keep syncing when Tessera is disabled or removed."
                 } else if enabled { "Runs in the background after you close Tessera." }
                 else { "Managed by Tessera." })));
+        }
+        if needs_package && !removed {
+            content = content.child(v_flex().gap_1()
+                .child(div().text_sm().text_color(p.text_muted)
+                    .child("On Arch / Omarchy: sudo pacman -S syncthing"))
+                .child(div().text_sm().text_color(p.text_muted)
+                    .child("On other Linux distributions, install Syncthing with your package manager. Then refresh here. Reader works without it.")));
         }
         if let Some(approval) = self.output.as_ref().and_then(|o| o.approval.as_ref()) {
             let code = approval
