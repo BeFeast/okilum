@@ -48,6 +48,9 @@ struct Journal {
 pub struct LocalStatus {
     pub reused: bool,
     pub removed: bool,
+    pub removal_pending: bool,
+    /// Durable first receive has not yet completed its promotion journal.
+    pub preparing: bool,
     /// True means external configuration remains; it is not a fleet isolation receipt.
     pub external_sync_retained: bool,
     pub folder: Value,
@@ -476,6 +479,8 @@ impl FolderController {
         Ok(LocalStatus {
             reused: !j.owns_folder,
             removed,
+            removal_pending: j.remove_requested && !removed,
+            preparing: j.owns_folder && !removed && j.phase != Phase::Active,
             external_sync_retained: removed && !j.owns_folder && exists,
             folder,
             status,

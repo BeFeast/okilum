@@ -416,6 +416,14 @@ fn owned_folder_and_external_replica_keep_their_boundaries() -> Result<()> {
         client.api.folder("controller-fixture")?["type"],
         "sendreceive"
     );
+    let promoted_status = reopened.status()?;
+    assert!(!promoted_status.preparing);
+    assert_eq!(
+        tessera_sync_controller::presentation::FolderState::from_local(&promoted_status),
+        tessera_sync_controller::presentation::FolderState::CaughtUp,
+        "real daemon status: {:?}",
+        promoted_status
+    );
     // Fault injection: PATCH committed, but the completion journal was lost.
     let journal_path = controller_state.join("folder.json");
     let mut journal: serde_json::Value = serde_json::from_slice(&fs::read(&journal_path)?)?;
