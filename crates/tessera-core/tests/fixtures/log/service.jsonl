@@ -1,0 +1,9 @@
+{"ts":"2025-10-01T00:00:00.240Z","level":"error","logger":"vault.scan","msg":"scan complete","request_id":"97c0482241e0de67","status":500,"path":"/v1/notes/a","user":{"id":2210,"role":"owner"}}
+{"ts":"2025-10-01T00:00:00.244Z","level":"warn","logger":"http","msg":"retrying upload","status":503,"duration_ms":812.50}
+{"ts":"2025-10-01T00:00:00.251Z","level":"info","logger":"reader","msg":"cache miss","request_id":"97c0482241e0de67","tags":["cold","warm"]}
+thread 'main' panicked at src/main.rs:12:5:
+{"ts":"2025-10-01T00:00:00.262Z","level":"debug","logger":"reader","msg":"line with \"quotes\" and é","status":200}
+
+{"ts":"2025-10-01T00:00:00.270Z","level":"trace","msg":"tick"}
+{"ts":"2025-10-01T00:00:00.271Z","level":"fatal","msg":"out of memory","Level":"shadowed"}
+{"ts":"not a time","level":"NOTICE","msg":"odd time"}

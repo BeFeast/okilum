@@ -123,6 +123,8 @@ pub(crate) struct FilePreview {
     pub image: bool,
     #[cfg(any(target_os = "macos", all(test, unix)))]
     pub thumbnail: Option<Entity<reader_thumbnail::Thumbnail>>,
+    /// The log view, for a log opened in the quick viewer (#602).
+    pub log: Option<Entity<reader_log::LogView>>,
 }
 impl FilePreview {
     pub fn load(root: &Path, rel: &str) -> anyhow::Result<Self> {
@@ -152,6 +154,7 @@ impl FilePreview {
         Ok(Self {
             #[cfg(any(target_os = "macos", all(test, unix)))]
             thumbnail: None,
+            log: None,
             rel: rel.into(),
             path,
             details: format!("{} · {} bytes · {modified}", ext.to_uppercase(), meta.len()),
@@ -306,12 +309,29 @@ impl Reader {
                     }
                     preview
                 };
+                // The quick viewer shows sibling logs as logs; vault
+                // attachments keep the file card until #602's vault slice.
+                let preview = {
+                    let mut preview = preview;
+                    if self.single_file && tessera_core::log::is_log_path(&preview.path) {
+                        let (rel, path) = (rel.to_owned(), preview.path.clone());
+                        let view = cx.new(|cx| reader_log::LogView::indexing(rel, path, cx));
+                        view.read(cx).focus_handle().clone().focus(window, cx);
+                        preview.log = Some(view);
+                    }
+                    preview
+                };
+                let log = preview.log.is_some();
                 self.file_preview = Some(preview);
                 self.find_open = false;
                 self.link_notice = None;
                 self.editing = None;
                 window.set_window_title(&format!("Tessera — {rel}"));
-                self.focus_handle.focus(window, cx);
+                if log {
+                    self.record_usable_document(cx);
+                } else {
+                    self.focus_handle.focus(window, cx);
+                }
             }
             Err(error) => reader_toast::error(format!("Cannot preview file: {error}"), window, cx),
         }
@@ -323,6 +343,9 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if let Some(log) = &preview.log {
+            return self.render_log_preview(log, cx);
+        }
         if tessera_core::excalidraw::is_drawing(&preview.rel) {
             return div()
                 .id("reader-drawing-preview")

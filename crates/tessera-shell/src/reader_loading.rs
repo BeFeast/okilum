@@ -55,6 +55,8 @@ enum Event {
         document: Option<(String, prepared_links::PreparedDocument)>,
         published: Option<async_channel::Sender<()>>,
         recovery_notice: Option<String>,
+        /// A log opened in the quick viewer; `document` is then the empty selection.
+        log: Option<reader_log::LogDocument>,
     },
     Progress(String),
     Siblings(Vault),
@@ -120,6 +122,48 @@ fn prepare_first_with_ui_notes(
     Ok(event)
 }
 
+/// Indexes the log on this worker and publishes it with an empty Markdown
+/// selection; the Reader then mounts the log view for `rel`.
+fn prepare_log(path: &Path, root: Option<&Path>, cancel: &Cancellation) -> Result<Event> {
+    let mut intent = reader_open::OpenIntent::validate(path, root, None)?;
+    intent.single_file = true;
+    let rel = intent
+        .note
+        .clone()
+        .context("A quick viewer requires a document")?;
+    cancel.check()?;
+    let started = std::time::Instant::now();
+    let file = tessera_core::log::LogFile::open(path)?;
+    let elapsed = started.elapsed();
+    cancel.check()?;
+    let mut vault = Vault::from_note_paths(std::iter::empty::<String>());
+    vault.root = intent.root.clone();
+    vault.single_file = true;
+    Ok(Event::First {
+        intent,
+        vault,
+        cache_lease: None,
+        searcher: None,
+        snapshot: None,
+        document: Some((
+            String::new(),
+            prepared_links::PreparedDocument {
+                source: String::new(),
+                original: Some(String::new()),
+                identities: Vec::new(),
+                frontmatter: None,
+            },
+        )),
+        published: None,
+        recovery_notice: None,
+        log: Some(reader_log::LogDocument {
+            rel,
+            file: Arc::new(file),
+            elapsed,
+        }),
+    })
+}
+
 fn prepare_first_with_last_document(
     opts: &Opts,
     cancel: &Cancellation,
@@ -150,6 +194,11 @@ fn prepare_first_with_last_document(
         .reusable_roots
         .iter()
         .find(|root| canonical_path.starts_with(root));
+    // A log always opens in the quick viewer, even inside an open folder:
+    // the vault path would render it as Markdown.
+    if canonical_path.is_file() && tessera_core::log::is_log_path(&canonical_path) {
+        return prepare_log(&canonical_path, root, cancel);
+    }
     if opts.single_file || (canonical_path.is_file() && root.is_none() && reusable.is_none()) {
         let mut intent = reader_open::OpenIntent::validate_cached(&canonical_path, root, None)?;
         intent.single_file = true;
@@ -185,6 +234,7 @@ fn prepare_first_with_last_document(
             document: Some((rel, document)),
             published: None,
             recovery_notice: None,
+            log: None,
         });
     }
     // Local derived data is prepared before preferences, recursive watching or
@@ -267,15 +317,19 @@ fn prepare_first_with_last_document(
         None => {
             let saved = last_document(&intent.root)?;
             let explicitly_empty = saved.as_deref() == Some("");
-            let hint = saved.filter(|hint| !hint.is_empty()).and_then(|hint| {
-                let path = intent.root.join(&hint);
-                let validated = if snapshot.as_ref().and_then(|s| s.source(&hint)).is_some() {
-                    reader_open::OpenIntent::validate_cached(&path, Some(&intent.root), None)
-                } else {
-                    reader_open::OpenIntent::validate(&path, Some(&intent.root), None)
-                };
-                validated.ok().and_then(|validated| validated.note)
-            });
+            let hint = saved
+                .filter(|hint| !hint.is_empty())
+                // Logs are only remembered by the quick viewer.
+                .filter(|hint| !tessera_core::log::is_log_path(Path::new(hint)))
+                .and_then(|hint| {
+                    let path = intent.root.join(&hint);
+                    let validated = if snapshot.as_ref().and_then(|s| s.source(&hint)).is_some() {
+                        reader_open::OpenIntent::validate_cached(&path, Some(&intent.root), None)
+                    } else {
+                        reader_open::OpenIntent::validate(&path, Some(&intent.root), None)
+                    };
+                    validated.ok().and_then(|validated| validated.note)
+                });
             match hint {
                 Some(note) => Some(note),
                 None if explicitly_empty => Some(String::new()),
@@ -370,6 +424,7 @@ fn prepare_first_with_last_document(
         document,
         published: None,
         recovery_notice: None,
+        log: None,
     })
 }
 
@@ -1217,6 +1272,7 @@ pub(crate) struct PendingDocument {
     document: prepared_links::PreparedDocument,
     content: Entity<TextViewState>,
     published: Option<async_channel::Sender<()>>,
+    log: Option<reader_log::LogDocument>,
     _observer: Subscription,
     languages_prepared: bool,
     language_task: Option<Task<()>>,
@@ -1231,6 +1287,7 @@ impl Reader {
         document: Option<(String, prepared_links::PreparedDocument)>,
         searcher: Option<Box<Searcher>>,
         published: Option<async_channel::Sender<()>>,
+        log: Option<reader_log::LogDocument>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1290,6 +1347,7 @@ impl Reader {
             document,
             content,
             published,
+            log,
             _observer: observer,
             languages_prepared: false,
             language_task: None,
@@ -1418,6 +1476,9 @@ impl Reader {
             );
         }
         self.restore_ui_state(window, cx);
+        if let Some(log) = pending.log {
+            self.mount_log(log, window, cx);
+        }
         self.refresh_quick_open(cx);
         if let Some(trace) = &self.loading.as_ref().unwrap().opts.diagnostics {
             trace.event("document_published", serde_json::json!({ "notes": self.vault.notes.len(), "warm": warm, "unreadable": self.vault.unreadable.len() }));
@@ -1618,9 +1679,14 @@ impl Reader {
         {
             return;
         }
+        // A log in the quick viewer is the document to restore (#602).
+        let document = match &self.file_preview {
+            Some(preview) if preview.log.is_some() => preview.rel.clone(),
+            _ => self.current_rel.clone(),
+        };
         let identity = (
             self.vault_root.clone(),
-            self.current_rel.clone(),
+            document,
             self.navigation_generation,
         );
         if self.last_recorded_document.as_ref() == Some(&identity) {
@@ -1970,11 +2036,12 @@ impl Reader {
                                 snapshot: _,
                                 published,
                                 recovery_notice,
+                                log,
                             } => {
                                 if let Some(trace) = &this.loading.as_ref().unwrap().opts.diagnostics { trace.event("first_event_received", serde_json::json!({})); }
                                 this.loading.as_mut().unwrap().opts.cache_lease = cache_lease;
                                 this.stage_first_document(
-                                    intent, vault, document, searcher, published, window, cx,
+                                    intent, vault, document, searcher, published, log, window, cx,
                                 );
                                 if let Some(notice) = recovery_notice {
                                     reader_toast::error(notice, window, cx);

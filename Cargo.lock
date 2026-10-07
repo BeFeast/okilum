@@ -7672,6 +7672,8 @@ dependencies = [
  "base64 0.22.1",
  "comrak",
  "euclid",
+ "memchr",
+ "memmap2",
  "notify",
  "palette",
  "regex",

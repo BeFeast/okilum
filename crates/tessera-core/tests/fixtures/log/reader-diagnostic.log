@@ -1,0 +1,7 @@
+{"time":1759276800,"launch":"3f1c9a2e-5b7d-4e21-9c0a-6d8e2f4b1a37","phase":"process_start","elapsed_ms":0.412,"vault":null,"details":{"version":"0.4.0","build":"0.4.0+a1e1959","os":"linux"}}
+{"time":1759276800,"launch":"3f1c9a2e-5b7d-4e21-9c0a-6d8e2f4b1a37","phase":"requested_path_resolve","elapsed_ms":1.875,"vault":null,"details":{"duration_ms":0.093}}
+{"time":1759276801,"launch":"3f1c9a2e-5b7d-4e21-9c0a-6d8e2f4b1a37","phase":"warm_cache","elapsed_ms":14.2,"vault":"~/Notes","details":{"found":false,"reason":"No startup snapshot","startup_bytes":null,"source_bank_bytes":null}}
+{"time":1759276801,"vault":"/home/user/Notes","unreadable":[{"path":"/home/user/Notes/locked","operation":"read directory","error":"Permission denied (os error 13)"}],"preparation_warnings":[]}
+{"time":1759276802,"launch":"3f1c9a2e-5b7d-4e21-9c0a-6d8e2f4b1a37","phase":"inventory_first_paint","elapsed_ms":182.06,"vault":"~/Notes","details":{"notes":5000}}
+{"time":1759276803,"vault":"/home/user/Notes","error":"Prepare vault ~/Notes: Opening cancelled"}
+{"time":1759276804,"vault":"/home/user/Notes","phase":"MOVE_PREVIEW","details":{"scan_ms":12,"plan_ms":3}}
