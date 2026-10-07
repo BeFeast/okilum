@@ -1,13 +1,8 @@
 //! Theme picker (#349): compact swatch cards, one per `brand::ThemeId`.
 //!
-//! Self-contained so Settings → Appearance can host it once its redesign
-//! (#623) lands: `.child(picker.clone())` for a `cx.new(|cx| ThemePicker::new(vault, cx))`.
+//! Hosted in Settings → Appearance after its redesign (#623).
 //! Selecting a card applies the theme live and stores it app-wide; the
 //! light/dark/system mode is left untouched.
-#![cfg_attr(
-    not(test),
-    allow(dead_code, reason = "hosted by Settings → Appearance after #623")
-)]
 use super::*;
 
 const CARD_WIDTH: f32 = 120.;
@@ -33,7 +28,7 @@ impl ThemePicker {
 
 impl Render for ThemePicker {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        h_flex().flex_wrap().gap_3().children(
+        h_flex().w_full().flex_wrap().gap_3().children(
             brand::ThemeId::ALL
                 .into_iter()
                 .zip(self.focus.iter())

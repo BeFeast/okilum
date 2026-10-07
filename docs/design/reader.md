@@ -237,9 +237,9 @@ text, link and accent in the variant currently shown. The selected card has a
 2 px `focus` ring and a check glyph; ring and glyph space are always laid out,
 so selection never moves anything. Cards are keyboard stops (Enter or Space
 selects). The choice applies live and is stored once for the whole app
-(`appearance.json`, key `theme`), never per vault or in notes. It is not yet
-placed in Settings → Appearance: that layout is being redesigned in #623, which
-hosts the picker.
+(`reader-ui.json`, key `theme`), never per vault or in notes. Settings →
+Appearance hosts the picker below the independent mode and reading controls.
+Legacy `appearance.json` is migration input only.
 
 The brand mark keeps its brand colors under every theme. The `highlight` color
 is resolved when a block is parsed, so an open note picks up a new theme's
@@ -669,7 +669,7 @@ a title and unboxed rows: a label with a short muted description on the left,
 a compact control on the right. Appearance offers a glyph segmented mode
 selector and independent text-size and reading-width controls backed by the
 global UI state store. Reading controls live in a separate component; the
-theme-picker component has its own insertion point.
+theme picker offers its swatch cards below these controls.
 
 Files shows the vault name and shortened location, with the full path in a
 tooltip and an explicit platform Reveal action. Hidden-file visibility is a

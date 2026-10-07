@@ -56,8 +56,6 @@ const IMAGES: [(&str, &[u8]); 25] = [
         "icons/arrow-down-circle.svg",
         include_bytes!("../assets/icons/arrow-down-circle.svg"),
     ),
-
-
     (
         "icons/trash.svg",
         include_bytes!("../assets/icons/trash.svg"),
@@ -206,10 +204,6 @@ impl ThemeId {
         }
     }
 
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "used by theme_picker, hosted after #623")
-    )]
     pub fn name(self) -> &'static str {
         match self {
             Self::Tessera => "Tessera",
@@ -396,10 +390,6 @@ fn tokens(theme: ThemeId, dark: bool) -> (Palette, ReaderPalette) {
 }
 
 /// Both variants of a theme, for previews that must not depend on the live mode.
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "used by theme_picker, hosted after #623")
-)]
 pub fn theme_palette(theme: ThemeId, dark: bool) -> Palette {
     tokens(theme, dark).0
 }

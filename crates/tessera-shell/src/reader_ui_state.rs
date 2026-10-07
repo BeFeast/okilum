@@ -114,6 +114,7 @@ impl Layout {
 struct Saved {
     version: u32,
     appearance: String,
+    theme: String,
     font_size: f32,
     reading_width: f32,
     find_case_sensitive: bool,
@@ -127,6 +128,7 @@ impl Default for Saved {
         Self {
             version: VERSION,
             appearance: "system".into(),
+            theme: brand::ThemeId::default().key().into(),
             font_size: BODY_FONT_SIZE,
             reading_width: READER_MAX_WIDTH,
             find_case_sensitive: false,
@@ -142,6 +144,7 @@ struct Store {
     saved: Saved,
     changed: BTreeSet<PathBuf>,
     appearance_changed: bool,
+    theme_changed: bool,
     font_changed: bool,
     width_changed: bool,
     find_changed: bool,
@@ -178,12 +181,19 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         Ok(mut saved) => {
             if !path.exists() {
                 // Legacy appearance is migration input only.
-                if let Some(mode) = super::appearance_settings_path()
+                if let Some(json) = super::appearance_settings_path()
                     .and_then(|path| std::fs::read(path).ok())
                     .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-                    .and_then(|json| json["appearance"].as_str().map(str::to_owned))
                 {
-                    saved.appearance = mode;
+                    if let Some(mode) = json["appearance"].as_str() {
+                        saved.appearance = mode.into();
+                    }
+                    saved.theme = json["theme"]
+                        .as_str()
+                        .and_then(brand::ThemeId::from_key)
+                        .unwrap_or_default()
+                        .key()
+                        .into();
                 }
             }
             saved
@@ -199,6 +209,7 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         saved,
         changed: Default::default(),
         appearance_changed: !path.exists(),
+        theme_changed: !path.exists(),
         font_changed: !path.exists(),
         width_changed: !path.exists(),
         find_changed: false,
@@ -261,6 +272,21 @@ pub(crate) fn appearance(cx: &App) -> Option<AppearancePreference> {
         },
     ))
 }
+pub(crate) fn theme(cx: &App) -> Option<brand::ThemeId> {
+    let state = cx.try_global::<Store>()?;
+    Some(brand::ThemeId::from_key(&state.saved.theme).unwrap_or_default())
+}
+pub(crate) fn set_theme(theme: brand::ThemeId, cx: &mut App) -> bool {
+    if cx.try_global::<Store>().is_none() {
+        return false;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.theme = theme.key().into();
+    state.theme_changed = true;
+    schedule(cx);
+    true
+}
+
 pub(crate) fn set_appearance(mode: Option<ThemeMode>, cx: &mut App) -> bool {
     if cx.try_global::<Store>().is_none() {
         return false;
@@ -305,6 +331,7 @@ struct WriteJob {
     saved: Saved,
     changed: BTreeSet<PathBuf>,
     appearance_changed: bool,
+    theme_changed: bool,
     font_changed: bool,
     width_changed: bool,
     find_changed: bool,
@@ -341,6 +368,9 @@ impl WriteJob {
         }
         if self.appearance_changed {
             latest.appearance = self.saved.appearance.clone();
+        }
+        if self.theme_changed {
+            latest.theme = self.saved.theme.clone();
         }
         if self.font_changed {
             latest.font_size = self.saved.font_size;
@@ -382,6 +412,7 @@ fn job(cx: &App) -> Option<WriteJob> {
         || (state.changed.is_empty()
             && state.frames_changed.is_empty()
             && !state.appearance_changed
+            && !state.theme_changed
             && !state.font_changed
             && !state.width_changed
             && !state.find_changed
@@ -398,6 +429,7 @@ fn job(cx: &App) -> Option<WriteJob> {
         saved: state.saved.clone(),
         changed: state.changed.clone(),
         appearance_changed: state.appearance_changed,
+        theme_changed: state.theme_changed,
         font_changed: state.font_changed,
         width_changed: state.width_changed,
         find_changed: state.find_changed,
@@ -908,6 +940,7 @@ fn mark_saved(generation: u64, cx: &mut App) {
         state.changed.clear();
         state.frames_changed.clear();
         state.appearance_changed = false;
+        state.theme_changed = false;
         state.font_changed = false;
         state.width_changed = false;
         state.find_changed = false;
@@ -952,6 +985,7 @@ mod tests {
         cx.update(|cx| {
             install(&directory, cx);
             set_appearance(Some(ThemeMode::Dark), cx);
+            set_theme(brand::ThemeId::Nord, cx);
             set_reading(19.5, 960., cx);
             assert!(!find_case_sensitive(cx));
             set_find_case_sensitive(true, cx);
@@ -963,6 +997,7 @@ mod tests {
             flush(cx);
             install(&directory, cx);
             assert!(matches!(appearance(cx).unwrap().0, Some(ThemeMode::Dark)));
+            assert_eq!(theme(cx), Some(brand::ThemeId::Nord));
             assert_eq!(font_size(cx), 19.5);
             assert_eq!(reading_width(cx), 960.);
             assert!(
@@ -1020,6 +1055,7 @@ mod tests {
                 serial: Arc::new(AtomicU64::new(1)),
                 generation: 1,
                 appearance_changed: false,
+                theme_changed: false,
                 font_changed: true,
                 width_changed: false,
                 find_changed: false,

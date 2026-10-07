@@ -409,19 +409,17 @@ fn set_appearance(
     save_appearance(vault, cx);
 }
 /// One app-wide color theme (#349); Light/Dark/System stays a separate choice.
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "used by theme_picker, hosted after #623")
-)]
 fn set_theme(theme: brand::ThemeId, vault: Option<&Path>, window: &mut Window, cx: &mut App) {
     cx.set_global(brand::ThemeChoice(theme));
     sync_appearance(window, cx);
     window.refresh();
     cx.refresh_windows();
+    if reader_ui_state::set_theme(theme, cx) {
+        return;
+    }
     save_appearance(vault, cx);
 }
 fn save_appearance(vault: Option<&Path>, cx: &App) {
-
     #[cfg(test)]
     let _ = (vault, cx);
     #[cfg(not(test))]
@@ -480,10 +478,12 @@ fn load_appearance(cx: &App) -> (AppearancePreference, brand::ThemeChoice) {
         return Default::default();
     }
     if let Some(saved) = reader_ui_state::appearance(cx) {
-        return (saved, brand::ThemeChoice(reader_ui_state::theme(cx).unwrap_or_default()));
+        return (
+            saved,
+            brand::ThemeChoice(reader_ui_state::theme(cx).unwrap_or_default()),
+        );
     }
     appearance_settings_path()
-
         .and_then(|path| std::fs::read(path).ok())
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
         .map(|value| parse_appearance_settings(&value))
