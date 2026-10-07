@@ -7,6 +7,8 @@ use time::Date;
 
 use crate::tasks::Query;
 
+pub mod layout;
+
 /// Stable IDs are the boundary for future validated schema sources.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Descriptor {

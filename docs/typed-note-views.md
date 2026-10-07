@@ -89,3 +89,35 @@ up a newer index at click time: doing so would authorize a revision the user has
 not seen. The index checks both the complete revision and occurrence membership
 before creating the Target; the write layer independently checks again at save.
 Cloned index snapshots retain their original evidence across updates/removals.
+
+## Tasks layout v1
+
+`typed_view::layout::parse` validates queries and presentation from the same exact
+source snapshot. It returns the original sections plus an order permutation; it
+does not reorder or discard source Markdown. Select the Tasks view first using
+the registry. Invalid queries or layout return a Markdown fallback reason.
+
+```yaml
+view: tasks
+tasks_view:
+  density: compact
+  grouping: query
+  order:
+    - heading: Today
+      occurrence: 2
+    - heading: Later
+```
+
+`density` accepts `compact` or `comfortable`. `grouping` accepts `query` (preserve
+each Tasks query's authored grouping), `note`, or `none`. Omitted properties use
+app defaults, whose built-in values are compact/query. The override must be a
+mapping; unknown keys, null density/grouping and unsupported values are errors.
+Unrelated frontmatter properties are left alone.
+
+`order` lists exact plain heading titles. `occurrence` is one-based among sections
+with that heading; it is optional only for a unique title. Listed sections come
+first, then all unlisted sections in body order, including untitled sections.
+Missing/ambiguous references, out-of-range occurrences and repeated references
+are errors. Sections keep their canonical source lines, queries and identities.
+No special vault definition file, settings persistence or native UI is activated
+by this parser slice.
