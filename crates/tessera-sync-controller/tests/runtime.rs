@@ -56,14 +56,105 @@ fn settings_runtime_enable_disable_and_restart() -> Result<()> {
     );
     assert!(!reopened.reconcile()?.unwrap().desired_enabled);
     assert!(identity.connect().is_err());
-    let resumed = reopened.enable(choice, &[])?;
+    let resumed = reopened.enable(choice.clone(), &[])?;
     assert_eq!(resumed.identity.as_ref(), Some(&identity));
     ready()?;
     assert_eq!(
         fs::read(identity.config_file.with_file_name("cert.pem"))?,
         certificate
     );
-    reopened.disable()?;
+    let service = OfflineRemoval {
+        identity: identity.clone(),
+        vault: uuid::Uuid::new_v4(),
+        offline: std::cell::Cell::new(true),
+        calls: std::cell::Cell::new(0),
+    };
+    let enrollment =
+        tessera_sync_controller::enrollment::Enrollment::new(root.path().join("enrollment"));
+    enrollment.begin(&service, &identity.device_id, "Isolated removal fixture")?;
+    enrollment.poll(&service)?;
+    let folder = tessera_sync_controller::folder::FolderController::new(root.path().join("folder"));
+    let outcome =
+        tessera_sync_controller::removal::remove(&reopened, &enrollment, &folder, &service);
+    assert!(outcome.local_stopped && !outcome.revoked && !outcome.complete());
+    assert_eq!(service.calls.get(), 1);
     assert!(identity.connect().is_err());
+    assert!(reopened.snapshot()?.unwrap().removed);
+    assert!(reopened.enable(choice, &[]).is_err());
+    assert!(!reopened.reconcile()?.unwrap().desired_enabled);
+    service.offline.set(false);
+    let outcome =
+        tessera_sync_controller::removal::remove(&reopened, &enrollment, &folder, &service);
+    assert!(outcome.complete(), "{outcome:?}");
+    assert_eq!(service.calls.get(), 2);
+    assert!(identity.connect().is_err());
+    assert_eq!(
+        fs::read(identity.config_file.with_file_name("cert.pem"))?,
+        certificate
+    );
     Ok(())
+}
+
+struct OfflineRemoval {
+    identity: tessera_sync_controller::daemon::DaemonIdentity,
+    vault: uuid::Uuid,
+    offline: std::cell::Cell<bool>,
+    calls: std::cell::Cell<usize>,
+}
+impl tessera_sync_controller::enrollment::PairingService for OfflineRemoval {
+    fn origin(&self) -> &str {
+        "https://isolated-removal.invalid"
+    }
+    fn start(
+        &self,
+        s: &tessera_sync_controller::pairing::Session,
+    ) -> Result<tessera_sync_controller::pairing::Approval> {
+        use tessera_sync_controller::pairing::*;
+        Ok(Approval {
+            approval_url: "https://isolated-removal.invalid/approval".into(),
+            request: Request {
+                id: s.id(),
+                device_id: s.device_id().into(),
+                name: s.name().into(),
+                code: "12345678".into(),
+                state: "pending".into(),
+                expires: i64::MAX,
+            },
+        })
+    }
+    fn exchange(
+        &self,
+        s: &tessera_sync_controller::pairing::Session,
+    ) -> Result<Option<tessera_sync_controller::pairing::Registration>> {
+        Ok(Some(self.status(s)?.registration))
+    }
+    fn status(
+        &self,
+        s: &tessera_sync_controller::pairing::Session,
+    ) -> Result<tessera_sync_controller::pairing::Status> {
+        use tessera_sync_controller::pairing::*;
+        Ok(Status {
+            registration: Registration {
+                id: s.id(),
+                vault: self.vault,
+                device_id: s.device_id().into(),
+                name: s.name().into(),
+                state: State::HubReady,
+                last_error: None,
+            },
+            descriptor: None,
+        })
+    }
+    fn remove(
+        &self,
+        _: &tessera_sync_controller::pairing::Session,
+    ) -> Result<tessera_sync_controller::pairing::State> {
+        self.calls.set(self.calls.get() + 1);
+        ensure!(
+            self.identity.connect().is_err(),
+            "remote revoke ran before owned service stop"
+        );
+        ensure!(!self.offline.get(), "simulated service outage");
+        Ok(tessera_sync_controller::pairing::State::Revoked)
+    }
 }

@@ -125,3 +125,19 @@ The dependency does not pin or downgrade the user's Syncthing package; support
 for another version requires updating the isolated compatibility evidence first.
 Arch package installation/lifecycle QA remains a native Linux check, separate
 from the controller's CT141 systemd and fixture tests.
+
+### Desktop Remove coordination
+
+Remove first records terminal intent in the runtime, pairing, and folder journals.
+It attempts local folder cleanup, stops/unregisters only the owned runtime, then
+reconciles service revocation. An unavailable service cannot keep the owned daemon
+running. Retry after restart revokes using saved credentials without starting the
+service again. A reused daemon keeps running; its folder cleanup must complete
+before claiming removal, and the UI must say external sync can continue.
+
+If an owned daemon was already offline, private dormant configuration may remain;
+local files remain in all cases. The removed runtime identity cannot be enabled
+again through its old journal. Disable remains reversible and preserves identity;
+a new connection after Remove requires a fresh explicit enrollment. The real
+CT141 user-systemd fixture verifies stop-before-revoke during a simulated service
+outage, later revocation, and no restart or certificate replacement on retry.

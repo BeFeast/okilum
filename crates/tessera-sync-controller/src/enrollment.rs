@@ -151,6 +151,17 @@ impl Enrollment {
     }
     /// Persists cancellation first. Even a failed exchange may have issued a
     /// grant; failed revocation stays pending and is retried after restart.
+    /// Record cancellation without network I/O so local shutdown is independent
+    /// of service availability. A later remove/poll reconciles revocation.
+    pub fn request_remove(&self) -> Result<()> {
+        if !self.file().try_exists()? {
+            return Ok(());
+        }
+        let _lock = private::lock(&self.state)?;
+        let mut j: Journal = serde_json::from_slice(&private::read(&self.file())?)?;
+        j.intent = Intent::Remove;
+        self.save(&j)
+    }
     pub fn remove(&self, service: &impl PairingService) -> Result<Snapshot> {
         let _lock = private::lock(&self.state)?;
         let mut j = self.load(service)?;
