@@ -700,5 +700,7 @@ Primary+Shift+Left always selects Folders-only; Primary+Shift+Right expands all
 left sections. Both appear in More. Reveal in sidebar keeps its glyph/menu and
 no longer uses Primary+Shift+Left. Collapse all folders is always visible in the
 Folders header and collapses tree nodes without collapsing the section itself.
-No note files change. The shortcut sheet catalog integration follows #663; Linux
-light/dark before/after belongs to the QA sub-session before publication.
+No note files change. The executor landing #663 adds the two shortcut catalog entries afterwards;
+#712 has no dependency on the shortcut sheet. Local Linux X11 light/dark
+before/after accompanies the PR; the QA sub-session checks the released build
+and strict UX on muninn after merge.

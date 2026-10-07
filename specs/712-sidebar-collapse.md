@@ -8,10 +8,11 @@ panel. The toolbar restore snapshot persists with sidebar state; an ordinary
 section toggle clears it so a later restore cannot undo intervening manual edits.
 
 The former primary+Shift+Left Focus current action loses that binding; its existing
-glyph/menu stays available. Add both new bound actions to the shortcut-sheet
-catalog when #663 is available. New actions are already in the More menu.
+glyph/menu stays available. The executor landing #663 will add both new bound actions to its shortcut-sheet
+catalog; #712 lands first without depending on that feature. New actions are already in the More menu.
 
 Dependencies: local branch stacks on #692; publication waits for that merge/CI
-slot. QA sub-session supplies Linux light/dark before/after; executors do not
-operate muninn. No source-note writes. Test actual glyph clicks, Alt-click,
+slot. The executor supplies local Linux X11 fixture before/after in light and dark.
+The QA sub-session owns strict UX and released-build verification on muninn;
+executors do not operate that screen. No source-note writes. Test actual glyph clicks, Alt-click,
 keyboard bindings, folder collapse, reversible persistence and Properties isolation.
