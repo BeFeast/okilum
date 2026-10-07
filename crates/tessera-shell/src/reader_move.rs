@@ -125,7 +125,7 @@ impl Reader {
             rename.error_input = Some(rename.input.read(cx).value().to_string());
             rename.error = Some(message);
         } else {
-            self.link_notice = Some(message);
+            self.link_notice = Some(message.into());
         }
     }
 
