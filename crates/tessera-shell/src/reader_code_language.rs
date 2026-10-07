@@ -244,6 +244,55 @@ mod rendered_tests {
     }
 
     #[gpui::test]
+    fn prepared_languages_reach_the_first_highlight_pass(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        let resolver: Arc<CodeBlockLanguageFn> = Arc::new(move |block| {
+            counter.fetch_add(1, Ordering::Relaxed);
+            language(block)
+        });
+        // Exercise recursive preparation as well as explicit and inferred fences.
+        let text = cx.new(|cx| {
+            TextViewState::markdown(
+                "```rs\nfn main() {}\n```\n\n> ```\n> {\"value\":42}\n> ```",
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        text.read_with(cx, |state, cx| {
+            assert_eq!(state.preparation_status(), Some(Ok(())));
+            state.prepare_code_languages(resolver.clone(), cx).detach();
+        });
+        cx.run_until_parked();
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|_| Fixture {
+                text,
+                hidden: false,
+                resolver,
+                highlighted: seen.clone(),
+            });
+            Root::new(view, window, cx)
+        });
+        visual.run_until_parked();
+        let seen = seen.lock().unwrap();
+        assert!(seen.len() >= 2, "positive control: both fences rendered");
+        assert_eq!(seen[0].as_deref(), Some("rust"));
+        assert_eq!(seen[1].as_deref(), Some("json"));
+        assert!(
+            seen.iter().all(Option::is_some),
+            "no uncoloured initial pass"
+        );
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            2,
+            "render uses prepared cache"
+        );
+    }
+
+    #[gpui::test]
     fn inference_is_visible_cached_shared_with_highlighter_and_replaced(
         cx: &mut gpui::TestAppContext,
     ) {

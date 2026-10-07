@@ -1218,6 +1218,8 @@ pub(crate) struct PendingDocument {
     content: Entity<TextViewState>,
     published: Option<async_channel::Sender<()>>,
     _observer: Subscription,
+    languages_prepared: bool,
+    language_task: Option<Task<()>>,
 }
 
 impl Reader {
@@ -1289,6 +1291,8 @@ impl Reader {
             content,
             published,
             _observer: observer,
+            languages_prepared: false,
+            language_task: None,
         });
         self.publish_pending_document(window, cx);
     }
@@ -1301,6 +1305,31 @@ impl Reader {
         else {
             return;
         };
+        if status.is_ok() {
+            let pending = self.pending_open_document.as_mut().unwrap();
+            if !pending.languages_prepared {
+                if pending.language_task.is_none() {
+                    let content = pending.content.clone();
+                    let work = content
+                        .read(cx)
+                        .prepare_code_languages(reader_code_language::resolver(), cx);
+                    pending.language_task = Some(cx.spawn_in(window, async move |this, cx| {
+                        work.await;
+                        let _ = this.update_in(cx, |this, window, cx| {
+                            let Some(pending) = this.pending_open_document.as_mut() else {
+                                return;
+                            };
+                            if pending.content != content {
+                                return;
+                            }
+                            pending.languages_prepared = true;
+                            this.publish_pending_document(window, cx);
+                        });
+                    }));
+                }
+                return;
+            }
+        }
         let Some(pending) = self.pending_open_document.take() else {
             return;
         };
