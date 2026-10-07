@@ -121,3 +121,17 @@ Missing/ambiguous references, out-of-range occurrences and repeated references
 are errors. Sections keep their canonical source lines, queries and identities.
 No special vault definition file, settings persistence or native UI is activated
 by this parser slice.
+
+## App preference storage
+
+The Reader's existing durable `reader-ui.json` carries a `typed_views` payload:
+exact-case `mappings` plus Tasks `density`/`grouping` defaults. Older settings load
+with an empty mapping and built-in defaults. Unknown view IDs are retained so the
+registry can produce an explicit Markdown fallback without deleting future or
+optional configuration.
+
+The existing locked, atomic settings writer merges this payload only when that
+field changes. An unrelated appearance, font or vault-layout save must preserve
+another process's newer typed-view preferences. These settings stay outside the
+vault and derived index. This storage slice does not add Settings controls or
+activate native view selection.

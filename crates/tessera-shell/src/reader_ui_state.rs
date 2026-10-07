@@ -118,6 +118,7 @@ struct Saved {
     font_size: f32,
     reading_width: f32,
     find_case_sensitive: bool,
+    typed_views: tessera_core::typed_view::Preferences,
     vaults: BTreeMap<PathBuf, Layout>,
     last_layout: Option<Layout>,
     frames: BTreeMap<String, window_state::Frame>,
@@ -132,6 +133,7 @@ impl Default for Saved {
             font_size: BODY_FONT_SIZE,
             reading_width: READER_MAX_WIDTH,
             find_case_sensitive: false,
+            typed_views: Default::default(),
             vaults: Default::default(),
             last_layout: None,
             frames: Default::default(),
@@ -148,6 +150,7 @@ struct Store {
     font_changed: bool,
     width_changed: bool,
     find_changed: bool,
+    typed_views_changed: bool,
     frames_changed: BTreeSet<String>,
     last_changed: bool,
     last_frame_changed: bool,
@@ -213,6 +216,9 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         font_changed: !path.exists(),
         width_changed: !path.exists(),
         find_changed: false,
+        // No migration input: opening a new window must not overwrite a
+        // different process's newly saved mappings with our startup defaults.
+        typed_views_changed: false,
         frames_changed: Default::default(),
         last_changed: false,
         last_frame_changed: false,
@@ -335,6 +341,7 @@ struct WriteJob {
     font_changed: bool,
     width_changed: bool,
     find_changed: bool,
+    typed_views_changed: bool,
     serial: Arc<AtomicU64>,
     generation: u64,
 }
@@ -374,6 +381,9 @@ impl WriteJob {
         }
         if self.font_changed {
             latest.font_size = self.saved.font_size;
+        }
+        if self.typed_views_changed {
+            latest.typed_views = self.saved.typed_views.clone();
         }
         if self.width_changed {
             latest.reading_width = self.saved.reading_width;
@@ -416,6 +426,7 @@ fn job(cx: &App) -> Option<WriteJob> {
             && !state.font_changed
             && !state.width_changed
             && !state.find_changed
+            && !state.typed_views_changed
             && !state.last_changed
             && !state.last_frame_changed)
     {
@@ -433,6 +444,7 @@ fn job(cx: &App) -> Option<WriteJob> {
         font_changed: state.font_changed,
         width_changed: state.width_changed,
         find_changed: state.find_changed,
+        typed_views_changed: state.typed_views_changed,
         serial: state.serial.clone(),
         generation: state.serial.load(Ordering::SeqCst),
     })
@@ -944,6 +956,7 @@ fn mark_saved(generation: u64, cx: &mut App) {
         state.font_changed = false;
         state.width_changed = false;
         state.find_changed = false;
+        state.typed_views_changed = false;
         state.last_changed = false;
         state.last_frame_changed = false;
     }
@@ -1050,6 +1063,16 @@ mod tests {
                 saved: Saved {
                     vaults: BTreeMap::from([(second.clone(), Layout::default())]),
                     font_size: 22.,
+                    typed_views: tessera_core::typed_view::Preferences {
+                        mappings: BTreeMap::from([
+                            ("Project".into(), "tasks".into()),
+                            ("Future".into(), "optional-view".into()),
+                        ]),
+                        tasks: tessera_core::typed_view::layout::Defaults {
+                            density: tessera_core::typed_view::layout::Density::Comfortable,
+                            grouping: tessera_core::typed_view::layout::Grouping::Note,
+                        },
+                    },
                     ..Default::default()
                 },
                 serial: Arc::new(AtomicU64::new(1)),
@@ -1059,6 +1082,7 @@ mod tests {
                 font_changed: true,
                 width_changed: false,
                 find_changed: false,
+                typed_views_changed: true,
                 frames_changed: Default::default(),
                 last_changed: false,
                 last_frame_changed: false,
@@ -1072,6 +1096,32 @@ mod tests {
             flush(cx);
             let merged = read(&current.path).unwrap();
             assert_eq!(merged.appearance, "dark");
+            assert_eq!(
+                merged.typed_views, independent.saved.typed_views,
+                "unrelated writes preserve mappings, defaults and unknown view IDs"
+            );
+            assert_eq!(
+                tessera_core::typed_view::select(
+                    "---\ntype: Project\n---\n",
+                    &merged.typed_views.mappings
+                ),
+                tessera_core::typed_view::Selection::Native(tessera_core::typed_view::TASKS)
+            );
+            assert_eq!(
+                tessera_core::typed_view::select(
+                    "---\ntype: project\n---\n",
+                    &merged.typed_views.mappings
+                ),
+                tessera_core::typed_view::Selection::Markdown
+            );
+            assert!(matches!(
+                tessera_core::typed_view::select(
+                    "---\ntype: Future\n---\n",
+                    &merged.typed_views.mappings
+                ),
+                tessera_core::typed_view::Selection::Fallback(_)
+            ));
+
             assert_eq!(
                 merged.font_size, 22.,
                 "unrelated global edits merge per field"
