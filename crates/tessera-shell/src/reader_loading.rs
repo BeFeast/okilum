@@ -1541,6 +1541,12 @@ impl Reader {
             self.refresh_link_preparation(cx);
             return;
         };
+        // Supersede inventory work without cancelling a user navigation that
+        // may already be preparing another note. Even a source equal to the
+        // displayed snapshot cancels an older, different in-flight snapshot.
+        self.document_reconciliation_generation =
+            self.document_reconciliation_generation.wrapping_add(1);
+        let reconciliation = self.document_reconciliation_generation;
         let pending_embed = self.note_source.contains(&format!(
             "{EMBED_LANG} {} ",
             tessera_core::render::EMBED_PENDING
@@ -1572,9 +1578,6 @@ impl Reader {
         let rel = self.current_rel.clone();
         let root = self.vault_root.clone();
         let navigation = self.navigation_generation;
-        // A newer inventory snapshot supersedes any in-flight reconciliation,
-        // including one for the same note with an unchanged rendered body.
-        self.document_preparation_generation = self.document_preparation_generation.wrapping_add(1);
         let generation = self.document_preparation_generation;
         let html = self.use_html;
         let raw = raw.clone();
@@ -1616,6 +1619,7 @@ impl Reader {
                     || this.current_rel != rel
                     || this.navigation_generation != navigation
                     || this.document_preparation_generation != generation
+                    || this.document_reconciliation_generation != reconciliation
                 {
                     return;
                 }
@@ -2457,6 +2461,19 @@ mod tests {
             std::fs::read_to_string(root.join("Dashboard.md")).unwrap(),
             initial
         );
+        // Reverting to the already displayed bytes still cancels older work.
+        reader.update_in(visual, |r, window, cx| {
+            r.reconcile_inventory_document(
+                &std::collections::HashMap::from([("Dashboard.md".into(), initial.into())]),
+                window,
+                cx,
+            );
+            r.reconcile_inventory_document(&sources, window, cx);
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert_eq!(r.note_canonical_source.as_deref(), Some(changed.as_str()));
+        });
         reader.update_in(visual, |r, window, cx| {
             r.reconcile_inventory_document(
                 &std::collections::HashMap::from([("Dashboard.md".into(), initial.into())]),

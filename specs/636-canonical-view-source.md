@@ -11,4 +11,6 @@ is unchanged. A failed or stale preparation keeps the prior accepted snapshot.
 No dashboard controls or writes are activated in this slice; FileEditor is unchanged.
 
 Test exact source through rendering rewrites/BOM/CRLF and native frontmatter-only
-reconciliation. Existing navigation generations remain the stale-completion guard.
+reconciliation. Existing navigation generations remain the stale-completion guard. Inventory
+reconciliation uses a separate generation so a source refresh cannot cancel an
+in-flight user navigation; reverting to accepted bytes also cancels older work.
