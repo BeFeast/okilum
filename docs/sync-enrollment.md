@@ -112,7 +112,7 @@ The first Linux controller component is documented in [Linux lifecycle ownership
 
 ### Linux package boundary (#587)
 
-The Arch package declares `syncthing: Sync between devices` in `optdepends`, not
+The Arch package declares `syncthing: sync between devices` in `optdepends`, not
 `depends`. Reader installation and use do not require Syncthing. Tessera installs
 no service unit or package install hook; discovering the package does not run it.
 Only explicit Enable Sync may prepare Tessera's private instance and register
