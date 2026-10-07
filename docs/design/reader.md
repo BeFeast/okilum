@@ -586,3 +586,26 @@ existing pinned/recent/Inbox metadata and source/draft recovery keep their
 respective storage contracts. Source contents never enter the UI state file.
 On Linux the default store is `~/.local/state/tessera/reader-ui.json` (or
 `$XDG_STATE_HOME/tessera/reader-ui.json`), beside `reader-diagnostic.log`.
+### Updates visual QA on Linux
+
+The non-publishing Linux branch-dispatch artifact includes the explicit
+`settings-ui-harness` feature. Run its extracted binary with
+`TESSERA_DEBUG_UPDATER_UI=sparkle` (or `velopack`) and open Settings → Updates.
+Both platform modes use the same production control tree: Stable/Beta segments
+and the refresh glyph. Channel selection stays in memory; refresh does not
+contact an updater. Normal builds omit this feature and ignore the variable.
+This verifies layout and interaction only, not native update delivery.
+
+### Settings presentation (#623)
+
+Settings uses a left-aligned navigation list with section glyphs. Pages have
+a title and unboxed rows: a label with a short muted description on the left,
+a compact control on the right. Appearance offers a glyph segmented mode
+selector and independent text-size and reading-width controls backed by the
+global UI state store. Reading controls live in a separate component; the
+theme-picker component has its own insertion point.
+
+Files shows the vault name and shortened location, with the full path in a
+tooltip and an explicit platform Reveal action. Hidden-file visibility is a
+switch. Templates has an inline current value and folder action. No setting
+action stretches into a full-width text button.

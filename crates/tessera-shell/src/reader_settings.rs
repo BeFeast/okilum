@@ -1,6 +1,6 @@
 //! Explicit, lazily opened user settings. No vault scans or startup reads.
 use super::*;
-use gpui_component::{button::ButtonGroup, ThemeMode};
+use gpui_component::{button::ButtonGroup, switch::Switch, ThemeMode};
 
 gpui::actions!(tessera_settings, [OpenSettings, CloseSettings]);
 
@@ -51,10 +51,10 @@ pub(crate) fn show(reader: Option<WeakEntity<Reader>>, cx: &mut App) {
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                 None,
-                size(px(700.), px(480.)),
+                size(px(780.), px(520.)),
                 cx,
             ))),
-            window_min_size: Some(size(px(600.), px(400.))),
+            window_min_size: Some(size(px(700.), px(440.))),
             ..Default::default()
         };
         match cx.open_window(options, move |window, cx| {
@@ -69,6 +69,49 @@ pub(crate) fn show(reader: Option<WeakEntity<Reader>>, cx: &mut App) {
     });
 }
 
+pub(super) fn setting_row(
+    label: &'static str,
+    help: &'static str,
+    control: impl IntoElement,
+    cx: &App,
+) -> impl IntoElement {
+    h_flex()
+        .w_full()
+        .justify_between()
+        .gap_4()
+        .py_2()
+        .child(
+            v_flex().flex_1().min_w_0().gap_1().child(label).child(
+                div()
+                    .text_sm()
+                    .text_color(brand::palette(cx).text_muted)
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .whitespace_nowrap()
+                    .child(help),
+            ),
+        )
+        .child(div().flex_none().child(control))
+}
+
+fn compact_vault_path(root: &Path) -> String {
+    let home =
+        std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from);
+    let display = home
+        .as_ref()
+        .and_then(|home| root.strip_prefix(home).ok())
+        .map(|relative| format!("~/{}", relative.to_string_lossy()))
+        .unwrap_or_else(|| root.to_string_lossy().into_owned());
+    if display.starts_with("~/") && display.chars().count() <= 36 {
+        return display;
+    }
+    let name = root.file_name().unwrap_or_default().to_string_lossy();
+    format!(
+        "{}…/{name}",
+        if display.starts_with("~/") { "~/" } else { "" }
+    )
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Section {
     Appearance,
@@ -77,6 +120,14 @@ enum Section {
     Inbox,
 }
 impl Section {
+    fn icon(self) -> Icon {
+        match self {
+            Self::Appearance => Icon::new(IconName::Palette),
+            Self::Files => Icon::new(IconName::Folder),
+            Self::Updates => Icon::default().path("icons/arrow-down-circle.svg"),
+            Self::Inbox => Icon::new(IconName::Inbox),
+        }
+    }
     fn label(self) -> &'static str {
         match self {
             Self::Appearance => "Appearance",
@@ -88,6 +139,8 @@ impl Section {
 }
 struct Settings {
     section: Section,
+    #[cfg(all(target_os = "linux", feature = "settings-ui-harness"))]
+    preview_beta: Option<bool>,
     reader: Option<WeakEntity<Reader>>,
     focus: FocusHandle,
     _reader_changes: Option<Subscription>,
@@ -110,6 +163,11 @@ impl Settings {
             .map(|reader| cx.observe(&reader, |_, _, cx| cx.notify()));
         Self {
             section: Section::Appearance,
+            #[cfg(all(target_os = "linux", feature = "settings-ui-harness"))]
+            preview_beta: match std::env::var("TESSERA_DEBUG_UPDATER_UI").as_deref() {
+                Ok("sparkle" | "velopack") => Some(false),
+                _ => None,
+            },
             reader,
             focus: cx.focus_handle(),
             _reader_changes: observer,
@@ -124,6 +182,23 @@ impl Settings {
             #[cfg(unix)]
             template_epoch: 0,
         }
+    }
+    // The harness renders the production control tree, with in-memory actions.
+    // It never initializes Sparkle/Velopack, changes preferences, or uses the network.
+    fn preview_channel(&self) -> Option<bool> {
+        #[cfg(all(target_os = "linux", feature = "settings-ui-harness"))]
+        return self.preview_beta;
+        #[cfg(not(all(target_os = "linux", feature = "settings-ui-harness")))]
+        None
+    }
+    fn select_update_channel(&mut self, beta: bool, cx: &mut Context<Self>) {
+        #[cfg(all(target_os = "linux", feature = "settings-ui-harness"))]
+        if let Some(value) = self.preview_beta.as_mut() {
+            *value = beta;
+            cx.notify();
+            return;
+        }
+        updater::set_beta(beta, cx);
     }
     fn set_reader(&mut self, reader: Option<WeakEntity<Reader>>, cx: &mut Context<Self>) {
         self._reader_changes = reader
@@ -252,22 +327,40 @@ impl Settings {
             let has_storage = self
                 .vault(cx)
                 .is_some_and(|reader| reader.read(cx).session_directory.is_some());
+            let folder = if self.template_pending {
+                "Loading…".to_owned()
+            } else {
+                self.template_folder.clone()
+            };
             v_flex()
                 .gap_2()
-                .child("Templates folder")
-                .child(if self.template_pending {
-                    "Loading…".into()
-                } else {
-                    self.template_folder.clone()
-                })
-                .child(
-                    Button::new("settings-template-folder")
-                        .label("Choose folder…")
-                        .disabled(self.template_pending || !has_storage)
-                        .on_click(cx.listener(|this, _, _, cx| this.choose_template_folder(cx))),
-                )
-                .child(div().text_sm().child(
-                    "Use New note from template in the document menu. Templates support {{title}} and {{date}}.",
+                .child(setting_row(
+                    "Templates folder",
+                    "Templates for new notes.",
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            div()
+                                .max_w(px(160.))
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .whitespace_nowrap()
+                                .text_sm()
+                                .text_color(brand::palette(cx).text_muted)
+                                .child(folder.clone()),
+                        )
+                        .child(
+                            Button::new("settings-template-folder")
+                                .ghost()
+                                .icon(IconName::FolderOpen)
+                                .accessibility_label("Change templates folder")
+                                .tooltip(format!("Change templates folder ({folder})"))
+                                .disabled(self.template_pending || !has_storage)
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.choose_template_folder(cx)),
+                                ),
+                        ),
+                    cx,
                 ))
                 .children(self.template_error.as_ref().map(|error| {
                     div()
@@ -298,51 +391,136 @@ impl Settings {
                     .vault(cx)
                     .map(|reader| reader.read(cx).vault_root.clone());
                 content
-                    .child("Choose how Tessera looks.")
-                    .child(
-                        h_flex().gap_2().children(
+                    .child(setting_row(
+                        "Theme",
+                        "Light, dark, or automatic.",
+                        ButtonGroup::new("settings-theme").flex_none().children(
                             [
-                                ("settings-system", "System", None),
-                                ("settings-light", "Light", Some(ThemeMode::Light)),
-                                ("settings-dark", "Dark", Some(ThemeMode::Dark)),
+                                (
+                                    "settings-system",
+                                    "System",
+                                    Icon::default().path("icons/monitor.svg"),
+                                    None,
+                                ),
+                                (
+                                    "settings-light",
+                                    "Light",
+                                    Icon::new(IconName::Sun),
+                                    Some(ThemeMode::Light),
+                                ),
+                                (
+                                    "settings-dark",
+                                    "Dark",
+                                    Icon::new(IconName::Moon),
+                                    Some(ThemeMode::Dark),
+                                ),
                             ]
-                            .map(|(id, label, mode)| {
+                            .map(|(id, label, icon, mode)| {
                                 let vault = vault.clone();
+                                let selected = current == mode;
                                 Button::new(id)
+                                    .ghost()
                                     .debug_selector(move || id.into())
                                     .label(label)
-                                    .selected(current == mode)
+                                    .icon(icon)
+                                    .selected(selected)
+                                    .when(selected, |button| button.primary())
                                     .on_click(move |_, window, cx| {
                                         set_appearance(mode, vault.as_deref(), window, cx)
                                     })
                             }),
                         ),
-                    )
+                        cx,
+                    ))
+                    .child(reader_reading_controls::render(cx))
+                    // #349 inserts its swatch row here, using the same setting_row layout.
                     .into_any_element()
             }
             Section::Files => {
                 if let Some(reader) = self.vault(cx) {
                     let state = reader.read(cx);
                     let hidden = state.sidebar.show_hidden;
-                    let root = state.vault_root.to_string_lossy().into_owned();
+                    let root = state.vault_root.clone();
+                    let name = root
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned();
+                    let full_path = root.to_string_lossy().into_owned();
+                    let short_path = compact_vault_path(&root);
                     let weak = reader.downgrade();
                     content
-                        .child(div().text_sm().text_color(p.text_muted).child(root))
                         .child(
-                            Button::new("settings-hidden-files")
+                            h_flex()
+                                .gap_3()
+                                .child(Icon::new(IconName::Folder).size_5())
+                                .child(
+                                    v_flex()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .gap_1()
+                                        .child(div().font_weight(FontWeight::MEDIUM).child(name))
+                                        .child(
+                                            div()
+                                                .id("settings-vault-path")
+                                                .text_sm()
+                                                .text_color(p.text_muted)
+                                                .overflow_hidden()
+                                                .text_ellipsis()
+                                                .whitespace_nowrap()
+                                                .child(short_path)
+                                                .tooltip(move |window, cx| {
+                                                    let path = full_path.clone();
+                                                    let width =
+                                                        (f32::from(window.viewport_size().width)
+                                                            - 64.)
+                                                            .clamp(160., 360.);
+                                                    gpui_component::tooltip::Tooltip::element(
+                                                        move |_, _| {
+                                                            div()
+                                                                .w(px(width))
+                                                                .whitespace_normal()
+                                                                .child(path.clone())
+                                                        },
+                                                    )
+                                                    .build(window, cx)
+                                                }),
+                                        ),
+                                )
+                                .child(
+                                    Button::new("settings-reveal-vault")
+                                        .ghost()
+                                        .icon(IconName::ExternalLink)
+                                        .accessibility_label("Reveal vault")
+                                        .tooltip(if cfg!(target_os = "macos") {
+                                            "Reveal in Finder"
+                                        } else if cfg!(target_os = "windows") {
+                                            "Reveal in Explorer"
+                                        } else {
+                                            "Reveal in File Manager"
+                                        })
+                                        .on_click(move |_, window, cx| {
+                                            reader_files::reveal(&root, window, cx)
+                                        }),
+                                ),
+                        )
+                        .child(setting_row(
+                            "Show hidden files",
+                            "Include hidden files in this vault’s sidebar.",
+                            div()
                                 .debug_selector(|| "settings-hidden-files".into())
-                                .label("Show hidden files")
-                                .selected(hidden)
-                                .on_click(move |_, _, cx| {
-                                    let _ = weak
-                                        .update(cx, |reader, cx| reader.toggle_hidden_files(cx));
-                                }),
-                        )
-                        .child(
-                            div().text_sm().text_color(p.text_muted).child(
-                                "Applies to this vault. Also available in the document menu.",
-                            ),
-                        )
+                                .child(
+                                    Switch::new("settings-hidden-files-switch")
+                                        .accessibility_label("Show hidden files")
+                                        .checked(hidden)
+                                        .on_click(move |_, _, cx| {
+                                            let _ = weak.update(cx, |reader, cx| {
+                                                reader.toggle_hidden_files(cx)
+                                            });
+                                        }),
+                                ),
+                            cx,
+                        ))
                         .child(self.template_controls(cx))
                         .into_any_element()
                 } else {
@@ -357,10 +535,16 @@ impl Settings {
                         "Version {} · Build {} · Channel: {}",
                         env!("TESSERA_RELEASE_VERSION"),
                         env!("TESSERA_BUILD_VERSION"),
-                        updater::channel()
+                        match self.preview_channel() {
+                            Some(true) => "Beta",
+                            Some(false) => "Stable",
+                            None => updater::channel(),
+                        }
                     )));
-                if updater::available() {
-                    let beta = updater::channel() == "Beta";
+                if self.preview_channel().is_some() || updater::available() {
+                    let beta = self
+                        .preview_channel()
+                        .unwrap_or_else(|| updater::channel() == "Beta");
                     content
                         .child(
                             h_flex()
@@ -399,9 +583,13 @@ impl Settings {
                                                         } else {
                                                             "Stable: receive approved releases"
                                                         })
-                                                        .on_click(move |_, _, cx| {
-                                                            updater::set_beta(value, cx)
-                                                        })
+                                                        .on_click(cx.listener(
+                                                            move |this, _, _, cx| {
+                                                                this.select_update_channel(
+                                                                    value, cx,
+                                                                );
+                                                            },
+                                                        ))
                                                 },
                                             ),
                                         ),
@@ -414,7 +602,11 @@ impl Settings {
                                         .ghost()
                                         .accessibility_label("Check for updates")
                                         .tooltip("Check for updates on the selected channel")
-                                        .on_click(|_, _, _| updater::check()),
+                                        .on_click(cx.listener(|this, _, _, _| {
+                                            if this.preview_channel().is_none() {
+                                                updater::check();
+                                            }
+                                        })),
                                 ),
                         )
                         .child(div().text_sm().text_color(p.text_muted).child(if beta {
@@ -501,8 +693,6 @@ impl Render for Settings {
                     .flex_none()
                     .p_3()
                     .gap_1()
-                    .border_r_1()
-                    .border_color(p.border)
                     .children(
                         [
                             Section::Appearance,
@@ -519,7 +709,14 @@ impl Render for Settings {
                                     Button::new(section.label())
                                         .w_full()
                                         .ghost()
-                                        .label(section.label())
+                                        .accessibility_label(section.label())
+                                        .child(
+                                            h_flex()
+                                                .w_full()
+                                                .gap_2()
+                                                .child(section.icon().size_4())
+                                                .child(section.label()),
+                                        )
                                         .selected(self.section == section)
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             this.section = section;
@@ -548,6 +745,73 @@ impl Render for Settings {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    #[cfg(all(target_os = "linux", feature = "settings-ui-harness"))]
+    #[gpui::test]
+    fn preview_uses_real_channel_controls_without_changing_the_platform_channel(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(gpui_component::init);
+        let (root, visual) = cx.add_window_view(|window, cx| {
+            let settings = cx.new(|cx| {
+                let mut settings = Settings::new(None, cx);
+                settings.section = Section::Updates;
+                settings.preview_beta = Some(false);
+                settings
+            });
+            Root::new(settings, window, cx)
+        });
+        let settings = root.read_with(visual, |root, _| {
+            root.view().clone().downcast::<Settings>().unwrap()
+        });
+        let platform_channel = updater::channel();
+        visual.run_until_parked();
+        for (selector, expected) in [("settings-beta", true), ("settings-stable", false)] {
+            let bounds = visual.debug_bounds(selector).expect("real channel segment");
+            visual.simulate_click(bounds.center(), Modifiers::default());
+            visual.run_until_parked();
+            settings.read_with(visual, |settings, _| {
+                assert_eq!(settings.preview_channel(), Some(expected));
+            });
+            assert_eq!(updater::channel(), platform_channel);
+        }
+        let bounds = visual
+            .debug_bounds("settings-check-updates")
+            .expect("refresh glyph");
+        visual.simulate_click(bounds.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(updater::channel(), platform_channel);
+    }
+
+    #[gpui::test]
+    fn reading_controls_update_the_shared_store(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            reader_ui_state::install(directory.path(), cx);
+        });
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let settings = cx.new(|cx| Settings::new(None, cx));
+            Root::new(settings, window, cx)
+        });
+        visual.run_until_parked();
+        let original = visual.update(|_, cx| reader_ui_state::font_size(cx));
+        for (selector, font, width) in [
+            ("reading-larger", original + 1., READER_MAX_WIDTH),
+            ("reading-wide", original + 1., 960.),
+            ("reading-smaller", original, 960.),
+        ] {
+            let bounds = visual
+                .debug_bounds(selector)
+                .expect("reading control visible");
+            visual.simulate_click(bounds.center(), Modifiers::default());
+            visual.run_until_parked();
+            visual.update(|_, cx| {
+                assert_eq!(reader_ui_state::font_size(cx), font);
+                assert_eq!(reader_ui_state::reading_width(cx), width);
+            });
+        }
+    }
 
     #[gpui::test]
     fn sections_switch_and_appearance_changes_without_a_vault(cx: &mut TestAppContext) {
