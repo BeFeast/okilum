@@ -20,7 +20,7 @@ source scripts/ci/release-cache.sh
 export TESSERA_SCCACHE="${RUSTC_WRAPPER:-}"
 export RUSTC_WRAPPER="$PWD/scripts/windows-rustc.py"
 export RC_x86_64_pc_windows_msvc="$PWD/scripts/windows-rc.py"
-cargo +1.96.1 xwin build --locked --target x86_64-pc-windows-msvc \
+cargo xwin build --locked --target x86_64-pc-windows-msvc \
     --profile windows-diagnostic -p tessera-shell --no-default-features
 cp "${CARGO_TARGET_DIR:-target}/x86_64-pc-windows-msvc/windows-diagnostic/tessera.exe" "$output/tessera.exe"
 python3 scripts/third-party-notices.py --stage "$output"

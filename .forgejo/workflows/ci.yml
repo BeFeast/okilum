@@ -71,10 +71,10 @@ jobs:
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libfontconfig-dev libfreetype-dev libxcb1-dev
 
-      - name: Install Rust (stable, with rustfmt and clippy)
+      - name: Install repository Rust toolchain
         run: |
           curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal \
-            --component rustfmt,clippy
+            --default-toolchain none
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           "$HOME/.cargo/bin/cargo" --version
 

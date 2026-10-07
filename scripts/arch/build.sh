@@ -10,9 +10,9 @@ export CARGO_INCREMENTAL=0
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-4}"
 export RUSTFLAGS='-C link-arg=-fuse-ld=mold'
 if ! command -v rustup >/dev/null; then
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.96.1
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
 fi
-rustup toolchain install 1.96.1 --profile minimal
+rustc --version
 source scripts/ci/release-cache.sh
 mkdir -p dist/arch
 cp scripts/arch/PKGBUILD dist/arch/PKGBUILD

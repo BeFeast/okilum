@@ -19,9 +19,9 @@ build() {
     if [[ ${TESSERA_SETTINGS_UI_HARNESS:-0} == 1 ]]; then
         qa_features=(--features settings-ui-harness)
     fi
-    cargo +1.96.1 build --release --locked -p tessera-shell "${qa_features[@]}"
+    cargo build --release --locked -p tessera-shell "${qa_features[@]}"
     if [[ ${TESSERA_SETTINGS_UI_HARNESS:-0} == 1 ]]; then
-        cargo +1.96.1 test --release --locked -p tessera-shell --features settings-ui-harness \
+        cargo test --release --locked -p tessera-shell --features settings-ui-harness \
             reader_settings::tests
     fi
 }

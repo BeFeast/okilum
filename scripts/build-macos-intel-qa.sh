@@ -13,23 +13,23 @@ export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
 export MACOSX_DEPLOYMENT_TARGET=12.0
 export TESSERA_RELEASE_VERSION="0.1.$TESSERA_BUILD_VERSION"
 export TESSERA_SOURCE_COMMIT="$(git rev-parse HEAD)"
-export CARGO_TARGET_DIR="$HOME/.cache/tessera-macos/1.96.1-intel-qa"
+export CARGO_TARGET_DIR="$HOME/.cache/tessera-macos/reader-intel-qa"
 export CARGO_INCREMENTAL=0
-rustup toolchain install 1.96.1 --profile minimal
-rustup target add --toolchain 1.96.1 x86_64-apple-darwin
+rustc --version
+rustup target add x86_64-apple-darwin
 bash scripts/vendor-setup.sh
 bash scripts/vendor-setup.sh --verify
 source scripts/ci/release-cache.sh
 # A stats response alone does not prove the daemon can serve rustc. Keep this
 # artifact-only build usable if the shared cache daemon fails during startup.
-if [[ -n ${RUSTC_WRAPPER:-} ]] && ! "$RUSTC_WRAPPER" "$(rustup which --toolchain 1.96.1 rustc)" -vV; then
+if [[ -n ${RUSTC_WRAPPER:-} ]] && ! "$RUSTC_WRAPPER" "$(rustup which rustc)" -vV; then
   echo 'Intel QA compiler cache probe failed; compiling without the wrapper'
   unset RUSTC_WRAPPER
 fi
 python3 scripts/updater/sparkle.py fetch "$OUTPUT/Sparkle.tar.xz"
 python3 scripts/updater/sparkle.py prepare --archive "$OUTPUT/Sparkle.tar.xz" --destination vendor/sparkle
 SECONDS=0
-cargo +1.96.1 build --release --locked --target x86_64-apple-darwin -p tessera-shell
+cargo build --release --locked --target x86_64-apple-darwin -p tessera-shell
 BUILD_SECONDS=$SECONDS
 APP="$OUTPUT/Tessera Intel QA.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
