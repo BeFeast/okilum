@@ -654,3 +654,10 @@ no dimmed backdrop or title bar. Typing filters; Up/Down selects; Enter moves;
 Escape or a click outside dismisses. Self, descendants, and the current parent
 are excluded. Errors stay inside the popover. The existing revision-aware move,
 exceptional link-impact confirmation, and result toast with Undo are unchanged.
+
+### Reader keyboard scrolling (#705)
+
+When rendered note text has focus, Up/Down scroll by two text lines and Page
+Up/Page Down scroll by 90% of the viewport. This includes focus transferred from
+a dismissed compact sidebar. These bindings belong only to Reader TextView;
+source inputs and the folder tree retain their own navigation keys.
