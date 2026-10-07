@@ -8,14 +8,14 @@ No build/signing credentials are needed on GitHub.
 
 Linux builds every merge to `main`. macOS and Windows build the newest `main`
 once an hour (the UTC hour boundary), skipping an already-published source.
-Mac/Windows have no push trigger: an hourly/manual run finishes its selected
-main snapshot even if new merges arrive. No runner sleeps between hourly ticks.
+Mac/Windows have no push trigger: a scheduled/manual run finishes its selected
+main snapshot even if new merges arrive. macOS runs daily at 10:30 UTC; Windows runs hourly. No runner sleeps between ticks.
 To get an urgent **Mac build now** or **Windows build now**, dispatch the respective
 `macos-release` or `windows-release` workflow on `main`; this bypasses the window.
 Manual branch builds publish nothing. Windows PR cross-compilation still runs.
 Scheduled starts can be delayed by runner queues; the source run number, rather
 than the publication time, remains the build version. Rapid merges can supersede
-a build before publication; the next hourly tick or manual build uses newest main.
+a build before publication; the next scheduled tick or manual build uses newest main.
 
 Release compilation uses pinned sccache with the existing private S3 cache when
 credentials are available, otherwise the ordinary compiler. Arch/Windows cache
@@ -83,7 +83,7 @@ appcast publication lock; scheduled Beta does not block the macOS release queue.
 ## Superseded main builds (#562)
 
 All platform builds finish useful work even while main advances. Linux builds on
-push; Mac/Windows select main only on the hourly tick or manual dispatch. Windows
+push; Mac/Windows select main only on their scheduled tick or manual dispatch. Windows
 PR checks can still cancel an earlier run of the same PR. Scheduled/manual builds
 are not cancelled by a push or the next tick.
 

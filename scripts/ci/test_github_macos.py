@@ -49,6 +49,26 @@ class BridgeTests(unittest.TestCase):
         return bridge.wait_for_run(api, BRANCH, SHA, clock=clock, sleep=clock.sleep,
                                    queue_timeout=30, run_timeout=60)[0]
 
+    def test_hosted_reads_retry_with_bounded_backoff(self):
+        class Flaky(API):
+            remaining = 2
+            def request(self, path, method='GET', data=None):
+                if self.remaining:
+                    self.remaining -= 1
+                    raise bridge.Unavailable('temporary outage')
+                return super().request(path, method, data)
+        delays = []
+        self.assertEqual(bridge.hosted_request(Flaky(), 'actions/runs',
+                         sleep=delays.append)['workflow_runs'][0]['id'], 1)
+        self.assertEqual(delays, [5, 10])
+        class Offline(API):
+            def request(self, *args):
+                raise bridge.Unavailable('offline')
+        delays = []
+        with self.assertRaises(bridge.Unavailable):
+            bridge.hosted_request(Offline(), 'actions/runs', sleep=delays.append)
+        self.assertEqual(delays, [5, 10])
+
     def test_exact_run_and_executed_job_pass(self):
         self.assertEqual(self.wait(API()), 'success')
 

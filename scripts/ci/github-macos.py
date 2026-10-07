@@ -2,7 +2,7 @@
 """Bridge a trusted Forgejo PR head to GitHub's unsigned native gate.
 
 No Forgejo credentials reach GitHub. The caller's final `macos` job reports the
-result using Forgejo's normal job status, including any local fallback result.
+result using Forgejo's normal job status, without using the corporate M4.
 """
 import argparse
 import json
@@ -82,6 +82,17 @@ def push_head(branch, sha, token):
             raise Unavailable("Could not push the GitHub native-check ref") from None
 
 
+def hosted_request(api, path, *, sleep=time.sleep):
+    """Retry transient hosted-service reads without creating duplicate builds."""
+    for attempt in range(3):
+        try:
+            return api.request(path)
+        except Unavailable:
+            if attempt == 2:
+                raise
+            sleep(5 * (2 ** attempt))
+
+
 def wait_for_run(api, branch, sha, *, clock=time.monotonic, sleep=time.sleep,
                  queue_timeout=480, run_timeout=2400):
     query = urllib.parse.urlencode({"branch": branch, "head_sha": sha,
@@ -89,7 +100,7 @@ def wait_for_run(api, branch, sha, *, clock=time.monotonic, sleep=time.sleep,
     queued_until = clock() + queue_timeout
     running_until = None
     while True:
-        runs = api.request(f"actions/runs?{query}")["workflow_runs"]
+        runs = hosted_request(api, f"actions/runs?{query}", sleep=sleep)["workflow_runs"]
         matches = [run for run in runs if run["head_sha"] == sha
                    and run["head_branch"] == branch and run["event"] == "push"
                    and run["path"] == WORKFLOW]
@@ -103,7 +114,7 @@ def wait_for_run(api, branch, sha, *, clock=time.monotonic, sleep=time.sleep,
                     raise Unavailable(f"GitHub runner could not start: {url}")
                 if run["conclusion"] != "success":
                     return "failure", f"GitHub native gate: {run['conclusion']} — {url}"
-                jobs = api.request(f"actions/runs/{run['id']}/jobs?per_page=100")["jobs"]
+                jobs = hosted_request(api, f"actions/runs/{run['id']}/jobs?per_page=100", sleep=sleep)["jobs"]
                 # A green workflow with a skipped/removed native job is not evidence.
                 native = [job for job in jobs if job["name"] == "macos"]
                 if len(native) != 1 or native[0]["conclusion"] != "success" or not any(
@@ -161,7 +172,7 @@ def main():
         print(message)
     except Unavailable as error:
         result = "unavailable"
-        print(f"{error}; requesting the M4 fallback")
+        print(f"GitHub macOS unavailable — rerun later: {error}")
     finally:
         with open(os.environ["GITHUB_OUTPUT"], "a") as output:
             output.write(f"result={result}\n")
