@@ -232,59 +232,232 @@ pub(super) fn record_failure(root: &Path, state: Option<&Path>, error: &anyhow::
     );
 }
 
+#[derive(Default)]
+struct DiagnosticDisclosure {
+    expanded: bool,
+    copied: bool,
+}
+
 impl Reader {
     pub(super) fn show_unreadable_items(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let rows: Vec<_> = self
+        let items: Vec<_> = self
             .vault
             .unreadable
             .iter()
             .chain(self.loading.iter().flat_map(|load| &load.warnings))
+            .collect();
+        let rows: Vec<_> = items
+            .iter()
             .map(|item| {
-                let path = item
+                let (title, summary) = if item.operation.contains("search") {
+                    (
+                        "Search".to_string(),
+                        match item.operation {
+                            "persist search cache" => "Search data could not be saved.",
+                            "prepare search (unavailable)" => "Content search is unavailable.",
+                            _ => "Saved search data could not be reused.",
+                        },
+                    )
+                } else if item.operation.starts_with("watch vault") {
+                    (
+                        "Vault updates".to_string(),
+                        "Automatic refresh is unavailable. Retry to check for changes.",
+                    )
+                } else {
+                    let name = item
+                        .path
+                        .file_name()
+                        .unwrap_or(item.path.as_os_str())
+                        .to_string_lossy();
+                    let title = if item
+                        .path
+                        .extension()
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+                    {
+                        item.path
+                            .file_stem()
+                            .unwrap_or(item.path.as_os_str())
+                            .to_string_lossy()
+                            .into_owned()
+                    } else {
+                        name.into_owned()
+                    };
+                    (
+                        title,
+                        match item.operation {
+                            "decode note" => "This note’s text encoding could not be read.",
+                            "read note" => "This note could not be read.",
+                            "list siblings" => "This folder could not be listed.",
+                            _ => "This item could not be read.",
+                        },
+                    )
+                };
+                let location = item
                     .path
                     .strip_prefix(&self.vault_root)
-                    .map(tessera_core::vault::note_path)
-                    .unwrap_or_else(|_| tessera_core::vault::display_path(&item.path));
+                    .ok()
+                    .and_then(Path::parent)
+                    .map(|parent| {
+                        parent
+                            .components()
+                            .map(|part| part.as_os_str().to_string_lossy())
+                            .collect::<Vec<_>>()
+                            .join(" › ")
+                    })
+                    .filter(|location| !location.is_empty());
+                (title, summary, location)
+            })
+            .collect();
+        // Keep complete paths and original errors in the optional report and
+        // clipboard, where they are needed to diagnose duplicate file names.
+        let reports: Vec<_> = items
+            .iter()
+            .map(|item| {
                 format!(
-                    "{path}\n{}: {}",
+                    "{}\n{}: {}",
+                    tessera_core::vault::display_path(&item.path),
                     item.operation,
-                    tessera_core::vault::display_error(&item.error)
+                    tessera_core::vault::display_error(&item.error),
                 )
             })
             .collect();
-        let root = tessera_core::vault::display_path(&self.vault_root);
-        let details = format!("Vault: {root}\n\n{}", rows.join("\n\n"));
-        let log = log_path(self.session_directory.as_deref()).ok();
+        let mut details = format!(
+            "Vault: {}\n\n{}",
+            tessera_core::vault::display_path(&self.vault_root),
+            reports.join("\n\n")
+        );
+        if let Ok(path) = log_path(self.session_directory.as_deref()) {
+            details.push_str(&format!(
+                "\n\nDiagnostic log: {}",
+                tessera_core::vault::display_path(&path)
+            ));
+        }
+        let disclosure = cx.new(|_| DiagnosticDisclosure::default());
         let reader = cx.entity().downgrade();
-        window.open_dialog(cx, move |dialog, _, _| {
-            let details = details.clone();
+        window.open_dialog(cx, move |dialog, window, cx| {
+            let expanded = disclosure.read(cx).expanded;
+            let copied = disclosure.read(cx).copied;
+            let toggle = disclosure.clone();
+            let copy_state = disclosure.clone();
+            let copy_details = details.clone();
             let reader = reader.clone();
-            dialog.title(format!("{} items unreadable", rows.len())).child(
-                v_flex().gap_3()
-                    .child("These paths or operations were unavailable. Available notes remain readable. Search uses memory if its cache failed; if readable content exceeds 128 MiB, content search is unavailable. If watching failed, use Retry to refresh.")
-                    .child(root.clone())
-                    .child(div().id("unreadable-paths").max_h(px(320.)).overflow_y_scroll()
-                        .child(v_flex().gap_3().children(rows.iter().cloned().map(|row| {
-                            div().text_sm().child(row)
-                        }))))
-                    .when_some(log.as_ref(), |view, path| {
-                        view.child(format!("Latest diagnostic log: {}", tessera_core::vault::display_path(path)))
-                    })
-                    .child(h_flex().gap_2()
-                        .child(Button::new("copy-unreadable-paths").label("Copy details")
-                            .on_click(move |_, _, cx| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(details.clone()));
-                            }))
-                        .child(Button::new("retry-unreadable-paths").label("Retry")
-                            .on_click(move |_, window, cx| {
-                                window.close_dialog(cx);
-                                if let Some(reader) = reader.upgrade() {
-                                    reader.update(cx, |this, cx| {
-                                        this.refresh_inventory(tessera_core::Changes::default(), window, cx);
-                                    });
-                                }
-                            }))),
-            )
+            let muted = cx.theme().muted_foreground;
+            dialog
+                .title("Items needing attention")
+                .width(px(560.).min((window.viewport_size().width - px(80.)).max(px(280.))))
+                .max_h((window.viewport_size().height - px(80.)).max(px(240.)))
+                .child(
+                    v_flex()
+                        .gap_3()
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(muted)
+                                .child("You can keep reading your other notes."),
+                        )
+                        .child(
+                            div()
+                                .id("unreadable-items")
+                                .max_h(px(280.))
+                                .overflow_y_scroll()
+                                .child(v_flex().gap_3().children(rows.iter().map(
+                                    |(title, summary, location)| {
+                                        v_flex()
+                                            .gap_1()
+                                            .child(
+                                                div()
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .child(title.clone()),
+                                            )
+                                            .when_some(location.as_ref(), |view, location| {
+                                                view.child(
+                                                    div()
+                                                        .text_sm()
+                                                        .text_color(muted)
+                                                        .child(location.clone()),
+                                                )
+                                            })
+                                            .child(
+                                                div().text_sm().text_color(muted).child(*summary),
+                                            )
+                                    },
+                                ))),
+                        )
+                        .child(
+                            h_flex()
+                                .justify_end()
+                                .gap_1()
+                                .child(
+                                    Button::new("unreadable-details")
+                                        .ghost()
+                                        .small()
+                                        .icon(if expanded {
+                                            IconName::ChevronUp
+                                        } else {
+                                            IconName::Info
+                                        })
+                                        .tooltip(if expanded {
+                                            "Hide technical details"
+                                        } else {
+                                            "Show technical details"
+                                        })
+                                        .on_click(move |_, window, cx| {
+                                            toggle.update(cx, |state, _| {
+                                                state.expanded = !state.expanded
+                                            });
+                                            window.refresh();
+                                        }),
+                                )
+                                .child(
+                                    Button::new("copy-unreadable-paths")
+                                        .ghost()
+                                        .small()
+                                        .icon(if copied {
+                                            IconName::Check
+                                        } else {
+                                            IconName::Copy
+                                        })
+                                        .tooltip(if copied { "Copied" } else { "Copy details" })
+                                        .on_click(move |_, window, cx| {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                copy_details.clone(),
+                                            ));
+                                            copy_state.update(cx, |state, _| state.copied = true);
+                                            window.refresh();
+                                        }),
+                                )
+                                .child(
+                                    Button::new("retry-unreadable-paths")
+                                        .ghost()
+                                        .small()
+                                        .icon(IconName::RotateCw)
+                                        .tooltip("Retry")
+                                        .on_click(move |_, window, cx| {
+                                            window.close_dialog(cx);
+                                            if let Some(reader) = reader.upgrade() {
+                                                reader.update(cx, |this, cx| {
+                                                    this.refresh_inventory(
+                                                        tessera_core::Changes::default(),
+                                                        window,
+                                                        cx,
+                                                    );
+                                                });
+                                            }
+                                        }),
+                                ),
+                        )
+                        .when(expanded, |view| {
+                            view.child(
+                                div()
+                                    .id("unreadable-technical-details")
+                                    .max_h(px(180.))
+                                    .overflow_y_scroll()
+                                    .text_sm()
+                                    .text_color(muted)
+                                    .child(details.clone()),
+                            )
+                        }),
+                )
         });
     }
 }
