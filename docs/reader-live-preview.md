@@ -55,8 +55,9 @@ Recovered draft hash `9a9465129b839310eb40a782f8f683dd1e4be24993823ee9370fdb2113
 matched before/after SIGKILL. External disk bytes stayed at
 `49f09b06d2387f84f9308d0eb819277a8c104ef48b63ee556d3526391b73b478`.
 
-Publication remains gated on the executor CI slot, #699's save fix and completion
-of the pending native acceptance rows. This is not a released-build claim.
+Publication as a PR waits for the executor CI slot and #699's save fix. Merge
+waits for the remaining native acceptance rows, using the PR Linux package on
+muninn as described below. This is not a released-build claim.
 
 ### Additional native geometry and timing evidence (2026-10-07)
 
@@ -83,10 +84,10 @@ These are input-dispatch-to-observed-Xvfb-framebuffer measurements, including
 xdotool and screenshot sampling overhead. They are not compositor presentation
 latencies or evidence that Live Preview is faster. The small fixture and sequential
 mode order do not establish large-note performance. Scripts and raw logs are
-`/tmp/tessera359-ui/native-geometry.py`,
-`/tmp/tessera359-ui/native-timing.py`,
-`/tmp/tessera359-native-geometry.log` and
-`/tmp/tessera359-native-timing.log` in the development environment.
+`~/.cache/tessera-qa/359/tessera359-ui/native-geometry.py`,
+`~/.cache/tessera-qa/359/tessera359-ui/native-timing.py`,
+`~/.cache/tessera-qa/359/tessera359-native-geometry.log` and
+`~/.cache/tessera-qa/359/tessera359-native-timing.log` in the development environment.
 
 The available environment has Xvfb but no installed IBus/Fcitx or Wayland
 compositor. Real IME preedit/update/commit/cancel and candidate-window geometry
@@ -96,6 +97,40 @@ real X11 probe passed Left over combining Cyrillic, an emoji ZWJ sequence and a
 flag, Home/End on the same line, and forward/reversed cross-block drags. Each
 selection was verified against canonical source through an externally reset
 clipboard. The fixture file remained unchanged. Evidence:
-`/tmp/tessera359-ui/native-movement.py` and
-`/tmp/tessera359-native-movement.log`. These specific cases do not imply that
+`~/.cache/tessera-qa/359/tessera359-ui/native-movement.py` and
+`~/.cache/tessera-qa/359/tessera359-native-movement.log`. These specific cases do not imply that
 all cases in the larger managed matrix have passed.
+
+## Muninn pre-merge acceptance plan
+
+Owner-approved QA environment: Omarchy, Hyprland/Wayland on muninn, fcitx5 with
+an installed Chinese or Japanese composition engine. QA runs the Linux package
+from this PR's `linux-release` CI artifact before merge. First merge #699 / PR
+#702; then publish S1 into the free executor CI slot. When the package is ready,
+report the exact run number, artifact and source commit to the manager so the
+QA sub-session can start. Do not substitute the public beta or an older binary.
+
+Use a disposable vault copy. Record package version/commit, compositor, input
+engine, font, scale and window width. Repeat in Source and Live Preview on the
+same machine/session, at wide and narrow widths. The primary acceptance priority
+is lossless ru/he/en input and layout switching; CJK composition additionally
+exercises native preedit and candidate geometry.
+
+| Scenario | Required result |
+| --- | --- |
+| Switch en → ru → he → en while editing | Every committed character appears exactly once; switching does not drop, duplicate or replace existing text. Repeat after moving the caret and with a selection. |
+| Cyrillic and Hebrew mixed with Latin, digits and punctuation | Source, external clipboard and saved/reopened UTF-8 bytes match the authored sequence. Compare mixed RTL/LTR caret and selection behavior in both modes; do not infer bytes solely from visual order. |
+| Combining marks, emoji ZWJ and flags beside styled links | Movement/deletion preserves whole graphemes; copy retains authored Markdown and Unicode. Include Cyrillic combining marks and Hebrew niqqud. |
+| CJK preedit/update/commit/cancel | Preedit reveals the affected source block; candidate window follows the actual caret. Commit inserts exactly once; cancel leaves authored bytes unchanged. Repeat selected replacement, successive compositions and Undo/redo. |
+| Wrap boundaries | At both widths, click first/last glyph and far-right row space; arrows and Home/End resolve to canonical source positions. Forward/reverse drag across wraps keeps its anchor through reveal. Include bold, inline code, links and mixed ru/he/en text. |
+| IME at wrapped/concealed boundaries | Candidate geometry follows the caret after reveal, resize and scroll; no jump to document start or stale row. Preedit, commit and cancel retain exact source coordinates. |
+| Presentation toggles and persistence | Toggle without saving or adding an Undo transaction; Undo/redo survives reveal. Explicit Save, external conflict and crash recovery retain authored bytes and newer drafts. |
+
+For each row report PASS/FAIL with the source fixture, expected/actual bytes and
+focused screenshot/video where geometry matters. A successfully committed input
+and visible candidate list are positive controls for IME; an absent popup alone
+is not evidence. A failure in either mode must identify whether it predates S1.
+All required rows must pass before merge; API-level tests alone do not close them.
+Linux diagnostics: `~/.local/state/tessera/reader-diagnostic.log` (or the same
+path under `XDG_STATE_HOME`). Store captures/packages in
+`~/.cache/tessera-qa/359/`, never `/tmp`; remove scratch after merge.
