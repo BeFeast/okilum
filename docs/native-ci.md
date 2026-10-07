@@ -54,3 +54,16 @@ matching, executed-step evidence, failed/queued/hung runs, API outages, cleanup
 boundaries and the Forgejo success/fallback/failure matrix. Workflow edits also
 need YAML/actionlint validation and a real hosted run before accepting this gate
 as operational. A green M4 fallback proves the PR, not the GitHub integration.
+
+### Temporary owner-approved local lane
+
+`TESSERA_MACOS_LANE=local` selects the trusted M4 native job directly after Linux.
+The GitHub bridge is skipped, so it occupies no `light` runner while that lane is
+selected. Unset the variable or set `hosted` to restore hosted-only checks; remote
+unavailability never silently falls back to M4. Both lanes retain the same native
+script and fail-closed aggregate checks. Fork PRs cannot run on M4. This switch
+does not change the shared mirror secret, mirroring or release workflows.
+
+Enable local only for an explicitly approved window, with a scheduled reset to
+`hosted` before morning. Existing PR heads must incorporate this workflow before
+the switch affects them; already-running jobs are not migrated or cancelled.
