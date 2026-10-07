@@ -562,7 +562,11 @@ background search validation; “Checking search data” cannot keep it blank.
 Reader restoration installs the saved block/offset before its first layout, so
 the top of the note never paints before the restored position. Breadcrumbs remain
 visible on restoration, including mid-note; deliberate scrolling resumes the
-usual scrolling-header behavior. Neither mode waits for search validation.
+usual scrolling-header behavior. Source restoration follows the same header rule.
+Initial source syntax preparation starts before mounting, without the typing
+debounce. The restored editor is revealed once its scroll and initial highlighting
+are ready; subsequent edits stay visible while syntax updates asynchronously.
+Neither mode waits for search validation.
 A previously unseen vault inherits the last active window's
 presentation and geometry, without copying its note paths or navigation history.
 Transient menus, hover previews, notifications and dialogs do not reopen.

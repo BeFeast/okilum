@@ -265,6 +265,10 @@ impl Reader {
             input.set_projection_provider(Some(Arc::new(ExactSource)), cx);
             input.set_exact_clipboard_provider(clipboard, cx);
             input.set_value(store.text().to_owned(), window, cx);
+            input.ensure_highlighter_factory(
+                gpui_component::highlighter::input_highlighter_factory(),
+            );
+            input.prepare_highlighting(window, cx);
             input
         });
         let current_input = cx.new(|cx| {
@@ -274,6 +278,18 @@ impl Reader {
                 .soft_wrap(true);
             input.set_readonly(true, cx);
             input
+        });
+        let highlighting = cx.observe(&input, |this, input, cx| {
+            if this.ui_state.source_highlight_pending
+                && this
+                    .editing
+                    .as_ref()
+                    .is_some_and(|editing| editing.input == input)
+                && !input.read(cx).highlighting_pending()
+            {
+                this.ui_state.source_highlight_pending = false;
+                cx.notify();
+            }
         });
         let changed = cx.subscribe(&input, |this, input, _: &SourceMutation, cx| {
             let Some(editing) = &mut this.editing else { return; };
@@ -389,7 +405,7 @@ impl Reader {
             save_pending: false,
             saved_at: None,
             current_input,
-            _subscriptions: vec![changed, blur, clicked],
+            _subscriptions: vec![changed, blur, clicked, highlighting],
         });
         input.focus_handle(cx).focus(window, cx);
         cx.notify();
@@ -647,6 +663,12 @@ impl Reader {
                 });
             });
         }
+    }
+
+    pub(super) fn source_highlighting_pending(&self, cx: &App) -> bool {
+        self.editing
+            .as_ref()
+            .is_some_and(|editing| editing.input.read(cx).highlighting_pending())
     }
 
     pub(super) fn source_scroll_offset(&self, cx: &App) -> Option<Point<Pixels>> {
@@ -1200,6 +1222,45 @@ impl Reader {
 
 #[cfg(test)]
 mod tests {
+
+    #[gpui::test]
+    fn initial_source_highlighting_prepares_without_a_typing_debounce(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let mut input = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                let mut state = EditorState::new(window, cx)
+                    .language("markdown")
+                    .folding(false);
+                // Force the asynchronous path independently of machine speed.
+                state.set_value(
+                    format!("# Heading\n\n{}", "plain text ".repeat(30_000)),
+                    window,
+                    cx,
+                );
+                state.ensure_highlighter_factory(
+                    gpui_component::highlighter::input_highlighter_factory(),
+                );
+                state.prepare_highlighting(window, cx);
+                assert!(
+                    state.highlighting_pending(),
+                    "positive control: initial parse is running"
+                );
+                state
+            });
+            input = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        // No virtual clock advance: initial parsing must not wait for the
+        // 150ms typing debounce before the first highlighted presentation.
+        visual.run_until_parked();
+        input.unwrap().read_with(visual, |input, _| {
+            assert!(
+                !input.highlighting_pending(),
+                "initial syntax must settle without a debounce timer"
+            );
+        });
+    }
 
     #[gpui::test]
     fn quit_flushes_every_editor_even_after_a_conflict(cx: &mut TestAppContext) {

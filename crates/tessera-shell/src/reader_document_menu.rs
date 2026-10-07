@@ -24,7 +24,7 @@ impl Reader {
             return self.render_main(window, cx);
         }
         let height = px(48.);
-        let hidden = if self.restored_reader_header() || self.document_at_top(cx) {
+        let hidden = if self.restored_document_header() || self.document_at_top(cx) {
             self.document_header_hidden
         } else {
             height
@@ -79,7 +79,7 @@ impl Reader {
                                         return;
                                     }
                                     let at_top = this.document_at_top(cx);
-                                    let hidden = if this.restored_reader_header() || at_top {
+                                    let hidden = if this.restored_document_header() || at_top {
                                         this.document_header_hidden
                                     } else {
                                         height
@@ -96,7 +96,7 @@ impl Reader {
                                     this.document_header_hidden =
                                         (hidden + consumed).clamp(px(0.), height);
                                     if this.document_header_hidden >= height || at_top {
-                                        this.ui_state.reader_header = None;
+                                        this.ui_state.restored_header = None;
                                     }
                                     if consumed != px(0.) {
                                         let remaining = delta.y + consumed;
