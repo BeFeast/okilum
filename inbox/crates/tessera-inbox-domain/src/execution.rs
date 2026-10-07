@@ -81,6 +81,8 @@ fn is_question(kind: &SourceRecordKind) -> bool {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Approval {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
     pub action: String,
     pub target: serde_json::Value,
     pub summary: String,
@@ -198,7 +200,8 @@ impl Question {
                 if s.worker_id.as_ref().is_some_and(|w| identity(w)) => {}
             (SourceKind::Maestro, SourceRecordKind::Approval, Some(a)) => {
                 let target = serde_json::to_vec(&a.target).map_err(|_| InvalidExecution)?;
-                if s.worker_id.is_some()
+                if a.repo.as_ref().is_some_and(|r| !bounded(r, 1024, true))
+                    || s.worker_id.is_some()
                     || !identity(&a.action)
                     || a.action == "stop_worker"
                     || !a.target.is_object()

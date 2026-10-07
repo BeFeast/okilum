@@ -44,3 +44,12 @@ test('explicit refusal persists for the exact operation until its draft is clear
  assert.equal(reopened.isRefused(body.question_id,'other-op'),false);assert.equal(replyJournal(storage,'other-owner').isRefused(body.question_id,body.operation_id),false);
  reopened.clear(body.question_id);assert.equal(reopened.isRefused(body.question_id,body.operation_id),false);
 });
+
+test('Maestro approval receipt describes a recorded decision, never completed execution', async () => {
+ const {questionStatus,operationLabel}=await import('../questions.js');
+ const q={source:{kind:'maestro'},approval:{action:'merge_pr'}};
+ assert.equal(operationLabel(q,'delivered'),'Decision recorded');
+ assert.match(questionStatus(q,{state:'delivered'}),/execution is not confirmed/);
+ assert.equal(operationLabel(q,'accepted'),'Accepted by Maestro');
+ assert.equal(operationLabel({source:{kind:'t3'}},'accepted'),'Accepted by T3');
+});
