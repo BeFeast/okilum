@@ -6,7 +6,8 @@ pkgdesc='Local-first Markdown reader and knowledge environment'
 arch=('x86_64')
 url='https://git.oklabs.uk/BeFeast/tessera'
 license=('MIT')
-depends=('gcc-libs' 'glibc' 'fontconfig' 'freetype2' 'libxcb' 'libxkbcommon' 'libxkbcommon-x11' 'wayland' 'vulkan-icd-loader' 'syncthing')
+depends=('gcc-libs' 'glibc' 'fontconfig' 'freetype2' 'libxcb' 'libxkbcommon' 'libxkbcommon-x11' 'wayland' 'vulkan-icd-loader')
+optdepends=('syncthing: Sync between devices')
 makedepends=('git' 'cmake' 'pkgconf' 'clang' 'mold')
 options=('!debug' '!lto')
 

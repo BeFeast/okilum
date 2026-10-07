@@ -9,7 +9,7 @@ indexes remain disposable, identity/grants/operation journals do not.
 
 - After Enable Sync, a managed user background service continues after closing the
   window and starts at login. Logout/sleep/offline is not loss of the local vault.
-  Linux packages depend on Syncthing but installation never starts it or registers
+  Linux packages offer Syncthing as an optional dependency; installation never starts it or registers
   any service/autostart. Registration starts only on Enable Sync; Disable/Remove
   unregister Tessera-owned services, preserving externally owned services. macOS and
   Windows bundle an unchanged sidecar with matching MPL notices/source access.
@@ -112,7 +112,8 @@ The first Linux controller component is documented in [Linux lifecycle ownership
 
 ### Linux package boundary (#587)
 
-The Arch package declares `syncthing` as a runtime dependency. Tessera installs
+The Arch package declares `syncthing: Sync between devices` in `optdepends`, not
+`depends`. Reader installation and use do not require Syncthing. Tessera installs
 no service unit or package install hook; discovering the package does not run it.
 Only explicit Enable Sync may prepare Tessera's private instance and register
 its user service. Disable/Remove unregister that owned service. External reused
