@@ -1,0 +1,5 @@
+time=2025-10-01T00:00:00Z level=info logger=http msg="request finished" status=200 duration_ms=4.10
+time=2025-10-01T00:00:01Z level=warn logger=http msg="slow request" status=200 duration_ms=812
+goroutine 7 [running]:
+time=2025-10-01T00:00:02Z level=error logger=db msg="query failed: \"timeout\"" retry=true
+time=2025-10-01T00:00:03Z level=debug msg= empty_message=yes

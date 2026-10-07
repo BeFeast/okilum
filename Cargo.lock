@@ -7918,6 +7918,8 @@ dependencies = [
  "comrak",
  "euclid",
  "markdown",
+ "memchr",
+ "memmap2",
  "notify",
  "palette",
  "regex",

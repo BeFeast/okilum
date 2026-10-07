@@ -45,6 +45,7 @@ mod reader_incremental;
 mod reader_instance;
 mod reader_layout;
 mod reader_loading;
+mod reader_log;
 #[cfg(unix)]
 mod reader_move;
 #[cfg(unix)]
@@ -224,6 +225,7 @@ const HIDDEN_FILES_KEY_MAC: &str = "cmd->";
 fn bind_keys(cx: &mut App) {
     #[cfg(unix)]
     reader_move_picker::bind_keys(cx);
+    reader_log::bind_keys(cx);
     cx.bind_keys([
         KeyBinding::new("alt-cmd-r", RevealFile, Some(READER_CONTEXT)),
         KeyBinding::new("alt-cmd-c", CopyVaultPath, Some(READER_CONTEXT)),
