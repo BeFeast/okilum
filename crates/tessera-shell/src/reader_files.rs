@@ -123,6 +123,20 @@ pub(crate) fn menu(mut menu: PopupMenu, root: PathBuf, rel: String) -> PopupMenu
     menu
 }
 
+// Keep ordinary images on the same renderer as image embeds. Native document
+// thumbnails can fail independently even when the raster decoder supports them.
+pub(super) fn inline_image(rel: &str) -> bool {
+    let ext = Path::new(rel)
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    matches!(
+        ext.as_str(),
+        "svg" | "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "apng"
+    ) || (cfg!(target_os = "macos") && matches!(ext.as_str(), "heic" | "heif"))
+}
+
 pub(crate) struct FilePreview {
     pub rel: String,
     pub path: PathBuf,
@@ -163,8 +177,7 @@ impl FilePreview {
             rel: rel.into(),
             path,
             details: live::metadata_label(&ext, &meta),
-            image: ["svg", "png", "jpg", "jpeg", "gif", "webp", "bmp"].contains(&ext.as_str())
-                || (cfg!(target_os = "macos") && ["heic", "heif"].contains(&ext.as_str())),
+            image: inline_image(rel),
         })
     }
 }
@@ -471,12 +484,43 @@ impl Reader {
                             div()
                                 .text_sm()
                                 .text_color(cx.theme().muted_foreground)
-                                .child("Quick Look preview · Space to open"),
+                                .child("Press Space for Quick Look"),
                         ),
                 )
                 .into_any_element();
         }
-        let mut view = v_flex()
+        if preview.image {
+            let image = super::reader_image::ReaderImage::new(image_source(preview.path.clone()))
+                .with_error_message("This image couldn’t be read.");
+            let image = match &preview.image_cache {
+                Some(cache) => image.with_cache(cache.clone()),
+                None => image,
+            };
+            return v_flex()
+                .id("reader-file-preview")
+                .key_context("ReaderFile")
+                .track_focus(&self.focus_handle)
+                .size_full()
+                .overflow_y_scroll()
+                .gap_3()
+                .child(self.render_document_header(window, cx))
+                .child(
+                    v_flex()
+                        .flex_none()
+                        .px_6()
+                        .pb_6()
+                        .gap_3()
+                        .child(image)
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(preview.details.clone()),
+                        ),
+                )
+                .into_any_element();
+        }
+        let view = v_flex()
             .flex_none()
             .px_6()
             .pb_6()
@@ -504,15 +548,7 @@ impl Reader {
                     .text_color(cx.theme().muted_foreground)
                     .child(preview.details.clone()),
             );
-        if preview.image {
-            let image = super::reader_image::ReaderImage::new(image_source(preview.path.clone()))
-                .with_error_message("This image couldn’t be read.");
-            if let Some(cache) = &preview.image_cache {
-                view = view.child(image.with_cache(cache.clone()));
-            } else {
-                view = view.child(image);
-            }
-        }
+
         v_flex()
             .id("reader-file-preview")
             .key_context("ReaderFile")
@@ -606,12 +642,74 @@ mod tests {
         let pdf = FilePreview::load(&root, "report.pdf").unwrap();
         assert!(!pdf.image);
         assert!(pdf.details.contains("12 bytes"));
+        assert!(!pdf.details.contains("UTC"));
         assert!(FilePreview::load(&root, "missing.svg").is_err());
         assert!(checked_path(&root, "../").is_err());
         assert_eq!(
             std::fs::read(root.join("report.pdf")).unwrap(),
             b"%PDF-fixture"
         );
+    }
+
+    #[gpui::test]
+    fn large_jpeg_uses_the_image_decoder_without_document_thumbnails(cx: &mut TestAppContext) {
+        let fixture = Fixture::new();
+        let root = fixture.0.join("vault");
+        // Deterministic high-entropy pixels create a real ~2 MB JPEG, rather
+        // than padding a tiny image that would miss decode/size regressions.
+        let mut state = 0x703u32;
+        let pixels: Vec<u8> = (0..1600 * 1200 * 3)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                state as u8
+            })
+            .collect();
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 80)
+            .encode(&pixels, 1600, 1200, image::ExtendedColorType::Rgb8)
+            .unwrap();
+        assert!(
+            (1_500_000..3_500_000).contains(&jpeg.len()),
+            "JPEG fixture: {} bytes",
+            jpeg.len()
+        );
+        std::fs::write(root.join("photo.JPG"), &jpeg).unwrap();
+        assert!(FilePreview::load(&root, "photo.JPG").unwrap().image);
+        cx.update(|cx| {
+            let decoded = Image::from_bytes(ImageFormat::Jpeg, jpeg.clone())
+                .to_image_data(cx.svg_renderer())
+                .unwrap();
+            assert_eq!(
+                decoded.size(0),
+                size(DevicePixels(1600), DevicePixels(1200))
+            );
+        });
+        #[cfg(unix)]
+        {
+            assert!(!reader_thumbnail::eligible("photo.JPG"));
+            assert!(
+                reader_thumbnail::eligible("report.pdf"),
+                "documents still use native previews"
+            );
+            for name in [
+                "photo.png",
+                "photo.gif",
+                "photo.webp",
+                "photo.bmp",
+                "photo.apng",
+            ] {
+                assert!(inline_image(name));
+                assert!(!reader_thumbnail::eligible(name));
+            }
+        }
+        #[cfg(target_os = "macos")]
+        for name in ["photo.heic", "photo.HEIF"] {
+            assert!(inline_image(name));
+            assert!(!reader_thumbnail::eligible(name));
+        }
+        assert_eq!(std::fs::read(root.join("photo.JPG")).unwrap(), jpeg);
     }
 
     #[gpui::test]

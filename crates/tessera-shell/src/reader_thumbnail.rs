@@ -31,14 +31,7 @@ impl Revision {
 }
 
 pub(super) fn eligible(rel: &str) -> bool {
-    let ext = Path::new(rel)
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    // Keep vector fidelity and animation in the existing image renderer.
-    !matches!(ext.as_str(), "svg" | "gif" | "webp" | "apng")
-        && !tessera_core::excalidraw::is_drawing(rel)
+    !reader_files::inline_image(rel) && !tessera_core::excalidraw::is_drawing(rel)
 }
 
 enum State {
@@ -128,7 +121,7 @@ impl Render for Thumbnail {
                 .gap_3()
                 .text_color(cx.theme().muted_foreground)
                 .child(Icon::new(IconName::File).size(px(48.)))
-                .child("Preview unavailable. Press Space for Quick Look, or open the file.")
+                .child("Preview unavailable.")
                 .into_any_element(),
         };
         div().w_full().flex_none().child(content)
