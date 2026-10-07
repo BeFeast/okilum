@@ -4,8 +4,21 @@ on:
     branches: [main]
   pull_request:
     paths:
-      - scripts/arch/**
-      - .forgejo/workflows/linux-release.yml
+      - 'scripts/arch/**'
+      - 'packaging/**'
+      - 'scripts/ci/release-cache.sh'
+      - 'scripts/releases/**'
+      - 'scripts/vendor-setup.sh'
+      - 'scripts/patches/**'
+      - 'scripts/brand-assets.py'
+      - 'scripts/third-party-notices.py'
+      - 'rust-toolchain.toml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/*/Cargo.toml'
+      - 'crates/tessera-shell/build.rs'
+      - 'crates/tessera-shell/assets/brand/**'
+      - '.forgejo/workflows/linux-release.yml'
   workflow_dispatch:
 
 concurrency:
