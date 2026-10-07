@@ -127,3 +127,22 @@ including highlights, as the actual destination view.
 
 Upstream submission and native hover/click acceptance remain separate
 review gates; widget evidence does not qualify a native platform build.
+
+## Adjacent image attachments (#315)
+
+Ordinary image links and embeds use source-relative identity with one percent
+decode. Explicit `./` and `../` do not redirect. Bare `attachments/...` retains
+root compatibility only when its source-relative candidate is absent; an existing
+invalid entry, including a dangling symlink, blocks fallback. Ambiguity is visible.
+Reader keeps its existing file preview and cached image first paint; completed
+image preparation uses the same bounded resolver as link actions.
+
+Managed preview adds `attachment_links_version: 1` and per-link `asset_url` plus
+`asset_revision`. PNG, JPEG, GIF, WebP, SVG and BMP bytes travel through the existing
+scoped source store and opaque asset table with unchanged byte limits. Ordinary
+links and matching embeds share those bytes. A click or explicit Source/Live
+Preview Open link shows the image in the preview pane; the back glyph restores
+the note. Changing preview ownership clears the image. Backend paths never become
+desktop file paths or OS-launch requests. Unsupported, unreadable or ambiguous
+images give an explicit reason. Old replies without the attachment capability
+cannot open an image. Sources remain unchanged.

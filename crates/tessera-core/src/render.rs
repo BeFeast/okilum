@@ -93,13 +93,9 @@ pub fn rewrite_links<'a>(root: &'a AstNode<'a>, vault: &Vault, note_rel: &str, s
                     .unwrap_or_else(|| format!("{UNRESOLVED_SCHEME}invalid-source-range"));
             }
             NodeValue::Image(img) => {
-                let raw = percent_decode(&img.url);
-                if !raw.contains("://") {
-                    if let Some(abs) = vault.resolve_asset(&raw, note_rel) {
-                        if let Ok(url) = url::Url::from_file_path(abs) {
-                            img.url = url.into();
-                        }
-                    }
+                if !img.url.contains("://") {
+                    img.url = image_file_url(&img.url, vault, note_rel)
+                        .unwrap_or_else(|| "tessera-asset://unavailable".into());
                 }
             }
             NodeValue::Link(link) => {
@@ -322,10 +318,28 @@ pub fn rewrite_source_images(text: &str, vault: &Vault, note_rel: &str) -> Strin
                     }),
             );
         }
-        vault
-            .resolve_asset(&raw, note_rel)
-            .and_then(|abs| url::Url::from_file_path(abs).ok().map(String::from))
+        Some(
+            image_file_url(url, vault, note_rel)
+                .unwrap_or_else(|| "tessera-asset://unavailable".into()),
+        )
     })
+}
+
+fn image_file_url(target: &str, vault: &Vault, from: &str) -> Option<String> {
+    // Cached first paint already owns these image identities. Preserve it while
+    // inventory verification is pending; link actions still await verified identity.
+    if !vault.inventory_complete && !vault.single_file {
+        return vault
+            .resolve_asset(&crate::document_links::decode(target), from)
+            .and_then(|path| url::Url::from_file_path(path).ok())
+            .map(String::from);
+    }
+    let resolved = crate::document_links::resolve(target, false, vault, from);
+    (resolved.status == "attachment")
+        .then(|| resolved.candidates.first())
+        .flatten()
+        .and_then(|path| url::Url::from_file_path(vault.root.join(path)).ok())
+        .map(String::from)
 }
 
 /// Apply a caller-owned image URL resolver while keeping the reader's prose/code
@@ -335,21 +349,73 @@ pub fn rewrite_source_images_with(
     text: &str,
     mut resolve: impl FnMut(&str) -> Option<String>,
 ) -> String {
-    let re = Regex::new(
-        r#"!\[([^\]]*)\]\(([^)\s]+)([ \t]+(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'))?[ \t]*\)"#,
-    )
-    .unwrap();
-    replace_in_prose(text, |prose| {
-        re.replace_all(prose, |c: &regex::Captures| {
-            resolve(&c[2])
-                .map(|url| {
-                    let title = c.get(3).map_or("", |m| m.as_str());
-                    format!("![{}]({}{})", &c[1], url, title)
-                })
-                .unwrap_or_else(|| c[0].to_owned())
-        })
-        .into_owned()
-    })
+    let arena = Arena::new();
+    let root = parse_document(&arena, text, &comrak_options());
+    let lines: Vec<_> = std::iter::once(0)
+        .chain(text.match_indices('\n').map(|(at, _)| at + 1))
+        .collect();
+    let mut replacements = Vec::new();
+    for node in root.descendants() {
+        // Image labels are alt text. Avoid overlapping replacement ranges for
+        // nested image syntax inside a label.
+        if node
+            .ancestors()
+            .skip(1)
+            .any(|parent| matches!(parent.data.borrow().value, NodeValue::Image(_)))
+        {
+            continue;
+        }
+        let data = node.data.borrow();
+        let NodeValue::Image(image) = &data.value else {
+            continue;
+        };
+        let pos = data.sourcepos;
+        let Some(start) = lines.get(pos.start.line.saturating_sub(1)) else {
+            continue;
+        };
+        let Some(end) = lines.get(pos.end.line.saturating_sub(1)) else {
+            continue;
+        };
+        let range = start + pos.start.column.saturating_sub(1)..end + pos.end.column;
+        if text.get(range.clone()).is_none() {
+            continue;
+        }
+        let Some(url) = resolve(&image.url) else {
+            continue;
+        };
+        // Preserve authored alt formatting, including brackets in code spans.
+        let label = node
+            .first_child()
+            .zip(node.last_child())
+            .and_then(|(first, last)| {
+                let a = first.data.borrow().sourcepos.start;
+                let b = last.data.borrow().sourcepos.end;
+                text.get(
+                    (lines.get(a.line.checked_sub(1)?)? + a.column.checked_sub(1)?)
+                        ..(lines.get(b.line.checked_sub(1)?)? + b.column),
+                )
+            })
+            .unwrap_or("");
+        let title = if image.title.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " \"{}\"",
+                image.title.replace('\\', "\\\\").replace('"', "\\\"")
+            )
+        };
+        let destination = if url.contains(['(', ')', ' ', '\t', '\n']) {
+            format!("<{url}>")
+        } else {
+            url
+        };
+        replacements.push((range, format!("![{}]({}{})", label, destination, title)));
+    }
+    let mut output = text.to_owned();
+    for (range, replacement) in replacements.into_iter().rev() {
+        output.replace_range(range, &replacement);
+    }
+    output
 }
 
 /// Rewrite Obsidian `==highlight==` spans in Markdown *source* into inline

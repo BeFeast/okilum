@@ -458,3 +458,35 @@ fn outside_absolute_file_is_explicit_and_never_a_vault_note() {
         tessera_core::Resolution::Unresolved
     );
 }
+
+#[test]
+fn image_rewriting_shares_link_identity_and_keeps_cached_and_quick_view_images() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(temp.path().join("notes")).unwrap();
+    std::fs::write(temp.path().join("notes/start.md"), "# Start").unwrap();
+    std::fs::write(temp.path().join("notes/image (1).png"), b"sibling").unwrap();
+    std::fs::write(temp.path().join("image (1).png"), b"root").unwrap();
+    let mut vault = Vault::scan_metadata(temp.path()).unwrap();
+    let source = "![`bracket ]` and **bold**][image]\n\n[image]: <image%20(1).png>\n\n`![code](image%20(1).png)`\n";
+    let rendered = tessera_core::render::rewrite_source_images(source, &vault, "notes/start.md");
+    assert!(
+        rendered.contains("![`bracket ]` and **bold**](<file://"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("/notes/image%20(1).png>"));
+    assert!(rendered.contains("`![code](image%20(1).png)`"));
+    assert_eq!(
+        links::resolve("image%20(1).png", false, &vault, "notes/start.md").candidates,
+        ["notes/image (1).png"]
+    );
+    vault.inventory_complete = false;
+    assert_eq!(
+        tessera_core::render::rewrite_source_images(source, &vault, "notes/start.md"),
+        rendered
+    );
+    vault.single_file = true;
+    assert_eq!(
+        tessera_core::render::rewrite_source_images(source, &vault, "notes/start.md"),
+        rendered
+    );
+}

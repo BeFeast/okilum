@@ -6,46 +6,46 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use std::path::{Component, Path};
 use tessera_core::{document_links, render, Vault};
 
 const MAX_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_ASSET_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_TOTAL_ASSET_BYTES: u64 = 32 * 1024 * 1024;
 
-fn bounded_relative(root: &Path, candidate: &Path) -> Option<String> {
-    let relative = candidate.strip_prefix(root).ok()?;
-    let mut parts = Vec::new();
-    for component in relative.components() {
-        match component {
-            Component::Normal(part) => parts.push(part.to_str()?.to_owned()),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                parts.pop()?;
-            }
-            _ => return None,
-        }
-    }
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts.join("/"))
-    }
+#[derive(Default)]
+struct PreviewAssets {
+    assets: BTreeMap<String, Value>,
+    paths: BTreeMap<String, Option<(String, String)>>,
+    total_bytes: u64,
 }
-fn media_type(path: &str) -> Option<&'static str> {
-    match Path::new(path)
-        .extension()?
-        .to_str()?
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "png" => Some("image/png"),
-        "jpg" | "jpeg" => Some("image/jpeg"),
-        "gif" => Some("image/gif"),
-        "webp" => Some("image/webp"),
-        "svg" => Some("image/svg+xml"),
-        "bmp" => Some("image/bmp"),
-        _ => None,
+impl PreviewAssets {
+    fn load(&mut self, runner: &Runner, path: &str) -> Result<(String, String)> {
+        if let Some(asset) = self.paths.get(path) {
+            return asset.clone().context("Image unavailable in this preview");
+        }
+        self.paths.insert(path.into(), None);
+        let kind = document_links::image_media_type(path)
+            .context("This attachment format is not supported in managed preview.")?;
+        let asset = runner.read_preview_source(
+            path,
+            MAX_ASSET_BYTES.min(MAX_TOTAL_ASSET_BYTES.saturating_sub(self.total_bytes)),
+        )?;
+        let opaque = format!(
+            "tessera-asset://{}",
+            asset
+                .revision
+                .strip_prefix("sha256:")
+                .context("Invalid attachment revision")?
+        );
+        if !self.assets.contains_key(&opaque) {
+            self.total_bytes += STANDARD.decode(&asset.content_base64)?.len() as u64;
+        }
+        self.assets.entry(opaque.clone()).or_insert_with(
+            || json!({"url":opaque,"content_base64":asset.content_base64,"media_type":kind}),
+        );
+        let result = (opaque, asset.revision);
+        self.paths.insert(path.into(), Some(result.clone()));
+        Ok(result)
     }
 }
 
@@ -69,46 +69,21 @@ pub fn source_preview(runner: &Runner, path: &str, draft: Option<&str>) -> Resul
     // store remains the only path to source and attachment bytes in this API.
     let vault = Vault::scan_metadata(runner.root())?;
     let text = render::preprocess(render::without_frontmatter(raw));
-    let mut assets = BTreeMap::<String, Value>::new();
-    let mut total_asset_bytes = 0u64;
-    let mut asset_paths = BTreeMap::<String, String>::new();
-    let images = render::rewrite_source_images_with(&text, |url| {
-        // Preserve the reader's remote reference, but never fetch it here.
-        if url.starts_with("https://") || url.starts_with("http://") {
+    let mut assets = PreviewAssets::default();
+    let images = render::rewrite_source_images_with(&text, |target| {
+        if target.starts_with("https://") || target.starts_with("http://") {
             return None;
         }
-        let loaded = (|| -> Option<String> {
-            // Explicit file URLs and other schemes never reach a GUI filesystem.
-            if url.contains("://") || url.starts_with("data:") {
-                return None;
-            }
-            let target = url.replace("%20", " ");
-            let candidate = vault.resolve_asset(&target, path)?;
-            let relative = bounded_relative(runner.root(), &candidate)?;
-            if let Some(url) = asset_paths.get(&relative) {
-                return Some(url.clone());
-            }
-            let kind = media_type(&relative)?;
-            let asset = runner
-                .read_preview_source(
-                    &relative,
-                    MAX_ASSET_BYTES.min(MAX_TOTAL_ASSET_BYTES.saturating_sub(total_asset_bytes)),
-                )
-                .ok()?;
-            let opaque = format!(
-                "tessera-asset://{}",
-                asset.revision.strip_prefix("sha256:")?
-            );
-            if !assets.contains_key(&opaque) {
-                total_asset_bytes += STANDARD.decode(&asset.content_base64).ok()?.len() as u64;
-            }
-            asset_paths.insert(relative, opaque.clone());
-            assets.entry(opaque.clone()).or_insert_with(
-                || json!({"url":opaque,"content_base64":asset.content_base64,"media_type":kind}),
-            );
-            Some(opaque)
-        })();
-        Some(loaded.unwrap_or_else(|| "tessera-asset://unavailable".into()))
+        let resolved = document_links::resolve(target, false, &vault, path);
+        let loaded = (resolved.status == "attachment")
+            .then(|| resolved.candidates.first())
+            .flatten()
+            .and_then(|path| assets.load(runner, path).ok());
+        Some(
+            loaded
+                .map(|(url, _)| url)
+                .unwrap_or_else(|| "tessera-asset://unavailable".into()),
+        )
     });
     let mut preparation = document_links::prepared::LinkPreparation::new(&vault, path, |target| {
         let (content, revision) = if target == path {
@@ -138,8 +113,51 @@ pub fn source_preview(runner: &Runner, path: &str, draft: Option<&str>) -> Resul
     // Compatibility adapter only: this is the exact historical inline subset,
     // applied to a link already parsed by Comrak, never the syntax authority.
     let legacy_md = regex::Regex::new(r"^\[([^\]]+)\]\(([^) ]+?\.md)\)$")?;
-    for link in document_links::parse(&images) {
-        let (resolved, prepared) = preparation.link(&link.target, link.wiki);
+    for link in document_links::parse_in_vault(&images, &vault, path) {
+        let (resolved, mut prepared) = preparation.link(&link.target, link.wiki);
+        if resolved.status == "attachment" {
+            let relative = &resolved.candidates[0];
+            let loaded = assets.load(runner, relative);
+            let (status, asset_url, asset_revision, reason) = match loaded {
+                Ok((url, revision)) => ("attachment", Some(url), Some(revision), None),
+                Err(_) => {
+                    let reason = if document_links::image_media_type(relative).is_none() {
+                        "This attachment format is not supported in managed preview."
+                    } else {
+                        "This image is unavailable or exceeds the preview limit. Refresh to try again."
+                    };
+                    prepared.status = document_links::prepared::LinkStatus::Unsupported;
+                    prepared.reason = reason.into();
+                    ("unsupported", None, None, Some(reason))
+                }
+            };
+            prepared.target_revision = asset_revision.clone();
+            let row = json!({"url":resolved.url,"target":link.target,"authored_target":link.target,
+                "wiki":link.wiki,"status":status,"prepared":prepared,
+                "candidates":[{"path":relative,"title":vault.note_title(relative)}],
+                "asset_url":asset_url,"asset_revision":asset_revision,"reason":reason});
+            if !links.contains(&row) {
+                links.push(row);
+            }
+            continue;
+        }
+        if resolved.status == "ambiguous"
+            && document_links::image_media_type(&document_links::decode(
+                link.target.split('#').next().unwrap_or_default(),
+            ))
+            .is_some()
+        {
+            prepared.status = document_links::prepared::LinkStatus::Unsupported;
+            prepared.reason =
+                "Several images match. Use a source-relative or full vault path.".into();
+            let row = json!({"url":resolved.url,"target":link.target,"authored_target":link.target,
+                "wiki":link.wiki,"status":"unsupported","prepared":prepared,
+                "candidates":[],"reason":prepared.reason});
+            if !links.contains(&row) {
+                links.push(row);
+            }
+            continue;
+        }
         let candidates: Vec<_> = resolved
             .candidates
             .iter()
@@ -173,7 +191,7 @@ pub fn source_preview(runner: &Runner, path: &str, draft: Option<&str>) -> Resul
     let markdown = render::rewrite_source_links(&images, &vault, path);
     let markdown = render::rewrite_highlights(&markdown);
     Ok(
-        json!({"prepared_links_version":1,"document_links_version":1,"path":path,"revision":snapshot.revision,"preview_revision":preview_revision,"markdown":markdown,"assets":assets.into_values().collect::<Vec<_>>(),"links":links}),
+        json!({"attachment_links_version":1,"prepared_links_version":1,"document_links_version":1,"path":path,"revision":snapshot.revision,"preview_revision":preview_revision,"markdown":markdown,"assets":assets.assets.into_values().collect::<Vec<_>>(),"links":links}),
     )
 }
 
