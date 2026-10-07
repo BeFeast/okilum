@@ -7,6 +7,10 @@ pub(super) enum Editing {}
 impl Reader {
     pub(super) fn restore_source_position(&self, _: [f32; 2], _: &Window, _: &mut Context<Self>) {}
 
+    pub(super) fn source_highlighting_pending(&self, _: &App) -> bool {
+        false
+    }
+
     pub(super) fn source_scroll_offset(&self, _: &App) -> Option<Point<Pixels>> {
         None
     }
