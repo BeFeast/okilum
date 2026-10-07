@@ -474,6 +474,13 @@ mod tests {
         visual.update(|window, cx| window.draw(cx).clear(cx));
         let undo = visual.debug_bounds("undo-move").expect("folder move Undo");
         visual.simulate_click(undo.center(), Modifiers::default());
+        // Check before background index/watcher work can repair the tree. The
+        // open note is unrelated to the moved folder (the QA reproduction).
+        reader.read_with(visual, |r, _| {
+            assert_eq!(r.current_rel, "Start.md");
+            assert!(r.tree.rows.iter().any(|row| row.path == "Source"));
+            assert!(!r.tree.rows.iter().any(|row| row.path == "Target/Source"));
+        });
         visual.run_until_parked();
         // Verify actual arrow bindings with multiple choices, not a one-result query.
         let picker = reader.update_in(visual, |_, window, cx| {

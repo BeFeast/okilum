@@ -903,7 +903,6 @@ impl Reader {
                             &operation.to,
                             &operation.from,
                         );
-                        r.tree.note_moved(&operation.to, &operation.from);
                         for p in &mut r.history {
                             *p = tessera_core::link_rewrite::moved_path(
                                 p,
@@ -928,7 +927,6 @@ impl Reader {
                     &operation.to,
                     &operation.from,
                 );
-                self.tree.note_moved(&operation.to, &operation.from);
                 for p in &mut self.history {
                     *p = tessera_core::link_rewrite::moved_path(p, &operation.to, &operation.from);
                 }
@@ -940,12 +938,14 @@ impl Reader {
             }
         }
         if result.is_ok() && same_move_root(&self.vault_root, &operation.root) {
+            self.tree.note_moved(&operation.to, &operation.from);
             self.remap_move_sidebar(&operation.to, &operation.from, cx);
             // Pinned/recent paths also belong to readers displaying unrelated notes.
             for (reader, _) in cx.default_global::<Editors>().0.clone() {
                 if reader.entity_id() != cx.entity_id() {
                     let _ = reader.update(cx, |r, cx| {
                         if same_move_root(&r.vault_root, &operation.root) {
+                            r.tree.note_moved(&operation.to, &operation.from);
                             r.remap_move_sidebar(&operation.to, &operation.from, cx);
                             cx.notify();
                         }
