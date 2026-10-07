@@ -1,13 +1,16 @@
 //! Exact UTF-8 file editing, independent of the Brain protocol.
 //! Drafts live in application state; atomic exchanges retain displaced files next
 //! to the note until archived into durable history; racing versions stay protected.
+mod directory;
 use anyhow::{bail, Context, Result};
+pub(crate) use directory::open_regular_at;
+use directory::Directory;
 use rustix::fs::{renameat_with, RenameFlags};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File},
-    io::Write,
+    io::{Read, Write},
     os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
     sync::{
@@ -67,6 +70,7 @@ struct Draft {
 }
 
 pub struct FileEditor {
+    directory: Directory,
     draft: Draft,
     journal: PathBuf,
     lock: Arc<EditorLock>,
@@ -182,13 +186,18 @@ impl FileEditor {
             bail!("Editing requires a regular file without symlinks or hard links");
         }
         let path = path.canonicalize()?;
+        let directory = Directory::open(path.parent().context("Missing source folder")?)?;
         fs::create_dir_all(state)?;
         let key = format!("{:x}", Sha256::digest(path.as_os_str().as_encoded_bytes()));
         let lock = EditorLock::acquire(&state.join(format!("{key}.lock")))
             .context("This note is already being edited in another window")?;
         let journal = state.join(format!("{key}.json"));
-        let base =
-            fs::read_to_string(&path).context("Only lossless UTF-8 source editing is supported")?;
+        let (base, opened) = directory.read(path.file_name().unwrap())?;
+        anyhow::ensure!(
+            (meta.dev(), meta.ino()) == (opened.dev(), opened.ino()),
+            "The source file changed while opening; reopen it"
+        );
+        directory.validate(path.parent().unwrap())?;
         let draft = if journal.exists() {
             let draft: Draft = serde_json::from_slice(&fs::read(&journal)?)?;
             if draft.path != path {
@@ -211,6 +220,7 @@ impl FileEditor {
             }
         };
         Ok(Self {
+            directory,
             draft,
             journal,
             lock: Arc::new(lock),
@@ -224,7 +234,8 @@ impl FileEditor {
         self.draft.text != self.draft.base
     }
     pub fn current(&self) -> Result<String> {
-        Ok(fs::read_to_string(&self.draft.path)?)
+        self.directory.validate(self.draft.path.parent().unwrap())?;
+        Ok(self.directory.read(self.draft.path.file_name().unwrap())?.0)
     }
     /// Update the UI-owned snapshot without performing filesystem I/O.
     pub fn queue_text(&mut self, text: String) -> DraftWrite {
@@ -291,15 +302,14 @@ impl FileEditor {
     }
     fn save_before_exchange(&mut self, before_exchange: impl FnOnce()) -> Result<Save> {
         if !self.dirty() {
+            self.directory.validate(self.draft.path.parent().unwrap())?;
             return Ok(Save::Saved);
         }
         self.persist()?;
-        let metadata = fs::symlink_metadata(&self.draft.path)?;
-        if !metadata.is_file() || metadata.nlink() != 1 {
-            bail!("The source file identity changed; reload it before saving");
-        }
-        let current = self.current()?;
+        self.directory.validate(self.draft.path.parent().unwrap())?;
+        let (current, metadata) = self.directory.read(self.draft.path.file_name().unwrap())?;
         if current == self.draft.text {
+            self.directory.validate(self.draft.path.parent().unwrap())?;
             self.draft.base = current;
             self.persist()?;
             return Ok(Save::Saved);
@@ -308,16 +318,12 @@ impl FileEditor {
             return Ok(Save::Conflict);
         }
         let parent = self.draft.path.parent().unwrap();
-        let directory = File::open(parent)?;
-        let mut temp = tempfile::Builder::new()
-            .prefix(".tessera-save-")
-            .tempfile_in(parent)?;
-        temp.as_file().set_permissions(metadata.permissions())?;
+        let directory = &self.directory.file;
+        let (mut temp, name) = self.directory.temporary()?;
+        temp.set_permissions(metadata.permissions())?;
         temp.write_all(self.draft.text.as_bytes())?;
-        temp.as_file().sync_all()?;
-        // Keep the name before exchange: TempPath's destructor must never remove
-        // the displaced inode, including during an error or process crash.
-        let (_, backup) = temp.keep()?;
+        temp.sync_all()?;
+        let backup = parent.join(name);
         directory.sync_all()?;
         let history = crate::source_history::Preimage::begin(
             self.journal.parent().unwrap(),
@@ -325,30 +331,40 @@ impl FileEditor {
             &self.draft.base,
             &backup,
         )?;
+        self.directory.validate(parent)?;
         before_exchange();
         renameat_with(
-            &directory,
+            directory,
             backup.file_name().unwrap(),
-            &directory,
+            directory,
             self.draft.path.file_name().unwrap(),
             RenameFlags::EXCHANGE,
         )?;
         directory.sync_all()?;
-        let displaced = fs::read(&backup)?;
-        if displaced != self.draft.base.as_bytes() {
+        let displaced =
+            open_regular_at(directory, backup.file_name().unwrap()).and_then(|mut file| {
+                // A racing writer may not have synced its replacement yet.
+                // Protect that inode before either archiving or rolling back.
+                file.sync_all()?;
+                let mut bytes = Vec::new();
+                file.read_to_end(&mut bytes)?;
+                Ok(bytes)
+            });
+        if !displaced.is_ok_and(|bytes| bytes == self.draft.base.as_bytes()) {
             // A racing replacement is restored, and the displaced version from
             // this second exchange also remains on disk. Never delete either.
             renameat_with(
-                &directory,
+                directory,
                 backup.file_name().unwrap(),
-                &directory,
+                directory,
                 self.draft.path.file_name().unwrap(),
                 RenameFlags::EXCHANGE,
             )?;
             directory.sync_all()?;
             return Ok(Save::Conflict);
         }
-        crate::source_history::Preimage::finish(&history)?;
+        crate::source_history::Preimage::finish_bound(&history, directory)?;
+        self.directory.validate(parent)?;
         self.draft.base = self.draft.text.clone();
         self.persist()?;
         // Cleanup is best effort; a retention error never reverses a saved note.
@@ -360,6 +376,185 @@ impl FileEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn replaced_parent_or_ancestor_refuses_save_reload_and_undo_without_losing_drafts() {
+        use std::os::unix::fs::symlink;
+        for ancestor in [false, true] {
+            for redirect in [false, true] {
+                for undo in [false, true] {
+                    let root = tempfile::tempdir().unwrap();
+                    let folder = root.path().join("folder");
+                    let sibling = root.path().join("sibling");
+                    let relative = if ancestor { "child/note.md" } else { "note.md" };
+                    let path = folder.join(relative);
+                    let other = sibling.join(relative);
+                    fs::create_dir_all(path.parent().unwrap()).unwrap();
+                    fs::create_dir_all(other.parent().unwrap()).unwrap();
+                    fs::write(&path, "base").unwrap();
+                    let state = root.path().join("state");
+                    let mut editor = FileEditor::open(&path, &state).unwrap();
+                    if undo {
+                        editor.set_text("saved edit".into()).unwrap();
+                        assert_eq!(editor.save().unwrap(), Save::Saved);
+                    }
+                    let baseline = if undo { "saved edit" } else { "base" };
+                    let draft = if undo { "base" } else { "unsaved edit 🧠" };
+                    editor.set_text(draft.into()).unwrap();
+                    fs::write(&other, baseline).unwrap();
+                    let moved = root.path().join("moved");
+                    fs::rename(&folder, &moved).unwrap();
+                    if redirect {
+                        symlink(&sibling, &folder).unwrap();
+                    } else {
+                        fs::create_dir_all(path.parent().unwrap()).unwrap();
+                        fs::write(&path, baseline).unwrap();
+                    }
+                    assert!(editor.current().is_err());
+                    assert!(editor.refresh_from_disk().is_err());
+                    assert!(editor.reload().is_err());
+                    assert!(editor.keep_mine(baseline).is_err());
+                    assert!(editor.save().is_err());
+                    assert_eq!(editor.text(), draft);
+                    assert_eq!(fs::read_to_string(&other).unwrap(), baseline);
+                    assert_eq!(fs::read_to_string(&path).unwrap(), baseline);
+                    assert_eq!(fs::read_to_string(moved.join(relative)).unwrap(), baseline);
+                    if redirect {
+                        fs::remove_file(&folder).unwrap();
+                    } else {
+                        fs::remove_dir_all(&folder).unwrap();
+                    }
+                    fs::rename(moved, folder).unwrap();
+                    drop(editor);
+                    let mut recovered = FileEditor::open(&path, &state).unwrap();
+                    assert_eq!(recovered.text(), draft);
+                    assert_eq!(recovered.save().unwrap(), Save::Saved);
+                    assert_eq!(fs::read_to_string(&path).unwrap(), draft);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn parent_swap_at_exchange_cannot_redirect_note_or_preimage_archiving() {
+        use std::os::unix::fs::symlink;
+        for redirect in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let folder = root.path().join("folder");
+            let sibling = root.path().join("sibling");
+            fs::create_dir(&folder).unwrap();
+            fs::create_dir(&sibling).unwrap();
+            let path = folder.join("note.md");
+            fs::write(&path, "base").unwrap();
+            fs::write(sibling.join("note.md"), "base").unwrap();
+            let original_inode = fs::metadata(&path).unwrap().ino();
+            let state = root.path().join("state");
+            let mut editor = FileEditor::open(&path, &state).unwrap();
+            editor.set_text("mine".into()).unwrap();
+            let moved = root.path().join("moved");
+            let result = editor.save_before_exchange(|| {
+                // Even after the last identity check, all I/O must stay bound.
+                let backup = fs::read_dir(&folder)
+                    .unwrap()
+                    .flatten()
+                    .find(|e| {
+                        e.file_name()
+                            .to_string_lossy()
+                            .starts_with(".tessera-save-")
+                    })
+                    .unwrap()
+                    .file_name();
+                fs::rename(&folder, &moved).unwrap();
+                if redirect {
+                    symlink(&sibling, &folder).unwrap();
+                } else {
+                    fs::create_dir(&folder).unwrap();
+                    fs::write(&path, "base").unwrap();
+                }
+                // A decoy with matching bytes must not be moved into history.
+                fs::write(folder.join(&backup), "base").unwrap();
+            });
+            assert!(
+                result.is_err(),
+                "stale visible path cannot report a successful save"
+            );
+            assert_eq!(fs::read_to_string(&path).unwrap(), "base");
+            assert_eq!(fs::read_to_string(sibling.join("note.md")).unwrap(), "base");
+            assert_eq!(fs::read_to_string(moved.join("note.md")).unwrap(), "mine");
+            let archived = fs::read_dir(state.join("source-history"))
+                .unwrap()
+                .flatten()
+                .find(|e| e.path().extension().is_some_and(|x| x == "source"))
+                .unwrap()
+                .path();
+            assert_eq!(fs::metadata(&archived).unwrap().ino(), original_inode);
+            assert_eq!(fs::read_to_string(archived).unwrap(), "base");
+            assert!(fs::read_dir(&folder).unwrap().flatten().any(|e| e
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".tessera-save-")));
+            let draft: Draft = serde_json::from_slice(&fs::read(&editor.journal).unwrap()).unwrap();
+            assert_eq!(draft.text, "mine");
+            assert_eq!(draft.base, "base");
+        }
+    }
+
+    #[test]
+    fn replacing_an_ancestor_is_detected_even_when_the_note_parent_inode_is_retained() {
+        let root = tempfile::tempdir().unwrap();
+        let ancestor = root.path().join("ancestor");
+        let parent = ancestor.join("parent");
+        fs::create_dir_all(&parent).unwrap();
+        let path = parent.join("note.md");
+        fs::write(&path, "base").unwrap();
+        let mut editor = FileEditor::open(&path, &root.path().join("state")).unwrap();
+        editor.set_text("mine".into()).unwrap();
+        let old_parent = fs::metadata(&parent).unwrap().ino();
+        let moved = root.path().join("moved");
+        fs::rename(&ancestor, &moved).unwrap();
+        fs::create_dir(&ancestor).unwrap();
+        fs::rename(moved.join("parent"), &parent).unwrap();
+        assert_eq!(fs::metadata(&parent).unwrap().ino(), old_parent);
+        assert!(editor.save().is_err());
+        assert_eq!(fs::read_to_string(path).unwrap(), "base");
+        assert_eq!(editor.text(), "mine");
+    }
+
+    #[test]
+    fn a_non_utf8_racing_write_is_restored_by_the_bound_exchange() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("note.md");
+        fs::write(&path, "base").unwrap();
+        let mut editor = FileEditor::open(&path, &root.path().join("state")).unwrap();
+        editor.set_text("mine".into()).unwrap();
+        assert_eq!(
+            editor
+                .save_before_exchange(|| fs::write(&path, [0xff]).unwrap())
+                .unwrap(),
+            Save::Conflict
+        );
+        assert_eq!(fs::read(path).unwrap(), [0xff]);
+        assert!(editor.dirty());
+    }
+
+    #[test]
+    fn moved_parent_without_replacement_is_refused_and_remains_recoverable() {
+        let root = tempfile::tempdir().unwrap();
+        let folder = root.path().join("folder");
+        fs::create_dir(&folder).unwrap();
+        let path = folder.join("note.md");
+        fs::write(&path, "base").unwrap();
+        let state = root.path().join("state");
+        let mut editor = FileEditor::open(&path, &state).unwrap();
+        editor.set_text("mine".into()).unwrap();
+        let moved = root.path().join("moved");
+        fs::rename(&folder, &moved).unwrap();
+        assert!(editor.save().is_err());
+        assert_eq!(fs::read_to_string(moved.join("note.md")).unwrap(), "base");
+        fs::rename(&moved, &folder).unwrap();
+        assert_eq!(editor.save().unwrap(), Save::Saved);
+        assert_eq!(fs::read_to_string(path).unwrap(), "mine");
+    }
+
     #[test]
     fn lossless_and_recovery() {
         for original in [
