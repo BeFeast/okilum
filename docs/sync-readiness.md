@@ -121,3 +121,39 @@ This is evidence for generation fields, not yet a client receipt validator.
 The client must reject expired observations and changed generations before any
 promotion. Known hub/global/local writes can still race separate REST calls;
 concurrent-change acceptance and crash recovery must precede enabling promotion.
+
+### Native observation validation
+
+The native pairing client now parses scoped observations into in-memory receipts.
+It validates protocol, registration/vault/device/hub/folder binding and a remaining
+lifetime of at most 30 seconds. Each receipt also carries a monotonic deadline;
+it is deliberately not serializable. Clock rollback cannot extend that deadline,
+and controller restart requires new observations. Two distinct fresh receipts
+must agree on owner, scope, adapter generation, daemon startup and hub counters.
+Paused/disconnected/unknown state, missing counters, pending downloads, local
+receive-only changes or mismatched totals fail the predicate.
+
+`FolderController::first_receive_ready` obtains receipts through the saved
+Enrollment credentials, scans the authenticated client between them, rechecks
+folder ownership/configuration and ignores, and evaluates the interval. This is
+an observational API, not automatic promotion. Reused folders cannot enter this
+path. A concurrent external write after the last scan remains outside this
+interval evidence; promotion still needs its own journal, replay logic and race
+acceptance before it changes receive-only mode.
+
+Unit regressions cover scope, expiration, revocation state, replay of one receipt,
+monotonic expiration, changed owner/generation/startup, partial index/content and
+local edits. The empty real-daemon fixture also feeds its actual REST counters
+through this same client parser and predicate, with pause/resume negative control.
+
+The large native predicate experiment identified a pinned-version counter
+incompatibility: hub 1.29.5 includes `SyntheticDirectorySize = 128` bytes per
+non-deleted directory or symlink (`protocol.FileInfo.FileSize`), whereas the
+2.1.6 fixture reports file bytes. Identical 12,000-note contents differed by 128
+bytes for the single directory. The adapter now also supplies global directory
+and symlink counts. The client subtracts their checked synthetic contribution
+from the pinned hub's global byte count before comparing to 2.1.6; missing counts,
+overflow or underflow fail closed. Hub-local versus hub-global bytes must still
+match before normalization, and pending/local-change/index checks remain required.
+This normalization is version-specific and must be revisited before upgrading
+either pinned endpoint. A unit regression covers both directories and symlinks.

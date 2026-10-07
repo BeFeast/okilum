@@ -255,6 +255,56 @@ impl FolderController {
         api.patch_folder(&j.descriptor.folder_id, &json!({"paused":paused}))?;
         self.status_locked(&mut j, &api)
     }
+    /// Read-only first-receive gate for Settings. This does not change folder
+    /// type; crash-safe promotion is a separate operation. The gate always
+    /// obtains new service observations and scans the authenticated local daemon.
+    pub fn first_receive_ready(
+        &self,
+        enrollment: &crate::enrollment::Enrollment,
+        service: &crate::pairing::Service,
+    ) -> Result<bool> {
+        let _lock = private::lock(&self.state)?;
+        let j = self.load()?;
+        ensure!(
+            j.owns_folder && !j.remove_requested && j.phase == Phase::Receiving,
+            "first receive is not active"
+        );
+        let api = j.daemon.connect()?;
+        let folder = api.folder(&j.descriptor.folder_id)?;
+        validate_owned(&j, &folder)?;
+        if folder["paused"] != false
+            || !policy_matches(
+                &api.ignores(&j.descriptor.folder_id)?,
+                &j.descriptor.ignores,
+            )?
+        {
+            return Ok(false);
+        }
+        let first = enrollment.readiness(service)?;
+        let observation = first.observation();
+        ensure!(
+            observation.registration_id == j.registration
+                && observation.vault_id == j.vault
+                && observation.device_id == j.daemon.device_id
+                && observation.folder_id == j.descriptor.folder_id
+                && observation.hub_device_id == j.descriptor.hub_device_id,
+            "folder and readiness scope differ"
+        );
+        api.scan(&j.descriptor.folder_id)?;
+        let second = enrollment.readiness(service)?;
+        let status = api.status(&j.descriptor.folder_id)?;
+        let current = api.folder(&j.descriptor.folder_id)?;
+        validate_owned(&j, &current)?;
+        if current != folder
+            || !policy_matches(
+                &api.ignores(&j.descriptor.folder_id)?,
+                &j.descriptor.ignores,
+            )?
+        {
+            return Ok(false);
+        }
+        crate::readiness::interval_complete(&first, &second, &status)
+    }
     pub fn status(&self) -> Result<LocalStatus> {
         let _lock = private::lock(&self.state)?;
         let mut j = self.load()?;

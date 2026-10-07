@@ -504,6 +504,7 @@ fn readiness_boundaries_empty_and_large() -> Result<()> {
         "large: hub boundary={boundary}, client remote sequence={}, local items={}",
         complete["remoteSequence"][&hub.id], complete["localTotalItems"]
     );
+    verify_live_readiness(&hub, &client, id)?;
     // A user edit in receive-only mode must prevent promotion despite no download need.
     write(&client.vault, "local-only.md", "must not be published")?;
     client.api.scan(id)?;
@@ -572,6 +573,7 @@ fn empty_readiness_requires_live_folder_connection() -> Result<()> {
         "empty remote folder: {}",
         hub.api.completion(id, &client.id)?
     );
+    verify_live_readiness(&hub, &client, id)?;
     client.api.patch_folder(id, &json!({"paused":true}))?;
     wait("paused empty remote folder not valid", || {
         Ok(hub.api.completion(id, &client.id)?["remoteState"] != "valid")
@@ -585,5 +587,50 @@ fn empty_readiness_requires_live_folder_connection() -> Result<()> {
         Ok(hub.api.completion(id, &client.id)?["remoteState"] == "valid")
     })?;
     assert_eq!(client.api.folder(id)?["type"], "receiveonly");
+    Ok(())
+}
+
+fn verify_live_readiness(hub: &Peer, client: &Peer, id: &str) -> Result<()> {
+    use tessera_sync_controller::readiness::{interval_complete, Observation, Receipt};
+    let registration = Registration {
+        id: Uuid::new_v4(),
+        vault: Uuid::new_v4(),
+        device_id: client.id.clone(),
+        name: "fixture".into(),
+        state: State::HubReady,
+        last_error: None,
+    };
+    let descriptor = Descriptor {
+        folder_id: id.into(),
+        hub_device_id: hub.id.clone(),
+        hub_address: format!("tcp://{}", hub.listen),
+        ignores: vec![],
+    };
+    let owner = Uuid::new_v4();
+    let generation = Uuid::new_v4();
+    let observe = || -> Result<Receipt> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs();
+        let observation: Observation = serde_json::from_value(json!({
+            "protocol":1,"observation_id":Uuid::new_v4(),"adapter_generation":generation,
+            "hub_started_at":hub.api.identity()?["startTime"],"expires_at":now+30,
+            "owner_id":owner,"vault_id":registration.vault,"registration_id":registration.id,
+            "device_id":client.id,"hub_device_id":hub.id,"folder_id":id,
+            "paused":hub.api.folder(id)?["paused"],
+            "connected":hub.api.connections()?["connections"][&client.id]["connected"],
+            "remote_state":hub.api.completion(id, &client.id)?["remoteState"],"hub":hub.api.status(id)?
+        }))?;
+        Receipt::new(observation, &registration, &descriptor)
+    };
+    let first = observe()?;
+    client.api.scan(id)?;
+    let status = client.api.status(id)?;
+    let second = observe()?;
+    ensure!(
+        interval_complete(&first, &second, &status)?,
+        "actual REST fields did not establish readiness: hub={:?}, client={status}",
+        second.observation().hub
+    );
     Ok(())
 }

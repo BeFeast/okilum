@@ -280,6 +280,8 @@ impl Hub {
                     "globalTotalItems",
                     "localTotalItems",
                     "globalBytes",
+                    "globalDirectories",
+                    "globalSymlinks",
                     "localBytes",
                     "needTotalItems",
                     "receiveOnlyTotalItems",
