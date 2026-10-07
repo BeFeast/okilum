@@ -32,9 +32,11 @@ jobs:
           export TESSERA_BUILD_VERSION=$((5000 + ${GITHUB_RUN_NUMBER:?}))
           bash scripts/build-macos-intel-qa.sh "$RUNNER_TEMP/intel-qa-$GITHUB_RUN_NUMBER"
       - uses: https://code.forgejo.org/actions/upload-artifact@v3
+        if: always()
         with:
           name: macos-intel-qa
           path: |
             ${{ runner.temp }}/intel-qa-${{ github.run_number }}/*.zip
             ${{ runner.temp }}/intel-qa-${{ github.run_number }}/metrics.txt
+            ${{ runner.temp }}/intel-qa-${{ github.run_number }}/compiler.log
           retention-days: 14
