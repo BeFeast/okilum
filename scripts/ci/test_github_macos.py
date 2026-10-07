@@ -120,6 +120,24 @@ class BridgeTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 bridge.ref_name(*args)
 
+    def test_repeated_forgejo_attempt_has_isolated_github_ref(self):
+        first = bridge.ref_name('564', SHA, '123', '1', '1' * 32)
+        second = bridge.ref_name('564', SHA, '123', '1', '2' * 32)
+        self.assertNotEqual(first, second)
+        api = API(runs=[dict(RUN, head_branch=first, id=10),
+                        dict(RUN, head_branch=first, id=11),
+                        dict(RUN, head_branch=second, id=12)])
+        clock = Clock()
+        result, _ = bridge.wait_for_run(api, second, SHA,
+                                        clock=clock, sleep=clock.sleep)
+        self.assertEqual(result, 'success')
+        self.assertIn(('actions/runs/12/jobs?per_page=100', 'GET'), api.calls)
+        with self.assertRaises(ValueError):
+            bridge.ref_name('564', SHA, '123', '1', '../bad')
+
+    def test_duplicate_runs_for_same_invocation_still_fail_closed(self):
+        self.assertEqual(self.wait(API(runs=[RUN, dict(RUN, id=2)])), 'failure')
+
     def test_cleanup_cannot_delete_main_tags_or_another_pr(self):
         class Refs(API):
             def request(self, path, method='GET', data=None):

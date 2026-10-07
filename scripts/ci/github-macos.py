@@ -15,6 +15,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
 REPOSITORY = "BeFeast/tessera"
 WORKFLOW = ".github/workflows/forgejo-macos.yml"
@@ -47,13 +48,16 @@ class GitHub:
             raise Unavailable(f"GitHub {method} {path.split('?')[0]}: {type(error).__name__}") from None
 
 
-def ref_name(number, sha, run_id, attempt):
+def ref_name(number, sha, run_id, attempt, invocation=None):
     if not re.fullmatch(r"[0-9a-f]{40}", sha):
         raise ValueError("Expected a full PR head SHA")
     if any(not re.fullmatch(r"[1-9][0-9]*", str(value))
            for value in (number, run_id, attempt)):
         raise ValueError("Expected positive PR/run/attempt identifiers")
-    return f"forgejo-pr/{number}/{sha}-{run_id}-{attempt}"
+    if invocation is not None and not re.fullmatch(r"[0-9a-f]{32}", invocation):
+        raise ValueError("Expected a UUID hex invocation identifier")
+    suffix = f"-{invocation}" if invocation is not None else ""
+    return f"forgejo-pr/{number}/{sha}-{run_id}-{attempt}{suffix}"
 
 
 def push_head(branch, sha, token):
@@ -151,7 +155,7 @@ def main():
             raise Unavailable("GitHub mirror token is unavailable")
         sha = os.environ["PR_HEAD_SHA"]
         branch = ref_name(os.environ["PR_NUMBER"], sha, os.environ["GITHUB_RUN_ID"],
-                          (os.environ.get("GITHUB_RUN_ATTEMPT") or "1"))
+                          (os.environ.get("GITHUB_RUN_ATTEMPT") or "1"), uuid.uuid4().hex)
         push_head(branch, sha, token)
         result, message = wait_for_run(GitHub(token), branch, sha)
         print(message)
