@@ -1,0 +1,12 @@
+build-essential
+cmake
+pkg-config
+curl
+git
+mold
+libwayland-dev
+libxkbcommon-dev
+libxkbcommon-x11-dev
+libfontconfig-dev
+libfreetype-dev
+libxcb1-dev
