@@ -77,3 +77,15 @@ opening. It does not pin ancestor directories for the lifetime of FileEditor:
 post-open parent replacement remains tracked in #699. Native write activation must
 resolve that shared-editor limitation before claiming vault-bound writes under
 concurrent directory replacement.
+
+## Indexed edit evidence
+
+The disposable Tasks index retains the full-source revision alongside each note's
+tasks. A prose-only change in a task-bearing note republishes this evidence even
+when visible task text stays unchanged. Files without tasks remain irrelevant.
+The UI must retain the immutable index that produced a displayed row and use that
+snapshot's `edit_target` on a worker with canonical source bytes. It must not look
+up a newer index at click time: doing so would authorize a revision the user has
+not seen. The index checks both the complete revision and occurrence membership
+before creating the Target; the write layer independently checks again at save.
+Cloned index snapshots retain their original evidence across updates/removals.

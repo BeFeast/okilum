@@ -1,4 +1,4 @@
-//! Read-only, disposable projection of canonical Markdown tasks.
+//! Disposable task projection with source revisions for explicit edit planning.
 use comrak::{nodes::NodeValue, parse_document, Arena};
 use std::{cmp::Ordering, collections::BTreeMap, sync::Arc};
 use time::{Date, Duration};
@@ -109,30 +109,60 @@ fn inline_text<'a>(node: &'a comrak::nodes::AstNode<'a>) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
+#[derive(Clone, Debug)]
+struct IndexedNote {
+    revision: String,
+    tasks: Vec<Task>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Index {
-    notes: BTreeMap<String, Arc<Vec<Task>>>,
+    notes: BTreeMap<String, Arc<IndexedNote>>,
 }
 impl Index {
-    /// Returns whether the projected task set changed (ordinary prose edits
-    /// must not invalidate every visible query).
+    /// Returns whether tasks or their full-source revision changed. Prose-only
+    /// files remain irrelevant; prose edits in a task-bearing note invalidate
+    /// edit evidence even when its visible tasks are identical.
     pub fn replace(&mut self, path: &str, source: &str) -> bool {
         let tasks = parse(path, source);
         if tasks.is_empty() {
-            self.remove(path)
-        } else if self
+            return self.remove(path);
+        }
+        let revision = crate::task_edit::revision(source);
+        if self
             .notes
             .get(path)
-            .is_some_and(|old| old.as_ref() == &tasks)
+            .is_some_and(|old| old.revision == revision)
         {
-            false
-        } else {
-            self.notes.insert(path.to_owned(), Arc::new(tasks));
-            true
+            return false;
         }
+        self.notes
+            .insert(path.to_owned(), Arc::new(IndexedNote { revision, tasks }));
+        true
     }
     pub fn remove(&mut self, path: &str) -> bool {
         self.notes.remove(path).is_some()
+    }
+    /// Resolve on a worker against the immutable index used to display `task`,
+    /// never a newer index fetched at click time. The caller reads canonical
+    /// source; this method refuses any difference from the displayed revision.
+    /// FileEditor still checks the resulting Target again when committing.
+    pub fn edit_target(
+        &self,
+        task: &Task,
+        source: &str,
+    ) -> Result<crate::task_edit::Target, String> {
+        let note = self
+            .notes
+            .get(&task.path)
+            .ok_or("The task source is no longer indexed")?;
+        if note.revision != crate::task_edit::revision(source) {
+            return Err("This note changed. Refresh the dashboard before editing the task.".into());
+        }
+        if !note.tasks.contains(task) {
+            return Err("The task does not belong to this displayed snapshot".into());
+        }
+        crate::task_edit::Target::capture(&task.path, source, task.line)
     }
     pub fn query(&self, query: &Query) -> Vec<Task> {
         if !query.unsupported.is_empty() {
@@ -141,7 +171,7 @@ impl Index {
         let mut tasks: Vec<_> = self
             .notes
             .values()
-            .flat_map(|v| v.iter())
+            .flat_map(|v| v.tasks.iter())
             .filter(|t| query.filters.iter().all(|f| f.matches(t)))
             .cloned()
             .collect();
@@ -443,12 +473,13 @@ mod tests {
         assert!(run(&i, "").is_empty());
     }
     #[test]
-    fn unchanged_projection_does_not_invalidate_queries() {
+    fn projection_tracks_task_source_revisions() {
         let mut index = Index::default();
         assert!(!index.replace("prose.md", "Ordinary prose"));
         assert!(!index.remove("missing.md"));
         assert!(index.replace("task.md", "- [ ] Task\n\nProse"));
-        assert!(!index.replace("task.md", "- [ ] Task\n\nChanged prose"));
+        assert!(!index.replace("task.md", "- [ ] Task\n\nProse"));
+        assert!(index.replace("task.md", "- [ ] Task\n\nChanged prose"));
         assert!(
             index.replace("task.md", "New paragraph\n\n- [ ] Task\n"),
             "source line changed"
@@ -456,6 +487,34 @@ mod tests {
         assert!(index.remove("task.md"));
     }
 
+    #[test]
+    fn edit_evidence_stays_bound_to_displayed_snapshot_and_occurrence() {
+        let source =
+            "\u{feff}---\r\ntype: Note\r\n---\r\n- [ ] Same\r\n- [ ] Same\r\n\r\nProse\r\n";
+        let mut index = Index::default();
+        index.replace("a.md", source);
+        let shown = index.clone();
+        let rows = run(&shown, "not done");
+        let target = shown.edit_target(&rows[1], source).unwrap();
+        let changed = target
+            .plan(source, crate::task_edit::Change::Checked(true))
+            .unwrap();
+        assert_eq!(
+            changed.after,
+            source.replace("- [ ] Same\r\n\r\n", "- [x] Same\r\n\r\n")
+        );
+        let newer = source.replace("Prose", "Changed prose");
+        assert!(index.replace("a.md", &newer));
+        assert_eq!(run(&index, "not done"), rows);
+        assert!(shown.edit_target(&rows[1], &newer).is_err());
+        assert!(index.edit_target(&rows[1], &newer).is_ok());
+        let mut invented = rows[1].clone();
+        invented.line += 1;
+        assert!(shown.edit_target(&invented, source).is_err());
+        index.remove("a.md");
+        assert!(index.edit_target(&rows[1], source).is_err());
+        assert!(shown.edit_target(&rows[1], source).is_ok());
+    }
     #[test]
     fn navigation_uses_rendered_inline_text_and_rejects_lossy_projection() {
         let source = "- [ ] Use `code` and **bold**\n";
