@@ -105,6 +105,12 @@ offers use a four-second toast only when a newer draft exists; entering source m
 can still restore it later. An unclean launch with no unsaved draft is silent. No
 notification adds a full-width row. History actions use a compact floating toolbar.
 
+The unreadable-items list uses note names without Markdown extensions and folder
+breadcrumbs to distinguish duplicates. Each row explains the unavailable item
+in plain language. Full paths, original errors and the diagnostic log location
+are behind a technical-details disclosure and included in Copy. Details, Copy
+and Retry use compact glyphs with tooltips; Retry closes the list and refreshes.
+
 ## Typography
 
 Fonts stay the brand pair: Noto Sans (UI and text) and Cascadia Code (code).
