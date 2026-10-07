@@ -52,6 +52,7 @@ pub(crate) struct LogView {
 
 impl LogView {
     pub(crate) fn ready(document: LogDocument, cx: &mut Context<Self>) -> Self {
+        record_ready(&document, cx);
         Self {
             state: State::Ready(document),
             selected: None,
@@ -80,6 +81,9 @@ impl LogView {
                     }),
                     Err(error) => State::Failed(format!("{error:#}")),
                 };
+                if let State::Ready(document) = &this.state {
+                    record_ready(document, cx);
+                }
                 cx.notify();
             });
         });
@@ -202,7 +206,7 @@ impl LogView {
                             .flex_none()
                             .w(px(92.))
                             .font_family(mono.clone())
-                            .text_xs()
+                            .text_size(px(12.))
                             .text_color(muted)
                             .child(row.time),
                     )
@@ -211,7 +215,7 @@ impl LogView {
                             .flex_none()
                             .w(px(28.))
                             .font_family(mono.clone())
-                            .text_xs()
+                            .text_size(px(12.))
                             .text_color(level_color(level, cx))
                             .when(level == Level::Fatal, |badge| {
                                 badge.font_weight(FontWeight::BOLD)
@@ -316,7 +320,7 @@ impl LogView {
                                 .w(px(KEY_WIDTH))
                                 .truncate()
                                 .font_family(mono.clone())
-                                .text_xs()
+                                .text_size(px(12.))
                                 .text_color(muted)
                                 .child(key),
                         )
@@ -325,7 +329,7 @@ impl LogView {
                                 .flex_1()
                                 .min_w_0()
                                 .when(kind != ValueKind::String, |value| {
-                                    value.font_family(mono.clone()).text_xs()
+                                    value.font_family(mono.clone()).text_size(px(12.))
                                 })
                                 .child(value),
                         )
@@ -341,7 +345,7 @@ impl LogView {
                             format => format!("Not a {} record", format.label()),
                         }),
                 )
-                .child(div().font_family(mono).text_xs().child(
+                .child(div().font_family(mono).text_size(px(12.)).child(
                     String::from_utf8_lossy(file.raw(index).unwrap_or_default()).into_owned(),
                 )),
         };
@@ -360,7 +364,7 @@ impl LogView {
             .px_3()
             .border_t_1()
             .border_color(brand::palette(cx).border_subtle)
-            .text_xs()
+            .text_size(px(12.))
             .text_color(cx.theme().muted_foreground)
             .child(div().truncate().child(text))
             .into_any_element()
@@ -413,6 +417,20 @@ impl Render for LogView {
             .child(list)
             .child(self.render_detail(cx))
             .child(self.render_status(cx))
+    }
+}
+
+/// Keep indexing performance in diagnostics instead of the document chrome.
+fn record_ready(document: &LogDocument, cx: &App) {
+    if let Some(trace) = reader_diagnostics::trace(cx) {
+        trace.event(
+            "LOG_READY",
+            serde_json::json!({
+                "path": document.rel,
+                "records": document.file.index().len(),
+                "duration_ms": document.elapsed.as_secs_f64() * 1000.,
+            }),
+        );
     }
 }
 
@@ -552,11 +570,7 @@ fn status_text(document: &LogDocument) -> String {
     if stats.timestamped > 0 {
         parts.push("Times in UTC".into());
     }
-    parts.push(format!(
-        "Indexed {} in {:.2} s",
-        size(index.bytes()),
-        document.elapsed.as_secs_f64()
-    ));
+    parts.push(size(index.bytes()));
     parts.join(" · ")
 }
 
@@ -694,7 +708,7 @@ mod tests {
         let status = status_text(&document);
         assert_eq!(
             status,
-            "JSON lines · 1 record · No record has a level · Times in UTC · Indexed 32 bytes in 0.01 s"
+            "JSON lines · 1 record · No record has a level · Times in UTC · 32 bytes"
         );
         assert!(!status.contains(" 0 "));
         let (_dir, file) = log("{\"level\":\"info\"}\n{\"a\":1}\n{\"a\":2}\nraw\n");
