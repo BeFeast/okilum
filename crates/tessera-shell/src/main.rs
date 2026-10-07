@@ -7351,7 +7351,7 @@ mod document_link_landing_tests {
         view.update(visual, |v, cx| {
             v.sidebar.collapsed.remove(&Section::Inbox);
             v.sidebar.pinned.clear();
-            v.inbox = ["Work/Projects/Idea.md", "Work/Resources/_index.md"]
+            v.inbox = ["Work/Projects/Idea.md", "Work/Resources/README.md"]
                 .into_iter()
                 .map(|path| reader_sidebar::InboxItem {
                     path: path.into(),
@@ -7393,8 +7393,8 @@ mod document_link_landing_tests {
                 "side-Inbox-Work/Projects/Idea.md-location",
             ),
             (
-                "side-Inbox-Work/Resources/_index.md",
-                "side-Inbox-Work/Resources/_index.md-location",
+                "side-Inbox-Work/Resources/README.md",
+                "side-Inbox-Work/Resources/README.md-location",
             ),
         ] {
             let row = visual.debug_bounds(row_selector).unwrap();
