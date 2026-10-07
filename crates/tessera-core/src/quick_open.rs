@@ -1,21 +1,36 @@
 //! Whole-vault name/path matching, independent of the full-text index.
+use std::collections::HashMap;
+
 use crate::vault::Note;
 
 /// Rank every note before limiting display rows. Recent paths are oldest first.
 pub fn search(notes: &[Note], query: &str, recent: &[String], limit: usize) -> Vec<Note> {
+    search_titled(notes, &HashMap::new(), query, recent, limit)
+}
+
+/// As [`search`], but also matches the display title a note resolves to
+/// (frontmatter title or first H1), keyed by path. A title match ranks with
+/// the file-name match; the path is always matched as well.
+pub fn search_titled(
+    notes: &[Note],
+    titles: &HashMap<String, String>,
+    query: &str,
+    recent: &[String],
+    limit: usize,
+) -> Vec<Note> {
     let query = query.trim().to_lowercase();
     let mut matches: Vec<_> = notes
         .iter()
         .filter_map(|note| {
-            let title = note.title.to_lowercase();
-            let path = note.path.to_lowercase();
             let score = if query.is_empty() {
                 0
             } else {
-                score(&title, &query)
-                    .map(|s| s + 1000)
+                let display = titles.get(&note.path).map(|t| t.to_lowercase());
+                score(&note.title.to_lowercase(), &query)
                     .into_iter()
-                    .chain(score(&path, &query))
+                    .chain(display.and_then(|title| score(&title, &query)))
+                    .map(|s| s + 1000)
+                    .chain(score(&note.path.to_lowercase(), &query))
                     .max()?
             };
             let recency = recent
@@ -106,6 +121,37 @@ mod tests {
         for length in 1..="Note 4999".len() {
             assert!(!search(&notes, &"Note 4999"[..length], &recent, 30).is_empty());
         }
+    }
+    #[test]
+    fn display_titles_match_alongside_names_and_paths() {
+        let notes = vec![
+            Note {
+                path: "Projects/2026-10-06-kickoff.md".into(),
+                title: "2026-10-06-kickoff".into(),
+            },
+            Note {
+                path: "Projects/Roadmap.md".into(),
+                title: "Roadmap".into(),
+            },
+        ];
+        let titles = HashMap::from([(
+            "Projects/2026-10-06-kickoff.md".to_string(),
+            "Quarterly planning".to_string(),
+        )]);
+        let paths = |query: &str| -> Vec<String> {
+            search_titled(&notes, &titles, query, &[], 30)
+                .into_iter()
+                .map(|note| note.path)
+                .collect()
+        };
+        // Resolved title: substring and fuzzy.
+        assert_eq!(paths("quarterly"), ["Projects/2026-10-06-kickoff.md"]);
+        assert_eq!(paths("qplan"), ["Projects/2026-10-06-kickoff.md"]);
+        // File name and path still match.
+        assert_eq!(paths("kickoff"), ["Projects/2026-10-06-kickoff.md"]);
+        assert_eq!(paths("proj/road"), ["Projects/Roadmap.md"]);
+        // Without titles, the resolved title is not searchable (positive control).
+        assert!(search(&notes, "quarterly", &[], 30).is_empty());
     }
     #[test]
     fn landing_uses_literal_match_not_query_expression() {
