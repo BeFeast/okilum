@@ -1,14 +1,14 @@
-# The latest main becomes a signed, notarized Sparkle beta about once an hour. A manual run on another branch builds and signs but publishes nothing.
+# The latest main becomes a signed, notarized Sparkle beta daily at 10:30 UTC. A manual run on another branch builds and signs but publishes nothing.
 # See docs/macos-auto-update.md.
 name: macos-release
 
 on:
-  # Fixed hourly window; the runner is free between ticks. Manual build now bypasses it.
+  # Daily window outside corporate VPN hours; the runner is free between ticks. Manual build now bypasses it.
   schedule:
-    - cron: "0 * * * *"
+    - cron: "30 10 * * *"
   workflow_dispatch:
 
-# Finish the selected hourly/manual snapshot even when main advances.
+# Finish the selected daily/manual snapshot even when main advances.
 concurrency:
   group: tessera-macos-build-${{ github.ref }}
   cancel-in-progress: false

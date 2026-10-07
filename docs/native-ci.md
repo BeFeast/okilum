@@ -10,7 +10,7 @@ requests still use the public `.github/workflows/ci.yml` workflow.
 
 After Linux succeeds, the Forgejo `macos-github` job checks out the exact PR head
 and pushes only that commit to
-`forgejo-pr/<number>/<head-sha>-<forgejo-run-id>-<attempt>` on `BeFeast/tessera`.
+`forgejo-pr/<number>/<head-sha>-<forgejo-run-id>-<attempt>-<invocation-uuid>` on `BeFeast/tessera`.
 The `TESSERA_GITHUB_MIRROR` secret needs Contents and Workflows read/write and
 permission to read Actions run/job results. The token stays in the Forgejo job;
 GitHub receives neither a Forgejo token nor signing secrets. This is the explicit
@@ -31,7 +31,10 @@ integration, and `ci / check` still requires that gate. The GitHub run URL is in
 the bridge log. There is no cross-host callback credential or external status
 that can race a newer head.
 
-## Fallback and cleanup
+## Availability and cleanup
+
+Hosted API reads retry three times with 5/10-second backoff within the same
+invocation; they never dispatch duplicate builds.
 
 Missing credentials, an API/push outage, runner startup failure, or eight minutes
 without a running GitHub job fail the hosted gate. No automatic M4 fallback is
