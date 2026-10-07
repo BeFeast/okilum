@@ -64,7 +64,9 @@ panel at a time; an outside click closes it and returns focus to the document. B
 closed. When resizing or desktop tiling crosses into compact mode, panels hide
 automatically so the document reflows without being covered (#677). Their wide
 visibility and preferred widths remain intact and return on expansion. A panel
-opened explicitly in compact mode still uses the overlay. The header then shows: traffic lights, sidebar toggle, Back,
+opened explicitly in compact mode still uses the overlay. Selecting a note from
+the sidebar dismisses that overlay and focuses the document, retaining the wide
+sidebar preference; expanding a folder keeps the overlay open. The header then shows: traffic lights, sidebar toggle, Back,
 Forward, breadcrumbs (they shrink first; leading folders collapse to «…»),
 Find, right-panel toggle, More.
 
