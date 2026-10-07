@@ -1,9 +1,40 @@
 //! Whole-vault name/path matching, independent of the full-text index.
 use std::collections::HashMap;
 
-use crate::vault::Note;
+use crate::vault::{EntryKind, Note, VaultEntry};
+
+/// Every file the Reader can open (#686): the Markdown notes plus the vault's
+/// other files. A non-Markdown file is named by its file name with the
+/// extension, so `tg.log` and `tg.md` stay distinguishable and both match.
+pub fn inventory(notes: impl IntoIterator<Item = Note>, entries: &[VaultEntry]) -> Vec<Note> {
+    let mut inventory: Vec<Note> = notes.into_iter().collect();
+    inventory.extend(
+        entries
+            .iter()
+            .filter(|entry| entry.kind == EntryKind::Attachment)
+            .map(|entry| Note {
+                path: entry.path.clone(),
+                title: entry
+                    .path
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(&entry.path)
+                    .to_owned(),
+            }),
+    );
+    inventory
+}
+
+fn is_markdown(path: &str) -> bool {
+    path.len() > 3
+        && path.is_char_boundary(path.len() - 3)
+        && path[path.len() - 3..].eq_ignore_ascii_case(".md")
+}
 
 /// Rank every note before limiting display rows. Recent paths are oldest first.
+/// Exact beats prefix beats substring beats fuzzy; a name or title match beats
+/// a path-only match. Among equal matches, recent files come first, then
+/// Markdown notes, so the vault's other files never bury a note.
 pub fn search(notes: &[Note], query: &str, recent: &[String], limit: usize) -> Vec<Note> {
     search_titled(notes, &HashMap::new(), query, recent, limit)
 }
@@ -26,11 +57,11 @@ pub fn search_titled(
                 0
             } else {
                 let display = titles.get(&note.path).map(|t| t.to_lowercase());
-                score(&note.title.to_lowercase(), &query)
+                score(&note.title.to_lowercase(), &query, true)
                     .into_iter()
-                    .chain(display.and_then(|title| score(&title, &query)))
+                    .chain(display.and_then(|title| score(&title, &query, true)))
                     .map(|s| s + 1000)
-                    .chain(score(&note.path.to_lowercase(), &query))
+                    .chain(score(&note.path.to_lowercase(), &query, false))
                     .max()?
             };
             let recency = recent
@@ -44,6 +75,7 @@ pub fn search_titled(
     matches.sort_by(|a, b| {
         b.1.cmp(&a.1)
             .then(b.2.cmp(&a.2))
+            .then(is_markdown(&b.0.path).cmp(&is_markdown(&a.0.path)))
             .then(a.0.path.cmp(&b.0.path))
     });
     matches
@@ -53,12 +85,17 @@ pub fn search_titled(
         .collect()
 }
 
-fn score(text: &str, query: &str) -> Option<i64> {
+/// `name` gives a prefix its own tier above any other substring; a path
+/// prefix is only the top-level folder, so it ranks as a plain substring.
+fn score(text: &str, query: &str, name: bool) -> Option<i64> {
     if text == query {
         return Some(10000);
     }
+    if name && text.starts_with(query) {
+        return Some(7000);
+    }
     if let Some(offset) = text.find(query) {
-        return Some(5000 - offset as i64);
+        return Some(5000 - offset.min(4000) as i64);
     }
     let mut wanted = query.chars().filter(|c| !c.is_whitespace());
     let mut next = wanted.next()?;
@@ -152,6 +189,100 @@ mod tests {
         assert_eq!(paths("proj/road"), ["Projects/Roadmap.md"]);
         // Without titles, the resolved title is not searchable (positive control).
         assert!(search(&notes, "quarterly", &[], 30).is_empty());
+    }
+    #[test]
+    fn inventory_lists_every_openable_file_with_its_extension() {
+        let notes = vec![Note {
+            path: "Health/medications.md".into(),
+            title: "medications".into(),
+        }];
+        let entry = |path: &str, kind| VaultEntry {
+            path: path.into(),
+            kind,
+        };
+        let entries = [
+            entry("Health", EntryKind::Directory),
+            entry("Health/medications.md", EntryKind::Markdown),
+            entry("Health/medications-data.toml", EntryKind::Attachment),
+            entry("tg.log", EntryKind::Attachment),
+        ];
+        let files: Vec<_> = inventory(notes, &entries)
+            .into_iter()
+            .map(|note| (note.path, note.title))
+            .collect();
+        assert_eq!(
+            files,
+            [
+                ("Health/medications.md".into(), "medications".into()),
+                (
+                    "Health/medications-data.toml".into(),
+                    "medications-data.toml".into()
+                ),
+                ("tg.log".into(), "tg.log".into()),
+            ] as [(String, String); 3]
+        );
+    }
+    #[test]
+    fn non_markdown_files_match_without_burying_notes() {
+        let entries: Vec<_> = [
+            "tg.log",
+            "Health/medications-data.toml",
+            "Archive/old-medications.csv",
+            "Media/medications-chart.png",
+        ]
+        .into_iter()
+        .map(|path| VaultEntry {
+            path: path.into(),
+            kind: EntryKind::Attachment,
+        })
+        .collect();
+        let notes = inventory(
+            [
+                ("Health/medications.md", "medications"),
+                ("Health/Telegram.md", "Telegram"),
+                ("medical/Plan.md", "Plan"),
+            ]
+            .map(|(path, title)| Note {
+                path: path.into(),
+                title: title.into(),
+            }),
+            &entries,
+        );
+        let titles = HashMap::from([(
+            "Health/medications.md".to_string(),
+            "Medications".to_string(),
+        )]);
+        let paths = |query: &str| -> Vec<String> {
+            search_titled(&notes, &titles, query, &[], 30)
+                .into_iter()
+                .map(|note| note.path)
+                .collect()
+        };
+        // Non-Markdown files are found by name, extension included.
+        assert_eq!(paths("tg.log"), ["tg.log"]);
+        assert_eq!(paths("tg")[0], "tg.log");
+        assert_eq!(paths("toml"), ["Health/medications-data.toml"]);
+        // Name prefix beats substring; at equal strength the note comes first.
+        assert_eq!(
+            paths("medications"),
+            [
+                "Health/medications.md",
+                "Health/medications-data.toml",
+                "Media/medications-chart.png",
+                "Archive/old-medications.csv",
+            ]
+        );
+        // A folder prefix is not a name prefix.
+        assert_eq!(paths("med")[..3], paths("medications")[..3]);
+        // The empty query lists notes before other files; recency still wins.
+        let all: Vec<_> = search(&notes, "", &[], 30)
+            .into_iter()
+            .map(|note| note.path)
+            .collect();
+        assert_eq!(all.len(), 7);
+        assert!(all[..3].iter().all(|path| path.ends_with(".md")));
+        let recent = vec!["tg.log".to_string()];
+        assert_eq!(search(&notes, "", &recent, 30)[0].path, "tg.log");
     }
     #[test]
     fn landing_uses_literal_match_not_query_expression() {

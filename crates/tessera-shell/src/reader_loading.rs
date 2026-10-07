@@ -688,10 +688,9 @@ fn prepare_rest_with_io_and_snapshot(
             .notes
             .iter()
             .filter(|note| source_snapshot.contains_key(&note.path))
-            .cloned()
-            .collect();
+            .cloned();
         send.send_blocking(Event::SearchInventory {
-            notes: readable,
+            notes: tessera_core::quick_open::inventory(readable, &vault.entries),
             // Publish cold and warm trees before search preparation; a usable
             // inventory does not depend on a writable search cache.
             reconciled: Some(Box::new(vault.clone())),
@@ -1374,7 +1373,12 @@ impl Reader {
         self.quick_open.invalidate();
         self.quick_open.recent.clear();
         let warm = self.vault.inventory_scanned;
-        self.quick_open.inventory = warm.then(|| Arc::new(self.vault.notes.clone()));
+        self.quick_open.inventory = warm.then(|| {
+            Arc::new(tessera_core::quick_open::inventory(
+                self.vault.notes.clone(),
+                &self.vault.entries,
+            ))
+        });
         self.searcher = pending.searcher.map(|searcher| Arc::new(*searcher));
         self.loading.as_mut().unwrap().warm = warm;
         self.loading.as_mut().unwrap().show_progress = !warm;
@@ -5583,7 +5587,10 @@ impl Reader {
 
     fn publish_quick_folder(&mut self, vault: Vault, cx: &mut Context<Self>) {
         self.vault = Arc::new(vault);
-        self.quick_open.inventory = Some(Arc::new(self.vault.notes.clone()));
+        self.quick_open.inventory = Some(Arc::new(tessera_core::quick_open::inventory(
+            self.vault.notes.clone(),
+            &self.vault.entries,
+        )));
         self.sync_tree();
         self.refresh_link_preparation(cx);
         self.refresh_quick_open(cx);

@@ -232,21 +232,29 @@ impl Reader {
                     )),
                 }
             } else {
-                let rows = tessera_core::quick_open::search_titled(
-                    names.as_deref().unwrap_or(&vault.notes),
-                    &titles,
-                    &query,
-                    &recent,
-                    100,
-                )
-                .into_iter()
-                .map(|note| SearchHit {
-                    path: note.path,
-                    title: note.title,
-                    score: 0.,
-                    snippet_html: String::new(),
-                })
-                .collect();
+                // Before the first inventory publishes, list what the vault
+                // already holds, non-Markdown files included (#686).
+                let fallback;
+                let files = match names.as_deref() {
+                    Some(names) => names,
+                    None => {
+                        fallback = tessera_core::quick_open::inventory(
+                            vault.notes.iter().cloned(),
+                            &vault.entries,
+                        );
+                        &fallback
+                    }
+                };
+                let rows =
+                    tessera_core::quick_open::search_titled(files, &titles, &query, &recent, 100)
+                        .into_iter()
+                        .map(|note| SearchHit {
+                            path: note.path,
+                            title: note.title,
+                            score: 0.,
+                            snippet_html: String::new(),
+                        })
+                        .collect();
                 Ok((rows, String::new()))
             };
             result.map(|(mut rows, message)| {
@@ -816,6 +824,94 @@ canaryhidden [[Target]]",
                 });
             }
         }
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[gpui::test]
+    fn names_list_non_markdown_files_with_extension_and_folder(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp =
+            std::env::temp_dir().join(format!("tessera-quick-files-{}", uuid::Uuid::new_v4()));
+        let root = temp.join("Vault");
+        std::fs::create_dir_all(root.join("Health")).unwrap();
+        std::fs::write(root.join("start.md"), "# Start").unwrap();
+        std::fs::write(root.join("tg.log"), "log line").unwrap();
+        std::fs::write(root.join("Health/medications.md"), "# Medications").unwrap();
+        std::fs::write(root.join("Health/medications-data.toml"), "dose = 1").unwrap();
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("start.md".into()),
+                        index_dir: Some(temp.join("index")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        let rows = |query: &str, visual: &mut VisualTestContext| {
+            reader.update_in(visual, |v, window, cx| {
+                v.open_quick_open(false, window, cx);
+                v.quick_open
+                    .input
+                    .update(cx, |input, cx| input.set_value(query, window, cx));
+                v.refresh_quick_open(cx);
+            });
+            visual.run_until_parked();
+            reader.update(visual, |v, _| {
+                assert!(v.quick_open.inventory.is_some(), "published inventory");
+                v.quick_open
+                    .rows
+                    .iter()
+                    .map(|hit| {
+                        (
+                            hit.path.clone(),
+                            hit.title.clone(),
+                            result_location("Vault", &hit.path),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+        };
+        let row = |path: &str, title: &str, folder: &str| {
+            (path.to_string(), title.to_string(), folder.to_string())
+        };
+        assert_eq!(rows("tg", visual)[0], row("tg.log", "tg.log", "Vault"));
+        // The note keeps its title; the data file keeps its extension.
+        assert_eq!(
+            rows("medications", visual),
+            [
+                row("Health/medications.md", "Medications", "Health"),
+                row(
+                    "Health/medications-data.toml",
+                    "medications-data.toml",
+                    "Health"
+                ),
+            ]
+        );
+        // Every openable file is listed before a query is typed.
+        assert_eq!(rows("", visual).len(), 4);
+        rows("tg.log", visual);
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        reader.update(visual, |v, _| {
+            assert!(!v.quick_open.open);
+            assert_eq!(
+                v.file_preview.as_ref().map(|preview| preview.rel.as_str()),
+                Some("tg.log")
+            );
+        });
         std::fs::remove_dir_all(temp).unwrap();
     }
 
