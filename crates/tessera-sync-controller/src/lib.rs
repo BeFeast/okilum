@@ -10,3 +10,6 @@ mod private;
 
 #[cfg(target_os = "linux")]
 pub mod enrollment;
+
+#[cfg(target_os = "linux")]
+pub mod folder;
