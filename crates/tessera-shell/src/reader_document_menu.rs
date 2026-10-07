@@ -377,7 +377,12 @@ impl Reader {
             .to_string_lossy()
             .into_owned();
         let mut recent = v_flex().gap_1();
-        for (ix, item) in self.sidebar.recent.iter().take(10).enumerate() {
+        let recent_notes = self
+            .sidebar
+            .recent
+            .iter()
+            .filter(|(rel, _)| !self.tree.hidden_by_preference(rel));
+        for (ix, item) in recent_notes.take(10).enumerate() {
             let rel = item.0.clone();
             let label = self.vault.note_title(&rel);
             recent = recent.child(
