@@ -20,6 +20,12 @@ rustup target add --toolchain 1.96.1 x86_64-apple-darwin
 bash scripts/vendor-setup.sh
 bash scripts/vendor-setup.sh --verify
 source scripts/ci/release-cache.sh
+# A stats response alone does not prove the daemon can serve rustc. Keep this
+# artifact-only build usable if the shared cache daemon fails during startup.
+if [[ -n ${RUSTC_WRAPPER:-} ]] && ! "$RUSTC_WRAPPER" "$(rustup which --toolchain 1.96.1 rustc)" -vV; then
+  echo 'Intel QA compiler cache probe failed; compiling without the wrapper'
+  unset RUSTC_WRAPPER
+fi
 python3 scripts/updater/sparkle.py fetch "$OUTPUT/Sparkle.tar.xz"
 python3 scripts/updater/sparkle.py prepare --archive "$OUTPUT/Sparkle.tar.xz" --destination vendor/sparkle
 SECONDS=0
