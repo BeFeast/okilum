@@ -12,6 +12,7 @@
 
 mod detect;
 mod file;
+pub mod filter;
 mod index;
 mod json;
 mod level;
@@ -23,6 +24,9 @@ use std::path::Path;
 
 pub use detect::{detect, Format};
 pub use file::{LogFile, MAP_THRESHOLD_BYTES, MAX_LOG_BYTES};
+pub use filter::{
+    FieldChip, FilterGenerations, FilterOutcome, FilterTicket, LevelFilter, LogFilter, TimeWindow,
+};
 pub use index::{LogEntry, LogIndex, LogStats};
 pub use level::Level;
 pub use record::{Field, Record, Role, ValueKind};

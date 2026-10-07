@@ -336,7 +336,7 @@ impl Reader {
                 // Structured logs take precedence in both vault and quick-file mode.
                 if tessera_core::log::is_log_path(&preview.path) {
                     let (rel, path) = (rel.to_owned(), preview.path.clone());
-                    let view = cx.new(|cx| reader_log::LogView::indexing(rel, path, cx));
+                    let view = cx.new(|cx| reader_log::LogView::indexing(rel, path, window, cx));
                     view.read(cx).focus_handle().clone().focus(window, cx);
                     preview.log = Some(view);
                 } else if reader_plain_text::eligible(rel) {
