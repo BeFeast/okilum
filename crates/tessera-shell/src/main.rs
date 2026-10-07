@@ -2850,21 +2850,28 @@ impl Reader {
                         })),
                     ))
                     .child(
-                        reader_icon_button(
-                            "reader-appearance",
-                            if appearance_label(cx) == "Dark" {
-                                IconName::Moon
-                            } else {
-                                IconName::Sun
-                            },
-                            match appearance_label(cx) {
-                                "Light" => "Appearance: Light",
-                                "Dark" => "Appearance: Dark",
-                                _ => "Appearance: System",
-                            },
-                            cx,
-                        )
-                        .on_click(|_, window, cx| cycle_appearance(window, cx)),
+                        div()
+                            .id("reader-appearance-tooltip")
+                            .tooltip(|window, cx| {
+                                gpui_component::tooltip::Tooltip::element(|_, cx| {
+                                    div().child(format!("Appearance: {}", appearance_label(cx)))
+                                })
+                                .build(window, cx)
+                            })
+                            .child(
+                                Button::new("reader-appearance")
+                                    .ghost()
+                                    .icon(if appearance_label(cx) == "Dark" {
+                                        IconName::Moon
+                                    } else {
+                                        IconName::Sun
+                                    })
+                                    .w(px(28.))
+                                    .h(px(28.))
+                                    .rounded(px(6.))
+                                    .accessibility_label("Appearance")
+                                    .on_click(|_, window, cx| cycle_appearance(window, cx)),
+                            ),
                     )
                     .child(
                         reader_icon_button(

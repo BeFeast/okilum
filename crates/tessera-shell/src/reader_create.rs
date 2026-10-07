@@ -261,7 +261,11 @@ impl Reader {
                     cx,
                 );
                 self.toggle_source(window, cx);
-                reader_toast::transient(format!("Created {created}"), window, cx);
+                reader_toast::transient(
+                    format!("Created {}", super::reader_move::display_name(&created)),
+                    window,
+                    cx,
+                );
                 self.queue_vault_mutation(
                     tessera_core::Changes {
                         changed: std::collections::BTreeSet::from([created]),
@@ -276,7 +280,17 @@ impl Reader {
                 self.tree
                     .entry_created(&rel, tessera_core::vault::EntryKind::Directory);
                 self.reveal_in_tree(&rel, window, cx);
-                reader_toast::transient(format!("Created {rel}"), window, cx);
+                reader_toast::transient(
+                    format!(
+                        "Created {}",
+                        Path::new(&rel)
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                    ),
+                    window,
+                    cx,
+                );
                 self.queue_vault_mutation(
                     tessera_core::Changes {
                         directories: std::collections::BTreeSet::from([rel]),

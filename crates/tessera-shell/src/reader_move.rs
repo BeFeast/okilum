@@ -7,7 +7,7 @@ use tessera_core::{
     note_move::MovePlan,
 };
 
-fn display_name(path: &str) -> String {
+pub(super) fn display_name(path: &str) -> String {
     let path = Path::new(path);
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     name.strip_suffix(".md").unwrap_or(&name).to_owned()
@@ -1005,6 +1005,10 @@ mod tests {
             "Moved to Home"
         );
         assert_eq!(move_message("Start.md", "Next.md", None), "Renamed to Next");
+        assert_eq!(
+            move_message("Nested/Start.md", "Nested/Next.md", None),
+            "Renamed to Next"
+        );
         std::fs::write(root.path().join("Ref.md"), "[[Start]]").unwrap();
         let linked = Preview::prepare(root.path(), "Start.md", "Folder/Next.md").unwrap();
         assert!(!needs_move_confirmation(&linked));

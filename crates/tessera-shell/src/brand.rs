@@ -34,7 +34,19 @@ pub const READER_PIN_ICON: &str = "icons/pin.svg";
 pub const READER_CLOCK_ICON: &str = "icons/clock.svg";
 pub const READER_COLLAPSE_ICON: &str = "icons/chevrons-down-up.svg";
 pub const READER_FOCUS_ICON: &str = "icons/locate-fixed.svg";
-const IMAGES: [(&str, &[u8]); 20] = [
+const IMAGES: [(&str, &[u8]); 23] = [
+    (
+        "icons/square-pen.svg",
+        include_bytes!("../assets/icons/square-pen.svg"),
+    ),
+    (
+        "icons/text-search.svg",
+        include_bytes!("../assets/icons/text-search.svg"),
+    ),
+    (
+        "icons/pencil.svg",
+        include_bytes!("../assets/icons/pencil.svg"),
+    ),
     (
         "icons/monitor.svg",
         include_bytes!("../assets/icons/monitor.svg"),
@@ -481,6 +493,34 @@ mod tests {
     use ::core::prelude::v1::test;
     use gpui_component::IconNamed;
     use gpui_component::ThemeMode;
+
+    #[test]
+    fn every_local_functional_icon_is_embedded() {
+        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/icons");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(directory).unwrap() {
+            let entry = entry.unwrap();
+            if entry.path().extension().is_none_or(|ext| ext != "svg") {
+                continue;
+            }
+            let path = format!("icons/{}", entry.file_name().to_string_lossy());
+            let bytes = Assets
+                .load(&path)
+                .unwrap()
+                .unwrap_or_else(|| panic!("Missing {path}"));
+            assert!(matches!(bytes, Cow::Borrowed(_)), "{path} must be embedded");
+            assert_eq!(
+                bytes.as_ref(),
+                std::fs::read(entry.path()).unwrap(),
+                "{path}"
+            );
+            checked += 1;
+        }
+        assert!(
+            checked >= 19,
+            "positive control: functional icon directory was read"
+        );
+    }
 
     #[test]
     fn toolbar_tree_and_caption_icons_are_embedded_even_with_debug_assertions() {
