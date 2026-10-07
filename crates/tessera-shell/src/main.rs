@@ -4541,7 +4541,7 @@ impl Reader {
             .when(empty, |list| {
                 list.child(div().px_3().py_1().text_sm().text_color(muted).child(
                     if self.vault.inventory_complete {
-                        "No notes link here."
+                        "—"
                     } else {
                         "No links found in readable items."
                     },
@@ -4572,7 +4572,9 @@ impl Reader {
                 .child(Icon::default().path(icon).xsmall().text_color(faint))
                 .child(label)
         };
-        let linked = if self.vault.inventory_scanned {
+        let linked = if self.vault.inventory_scanned && self.backlinks.is_empty() {
+            "Linked from".into()
+        } else if self.vault.inventory_scanned {
             format!("Linked from · {}", self.backlinks_count_label())
         } else {
             "Linked from · pending".into()
