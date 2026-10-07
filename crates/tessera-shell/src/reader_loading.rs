@@ -2112,8 +2112,12 @@ impl Reader {
                     Button::new("reader-unreadable-items")
                         .ghost()
                         .small()
-                        .label(format!("{issue_count} items unreadable"))
-                        .tooltip("Show unreadable paths")
+                            .label(if issue_count == 1 {
+                                "1 item unreadable".to_string()
+                            } else {
+                                format!("{issue_count} items unreadable")
+                            })
+                            .tooltip("Show items needing attention")
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.show_unreadable_items(window, cx);
                         })),

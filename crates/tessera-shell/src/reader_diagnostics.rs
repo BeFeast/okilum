@@ -334,7 +334,7 @@ impl Reader {
         }
         let disclosure = cx.new(|_| DiagnosticDisclosure::default());
         let reader = cx.entity().downgrade();
-        window.open_dialog(cx, move |dialog, _, cx| {
+        window.open_dialog(cx, move |dialog, window, cx| {
             let expanded = disclosure.read(cx).expanded;
             let copied = disclosure.read(cx).copied;
             let toggle = disclosure.clone();
@@ -344,7 +344,8 @@ impl Reader {
             let muted = cx.theme().muted_foreground;
             dialog
                 .title("Items needing attention")
-                .width(px(560.))
+                .width(px(560.).min((window.viewport_size().width - px(80.)).max(px(280.))))
+                .max_h((window.viewport_size().height - px(80.)).max(px(240.)))
                 .child(
                     v_flex()
                         .gap_3()
