@@ -561,6 +561,8 @@ pub fn reader_source(vault: &Vault, rel: &str) -> anyhow::Result<String> {
 /// authored embed syntax. Both values exclude the same leading frontmatter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReaderDocument {
+    /// Exact primary-file bytes, shared with native view selection and revision evidence.
+    pub canonical_source: std::sync::Arc<str>,
     pub rendered: String,
     pub original_body: String,
     pub links: Vec<crate::document_links::prepared::LinkIdentity>,
@@ -583,6 +585,7 @@ pub fn reader_document_from_source(vault: &Vault, from: &str, raw: &str) -> Read
     let mut links = Vec::new();
     let rendered = process_source_collect(body, vault, from, true, true, &mut links);
     ReaderDocument {
+        canonical_source: raw.into(),
         rendered,
         original_body: body.to_string(),
         links,
@@ -602,6 +605,7 @@ mod reader_document_tests {
         // The selected note is currently absent: only the persisted input exists.
         let source = "---\ntitle: Saved\n---\n# Saved\n\n[[Target]]\n\n![[Target]]\n";
         let document = reader_document_from_source(&vault, "note.md", source);
+        assert_eq!(document.canonical_source.as_ref(), source);
         assert_eq!(document.original_body, without_frontmatter(source));
         assert_eq!(document.frontmatter.as_deref(), Some("title: Saved\n"));
         assert!(document.rendered.contains("Saved"));
@@ -627,10 +631,11 @@ mod reader_document_tests {
         for ending in ["\n", "\r\n"] {
             let body = body.replace('\n', ending);
             let raw = format!("\u{feff}---{ending}type: Note{ending}---{ending}{body}");
-            std::fs::write(&path, raw).unwrap();
+            std::fs::write(&path, &raw).unwrap();
             let vault = Vault::scan(root.path()).unwrap();
             for rel in ["note.md", path.to_str().unwrap()] {
                 let document = reader_document(&vault, rel).unwrap();
+                assert_eq!(document.canonical_source.as_bytes(), raw.as_bytes());
                 assert_eq!(document.original_body.as_bytes(), body.as_bytes());
                 assert!(document.rendered.contains("<mark>highlight</mark>"));
                 assert!(document.rendered.contains("<mark>authored</mark>"));

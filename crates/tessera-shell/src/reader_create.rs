@@ -416,6 +416,7 @@ impl Reader {
                         restore_position: None,
                     },
                     Ok(prepared_links::PreparedDocument {
+                        canonical_source: Some(document.canonical_source),
                         source: document.rendered,
                         original: Some(document.original_body),
                         identities: document.links,
