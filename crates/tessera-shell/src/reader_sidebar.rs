@@ -183,18 +183,6 @@ pub struct InboxItem {
     pub domain: Option<String>,
 }
 
-impl InboxItem {
-    pub fn reason_label(&self) -> String {
-        match self.reason {
-            InboxReason::VaultRoot => "at root".into(),
-            InboxReason::DomainRoot => {
-                format!("in {}", self.domain.as_deref().unwrap_or("domain"))
-            }
-            InboxReason::NoIncomingLinks => "no links".into(),
-        }
-    }
-}
-
 /// Recently created notes not yet built into the structure: created within
 /// the window, and either directly in the vault or a domain root (not inside
 /// Projects/Areas/Resources/Archive), or without incoming links. Items leave
@@ -346,8 +334,9 @@ mod tests {
                 .iter()
                 .find(|i| i.path == "Work/Idea.md")
                 .unwrap()
-                .reason_label(),
-            "in Work"
+                .domain
+                .as_deref(),
+            Some("Work")
         );
     }
 

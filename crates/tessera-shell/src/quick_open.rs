@@ -22,6 +22,21 @@ fn is_folder_note(path: &str) -> bool {
             .any(|name| stem.eq_ignore_ascii_case(name))
 }
 
+/// Folder title without filesystem reads, shared by search results and Inbox.
+pub(super) fn folder_note_title(vault_name: &str, path: &str) -> Option<String> {
+    if !is_folder_note(path) {
+        return None;
+    }
+    Some(
+        Path::new(path)
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .unwrap_or(vault_name)
+            .to_owned(),
+    )
+}
+
 /// Primary line (#645): the note title the backlinks panel uses (first H1,
 /// then frontmatter title, then file name), never the `.md` file name. Other
 /// files keep their extension. Ranking still uses the file name and path too.
@@ -31,14 +46,12 @@ fn result_title(root: &Path, titles: &HashMap<String, String>, hit: &SearchHit) 
     if !is_markdown(&hit.path) {
         return hit.path.rsplit('/').next().unwrap_or(&hit.path).to_owned();
     }
-    if is_folder_note(&hit.path) {
-        if let Some(folder) = path
-            .parent()
-            .and_then(Path::file_name)
-            .and_then(|s| s.to_str())
-        {
-            return folder.to_owned();
-        }
+    let vault_name = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("Vault");
+    if let Some(folder) = folder_note_title(vault_name, &hit.path) {
+        return folder;
     }
     titles
         .get(&hit.path)
@@ -50,7 +63,7 @@ fn result_title(root: &Path, titles: &HashMap<String, String>, hit: &SearchHit) 
 /// Muted second line (#645): the containing folder, not the file path. A
 /// folder note is already titled by its folder, so it shows that folder's
 /// parent. Notes at the top level show the vault's name.
-fn result_location(vault_name: &str, path: &str) -> String {
+pub(super) fn result_location(vault_name: &str, path: &str) -> String {
     let parent = |path: &str| {
         path.rsplit_once('/')
             .map_or("", |(folder, _)| folder)
@@ -514,6 +527,17 @@ mod tests {
             assert!(!title.ends_with(".md"), "{path}");
             assert_eq!(hit.path, path);
         }
+        // Root folder notes keep the vault name too, without reading their title.
+        let root_index = SearchHit {
+            path: "_index.md".into(),
+            title: "Ignored".into(),
+            score: 0.,
+            snippet_html: String::new(),
+        };
+        assert_eq!(
+            result_title(&root, &HashMap::new(), &root_index),
+            root.file_name().unwrap().to_str().unwrap()
+        );
         // The shared title map wins over a disk read; folder notes keep their folder.
         let titles = HashMap::from([
             ("plain.md".to_string(), "Cached title".to_string()),
