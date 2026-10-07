@@ -220,15 +220,23 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new(
             "down",
             ReaderScrollDown,
-            Some("Reader > TextView && !Input"),
+            Some("Reader > TextView && !Input && !ReaderTree"),
         ),
-        KeyBinding::new("up", ReaderScrollUp, Some("Reader > TextView && !Input")),
+        KeyBinding::new(
+            "up",
+            ReaderScrollUp,
+            Some("Reader > TextView && !Input && !ReaderTree"),
+        ),
         KeyBinding::new(
             "pagedown",
             ReaderPageDown,
-            Some("Reader > TextView && !Input"),
+            Some("Reader > TextView && !Input && !ReaderTree"),
         ),
-        KeyBinding::new("pageup", ReaderPageUp, Some("Reader > TextView && !Input")),
+        KeyBinding::new(
+            "pageup",
+            ReaderPageUp,
+            Some("Reader > TextView && !Input && !ReaderTree"),
+        ),
     ]);
 
     cx.bind_keys([
@@ -2105,13 +2113,23 @@ impl Reader {
         }
     }
 
-    fn scroll_reader_key(&mut self, direction: f32, page: bool, cx: &mut Context<Self>) {
-        if self.editing.is_some() || self.file_preview.is_some() {
+    fn scroll_reader_key(
+        &mut self,
+        direction: f32,
+        page: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.editing.is_some()
+            || self.file_preview.is_some()
+            || !self.content.read(cx).focus_handle().is_focused(window)
+        {
+            cx.propagate();
             return;
         }
         let content = self.content.read(cx);
         let distance = if page {
-            (f32::from(content.bounds().size.height) * 0.9).max(40.)
+            (f32::from(content.list_state().viewport_bounds().size.height) * 0.9).max(40.)
         } else {
             reader_ui_state::font_size(cx) * 2.
         };
@@ -5732,20 +5750,18 @@ impl Render for Reader {
                 this.file_action(reader_files::FileAction::QuickLook, window, cx)
             }))
             .on_action(cx.listener(|this, _: &FindInNote, window, cx| this.open_find(window, cx)))
-            .on_action(cx.listener(|this, _: &ReaderScrollDown, _, cx| {
-                this.scroll_reader_key(1., false, cx)
+            .on_action(cx.listener(|this, _: &ReaderScrollDown, window, cx| {
+                this.scroll_reader_key(1., false, window, cx)
             }))
-            .on_action(
-                cx.listener(|this, _: &ReaderScrollUp, _, cx| {
-                    this.scroll_reader_key(-1., false, cx)
-                }),
-            )
-            .on_action(
-                cx.listener(|this, _: &ReaderPageDown, _, cx| this.scroll_reader_key(1., true, cx)),
-            )
-            .on_action(
-                cx.listener(|this, _: &ReaderPageUp, _, cx| this.scroll_reader_key(-1., true, cx)),
-            )
+            .on_action(cx.listener(|this, _: &ReaderScrollUp, window, cx| {
+                this.scroll_reader_key(-1., false, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ReaderPageDown, window, cx| {
+                this.scroll_reader_key(1., true, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ReaderPageUp, window, cx| {
+                this.scroll_reader_key(-1., true, window, cx)
+            }))
             .on_action(cx.listener(|this, _: &FindNext, _, cx| this.find_step(1, cx)))
             .on_action(cx.listener(|this, _: &FindPrev, _, cx| this.find_step(-1, cx)))
             .on_action(cx.listener(|this, _: &UndoTrash, window, cx| {
@@ -8794,6 +8810,19 @@ mod reader_scroll_key_tests {
                 visual.run_until_parked();
             }
             let before = position(visual);
+            // The action itself must reject another focus owner, even when
+            // dispatched directly instead of through its narrow key context.
+            reader.update_in(visual, |r, window, cx| {
+                r.tree_focus.focus(window, cx);
+                r.scroll_reader_key(1., true, window, cx);
+                r.content.read(cx).focus_handle().clone().focus(window, cx);
+            });
+            visual.run_until_parked();
+            assert_eq!(
+                before,
+                position(visual),
+                "tree focus cannot scroll the note"
+            );
             visual.simulate_keystrokes("down");
             visual.run_until_parked();
             let after_line = position(visual);
