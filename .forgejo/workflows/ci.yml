@@ -236,7 +236,7 @@ jobs:
   macos:
     needs: [linux, macos-github, macos-local]
     if: always() && github.event_name == 'pull_request'
-    runs-on: light
+    runs-on: bridge
     timeout-minutes: 2
     steps:
       - name: Require a native result
@@ -274,7 +274,7 @@ jobs:
   check:
     needs: [linux, macos]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: bridge
     timeout-minutes: 2
     steps:
       - name: Require Linux and applicable macOS checks
