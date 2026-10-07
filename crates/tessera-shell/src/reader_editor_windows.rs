@@ -4,6 +4,12 @@ use super::*;
 // Uninhabited: the Reader can never enter a writable state on Windows.
 pub(super) enum Editing {}
 
+/// Windows cannot construct an Editing value, so there are no writable drafts.
+/// Keep the restart lifecycle calling this boundary when native editing arrives.
+pub(crate) fn protect_all_for_quit(_: &mut App) -> bool {
+    true
+}
+
 impl Reader {
     pub(super) fn open_source_find(&mut self, _: &mut Context<Self>) {}
 

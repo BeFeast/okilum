@@ -21,9 +21,14 @@ never downgrades the current version. An already downloaded update still applies
 at the next launch, even if the channel preference is changed afterwards.
 
 The SDK handles installer lifecycle arguments before Reader argument parsing.
-Checks/downloads run on a background thread. **⋯ → Check for Updates** (also in
-About and Settings) reports errors or a downloaded update. Quit and reopen to
-apply it; the updater does not terminate an active Reader automatically.
+Checks/downloads run on a background thread. Once a package is downloaded, a
+quiet **Update ready → Restart** notification appears once; dismissing it leaves
+**Restart to update** available in ⋯, About and Settings. Restart protects edits
+and saves Reader state before asking Velopack to apply after normal shutdown.
+It reopens the current vault/note or standalone file. With several document
+windows open, close the others first; the app refuses to silently lose windows.
+Download alone never terminates an active Reader. Normal quit and reopen still
+applies a pending update.
 An offline check leaves the current version intact. Portable diagnostic builds
 have no automatic updates; use an installed release for update acceptance.
 
@@ -47,8 +52,12 @@ integrity, not independent publisher authentication.
 
 1. Install build N with Setup.exe. Select Beta in Settings → Updates. Open the
    existing vault and document; set a distinct window size and theme.
-2. After N+1 publishes, use ⋯ → Check for Updates. Wait for “Update downloaded”,
-   quit normally and reopen. About must show N+1; window/theme/document survive.
+2. After N+1 publishes, use ⋯ → Check for Updates. Wait for **Update ready**;
+   dismiss the toast and verify **Restart to update** remains in About/menu.
+   Select Restart: About must show N+1; window/theme/current document survive.
+   Repeat with an unsaved edit and a standalone file; failed draft protection
+   must keep Tessera open. A second open document window must block Restart
+   with a clear instruction, and closing it must permit an explicit retry.
 3. Repeat offline: checking shows an error, and the existing app/vault still work.
 4. Uninstall through Windows Settings. The vault and Reader user state remain.
 

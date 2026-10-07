@@ -428,6 +428,26 @@ fn schedule(cx: &mut App) {
     });
     cx.global_mut::<Store>().pending = Some(task);
 }
+#[cfg(any(windows, test))]
+pub(crate) fn prepare_for_restart(cx: &mut App) -> anyhow::Result<()> {
+    let Some(store) = cx.try_global::<Store>() else {
+        return Ok(());
+    };
+    anyhow::ensure!(!store.blocked, "Reader state storage is unavailable");
+    let readers = store.readers.clone();
+    for reader in readers {
+        let _ = reader.update(cx, |reader, cx| {
+            reader.record_ui_state(reader.ui_state.active, cx)
+        });
+    }
+    cx.global_mut::<Store>().pending.take();
+    if let Some(job) = job(cx).filter(|job| job.generation > 0) {
+        job.run()?;
+        mark_saved(job.generation, cx);
+    }
+    Ok(())
+}
+
 pub(crate) fn flush(cx: &mut App) {
     if cx.try_global::<Store>().is_some() {
         cx.global_mut::<Store>().pending.take();
@@ -1366,5 +1386,34 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod update_restart_tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+    #[cfg(test)]
+    #[gpui::test]
+    fn update_restart_requires_successful_state_persistence(cx: &mut gpui::TestAppContext) {
+        let temp = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            install(temp.path(), cx);
+            record(Path::new("/fixture"), Layout::default(), true, cx);
+            prepare_for_restart(cx).unwrap();
+            let path = temp.path().join("reader-ui.json");
+            assert!(path.is_file());
+            std::fs::remove_file(&path).unwrap();
+            std::fs::create_dir(&path).unwrap();
+            let layout = Layout {
+                note: "Changed.md".into(),
+                ..Default::default()
+            };
+            record(Path::new("/fixture"), layout, true, cx);
+            assert!(
+                prepare_for_restart(cx).is_err(),
+                "Do not quit when Reader state cannot be committed"
+            );
+        });
     }
 }
