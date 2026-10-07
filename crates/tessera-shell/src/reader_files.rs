@@ -611,6 +611,12 @@ mod tests {
                 );
             }
         });
+        // The title assertions above deliberately select drawings. Restore the
+        // PDF before testing its real keyboard focus and zoom handlers.
+        reader.update_in(visual, |reader, window, cx| {
+            reader.preview_file("report.pdf", window, cx);
+            assert!(reader.pdf_viewer().is_some(), "restore PDF for zoom checks");
+        });
         // Zoom keys reach the viewer through the Reader's PDF key context.
         visual.run_until_parked();
         let zoom = |visual: &mut VisualTestContext| {
