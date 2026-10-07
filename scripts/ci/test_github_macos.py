@@ -187,7 +187,7 @@ class BridgeTests(unittest.TestCase):
                      hosted == 'success' and local == 'skipped') or
                     (lane == 'local' and hosted_job == 'skipped' and local == 'success'))))
             result = subprocess.run(['bash', '-c', script], capture_output=True,
-                env=dict(os.environ, LINUX_RESULT=linux, MACOS_REQUIRED=required,
+                env=dict(os.environ, SCOPE_RESULT="success", LINUX_RESULT=linux, MACOS_REQUIRED=required,
                          MACOS_LANE=lane, HOSTED_JOB=hosted_job,
                          HOSTED_RESULT=hosted, LOCAL_RESULT=local))
             self.assertEqual(result.returncode == 0, expected,
