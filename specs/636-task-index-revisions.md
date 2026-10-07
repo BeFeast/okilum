@@ -7,4 +7,6 @@ Do not read files on the UI thread or capture a fresh revision for an old row.
 
 Tests cover unchanged task labels after a prose edit, retained old index snapshots,
 repeated task text, BOM/CRLF identity, removed sources and invented occurrences.
+A native Reader regression verifies that a prose-only update republishes the
+index, preserves visible query rows and rejects evidence from the old render.
 No native actions are activated; #699 remains a write-activation dependency.
