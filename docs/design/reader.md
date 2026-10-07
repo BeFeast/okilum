@@ -61,7 +61,10 @@ localisation.
 The accepted #321 rules stay: below the dock threshold panels overlay the
 document (shadow `shadow-lg`, 48 px of document stays exposed), at most one
 panel at a time; an outside click closes it and returns focus to the document. Both panels start
-closed. The header then shows: traffic lights, sidebar toggle, Back,
+closed. When resizing or desktop tiling crosses into compact mode, panels hide
+automatically so the document reflows without being covered (#677). Their wide
+visibility and preferred widths remain intact and return on expansion. A panel
+opened explicitly in compact mode still uses the overlay. The header then shows: traffic lights, sidebar toggle, Back,
 Forward, breadcrumbs (they shrink first; leading folders collapse to «…»),
 Find, right-panel toggle, More.
 
