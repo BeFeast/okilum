@@ -75,3 +75,72 @@ PR, follow the project's ten UI rules and attach Linux light/dark before/after
 screenshots from the manager's QA sub-session. Final slice acceptance also needs
 real login/update behavior, reuse preservation, empty first receive, known
 replica/path checks, folder Pause, offline Remove, conflicts and the Linux beta.
+
+## Read-only discovery and offline preparation (#587 increment)
+
+`daemon::configuration_paths` inspects only known XDG locations and user-owned
+Syncthing process arguments/environment; it never launches a daemon. Each process
+must resolve independently. `discover` authenticates loopback REST inventories,
+records the certificate fingerprint and device ID, and deduplicates paths.
+Unavailable candidates prevent selection/enrollment instead of being treated as
+an empty inventory. Missing/unmounted folder paths are errors. A later mutation
+must reconnect through the recorded identity; only client 2.1.6 is supported.
+Inventory may include the compatibility hub version 1.29.5, without granting
+permission to change it. This is discovery infrastructure, not automatic reuse.
+
+Explicit Enable may call `prepare` for a new private controller directory. Its
+intent is durable before offline `generate`; the receipt binds the executable,
+loopback endpoints, certificate and device ID. Repeating an interrupted prepare
+preserves the identity. Default folders are removed before any service launch;
+discovery/relay/NAT/upgrade/browser/reporting are disabled. Preparation does not
+register a unit or launch a serving process. Existing homes without the matching
+intent are never adopted.
+
+## Native HTTPS pairing and recovery
+
+`pairing::Service` uses an HTTPS origin with no redirects/proxy and strict trust.
+An explicit private test CA is supported for the CT141 sandbox; there is no
+accept-invalid-TLS option. Credentials are separate from browser sessions and
+never appear in the public status snapshot. Approval URLs, registration identity,
+vault scope and connection descriptors are validated before use.
+
+`enrollment::Enrollment` persists the session and origin before Start, and an
+exchange intent before attempting Exchange. After restart it tries grant status
+first, recovering a committed grant even when the original exchange response was
+lost or the exchange expired. The first grant binds its vault UUID; the first
+ready descriptor binds folder/hub/address/ignore policy. Later changes fail closed.
+Remove persists terminal intent before contacting the service and never exchanges
+again. Network failure retains the grant and pending removal for retry. Cancelling
+before a possible grant (including a confirmed unapproved exchange with no older
+uncertain attempt) is reported as setup cancellation, not hub revocation. If an
+exchange may have reached the server but status/revocation cannot establish its
+outcome, removal remains pending; credentials are retained for reconciliation.
+
+These APIs remain unconnected to Reader. Folder additions/reuse, receive-complete
+promotion, package dependency and the separate Settings Sync component follow in
+subsequent increments of #587; this increment does not close the issue.
+
+Validation: 14 unit tests cover service ownership and pairing restart/removal/scope;
+the ignored `linux_service` test uses an actual isolated 2.1.6 process and user
+systemd, including offline preparation/retry and read-only authenticated discovery.
+The ignored `sandbox_pairing` test checks trusted versus untrusted TLS, exact Start
+retry and absence of grant authority before browser approval against CT141. It does
+not replace real browser/passkey QA or claim a completed desktop enrollment.
+
+The CT141 sandbox now uses a dedicated local CA (`service/tls/ca.pem`) and a separate
+server certificate with `CA:FALSE`, serverAuth and localhost SANs. Native test trust
+uses the CA; no host-wide trust change is required. All fixtures remain synthetic.
+
+The replacement review identified three preparation/discovery durability gaps:
+all are addressed before merge. A completed preparation now rechecks the package
+version and binds its executable hash, so an upgrade at the same path cannot
+bypass compatibility checks. `/proc` discovery includes a running `syncthing
+(deleted)` executable after package replacement. Private state initialization
+syncs the directory and its parent before any journal-authorized network request,
+including retries after interrupted initialization. This is the filesystem
+ordering guarantee; the tests do not simulate physical power loss.
+
+The real Linux regression test replaces the package after preparation, rejects
+both an unsupported version and changed same-version bytes, restores the original
+package, and verifies that unlinking the running executable does not hide its
+custom-home configuration. User-service disable/re-enable still preserves identity.
