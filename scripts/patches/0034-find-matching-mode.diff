@@ -1,27 +1,6 @@
 --- a/crates/base/src/text/node.rs
 +++ b/crates/base/src/text/node.rs
-@@
-             return;
-         }
-         if self.language_cache.lock().is_ok_and(|cache| {
--            cache.as_ref().is_some_and(|cached| Arc::ptr_eq(&cached.resolver, resolver))
-+            cache
-+                .as_ref()
-+                .is_some_and(|cached| Arc::ptr_eq(&cached.resolver, resolver))
-         }) {
-             return;
-         }
-         let language = resolver(self);
-         if let Ok(mut cache) = self.language_cache.lock() {
--            *cache = Some(CachedCodeLanguage { resolver: resolver.clone(), language });
-+            *cache = Some(CachedCodeLanguage {
-+                resolver: resolver.clone(),
-+                language,
-+            });
-         }
-     }
- 
-@@ -1467,41 +1472,37 @@
+@@ -1467,41 +1467,37 @@
      pub(super) block: usize,
  }
  
@@ -85,7 +64,7 @@
          let mut text = String::new();
          for child in &p.children {
              text.push_str(&child.text);
-@@ -1512,7 +1513,7 @@
+@@ -1512,7 +1508,7 @@
          }
          segment(&text, &p.state, query, block, out);
      }
@@ -94,7 +73,7 @@
          match node {
              BlockNode::Paragraph(p) | BlockNode::Heading { children: p, .. } => {
                  paragraph(p, query, block, out)
-@@ -1545,7 +1546,7 @@
+@@ -1545,7 +1541,7 @@
      }
      let mut out = Vec::new();
      for (block, node) in blocks.iter().enumerate() {
