@@ -1,2 +1,29 @@
 # Permissive OR branches first; retain obligations of required AND licenses.
 accepted = ["MIT", "Apache-2.0", "BSD-3-Clause", "BSD-2-Clause", "ISC", "Zlib", "Unicode-3.0", "MPL-2.0", "CC0-1.0", "Unlicense", "0BSD", "CDLA-Permissive-2.0", "MITNFA", "NCSA", "bzip2-1.0.6", "BSL-1.0", "Apache-2.0 WITH LLVM-exception", "MIT-0", "zlib-acknowledgement"]
+
+# hayro-interpret embeds PDFium's Foxit standard fonts (BSD-3-Clause) and a CC0
+# CMYK profile next to its own MIT/Apache code (#477). The manifest names only
+# the code licence; this keeps the font notice in the generated inventory.
+# Re-check the paths and checksums whenever hayro is upgraded.
+[hayro-interpret.clarify]
+license = "(MIT OR Apache-2.0) AND BSD-3-Clause AND CC0-1.0"
+
+[[hayro-interpret.clarify.files]]
+path = "LICENSE-MIT"
+license = "MIT"
+checksum = "51b50e6120c344dcc146bbd6375ca1c78e079d97c8bea76e67a53d6ff0efebac"
+
+[[hayro-interpret.clarify.files]]
+path = "LICENSE-APACHE"
+license = "Apache-2.0"
+checksum = "0cec06e0e55fbc3dc5cee4fca9b607f66cb8f4e4dbcf3b3c013594dd156732e9"
+
+[[hayro-interpret.clarify.files]]
+path = "assets/LICENSE_FOXIT"
+license = "BSD-3-Clause"
+checksum = "b578cdd2345840ada550bd12519533812320d5f1d21cf4c1c7e1b1b0a31c98b7"
+
+[[hayro-interpret.clarify.files]]
+path = "assets/CGATS_LICENSE.txt"
+license = "CC0-1.0"
+checksum = "469d87b5fa48f8aaf69e25f4fcac3a309c97dbb7d561b917638abdb640e004d9"

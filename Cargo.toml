@@ -40,6 +40,12 @@ gpui-pre-macros = { opt-level = 3 }
 tree-sitter = { opt-level = 3 }
 gpui-pre-sum-tree = { opt-level = 3 }
 ropey = { opt-level = 3 }
+# PDF pages rasterize on the CPU; unoptimised they take seconds each (#477).
+hayro = { opt-level = 3 }
+hayro-interpret = { opt-level = 3 }
+hayro-syntax = { opt-level = 3 }
+vello_cpu = { opt-level = 3 }
+vello_common = { opt-level = 3 }
 
 # Diagnostic cross-build: GPUI compiles HLSL at runtime on Windows.
 # Its offline shader build requires a Windows-hosted fxc.exe build script.

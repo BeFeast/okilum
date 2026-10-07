@@ -18,6 +18,7 @@ mod desktop_app_menu;
 mod export;
 #[cfg(windows)]
 mod markdown_handler;
+mod pdf_engine;
 mod platform;
 mod prepared_links;
 mod quick_open;
@@ -48,6 +49,7 @@ mod reader_move;
 #[cfg(unix)]
 mod reader_move_picker;
 mod reader_open;
+mod reader_pdf;
 mod reader_properties;
 mod reader_reading_controls;
 #[cfg(unix)]
@@ -181,6 +183,9 @@ actions!(
         TreeCollapseSubtree,
         CollapseFolders,
         FocusCurrentFolder,
+        PdfZoomIn,
+        PdfZoomOut,
+        PdfZoomFit,
     ]
 );
 
@@ -210,6 +215,15 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("alt-cmd-c", CopyVaultPath, Some(READER_CONTEXT)),
         KeyBinding::new("space", QuickLookFile, Some("ReaderFile && !Input")),
         KeyBinding::new("space", QuickLookFile, Some("ReaderTree && !Input")),
+    ]);
+    // ⌘/Ctrl + and − arrive as `=`/`+` and `-` depending on layout and shift.
+    let pdf = Some("ReaderPdf");
+    cx.bind_keys([
+        KeyBinding::new("secondary-=", PdfZoomIn, pdf),
+        KeyBinding::new("secondary-+", PdfZoomIn, pdf),
+        KeyBinding::new("secondary-shift-=", PdfZoomIn, pdf),
+        KeyBinding::new("secondary--", PdfZoomOut, pdf),
+        KeyBinding::new("secondary-0", PdfZoomFit, pdf),
     ]);
 
     cx.bind_keys([
@@ -1579,6 +1593,9 @@ impl Reader {
         cx: &mut Context<Self>,
     ) {
         reader_drawing::invalidate(&self.vault_root, cx);
+        if let Some(viewer) = self.pdf_viewer().cloned() {
+            viewer.update(cx, |viewer, cx| viewer.check_revision(cx));
+        }
         if self.incremental_active || self.incremental_initializing {
             self.deferred_vault_changes.rescan |= changes.rescan;
             self.deferred_vault_changes
