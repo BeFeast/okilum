@@ -79,7 +79,7 @@ pub fn strip_comments(text: &str) -> String {
     }
     let mut out = String::with_capacity(text.len());
     let mut pos = 0;
-    for pair in marks.chunks_exact(2) {
+    for pair in marks.as_chunks::<2>().0 {
         let (mut start, mut end) = (pair[0], pair[1] + 2);
         let line_start = text[..start].rfind('\n').map_or(0, |n| n + 1);
         let line_end = text[end..].find('\n').map_or(text.len(), |n| end + n + 1);
