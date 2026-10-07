@@ -398,3 +398,192 @@ fn owned_folder_and_external_replica_keep_their_boundaries() -> Result<()> {
     client.api.verify_identity(&client.id)?;
     Ok(())
 }
+
+/// Readiness protocol experiment only: never promotes the folder.
+#[test]
+#[ignore = "requires CT141 isolated hub/client binaries; synthetic large vault"]
+fn readiness_boundaries_empty_and_large() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let hub = Peer::new(
+        root.path(),
+        "hub",
+        std::env::var_os("TESSERA_SYNC_HUB")
+            .context("hub binary")?
+            .into(),
+    )?;
+    let client = Peer::new(
+        root.path(),
+        "client",
+        std::env::var_os("TESSERA_SYNC_CLIENT")
+            .context("client binary")?
+            .into(),
+    )?;
+    let id = "readiness-fixture";
+    hub.api.add_device(&device(&client, false))?;
+    client.api.add_device(&device(&hub, true))?;
+    hub.api
+        .add_paused_folder(&folder(&hub, &client, id, "sendreceive"))?;
+    client
+        .api
+        .add_paused_folder(&folder(&client, &hub, id, "receiveonly"))?;
+    hub.api.set_ignores(id, FIXTURE_IGNORES)?;
+    client.api.set_ignores(id, FIXTURE_IGNORES)?;
+    hub.api.patch_folder(id, &json!({"paused":false}))?;
+    client.api.patch_folder(id, &json!({"paused":false}))?;
+    hub.api.scan(id)?;
+    client.api.scan(id)?;
+    wait("empty hub/client connected and scanned", || {
+        Ok(
+            hub.api.connections()?["connections"][&client.id]["connected"] == true
+                && hub.api.status(id)?["state"] == "idle"
+                && client.api.status(id)?["state"] == "idle",
+        )
+    })?;
+    let empty = hub.api.status(id)?;
+    assert_eq!(empty["localTotalItems"], 0);
+    assert_eq!(empty["globalTotalItems"], 0);
+    let empty_client = client.api.status(id)?;
+    assert_eq!(empty_client["needTotalItems"], 0);
+    println!(
+        "empty: hub sequence={}, client remote sequence={}",
+        empty["sequence"], empty_client["remoteSequence"][&hub.id]
+    );
+    // Force multiple index batches; each file has independently checked bytes.
+    for i in 0..12_000 {
+        write(
+            &hub.vault,
+            &format!("notes/note-{i:05}.md"),
+            &format!("fixture content {i}"),
+        )?;
+    }
+    hub.api.scan(id)?;
+    let boundary = hub.api.status(id)?["sequence"]
+        .as_u64()
+        .context("hub sequence")?;
+    assert!(boundary > empty["sequence"].as_u64().context("empty sequence")?);
+    // Positive control: the old empty observation cannot satisfy the new boundary.
+    assert!(
+        empty_client["remoteSequence"][&hub.id]
+            .as_u64()
+            .unwrap_or(0)
+            < boundary
+    );
+    let receive_started = Instant::now();
+    loop {
+        let status = client.api.status(id)?;
+        if status["remoteSequence"][&hub.id]
+            .as_u64()
+            .is_some_and(|s| s >= boundary)
+            && status["state"] == "idle"
+            && status["needTotalItems"] == 0
+        {
+            break;
+        }
+        println!(
+            "receiving: state={}, remote={}, target={}, local={}, need={}",
+            status["state"],
+            status["remoteSequence"][&hub.id],
+            boundary,
+            status["localTotalItems"],
+            status["needTotalItems"]
+        );
+        ensure!(
+            receive_started.elapsed() < Duration::from_secs(180),
+            "large receive did not complete"
+        );
+        thread::sleep(Duration::from_secs(5));
+    }
+    for i in 0..12_000 {
+        assert_eq!(
+            fs::read_to_string(client.vault.join(format!("notes/note-{i:05}.md")))?,
+            format!("fixture content {i}")
+        );
+    }
+    let complete = client.api.status(id)?;
+    println!(
+        "large: hub boundary={boundary}, client remote sequence={}, local items={}",
+        complete["remoteSequence"][&hub.id], complete["localTotalItems"]
+    );
+    // A user edit in receive-only mode must prevent promotion despite no download need.
+    write(&client.vault, "local-only.md", "must not be published")?;
+    client.api.scan(id)?;
+    wait("receive-only local edit detected", || {
+        Ok(client.api.status(id)?["receiveOnlyTotalItems"]
+            .as_u64()
+            .is_some_and(|n| n > 0))
+    })?;
+    assert!(!hub.vault.join("local-only.md").exists());
+    assert_eq!(client.api.folder(id)?["type"], "receiveonly");
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires CT141 isolated pinned hub/client binaries"]
+fn empty_readiness_requires_live_folder_connection() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let hub = Peer::new(
+        root.path(),
+        "hub",
+        std::env::var_os("TESSERA_SYNC_HUB")
+            .context("hub binary")?
+            .into(),
+    )?;
+    let client = Peer::new(
+        root.path(),
+        "client",
+        std::env::var_os("TESSERA_SYNC_CLIENT")
+            .context("client binary")?
+            .into(),
+    )?;
+    let id = "readiness-fixture";
+    hub.api.add_device(&device(&client, false))?;
+    client.api.add_device(&device(&hub, true))?;
+    hub.api
+        .add_paused_folder(&folder(&hub, &client, id, "sendreceive"))?;
+    client
+        .api
+        .add_paused_folder(&folder(&client, &hub, id, "receiveonly"))?;
+    hub.api.set_ignores(id, FIXTURE_IGNORES)?;
+    client.api.set_ignores(id, FIXTURE_IGNORES)?;
+    hub.api.patch_folder(id, &json!({"paused":false}))?;
+    client.api.patch_folder(id, &json!({"paused":false}))?;
+    hub.api.scan(id)?;
+    client.api.scan(id)?;
+    wait("empty hub/client connected and scanned", || {
+        Ok(
+            hub.api.connections()?["connections"][&client.id]["connected"] == true
+                && hub.api.status(id)?["state"] == "idle"
+                && client.api.status(id)?["state"] == "idle",
+        )
+    })?;
+    let empty = hub.api.status(id)?;
+    assert_eq!(empty["localTotalItems"], 0);
+    assert_eq!(empty["globalTotalItems"], 0);
+    let empty_client = client.api.status(id)?;
+    assert_eq!(empty_client["needTotalItems"], 0);
+    println!(
+        "empty: hub sequence={}, client remote sequence={}",
+        empty["sequence"], empty_client["remoteSequence"][&hub.id]
+    );
+    wait("empty remote folder valid", || {
+        Ok(hub.api.completion(id, &client.id)?["remoteState"] == "valid")
+    })?;
+    println!(
+        "empty remote folder: {}",
+        hub.api.completion(id, &client.id)?
+    );
+    client.api.patch_folder(id, &json!({"paused":true}))?;
+    wait("paused empty remote folder not valid", || {
+        Ok(hub.api.completion(id, &client.id)?["remoteState"] != "valid")
+    })?;
+    println!(
+        "paused remote folder: {}",
+        hub.api.completion(id, &client.id)?
+    );
+    client.api.patch_folder(id, &json!({"paused":false}))?;
+    wait("empty remote folder valid again", || {
+        Ok(hub.api.completion(id, &client.id)?["remoteState"] == "valid")
+    })?;
+    assert_eq!(client.api.folder(id)?["type"], "receiveonly");
+    Ok(())
+}
