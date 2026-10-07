@@ -31,7 +31,7 @@ acceptance gate, now exercised through the ordinary Reader editor:
 | Latest-only adoption and note changes | Native integration regression |
 | Byte-exact mode toggles, clipboard, Undo/redo | Integration regression plus real Linux/X11 keyboard, toolbar and xclip; BOM/CRLF/Unicode hashes match |
 | Save/conflict/durable draft | Integration regression plus real Linux explicit Save, external rewrite and rejected overwrite |
-| Mouse reveal/drag, grapheme arrows, Home/End | Native integration regression; real Linux input capture pending |
+| Mouse reveal/drag, grapheme arrows, Home/End | Native integration regression; real X11 Left through combining/ZWJ/flag graphemes, Home/End and forward/reverse cross-block drag passed; full wrapped-row matrix remains pending |
 | IME | Native UTF-16 bridge regression; real compositor IME preedit/commit/cancel pending |
 | Narrow/wide styled wraps and candidate geometry | Actual X11 click after inline code/bold at 1,240 and 900 px returns canonical W offset 4 after reveal, checked through external clipboard; IME candidate geometry remains pending |
 | Restore/reopen and crash recovery | Real Linux SIGKILL after observing the durable journal, restart in Reader, explicit edit restores the exact draft; external file hash unchanged |
@@ -91,5 +91,11 @@ mode order do not establish large-note performance. Scripts and raw logs are
 The available environment has Xvfb but no installed IBus/Fcitx or Wayland
 compositor. Real IME preedit/update/commit/cancel and candidate-window geometry
 must still be exercised in a suitable native session. Existing API-level tests
-must not substitute for that evidence. The remaining real-input movement/drag
-matrix also stays pending; only the specific geometry probe above is accepted.
+must not substitute for that evidence. The complete wrapped-row movement/drag matrix also stays pending. A separate
+real X11 probe passed Left over combining Cyrillic, an emoji ZWJ sequence and a
+flag, Home/End on the same line, and forward/reversed cross-block drags. Each
+selection was verified against canonical source through an externally reset
+clipboard. The fixture file remained unchanged. Evidence:
+`/tmp/tessera359-ui/native-movement.py` and
+`/tmp/tessera359-native-movement.log`. These specific cases do not imply that
+all cases in the larger managed matrix have passed.
