@@ -39,6 +39,10 @@ directory.
 - `normalization_ignores_form_but_not_content` is the positive control: it
   checks that real differences (text, whitespace inside `<pre>`, heading
   level, `href`) still fail the comparison.
+- `asset_uri_remapping_keeps_image_structure_checks` accepts the Reader
+  asset identity mapping while rejecting altered alt text, titles, nesting
+  and arbitrary image URL changes. This accounts for the shared adjacent
+  image-identity change already on main.
 - `harness_detects_a_known_deviation` checks that a known deviation is
   detected and named in both engines.
 - GFM examples run with the extensions their fence names, as cmark-gfm's own
@@ -54,7 +58,8 @@ Not covered:
   parse and change URLs and code markup on purpose.
 - The reader rewrites link destinations in the *source*, before the parse.
   It turns them into `tessera://` URLs, by design. An example whose output
-  differs only in such `href`/`src` values counts as passing and is listed
+  differs only in such `href`/`src` values (including opaque `tessera-asset://`
+  identities) counts as passing and is listed
   in the "resolved URLs" column. The parse around the link still has to
   match.
 
@@ -114,14 +119,14 @@ whose link URLs were rewritten to `tessera://` (see above).
 | Inlines | 1 | 1 | 1 |  |
 | Code spans | 22 | 22 | 22 |  |
 | Emphasis and strong emphasis | 132 | 132 | 132 | 6 |
-| Links | 90 | 89 (99%) | 89 (99%) | 65 |
-| Images | 22 | 21 (95%) | 21 (95%) | 1 |
+| Links | 90 | 89 (99%) | 89 (99%) | 66 |
+| Images | 22 | 21 (95%) | 21 (95%) | 20 |
 | Autolinks | 19 | 14 (74%) | 15 (79%) | 4 |
 | Raw HTML | 20 | 20 | 20 |  |
 | Hard line breaks | 15 | 15 | 15 |  |
 | Soft line breaks | 2 | 2 | 2 |  |
 | Textual content | 3 | 3 | 3 |  |
-| **Total** | **652** | **644 (98.8%)** | **644 (98.8%)** | 96 |
+| **Total** | **652** | **644 (98.8%)** | **644 (98.8%)** | 116 |
 
 #### gfm
 
@@ -149,8 +154,8 @@ whose link URLs were rewritten to `tessera://` (see above).
 | Code spans | 22 | 22 | 22 |  |
 | Emphasis and strong emphasis | 131 | 122 (93%) | 122 (93%) | 6 |
 | Strikethrough (extension) | 2 | 2 | 2 |  |
-| Links | 87 | 86 (99%) | 86 (99%) | 63 |
-| Images | 22 | 21 (95%) | 21 (95%) | 1 |
+| Links | 87 | 86 (99%) | 86 (99%) | 64 |
+| Images | 22 | 21 (95%) | 21 (95%) | 20 |
 | Autolinks | 19 | 14 (74%) | 15 (79%) | 4 |
 | Autolinks (extension) | 11 | 11 | 10 (91%) |  |
 | Raw HTML | 20 | 20 | 20 |  |
@@ -158,7 +163,7 @@ whose link URLs were rewritten to `tessera://` (see above).
 | Hard line breaks | 15 | 15 | 15 |  |
 | Soft line breaks | 2 | 2 | 2 |  |
 | Textual content | 3 | 3 | 3 |  |
-| **Total** | **672** | **654 (97.3%)** | **653 (97.2%)** | 94 |
+| **Total** | **672** | **654 (97.3%)** | **653 (97.2%)** | 114 |
 
 ## Intentional deviations
 
@@ -170,7 +175,7 @@ Each deviation below is pinned, with its cause, in `known-failures.txt`.
 | `[[...]]` is a wikilink | CM 559; GFM 567 | both | Obsidian link syntax, the core of note identity. |
 | `![[...]]` is an embed | CM 590; GFM 598 | both | Obsidian embed syntax. |
 | GFM autolink literals are on in every note | CM 602, 606, 608, 611, 612; GFM 610, 614, 616, 619, 620 | both (the reader passes CM 606 / GFM 614) | Bare URLs and email addresses are links on GitHub and in Obsidian. The spec runs these CommonMark examples without the extension. |
-| Link destinations are resolved into `tessera://` URLs | 96 CommonMark and 94 GFM examples (passing, listed separately) | reader | Navigation is resolved against the vault (`document_links`). The parse is unchanged. |
+| Link and image destinations are resolved into internal URLs | 116 CommonMark and 114 GFM examples (passing, listed separately) | reader | Navigation is resolved against the vault (`document_links`); missing adjacent assets use `tessera-asset://unavailable`. The parse around the URL is unchanged. |
 | GFM "disallowed raw HTML" (tagfilter) is off | GFM 652 | both | See the open question below. |
 
 ### Not Tessera's choice

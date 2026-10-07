@@ -290,8 +290,8 @@ fn comrak(markdown: &str, options: &comrak::Options) -> String {
 enum Verdict {
     Pass,
     /// Equal once link and image URLs are set aside. The reader resolves
-    /// every link destination in the source into a `tessera://` URL before
-    /// parsing, by design; the parse around it still has to match.
+    /// links and local images into internal URLs before parsing, by design;
+    /// the parse around them still has to match.
     PassResolved,
     Fail,
 }
@@ -300,7 +300,9 @@ fn verdict(got: &str, expected: &str) -> Verdict {
     let (got, expected) = (normalize(got), normalize(expected));
     if got == expected {
         Verdict::Pass
-    } else if got.contains("tessera://") && mask_urls(&got) == mask_urls(&expected) {
+    } else if (got.contains("tessera://") || got.contains("tessera-asset://"))
+        && mask_urls(&got) == mask_urls(&expected)
+    {
         Verdict::PassResolved
     } else {
         Verdict::Fail
@@ -694,6 +696,31 @@ fn normalization_ignores_form_but_not_content() {
     ] {
         assert_ne!(normalize(a), normalize(b), "{a:?} vs {b:?}");
     }
+}
+
+/// URL mapping is presentation identity, but image labels and titles are
+/// still part of the parse contract. Exercise both sides of that boundary.
+#[test]
+fn asset_uri_remapping_keeps_image_structure_checks() {
+    let got = r#"<p><img src="tessera-asset://unavailable" alt="foo bar" title="train &amp; tracks" /></p>"#;
+    let expected = r#"<p><img src="train.jpg" alt="foo bar" title="train &amp; tracks" /></p>"#;
+    assert!(verdict(got, expected) == Verdict::PassResolved);
+    for changed in [
+        expected.replace("foo bar", "wrong label"),
+        expected.replace("train &amp; tracks", "wrong title"),
+        expected.replace(r#" title="train &amp; tracks""#, ""),
+        expected.replace("<p>", "<blockquote>"),
+    ] {
+        assert!(verdict(got, &changed) == Verdict::Fail, "{changed}");
+    }
+    // Arbitrary URL differences are still visible unless the reader's known
+    // identity mapping produced them.
+    assert!(
+        verdict(
+            &got.replace("tessera-asset://unavailable", "other.jpg"),
+            expected
+        ) == Verdict::Fail
+    );
 }
 
 /// The harness must be able to fail: a renderer that differs from the spec
