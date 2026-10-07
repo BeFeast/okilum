@@ -5343,6 +5343,8 @@ impl Render for Reader {
             f32::from(window.viewport_size().width)
         };
         let overlay = reader_layout::overlay(available);
+        self.panels
+            .viewport_changed(f32::from(self.body_bounds.size.width), available);
         let panel_widths = self.panels.widths(&self.panel_widths, available);
         let bounds_view = cx.entity().downgrade();
         let main = v_flex()
@@ -6259,6 +6261,7 @@ mod document_link_landing_tests {
         visual.run_until_parked();
         for width in [1366., 700.] {
             visual.simulate_resize(size(px(width), px(768.)));
+            visual.run_until_parked();
             for source in [false, true]
                 .into_iter()
                 .filter(|source| !source || cfg!(unix))
@@ -7124,15 +7127,16 @@ mod document_link_landing_tests {
         });
         visual.run_until_parked();
         assert!(paths(visual).contains(&"Home/Empty".to_string()));
-        // Compact: the active Notes panel becomes an overlay, and choosing a
-        // note keeps it open (#363).
+        // Automatic compact entry hides the dock; explicitly reopening it
+        // creates an overlay, and choosing a note keeps it open (#363).
         visual.simulate_resize(size(px(800.), px(860.)));
         visual.run_until_parked();
         view.update_in(visual, |v, window, cx| {
-            assert!(v.panels.visible(
+            assert!(!v.panels.visible(
                 reader_layout::Panel::Notes,
                 f32::from(v.body_bounds.size.width)
             ));
+            v.focus_sidebar_search(window, cx);
             v.select_panel_note(
                 reader_layout::Panel::Notes,
                 "Work/Projects/Cafe/Plan.md",
@@ -7435,6 +7439,9 @@ mod document_link_landing_tests {
         );
         let wide = visual.debug_bounds("reader-document").unwrap();
         visual.simulate_resize(size(px(600.), px(860.)));
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("reader-notes-panel").is_none());
+        view.update_in(visual, |v, window, cx| v.focus_sidebar_search(window, cx));
         visual.run_until_parked();
         assert_eq!(
             visual
@@ -7875,10 +7882,9 @@ mod document_link_landing_tests {
                 )
             });
         }
-        for width in [640., 1366., 1000., 1366.] {
+        for width in [666., 1366., 640., 1366., 1000., 1366.] {
             visual.simulate_resize(size(px(width), px(720.)));
             visual.run_until_parked();
-            let right = visual.debug_bounds("reader-backlinks-panel").unwrap();
             let document = visual.debug_bounds("reader-document").unwrap();
             if width < 1000. {
                 let state = view.read_with(visual, |v, _| (v.body_bounds, v.panels.clone()));
@@ -7886,8 +7892,12 @@ mod document_link_landing_tests {
                     visual.debug_bounds("reader-notes-panel").is_none(),
                     "compact state: {state:?}"
                 );
-                assert_eq!(right.right(), document.right());
+                assert!(visual.debug_bounds("reader-backlinks-panel").is_none());
+                assert_eq!(document.left(), state.0.left());
+                assert_eq!(document.right(), state.0.right());
+                assert!(state.1.notes && state.1.backlinks, "wide choices retained");
             } else {
+                let right = visual.debug_bounds("reader-backlinks-panel").unwrap();
                 let left = visual.debug_bounds("reader-notes-panel").unwrap();
                 assert!(left.right() <= document.left());
                 assert!(document.right() <= right.left());
@@ -7962,6 +7972,15 @@ mod document_link_landing_tests {
         for (width, height) in [(640., 720.), (1366., 768.), (640., 720.)] {
             visual.simulate_resize(size(px(width), px(height)));
             visual.run_until_parked();
+            if width < reader_layout::DOCK_MIN_WIDTH {
+                view.update_in(visual, |v, window, cx| {
+                    assert!(!v.panels.visible(reader_layout::Panel::Notes, width));
+                    assert!(!v.sidebar_search_focus.is_focused(window));
+                    assert!(v.content.read(cx).focus_handle().is_focused(window));
+                    v.focus_sidebar_search(window, cx);
+                });
+                visual.run_until_parked();
+            }
             view.update_in(visual, |v, window, _| {
                 assert_eq!(v.content.entity_id(), old);
                 assert_eq!(v.history, history_before);

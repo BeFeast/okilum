@@ -16,6 +16,14 @@ pub struct Panels {
     pub active: Panel,
 }
 impl Panels {
+    /// Automatic tiling must not turn a docked panel into an obstruction.
+    /// Keep the wide choices; only explicit opens activate a compact overlay.
+    pub fn viewport_changed(&mut self, previous: f32, current: f32) {
+        if !overlay(previous) && overlay(current) {
+            self.active = Panel::Closed;
+        }
+    }
+
     pub fn visible(&self, panel: Panel, available: f32) -> bool {
         let enabled = match panel {
             Panel::Notes => self.notes,
@@ -238,6 +246,22 @@ pub(crate) fn settings_path_at(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tiling_hides_panels_without_losing_wide_choices() {
+        let mut panels = Panels::default();
+        panels.open(Panel::Notes);
+        panels.open(Panel::Backlinks);
+        panels.viewport_changed(1366., 666.);
+        assert!(!panels.visible(Panel::Notes, 666.));
+        assert!(!panels.visible(Panel::Backlinks, 666.));
+        assert!(panels.visible(Panel::Notes, 1366.));
+        assert!(panels.visible(Panel::Backlinks, 1366.));
+        panels.open(Panel::Notes);
+        panels.viewport_changed(666., 640.);
+        assert!(panels.visible(Panel::Notes, 640.));
+        assert!(!panels.visible(Panel::Backlinks, 640.));
+    }
 
     #[test]
     fn sides_are_independent_and_compact_visibility_restores_wide_choices() {
