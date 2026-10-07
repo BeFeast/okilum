@@ -30,6 +30,7 @@ pub mod note_move;
 #[cfg(unix)]
 pub mod note_templates;
 pub mod obsidian;
+pub mod projects;
 pub mod properties;
 pub mod prose;
 pub mod quick_open;

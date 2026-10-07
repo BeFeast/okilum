@@ -28,12 +28,7 @@ pub fn hidden(path: &str) -> bool {
 
 /// PARA archive folders, with or without a numeric prefix ("4 Archive").
 pub fn archived(path: &str) -> bool {
-    path.split('/').any(|segment| {
-        let name = segment
-            .trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == '-' || c == ' ')
-            .to_lowercase();
-        name == "archive" || name == "архив"
-    })
+    tessera_core::projects::archived(path)
 }
 
 #[derive(Default)]

@@ -29,6 +29,7 @@ pub enum Section {
     Recent,
     Pinned,
     Inbox,
+    Projects,
     Folders,
     /// The Properties section of the right panel (#386); kept here so its
     /// collapsed state persists with the other sections.
@@ -41,6 +42,7 @@ impl Section {
             Section::Recent => "Recent",
             Section::Pinned => "Pinned",
             Section::Inbox => "Inbox",
+            Section::Projects => "Projects",
             Section::Folders => "Folders",
             Section::Properties => "Properties",
         }
@@ -61,6 +63,8 @@ pub struct State {
     /// `Properties` variant, does not discard the whole state.
     #[serde(default)]
     pub properties_collapsed: bool,
+    #[serde(default)]
+    pub projects_collapsed: bool,
     /// Show `_`/`.` files and folders in the tree for this root (#395).
     #[serde(default)]
     pub show_hidden: bool,
@@ -140,11 +144,16 @@ impl State {
     pub fn is_collapsed(&self, section: Section) -> bool {
         match section {
             Section::Properties => self.properties_collapsed,
+            Section::Projects => self.projects_collapsed,
             other => self.collapsed.contains(&other),
         }
     }
 
     pub fn toggle_section(&mut self, section: Section) {
+        if section == Section::Projects {
+            self.projects_collapsed = !self.projects_collapsed;
+            return;
+        }
         if section == Section::Properties {
             self.properties_collapsed = !self.properties_collapsed;
             return;

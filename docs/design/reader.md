@@ -661,3 +661,27 @@ When rendered note text has focus, Up/Down scroll by two text lines and Page
 Up/Page Down scroll by 90% of the viewport. This includes focus transferred from
 a dismissed compact sidebar. These bindings belong only to Reader TextView;
 source inputs and the folder tree retain their own navigation keys.
+
+### Derived Projects (#370, option B approved 2026-10-07)
+
+Projects sits between Inbox and Folders. It contains every readable folder
+`_index.md` with a scalar `type: project` (case-insensitive), outside PARA archive
+folders. It is independent of the folder tree's hidden-item setting. Rows open
+the canonical index note; no Markdown, folders or type values are rewritten.
+
+Active projects precede planned projects; unknown/paused/missing statuses remain
+visible afterward with the authored status on hover. Done/closed/completed and
+cancelled projects are initially behind “Show N done”. Within status groups,
+newest accepted source activity in the project subtree comes first; title/path
+break ties deterministically. Domain is a muted secondary label, not a raw path.
+Open checkbox counts cover the folder subtree, excluding archives and hidden
+subfolders/templates, and disappear at zero. Empty Projects has no zero-count
+message. Its collapse preference is app-owned and does not alter older sidebar
+state fields.
+
+The list is rebuilt from accepted Reader snapshots and refreshed with changed or
+removed sources in the existing incremental worker. Render performs no source IO.
+The folder tree is unchanged. The future Views slot is absent while no saved view
+exists; this slice adds neither service views nor a placeholder heading. Linux
+light/dark before/after are captured by the QA sub-session after merge, per the
+owner's delivery instruction for this slice.

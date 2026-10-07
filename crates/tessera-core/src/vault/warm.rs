@@ -21,6 +21,11 @@ pub struct SourceRevision {
     changed: i128,
 }
 impl SourceRevision {
+    /// Accepted source mtime for derived recency ordering, without additional IO.
+    pub fn modified_nanoseconds(&self) -> u128 {
+        self.modified
+    }
+
     /// Imported mtime can be rounded even on a precise native filesystem. Native
     /// change time also changes on same-size writes with a restored mtime. Reuse still
     /// requires equality of the entire revision, never just either timestamp.
