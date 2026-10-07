@@ -89,6 +89,7 @@ mod reader_trash;
 #[cfg(unix)]
 mod reader_trash_fs;
 mod reader_tree;
+mod reader_tree_preview;
 mod reader_typed_view;
 mod reader_ui_state;
 #[cfg(any(unix, windows))]
@@ -177,6 +178,7 @@ actions!(
         RevealFile,
         CopyVaultPath,
         QuickLookFile,
+        TreePreview,
         FindInNote,
         ReaderScrollDown,
         ReaderScrollUp,
@@ -247,8 +249,7 @@ fn bind_keys(cx: &mut App) {
         // Quick Look is a macOS service; elsewhere Space would only report that.
         #[cfg(target_os = "macos")]
         KeyBinding::new("space", QuickLookFile, Some("ReaderFile && !Input")),
-        #[cfg(target_os = "macos")]
-        KeyBinding::new("space", QuickLookFile, Some("ReaderTree && !Input")),
+
     ]);
     // ⌘/Ctrl + and − arrive as `=`/`+` and `-` depending on layout and shift.
     let pdf = Some("ReaderPdf");
@@ -371,7 +372,7 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("enter", TreeOpen, Some("ReaderTree && !Input")),
         #[cfg(any(unix, windows))]
         KeyBinding::new("enter", RenameTreeNote, Some("ReaderTree && !Input")),
-        KeyBinding::new("space", TreeOpen, Some("ReaderTree && !Input")),
+        KeyBinding::new("space", TreePreview, Some("ReaderTree && !Input")),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-down", TreeOpen, Some(TREE_KEYS)),
         #[cfg(not(target_os = "macos"))]
@@ -1169,6 +1170,7 @@ struct Reader {
     single_file: bool,
     hover_preview: reader_hover::HoverPreview,
     file_preview: Option<reader_files::FilePreview>,
+    tree_preview: reader_tree_preview::Session,
     file_menu: Option<(Entity<gpui_component::menu::PopupMenu>, Point<Pixels>)>,
     editing: Option<reader_editor::Editing>,
     #[cfg(any(unix, windows))]
@@ -1527,6 +1529,7 @@ impl Reader {
             tree_revealed: String::new(),
             hover_preview: Default::default(),
             file_preview: None,
+            tree_preview: Default::default(),
             file_menu: None,
             tree_focus: cx.focus_handle(),
             typed_navigation: Default::default(),
@@ -1740,6 +1743,7 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.tree_preview.close();
         if rel.is_empty() {
             self.show_empty_vault(window, cx);
             return;
@@ -2085,6 +2089,12 @@ impl Reader {
     fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.recent_switcher.open() {
             self.recent_switcher.cancel();
+            cx.notify();
+            return;
+        }
+        if self.tree_preview.is_open() {
+            self.tree_preview.close();
+            self.tree_focus.focus(window, cx);
             cx.notify();
             return;
         }
@@ -2854,6 +2864,9 @@ impl Reader {
                 }
             }
         }
+        if matches!(key, TreeKey::Down | TreeKey::Up) {
+            self.follow_tree_preview(window, cx);
+        }
         if let Some(folder) = lazy_folder {
             self.load_quick_folder(folder, cx);
         }
@@ -2948,6 +2961,7 @@ impl Reader {
         cx: &mut Context<Self>,
     ) {
         use tessera_core::vault::EntryKind;
+        self.tree_preview.close();
         let tree = &mut self.tree;
         tree.cursor = Some(row.path.clone());
         match row.kind {
@@ -6133,6 +6147,11 @@ impl Render for Reader {
                 }
             }))
             .on_action(cx.listener(|this, _: &Dismiss, window, cx| this.dismiss(window, cx)))
+            .on_action(
+                cx.listener(|this, _: &TreePreview, window, cx| {
+                    this.toggle_tree_preview(window, cx)
+                }),
+            )
             .on_action(cx.listener(|this, _: &TreeDown, w, cx| this.tree_key(TreeKey::Down, w, cx)))
             .on_action(cx.listener(|this, _: &TreeUp, w, cx| this.tree_key(TreeKey::Up, w, cx)))
             .on_action(
