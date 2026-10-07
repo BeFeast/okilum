@@ -656,6 +656,14 @@ impl Render for SyncSettings {
                     ),
             );
         }
+        if enabled && !removed {
+            if let Some(local) = local {
+                for message in tessera_sync_controller::presentation::attention_messages(local) {
+                    content =
+                        content.child(div().text_sm().text_color(p.text_muted).child(message));
+                }
+            }
+        }
         if let Some(last) = self
             .output
             .as_ref()

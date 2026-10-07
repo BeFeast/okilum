@@ -167,3 +167,10 @@ Native Linux light/dark before/after evidence and browser-to-daemon end-to-end Q
 are required before publishing the Settings UI. Development still uses only the
 CT141 sandbox. The optional QA trust certificate is compiled only into the
 non-publishing settings harness; shipping builds use system certificate trust.
+
+Folder attention messages distinguish unavailable locations or markers, permissions,
+full disks, and preserved receive-only local edits. They use the existing authenticated
+status/error snapshot and perform no additional file scan. Raw daemon paths and error
+text stay out of the Settings layout. Local edits during first receive report Needs
+attention rather than silently remaining Preparing. These messages never recreate a
+marker, revert local edits, or resolve conflict copies automatically.
