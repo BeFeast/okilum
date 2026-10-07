@@ -4,7 +4,10 @@ use gpui_component::WindowExt;
 
 pub(crate) const PROJECT_URL: &str = "https://git.oklabs.uk/BeFeast/tessera";
 const TAGLINE: &str = "Your notes. Clearly connected.";
-const DESCRIPTION: &str = "A fast Markdown reader and editor for your local, Obsidian-style vault. Built with native GPUI.";
+#[cfg(not(windows))]
+const DESCRIPTION: &str = "A fast Markdown reader and editor for your local, Obsidian-style vault.";
+#[cfg(windows)]
+const DESCRIPTION: &str = "A fast Markdown reader for your local, Obsidian-style vault.";
 const FEATURES: [&str; 4] = [
     "Read rich notes, tables, code and diagrams.",
     "Find the right passage with full-text search.",
@@ -108,37 +111,40 @@ fn show_about_dialog(window: &mut Window, cx: &mut App, close_window: bool) {
                             .text_sm()
                             .children(FEATURES.map(|text| div().child(format!("• {text}")))),
                     )
-                    .when(cfg!(windows), |view| {
-                        view.child(
-                            div()
-                                .text_sm()
-                                .text_color(palette.text_muted)
-                                .child("This Windows build is read-only."),
-                        )
-                    })
-                    .child(div().text_sm().child(format!(
-                        "Version {} · Build {}",
-                        env!("TESSERA_RELEASE_VERSION"),
-                        env!("TESSERA_BUILD_VERSION")
-                    )))
                     .child(
-                        div()
-                            .text_sm()
-                            .text_color(palette.text_muted)
-                            .child(format!("Update channel: {}", updater::channel())),
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_sm()
+                                    .text_color(palette.text_muted)
+                                    .child(format!(
+                                        "Version {} · Build {} · {}",
+                                        env!("TESSERA_RELEASE_VERSION"),
+                                        env!("TESSERA_BUILD_VERSION"),
+                                        updater::channel()
+                                    )),
+                            )
+                            .when(updater::available(), |row| {
+                                row.child(
+                                    reader_icon_button(
+                                        "about-check-updates",
+                                        IconName::RotateCw,
+                                        updater::action_label(),
+                                        cx,
+                                    )
+                                    .accessibility_label(updater::action_label())
+                                    .on_click(|_, _, cx| updater::activate(cx)),
+                                )
+                            }),
                     )
                     .child(links)
-                    .when(updater::available(), |view| {
-                        view.child(
-                            Button::new("about-check-updates")
-                                .label(updater::action_label())
-                                .on_click(|_, _, cx| updater::activate(cx)),
-                        )
-                    })
                     .when(cfg!(target_os = "linux"), |view| {
                         view.child(
                             div()
-                                .text_xs()
+                                .text_size(px(12.))
                                 .text_color(palette.text_muted)
                                 .child("Updates are managed by your system package manager."),
                         )
@@ -146,7 +152,7 @@ fn show_about_dialog(window: &mut Window, cx: &mut App, close_window: bool) {
                     .when(cfg!(windows) && !updater::available(), |view| {
                         view.child(
                             div()
-                                .text_xs()
+                                .text_size(px(12.))
                                 .text_color(palette.text_muted)
                                 .child("To update, download the latest Windows ZIP."),
                         )
