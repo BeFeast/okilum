@@ -394,8 +394,11 @@ distinctive Rust/Python/JavaScript combinations, or multiple known shell prompts
 Rule confidence must reach 95/100 and have a unique winner; these scores describe
 signature strength, not calibrated probabilities. Ambiguous text has no label and
 no syntax highlighting. Indented blocks are never inferred. Detection skips blocks
-larger than 8 KiB or 128 lines, runs only on entering the viewport, and caches both
-matches and abstentions per block/resolver. Label and highlighting share the result.
+larger than 8 KiB or 128 lines and caches both matches and abstentions per
+block/resolver. Ordinary views resolve on entering the viewport. The staged
+startup document resolves its fences in the background before publication, so
+labels and syntax colours accompany the first text frame, including a restored
+mid-note position. Label and highlighting share the result.
 No source bytes, explicit fence language, selection export or Copy payload change.
 
 Existing highlighter assessment: keep the vendored tree-sitter adapter and its
@@ -567,6 +570,9 @@ Initial source syntax preparation starts before mounting, without the typing
 debounce. The restored editor is revealed once its scroll and initial highlighting
 are ready; subsequent edits stay visible while syntax updates asynchronously.
 Neither mode waits for search validation.
+The saved appearance is applied before native window construction, rather than
+waiting for the window's appearance observer. Startup must not expose a light
+palette when Dark was saved.
 A previously unseen vault inherits the last active window's
 presentation and geometry, without copying its note paths or navigation history.
 Transient menus, hover previews, notifications and dialogs do not reopen.

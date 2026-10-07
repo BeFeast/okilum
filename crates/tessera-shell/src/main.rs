@@ -5935,6 +5935,12 @@ fn main() {
         drop(fonts_phase);
         let appearance_phase = diagnostics.phase("appearance_load");
         cx.set_global(load_appearance(cx));
+        // Native window construction must already see the persisted palette.
+        // The per-window callback still handles system appearance updates.
+        match cx.global::<AppearancePreference>().0 {
+            Some(mode) => Theme::change(mode, None, cx),
+            None => Theme::sync_system_appearance(None, cx),
+        }
         brand::apply_theme(cx);
         cx.activate(true);
         drop(appearance_phase);

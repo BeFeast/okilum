@@ -1,0 +1,60 @@
+diff --git a/crates/base/src/text/state.rs b/crates/base/src/text/state.rs
+--- a/crates/base/src/text/state.rs
++++ b/crates/base/src/text/state.rs
+@@ -410,6 +410,31 @@
+             return None;
+         }
+         Some(self.parsed_error.as_ref().map_or(Ok(()), |error| Err(error.to_string())))
++    }
++
++    /// Resolve code languages off the UI thread before publishing a prepared
++    /// document. Ordinary TextViews retain their lazy, visible-only resolution.
++    pub fn prepare_code_languages(
++        &self,
++        resolver: Arc<CodeBlockLanguageFn>,
++        cx: &App,
++    ) -> Task<()> {
++        let blocks = self.parsed_content.document.blocks.clone();
++        cx.background_executor().spawn(async move {
++            fn visit(blocks: &[node::BlockNode], resolver: &Arc<CodeBlockLanguageFn>) {
++                for block in blocks {
++                    match block {
++                        node::BlockNode::CodeBlock(code) => code.prepare_language(resolver),
++                        node::BlockNode::Root { children, .. }
++                        | node::BlockNode::Blockquote { children, .. }
++                        | node::BlockNode::List { children, .. }
++                        | node::BlockNode::ListItem { children, .. } => visit(children, resolver),
++                        _ => {}
++                    }
++                }
++            }
++            visit(&blocks, &resolver);
++        })
+     }
+ 
+     /// Restore a prepared document before its first layout, without painting
+diff --git a/crates/base/src/text/node.rs b/crates/base/src/text/node.rs
+--- a/crates/base/src/text/node.rs
++++ b/crates/base/src/text/node.rs
+@@ -1339,6 +1339,21 @@
+     pub(super) fn clear_selection(&self) {
+         if let Ok(mut state) = self.state.lock() {
+             state.selection = None;
++        }
++    }
++
++    pub(super) fn prepare_language(&self, resolver: &Arc<CodeBlockLanguageFn>) {
++        if self.copy_code.is_none() {
++            return;
++        }
++        if self.language_cache.lock().is_ok_and(|cache| {
++            cache.as_ref().is_some_and(|cached| Arc::ptr_eq(&cached.resolver, resolver))
++        }) {
++            return;
++        }
++        let language = resolver(self);
++        if let Ok(mut cache) = self.language_cache.lock() {
++            *cache = Some(CachedCodeLanguage { resolver: resolver.clone(), language });
+         }
+     }
+ 
