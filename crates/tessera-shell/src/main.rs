@@ -64,6 +64,7 @@ mod reader_settings;
 #[cfg(target_os = "linux")]
 mod reader_settings_sync;
 mod reader_sidebar;
+use reader_sidebar::SectionAction;
 #[cfg(unix)]
 mod reader_source_history;
 mod reader_startup;
@@ -190,6 +191,8 @@ actions!(
         TreeOpen,
         TreeExpandSubtree,
         TreeCollapseSubtree,
+        CollapseSidebarSections,
+        ExpandSidebarSections,
         CollapseFolders,
         FocusCurrentFolder,
         PdfZoomIn,
@@ -205,9 +208,9 @@ const TREE_KEYS: &str = "ReaderTree && !Input";
 const TREE_EXPAND_SUBTREE_KEY: &str = "alt-right";
 const TREE_COLLAPSE_SUBTREE_KEY: &str = "alt-left";
 #[cfg(target_os = "macos")]
-const FOCUS_CURRENT_KEY: &str = "cmd-shift-left";
+const COLLAPSE_SECTIONS_KEY: &str = "cmd-shift-left";
 #[cfg(not(target_os = "macos"))]
-const FOCUS_CURRENT_KEY: &str = "ctrl-shift-left";
+const COLLAPSE_SECTIONS_KEY: &str = "ctrl-shift-left";
 
 /// X11/Wayland may report the press either way: `.` with shift, or `>`.
 const HIDDEN_FILES_KEYS: [&str; 2] = ["ctrl-shift-.", "ctrl->"];
@@ -343,7 +346,16 @@ fn bind_keys(cx: &mut App) {
             TreeCollapseSubtree,
             Some(TREE_KEYS),
         ),
-        KeyBinding::new(FOCUS_CURRENT_KEY, FocusCurrentFolder, Some(TREE_KEYS)),
+        KeyBinding::new(
+            COLLAPSE_SECTIONS_KEY,
+            CollapseSidebarSections,
+            Some("Reader && !Input"),
+        ),
+        KeyBinding::new(
+            "secondary-shift-right",
+            ExpandSidebarSections,
+            Some("Reader && !Input"),
+        ),
         KeyBinding::new(HIDDEN_FILES_KEYS[0], ToggleHiddenFiles, ctx),
         KeyBinding::new(HIDDEN_FILES_KEYS[1], ToggleHiddenFiles, ctx),
         #[cfg(target_os = "macos")]
@@ -2319,6 +2331,9 @@ impl Reader {
     }
 
     fn toggle_section(&mut self, section: reader_sidebar::Section, cx: &mut Context<Self>) {
+        if section != reader_sidebar::Section::Properties {
+            self.sidebar.folders_only_restore = None;
+        }
         if self
             .scroll_sections
             .closed(section, &self.sidebar.collapsed)
@@ -2811,13 +2826,25 @@ impl Reader {
         cx.notify();
     }
 
+    fn set_sidebar_sections(&mut self, mode: SectionAction, cx: &mut Context<Self>) {
+        match mode {
+            SectionAction::FoldersOnly => self.sidebar.folders_only(false),
+            SectionAction::ExpandAll => self.sidebar.all_sections(false),
+            SectionAction::ToggleFoldersOnly => self.sidebar.folders_only(true),
+            SectionAction::CollapseAll => self.sidebar.all_sections(true),
+        }
+        self.scroll_sections.restore();
+        self.save_sidebar(cx);
+        cx.notify();
+    }
+
     /// Folders header «Collapse all» (#410).
     fn collapse_folders(&mut self, cx: &mut Context<Self>) {
         self.tree.collapse_all();
         cx.notify();
     }
 
-    /// Folders header «Focus current», ⇧⌘← (#410): only the path to the
+    /// Folders header «Focus current» (#410): only the path to the
     /// open note stays expanded, and the note is selected.
     fn focus_current_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.selected_file().is_empty() {
@@ -3290,45 +3317,61 @@ impl Reader {
                             cx.listener(|this, _, window, cx| this.new_folder(None, window, cx)),
                         ),
                     );
-                header.child(
-                    h_flex()
-                        .id("sidebar-search")
-                        .debug_selector(|| "sidebar-search".into())
-                        .track_focus(&self.sidebar_search_focus)
-                        .flex_none()
-                        .h(px(28.))
-                        .px(px(6.))
-                        .gap_1()
-                        .rounded(px(6.))
-                        .text_color(faint)
-                        .cursor_pointer()
-                        .hover(|s| s.bg(brand::reader_palette(cx).hover))
-                        .focus(|s| s.bg(brand::reader_palette(cx).hover))
-                        .tooltip(|window, cx| {
-                            gpui_component::tooltip::Tooltip::new(format!(
-                                "Search notes ({SEARCH_SHORTCUT})"
-                            ))
-                            .build(window, cx)
-                        })
-                        .child(Icon::new(IconName::Search).small())
-                        .when(width >= SEARCH_HINT_MIN_PANEL_WIDTH, |button| {
-                            button.child(
-                                div()
-                                    .text_size(px(11.))
-                                    .child(SEARCH_SHORTCUT)
-                                    .debug_selector(|| "sidebar-search-shortcut".into()),
-                            )
-                        })
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.open_quick_open(false, window, cx)
-                        }))
-                        .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                this.open_quick_open(false, window, cx);
-                                cx.stop_propagation();
-                            }
+                header
+                    .child(
+                        reader_icon_button(
+                            "sidebar-folders-only",
+                            Icon::default().path(brand::READER_COLLAPSE_ICON),
+                            with_shortcut(
+                                "Folders only / Restore sections",
+                                "secondary-shift-left",
+                            ),
+                            cx,
+                        )
+                        .debug_selector(|| "sidebar-folders-only".into())
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.set_sidebar_sections(SectionAction::ToggleFoldersOnly, cx)
                         })),
-                )
+                    )
+                    .child(
+                        h_flex()
+                            .id("sidebar-search")
+                            .debug_selector(|| "sidebar-search".into())
+                            .track_focus(&self.sidebar_search_focus)
+                            .flex_none()
+                            .h(px(28.))
+                            .px(px(6.))
+                            .gap_1()
+                            .rounded(px(6.))
+                            .text_color(faint)
+                            .cursor_pointer()
+                            .hover(|s| s.bg(brand::reader_palette(cx).hover))
+                            .focus(|s| s.bg(brand::reader_palette(cx).hover))
+                            .tooltip(|window, cx| {
+                                gpui_component::tooltip::Tooltip::new(format!(
+                                    "Search notes ({SEARCH_SHORTCUT})"
+                                ))
+                                .build(window, cx)
+                            })
+                            .child(Icon::new(IconName::Search).small())
+                            .when(width >= SEARCH_HINT_MIN_PANEL_WIDTH, |button| {
+                                button.child(
+                                    div()
+                                        .text_size(px(11.))
+                                        .child(SEARCH_SHORTCUT)
+                                        .debug_selector(|| "sidebar-search-shortcut".into()),
+                                )
+                            })
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_quick_open(false, window, cx)
+                            }))
+                            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                    this.open_quick_open(false, window, cx);
+                                    cx.stop_propagation();
+                                }
+                            })),
+                    )
             })
             .into_any_element()
     }
@@ -3644,6 +3687,13 @@ impl Reader {
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(tokens.text_faint)
                     .cursor_pointer()
+                    .tooltip(|window, cx| {
+                        gpui_component::tooltip::Tooltip::new(if cfg!(target_os = "macos") {
+                            "Option-click to collapse or expand all sections"
+                        } else {
+                            "Alt-click to collapse or expand all sections"
+                        }).build(window, cx)
+                    })
                     .hover(move |d| d.text_color(p.text_muted))
                     .child(
                         Icon::new(if closed {
@@ -3674,7 +3724,8 @@ impl Reader {
                                             .id(id)
                                             .flex_none()
                                             .px_1()
-                                            .opacity(0.)
+                                            .opacity(if id == "folders-collapse-all" { 1. } else { 0. })
+                                            .debug_selector(move || id.into())
                                             .group_hover(FOLDERS_HEADER_GROUP, |s| s.opacity(1.))
                                             .text_color(p.text_muted)
                                             .hover(move |s| s.text_color(p.text))
@@ -3820,9 +3871,13 @@ impl Reader {
                     .on_click({
                         let entity = entity.clone();
                         let act = act.clone();
-                        move |_, window, cx| {
+                        move |event, window, cx| {
                             act(&entity, window, cx, &|this, _, cx| {
-                                this.toggle_section(section, cx)
+                                if event.modifiers().alt {
+                                    this.set_sidebar_sections(if closed { SectionAction::ExpandAll } else { SectionAction::CollapseAll }, cx);
+                                } else {
+                                    this.toggle_section(section, cx);
+                                }
                             })
                         }
                     })
@@ -5566,9 +5621,9 @@ const HIDDEN_FILES_MENU: &str = "Show hidden files";
 const FOLDERS_HEADER_GROUP: &str = "folders-header";
 const COLLAPSE_FOLDERS_TOOLTIP: &str = "Collapse all";
 #[cfg(target_os = "macos")]
-const FOCUS_CURRENT_TOOLTIP: &str = "Focus current note ⇧⌘←";
+const FOCUS_CURRENT_TOOLTIP: &str = "Reveal in sidebar";
 #[cfg(not(target_os = "macos"))]
-const FOCUS_CURRENT_TOOLTIP: &str = "Focus current note Ctrl+Shift+←";
+const FOCUS_CURRENT_TOOLTIP: &str = "Reveal in sidebar";
 
 #[cfg(target_os = "macos")]
 const VAULT_SEARCH_TOOLTIP: &str = "Search in vault (⇧⌘F)";
@@ -5661,6 +5716,10 @@ fn reader_more_menu(
                         let _ = reader.update(cx, |this, cx| this.toggle_hidden_files(cx));
                     }),
             )
+            .separator()
+            .menu("Folders only", Box::new(CollapseSidebarSections))
+            .menu("Expand sidebar sections", Box::new(ExpandSidebarSections))
+            .menu("Collapse all folders", Box::new(CollapseFolders))
             .separator()
             .label("Appearance")
             .item(appearance("System", None))
@@ -5971,6 +6030,12 @@ impl Render for Reader {
             }))
             .on_action(cx.listener(|this, _: &TreeCollapseSubtree, w, cx| {
                 this.tree_key(TreeKey::CollapseSubtree, w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &CollapseSidebarSections, _, cx| {
+                this.set_sidebar_sections(SectionAction::FoldersOnly, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ExpandSidebarSections, _, cx| {
+                this.set_sidebar_sections(SectionAction::ExpandAll, cx)
             }))
             .on_action(cx.listener(|this, _: &CollapseFolders, _, cx| this.collapse_folders(cx)))
             .on_action(
@@ -6416,7 +6481,7 @@ fn main() {
 #[cfg(test)]
 mod hidden_files_shortcut_tests {
     use super::{
-        FOCUS_CURRENT_KEY, HIDDEN_FILES_KEYS, HIDDEN_FILES_KEY_MAC, TREE_COLLAPSE_SUBTREE_KEY,
+        COLLAPSE_SECTIONS_KEY, HIDDEN_FILES_KEYS, HIDDEN_FILES_KEY_MAC, TREE_COLLAPSE_SUBTREE_KEY,
         TREE_EXPAND_SUBTREE_KEY,
     };
     use gpui::{KeybindingKeystroke, Keystroke, Modifiers};
@@ -6474,7 +6539,7 @@ mod hidden_files_shortcut_tests {
         )
         .should_match(&focus));
         #[cfg(target_os = "macos")]
-        assert_eq!(FOCUS_CURRENT_KEY, "cmd-shift-left");
+        assert_eq!(COLLAPSE_SECTIONS_KEY, "cmd-shift-left");
         #[cfg(not(target_os = "macos"))]
         assert!(mac_arrow(
             "left",
@@ -6484,7 +6549,7 @@ mod hidden_files_shortcut_tests {
                 ..Default::default()
             }
         )
-        .should_match(&binding(FOCUS_CURRENT_KEY)));
+        .should_match(&binding(COLLAPSE_SECTIONS_KEY)));
     }
 
     #[test]
@@ -7677,6 +7742,123 @@ mod document_link_landing_tests {
             assert!(location.origin.y >= row.origin.y && location.bottom() <= row.bottom());
             previous_bottom = row.bottom();
         }
+    }
+
+    #[gpui::test]
+    fn sidebar_bulk_controls_restore_alt_click_and_shortcuts(cx: &mut gpui::TestAppContext) {
+        use reader_sidebar::{Section, LEFT_SECTIONS};
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir_all(root.join("Folder")).unwrap();
+        std::fs::write(root.join("Folder/Note.md"), "# Note").unwrap();
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("Folder/Note.md".into()),
+                        index_dir: Some(temp.path().join("cache")),
+                        session_directory: Some(temp.path().join("state")),
+                        panel_settings_override: Some(temp.path().join("panels.json")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let view = entity.unwrap();
+        visual.run_until_parked();
+        visual.simulate_resize(size(px(1400.), px(960.)));
+        visual.run_until_parked();
+        view.update(visual, |v, cx| {
+            v.panels.open(reader_layout::Panel::Notes);
+            v.sidebar.toggle_section(Section::Pinned);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let before = view.read_with(visual, |v, _| {
+            LEFT_SECTIONS.map(|s| v.sidebar.is_collapsed(s))
+        });
+        let toggle = visual.debug_bounds("sidebar-folders-only").unwrap();
+        visual.simulate_click(toggle.center(), Modifiers::default());
+        visual.run_until_parked();
+        view.read_with(visual, |v, _| {
+            assert_eq!(
+                LEFT_SECTIONS.map(|s| v.sidebar.is_collapsed(s)),
+                [true, true, true, true, false]
+            )
+        });
+        visual.simulate_click(toggle.center(), Modifiers::default());
+        visual.run_until_parked();
+        view.read_with(visual, |v, _| {
+            assert_eq!(LEFT_SECTIONS.map(|s| v.sidebar.is_collapsed(s)), before)
+        });
+        let folders = visual.debug_bounds("sidebar-header-Folders").unwrap();
+        // Click the chevron area, not the neighbouring folder actions.
+        visual.simulate_click(
+            point(folders.left() + px(10.), folders.center().y),
+            Modifiers {
+                alt: true,
+                ..Default::default()
+            },
+        );
+        visual.run_until_parked();
+        view.read_with(visual, |v, _| {
+            assert!(LEFT_SECTIONS.into_iter().all(|s| v.sidebar.is_collapsed(s)))
+        });
+        let folders = visual.debug_bounds("sidebar-header-Folders").unwrap();
+        visual.simulate_click(
+            point(folders.left() + px(10.), folders.center().y),
+            Modifiers {
+                alt: true,
+                ..Default::default()
+            },
+        );
+        visual.run_until_parked();
+        view.read_with(visual, |v, _| {
+            assert!(LEFT_SECTIONS
+                .into_iter()
+                .all(|s| !v.sidebar.is_collapsed(s)))
+        });
+        view.update_in(visual, |v, window, cx| v.tree_focus.focus(window, cx));
+        visual.simulate_keystrokes(COLLAPSE_SECTIONS_KEY);
+        visual.run_until_parked();
+        view.read_with(visual, |v, _| {
+            assert_eq!(
+                LEFT_SECTIONS.map(|s| v.sidebar.is_collapsed(s)),
+                [true, true, true, true, false]
+            )
+        });
+        visual.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-shift-right"
+        } else {
+            "ctrl-shift-right"
+        });
+        visual.run_until_parked();
+        view.read_with(visual, |v, _| {
+            assert!(LEFT_SECTIONS
+                .into_iter()
+                .all(|s| !v.sidebar.is_collapsed(s)))
+        });
+        let collapse = visual.debug_bounds("folders-collapse-all").unwrap();
+        visual.simulate_click(collapse.center(), Modifiers::default());
+        visual.run_until_parked();
+        view.read_with(visual, |v, _| {
+            assert!(!v.sidebar.is_collapsed(Section::Folders));
+            assert!(!v.tree.rows.iter().any(|row| row.path == "Folder/Note.md"));
+        });
+        assert_eq!(
+            std::fs::read_to_string(root.join("Folder/Note.md")).unwrap(),
+            "# Note"
+        );
     }
 
     #[gpui::test]

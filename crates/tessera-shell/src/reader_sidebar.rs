@@ -36,6 +36,21 @@ pub enum Section {
     Properties,
 }
 
+pub enum SectionAction {
+    FoldersOnly,
+    ExpandAll,
+    ToggleFoldersOnly,
+    CollapseAll,
+}
+
+pub const LEFT_SECTIONS: [Section; 5] = [
+    Section::Recent,
+    Section::Pinned,
+    Section::Inbox,
+    Section::Projects,
+    Section::Folders,
+];
+
 impl Section {
     pub fn label(self) -> &'static str {
         match self {
@@ -65,6 +80,9 @@ pub struct State {
     pub properties_collapsed: bool,
     #[serde(default)]
     pub projects_collapsed: bool,
+    /// Saved section state for the reversible Folders-only toolbar toggle.
+    #[serde(default)]
+    pub folders_only_restore: Option<[bool; 5]>,
     /// Show `_`/`.` files and folders in the tree for this root (#395).
     #[serde(default)]
     pub show_hidden: bool,
@@ -149,7 +167,49 @@ impl State {
         }
     }
 
+    fn set_collapsed(&mut self, section: Section, collapsed: bool) {
+        match section {
+            Section::Properties => self.properties_collapsed = collapsed,
+            Section::Projects => self.projects_collapsed = collapsed,
+            _ => {
+                if collapsed {
+                    self.collapsed.insert(section);
+                } else {
+                    self.collapsed.remove(&section);
+                }
+            }
+        }
+    }
+
+    pub fn folders_only(&mut self, toggle: bool) {
+        if toggle {
+            if let Some(previous) = self.folders_only_restore.take() {
+                for (section, closed) in LEFT_SECTIONS.into_iter().zip(previous) {
+                    self.set_collapsed(section, closed);
+                }
+                return;
+            }
+        }
+        if self.folders_only_restore.is_none() {
+            self.folders_only_restore =
+                Some(LEFT_SECTIONS.map(|section| self.is_collapsed(section)));
+        }
+        for section in LEFT_SECTIONS {
+            self.set_collapsed(section, section != Section::Folders);
+        }
+    }
+
+    pub fn all_sections(&mut self, collapsed: bool) {
+        self.folders_only_restore = None;
+        for section in LEFT_SECTIONS {
+            self.set_collapsed(section, collapsed);
+        }
+    }
+
     pub fn toggle_section(&mut self, section: Section) {
+        if section != Section::Properties {
+            self.folders_only_restore = None;
+        }
         if section == Section::Projects {
             self.projects_collapsed = !self.projects_collapsed;
             return;
@@ -284,6 +344,39 @@ mod tests {
     use super::*;
 
     const DAY: u64 = 86_400;
+
+    #[test]
+    fn section_bulk_actions_restore_and_preserve_right_panel() {
+        let mut state = State::default();
+        state.toggle_section(Section::Pinned);
+        state.toggle_section(Section::Projects);
+        state.properties_collapsed = true;
+        let previous = LEFT_SECTIONS.map(|s| state.is_collapsed(s));
+        state.folders_only(true);
+        assert_eq!(
+            LEFT_SECTIONS.map(|s| state.is_collapsed(s)),
+            [true, true, true, true, false]
+        );
+        let mut state: State =
+            serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+        state.folders_only(true);
+        assert_eq!(LEFT_SECTIONS.map(|s| state.is_collapsed(s)), previous);
+        state.folders_only(false);
+        state.folders_only(false);
+        state.folders_only(true);
+        assert_eq!(LEFT_SECTIONS.map(|s| state.is_collapsed(s)), previous);
+        state.all_sections(true);
+        assert!(LEFT_SECTIONS.into_iter().all(|s| state.is_collapsed(s)));
+        state.all_sections(false);
+        assert!(LEFT_SECTIONS.into_iter().all(|s| !state.is_collapsed(s)));
+        assert!(state.properties_collapsed);
+        state.folders_only(true);
+        state.toggle_section(Section::Inbox);
+        assert!(
+            state.folders_only_restore.is_none(),
+            "manual changes invalidate the restore snapshot"
+        );
+    }
 
     fn vault_with(notes: &[(&str, &str)]) -> Vault {
         let root = std::env::temp_dir().join(format!("tessera-inbox-{}", uuid::Uuid::new_v4()));
