@@ -22,23 +22,50 @@ fn is_folder_note(path: &str) -> bool {
             .any(|name| stem.eq_ignore_ascii_case(name))
 }
 
+/// Excalidraw's compound extension identifies the format, not the drawing name.
+/// Keep canonical paths intact; use this only for display labels.
+pub(super) fn drawing_title(path: &str) -> Option<String> {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    let lower = name.to_ascii_lowercase();
+    [".excalidraw.md", ".excalidraw"]
+        .into_iter()
+        .find(|suffix| lower.ends_with(suffix))
+        .map(|suffix| name[..name.len() - suffix.len()].to_owned())
+}
+
+/// Folder title without filesystem reads, shared by search results and Inbox.
+pub(super) fn folder_note_title(vault_name: &str, path: &str) -> Option<String> {
+    if !is_folder_note(path) {
+        return None;
+    }
+    Some(
+        Path::new(path)
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .unwrap_or(vault_name)
+            .to_owned(),
+    )
+}
+
 /// Primary line (#645): the note title the backlinks panel uses (first H1,
 /// then frontmatter title, then file name), never the `.md` file name. Other
 /// files keep their extension. Ranking still uses the file name and path too.
 /// Called on the query worker, never during rendering.
 fn result_title(root: &Path, titles: &HashMap<String, String>, hit: &SearchHit) -> String {
     let path = root.join(&hit.path);
+    if let Some(title) = drawing_title(&hit.path) {
+        return title;
+    }
     if !is_markdown(&hit.path) {
         return hit.path.rsplit('/').next().unwrap_or(&hit.path).to_owned();
     }
-    if is_folder_note(&hit.path) {
-        if let Some(folder) = path
-            .parent()
-            .and_then(Path::file_name)
-            .and_then(|s| s.to_str())
-        {
-            return folder.to_owned();
-        }
+    let vault_name = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("Vault");
+    if let Some(folder) = folder_note_title(vault_name, &hit.path) {
+        return folder;
     }
     titles
         .get(&hit.path)
@@ -50,7 +77,7 @@ fn result_title(root: &Path, titles: &HashMap<String, String>, hit: &SearchHit) 
 /// Muted second line (#645): the containing folder, not the file path. A
 /// folder note is already titled by its folder, so it shows that folder's
 /// parent. Notes at the top level show the vault's name.
-fn result_location(vault_name: &str, path: &str) -> String {
+pub(super) fn result_location(vault_name: &str, path: &str) -> String {
     let parent = |path: &str| {
         path.rsplit_once('/')
             .map_or("", |(folder, _)| folder)
@@ -501,6 +528,14 @@ mod tests {
             ("Memory/Scan.pdf", "%PDF", "Scan.pdf"),
             ("Memory/Board.canvas", "{}", "Board.canvas"),
             ("Memory/readme.txt", "# Not a note", "readme.txt"),
+            ("Memory/Схема.excalidraw.md", "# Internal metadata", "Схема"),
+            ("Memory/Board.excalidraw", "{}", "Board"),
+            ("Memory/Board.EXCALIDRAW.MD", "# Internal metadata", "Board"),
+            (
+                "Memory/Board.excalidraw.txt",
+                "Text",
+                "Board.excalidraw.txt",
+            ),
         ] {
             std::fs::write(root.join(path), body).unwrap();
             let hit = SearchHit {
@@ -514,6 +549,17 @@ mod tests {
             assert!(!title.ends_with(".md"), "{path}");
             assert_eq!(hit.path, path);
         }
+        // Root folder notes keep the vault name too, without reading their title.
+        let root_index = SearchHit {
+            path: "_index.md".into(),
+            title: "Ignored".into(),
+            score: 0.,
+            snippet_html: String::new(),
+        };
+        assert_eq!(
+            result_title(&root, &HashMap::new(), &root_index),
+            root.file_name().unwrap().to_str().unwrap()
+        );
         // The shared title map wins over a disk read; folder notes keep their folder.
         let titles = HashMap::from([
             ("plain.md".to_string(), "Cached title".to_string()),

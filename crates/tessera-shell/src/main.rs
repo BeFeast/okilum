@@ -1785,7 +1785,7 @@ impl Reader {
         self.usable_document = true;
         self.record_usable_document(cx);
         self.refresh_link_preparation(cx);
-        self.current_title = self.vault.note_title(rel);
+        self.current_title = self.note_label(rel);
         self.backlinks = self.vault.backlinks(rel);
         window.set_window_title(&format!("Tessera — {}", self.current_title));
         if request.history_index.is_none()
@@ -2319,10 +2319,22 @@ impl Reader {
     }
 
     fn note_label(&self, path: &str) -> String {
+        if let Some(title) = quick_open::drawing_title(path) {
+            return title;
+        }
         if path.ends_with(".md") {
             self.vault.note_title(path)
         } else {
             path.rsplit('/').next().unwrap_or(path).to_owned()
+        }
+    }
+
+    /// The title shared by attachment breadcrumbs and the native window.
+    fn selected_title(&self) -> String {
+        if self.file_preview.is_some() {
+            self.note_label(self.selected_file())
+        } else {
+            self.current_title.clone()
         }
     }
 
@@ -2378,7 +2390,7 @@ impl Reader {
                     path: path.clone(),
                     label: self.note_label(path),
                     meta: Some(reader_sidebar::age_label(*at, now)),
-                    tag: None,
+                    location: None,
                     folder: false,
                 });
             }
@@ -2400,7 +2412,7 @@ impl Reader {
                     path: path.clone(),
                     label: self.note_label(path),
                     meta: None,
-                    tag: None,
+                    location: None,
                     folder: !path.ends_with(".md"),
                 });
             }
@@ -2414,12 +2426,18 @@ impl Reader {
                 items.push(SideItem::Empty("No new unfiled notes."));
             }
             for item in inbox {
+                let vault_name = self
+                    .vault_root
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("Vault");
                 items.push(SideItem::Entry {
                     section: Section::Inbox,
                     path: item.path.clone(),
-                    label: self.note_label(&item.path),
+                    label: quick_open::folder_note_title(vault_name, &item.path)
+                        .unwrap_or_else(|| self.note_label(&item.path)),
                     meta: Some(reader_sidebar::age_label(item.created, now)),
-                    tag: Some(item.reason_label()),
+                    location: Some(quick_open::result_location(vault_name, &item.path)),
                     folder: false,
                 });
             }
@@ -2982,15 +3000,7 @@ impl Reader {
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.reveal_in_tree(&current, window, cx)
                     }))
-                    .child(if self.file_preview.is_some() {
-                        self.selected_file()
-                            .rsplit('/')
-                            .next()
-                            .unwrap_or("")
-                            .to_owned()
-                    } else {
-                        self.current_title.clone()
-                    })
+                    .child(self.selected_title())
                     .tooltip(move |window, cx| {
                         gpui_component::tooltip::Tooltip::new(root.clone()).build(window, cx)
                     })
@@ -3694,7 +3704,7 @@ impl Reader {
                     path,
                     label,
                     meta,
-                    tag,
+                    location,
                     folder,
                 } => {
                     let group = SharedString::from(format!("side-{}-{path}", section.label()));
@@ -3704,6 +3714,7 @@ impl Reader {
                     let open_entity = entity.clone();
                     let open_act = act.clone();
                     row_base(group.clone())
+                        .when(location.is_some(), |row| row.h(px(44.)))
                         .debug_selector({
                             let group = group.clone();
                             move || group.to_string()
@@ -3725,26 +3736,26 @@ impl Reader {
                             .text_color(p.text_muted),
                         )
                         .child(
-                            div()
+                            v_flex()
                                 .flex_1()
                                 .min_w_0()
                                 .overflow_hidden()
-                                .text_ellipsis()
-                                .child(label),
+                                .child(div().text_ellipsis().child(label))
+                                .when_some(location, |column, location| {
+                                    column.child(
+                                        div()
+                                            .debug_selector({
+                                                let group = group.clone();
+                                                move || format!("{group}-location")
+                                            })
+                                            .text_size(px(12.))
+                                            .line_height(px(16.))
+                                            .text_color(p.text_muted)
+                                            .text_ellipsis()
+                                            .child(location),
+                                    )
+                                }),
                         )
-                        .when_some(tag, |d, tag| {
-                            d.child(
-                                div()
-                                    .flex_none()
-                                    .px_1()
-                                    .rounded(px(4.))
-                                    .border_1()
-                                    .border_color(p.border_subtle)
-                                    .text_size(px(10.5))
-                                    .text_color(tokens.text_faint)
-                                    .child(tag),
-                            )
-                        })
                         .when_some(meta, |d, meta| {
                             d.child(
                                 div()
@@ -4011,6 +4022,13 @@ impl Reader {
                 continue;
             }
             let count = rows.len();
+            let row_height = if section == Section::Inbox
+                && matches!(rows.first(), Some(SideItem::Entry { .. }))
+            {
+                44.
+            } else {
+                28.
+            };
             let render = render_row.clone();
             let list = uniform_list(
                 SharedString::from(format!("sidebar-body-{}", section.label())),
@@ -4078,7 +4096,7 @@ impl Reader {
             } else {
                 section_views.push(
                     div()
-                        .h(px((count as f32 * 28.).min(per_section)))
+                        .h(px((count as f32 * row_height).min(per_section)))
                         .flex_none()
                         .overflow_hidden()
                         .debug_selector(move || format!("sidebar-body-{}", section.label()))
@@ -5241,7 +5259,7 @@ enum SideItem {
         path: String,
         label: String,
         meta: Option<String>,
-        tag: Option<String>,
+        location: Option<String>,
         folder: bool,
     },
     More(usize),
@@ -7341,6 +7359,64 @@ mod document_link_landing_tests {
         });
         visual.run_until_parked();
         view.read_with(visual, |v, _| assert!(!v.scroll_sections.compact));
+        // Inbox has its own virtual list: both lines must fit without clipping
+        // a neighbouring row or shrinking the persistent section headers.
+        view.update(visual, |v, cx| {
+            v.sidebar.collapsed.remove(&Section::Inbox);
+            v.sidebar.pinned.clear();
+            v.inbox = ["Work/Projects/Idea.md", "Work/Resources/README.md"]
+                .into_iter()
+                .map(|path| reader_sidebar::InboxItem {
+                    path: path.into(),
+                    created: 1,
+                    reason: reader_sidebar::InboxReason::NoIncomingLinks,
+                    domain: None,
+                })
+                .collect();
+            let entries: Vec<_> = v
+                .sidebar_items()
+                .into_iter()
+                .filter_map(|item| match item {
+                    SideItem::Entry {
+                        section: Section::Inbox,
+                        label,
+                        location,
+                        ..
+                    } => Some((label, location)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                entries,
+                vec![
+                    ("Idea".into(), Some("Work / Projects".into())),
+                    ("Resources".into(), Some("Work".into())),
+                ]
+            );
+            cx.notify();
+        });
+        visual.run_until_parked();
+        headers_visible(visual);
+        let body = visual.debug_bounds("sidebar-body-Inbox").unwrap();
+        assert_eq!(body.size.height, px(88.));
+        let mut previous_bottom = body.origin.y;
+        for (row_selector, location_selector) in [
+            (
+                "side-Inbox-Work/Projects/Idea.md",
+                "side-Inbox-Work/Projects/Idea.md-location",
+            ),
+            (
+                "side-Inbox-Work/Resources/README.md",
+                "side-Inbox-Work/Resources/README.md-location",
+            ),
+        ] {
+            let row = visual.debug_bounds(row_selector).unwrap();
+            let location = visual.debug_bounds(location_selector).unwrap();
+            assert_eq!(row.size.height, px(44.));
+            assert!(row.origin.y >= previous_bottom && row.bottom() <= body.bottom());
+            assert!(location.origin.y >= row.origin.y && location.bottom() <= row.bottom());
+            previous_bottom = row.bottom();
+        }
     }
 
     #[gpui::test]
