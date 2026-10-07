@@ -317,6 +317,7 @@ impl Reader {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+    use gpui_component::WindowExt as _;
     #[gpui::test]
     fn creation_prefers_tree_selection_then_open_note(cx: &mut TestAppContext) {
         cx.update(|cx| {
@@ -585,18 +586,29 @@ mod tests {
             reader.new_from_template(window, cx)
         });
         visual.run_until_parked();
-        let choice = visual
-            .debug_bounds("template-choice-0")
-            .expect("template choice shown");
-        // Input can arrive on a later frame than the selector measurement.
-        // Advance virtual time, not wall-clock time, to exercise that boundary.
-        visual
-            .executor()
-            .advance_clock(std::time::Duration::from_millis(125));
-        visual.update(|window, _| window.refresh());
+        reader.update_in(visual, |reader, window, cx| {
+            assert!(
+                reader.file_menu.is_some(),
+                "template choices are a popup menu"
+            );
+            assert!(
+                !window.has_active_dialog(cx),
+                "template choice is not a modal"
+            );
+            assert!(
+                reader.creation.is_none(),
+                "a template must be chosen explicitly"
+            );
+        });
+        visual.simulate_keystrokes("escape");
         visual.run_until_parked();
-        assert_eq!(visual.debug_bounds("template-choice-0"), Some(choice));
-        visual.simulate_click(choice.center(), Modifiers::default());
+        reader.update_in(visual, |reader, window, cx| {
+            assert!(reader.file_menu.is_none());
+            assert!(reader.creation.is_none());
+            reader.new_from_template(window, cx);
+        });
+        visual.run_until_parked();
+        visual.simulate_keystrokes("down enter");
         visual.run_until_parked();
         assert!(!visual.did_prompt_for_new_path());
         reader.update_in(visual, |reader, window, cx| {

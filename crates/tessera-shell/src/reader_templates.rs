@@ -1,7 +1,7 @@
 //! User-selected templates, loaded only after explicit Settings/create actions.
 use super::*;
 use anyhow::{Context as _, Result};
-use gpui_component::WindowExt as _;
+use gpui_component::menu::{PopupMenu, PopupMenuItem};
 #[cfg(test)]
 use std::io::Read as _;
 
@@ -152,47 +152,35 @@ impl Reader {
                     return;
                 }
                 match result {
-                    Ok((folder, templates)) => {
+                    Ok((_folder, templates)) => {
                         let reader = cx.entity().downgrade();
-                        window.open_dialog(cx, move |dialog, _, _| {
-                            let reader = reader.clone();
-                            dialog
-                                .title("New note from template")
-                                .child(folder.clone())
-                                .child(
-                                    div()
-                                        .id("template-list")
-                                        .max_h(px(320.))
-                                        .overflow_y_scroll()
-                                        .child(v_flex().gap_1().children(
-                                            templates.iter().enumerate().map(|(ix, path)| {
-                                                let path = path.clone();
-                                                let reader = reader.clone();
-                                                Button::new(("template", ix))
-                                                    .debug_selector(move || {
-                                                        format!("template-choice-{ix}")
-                                                    })
-                                                    .ghost()
-                                                    .label(
-                                                        path.file_stem()
-                                                            .unwrap_or_default()
-                                                            .to_string_lossy()
-                                                            .into_owned(),
-                                                    )
-                                                    .on_click(move |_, window, cx| {
-                                                        window.close_dialog(cx);
-                                                        let _ = reader.update(cx, |reader, cx| {
-                                                            reader.create_from_template(
-                                                                path.clone(),
-                                                                window,
-                                                                cx,
-                                                            )
-                                                        });
-                                                    })
-                                            }),
-                                        )),
-                                )
+                        let popup = PopupMenu::build(window, cx, move |mut menu, _, _| {
+                            for path in &templates {
+                                let path = path.clone();
+                                let reader = reader.clone();
+                                let label = path
+                                    .file_stem()
+                                    .unwrap_or_default()
+                                    .to_string_lossy()
+                                    .into_owned();
+                                menu = menu.item(PopupMenuItem::new(label).on_click(
+                                    move |_, window, cx| {
+                                        let _ = reader.update(cx, |reader, cx| {
+                                            reader.create_from_template(path.clone(), window, cx)
+                                        });
+                                    },
+                                ));
+                            }
+                            menu
                         });
+                        cx.subscribe(&popup, |this, _, _: &DismissEvent, cx| {
+                            this.file_menu = None;
+                            cx.notify();
+                        })
+                        .detach();
+                        popup.focus_handle(cx).focus(window, cx);
+                        this.file_menu = Some((popup, window.mouse_position()));
+                        cx.notify();
                     }
                     Err(error) => {
                         this.link_notice = Some(format!("Cannot use template: {error:#}"));
