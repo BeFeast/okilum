@@ -183,6 +183,61 @@ fn real_hub_scope_restart_offline_revocation_and_preservation() -> Result<()> {
     let mut adapter = Hub::open(config.clone())?;
     assert_eq!(adapter.apply(&request)?.state, "hub_ready");
     assert_eq!(adapter.apply(&request)?.state, "hub_ready");
+    let mut observation_request = request.clone();
+    observation_request.action = Action::Readiness;
+    // An unready/paused runner may return unavailable, never fake an empty
+    // successful observation. Unpause the synthetic folder for live sampling.
+    api.patch_folder("fixture", &json!({"paused":false}))?;
+    fs::write(
+        config.folder_path.join("readiness.md"),
+        "synthetic index generation",
+    )?;
+    api.scan("fixture")?;
+    let first = adapter
+        .apply(&observation_request)?
+        .observation
+        .context("observation")?;
+    assert_eq!(
+        first["registration_id"],
+        request.registration_id.to_string()
+    );
+    assert_eq!(first["device_id"], device);
+    assert_eq!(first["connected"], false);
+    assert!(first["hub"]["sequence"].as_u64().is_some_and(|s| s > 0));
+    let mut substituted = observation_request.clone();
+    substituted.owner_id = Uuid::new_v4();
+    assert!(adapter.apply(&substituted).is_err());
+    substituted = observation_request.clone();
+    substituted.registration_id = Uuid::new_v4();
+    assert!(adapter.apply(&substituted).is_err());
+    // Rebuilding a synthetic index can reuse numeric sequence values. Startup
+    // identity must invalidate the old observation independently of sequence.
+    daemon.stop();
+    assert!(adapter.apply(&observation_request).is_err());
+    let index = home.join("index-v0.14.0.db");
+    assert!(index.is_dir());
+    fs::remove_dir_all(index)?;
+    daemon.restart()?;
+    ready(&api);
+    api.scan("fixture")?;
+    let rebuilt = adapter
+        .apply(&observation_request)?
+        .observation
+        .context("rebuilt observation")?;
+    assert_ne!(first["hub_started_at"], rebuilt["hub_started_at"]);
+    assert_eq!(first["adapter_generation"], rebuilt["adapter_generation"]);
+    drop(adapter);
+    let mut adapter = Hub::open(config.clone())?;
+    let reopened = adapter
+        .apply(&observation_request)?
+        .observation
+        .context("reopened observation")?;
+    assert_ne!(
+        rebuilt["adapter_generation"],
+        reopened["adapter_generation"]
+    );
+    api.patch_folder("fixture", &json!({"paused":true}))?;
+
     assert!(
         api.folder("fixture")?["devices"]
             .as_array()

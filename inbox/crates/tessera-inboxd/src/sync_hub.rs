@@ -32,6 +32,7 @@ pub enum Action {
     Add,
     Remove,
     Status,
+    Readiness,
 }
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -45,6 +46,8 @@ pub struct Request {
 #[derive(Deserialize, Serialize)]
 pub struct Reply {
     pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observation: Option<serde_json::Value>,
 }
 
 pub fn call(socket: &Path, request: &Request) -> Result<Reply> {
@@ -65,6 +68,7 @@ pub struct Hub {
     config: Config,
     db: Connection,
     api: Syncthing,
+    generation: Uuid,
 }
 impl Hub {
     pub fn open(config: Config) -> Result<Self> {
@@ -100,7 +104,12 @@ impl Hub {
                 db.execute("INSERT INTO scope VALUES(?1)", [binding])?;
             }
         }
-        Ok(Self { config, db, api })
+        Ok(Self {
+            config,
+            db,
+            api,
+            generation: Uuid::new_v4(),
+        })
     }
     fn check_hub(&self) -> Result<serde_json::Value> {
         self.api.verify_identity(&self.config.hub_device_id)?;
@@ -169,6 +178,7 @@ impl Hub {
                     self.remove_share(&request.device_id)?;
                 }
                 Ok(Reply {
+                    observation: None,
                     state: "revoked".into(),
                 })
             }
@@ -219,7 +229,83 @@ impl Hub {
                         .patch_folder(&self.config.folder_id, &json!({"devices":after}))?;
                 }
                 Ok(Reply {
+                    observation: None,
                     state: "hub_ready".into(),
+                })
+            }
+            Action::Readiness => {
+                ensure!(
+                    existing
+                        .as_ref()
+                        .is_some_and(|(_, revoked, owned)| !revoked && *owned),
+                    "active owned registration required"
+                );
+                let folder = self.check_hub()?;
+                ensure!(
+                    folder["devices"]
+                        .as_array()
+                        .context("invalid shares")?
+                        .iter()
+                        .any(|d| d["deviceID"] == request.device_id),
+                    "share missing"
+                );
+                let started = std::time::Instant::now();
+                let identity = self.api.identity()?;
+                let startup = identity["startTime"]
+                    .as_str()
+                    .context("hub startup unavailable")?;
+                let before = self.api.status(&self.config.folder_id)?;
+                let remote = self
+                    .api
+                    .completion(&self.config.folder_id, &request.device_id)?;
+                let connected = self.api.connections()?["connections"][&request.device_id]
+                    ["connected"]
+                    .as_bool()
+                    .unwrap_or(false);
+                let after = self.api.status(&self.config.folder_id)?;
+                let final_identity = self.api.identity()?;
+                ensure!(
+                    started.elapsed() < Duration::from_secs(2)
+                        && final_identity["startTime"] == startup
+                        && final_identity["myID"] == self.config.hub_device_id
+                        && before["sequence"].as_u64().is_some()
+                        && before["sequence"] == after["sequence"]
+                        && self.check_hub()? == folder,
+                    "hub changed during observation"
+                );
+                let mut status = serde_json::Map::new();
+                for key in [
+                    "state",
+                    "sequence",
+                    "globalTotalItems",
+                    "localTotalItems",
+                    "globalBytes",
+                    "localBytes",
+                    "needTotalItems",
+                    "receiveOnlyTotalItems",
+                    "errors",
+                    "pullErrors",
+                    "error",
+                    "invalid",
+                    "watchError",
+                ] {
+                    status.insert(
+                        key.into(),
+                        after.get(key).cloned().unwrap_or(serde_json::Value::Null),
+                    );
+                }
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)?
+                    .as_secs();
+                Ok(Reply {
+                    state: "observed".into(),
+                    observation: Some(json!({
+                        "protocol":1,"observation_id":Uuid::new_v4(),"adapter_generation":self.generation,
+                        "hub_started_at":startup,"expires_at":now+30,
+                        "owner_id":request.owner_id,"vault_id":request.vault_id,"registration_id":request.registration_id,
+                        "device_id":request.device_id,"hub_device_id":self.config.hub_device_id,"folder_id":self.config.folder_id,
+                        "paused":folder["paused"],"connected":connected,"remote_state":remote["remoteState"],"hub":status
+                    })),
                 })
             }
             Action::Status => {
@@ -231,6 +317,7 @@ impl Hub {
                     .iter()
                     .any(|d| d["deviceID"] == request.device_id);
                 Ok(Reply {
+                    observation: None,
                     state: if revoked {
                         if shared && owned && !another_active {
                             "removal_pending"
@@ -329,6 +416,7 @@ pub fn serve(config: Config) -> Result<()> {
                     hub.apply(&serde_json::from_str::<Request>(&line)?)
                 })();
                 let reply = result.unwrap_or(Reply {
+                    observation: None,
                     state: "unavailable".into(),
                 });
                 let _ = serde_json::to_writer(&mut stream, &reply);

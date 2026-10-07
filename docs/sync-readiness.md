@@ -2,9 +2,8 @@
 
 Approved direction: extend the pairing service and hub adapter with a scoped,
 read-only readiness observation. No marker is written to a vault. Development
-and proof use only the independent CT141 hub and synthetic data. This document
-specifies the next protocol increment; it does not claim that the endpoint or
-automatic promotion has shipped. Until its acceptance gates pass, new folders
+and proof use only the independent CT141 hub and synthetic data. The endpoint is implemented in this local increment; automatic promotion is
+not connected and no production deployment is implied. Until its acceptance gates pass, new folders
 remain receive-only and Settings shows **Preparing**.
 
 ## Authority and endpoint
@@ -94,5 +93,31 @@ is null. The hub's scoped completion reports remoteState=valid. Pausing the
 client changes that field to paused even though completion remains 100 percent;
 resuming returns valid. This is a positive/negative control for empty-folder
 sharing, not proof that completion percentage alone is usable. Both fixtures
-leave the client receive-only. Endpoint authorization and restart/index reset
-proof remain required before promotion can be enabled.
+leave the client receive-only. Endpoint authorization and restart/index reset evidence are recorded below;
+client-side freshness validation and promotion recovery remain outstanding.
+
+
+### Scoped observation endpoint implementation
+
+The native POST accepts an empty JSON object and rejects extra fields. It resolves
+scope from the grant, releases the auth mutex during private socket I/O, then
+revalidates the same grant and hub_ready registration before returning data.
+A removal committed while the adapter is responding prevents disclosure. The
+adapter requires an active owned registration and existing share. It validates
+hub identity/version/path, brackets sampling with hub startup/sequence/config
+checks, and emits bounded selected counters without REST credentials or paths.
+The response state is `observed`, never `ready`; missing counters remain null.
+An offline/unstable adapter returns unavailable rather than an empty success.
+
+The native HTTP regression passes wrong-grant, caller-supplied vault, browser
+Origin and removal-during-socket-I/O cases, with a valid scoped observation as
+positive control. The actual 1.29.5 fixture records a nonzero index, stops its own
+synthetic daemon, deletes only its temporary index database and restarts it.
+The new startup value differs even though sequence values may be reused. Reopening
+the adapter changes adapter_generation independently. Wrong owner/unknown
+registration fail; existing revoke and unrelated-configuration regressions pass.
+
+This is evidence for generation fields, not yet a client receipt validator.
+The client must reject expired observations and changed generations before any
+promotion. Known hub/global/local writes can still race separate REST calls;
+concurrent-change acceptance and crash recovery must precede enabling promotion.
