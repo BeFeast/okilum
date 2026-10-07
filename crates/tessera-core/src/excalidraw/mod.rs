@@ -1,7 +1,10 @@
-//! Read-only Excalidraw scene decoding, independent of the desktop renderer.
+//! Excalidraw scene decoding, independent of the desktop renderer, and the
+//! explicit writer an editor uses to save a scene back (`write`).
 mod lz;
 mod vector;
+mod write;
 pub use vector::VectorScene;
+pub use write::{write, WriteOutcome};
 
 use anyhow::{ensure, Context, Result};
 use serde::Deserialize;
