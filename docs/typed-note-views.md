@@ -71,3 +71,9 @@ save or receipt. Conflicts retain the recovery draft rather than overwriting new
 source. Snooze edits scheduled metadata (`⏳`) while preserving due metadata (`📅`).
 This core-only slice does not activate dashboard controls or protocol writes;
 platforms without FileEditor retain read-only capability.
+
+Path validation rejects existing redirects and checks the canonical identity after
+opening. It does not pin ancestor directories for the lifetime of FileEditor:
+post-open parent replacement remains tracked in #699. Native write activation must
+resolve that shared-editor limitation before claiming vault-bound writes under
+concurrent directory replacement.

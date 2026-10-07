@@ -167,6 +167,21 @@ mod tests {
         );
     }
     #[test]
+    fn editor_binding_refuses_redirected_parents_and_hard_links() {
+        let (_temp, root, drafts, text) = fixture();
+        let target = Target::capture("a.md", &text, 4).unwrap();
+        std::fs::hard_link(root.join("a.md"), root.join("alias.md")).unwrap();
+        assert!(apply(&root, &drafts, &target, Change::Checked(true)).is_err());
+        std::fs::remove_file(root.join("alias.md")).unwrap();
+        // Simulate a parent replacement between bound_path and open_clean.
+        let expected = bound_path(&root.canonicalize().unwrap(), "a.md").unwrap();
+        let moved = root.with_file_name("moved-vault");
+        std::fs::rename(&root, &moved).unwrap();
+        std::os::unix::fs::symlink(&moved, &root).unwrap();
+        assert!(open_clean(&expected, &drafts).is_err());
+        assert_eq!(std::fs::read_to_string(moved.join("a.md")).unwrap(), text);
+    }
+    #[test]
     fn undo_refuses_later_edits_other_roots_and_symlink_replacements() {
         let (_temp, root, drafts, text) = fixture();
         let target = Target::capture("a.md", &text, 4).unwrap();
