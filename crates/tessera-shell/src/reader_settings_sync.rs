@@ -322,6 +322,15 @@ fn perform(desktop: &Desktop, operation: Operation) -> anyhow::Result<Output> {
     };
     match operation {
         Operation::Read => {
+            // Resume an already requested Disable after an interrupted stop.
+            // No runtime journal exists before the first explicit Enable.
+            if snapshot
+                .runtime
+                .as_ref()
+                .is_some_and(|r| !r.desired_enabled && !r.removed)
+            {
+                output.snapshot = desktop.disable()?;
+            }
             let discovery = daemon::discover(&desktop.configs()?);
             output.unavailable = !discovery.unavailable.is_empty();
             output.candidates = Some(
@@ -531,7 +540,7 @@ impl Render for SyncSettings {
                 .child(div().text_sm().text_color(p.text_muted).child(if reused {
                     "Using existing Syncthing. It may keep syncing when Tessera is disabled or removed."
                 } else if enabled { "Runs in the background after you close Tessera." }
-                else { "Tessera’s background service is off." })));
+                else { "Managed by Tessera." })));
         }
         if let Some(approval) = self.output.as_ref().and_then(|o| o.approval.as_ref()) {
             let code = approval

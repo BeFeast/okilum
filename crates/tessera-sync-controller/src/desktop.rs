@@ -150,8 +150,9 @@ impl Desktop {
             .as_ref()
             .filter(|s| s.desired_enabled && !s.removed)
         else {
+            self.runtime()?.reconcile()?;
             return Ok(Progress {
-                snapshot,
+                snapshot: self.read()?,
                 approval: None,
                 folder: None,
             });
