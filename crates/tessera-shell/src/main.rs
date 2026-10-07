@@ -52,6 +52,7 @@ mod reader_move_picker;
 mod reader_obsidian;
 mod reader_open;
 mod reader_pdf;
+mod reader_plain_text;
 mod reader_properties;
 mod reader_reading_controls;
 #[cfg(any(unix, windows))]

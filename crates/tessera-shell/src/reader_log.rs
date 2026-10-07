@@ -794,6 +794,7 @@ mod tests {
         reader.read_with(visual, |reader, _| {
             assert!(reader.single_file && reader.searcher.is_none());
             assert_eq!(reader.selected_file(), "app.jsonl");
+            assert!(reader.file_preview.as_ref().unwrap().text.is_none());
             assert_eq!(reader.history, ["app.jsonl"]);
             assert!(reader.vault.entries.iter().any(|e| e.path == "older.log"));
         });
@@ -828,6 +829,9 @@ mod tests {
             reader.open_note("older.log", None, window, cx)
         });
         visual.run_until_parked();
+        reader.read_with(visual, |reader, _| {
+            assert!(reader.file_preview.as_ref().unwrap().text.is_none());
+        });
         let sibling = log_view(&reader, visual);
         sibling.read_with(visual, |view, _| {
             assert_eq!(view.file().unwrap().index().len(), 1);
