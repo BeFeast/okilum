@@ -131,7 +131,7 @@ impl PageRenderer<'_> {
             // White background: every pixel is opaque, so premultiplied and
             // straight alpha are the same bytes and no conversion is needed.
             let mut bgra = pixmap.take_rgba8(ImageAlphaType::AlphaPremultiplied);
-            for pixel in bgra.chunks_exact_mut(4) {
+            for pixel in bgra.as_chunks_mut::<4>().0 {
                 pixel.swap(0, 2);
             }
             Some(Bitmap {
