@@ -118,7 +118,22 @@ fn move_error(error: &anyhow::Error) -> &'static str {
     }
 }
 
+#[derive(Default)]
+pub(super) struct PickerState {
+    active: Option<(Entity<FolderPicker>, Point<Pixels>)>,
+    recent: std::collections::BTreeMap<PathBuf, Vec<String>>,
+}
+
 impl Reader {
+    pub(super) fn render_move_picker(&self) -> Option<impl IntoElement> {
+        self.move_picker.active.as_ref().map(|(picker, position)| {
+            anchored()
+                .position(*position)
+                .snap_to_window_with_margin(px(12.))
+                .child(picker.clone())
+        })
+    }
+
     pub(super) fn move_to_folder(
         &mut self,
         root: &Path,
@@ -187,16 +202,19 @@ impl Reader {
         folders.retain(|folder| valid_destination(&from, folder));
         folders.sort();
         folders.dedup();
+        if let Some(recent) = self.move_picker.recent.get(&self.vault_root) {
+            folders.sort_by_key(|folder| {
+                recent
+                    .iter()
+                    .position(|p| p == folder)
+                    .unwrap_or(usize::MAX)
+            });
+        }
         let reader = cx.weak_entity();
         let root = self.vault_root.clone();
         let picker = cx.new(|cx| FolderPicker::new(reader, root, from, folders, window, cx));
-        window.open_dialog(cx, move |dialog, _, _| {
-            dialog
-                .title("Move to…")
-                .on_ok(|_, _, _| false)
-                .width(px(460.))
-                .child(picker.clone())
-        });
+        self.move_picker.active = Some((picker, window.mouse_position()));
+        cx.notify();
     }
 }
 struct FolderPicker {
@@ -270,6 +288,16 @@ impl FolderPicker {
         self.scroll.scroll_to_item(self.selected);
         cx.notify();
     }
+    fn close(&self, restore_focus: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let _ = self.reader.update(cx, |reader, cx| {
+            reader.move_picker.active = None;
+            if restore_focus {
+                reader.focus_handle.focus(window, cx);
+            }
+            cx.notify();
+        });
+    }
+
     fn accept(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(folder) = self.matches.get(self.selected) else {
             return;
@@ -278,7 +306,19 @@ impl FolderPicker {
             r.move_to_folder(&self.root, &self.from, folder, window, cx)
         });
         match result {
-            Ok(Ok(())) => window.close_dialog(cx),
+            Ok(Ok(())) => {
+                let _ = self.reader.update(cx, |reader, _| {
+                    let recent = reader
+                        .move_picker
+                        .recent
+                        .entry(self.root.clone())
+                        .or_default();
+                    recent.retain(|p| p != folder);
+                    recent.insert(0, folder.clone());
+                    recent.truncate(8);
+                });
+                self.close(true, window, cx);
+            }
             Ok(Err(error)) => {
                 eprintln!("Folder move failed: {error:#}");
                 self.error = Some(move_error(&error));
@@ -301,12 +341,24 @@ impl Render for FolderPicker {
         }
         let p = brand::palette(cx);
         v_flex()
+            .id("move-folder-popover")
+            .debug_selector(|| "move-folder-popover".into())
+            .occlude()
+            .w(px(360.))
+            .p_2()
+            .rounded_lg()
+            .shadow_lg()
+            .bg(p.surface)
+            .text_color(p.text)
+            .on_mouse_down_out(cx.listener(|this, _, window, cx| this.close(false, window, cx)))
             .key_context("MoveFolderPicker")
             .gap_2()
             .on_action(cx.listener(|this, _: &FolderAccept, window, cx| this.accept(window, cx)))
             .on_action(cx.listener(|this, _: &FolderNext, _, cx| this.step(1, cx)))
             .on_action(cx.listener(|this, _: &FolderPrevious, _, cx| this.step(-1, cx)))
-            .on_action(cx.listener(|_, _: &CloseFolderPicker, window, cx| window.close_dialog(cx)))
+            .on_action(
+                cx.listener(|this, _: &CloseFolderPicker, window, cx| this.close(true, window, cx)),
+            )
             .child(Input::new(&self.input).prefix(Icon::new(IconName::Search).small()))
             .when_some(self.error, |d, error| {
                 d.child(div().text_size(px(12.)).text_color(p.danger).child(error))
@@ -393,7 +445,11 @@ mod tests {
         let reader = entity.unwrap();
         visual.run_until_parked();
         reader.update_in(visual, |r, window, cx| {
-            r.choose_move_folder("Source/Note.md".into(), window, cx)
+            r.choose_move_folder("Source/Note.md".into(), window, cx);
+            assert!(
+                !window.has_active_dialog(cx),
+                "Move picker must not open a modal"
+            );
         });
         visual.run_until_parked();
         visual.simulate_input("Target");
@@ -406,7 +462,11 @@ mod tests {
         assert!(root.join("Source/Note.md").exists());
         assert!(!root.join("Target/Note.md").exists());
         reader.update_in(visual, |r, window, cx| {
-            r.choose_move_folder("Source/Note.md".into(), window, cx)
+            r.choose_move_folder("Source/Note.md".into(), window, cx);
+            assert!(
+                !window.has_active_dialog(cx),
+                "Move picker must not open a modal"
+            );
         });
         visual.run_until_parked();
         visual.simulate_input("Target");
@@ -482,8 +542,27 @@ mod tests {
             assert!(!r.tree.rows.iter().any(|row| row.path == "Target/Source"));
         });
         visual.run_until_parked();
+        // Recent destinations outrank alphabetical entries; outside click dismisses
+        // without intercepting the rest of the window or opening a modal.
+        reader.update_in(visual, |r, window, cx| {
+            r.choose_move_folder("Source/Note.md".into(), window, cx);
+            let picker = &r.move_picker.active.as_ref().unwrap().0;
+            assert_eq!(picker.read(cx).matches.first().unwrap(), "Target");
+            assert!(!window.has_active_dialog(cx));
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let bounds = visual.debug_bounds("move-folder-popover").unwrap();
+        let outside = if bounds.origin.x > px(10.) {
+            point(px(1.), px(1.))
+        } else {
+            point(bounds.right() + px(10.), px(1.))
+        };
+        visual.simulate_click(outside, Modifiers::default());
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| assert!(r.move_picker.active.is_none()));
         // Verify actual arrow bindings with multiple choices, not a one-result query.
-        let picker = reader.update_in(visual, |_, window, cx| {
+        let picker = reader.update_in(visual, |r, window, cx| {
             let picker = cx.new(|cx| {
                 FolderPicker::new(
                     reader.downgrade(),
@@ -494,8 +573,8 @@ mod tests {
                     cx,
                 )
             });
-            let shown = picker.clone();
-            window.open_dialog(cx, move |dialog, _, _| dialog.child(shown.clone()));
+            r.move_picker.active = Some((picker.clone(), point(px(20.), px(60.))));
+            cx.notify();
             picker
         });
         visual.run_until_parked();

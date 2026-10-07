@@ -641,3 +641,13 @@ Find in note (`TextSearch`) and Rename (`Pencil`). Rename edits the title in
 place with the existing revision-aware rename flow, inline errors and Escape
 to cancel. All actions remain in their existing menus, and use the shared glyph
 control size and baseline. Contents preserves authored heading text verbatim.
+
+### Move destination popover (#684)
+
+Move to… from the note menu or a tree row opens the same lightweight popover at
+that menu position. It contains folder search and a scrollable destination list,
+with recent destinations first for the current vault and window session. There is
+no dimmed backdrop or title bar. Typing filters; Up/Down selects; Enter moves;
+Escape or a click outside dismisses. Self, descendants, and the current parent
+are excluded. Errors stay inside the popover. The existing revision-aware move,
+exceptional link-impact confirmation, and result toast with Undo are unchanged.
