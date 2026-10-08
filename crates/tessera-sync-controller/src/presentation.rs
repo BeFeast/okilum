@@ -109,6 +109,8 @@ pub fn attention_messages(local: &LocalStatus) -> Vec<&'static str> {
             "A required file or folder is unavailable. Check its location and connected drives."
         } else if lower.contains("permission denied") || lower.contains("access is denied") {
             "Syncthing cannot access some files. Check the folder’s access permissions."
+        } else if lower.contains("insufficient space in folder") {
+            "The folder’s free-space reserve prevents receiving files. Free space on its drive or review the reserve in Syncthing."
         } else if lower.contains("no space left") || lower.contains("disk full") {
             "There is not enough disk space to receive files. Free space on the destination drive."
         } else {
@@ -221,5 +223,23 @@ mod tests {
         assert!(messages[1].contains("preserved"));
         local.folder["paused"] = json!(true);
         assert!(attention_messages(&local).is_empty());
+    }
+    #[test]
+    fn actual_syncthing_reserve_error_has_actionable_private_explanation() {
+        let mut local = local();
+        local.errors = json!({"errors":[{"path":"private-note.md", "error":"syncing: insufficient space in folder \"Private vault\" (folder-id) (/private/vault): current 67.46 % < required 100 %"}]});
+        assert_eq!(FolderState::from_local(&local), FolderState::NeedsAttention);
+        let messages = attention_messages(&local);
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].contains("free-space reserve"));
+        for private in [
+            "private-note",
+            "Private vault",
+            "folder-id",
+            "/private",
+            "67.46",
+        ] {
+            assert!(!messages[0].contains(private));
+        }
     }
 }
