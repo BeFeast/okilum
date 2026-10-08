@@ -1,0 +1,22 @@
+name: Windows native diagnostics
+on:
+  workflow_dispatch:
+    inputs:
+      package: {required: true, default: tessera-sync-controller}
+      features: {required: false, default: ''}
+      test-filter: {description: 'One test-name substring, not multiple filters or extra flags', required: false, default: ''}
+permissions: {contents: read}
+concurrency: {group: 'windows-native-${{ github.ref }}', cancel-in-progress: true}
+jobs:
+  native:
+    if: startsWith(github.ref, 'refs/heads/') && github.ref != 'refs/heads/main'
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/vendor-setup.sh
+      - shell: pwsh
+        env: {PKG: '${{ inputs.package }}', FEATURES: '${{ inputs.features }}', FILTER: '${{ inputs.test-filter }}'}
+        run: |
+          Get-Content rust-toolchain.toml; rustup show active-toolchain; if ($LASTEXITCODE) { exit $LASTEXITCODE }; rustc -Vv; if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $a = @('test', '--locked', '-p', $env:PKG); if ($env:FEATURES) { $a += @('--features', $env:FEATURES) }; if ($env:FILTER) { $a += $env:FILTER }; $a += @('--', '--nocapture', '--test-threads=1'); & cargo @a; exit $LASTEXITCODE
