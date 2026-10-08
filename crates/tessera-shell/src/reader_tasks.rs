@@ -771,6 +771,8 @@ impl RenderOnce for TasksList {
             let writable = cfg!(unix) && self.native && (copies == 1 || expanded);
             let displayed_index = results.index.clone();
             let displayed_task = task.clone();
+            let action_root = root.clone();
+            let date_root = root.clone();
             let action_reader = self.reader.clone();
             let date_reader = self.reader.clone();
             let date_index = results.index.clone();
@@ -804,6 +806,9 @@ impl RenderOnce for TasksList {
                                     return;
                                 }
                                 let _ = action_reader.update(cx, |this, cx| {
+                                    if this.vault_root != action_root {
+                                        return;
+                                    }
                                     this.apply_task_change(
                                         displayed_index.clone(),
                                         displayed_task.clone(),
@@ -860,6 +865,7 @@ impl RenderOnce for TasksList {
                                         ("Snooze until tomorrow", Change::Scheduled(tomorrow)),
                                     ] {
                                         let reader = date_reader.clone();
+                                        let expected_root = date_root.clone();
                                         let index = date_index.clone();
                                         let task = date_task.clone();
                                         menu = menu.item(PopupMenuItem::new(label).on_click(
@@ -868,6 +874,9 @@ impl RenderOnce for TasksList {
                                                     return;
                                                 }
                                                 let _ = reader.update(cx, |this, cx| {
+                                                    if this.vault_root != expected_root {
+                                                        return;
+                                                    }
                                                     this.apply_task_change(
                                                         index.clone(),
                                                         task.clone(),
