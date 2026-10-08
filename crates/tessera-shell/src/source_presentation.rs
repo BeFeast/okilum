@@ -20,6 +20,8 @@ pub struct ProjectionColors {
     pub link: gpui::Hsla,
 }
 
+// The standalone projection fixture imports this module without app theme colors.
+#[allow(dead_code)]
 struct ColoredProvider {
     provider: Arc<CachedProvider>,
     colors: ProjectionColors,
@@ -43,6 +45,8 @@ pub struct CachedProvider {
 
 impl CachedProvider {
     /// Reuse the classification when the theme changes; never parse on the UI thread.
+    // The standalone projection fixture deliberately uses the unthemed provider.
+    #[allow(dead_code)]
     pub fn with_colors(self: Arc<Self>, colors: ProjectionColors) -> Arc<dyn ProjectionProvider> {
         Arc::new(ColoredProvider {
             provider: self,
