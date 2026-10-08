@@ -846,6 +846,58 @@ mod tests {
         assert!(!root.join(".tessera-index").exists());
     }
 
+    #[gpui::test]
+    fn queued_note_open_wins_over_the_initial_log_publication(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::bind_keys(cx);
+        });
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("files");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("app.log"), "initial log\n").unwrap();
+        std::fs::write(root.join("notes.md"), "# Queued note\n").unwrap();
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        open_path: Some(root.join("app.log")),
+                        session_directory: Some(fixture.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader.update(cx, |reader, _| {
+                assert!(!reader.loading.as_ref().unwrap().published);
+                assert!(reader.file_preview.is_none());
+                reader.queued_open_note = Some("notes.md".into());
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        visual.run_until_parked();
+        reader.read_with(visual, |reader, _| {
+            assert!(
+                reader.queued_open_note.is_none(),
+                "publication consumed the request"
+            );
+            assert_eq!(reader.selected_file(), "notes.md");
+            assert!(
+                reader.file_preview.is_none(),
+                "the initial log cannot replace the newer note"
+            );
+            assert!(reader.document_ready());
+        });
+        assert_eq!(
+            std::fs::read_to_string(root.join("app.log")).unwrap(),
+            "initial log\n"
+        );
+    }
+
     #[test]
     fn epoch_time_shows_its_utc_date_beside_the_raw_value() {
         let record = Record::parse(br#"{"time":1759276800,"x":"1"}"#, Format::JsonLines).unwrap();
