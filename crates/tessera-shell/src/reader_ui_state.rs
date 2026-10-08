@@ -1555,3 +1555,9 @@ mod update_restart_tests {
         });
     }
 }
+
+pub(crate) fn typed_views(cx: &App) -> tessera_core::typed_view::Preferences {
+    cx.try_global::<Store>()
+        .map(|store| store.saved.typed_views.clone())
+        .unwrap_or_default()
+}

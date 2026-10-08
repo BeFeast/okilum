@@ -70,6 +70,7 @@ mod reader_source_history;
 mod reader_startup;
 #[cfg(test)]
 mod reader_table_tests;
+mod reader_task_actions;
 mod reader_tasks;
 #[cfg(any(unix, windows))]
 mod reader_templates;
@@ -83,6 +84,7 @@ mod reader_trash;
 #[cfg(unix)]
 mod reader_trash_fs;
 mod reader_tree;
+mod reader_typed_view;
 mod reader_ui_state;
 #[cfg(any(unix, windows))]
 mod source_presentation;
@@ -1404,6 +1406,7 @@ struct Reader {
     tree_source: Option<Arc<Vault>>,
     tree_revealed: String,
     tree_focus: FocusHandle,
+    typed_navigation: reader_typed_view::Navigation,
     tree_scroll: UniformListScrollHandle,
     section_scroll: [UniformListScrollHandle; 4],
     scroll_sections: reader_sidebar::ScrollSections,
@@ -1651,6 +1654,7 @@ impl Reader {
             file_preview: None,
             file_menu: None,
             tree_focus: cx.focus_handle(),
+            typed_navigation: Default::default(),
             tree_scroll: UniformListScrollHandle::new(),
             section_scroll: std::array::from_fn(|_| UniformListScrollHandle::new()),
             scroll_sections: Default::default(),
@@ -2001,6 +2005,7 @@ impl Reader {
             .as_deref()
             .map(tessera_core::properties::parse)
             .unwrap_or_else(|| Ok(Vec::new()));
+        self.typed_navigation = Default::default();
         self.note_source = source;
         self.note_canonical_source = canonical_source;
         if request.history_index.is_none() {
@@ -2099,6 +2104,13 @@ impl Reader {
 
     /// Recompute the matches for the find term and re-mark the note.
     fn run_find(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.typed_navigation.active.get() {
+            self.typed_navigation
+                .scroll
+                .set_offset(point(px(0.), px(0.)));
+            cx.notify();
+            return;
+        }
         let term = self.find_input.read(cx).value().trim().to_string();
         let sensitive = reader_ui_state::find_case_sensitive(cx);
         self.content.update(cx, |s, cx| {
@@ -2109,6 +2121,10 @@ impl Reader {
     }
 
     fn find_step(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if self.typed_navigation.active.get() {
+            cx.notify();
+            return;
+        }
         self.content
             .update(cx, |s, cx| s.step_search_match(delta, cx));
         cx.notify();
@@ -2142,6 +2158,15 @@ impl Reader {
                 cx.background_executor().timer(Duration::from_millis(50)).await;
                 let done = entity.update(cx, |this, cx| {
                     if landing != this.landing_generation { return true; }
+                    if generation == this.navigation_generation && content == this.content.entity_id()
+                        && this.typed_navigation.active.get() {
+                        this.pending_landing = None;
+                        if let Err(reason) = reader_typed_view::land(this, position.item_ix) {
+                            this.link_notice = Some(reason.into());
+                        }
+                        cx.notify();
+                        return true;
+                    }
                     match reader_landing_state(generation == this.navigation_generation,
                         content == this.content.entity_id(), this.content.read(cx).list_state().item_count(), position.item_ix, attempt)
                     {
@@ -2336,6 +2361,20 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.typed_navigation.active.get() && self.focus_handle.is_focused(window) {
+            let distance = if page {
+                self.typed_navigation.scroll.bounds().size.height * 0.9
+            } else {
+                px(reader_ui_state::font_size(cx) * 2.)
+            };
+            let offset = self.typed_navigation.scroll.offset();
+            self.typed_navigation.scroll.set_offset(point(
+                offset.x,
+                (offset.y - distance * direction).min(px(0.)),
+            ));
+            cx.notify();
+            return;
+        }
         if self.editing.is_some()
             || self.file_preview.is_some()
             || !self.content.read(cx).focus_handle().is_focused(window)
@@ -3484,8 +3523,11 @@ impl Reader {
     fn render_find_bar(&self, cx: &mut Context<Self>) -> AnyElement {
         let border = cx.theme().border;
         let muted = cx.theme().muted_foreground;
+        let native = self.typed_navigation.active.get();
         let (current, total) = self.content.read(cx).search_status();
-        let count = if total == 0 {
+        let count = if native {
+            "Filter tasks".to_owned()
+        } else if total == 0 {
             if self.find_input.read(cx).value().trim().is_empty() {
                 String::new()
             } else {
@@ -3540,6 +3582,7 @@ impl Reader {
             )
             .child(
                 Button::new("find-prev")
+                    .when(native, |button| button.invisible())
                     .ghost()
                     .small()
                     .icon(IconName::ChevronUp)
@@ -3548,6 +3591,7 @@ impl Reader {
             )
             .child(
                 Button::new("find-next")
+                    .when(native, |button| button.invisible())
                     .ghost()
                     .small()
                     .icon(IconName::ChevronDown)
@@ -4568,6 +4612,7 @@ impl Reader {
     }
 
     fn render_main(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        self.typed_navigation.active.set(false);
         if let Some(preview) = self.render_timeline_preview(window, cx) {
             return preview;
         }
@@ -4584,6 +4629,9 @@ impl Reader {
         }
         if self.editing.is_some() {
             return self.render_source(window, cx);
+        }
+        if let Some(view) = reader_typed_view::render(self, window, cx) {
+            return view;
         }
         let entity = cx.entity().downgrade();
         let mut style = reader_text_style(cx.theme());
@@ -5562,6 +5610,9 @@ impl Reader {
     }
 
     fn render_outline(&self, cx: &mut Context<Self>) -> AnyElement {
+        if let Some(outline) = reader_typed_view::outline(self, cx) {
+            return outline;
+        }
         let p = brand::palette(cx);
         if self.file_preview.is_some() || self.outline.is_empty() {
             return div()

@@ -1,5 +1,6 @@
 //! Native, read-only Tasks blocks. Index ownership stays with Reader snapshots.
 use super::*;
+use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_component::{checkbox::Checkbox, Disableable};
 use tessera_core::tasks::{Group, Index, Query, Task};
 
@@ -197,6 +198,11 @@ pub(super) fn plugins(view: TextView, reader: WeakEntity<Reader>) -> TextView {
                 offset: block.offset,
                 reader: reader.clone(),
                 has_heading: block.has_heading,
+                layout: Default::default(),
+                title: None,
+                native: false,
+                search: String::new(),
+                case_sensitive: false,
             })
             .into_any_element()
     })
@@ -314,12 +320,19 @@ fn count_badge(results: &Results, cx: &App) -> impl IntoElement {
 
 #[derive(IntoElement)]
 struct TasksList {
+    native: bool,
+    search: String,
+    case_sensitive: bool,
+    title: Option<String>,
+    layout: tessera_core::typed_view::layout::Defaults,
     has_heading: bool,
     query: String,
     offset: usize,
     reader: WeakEntity<Reader>,
 }
 struct Results {
+    search: String,
+    case_sensitive: bool,
     index: Arc<Index>,
     today: time::Date,
     query: String,
@@ -328,22 +341,75 @@ struct Results {
     unsupported: Vec<String>,
     groups: Vec<Group>,
     explicit_groups: bool,
+    grouping: tessera_core::typed_view::layout::Grouping,
     expanded: std::collections::BTreeSet<(String, usize)>,
     shown: usize,
 }
 impl Results {
     fn refresh(&mut self, index: Arc<Index>, now: time::Date, source: &str) {
-        if !Arc::ptr_eq(&self.index, &index) || self.today != now || self.query != source {
+        self.refresh_grouped(index, now, source, Default::default());
+    }
+    fn refresh_grouped(
+        &mut self,
+        index: Arc<Index>,
+        now: time::Date,
+        source: &str,
+        grouping: tessera_core::typed_view::layout::Grouping,
+    ) {
+        self.refresh_filtered(index, now, source, grouping, "", false);
+    }
+    fn refresh_filtered(
+        &mut self,
+        index: Arc<Index>,
+        now: time::Date,
+        source: &str,
+        grouping: tessera_core::typed_view::layout::Grouping,
+        search: &str,
+        case_sensitive: bool,
+    ) {
+        use tessera_core::typed_view::layout::Grouping;
+        let search = search.trim();
+        if !Arc::ptr_eq(&self.index, &index)
+            || self.today != now
+            || self.query != source
+            || self.grouping != grouping
+            || self.search != search
+            || self.case_sensitive != case_sensitive
+        {
             let query = Query::parse(source, now);
             self.tasks = index.query(&query);
             self.tasks.retain(|task| !task_label(task).is_empty());
 
-            self.explicit_groups = !query.groups.is_empty();
+            if !search.is_empty() {
+                let needle = if case_sensitive {
+                    search.to_owned()
+                } else {
+                    search.to_lowercase()
+                };
+                self.tasks.retain(|task| {
+                    let text = format!("{} {}", task_label(task), source_label(task));
+                    if case_sensitive {
+                        text.contains(&needle)
+                    } else {
+                        text.to_lowercase().contains(&needle)
+                    }
+                });
+            }
+            self.search = search.to_owned();
+            self.case_sensitive = case_sensitive;
+            self.explicit_groups = grouping == Grouping::Note
+                || (grouping == Grouping::Query && !query.groups.is_empty());
             self.groups = if query.groups.is_empty() {
                 vec![Group::Filename]
             } else {
                 query.groups
             };
+            match grouping {
+                Grouping::Note => self.groups = vec![Group::Filename],
+                Grouping::None => self.groups.clear(),
+                Grouping::Query => {}
+            }
+            self.grouping = grouping;
             // Stable grouping preserves the query ordering inside each group.
             self.tasks.sort_by_key(|task| group_key(task, &self.groups));
             self.rows = carried_rows(&self.tasks, &self.groups, self.explicit_groups);
@@ -495,7 +561,7 @@ fn priority_icon(priority: u8, color: Hsla) -> impl IntoElement {
             )
         })
 }
-fn today() -> time::Date {
+pub(super) fn today() -> time::Date {
     use chrono::Datelike;
     let now = chrono::Local::now();
     time::Date::from_calendar_date(
@@ -528,6 +594,8 @@ fn results_state(window: &mut Window, cx: &mut App) -> Entity<Results> {
         })
         .detach();
         Results {
+            search: String::new(),
+            case_sensitive: false,
             index: Arc::default(),
             today: now,
             query: String::new(),
@@ -536,6 +604,7 @@ fn results_state(window: &mut Window, cx: &mut App) -> Entity<Results> {
             unsupported: Vec::new(),
             groups: vec![Group::Filename],
             explicit_groups: false,
+            grouping: Default::default(),
             expanded: Default::default(),
             shown: 20,
         }
@@ -573,7 +642,16 @@ impl RenderOnce for TasksList {
         let offset = self.offset;
         let now = today();
         let state = results_state(window, cx);
-        state.update(cx, |s, _| s.refresh(index, now, &self.query));
+        state.update(cx, |s, _| {
+            s.refresh_filtered(
+                index,
+                now,
+                &self.query,
+                self.layout.grouping,
+                &self.search,
+                self.case_sensitive,
+            )
+        });
         let results = state.read(cx);
         let muted = cx.theme().muted_foreground;
         let mut list = v_flex().gap_0().py_1().w_full();
@@ -598,7 +676,16 @@ impl RenderOnce for TasksList {
                     .gap_2()
                     .text_sm()
                     .text_color(muted)
-                    .child("Tasks")
+                    .child(
+                        div()
+                            .when(self.title.is_some(), |title| {
+                                title
+                                    .text_base()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(cx.theme().foreground)
+                            })
+                            .child(self.title.clone().unwrap_or_else(|| "Tasks".into())),
+                    )
                     .child(count_badge(results, cx)),
             );
         }
@@ -623,7 +710,7 @@ impl RenderOnce for TasksList {
                 .iter()
                 .any(|g| matches!(g, Group::Filename | Group::Path));
 
-            if !is_copy && previous_group.as_ref() != Some(&key) {
+            if !is_copy && !results.groups.is_empty() && previous_group.as_ref() != Some(&key) {
                 let label = results
                     .groups
                     .iter()
@@ -681,18 +768,56 @@ impl RenderOnce for TasksList {
             let expanded = results.expanded.contains(&task_key);
             let overdue = !task.checked && task.due.is_some_and(|d| d < now);
             let due_color = if overdue { cx.theme().danger } else { muted };
+            let writable = cfg!(unix) && self.native && (copies == 1 || expanded);
+            let displayed_index = results.index.clone();
+            let displayed_task = task.clone();
+            let action_root = root.clone();
+            let date_root = root.clone();
+            let action_reader = self.reader.clone();
+            let date_reader = self.reader.clone();
+            let date_index = results.index.clone();
+            let date_task = task.clone();
             list = list.child(
                 h_flex()
                     .w_full()
-                    .min_h(px(28.))
+                    .min_h(px(
+                        if self.layout.density
+                            == tessera_core::typed_view::layout::Density::Comfortable
+                        {
+                            36.
+                        } else {
+                            28.
+                        },
+                    ))
                     .when(is_copy, |row| row.pl_6())
                     .gap_2()
                     .child(
                         Checkbox::new(("task-check", ix))
                             .checked(task.checked)
-                            .disabled(true)
+                            .disabled(!writable)
                             .accessibility_label(text.clone())
-                            .tooltip("Read-only task — open the source note to edit"),
+                            .tooltip(if self.native && copies > 1 && !expanded {
+                                "Expand notes to change one occurrence"
+                            } else {
+                                "Change task status"
+                            })
+                            .on_click(move |checked, window, cx| {
+                                if !writable {
+                                    return;
+                                }
+                                let _ = action_reader.update(cx, |this, cx| {
+                                    if this.vault_root != action_root {
+                                        return;
+                                    }
+                                    this.apply_task_change(
+                                        displayed_index.clone(),
+                                        displayed_task.clone(),
+                                        tessera_core::task_edit::Change::Checked(*checked),
+                                        window,
+                                        cx,
+                                    );
+                                });
+                            }),
                     )
                     .child(
                         Button::new(("task-title", ix))
@@ -723,6 +848,114 @@ impl RenderOnce for TasksList {
                             .accessibility_label(text.clone())
                             .child(div().flex_1().min_w_0().text_sm().truncate().child(text)),
                     )
+                    .when(self.native, |row| {
+                        row.child(
+                            Button::new(("task-date", ix))
+                                .small()
+                                .ghost()
+                                .icon(IconName::Calendar)
+                                .disabled(!writable)
+                                .tooltip("Reschedule task")
+                                .debug_selector(move || format!("task-date-{offset}-{ix}"))
+                                .dropdown_menu(move |mut menu, window, cx| {
+                                    use tessera_core::task_edit::Change;
+                                    let tomorrow = today().next_day().unwrap_or(today());
+                                    for (label, change) in [
+                                        ("Due today", Change::Due(today())),
+                                        ("Due tomorrow", Change::Due(tomorrow)),
+                                        ("Snooze until tomorrow", Change::Scheduled(tomorrow)),
+                                    ] {
+                                        let reader = date_reader.clone();
+                                        let expected_root = date_root.clone();
+                                        let index = date_index.clone();
+                                        let task = date_task.clone();
+                                        menu = menu.item(PopupMenuItem::new(label).on_click(
+                                            move |_, window, cx| {
+                                                if !writable {
+                                                    return;
+                                                }
+                                                let _ = reader.update(cx, |this, cx| {
+                                                    if this.vault_root != expected_root {
+                                                        return;
+                                                    }
+                                                    this.apply_task_change(
+                                                        index.clone(),
+                                                        task.clone(),
+                                                        change,
+                                                        window,
+                                                        cx,
+                                                    )
+                                                });
+                                            },
+                                        ));
+                                    }
+                                    use gpui_component::calendar::{
+                                        Calendar, CalendarEvent, CalendarState, Date,
+                                    };
+                                    let calendar = cx.new(|cx| {
+                                        let mut state = CalendarState::new(window, cx);
+                                        let initial = date_task.due.unwrap_or_else(today);
+                                        let date = chrono::NaiveDate::from_ymd_opt(
+                                            initial.year(),
+                                            initial.month() as u32,
+                                            initial.day() as u32,
+                                        )
+                                        .expect("valid task date");
+                                        state.set_date(date, window, cx);
+                                        state
+                                    });
+                                    let reader = date_reader.clone();
+                                    let expected_root = date_root.clone();
+                                    let index = date_index.clone();
+                                    let task = date_task.clone();
+                                    cx.subscribe_in(
+                                        &calendar,
+                                        window,
+                                        move |_, _, event, window, cx| {
+                                            let CalendarEvent::Selected(Date::Single(Some(date))) =
+                                                event
+                                            else {
+                                                return;
+                                            };
+                                            use chrono::Datelike;
+                                            let Ok(date) = time::Date::from_calendar_date(
+                                                date.year(),
+                                                (date.month() as u8)
+                                                    .try_into()
+                                                    .expect("calendar month"),
+                                                date.day() as u8,
+                                            ) else {
+                                                return;
+                                            };
+                                            if !writable {
+                                                return;
+                                            }
+                                            let _ = reader.update(cx, |this, cx| {
+                                                if this.vault_root == expected_root {
+                                                    this.apply_task_change(
+                                                        index.clone(),
+                                                        task.clone(),
+                                                        Change::Due(date),
+                                                        window,
+                                                        cx,
+                                                    );
+                                                }
+                                            });
+                                            cx.emit(gpui::DismissEvent);
+                                        },
+                                    )
+                                    .detach();
+                                    menu.separator().label("Choose due date").item(
+                                        PopupMenuItem::element(move |_, _| {
+                                            div()
+                                                .id("task-due-calendar")
+                                                .on_click(|_, _, cx| cx.stop_propagation())
+                                                .child(Calendar::new(&calendar).border_0())
+                                        }),
+                                    )
+                                }),
+                        )
+                    })
                     .when(task.priority != 3, |row| {
                         row.child(priority_icon(task.priority, muted))
                     })
@@ -780,7 +1013,16 @@ impl RenderOnce for TasksList {
                                 .text_xs()
                                 .text_color(due_color)
                                 .bg(due_color.opacity(0.10))
-                                .child(due.to_string()),
+                                .child(if due == now {
+                                    "Today".to_owned()
+                                } else if Some(due) == now.next_day() {
+                                    "Tomorrow".to_owned()
+                                } else {
+                                    due.format(&time::macros::format_description!(
+                                        "[day padding:none] [month repr:short] [year]"
+                                    ))
+                                    .unwrap_or_default()
+                                }),
                         )
                     }),
             );
@@ -913,6 +1155,8 @@ mod tests {
     #[test]
     fn index_refresh_keeps_expanded_pagination() {
         let mut results = Results {
+            search: String::new(),
+            case_sensitive: false,
             index: Arc::default(),
             today: today(),
             query: "not done".into(),
@@ -921,6 +1165,7 @@ mod tests {
             unsupported: Vec::new(),
             groups: vec![Group::Filename],
             explicit_groups: false,
+            grouping: Default::default(),
             expanded: Default::default(),
             shown: 150,
         };
@@ -937,6 +1182,27 @@ mod tests {
         );
         assert_eq!(results.shown, 150);
         assert!(results.expanded.contains(&("old.md".into(), 1)));
+        results.refresh_grouped(
+            results.index.clone(),
+            today(),
+            "not done\ngroup by filename",
+            tessera_core::typed_view::layout::Grouping::Note,
+        );
+        assert!(results.explicit_groups);
+        assert_eq!(results.rows.len(), 2);
+        results.refresh_grouped(
+            results.index.clone(),
+            today(),
+            "not done\ngroup by filename",
+            tessera_core::typed_view::layout::Grouping::None,
+        );
+        assert!(!results.explicit_groups);
+        assert!(results.groups.is_empty());
+        assert_eq!(
+            results.rows.len(),
+            1,
+            "ungrouped carried copies collapse again"
+        );
         results.refresh(results.index.clone(), today(), "done");
         assert_eq!(results.shown, 20);
         assert!(results.expanded.is_empty());
@@ -1175,4 +1441,26 @@ mod tests {
             )
         });
     }
+}
+
+pub(super) fn dashboard_section(
+    title: Option<String>,
+    query: String,
+    offset: usize,
+    layout: tessera_core::typed_view::layout::Defaults,
+    search: String,
+    case_sensitive: bool,
+    reader: WeakEntity<Reader>,
+) -> impl IntoElement {
+    div().id(("native-tasks-section", offset)).child(TasksList {
+        native: true,
+        query,
+        offset,
+        search,
+        case_sensitive,
+        layout,
+        reader,
+        title,
+        has_heading: false,
+    })
 }
