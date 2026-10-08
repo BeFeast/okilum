@@ -24,6 +24,16 @@ def bounded(value, limit, required=True):
     return value
 
 
+def approval_target(approval):
+    target = approval.get('target')
+    # Maestro omits a null target for this global action. Preserve that meaning
+    # explicitly in Inbox; missing targets for scoped actions remain invalid.
+    if target is None and approval.get('action') == 'change_global_config':
+        return {'scope': 'global'}
+    require(isinstance(target, dict) and len(canonical(target).encode()) <= 16384)
+    return target
+
+
 def project(raw, config, approval=False):
     require(isinstance(raw, dict))
     require(raw.get('instance_id') == config['instance_id'] and
@@ -43,8 +53,7 @@ def project(raw, config, approval=False):
         action = text(a.get('action'))
         require(action != 'stop_worker' and action in config['approval_actions'], 'unsupported_action')
         require(set(caps) <= {'approve', 'reject'})
-        target = a.get('target')
-        require(isinstance(target, dict) and len(canonical(target).encode()) <= 16384)
+        target = approval_target(a)
         detail = {'action': action, 'target': target,
                   'repo': bounded(a['repo'], 1024) if a.get('repo') else None,
                   'summary': bounded(a.get('summary'), 16384), 'risk': text(a.get('risk')),
@@ -252,7 +261,7 @@ class Runner:
                 current = receipt.get('current', {}); a = current.get('approval', {})
                 require(current.get('project_id') == source['project_id'] and current.get('id') == source['question_id'], 'receipt_identity_mismatch')
                 detail = q['approval']
-                require(all(a.get(k) == detail[k] for k in ('action','target','payload_hash')) and (a.get('repo') or None) == detail.get('repo') and (a.get('target_state_hash') or None) == detail.get('target_state_hash'), 'receipt_payload_mismatch')
+                require(approval_target(a) == detail['target'] and all(a.get(k) == detail[k] for k in ('action','payload_hash')) and (a.get('repo') or None) == detail.get('repo') and (a.get('target_state_hash') or None) == detail.get('target_state_hash'), 'receipt_payload_mismatch')
                 require(state == 'delivered' and a.get('status') == ('approved' if path.endswith('/approve') else 'rejected'), 'receipt_decision_mismatch')
             else:
                 current = receipt.get('question', {})
