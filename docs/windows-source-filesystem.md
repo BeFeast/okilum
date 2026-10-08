@@ -89,17 +89,48 @@ Prepared recovery bytes remain discoverable after preparation/publication errors
 an unacknowledged save keeps protected history and can acknowledge its already
 published exact draft on reopen.
 History preview limits each prepared recovery read to 128 MiB, checking the
-opened file size before allocating and bounding the read itself. Oversized or
-non-UTF-8 prepared bytes remain on disk with a listing warning; this preview
+opened file size before allocating and bounding the read itself. Windows displaced
+recovery uses the same bound and checked native open, refusing symlinks, reparse
+redirection and hard links rather than reading their targets. Oversized or
+non-UTF-8 recovery bytes remain on disk with a listing warning; this preview
 limit never deletes recovery or limits the source save.
 
-Preimages remain on their source NTFS volume with the source DACL. Folder
+Native preimages retain the source DACL until a successful save has persisted a
+complete acknowledged snapshot in application state. The history owner then
+removes only the checked original preimage through a DELETE handle, verifying
+identity and exact bytes and excluding writers. The snapshot remains subject to
+the existing 20-version/30-day/128-MiB retention. A crash during cleanup or a
+sharing error leaves an identified cleanup record; startup retries only these
+acknowledged records for the opened vault. Interrupted saves, changed/replaced
+preimages, reparse points, and unassigned synced leftovers remain protected.
+All `.tessera-save-*` names are excluded from inventory, search and the tree on
+every platform, even with Show hidden enabled. This includes old six-character
+tempfile names, native prepared/raced files and synced preimages. Visibility is
+separate from cleanup ownership: only acknowledged identity-bound preimages are
+automatically removed. Unassigned
+legacy files can still be inspected through recovery; they require a separate
+dry-run inventory and owner approval before one-time deletion. Folder
 snapshots exclude generated `.tessera-save-*` recovery entries from canonical
 inventory; ordinary sources/assets and directory identities remain revision-bound.
 The link-move journal retains complete before/after bytes even when vault-side
 history names move with a folder. No automatic rollback overwrites a concurrent
 writer; post-publication verification failures are reported as completed moves
 requiring inspection.
+
+`python scripts/tessera-save-dry-run.py /absolute/vault/root` prints a read-only
+JSON inventory grouped into canonical Windows UUID `.previous` names, legacy
+six-character tempfile names and other `.tessera-save-*` entries. It reads only
+directory entries and metadata, never file contents, and does not follow symlinks
+or Windows reparse directories. Scan errors are reported explicitly. Send the
+exact report to the owner before considering any legacy cleanup; a matching name
+alone is not proof that the bytes are safe to delete.
+
+Old Unix saves used `tempfile::Builder` with this prefix and intentionally kept
+displaced inodes without ownership records. Commit b2d1fcff replaced that path
+with directory-bound UUID names and durable history archival. Current Unix saves
+archive to application state; a cross-device archive retains the identity-bound
+vault preimage under history retention. Historical unassigned names are not
+automatically adopted or deleted.
 
 Creation Undo checks the original identity and exact initial source (or empty
 folder), then marks that checked native DELETE handle for deletion. It refuses

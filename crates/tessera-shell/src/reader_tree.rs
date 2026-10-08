@@ -114,6 +114,9 @@ impl Tree {
         // Hidden items are kept and filtered at flatten time, so a reveal or
         // the Show hidden toggle can bring them back without a rescan.
         for entry in entries {
+            if tessera_core::vault::service_path(Path::new(&entry.path)) {
+                continue;
+            }
             self.kinds.insert(entry.path.clone(), entry.kind);
             let parent = parent(&entry.path).unwrap_or_default();
             self.children
@@ -727,5 +730,59 @@ mod tests {
             started.elapsed()
         );
         assert_eq!(t.rows.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod preimage_visibility_tests {
+    use super::*;
+    #[test]
+    fn windows_history_tree_hides_native_preimages_even_when_hidden_files_are_enabled() {
+        let mut tree = Tree::default();
+        let preimage = "nested/.tessera-save-7d7d7698-4f47-4a9f-9a7b-2bb5e01f3718.previous";
+        let mut entries = vec![
+            VaultEntry {
+                path: "nested".into(),
+                kind: EntryKind::Directory,
+            },
+            VaultEntry {
+                path: "nested/Visible.md".into(),
+                kind: EntryKind::Markdown,
+            },
+            VaultEntry {
+                path: preimage.into(),
+                kind: EntryKind::Attachment,
+            },
+            VaultEntry {
+                path: "nested/.ordinary.md".into(),
+                kind: EntryKind::Markdown,
+            },
+        ];
+        let service_names = [
+            ".tessera-save-icf3uR",
+            ".tessera-save-legacy.md",
+            ".tessera-save-proposed.prepared",
+            ".tessera-save-user.previous",
+        ];
+        entries.extend(service_names.into_iter().map(|name| VaultEntry {
+            path: format!("nested/{name}"),
+            kind: EntryKind::Attachment,
+        }));
+        tree.refresh(Path::new("vault"), &entries);
+        tree.set_show_hidden(true);
+        tree.set_subtree("nested", true);
+        assert!(tree.rows.iter().any(|row| row.path == "nested/Visible.md"));
+        assert!(tree
+            .rows
+            .iter()
+            .any(|row| row.path == "nested/.ordinary.md"));
+        for name in service_names {
+            let path = format!("nested/{name}");
+            assert!(!tree.kinds.contains_key(&path));
+            assert!(tree.reveal(&path).is_none());
+        }
+        assert!(!tree.rows.iter().any(|row| row.path == preimage));
+        assert!(tree.reveal(preimage).is_none());
+        assert!(!tree.kinds.contains_key(preimage));
     }
 }

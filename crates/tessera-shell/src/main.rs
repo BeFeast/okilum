@@ -1507,6 +1507,23 @@ impl Reader {
                     .map(|d| d.0.clone());
             }
         }
+        #[cfg(windows)]
+        if let (Some(state), Some(root)) = (&opts.session_directory, &opts.vault) {
+            let drafts = state.join("editor-drafts");
+            let root = root.clone();
+            cx.background_executor()
+                .spawn(async move {
+                    match tessera_core::source_history::cleanup_windows(&drafts, &root) {
+                        Ok(warnings) => {
+                            for warning in warnings {
+                                eprintln!("{warning}");
+                            }
+                        }
+                        Err(error) => eprintln!("Save recovery cleanup retained files: {error:#}"),
+                    }
+                })
+                .detach();
+        }
         let use_html = opts.use_html;
         let vault_root = opts.vault.clone().unwrap_or_default();
         let index_dir = opts.index_dir.clone();
