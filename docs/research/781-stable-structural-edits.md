@@ -42,3 +42,21 @@ uses delayed classifier delivery and a failing baseline as positive control.
 The full Reader/Wayland wide/narrow, light/dark, typing, click, drag and IME
 matrix remains required before merge; existing probe evidence is only for the
 bounded structural-edit path.
+
+## Paint policy binding (#784)
+
+Patch 0040 adds `SourceProjection::marker_scope_is_raw`, defaulting to raw for
+providers without a reveal policy. `MappedProjection` delegates to its owned
+`RevealSnapshot`. `PinnedProjection::marker_scope_is_raw(layout, current,
+scope, safety)` checks the full LayoutStamp, source stamp and bytes before
+consulting that policy. Invalid scope or safety coordinates conservatively
+return raw. Selection, composition and explicit replacement may force raw
+foreground without recomposing the pinned projection.
+
+The decoration integration point is `prepaint.last_layout.projection`, using
+that same prepaint's source, layout stamp and captured safety ranges. Do not
+fetch another projection/provider from live editor state at paint time. A
+missing pin, mismatched epoch or invalid geometry must paint the original row.
+The existing drag path retains the same projection Arc; its immutable reveal
+policy now follows automatically. This seam does not fix mouse-up recomposition
+or authorize independently reconstructing the gesture policy in the renderer.
