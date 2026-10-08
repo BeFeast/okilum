@@ -541,6 +541,11 @@ version/build/channel sits directly above. Linux identifies system-package
 management and offers compact repository-setup and release-notes glyph buttons;
 it does not pretend to switch pacman repositories. Unpackaged builds explain
 updater availability.
+On macOS, manual checks from Settings, About and the app menu open Updates and
+show checking, up-to-date, compatibility and retryable errors inline (#750).
+They do not open Sparkle's progress or no-update dialogs. Available updates and
+installation retain Sparkle's standard workflow; see
+[`750-inline-update-status`](../../specs/750-inline-update-status.md).
 Inbox shows “Not connected”; no connection controls are enabled in this slice.
 The deferred local Excalidraw editor needs no editor-URL setting.
 

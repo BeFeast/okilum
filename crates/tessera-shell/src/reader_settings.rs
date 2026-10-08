@@ -17,6 +17,15 @@ pub(crate) fn install(cx: &mut App) {
 }
 
 pub(crate) fn show(reader: Option<WeakEntity<Reader>>, cx: &mut App) {
+    show_section(reader, None, cx);
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn show_updates(cx: &mut App) {
+    show_section(None, Some(Section::Updates), cx);
+}
+
+fn show_section(reader: Option<WeakEntity<Reader>>, section: Option<Section>, cx: &mut App) {
     // Native application-menu actions may bypass the Reader's action handler.
     let active = cx.active_window();
     // Menu dispatch can still hold the active Reader's update borrow.
@@ -35,11 +44,16 @@ pub(crate) fn show(reader: Option<WeakEntity<Reader>>, cx: &mut App) {
         if let Some(handle) = cx.try_global::<SettingsWindow>().and_then(|s| s.0) {
             if handle
                 .update(cx, |root, window, cx| {
-                    if let Some(reader) = reader.clone() {
-                        if let Ok(settings) = root.view().clone().downcast::<Settings>() {
-                            settings
-                                .update(cx, |settings, cx| settings.set_reader(Some(reader), cx));
-                        }
+                    if let Ok(settings) = root.view().clone().downcast::<Settings>() {
+                        settings.update(cx, |settings, cx| {
+                            if let Some(reader) = reader.clone() {
+                                settings.set_reader(Some(reader), cx);
+                            }
+                            if let Some(section) = section {
+                                settings.section = section;
+                                cx.notify();
+                            }
+                        });
                     }
                     window.activate_window();
                 })
@@ -59,7 +73,13 @@ pub(crate) fn show(reader: Option<WeakEntity<Reader>>, cx: &mut App) {
         };
         match cx.open_window(options, move |window, cx| {
             window.set_window_title("Tessera Settings");
-            let settings = cx.new(|cx| Settings::new(reader, cx));
+            let settings = cx.new(|cx| {
+                let mut settings = Settings::new(reader, cx);
+                if let Some(section) = section {
+                    settings.section = section;
+                }
+                settings
+            });
             settings.read(cx).focus.clone().focus(window, cx);
             cx.new(|cx| Root::new(settings, window, cx))
         }) {
@@ -636,6 +656,7 @@ impl Settings {
                                         .ghost()
                                         .accessibility_label(updater::action_label())
                                         .tooltip(updater::action_label())
+                                        .disabled(updater::check_status().checking())
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             if this.preview_channel().is_none() {
                                                 updater::activate(cx);
@@ -643,6 +664,15 @@ impl Settings {
                                         })),
                                 ),
                         )
+                        .when_some(updater::check_status().message(), |content, message| {
+                            content.child(
+                                div()
+                                    .debug_selector(|| "settings-update-status".into())
+                                    .text_sm()
+                                    .text_color(p.text_muted)
+                                    .child(message),
+                            )
+                        })
                         .child(div().text_sm().text_color(p.text_muted).child(if beta {
                             "Beta selected — preview new features and fixes."
                         } else {

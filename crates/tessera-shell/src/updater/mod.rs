@@ -1,6 +1,6 @@
-//! macOS updates through stock Sparkle 2: its standard UI does the checking,
-//! downloading, installing and relaunching. The app only adds menu items and
-//! the beta channel preference.
+//! Platform updates: macOS manual-check results are inline; Sparkle retains installation UI.
+mod check_status;
+pub(crate) use check_status::CheckStatus;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(any(windows, test))]
@@ -11,6 +11,12 @@ mod windows;
 mod windows_feed;
 
 use gpui::{App, MenuItem};
+
+#[cfg(target_os = "macos")]
+#[derive(Default)]
+struct CheckWatcher(bool);
+#[cfg(target_os = "macos")]
+impl gpui::Global for CheckWatcher {}
 
 #[cfg(target_os = "macos")]
 gpui::actions!(tessera, [AboutTessera, CheckForUpdates, ToggleBetaBuilds]);
@@ -67,9 +73,10 @@ pub(crate) fn install(_cx: &mut App) {
     }
     #[cfg(target_os = "macos")]
     {
+        _cx.set_global(CheckWatcher::default());
         macos::start();
         _cx.on_action(|_: &AboutTessera, cx| crate::about::show_from_menu(cx));
-        _cx.on_action(|_: &CheckForUpdates, _| macos::check());
+        _cx.on_action(|_: &CheckForUpdates, cx| activate(cx));
         _cx.on_action(|_: &ToggleBetaBuilds, cx| {
             set_beta(!macos::beta(), cx);
         });
@@ -140,6 +147,12 @@ pub(crate) fn set_beta(enabled: bool, cx: &mut App) {
 
 /// The same explicit action is exposed in About, Settings and the ready toast.
 pub(crate) fn action_label() -> &'static str {
+    #[cfg(target_os = "macos")]
+    match check_status() {
+        CheckStatus::Checking | CheckStatus::Busy => return "Checking for updates…",
+        CheckStatus::Failed => return "Retry update check",
+        _ => {}
+    }
     #[cfg(windows)]
     if windows::ready() {
         return "Restart to update";
@@ -152,8 +165,59 @@ pub(crate) fn activate(cx: &mut App) {
         windows::restart(None, cx);
         return;
     }
-    let _ = cx;
-    check();
+    #[cfg(target_os = "macos")]
+    {
+        crate::reader_settings::show_updates(cx);
+        if check_status().checking() {
+            return;
+        }
+        check();
+        cx.refresh_windows();
+        if cx.global::<CheckWatcher>().0 {
+            return;
+        }
+        cx.global_mut::<CheckWatcher>().0 = true;
+        cx.spawn(async move |cx| {
+            let mut previous = CheckStatus::Idle;
+            loop {
+                let current = cx.update(|cx| {
+                    let current = check_status();
+                    if current != previous {
+                        cx.refresh_windows();
+                    }
+                    current
+                });
+                previous = current;
+                if !current.tracking() {
+                    cx.update(|cx| cx.global_mut::<CheckWatcher>().0 = false);
+                    break;
+                }
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(250))
+                    .await;
+            }
+        })
+        .detach();
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = cx;
+        check();
+    }
+}
+
+pub(crate) fn check_status() -> CheckStatus {
+    #[cfg(all(target_os = "linux", feature = "updater-ui-harness"))]
+    if let Some(value) = std::env::var("TESSERA_UPDATE_CHECK_FIXTURE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+    {
+        return CheckStatus::from_native(value);
+    }
+    #[cfg(target_os = "macos")]
+    return macos::status();
+    #[cfg(not(target_os = "macos"))]
+    CheckStatus::from_native(0)
 }
 
 pub(crate) fn ready_notice(window: &mut gpui::Window, cx: &mut App) {
