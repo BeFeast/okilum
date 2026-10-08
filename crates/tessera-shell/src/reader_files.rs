@@ -129,6 +129,7 @@ pub(crate) struct FilePreview {
     pub image: bool,
     /// The inline reader for a PDF (#477); replaces the file card.
     pub pdf: Option<Entity<reader_pdf::PdfViewer>>,
+    pub text: Option<Entity<reader_plain_text::PlainTextPreview>>,
     #[cfg(any(target_os = "macos", all(test, unix)))]
     pub thumbnail: Option<Entity<reader_thumbnail::Thumbnail>>,
     /// The log view, for a log opened in the quick viewer (#602).
@@ -164,6 +165,7 @@ impl FilePreview {
             thumbnail: None,
             pdf: None,
             log: None,
+            text: None,
             rel: rel.into(),
             path,
             details: format!("{} · {} bytes · {modified}", ext.to_uppercase(), meta.len()),
@@ -321,19 +323,31 @@ impl Reader {
                     .detach();
                     preview.pdf = Some(viewer);
                 }
-                #[cfg(target_os = "macos")]
-                if preview.pdf.is_none() && reader_thumbnail::eligible(rel) {
-                    preview.thumbnail = Some(cx.new(|cx| {
-                        reader_thumbnail::Thumbnail::new(self.vault_root.clone(), rel.into(), cx)
-                    }));
-                }
-                // The quick viewer shows sibling logs as logs; vault
-                // attachments keep the file card until #602's vault slice.
-                if self.single_file && tessera_core::log::is_log_path(&preview.path) {
+                // Structured logs take precedence in both vault and quick-file mode.
+                if tessera_core::log::is_log_path(&preview.path) {
                     let (rel, path) = (rel.to_owned(), preview.path.clone());
                     let view = cx.new(|cx| reader_log::LogView::indexing(rel, path, cx));
                     view.read(cx).focus_handle().clone().focus(window, cx);
                     preview.log = Some(view);
+                } else if reader_plain_text::eligible(rel) {
+                    preview.text = Some(cx.new(|cx| {
+                        reader_plain_text::PlainTextPreview::new(
+                            self.vault_root.clone(),
+                            rel.into(),
+                            preview.path.clone(),
+                            cx,
+                        )
+                    }));
+                }
+                #[cfg(target_os = "macos")]
+                if preview.pdf.is_none()
+                    && preview.log.is_none()
+                    && preview.text.is_none()
+                    && reader_thumbnail::eligible(rel)
+                {
+                    preview.thumbnail = Some(cx.new(|cx| {
+                        reader_thumbnail::Thumbnail::new(self.vault_root.clone(), rel.into(), cx)
+                    }));
                 }
                 let log = preview.log.is_some();
                 self.file_preview = Some(preview);
@@ -359,6 +373,16 @@ impl Reader {
     ) -> AnyElement {
         if let Some(log) = &preview.log {
             return self.render_log_preview(log, window, cx);
+        }
+        if let Some(text) = &preview.text {
+            return v_flex()
+                .id("reader-file-preview")
+                .key_context("ReaderFile")
+                .track_focus(&self.focus_handle)
+                .size_full()
+                .child(self.render_document_header(window, cx))
+                .child(text.clone())
+                .into_any_element();
         }
         if tessera_core::excalidraw::is_drawing(&preview.rel) {
             return div()
@@ -597,6 +621,10 @@ mod tests {
         let reader = entity.unwrap();
         let drawing_source =
             include_str!("../../tessera-core/tests/fixtures/excalidraw/elements.excalidraw.md");
+        let literal = "# This is plain text\n[[No automatic navigation]]\n";
+        for path in ["plain.txt", "plain.log", "plain.csv"] {
+            std::fs::write(root.join(path), literal).unwrap();
+        }
         for path in [
             "Схема.excalidraw.md",
             "Board.excalidraw",
@@ -625,6 +653,36 @@ mod tests {
             assert!(!reader.file_preview.as_ref().unwrap().image);
             assert!(reader.pdf_viewer().is_some(), "a PDF opens inline");
             assert_eq!(reader.history.last().unwrap(), "report.pdf");
+            reader.preview_file("plain.txt", window, cx);
+            assert_eq!(reader.selected_file(), "plain.txt");
+            assert!(reader.file_preview.as_ref().unwrap().text.is_some());
+            reader.toggle_source(window, cx);
+            assert!(reader.editing.is_none());
+            reader.file_action(FileAction::Relative, window, cx);
+            assert_eq!(
+                cx.read_from_clipboard().unwrap().text().unwrap(),
+                "plain.txt"
+            );
+            assert!(!reader.single_file, "vault-mode positive control");
+            reader.preview_file("plain.csv", window, cx);
+            let preview = reader.file_preview.as_ref().unwrap();
+            assert!(preview.text.is_some());
+            assert!(
+                preview.log.is_none(),
+                "CSV attachments use the literal preview"
+            );
+            assert_eq!(reader.selected_file(), "plain.csv");
+            assert_eq!(
+                std::fs::read_to_string(root.join("plain.csv")).unwrap(),
+                literal
+            );
+            reader.preview_file("plain.log", window, cx);
+            let preview = reader.file_preview.as_ref().unwrap();
+            assert!(
+                preview.log.is_some(),
+                "vault logs use the structured viewer"
+            );
+            assert!(preview.text.is_none());
             for (path, name) in [
                 ("Схема.excalidraw.md", "Схема"),
                 ("Board.excalidraw", "Board"),
@@ -674,6 +732,10 @@ mod tests {
             assert!(reader.pdf_viewer().is_none());
         });
         assert_eq!(visual.opened_url(), None);
+        assert_eq!(
+            std::fs::read_to_string(root.join("plain.txt")).unwrap(),
+            literal
+        );
         assert_eq!(
             std::fs::read_to_string(root.join("start.md")).unwrap(),
             "# Original note"
