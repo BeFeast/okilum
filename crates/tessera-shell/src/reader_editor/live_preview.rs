@@ -98,7 +98,11 @@ impl Reader {
         });
     }
 
-    pub(crate) fn render_live_preview_control(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_live_preview_control(
+        &self,
+        labels: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let Some(editing) = &self.editing else {
             return div().into_any_element();
         };
@@ -110,22 +114,48 @@ impl Reader {
                 .accepted
                 .as_ref()
                 .is_some_and(|p| p.limited());
-        reader_icon_button(
-            "reader-live-preview",
-            IconName::BookOpen,
-            if limited {
-                "Live Preview uses Source for this note"
-            } else if editing.live_preview.enabled {
-                "Switch to Source"
-            } else {
-                "Switch to Live Preview"
-            },
-            cx,
-        )
-        .debug_selector(|| "reader-live-preview".into())
-        .selected(editing.live_preview.enabled)
-        .on_click(cx.listener(|this, _, window, cx| this.toggle_live_preview(window, cx)))
-        .into_any_element()
+        use gpui_component::button::ButtonGroup;
+        let live = editing.live_preview.enabled;
+        ButtonGroup::new("edit-presentation")
+            .children([
+                Button::new("reader-live-preview")
+                    .ghost()
+                    .small()
+                    .icon(IconName::Eye)
+                    .h(px(28.))
+                    .when(!labels, |b| b.w(px(28.)))
+                    .when(labels, |button| button.label("Live Preview"))
+                    .accessibility_label("Live Preview")
+                    .tooltip(if limited {
+                        "Live Preview uses Source for this note"
+                    } else {
+                        "Live Preview"
+                    })
+                    .debug_selector(|| "reader-live-preview".into())
+                    .selected(live)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        if !live {
+                            this.toggle_live_preview(window, cx);
+                        }
+                    })),
+                Button::new("reader-source")
+                    .ghost()
+                    .small()
+                    .icon(Icon::default().path("icons/code-xml.svg"))
+                    .h(px(28.))
+                    .when(!labels, |b| b.w(px(28.)))
+                    .when(labels, |button| button.label("Source"))
+                    .accessibility_label("Source")
+                    .tooltip("Markdown source")
+                    .debug_selector(|| "reader-source".into())
+                    .selected(!live)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        if live {
+                            this.toggle_live_preview(window, cx);
+                        }
+                    })),
+            ])
+            .into_any_element()
     }
 
     pub(crate) fn toggle_live_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -236,6 +266,133 @@ impl Reader {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[gpui::test]
+    fn mode_segments_follow_labels_preference_and_switch_editor_presentation(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let vault = fixture.path().join("Personal knowledge — 研究");
+        std::fs::create_dir(&vault).unwrap();
+        std::fs::write(vault.join("Note.md"), "# Note\n\nBody text\n").unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+            reader_ui_state::install(&fixture.path().join("state"), cx);
+            cx.set_global(reader_history::TestSessionDirectory(
+                fixture.path().join("history"),
+            ));
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let entity = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(vault.clone()),
+                        note: Some("Note.md".into()),
+                        index_dir: Some(fixture.path().join("index")),
+                        panel_settings_override: Some(fixture.path().join("panels.json")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(entity.clone());
+            Root::new(entity, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        visual.simulate_resize(size(px(1400.), px(900.)));
+        visual.run_until_parked();
+        let icon_width = visual.debug_bounds("reader-edit").unwrap().size.width;
+        visual.update(|_, cx| reader_ui_state::set_toolbar_labels(true, cx));
+        visual.run_until_parked();
+        let edit = visual.debug_bounds("reader-edit").unwrap();
+        assert!(
+            edit.size.width > icon_width,
+            "labels change the actual rendered control"
+        );
+        visual.simulate_click(edit.center(), Modifiers::default());
+        visual.run_until_parked();
+        reader.read_with(visual, |reader, _| assert!(reader.editing.is_some()));
+        assert!(
+            visual.debug_bounds("source-save").is_none(),
+            "clean source needs no Save glyph"
+        );
+        let live = visual.debug_bounds("reader-live-preview").unwrap();
+        visual.simulate_click(live.center(), Modifiers::default());
+        visual.run_until_parked();
+        reader.read_with(visual, |reader, _| {
+            assert!(reader.editing.as_ref().unwrap().live_preview.enabled)
+        });
+        let source = visual.debug_bounds("reader-source").unwrap();
+        visual.simulate_click(source.center(), Modifiers::default());
+        visual.run_until_parked();
+        reader.read_with(visual, |reader, _| {
+            assert!(!reader.editing.as_ref().unwrap().live_preview.enabled)
+        });
+        let read = visual.debug_bounds("reader-read").unwrap();
+        visual.simulate_click(read.center(), Modifiers::default());
+        visual.run_until_parked();
+        reader.read_with(visual, |reader, _| assert!(reader.editing.is_none()));
+        visual.simulate_resize(size(px(480.), px(900.)));
+        reader.update_in(visual, |reader, window, cx| {
+            reader.toggle_source(window, cx)
+        });
+        visual.run_until_parked();
+        assert_eq!(
+            visual.debug_bounds("reader-edit").unwrap().size.width,
+            icon_width,
+            "optional labels yield to glyphs in a narrow editor"
+        );
+        visual.simulate_keystrokes("f2");
+        visual.run_until_parked();
+        reader.read_with(visual, |reader, _| {
+            assert!(reader.renaming.as_ref().unwrap().in_header)
+        });
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        let header = visual.debug_bounds("document-header").unwrap();
+        for control in [
+            "reader-history-back",
+            "reader-history-forward",
+            "reader-read",
+            "reader-edit",
+            "reader-live-preview",
+            "reader-source",
+            "document-more",
+        ] {
+            let bounds = visual.debug_bounds(control).unwrap();
+            assert!(
+                bounds.left() >= header.left() && bounds.right() <= header.right(),
+                "{control} stays inside narrow header"
+            );
+        }
+        visual.simulate_resize(size(px(1100.), px(900.)));
+        reader.update_in(visual, |reader, _, cx| {
+            reader.panel_widths.notes = 200.;
+            reader.panels.open(reader_layout::Panel::Notes);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let panel = visual.debug_bounds("reader-notes-panel").unwrap();
+        let menu = visual.debug_bounds("sidebar-actions").unwrap();
+        let folders = visual.debug_bounds("folders-actions").unwrap();
+        assert!(
+            menu.right() < panel.right(),
+            "menu={menu:?}, panel={panel:?}"
+        );
+        assert!(
+            folders.right() < panel.right(),
+            "Folders actions never clip at 200px"
+        );
+        assert!(
+            visual.debug_bounds("sidebar-new-note").is_none(),
+            "long vault name takes precedence over actions"
+        );
+    }
+
     use super::*;
     use ::core::prelude::v1::test;
     use gpui_component::input::projection::ActiveSource;

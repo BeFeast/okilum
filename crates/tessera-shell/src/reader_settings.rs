@@ -447,6 +447,21 @@ impl Settings {
                         cx,
                     ))
                     .child(reader_reading_controls::render(cx))
+                    .child(setting_row(
+                        "Show labels on toolbar buttons",
+                        "Show names beside icons when there is room.",
+                        div()
+                            .debug_selector(|| "settings-toolbar-labels-control".into())
+                            .child(
+                                Switch::new("settings-toolbar-labels")
+                                    .accessibility_label("Show labels on toolbar buttons")
+                                    .checked(reader_ui_state::toolbar_labels(cx))
+                                    .on_click(|value, _, cx| {
+                                        reader_ui_state::set_toolbar_labels(*value, cx)
+                                    }),
+                            ),
+                        cx,
+                    ))
                     .child(
                         v_flex()
                             .gap_2()
@@ -825,6 +840,13 @@ mod tests {
             Root::new(settings, window, cx)
         });
         visual.run_until_parked();
+        let labels = visual
+            .debug_bounds("settings-toolbar-labels-control")
+            .expect("labels setting visible");
+        assert!(!visual.update(|_, cx| reader_ui_state::toolbar_labels(cx)));
+        visual.simulate_click(labels.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(visual.update(|_, cx| reader_ui_state::toolbar_labels(cx)));
         let original = visual.update(|_, cx| reader_ui_state::font_size(cx));
         for (selector, font, width) in [
             ("reading-larger", original + 1., READER_MAX_WIDTH),

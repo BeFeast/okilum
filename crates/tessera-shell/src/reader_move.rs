@@ -207,7 +207,7 @@ impl Reader {
         if self.file_preview.is_some() {
             return;
         }
-        self.begin_rename(self.current_rel.clone(), window, cx);
+        self.rename_note_title(window, cx);
     }
 
     pub(super) fn rename_tree_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1079,10 +1079,12 @@ mod tests {
         });
         let reader = reader.unwrap();
         visual.run_until_parked();
+        // Exercise inline tree inputs. Note-header rename now intentionally
+        // returns focus to the document and is covered by the toolbar test.
         for rename in [false, true] {
             reader.update_in(visual, |r, window, cx| {
                 if rename {
-                    r.rename_note(window, cx);
+                    r.begin_rename(r.current_rel.clone(), window, cx);
                 } else {
                     r.new_note(Some(""), window, cx);
                 }
@@ -1113,7 +1115,7 @@ mod tests {
             assert!(!r.note_move_pending);
             assert!(r.link_notice.is_none());
             assert!(r.tree_focus.is_focused(window));
-            r.rename_note(window, cx);
+            r.begin_rename(r.current_rel.clone(), window, cx);
         });
         visual.run_until_parked();
         visual.simulate_input("start");

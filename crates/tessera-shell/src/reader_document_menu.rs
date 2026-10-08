@@ -27,7 +27,6 @@ impl Reader {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if self.active_timeline().is_some_and(|t| t.selected.is_some())
-            || self.selected_file().is_empty()
             || self.file_preview.is_some()
         {
             return self.render_main(window, cx);
@@ -42,17 +41,63 @@ impl Reader {
                     .flex_none()
                     .overflow_hidden()
                     .h(px(48.))
-                    .child(self.render_document_header(cx)),
+                    .child(self.render_document_header(window, cx)),
             )
             .child(div().flex_1().min_h_0().child(self.render_main(window, cx)))
             .into_any_element()
     }
 
-    pub(super) fn render_document_header(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+    pub(super) fn render_document_header(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
         use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
         let is_file = self.file_preview.is_some();
         #[cfg(any(unix, windows))]
         let editing = self.editing.is_some();
+        #[cfg(any(unix, windows))]
+        let reader = cx.entity().downgrade();
+        let available = if self.body_bounds.size.width > px(0.) {
+            self.body_bounds.size.width.as_f32()
+        } else {
+            window.viewport_size().width.as_f32()
+        };
+        let widths = self.panels.widths(&self.panel_widths, available);
+        let document_width = available
+            - if reader_layout::overlay(available) {
+                0.
+            } else {
+                widths.notes + widths.backlinks
+            };
+        let title_width = toolbar_text_width(&self.selected_title(), FontWeight::MEDIUM, window);
+        let mode_width = if !cfg!(any(unix, windows)) {
+            0.
+        } else if self.editing.is_some() {
+            128.
+        } else {
+            64.
+        };
+        #[cfg(any(unix, windows))]
+        let dirty = self.source_is_dirty(cx);
+        #[cfg(not(any(unix, windows)))]
+        let dirty = false;
+        let fixed_width = 32. + 64. + 32. + mode_width + if dirty { 100. } else { 0. };
+        let show_find = document_width >= fixed_width + title_width + 32.;
+        #[cfg(any(unix, windows))]
+        let labels_width = ["Read", "Edit"]
+            .into_iter()
+            .chain(if self.editing.is_some() {
+                vec!["Live Preview", "Source"]
+            } else {
+                vec![]
+            })
+            .map(|label| toolbar_text_width(label, FontWeight::MEDIUM, window) + 12.)
+            .sum::<f32>();
+        #[cfg(any(unix, windows))]
+        let labels = reader_ui_state::toolbar_labels(cx)
+            && document_width
+                >= fixed_width + title_width + labels_width + if show_find { 32. } else { 0. };
         let root = self.vault_root.clone();
         let rel = self.selected_file().to_owned();
         let mut row = h_flex()
@@ -64,74 +109,97 @@ impl Reader {
             .min_w_0()
             .px_4()
             .gap_1()
-            .child(self.render_breadcrumbs(cx));
-        #[cfg(any(unix, windows))]
-        if !is_file {
-            if editing {
-                row = row.child(self.render_save_status(cx)).child(
-                    reader_icon_button(
-                        "source-save",
-                        Icon::default().path("icons/save.svg"),
-                        reader_shortcuts::hint("Save", &SaveSource, cx),
-                        cx,
-                    )
-                    .debug_selector(|| "source-save".into())
-                    .on_click(cx.listener(|this, _, _, cx| this.request_source_save(cx))),
-                );
-                row = row.child(self.render_live_preview_control(cx));
-            }
-            row = row.child(
+            .child(
                 reader_icon_button(
-                    "reader-edit",
-                    if editing {
-                        IconName::Eye
-                    } else {
-                        IconName::FileText
-                    },
-                    reader_shortcuts::hint("Source / preview", &ToggleSource, cx),
+                    "reader-history-back",
+                    IconName::ArrowLeft,
+                    reader_shortcuts::hint("Back", &HistoryBack, cx),
                     cx,
                 )
-                .debug_selector(|| "reader-edit".into())
-                .selected(editing)
-                .on_click(cx.listener(|this, _, window, cx| this.toggle_source(window, cx))),
-            );
-        }
-        if !is_file {
-            row = row
-                .child(
-                    reader_icon_button(
-                        "note-reveal",
-                        Icon::default().path(brand::READER_FOCUS_ICON),
-                        "Reveal in sidebar",
-                        cx,
-                    )
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.focus_current_folder(window, cx)),
-                    ),
+                .debug_selector(|| "reader-history-back".into())
+                .disabled(self.history_ix == 0)
+                .on_click(cx.listener(|this, _, window, cx| this.history_move(-1, window, cx))),
+            )
+            .child(
+                reader_icon_button(
+                    "reader-history-forward",
+                    IconName::ArrowRight,
+                    reader_shortcuts::hint("Forward", &HistoryForward, cx),
+                    cx,
                 )
-                .child(
-                    reader_icon_button(
-                        "note-find",
-                        Icon::default().path("icons/text-search.svg"),
-                        with_shortcut("Find in note", "secondary-f"),
-                        cx,
-                    )
-                    .on_click(cx.listener(|this, _, window, cx| this.open_find(window, cx))),
-                );
-            #[cfg(any(unix, windows))]
-            {
-                row = row.child(
-                    reader_icon_button(
-                        "note-rename",
-                        Icon::default().path("icons/pencil.svg"),
-                        "Rename",
-                        cx,
-                    )
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.rename_note_title(window, cx)),
-                    ),
-                );
+                .debug_selector(|| "reader-history-forward".into())
+                .disabled(self.history_ix + 1 >= self.history.len())
+                .on_click(cx.listener(|this, _, window, cx| this.history_move(1, window, cx))),
+            )
+            .child(self.render_breadcrumbs(cx));
+        if rel.is_empty() {
+            return row;
+        }
+        #[cfg(any(unix, windows))]
+        if !is_file {
+            use gpui_component::button::ButtonGroup;
+            row = row.child(
+                ButtonGroup::new("note-mode").children([
+                    Button::new("reader-read")
+                        .ghost()
+                        .small()
+                        .icon(IconName::BookOpen)
+                        .h(px(28.))
+                        .when(!labels, |b| b.w(px(28.)))
+                        .when(labels, |button| button.label("Read"))
+                        .selected(!editing)
+                        .accessibility_label("Read")
+                        .tooltip(reader_shortcuts::hint("Read", &ToggleSource, cx))
+                        .debug_selector(|| "reader-read".into())
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            if this.editing.is_some() {
+                                this.toggle_source(window, cx);
+                            }
+                        })),
+                    Button::new("reader-edit")
+                        .ghost()
+                        .small()
+                        .icon(Icon::default().path("icons/pencil.svg"))
+                        .h(px(28.))
+                        .when(!labels, |b| b.w(px(28.)))
+                        .when(labels, |button| button.label("Edit"))
+                        .selected(editing)
+                        .accessibility_label("Edit")
+                        .tooltip(reader_shortcuts::hint("Edit", &ToggleSource, cx))
+                        .debug_selector(|| "reader-edit".into())
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            if this.editing.is_none() {
+                                this.toggle_source(window, cx);
+                            }
+                        })),
+                ]),
+            );
+            if editing {
+                row = row.child(self.render_live_preview_control(labels, cx));
+                if self.source_is_dirty(cx) {
+                    row = row.child(self.render_save_status(cx)).child(
+                        reader_icon_button(
+                            "source-save",
+                            Icon::default().path("icons/save.svg"),
+                            reader_shortcuts::hint("Save", &SaveSource, cx),
+                            cx,
+                        )
+                        .debug_selector(|| "source-save".into())
+                        .on_click(cx.listener(|this, _, _, cx| this.request_source_save(cx))),
+                    );
+                }
             }
+        }
+        if !is_file && show_find {
+            row = row.child(
+                reader_icon_button(
+                    "note-find",
+                    Icon::default().path("icons/text-search.svg"),
+                    reader_shortcuts::hint("Find in note", &FindInNote, cx),
+                    cx,
+                )
+                .on_click(cx.listener(|this, _, window, cx| this.open_find(window, cx))),
+            );
         }
         if is_file {
             row = row.children(self.render_pdf_controls(cx));
@@ -215,7 +283,18 @@ impl Reader {
                                     if editing { "Preview" } else { "Edit source" },
                                     Box::new(ToggleSource),
                                 )
-                                .menu("Rename…", Box::new(RenameNote))
+                                .item(
+                                    PopupMenuItem::new("Rename")
+                                        .action(Box::new(RenameNote))
+                                        .on_click({
+                                            let reader = reader.clone();
+                                            move |_, window, cx| {
+                                                let _ = reader.update(cx, |this, cx| {
+                                                    this.rename_note_title(window, cx)
+                                                });
+                                            }
+                                        }),
+                                )
                                 .menu("Move to…", Box::new(reader_move_picker::MoveToFolder))
                                 .menu("Note history", Box::new(NoteSourceHistory))
                                 .separator();
@@ -246,7 +325,23 @@ impl Reader {
                             ));
                         }
                     }
-                    // #466's Delete action joins this document-scoped menu once available.
+                    if !is_file {
+                        menu = menu.menu("Open in new window", Box::new(reader_open::NewWindow));
+                    }
+                    #[cfg(any(unix, windows))]
+                    {
+                        let reader = reader.clone();
+                        let rel = rel.clone();
+                        menu = menu
+                            .separator()
+                            .item(PopupMenuItem::new("Move to Trash").on_click(
+                                move |_, window, cx| {
+                                    let _ = reader.update(cx, |this, cx| {
+                                        this.delete_path(rel.clone(), window, cx);
+                                    });
+                                },
+                            ));
+                    }
                     menu.separator().menu(
                         if is_file { "Close file" } else { "Close note" },
                         Box::new(CloseNote),
@@ -459,6 +554,10 @@ mod tests {
             std::fs::read_to_string(root.join("One.md")).unwrap(),
             "# One\n\nExact text\n"
         );
+        assert!(
+            visual.debug_bounds("reader-history-back").is_some(),
+            "empty selection still offers document history navigation"
+        );
         let before = visual.windows().len();
         visual.simulate_keystrokes(if cfg!(target_os = "macos") {
             "cmd-w"
@@ -565,6 +664,11 @@ mod tests {
             visual.run_until_parked();
             let header = visual.debug_bounds("document-header-viewport").unwrap();
             assert_eq!(header.size.height, px(48.));
+            let back = visual.debug_bounds("reader-history-back").unwrap();
+            let forward = visual.debug_bounds("reader-history-forward").unwrap();
+            let title = visual.debug_bounds("reader-document-root").unwrap();
+            assert!(back.left() < forward.left() && forward.right() <= title.left());
+            assert!(back.top() >= header.top() && back.bottom() <= header.bottom());
             for delta in [-24., -400.] {
                 wheel(visual, delta);
                 assert_eq!(
