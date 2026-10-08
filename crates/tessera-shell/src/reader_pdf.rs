@@ -520,6 +520,11 @@ impl PdfViewer {
         self.zoom
     }
 
+    #[cfg(test)]
+    pub(crate) fn cached_page_image(&self, page: usize) -> Option<Arc<RenderImage>> {
+        self.cache.get(page).cloned()
+    }
+
     /// False once the file turned out locked or unreadable.
     pub(crate) fn is_available(&self) -> bool {
         matches!(self.state, State::Opening | State::Ready(_))

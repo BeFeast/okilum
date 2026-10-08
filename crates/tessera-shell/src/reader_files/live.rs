@@ -300,6 +300,11 @@ mod native_tests {
 
     #[gpui::test]
     fn native_pdf_notifications_reload_corruption_replacement_and_restore(cx: &mut TestAppContext) {
+        fn center_pixel(image: &RenderImage) -> &[u8] {
+            let size = image.size(0);
+            let offset = ((size.height.0 / 2 * size.width.0 + size.width.0 / 2) * 4) as usize;
+            &image.as_bytes(0).unwrap()[offset..offset + 4]
+        }
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("doc.pdf");
         let one = crate::pdf_engine::fixture::pdf(&[(300., 300., [1., 0., 0.])]);
@@ -309,9 +314,18 @@ mod native_tests {
             reader.preview_file("doc.pdf", window, cx)
         });
         settle(visual, &reader, |r, cx, _| {
-            r.pdf_viewer().unwrap().read(cx).page_count() == Some(1)
+            let pdf = r.pdf_viewer().unwrap().read(cx);
+            pdf.page_count() == Some(1) && pdf.cached_page_image(0).is_some()
         });
         let viewer = reader.read_with(visual, |r, _| r.pdf_viewer().unwrap().clone());
+        let old_image = viewer.read_with(visual, |v, _| v.cached_page_image(0).unwrap());
+        assert_eq!(center_pixel(&old_image), [0, 0, 255, 255]);
+        visual.update(|window, _| {
+            assert!(
+                window.has_image_atlas_entry(&old_image),
+                "painted PDF positive control"
+            );
+        });
         reader.update(visual, |r, _| {
             assert!(
                 r.watcher.is_none(),
@@ -320,6 +334,36 @@ mod native_tests {
             assert!(
                 r.file_preview.as_ref().unwrap()._live.is_some(),
                 "native subscription positive control"
+            );
+        });
+        // The replacement has the same page count, byte size and mtime. Frame
+        // polling cannot discover it through the old metadata revision check;
+        // native notification must evict the red pixels and paint blue pixels.
+        let blue = crate::pdf_engine::fixture::pdf(&[(300., 300., [0., 0., 1.])]);
+        assert_eq!(blue.len(), one.len());
+        let stamp = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let replacement = dir.path().join("same-count.tmp");
+        std::fs::write(&replacement, &blue).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&replacement)
+            .unwrap()
+            .set_modified(stamp)
+            .unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::rename(&replacement, &path).unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), stamp);
+        settle(visual, &reader, |r, cx, _| {
+            let pdf = r.pdf_viewer().unwrap().read(cx);
+            pdf.page_count() == Some(1)
+                && pdf.cached_page_image(0).is_some_and(|image| {
+                    image.id != old_image.id && center_pixel(&image) == [255, 0, 0, 255]
+                })
+        });
+        visual.update(|window, _| {
+            assert!(
+                !window.has_image_atlas_entry(&old_image),
+                "replaced PDF pixels leave atlas"
             );
         });
         std::fs::write(&path, b"corrupt incoming PDF").unwrap();
