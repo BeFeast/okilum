@@ -8,7 +8,8 @@ The last layout must have the current source stamp. Resolve the source caret
 through that layout's projection, locate its shaped row using both wrap and bidi
 affinity, and map the row boundary back through the same projection. Home uses
 Before affinity (the first grapheme); End uses After affinity (the last grapheme)
-and end-of-wrap affinity. A missing/stale layout retains the existing fallback.
+and end-of-wrap affinity. Source mapping includes concealed boundary markers:
+Home uses left conceal bias; End uses right conceal bias. A missing/stale layout retains the existing fallback.
 No new shaping, bidi selection geometry, or paragraph-direction policy is added.
 
 The original reproduction was measured by typing a character after Home. On the

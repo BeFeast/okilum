@@ -15,7 +15,7 @@
 +                let pos = line.position_for_caret(displayed - start, last,
 +                    self.cursor_line_end_affinity, self.cursor_bidi_affinity)?;
 +                let (index, wrap, affinity) = line.logical_row_boundary(pos, last, end)?;
-+                let bias = if end { ConcealBias::Left } else { ConcealBias::Right };
++                let bias = if end { ConcealBias::Right } else { ConcealBias::Left };
 +                return Some((last.source(start + index, bias)?, wrap, affinity));
 +            }
 +        }
