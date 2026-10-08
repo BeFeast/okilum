@@ -105,8 +105,17 @@ impl Reader {
         }
         self.shared_session = Some(session);
         self.sync_shared_session(window, cx);
+        // Preserve explicit intent through the shared-session restore lifecycle.
+        if let Some(load) = &mut self.loading {
+            load.opts.note = Some(note.clone());
+        }
         reader_open::register(cx.entity().downgrade(), self.vault_root.clone(), cx);
         self.open_note(&note, None, window, cx);
+        // Markdown restores after asynchronous publication; previews/empty views
+        // are ready synchronously. The store restore is idempotent per root.
+        if note.is_empty() || self.file_preview.is_some() {
+            self.restore_ui_state(window, cx);
+        }
     }
 
     fn sync_shared_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {

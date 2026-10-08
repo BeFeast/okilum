@@ -25,3 +25,22 @@ independent navigation, external edit visible in both windows, close the first
 window during changes, and open a different vault. Repeat native handler/shortcut
 checks on macOS and Windows. Linux diagnostics:
 `~/.local/state/tessera/reader-diagnostic.log` (or absolute `$XDG_STATE_HOME`).
+
+## Window state integration (#592)
+
+New Window snapshots the initiating Reader before attaching the shared vault.
+The explicit document intent survives attachment; the existing store restores
+layout/history/scroll once the document is ready. Appearance, font size and
+reading width remain application preferences. Subsequent navigation and scrolling
+are independent, and the active sibling owns persisted viewport state. This does
+not add durable multi-window relaunch or change the preference schema.
+
+A duplicate retains its source window size and display, with a 28 px cascade.
+At work-area edges the position wraps to the visible origin; an oversized window
+is fitted to the work area. Explicit duplication does not restore a saved slot's
+maximized/fullscreen state. Normal launch still restores saved geometry.
+
+Acceptance also covers light/dark Linux before/after, duplicate geometry near
+screen edges and on a secondary display, explicit note versus an older empty
+selection, global preference refresh in both windows, and independent history
+and scroll after duplication.

@@ -1943,6 +1943,9 @@ impl Reader {
         if let Some(position) = request.restore_position {
             self.scroll_to_position(position, cx);
         }
+        if self.shared_session.is_some() {
+            self.restore_ui_state(window, cx);
+        }
         cx.notify();
     }
 

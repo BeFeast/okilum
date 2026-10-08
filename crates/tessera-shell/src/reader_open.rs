@@ -592,7 +592,7 @@ pub(crate) fn open_window(mut opts: super::Opts, cx: &mut App) -> Result<()> {
         cx.update(|cx| match resolved {
             Ok(opts) => {
                 if !focus_existing(&opts, cx) {
-                    if let Err(error) = create_window(opts, None, cx) {
+                    if let Err(error) = create_window(opts, None, None, cx) {
                         show_error(format!("{error:#}"), cx);
                     }
                 }
@@ -657,13 +657,16 @@ fn focus_existing(opts: &super::Opts, cx: &mut App) -> bool {
 fn create_window(
     opts: super::Opts,
     shared: Option<super::reader_session::Shared>,
+    duplicate_options: Option<WindowOptions>,
     cx: &mut App,
 ) -> Result<()> {
     let _phase = super::reader_diagnostics::phase(cx, "native_window_open");
     let _key_phase = super::reader_diagnostics::phase(cx, "window_key_and_geometry");
     let key = super::window_state::reader_key(&opts);
     super::reader_ui_state::guard_window_root(&key, cx);
-    let (options, frame_key) = super::window_state::prepare(window_options(cx), &key, cx);
+    let (restored_options, frame_key) = super::window_state::prepare(window_options(cx), &key, cx);
+    let duplicate = duplicate_options.is_some();
+    let options = duplicate_options.unwrap_or(restored_options);
     drop(_key_phase);
     cx.open_window(options, |window, cx| {
         super::sync_appearance(window, cx);
@@ -702,7 +705,7 @@ fn create_window(
             .unwrap_or(true)
         });
         let root = cx.new(|cx| Root::new(reader, window, cx));
-        super::window_state::track(&root, frame_key, window, cx);
+        super::window_state::track_with_restore(&root, frame_key, !duplicate, window, cx);
         root
     })?;
     super::reader_startup::supersede(cx);
@@ -723,7 +726,8 @@ fn new_window(cx: &mut App) {
         return;
     };
     cx.spawn(async move |cx| loop {
-        let outcome = source.update(cx, |reader, _| {
+        let outcome = source.update(cx, |reader, cx| {
+            reader.record_ui_state(true, cx);
             let opts = super::Opts {
                 vault: Some(reader.vault_root.clone()),
                 note: Some(reader.current_rel.clone()),
@@ -738,12 +742,19 @@ fn new_window(cx: &mut App) {
                 && !reader.incremental_active
                 && !reader.incremental_initializing
                 && !reader.watcher_poll_active;
-            (session.map(|session| (opts, session)), failed)
+            (
+                session.map(|session| (opts, session, reader.reader_window)),
+                failed,
+            )
         });
         match outcome {
-            Ok((Some((opts, session)), _)) => {
+            Ok((Some((opts, session, source_window)), _)) => {
                 cx.update(|cx| {
-                    if let Err(error) = create_window(opts, Some(session), cx) {
+                    let options = source_window.update(cx, |_, window, cx| {
+                        super::window_state::duplicate_options(window_options(cx), window, cx)
+                    });
+                    let Ok(options) = options else { return };
+                    if let Err(error) = create_window(opts, Some(session), Some(options), cx) {
                         show_error(format!("{error:#}"), cx);
                     }
                 });
@@ -1141,6 +1152,7 @@ mod entry_tests {
         cx.update(|cx| {
             gpui_component::init(cx);
             install(cx);
+            super::super::reader_ui_state::install(&fixture.path().join("ui-state"), cx);
             let opts = super::super::Opts {
                 vault: Some(root.clone()),
                 note: Some("a.md".into()),
@@ -1174,6 +1186,10 @@ mod entry_tests {
             handle
                 .update(cx, |_, window, _| window.activate_window())
                 .unwrap();
+            first.update(cx, |reader, _| {
+                reader.properties_open = true;
+                reader.recent_expanded = true;
+            });
             new_window(cx);
         });
         cx.run_until_parked();
@@ -1188,6 +1204,14 @@ mod entry_tests {
                 .upgrade()
                 .unwrap();
             assert_ne!(first.entity_id(), second.entity_id());
+            assert_eq!(second.read(cx).current_rel, "a.md");
+            assert!(
+                second.read(cx).properties_open,
+                "snapshot reaches duplicate restore"
+            );
+            assert!(second.read(cx).recent_expanded);
+            assert_eq!(second.read(cx).history, first.read(cx).history);
+
             assert!(std::sync::Arc::ptr_eq(
                 first.read(cx).shared_session.as_ref().unwrap(),
                 second.read(cx).shared_session.as_ref().unwrap()
@@ -1208,6 +1232,21 @@ mod entry_tests {
         cx.update(|cx| {
             assert_eq!(first.read(cx).current_rel, "a.md");
             assert_eq!(second.read(cx).current_rel, "b.md");
+            assert_eq!(first.read(cx).history, vec!["a.md".to_string()]);
+            assert_eq!(
+                second.read(cx).history,
+                vec!["a.md".to_string(), "b.md".to_string()]
+            );
+            second.update(cx, |reader, cx| reader.record_ui_state(true, cx));
+            first.update(cx, |reader, cx| reader.record_ui_state(false, cx));
+            let (saved, _) = super::super::reader_ui_state::layout(&root, cx).unwrap();
+            assert_eq!(
+                saved.note, "b.md",
+                "background sibling cannot overwrite active state"
+            );
+            super::super::reader_ui_state::set_reading(20., 960., cx);
+            assert_eq!(super::super::reader_ui_state::font_size(cx), 20.);
+            assert_eq!(super::super::reader_ui_state::reading_width(cx), 960.);
         });
         let (release, hold) = async_channel::bounded(1);
         std::fs::write(root.join("b.md"), "# Changed after first window closed\n").unwrap();

@@ -172,6 +172,43 @@ pub(crate) fn prepare(
     (options, Some(key_with_slot))
 }
 
+/// Explicit duplicates use the source display and size, never a restored slot's
+/// fullscreen/maximized state. Wrap at the work-area edge to keep them visible.
+pub(crate) fn duplicate_options(
+    mut options: WindowOptions,
+    source: &Window,
+    cx: &App,
+) -> WindowOptions {
+    if let Some(display) = source.display(cx) {
+        options.display_id = Some(display.id());
+        options.window_bounds = Some(WindowBounds::Windowed(cascade_bounds(
+            source.window_bounds().get_bounds(),
+            display.visible_bounds(),
+        )));
+    }
+    options
+}
+
+fn cascade_bounds(source: Bounds<Pixels>, visible: Bounds<Pixels>) -> Bounds<Pixels> {
+    let width = source.size.width.min(visible.size.width);
+    let height = source.size.height.min(visible.size.height);
+    let next = |position: Pixels, length: Pixels, start: Pixels, end: Pixels| {
+        let shifted = position + px(28.);
+        if shifted + length > end {
+            start
+        } else {
+            shifted.max(start)
+        }
+    };
+    Bounds::new(
+        point(
+            next(source.left(), width, visible.left(), visible.right()),
+            next(source.top(), height, visible.top(), visible.bottom()),
+        ),
+        size(width, height),
+    )
+}
+
 fn record(key: &str, window: &Window, cx: &mut App) {
     let bounds = window.window_bounds();
     let frame = bounds.get_bounds();
@@ -255,6 +292,19 @@ pub(crate) fn record_window(window: &Window, cx: &mut App) {
 }
 
 pub(crate) fn track(root: &Entity<Root>, key: Option<String>, window: &mut Window, cx: &mut App) {
+    track_with_restore(root, key, true, window, cx);
+}
+
+pub(crate) fn track_with_restore(
+    root: &Entity<Root>,
+    key: Option<String>,
+    restore: bool,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    #[cfg(not(target_os = "linux"))]
+    let _ = restore;
+
     let Some(key) = key else {
         return;
     };
@@ -266,7 +316,7 @@ pub(crate) fn track(root: &Entity<Root>, key: Option<String>, window: &mut Windo
     if let Some(frame) = super::reader_ui_state::window_frame(&key, cx)
         .or_else(|| cx.global::<State>().saved.frames.get(&key).cloned())
         .or_else(|| super::reader_ui_state::inherited_window_frame(&key, cx))
-        .filter(Frame::valid)
+        .filter(|frame| restore && frame.valid())
     {
         window.on_next_frame(move |window, _| {
             if frame.fullscreen {
@@ -295,6 +345,21 @@ pub(crate) fn track(root: &Entity<Root>, key: Option<String>, window: &mut Windo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn duplicate_cascades_on_its_display_and_wraps_at_work_area_edges() {
+        let visible = Bounds::new(point(px(1920.), px(24.)), size(px(1600.), px(1000.)));
+        let source = Bounds::new(point(px(2000.), px(80.)), size(px(800.), px(600.)));
+        let duplicate = cascade_bounds(source, visible);
+        assert_eq!(duplicate.size, source.size);
+        assert_eq!(duplicate.origin, point(px(2028.), px(108.)));
+        let edge = Bounds::new(point(px(2720.), px(424.)), source.size);
+        let wrapped = cascade_bounds(edge, visible);
+        assert_eq!(wrapped.size, source.size);
+        assert_eq!(wrapped.origin, visible.origin);
+        assert_eq!(cascade_bounds(visible, visible), visible);
+    }
+
     #[gpui::test]
     fn restores_saved_display_slots_and_flushes_latest_state(cx: &mut gpui::TestAppContext) {
         let directory =
