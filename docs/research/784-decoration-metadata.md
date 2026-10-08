@@ -73,3 +73,17 @@ vendor patch stack is verified before native builds.
 Remaining acceptance: editing-executor seam review, broader S3a mouse-up/gesture
 acceptance and Mac QA after publication. The measured click/drag result above is
 limited to the fixture and does not claim completion of S3a. #588 stays paused.
+
+### PR review: marker repaint cost
+
+Marker-free, missing-pin, stale-pin and unsupported-alignment paths return before
+reading canonical bytes or segmenting graphemes. Prepaint reuses the pinned
+immutable source Arc. A per-editor, single-entry cache retains exact-source
+validation and grapheme boundaries for that source identity and Arc; it never
+caches reveal decisions or row geometry. A new Arc is checked against the Rope
+without allocating a String before being admitted. Paint only checks the canonical
+source generation, which also advances for silent IME mutations, against the
+prepaint snapshot; it never copies or scans the document or queries a provider.
+The cache regression includes a positive source-read control, panicking readers
+on zero-work paths, pointer identity for reused boundaries, and wrong-byte
+rejection despite an equal stamp. Existing per-row cluster/grapheme checks remain.

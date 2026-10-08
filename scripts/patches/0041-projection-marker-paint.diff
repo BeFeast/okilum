@@ -36,37 +36,47 @@
  }
  
  pub(super) struct PrepaintState {
-+    marker_source: super::projection::SourceSnapshot,
++    marker_source: Option<std::sync::Arc<super::marker_paint::MarkerSource>>,
 +    marker_rows: Vec<Vec<Option<super::marker_paint::RowPaint>>>,
      /// The lines of entire lines.
      last_layout: LastLayout,
      /// The lines only contains the visible lines in the viewport, based on `visible_range`.
-@@ -2262,7 +2264,14 @@
+@@ -2262,7 +2264,21 @@
  
          trace.current(TraceIdentity::new(last_layout.source_stamp, last_layout.presentation_epoch, last_layout.projection.is_some()));
          trace.counts([last_layout.visible_buffer_lines.len() as u64, last_layout.lines.len() as u64, 0, 0]);
 +        let state = self.state.read(cx);
-+        let marker_source = super::projection::SourceSnapshot {
-+            stamp: state.source_stamp(), text: state.text.to_string().into(),
-+        };
-+        let marker_rows = super::marker_paint::prepare(&last_layout, &marker_source, &state.projection.active);
++        let marker_source = super::marker_paint::source_for_markers(
++            last_layout.projection.as_ref(),
++            super::projection::LayoutStamp { source: last_layout.source_stamp, presentation: last_layout.presentation_epoch },
++            state.source_stamp(),
++            last_layout.text_align == TextAlign::Left,
++            &state.marker_source_cache,
++            |text| state.text == text,
++        );
++        let marker_rows = marker_source.as_ref().map(|source|
++            super::marker_paint::prepare(&last_layout, source, &state.projection.active)
++        ).unwrap_or_default();
          PrepaintState {
 +            marker_source,
 +            marker_rows,
              bounds,
              last_layout,
              scroll_size,
-@@ -2296,6 +2305,9 @@
+@@ -2296,6 +2312,12 @@
          let layout = &prepaint.last_layout;
          let mut trace = TraceSpan::new("editor_paint", TraceIdentity::new(layout.source_stamp, layout.presentation_epoch, layout.projection.is_some()));
          let current = self.state.read(cx);
-+        let marker_source_matches = current.source_stamp() == prepaint.marker_source.stamp
-+            && current.text.to_string().as_str() == prepaint.marker_source.text.as_ref();
++        // Prepaint checked exact bytes against its immutable pin. Every canonical
++        // mutation (including silent IME) advances source_stamp; paint needs no
++        // second full-buffer copy or scan and never asks a fresh provider.
++        let marker_source_matches = prepaint.marker_source.as_ref()
++            .is_some_and(|source| current.source_stamp() == source.snapshot.stamp);
 +
          trace.current(TraceIdentity::new(current.source_stamp(), current.presentation_epoch(), current.projection.current.is_some()));
          trace.counts([layout.visible_buffer_lines.len() as u64, layout.lines.len() as u64, 0, 0]);
          let (focus_handle, show_cursor, disabled, selected_range, editor_style, editor_paddings) = {
-@@ -2447,11 +2459,11 @@
+@@ -2447,11 +2469,11 @@
          // Track the y-position of the cursor row for positioning the first line suffix
          let mut cursor_row_y = None;
  
@@ -80,7 +90,7 @@
          {
              let row = buffer_line;
              let line_y = origin.y + offset_y;
-@@ -2460,15 +2472,21 @@
+@@ -2460,15 +2482,21 @@
                  line_y,
              );
  
@@ -113,17 +123,18 @@
              if Some(row) == prepaint.current_row {
 --- /dev/null
 +++ b/crates/base/src/input/base/marker_paint.rs
-@@ -0,0 +1,303 @@
+@@ -0,0 +1,504 @@
 +//! Paint-only consumer of one prepaint's immutable projection and visual rows.
 +use super::layout::LastLayout;
 +use crate::input::projection::{
-+    ActiveSource, ConcealBias, LayoutStamp, MarkerKind, SourceSnapshot,
++    ActiveSource, ConcealBias, LayoutStamp, MarkerKind, PinnedProjection, SourceSnapshot,
++    SourceStamp,
 +};
 +use gpui::{
 +    App, BorderStyle, Bounds, Edges, Hsla, Pixels, Point, ShapedLine, TextAlign, Window, fill,
 +    point, px, quad, size, transparent_black,
 +};
-+use std::ops::Range;
++use std::{cell::RefCell, ops::Range, sync::Arc};
 +use unicode_segmentation::UnicodeSegmentation;
 +
 +pub(super) struct RowPaint {
@@ -136,27 +147,73 @@
 +    kind: MarkerKind,
 +}
 +
++pub(super) struct MarkerSource {
++    pub(super) snapshot: SourceSnapshot,
++    boundaries: Vec<usize>,
++}
++
++/// Check cheap inventory/identity guards before touching canonical bytes. Reuse
++/// the exact immutable source already owned by this prepaint's pin.
++pub(super) fn source_for_markers(
++    pin: Option<&PinnedProjection>,
++    layout: LayoutStamp,
++    current: SourceStamp,
++    aligned: bool,
++    cache: &RefCell<Option<Arc<MarkerSource>>>,
++    matches_source: impl FnOnce(&str) -> bool,
++) -> Option<Arc<MarkerSource>> {
++    let pin = pin?;
++    if !aligned
++        || pin.stamp != layout
++        || layout.source != current
++        || pin.projection.markers().is_empty()
++    {
++        return None;
++    }
++    let source = pin.projection.source();
++    if source.stamp != current {
++        return None;
++    }
++    if let Some(cached) = cache.borrow().as_ref() {
++        // The session verifies provider bytes on compose; retain a separate
++        // exact-byte check here before admitting a new immutable source Arc.
++        if cached.snapshot.stamp == current && Arc::ptr_eq(&cached.snapshot.text, &source.text) {
++            return Some(cached.clone());
++        }
++    }
++    if !matches_source(&source.text) {
++        return None;
++    }
++    let validated = Arc::new(MarkerSource {
++        snapshot: source.clone(),
++        boundaries: source
++            .text
++            .grapheme_indices(true)
++            .map(|(i, _)| i)
++            .chain(std::iter::once(source.text.len()))
++            .collect(),
++    });
++    *cache.borrow_mut() = Some(validated.clone());
++    Some(validated)
++}
++
 +pub(super) fn prepare(
 +    layout: &LastLayout,
-+    current: &SourceSnapshot,
++    validated: &MarkerSource,
 +    safety: &ActiveSource,
 +) -> Vec<Vec<Option<RowPaint>>> {
 +    let Some(pin) = &layout.projection else {
 +        return vec![];
 +    };
-+    if layout.text_align != TextAlign::Left {
++    if layout.text_align != TextAlign::Left || pin.projection.markers().is_empty() {
 +        return vec![];
 +    }
 +    let stamp = LayoutStamp {
 +        source: layout.source_stamp,
 +        presentation: layout.presentation_epoch,
 +    };
-+    let boundaries: Vec<_> = current
-+        .text
-+        .grapheme_indices(true)
-+        .map(|(i, _)| i)
-+        .chain(std::iter::once(current.text.len()))
-+        .collect();
++    let current = &validated.snapshot;
++    let boundaries = &validated.boundaries;
 +    let mut markers = Vec::new();
 +    for marker in pin.projection.markers() {
 +        if marker.range.start.0 >= marker.range.end.0
@@ -417,3 +474,175 @@
 +    }
 +    Some(pieces)
 +}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::input::projection::*;
++    use std::{cell::Cell, sync::Arc};
++
++    struct Fixture {
++        source: SourceSnapshot,
++        markers: Vec<ProjectionMarker>,
++    }
++    impl SourceProjection for Fixture {
++        fn source(&self) -> &SourceSnapshot {
++            &self.source
++        }
++        fn text(&self) -> &str {
++            &self.source.text
++        }
++        fn styles(&self) -> &[ProjectionStyle] {
++            &[]
++        }
++        fn markers(&self) -> &[ProjectionMarker] {
++            &self.markers
++        }
++        fn to_projected(&self, b: SourceByte, _: ConcealBias) -> Option<ProjectedByte> {
++            Some(ProjectedByte(b.0))
++        }
++        fn to_source(&self, b: ProjectedByte, _: ConcealBias) -> Option<SourceByte> {
++            Some(SourceByte(b.0))
++        }
++    }
++
++    #[test]
++    fn marker_inventory_gates_source_access_and_reuses_exact_snapshot() {
++        let cache = RefCell::new(None);
++        let stamp = SourceStamp {
++            document: 1,
++            generation: 2,
++        };
++        let layout = LayoutStamp {
++            source: stamp,
++            presentation: 3,
++        };
++        let source = SourceSnapshot {
++            stamp,
++            text: Arc::from("- item\n"),
++        };
++        let pin = |markers| PinnedProjection {
++            stamp: layout,
++            projection: Arc::new(Fixture {
++                source: source.clone(),
++                markers,
++            }),
++        };
++        let absent = pin(vec![]);
++        let present = pin(vec![ProjectionMarker {
++            range: SourceByte(0)..SourceByte(1),
++            scope: SourceByte(0)..SourceByte(6),
++            kind: MarkerKind::Bullet { depth: 1 },
++        }]);
++        for candidate in [None, Some(&absent)] {
++            assert!(
++                source_for_markers(candidate, layout, stamp, true, &cache, |_| panic!(
++                    "empty inventory must not read source"
++                ))
++                .is_none()
++            );
++        }
++        let stale = SourceStamp {
++            generation: 4,
++            ..stamp
++        };
++        assert!(
++            source_for_markers(Some(&present), layout, stale, true, &cache, |_| panic!(
++                "stale pin must not read source"
++            ))
++            .is_none()
++        );
++        assert!(
++            source_for_markers(Some(&present), layout, stamp, false, &cache, |_| panic!(
++                "unsupported alignment must not read source"
++            ))
++            .is_none()
++        );
++        let calls = Cell::new(0);
++        let captured = source_for_markers(Some(&present), layout, stamp, true, &cache, |text| {
++            calls.set(calls.get() + 1);
++            text == "- item\n"
++        })
++        .unwrap();
++        let reused = source_for_markers(Some(&present), layout, stamp, true, &cache, |_| {
++            panic!("unchanged snapshot must not scan source")
++        })
++        .unwrap();
++        assert!(
++            Arc::ptr_eq(&captured, &reused),
++            "reuse grapheme boundaries too"
++        );
++        assert_eq!(calls.get(), 1, "positive control must check exact bytes");
++        let foreign = PinnedProjection {
++            stamp: layout,
++            projection: Arc::new(Fixture {
++                source: SourceSnapshot {
++                    stamp,
++                    text: Arc::from("- wrong bytes"),
++                },
++                markers: present.projection.markers().to_vec(),
++            }),
++        };
++        assert!(
++            source_for_markers(Some(&foreign), layout, stamp, true, &cache, |text| text
++                == "- item\n")
++            .is_none()
++        );
++        let revised_layout = LayoutStamp {
++            source: stale,
++            ..layout
++        };
++        let revised = PinnedProjection {
++            stamp: revised_layout,
++            projection: Arc::new(Fixture {
++                source: SourceSnapshot {
++                    stamp: stale,
++                    text: source.text.clone(),
++                },
++                markers: present.projection.markers().to_vec(),
++            }),
++        };
++        let new_revision =
++            source_for_markers(Some(&revised), revised_layout, stale, true, &cache, |_| {
++                calls.set(calls.get() + 1);
++                true
++            })
++            .unwrap();
++        assert_eq!(calls.get(), 2, "new source generation must revalidate");
++        assert!(!Arc::ptr_eq(&captured, &new_revision));
++        assert!(
++            Arc::ptr_eq(&captured.snapshot.text, &source.text),
++            "reuse allocation"
++        );
++        assert!(
++            source_for_markers(
++                Some(&present),
++                layout,
++                stamp,
++                true,
++                &RefCell::new(None),
++                |_| false
++            )
++            .is_none(),
++            "equal stamp cannot admit wrong bytes"
++        );
++    }
++}
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -315,6 +315,7 @@
+     pub(super) mode: LayoutMode,
+     pub(super) text: Rope,
+     pub(super) projection: ProjectionSession,
++    pub(super) marker_source_cache: std::cell::RefCell<Option<std::sync::Arc<super::marker_paint::MarkerSource>>>,
+     exact_clipboard: ClipboardSession,
+     pub(super) projection_pending_click: Option<(MouseDownEvent, bool)>,
+     pub(super) projection_pending_vertical: Option<super::movement::PendingVertical>,
+@@ -659,6 +660,7 @@
+             focus_handle: focus_handle.clone(),
+             text: "".into(),
+             projection: ProjectionSession::default(),
++            marker_source_cache: Default::default(),
+             exact_clipboard: ClipboardSession::default(),
+             projection_pending_click: None,
+             projection_pending_vertical: None,
