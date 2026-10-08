@@ -13,7 +13,21 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 30
     steps:
+      - name: Keep checkout and vendor patches in LF format
+        shell: bash
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
       - uses: actions/checkout@v4
+      - name: Diagnose patch line endings
+        shell: bash
+        run: |
+          git config --show-origin core.autocrlf
+          git ls-files --eol scripts/patches
+          if LC_ALL=C grep -l $'\r' scripts/patches/*.diff; then
+            echo '::error::CRLF detected in vendor patches; checkout must preserve LF'
+            exit 1
+          fi
       - run: bash scripts/vendor-setup.sh
       - shell: pwsh
         env: {PKG: '${{ inputs.package }}', FEATURES: '${{ inputs.features }}', FILTER: '${{ inputs.test-filter }}'}

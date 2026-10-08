@@ -47,6 +47,12 @@ if [ "$have_rev" != "$REPO_REV" ]; then
     git -C "$VENDOR" checkout --quiet "$REPO_REV"
 fi
 
+# Patch context must be LF even on Windows Git installations using autocrlf.
+if LC_ALL=C grep -q $'\r' "$VENDOR/crates/base/src/text/selection_adapter.rs"; then
+    echo "vendor-setup: CRLF detected in selection_adapter.rs; set core.autocrlf=false and core.eol=lf before checkout/clone" >&2
+    exit 1
+fi
+
 # Verify the cumulative patch result in a disposable index. Later patches may
 # intentionally refine lines introduced by earlier ones, so independently
 # reverse-checking each diff is not sufficient. The working tree is never changed.

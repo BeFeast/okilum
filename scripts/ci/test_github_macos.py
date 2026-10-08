@@ -1,4 +1,7 @@
 import copy
+import http.client
+import socket
+from unittest.mock import MagicMock, patch
 import importlib.util
 import os
 from pathlib import Path
@@ -197,3 +200,33 @@ class BridgeTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TransportRetryTests(unittest.TestCase):
+    def test_socket_errors_retry_real_request_and_recover(self):
+        errors = [http.client.RemoteDisconnected('sensitive reason'),
+                  ConnectionResetError('sensitive reason'),
+                  socket.timeout('sensitive reason'),
+                  bridge.urllib.error.URLError(socket.timeout('sensitive reason'))]
+        for error in errors:
+            with self.subTest(error=type(error).__name__):
+                response = MagicMock()
+                response.__enter__.return_value.read.return_value = b'{"workflow_runs": []}'
+                delays = []
+                with patch.object(bridge.urllib.request, 'urlopen',
+                                  side_effect=[error, response]) as request:
+                    self.assertEqual(bridge.hosted_request(bridge.GitHub('secret'),
+                                     'actions/runs', sleep=delays.append), {'workflow_runs': []})
+                self.assertEqual(request.call_count, 2)
+                self.assertEqual(delays, [5])
+
+    def test_disconnect_while_reading_exhausts_existing_retry_budget(self):
+        response = MagicMock()
+        response.__enter__.return_value.read.side_effect = http.client.RemoteDisconnected('secret')
+        delays = []
+        with patch.object(bridge.urllib.request, 'urlopen', return_value=response) as request:
+            with self.assertRaises(bridge.Unavailable) as raised:
+                bridge.hosted_request(bridge.GitHub('secret'), 'actions/runs', sleep=delays.append)
+        self.assertEqual(request.call_count, 3)
+        self.assertEqual(delays, [5, 10])
+        self.assertNotIn('secret', str(raised.exception))
