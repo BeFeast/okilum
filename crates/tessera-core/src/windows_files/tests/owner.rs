@@ -465,19 +465,81 @@ fn windows_save_owner_fallback_refuses_effective_access_loss_before_publication(
 
 #[test]
 fn windows_save_administrators_owner_preserves_inherited_and_explicit_dacl() {
-    use windows_sys::Win32::Security::{INHERITED_ACE, UNPROTECTED_DACL_SECURITY_INFORMATION};
-    let fixture = Fixture::new();
-    let path = fixture.source("note.md", "base");
-    let sd = descriptor(&format!("D:(A;;FA;;;{})(A;;FR;;;OW)", fixture.sid_text));
-    assert_ne!(
-        unsafe {
-            SetFileSecurityW(
-                wide(&path).unwrap().as_ptr(),
-                DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION,
-                sd.0,
+    use windows_sys::Win32::Security::{
+        Authorization::SetNamedSecurityInfoW, GetSecurityDescriptorOwner, CONTAINER_INHERIT_ACE,
+        INHERITED_ACE, OBJECT_INHERIT_ACE, UNPROTECTED_DACL_SECURITY_INFORMATION,
+    };
+    fn set_named_security(path: &Path, sddl: &str, protection: u32) {
+        let sd = descriptor(sddl);
+        let mut owner = std::ptr::null_mut();
+        let mut dacl = std::ptr::null_mut();
+        let mut present = 0;
+        let mut defaulted = 0;
+        assert_ne!(
+            unsafe { GetSecurityDescriptorOwner(sd.0, &mut owner, &mut defaulted) },
+            0
+        );
+        assert_ne!(
+            unsafe { GetSecurityDescriptorDacl(sd.0, &mut present, &mut dacl, &mut defaulted) },
+            0
+        );
+        assert_ne!(present, 0);
+        assert!(!owner.is_null() && !dacl.is_null());
+        let status = unsafe {
+            SetNamedSecurityInfoW(
+                wide(path).unwrap().as_ptr(),
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION | protection,
+                owner,
+                std::ptr::null_mut(),
+                dacl,
+                std::ptr::null(),
             )
-        },
-        0
+        };
+        assert_eq!(status, 0, "fixture named security: {status}");
+    }
+    let fixture = Fixture::new();
+    let parent = fixture.root.join("inheriting");
+    fs::create_dir(&parent).unwrap();
+    // SetFileSecurityW does not perform automatic inheritance processing.
+    // Own the parent grants and use the inheritance-aware API, independent of
+    // the runner's temp-directory ACL or protection policy.
+    set_named_security(
+        &parent,
+        &format!(
+            "O:{}D:P(A;OICI;FA;;;{})(A;OICI;FR;;;SY)",
+            fixture.sid_text, fixture.sid_text
+        ),
+        PROTECTED_DACL_SECURITY_INFORMATION,
+    );
+    let parent_permissions = permissions(&parent);
+    let inherit = (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE) as u8;
+    assert!(parent_permissions.dacl_protected);
+    assert_eq!(parent_permissions.aces.as_ref().unwrap().len(), 2);
+    assert!(
+        parent_permissions
+            .aces
+            .as_ref()
+            .unwrap()
+            .iter()
+            .all(|ace| ace[1] & inherit == inherit),
+        "parent OI/CI ACE positive control"
+    );
+    let path = parent.join("note.md");
+    fs::write(&path, "base").unwrap();
+    assert!(
+        permissions(&path)
+            .aces
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|ace| ace[1] & INHERITED_ACE as u8 != 0),
+        "new child inherited ACE positive control"
+    );
+    set_named_security(
+        &path,
+        "O:BAD:(A;;FR;;;OW)",
+        UNPROTECTED_DACL_SECURITY_INFORMATION,
     );
     let before = permissions(&path);
     assert_eq!(before.owner, fixture.admin);
@@ -491,9 +553,10 @@ fn windows_save_administrators_owner_preserves_inherited_and_explicit_dacl() {
         aces.iter().any(|ace| ace[1] & INHERITED_ACE as u8 == 0),
         "explicit ACE positive control"
     );
+    println!("Windows inheritance fixture: parent OI/CI grants verified; child has inherited and explicit ACEs with unprotected DACL");
     let _limited = fixture.impersonate();
     assert_access_and_dacl(&path, &before);
-    let directory = Directory::open(&fixture.root).unwrap();
+    let directory = Directory::open(&parent).unwrap();
     let plan = directory
         .prepare_replace(OsStr::new("note.md"), b"base", b"mine")
         .unwrap()
