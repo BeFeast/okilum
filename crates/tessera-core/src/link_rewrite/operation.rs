@@ -4,7 +4,7 @@ use crate::{
     file_editor::{EditorLock, FileEditor, Save},
     note_move::MovePlan,
 };
-use std::{fs::File, io::Write, path::PathBuf};
+use std::path::PathBuf;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Operation {
@@ -45,14 +45,14 @@ impl Operation {
     fn persist(&self, path: &Path) -> Result<()> {
         let parent = path.parent().context("Missing operation directory")?;
         fs::create_dir_all(parent)?;
-        let mut file = tempfile::NamedTempFile::new_in(parent)?;
-        serde_json::to_writer(&mut file, self)?;
-        file.flush()?;
-        file.as_file().sync_all()?;
-        file.persist(path).map_err(|e| e.error)?;
-        File::open(parent)?.sync_all()?;
-        if let Some(directory) = parent.parent() {
-            File::open(directory)?.sync_all()?;
+        crate::source_state::persist(path, &serde_json::to_vec(self)?)?;
+        #[cfg(unix)]
+        {
+            use std::fs::File;
+            File::open(parent)?.sync_all()?;
+            if let Some(directory) = parent.parent() {
+                File::open(directory)?.sync_all()?;
+            }
         }
         Ok(())
     }

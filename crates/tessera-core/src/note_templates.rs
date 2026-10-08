@@ -1,14 +1,18 @@
 //! Ordinary-note templates compatible with Obsidian's template folder/variables.
 use anyhow::{ensure, Context, Result};
+#[cfg(unix)]
 use rustix::{
     fd::OwnedFd,
     fs::{open, openat, Dir, Mode, OFlags},
 };
+#[cfg(unix)]
+use std::fs::File;
 use std::{
-    fs::File,
     io::Read,
     path::{Component, Path, PathBuf},
 };
+#[cfg(windows)]
+type OwnedFd = crate::windows_files::Directory;
 use time::OffsetDateTime;
 
 pub const DEFAULT_FOLDER: &str = "_Assets/Templates";
@@ -46,40 +50,79 @@ fn open_folder(root: &Path, relative: &Path) -> Result<Option<OwnedFd>> {
             .all(|p| matches!(p, Component::Normal(_))),
         "Templates folder must be inside the vault"
     );
-    let mut fd = open(
-        root,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )?;
-    for part in relative.components() {
-        fd = match openat(
-            &fd,
-            part.as_os_str(),
+    #[cfg(windows)]
+    {
+        let mut folder = crate::windows_files::Directory::open(root)?;
+        for part in relative.components() {
+            let path = folder.path().join(part.as_os_str());
+            folder = match crate::windows_files::Directory::open(&path) {
+                Ok(folder) => folder,
+                Err(error)
+                    if error
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
+                {
+                    return Ok(None)
+                }
+                Err(error) => {
+                    return Err(error).context("Templates require real folders, not symbolic links")
+                }
+            };
+        }
+        Ok(Some(folder))
+    }
+    #[cfg(unix)]
+    {
+        let mut fd = open(
+            root,
             OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?;
+        for part in relative.components() {
+            fd = match openat(
+                &fd,
+                part.as_os_str(),
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            ) {
+                Ok(fd) => fd,
+                Err(rustix::io::Errno::NOENT) => return Ok(None),
+                Err(error) => {
+                    return Err(error).context("Templates require real folders, not symbolic links")
+                }
+            };
+        }
+        Ok(Some(fd))
+    }
+}
+
+fn read_file(folder: &OwnedFd, name: &str) -> Result<Option<String>> {
+    #[cfg(windows)]
+    let file = match folder.open_file(std::ffi::OsStr::new(name)) {
+        Ok(file) => file,
+        Err(error)
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            return Ok(None)
+        }
+        Err(error) => return Err(error).with_context(|| format!("Cannot read {name}")),
+    };
+    #[cfg(unix)]
+    let file = {
+        let fd = match openat(
+            folder,
+            name,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
             Mode::empty(),
         ) {
             Ok(fd) => fd,
             Err(rustix::io::Errno::NOENT) => return Ok(None),
-            Err(error) => {
-                return Err(error).context("Templates require real folders, not symbolic links")
-            }
+            Err(error) => return Err(error).with_context(|| format!("Cannot read {name}")),
         };
-    }
-    Ok(Some(fd))
-}
-
-fn read_file(folder: &OwnedFd, name: &str) -> Result<Option<String>> {
-    let fd = match openat(
-        folder,
-        name,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
-        Mode::empty(),
-    ) {
-        Ok(fd) => fd,
-        Err(rustix::io::Errno::NOENT) => return Ok(None),
-        Err(error) => return Err(error).with_context(|| format!("Cannot read {name}")),
+        File::from(fd)
     };
-    let file = File::from(fd);
     ensure!(
         file.metadata()?.is_file(),
         "{name} must be a regular UTF-8 file"
@@ -121,13 +164,37 @@ impl Catalog {
         };
         let mut files = Vec::new();
         if let Some(fd) = open_folder(root, &folder)? {
+            #[cfg(windows)]
+            for item in std::fs::read_dir(fd.path())? {
+                let item = item?;
+                let Some(name) = item.file_name().to_str().map(str::to_owned) else {
+                    continue;
+                };
+                if name.starts_with("._")
+                    || !Path::new(&name)
+                        .extension()
+                        .is_some_and(|e| e.eq_ignore_ascii_case("md"))
+                {
+                    continue;
+                }
+                match fd.open_file(std::ffi::OsStr::new(&name)) {
+                    Ok(_) => files.push(name),
+                    Err(error) if name.eq_ignore_ascii_case("Note.md") => {
+                        return Err(error)
+                            .context("Note.md must be a regular resident template file")
+                    }
+                    Err(_) => {}
+                }
+            }
+            #[cfg(unix)]
             for item in Dir::read_from(&fd)? {
                 let item = item?;
                 let Some(name) = item.file_name().to_str().ok() else {
                     continue;
                 };
                 if name == "Note.md"
-                    || (cfg!(target_os = "macos") && name.eq_ignore_ascii_case("Note.md"))
+                    || (cfg!(any(target_os = "macos", windows))
+                        && name.eq_ignore_ascii_case("Note.md"))
                 {
                     ensure!(
                         item.file_type() == rustix::fs::FileType::RegularFile,
@@ -158,14 +225,15 @@ impl Catalog {
             .iter()
             .find(|name| {
                 *name == "Note.md"
-                    || (cfg!(target_os = "macos") && name.eq_ignore_ascii_case("Note.md"))
+                    || (cfg!(any(target_os = "macos", windows))
+                        && name.eq_ignore_ascii_case("Note.md"))
             })
             .cloned()
     }
 
     pub fn contains_target(&self, target: &Path) -> bool {
         target.starts_with(&self.folder)
-            || (cfg!(target_os = "macos")
+            || (cfg!(any(target_os = "macos", windows))
                 && target
                     .to_string_lossy()
                     .to_lowercase()
@@ -260,7 +328,7 @@ fn moment(mut format: &str, now: OffsetDateTime) -> Option<String> {
     Some(out)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     #[test]

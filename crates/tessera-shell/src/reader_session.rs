@@ -11,7 +11,7 @@ struct Published {
     vault: Arc<Vault>,
     searcher: Arc<Searcher>,
     tasks: Arc<tessera_core::tasks::Index>,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     candidates: Option<Arc<tessera_core::link_rewrite::CandidateIndex>>,
     titles: Arc<std::collections::HashMap<String, String>>,
     version: u64,
@@ -75,7 +75,7 @@ impl Reader {
                 vault: self.vault.clone(),
                 searcher,
                 tasks: self.tasks_index.clone().unwrap_or_default(),
-                #[cfg(unix)]
+                #[cfg(any(unix, windows))]
                 candidates: self.move_index.clone(),
                 titles: self.backlink_titles.clone(),
                 version: 1,
@@ -174,7 +174,7 @@ impl Reader {
         self.vault = published.vault;
         self.searcher = Some(published.searcher);
         self.tasks_index = Some(published.tasks);
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             self.move_index = published.candidates;
         }
@@ -214,7 +214,7 @@ impl Reader {
             vault: self.vault.clone(),
             searcher,
             tasks: self.tasks_index.clone().unwrap_or_default(),
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             candidates: self.move_index.clone(),
             titles: self.backlink_titles.clone(),
             version: shared.published.version.wrapping_add(1),
@@ -394,7 +394,7 @@ fn update(
     }
     published.vault = Arc::new(state.vault.clone());
     published.tasks = Arc::new(tasks);
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     {
         published.candidates = Some(state.candidates.clone());
     }

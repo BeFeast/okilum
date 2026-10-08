@@ -687,6 +687,7 @@ impl Reader {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+    #[cfg(unix)]
     use gpui_component::WindowExt;
 
     #[test]

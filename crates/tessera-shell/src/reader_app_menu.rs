@@ -4,7 +4,14 @@ use gpui::{App, KeyBinding, Menu, MenuItem};
 gpui::actions!(tessera, [Quit]);
 
 pub(crate) fn install(cx: &mut App) {
-    cx.on_action(|_: &Quit, cx| cx.quit());
+    cx.on_action(|_: &Quit, cx| {
+        // Defer until the dispatching Reader releases its entity borrow.
+        cx.defer(|cx| {
+            if crate::reader_editor::save_all(cx) {
+                cx.quit();
+            }
+        });
+    });
     cx.bind_keys([KeyBinding::new("secondary-q", Quit, None)]);
     set_menus(cx);
 }

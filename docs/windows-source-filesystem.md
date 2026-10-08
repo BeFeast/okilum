@@ -1,9 +1,9 @@
 # Native Windows source filesystem (#765)
 
-This first slice adds NTFS primitives in `tessera_core::windows_files`. It does
-not enable Windows Reader editing or write access in the Reader/MCP protocol.
-The subsequent UI slice adapts the existing editor, drafts/history, conflicts,
-creation and rename flows to this backend; their Unix behavior stays intact.
+The backend slice (#776) added NTFS primitives in `tessera_core::windows_files`.
+The desktop integration (#765) adapts the shared editor, drafts/history,
+conflicts, creation and rename flows to those primitives. The Reader/MCP
+protocol remains read-only.
 
 A `Directory` pins every ancestor without DELETE sharing and refuses UNC,
 mapped network drives and non-NTFS volumes. Symlinks, junctions, unknown reparse
@@ -68,6 +68,46 @@ is not compared as a user permission; ACEs and inheritance protection must match
 Linux core clippy and Windows MSVC cross-clippy for the full package, including
 all test targets, supplement these tests; neither substitutes for their execution
 on Windows. The Unix rename integration test and inode assertion remain gated
-on Unix; portable search-update assertions still compile on Windows. UI remains
-disabled until the native backend is accepted and the common editor integration
-is reviewed.
+on Unix; portable search-update assertions also compile on Windows.
+
+## Desktop integration
+
+Windows uses the shared Edit source / Live Preview input, Ctrl+S, Ctrl+F,
+New note/folder and reviewed link-rewriting rename flows. Editing is restricted
+to the local NTFS backend; network and unsupported filesystems fail closed.
+A source editor records the original ancestry identities and pins and checks
+all ancestors for each operation. Pins are released between operations so an
+explicit folder move is possible; the next read/save refuses a replaced parent.
+Dirty drafts are persisted before any source validation or replacement failure.
+
+Exclusive sharing holds the editor journal lock until the last queued writer
+finishes. Generation checks serialize native same-volume draft publication,
+so a delayed write cannot supersede a newer draft or acknowledged save. Drafts
+and link-move/history records live in application state, outside the index.
+Before source mutation, history records both prepared and preimage paths.
+Prepared recovery bytes remain discoverable after preparation/publication errors;
+an unacknowledged save keeps protected history and can acknowledge its already
+published exact draft on reopen.
+
+Preimages remain on their source NTFS volume with the source DACL. Folder
+snapshots exclude generated `.tessera-save-*` recovery entries from canonical
+inventory; ordinary sources/assets and directory identities remain revision-bound.
+The link-move journal retains complete before/after bytes even when vault-side
+history names move with a folder. No automatic rollback overwrites a concurrent
+writer; post-publication verification failures are reported as completed moves
+requiring inspection.
+
+Creation Undo checks the original identity and exact initial source (or empty
+folder), then marks that checked native DELETE handle for deletion. It refuses
+changed/replaced notes and populated folders. Windows system Trash is separate
+from this limited Undo operation. Startup markers distinguish live launches from
+unclean exits through sharing exclusion and are cleared only after drafts are
+protected at normal application shutdown.
+
+`tests/desktop_editor.rs` runs portable `windows_editor_*` contracts on both Unix
+and native Windows. Additional Windows tests exercise queued-draft protection
+after a parent swap, sharing errors, checked creation Undo, acknowledgement loss
+and last-moment replacement. Native acceptance must cover these and the eleven
+`windows_save_*` backend controls at the final SHA; cross-clippy is supplementary.
+Velopack beta QA checks the actual Windows input, Source/Live Preview, navigation,
+Ctrl+S/Ctrl+F, creation/rename and OneDrive/antivirus behavior.

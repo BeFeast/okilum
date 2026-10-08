@@ -9,11 +9,14 @@ use std::{
 
 /// Signal callbacks do only an atomic store. Saving, marker cleanup and GPUI
 /// shutdown always run on the normal application thread, never in a handler.
+#[cfg(unix)]
 struct TerminationSignals {
     requested: Arc<std::sync::atomic::AtomicBool>,
     registrations: Vec<signal_hook_registry::SigId>,
 }
+#[cfg(unix)]
 impl Global for TerminationSignals {}
+#[cfg(unix)]
 impl TerminationSignals {
     fn install() -> Result<Self> {
         let mut signals = Self {
@@ -37,6 +40,7 @@ impl TerminationSignals {
         self.requested.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
+#[cfg(unix)]
 impl Drop for TerminationSignals {
     fn drop(&mut self) {
         for registration in self.registrations.drain(..) {
@@ -45,6 +49,7 @@ impl Drop for TerminationSignals {
     }
 }
 
+#[cfg(unix)]
 fn install_termination(cx: &mut App) {
     let signals = match TerminationSignals::install() {
         Ok(signals) => signals,
@@ -71,6 +76,19 @@ fn install_termination(cx: &mut App) {
     .detach();
 }
 
+#[cfg(windows)]
+fn marker_options() -> fs::OpenOptions {
+    use std::os::windows::fs::OpenOptionsExt;
+    let mut options = fs::OpenOptions::new();
+    // Deny other READ/WRITE opens, permit deletion of an acknowledged marker.
+    options
+        .read(true)
+        .write(true)
+        .share_mode(windows_sys::Win32::Storage::FileSystem::FILE_SHARE_DELETE)
+        .custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_WRITE_THROUGH);
+    options
+}
+
 struct Run {
     marker: PathBuf,
     stale: Vec<PathBuf>,
@@ -81,6 +99,7 @@ impl Drop for Run {
         // Explicitly release the open-file-description lock before close. A
         // concurrent subprocess fork may briefly retain a descriptor until exec.
         // Keep the marker itself: only clean() acknowledges a safe shutdown.
+        #[cfg(unix)]
         let _ = rustix::fs::flock(&self._lock, rustix::fs::FlockOperation::Unlock);
     }
 }
@@ -94,21 +113,43 @@ impl Run {
             if path.extension().is_none_or(|ext| ext != "active") {
                 continue;
             }
-            let file = File::open(&path)?;
-            // Another live Tessera process is not a crashed launch.
-            match rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
-                Ok(()) => stale.push(path),
-                Err(rustix::io::Errno::WOULDBLOCK) => (),
-                Err(error) => return Err(error.into()),
+            #[cfg(unix)]
+            {
+                let file = File::open(&path)?;
+                match rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive)
+                {
+                    Ok(()) => stale.push(path),
+                    Err(rustix::io::Errno::WOULDBLOCK) => (),
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            #[cfg(windows)]
+            {
+                match marker_options().open(&path) {
+                    Ok(_) => stale.push(path),
+                    Err(error) if matches!(error.raw_os_error(), Some(32 | 33)) => (),
+                    Err(error) => return Err(error.into()),
+                }
             }
         }
         let marker = directory.join(format!("{}.active", uuid::Uuid::new_v4()));
-        let pending = marker.with_extension("pending");
-        let lock = File::create_new(&pending)?;
-        rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive)?;
-        lock.sync_all()?;
-        fs::rename(pending, &marker)?;
-        File::open(&directory)?.sync_all()?;
+        #[cfg(unix)]
+        let lock = {
+            let pending = marker.with_extension("pending");
+            let lock = File::create_new(&pending)?;
+            rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive)?;
+            lock.sync_all()?;
+            fs::rename(pending, &marker)?;
+            File::open(&directory)?.sync_all()?;
+            lock
+        };
+        #[cfg(windows)]
+        let lock = {
+            // Creation and sharing exclusion happen in the same native open.
+            let lock = marker_options().create_new(true).open(&marker)?;
+            lock.sync_all()?;
+            lock
+        };
         Ok(Self {
             marker,
             stale,
@@ -125,6 +166,7 @@ impl Run {
                 Err(error) => return Err(error.into()),
             }
         }
+        #[cfg(unix)]
         File::open(self.marker.parent().unwrap())?.sync_all()?;
         Ok(())
     }
@@ -140,6 +182,7 @@ pub(crate) fn is_recovering(cx: &App) -> bool {
 
 pub(crate) fn install(directory: &Path, config_directory: Option<&Path>, cx: &mut App) {
     // Tests install their own isolated signal handlers in subprocesses.
+    #[cfg(unix)]
     if !cfg!(test) {
         install_termination(cx);
     }
@@ -212,6 +255,7 @@ mod tests {
     }
 
     // The real signal is delivered only to this subprocess, never to the test runner.
+    #[cfg(unix)]
     #[test]
     fn signal_child() {
         let Some(directory) = std::env::var_os("TESSERA_SIGNAL_TEST_DIRECTORY") else {
@@ -234,6 +278,7 @@ mod tests {
         run.clean().unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn termination_signals_are_graceful_but_sigkill_retains_crash_evidence() {
         use rustix::process::{kill_process, Pid, Signal};
@@ -297,10 +342,12 @@ mod tests {
         let concurrent = Run::begin(&directory).unwrap();
         assert!(concurrent.stale.is_empty());
         concurrent.clean().unwrap();
+        #[cfg(unix)]
         let inherited = first._lock.try_clone().unwrap();
         drop(first); // Release synchronously even while a duplicated descriptor exists.
         let recovered = Run::begin(&directory).unwrap();
         assert_eq!(recovered.stale.len(), 1);
+        #[cfg(unix)]
         drop(inherited);
         recovered.clean().unwrap();
         let clean = Run::begin(&directory).unwrap();

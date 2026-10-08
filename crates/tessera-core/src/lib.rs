@@ -14,21 +14,24 @@ pub mod excalidraw;
 #[cfg(all(unix, feature = "brain"))]
 pub mod export;
 pub mod facets;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub mod file_editor;
 #[cfg(all(unix, feature = "brain"))]
 pub mod goal_criteria;
 pub mod ir;
 pub mod link_candidates;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub mod link_rewrite;
 pub mod log;
 pub mod maestro_observation;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub mod note_files;
 #[cfg(unix)]
 pub mod note_move;
-#[cfg(unix)]
+#[cfg(windows)]
+#[path = "note_move_windows.rs"]
+pub mod note_move;
+#[cfg(any(unix, windows))]
 pub mod note_templates;
 pub mod obsidian;
 pub mod projects;
@@ -41,9 +44,11 @@ pub mod search_snippet;
 #[cfg(all(unix, feature = "brain"))]
 pub mod source;
 pub mod source_classifier;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub mod source_history;
 pub mod source_projection;
+#[cfg(any(unix, windows))]
+mod source_state;
 pub mod task_edit;
 pub mod tasks;
 pub mod typed_view;

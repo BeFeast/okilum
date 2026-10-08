@@ -1,24 +1,31 @@
 //! Inline, create-only Reader actions (#466).
 use super::*;
 use gpui_component::{notification::Notification, WindowExt};
-use std::{io::Read as _, os::unix::fs::MetadataExt as _};
+use std::io::Read as _;
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt as _;
 
 pub(super) struct CreatedUndo {
     pub root: PathBuf,
     pub relative: String,
-    source: Option<String>,
-    identity: (u64, u64),
+    pub(super) source: Option<String>,
+    pub(super) identity: (u64, u64),
 }
 
 impl CreatedUndo {
     fn capture(root: &Path, relative: &str, source: Option<String>) -> anyhow::Result<Self> {
         let root = root.canonicalize()?;
+        #[cfg(unix)]
         let metadata = std::fs::symlink_metadata(root.join(relative))?;
+        #[cfg(unix)]
+        let identity = (metadata.dev(), metadata.ino());
+        #[cfg(windows)]
+        let identity = tessera_core::windows_files::checked_identity(&root.join(relative))?;
         let item = Self {
             root,
             relative: relative.into(),
             source,
-            identity: (metadata.dev(), metadata.ino()),
+            identity,
         };
         item.verify()?;
         Ok(item)
@@ -27,8 +34,12 @@ impl CreatedUndo {
     pub(super) fn verify(&self) -> anyhow::Result<()> {
         let path = self.root.join(&self.relative);
         let metadata = std::fs::symlink_metadata(&path)?;
+        #[cfg(unix)]
+        let identity = (metadata.dev(), metadata.ino());
+        #[cfg(windows)]
+        let identity = tessera_core::windows_files::checked_identity(&path)?;
         anyhow::ensure!(
-            (metadata.dev(), metadata.ino()) == self.identity && !metadata.file_type().is_symlink(),
+            identity == self.identity && !metadata.file_type().is_symlink(),
             "This item was replaced; it was kept"
         );
         if let Some(source) = &self.source {
@@ -186,7 +197,7 @@ impl Reader {
         tessera_core::note_templates::Catalog::load_with_folder(&self.vault_root, folder.as_deref())
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(super) fn create_missing_note(
         &mut self,
         url: &str,

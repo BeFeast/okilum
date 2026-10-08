@@ -68,6 +68,7 @@ fn save_all_outcomes(cx: &mut App) -> (bool, bool) {
         })
 }
 
+#[cfg(all(unix, feature = "brain"))]
 pub(crate) fn save_window(window: AnyWindowHandle, cx: &mut App) -> bool {
     let editors = cx.default_global::<Editors>().0.clone();
     editors

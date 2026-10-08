@@ -352,6 +352,7 @@ impl Reader {
     }
 }
 
+#[cfg(all(unix, feature = "brain"))]
 pub(crate) fn managed_states(preview: &serde_json::Value, current: bool) -> States {
     let mut states = BTreeMap::new();
     if !current || preview["prepared_links_version"] != 1 {

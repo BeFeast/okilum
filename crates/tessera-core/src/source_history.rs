@@ -1,10 +1,11 @@
 //! Durable source preimages, distinct from the rebuildable index.
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
+#[cfg(unix)]
+use std::fs::File;
 use std::{
     collections::BTreeMap,
-    fs::{self, File},
-    io::Write,
+    fs,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -26,6 +27,8 @@ pub struct Preimage {
     // snapshot still participates in retention; unexpected inode/bytes pin both.
     #[serde(default)]
     external_inode: Option<(u64, u64)>,
+    #[serde(default)]
+    prepared: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -55,15 +58,17 @@ fn directory(drafts: &Path) -> PathBuf {
 fn persist(path: &Path, value: &Preimage) -> Result<()> {
     let parent = path.parent().context("Missing history folder")?;
     fs::create_dir_all(parent)?;
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
-    let mut file = tempfile::NamedTempFile::new_in(parent)?;
-    serde_json::to_writer(&mut file, value)?;
-    file.flush()?;
-    file.as_file().sync_all()?;
-    file.persist(path).map_err(|e| e.error)?;
-    File::open(parent)?.sync_all()?;
-    File::open(parent.parent().context("Missing recovery folder")?)?.sync_all()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+    }
+    crate::source_state::persist(path, &serde_json::to_vec(value)?)?;
+    #[cfg(unix)]
+    {
+        File::open(parent)?.sync_all()?;
+        File::open(parent.parent().context("Missing recovery folder")?)?.sync_all()?;
+    }
     Ok(())
 }
 impl Preimage {
@@ -78,9 +83,49 @@ impl Preimage {
                 pending: true,
                 displaced: backup.to_owned(),
                 external_inode: None,
+                prepared: None,
             },
         )?;
         Ok(path)
+    }
+    #[cfg(windows)]
+    pub(crate) fn begin_windows(
+        drafts: &Path,
+        note: &Path,
+        text: &str,
+        backup: &Path,
+        prepared: &Path,
+    ) -> Result<PathBuf> {
+        let path = Self::begin(drafts, note, text, backup)?;
+        let mut entry = Self::load(&path)?;
+        entry.prepared = Some(prepared.to_owned());
+        persist(&path, &entry)?;
+        Ok(path)
+    }
+    #[cfg(windows)]
+    pub(crate) fn finish_windows(
+        path: &Path,
+        directory: &crate::windows_files::Directory,
+    ) -> Result<()> {
+        let mut entry = Self::load(path)?;
+        let (_, bytes, info) = directory.read(
+            entry
+                .displaced
+                .file_name()
+                .context("Missing displaced filename")?,
+        )?;
+        ensure!(
+            bytes == entry.text.as_bytes(),
+            "Displaced source changed; recovery is protected"
+        );
+        // Keep the native preimage with its source DACL on the source volume.
+        // The durable JSON is a complete copy; retention checks identity before
+        // removing this vault-side archive, just as for Unix EXDEV recovery.
+        let (volume, high, low) = crate::windows_files::identity(&info);
+        entry.external_inode = Some((u64::from(volume), u64::from(high) << 32 | u64::from(low)));
+        entry.pending = false;
+        entry.prepared = None;
+        persist(path, &entry)
     }
     fn load(path: &Path) -> Result<Self> {
         let entry: Self = serde_json::from_slice(&fs::read(path)?)?;
@@ -92,11 +137,13 @@ impl Preimage {
     }
     /// Archive the displaced inode through the editor's pinned directory. Its
     /// old absolute name may now resolve to an entirely different directory.
+    #[cfg(unix)]
     pub(crate) fn finish_bound(path: &Path, source_directory: &File) -> Result<()> {
         Self::finish_bound_with(path, source_directory, |source, name, target, archived| {
             rustix::fs::renameat(source, name, target, archived).map_err(Into::into)
         })
     }
+    #[cfg(unix)]
     fn finish_bound_with(
         path: &Path,
         source_directory: &File,
@@ -141,13 +188,13 @@ impl Preimage {
         persist(path, &entry)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn finish(path: &Path) -> Result<()> {
         let entry = Self::load(path)?;
         let directory = File::open(entry.displaced.parent().context("Missing source folder")?)?;
         Self::finish_bound(path, &directory)
     }
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn finish_with(
         path: &Path,
         rename: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
@@ -162,14 +209,28 @@ impl Preimage {
 
 /// A changed inode is recovery, never an ordinary expirable history entry.
 fn protected(entry: &Preimage) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    entry.pending
-        || fs::read(&entry.displaced).map_or(true, |b| b != entry.text.as_bytes())
-        || entry.external_inode.is_some_and(|identity| {
-            fs::symlink_metadata(&entry.displaced).map_or(true, |m| {
-                !m.is_file() || m.nlink() != 1 || (m.dev(), m.ino()) != identity
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        entry.pending
+            || fs::read(&entry.displaced).map_or(true, |b| b != entry.text.as_bytes())
+            || entry.external_inode.is_some_and(|identity| {
+                fs::symlink_metadata(&entry.displaced).map_or(true, |m| {
+                    !m.is_file() || m.nlink() != 1 || (m.dev(), m.ino()) != identity
+                })
             })
-        })
+    }
+    #[cfg(windows)]
+    {
+        entry.pending
+            || crate::windows_files::read_file(&entry.displaced).map_or(true, |(_, bytes, info)| {
+                let (volume, high, low) = crate::windows_files::identity(&info);
+                bytes != entry.text.as_bytes()
+                    || entry.external_inode.is_some_and(|expected| {
+                        expected != (u64::from(volume), u64::from(high) << 32 | u64::from(low))
+                    })
+            })
+    }
 }
 fn owned_displaced(record: &Path, entry: &Preimage) -> bool {
     if entry.external_inode.is_some() {
@@ -213,6 +274,37 @@ pub fn list(drafts: &Path, root: &Path) -> Result<Listing> {
                     protected: is_protected,
                     link_move: false,
                 });
+                #[cfg(windows)]
+                if let Some(prepared) = entry.prepared.as_ref().filter(|path| {
+                    path.parent() == entry.note.parent()
+                        && path.file_name().is_some_and(|name| {
+                            name.to_string_lossy().starts_with(".tessera-save-")
+                        })
+                }) {
+                    let recovered = (|| -> Result<String> {
+                        let directory =
+                            crate::windows_files::Directory::open(prepared.parent().unwrap())?;
+                        let (_, bytes, _) = directory.read(prepared.file_name().unwrap())?;
+                        String::from_utf8(bytes).context("Prepared recovery is not UTF-8")
+                    })();
+                    match recovered {
+                        Ok(text) => result.versions.push(Version {
+                            note: entry.note.clone(),
+                            text,
+                            created: entry.created,
+                            label: "Prepared save — protected".into(),
+                            protected: true,
+                            link_move: false,
+                        }),
+                        Err(error)
+                            if error
+                                .downcast_ref::<std::io::Error>()
+                                .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) => {}
+                        Err(error) => result
+                            .warnings
+                            .push(format!("Cannot read prepared recovery: {error:#}")),
+                    }
+                }
                 // A crash after the inode move but before acknowledgement leaves
                 // the archived name discoverable without rewriting the record.
                 let displaced = if entry.displaced.exists() {
@@ -293,6 +385,7 @@ fn prune_at(drafts: &Path, now: u64) -> Result<()> {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => return Err(e.into()),
             }
+            #[cfg(unix)]
             File::open(
                 entry
                     .displaced
@@ -303,6 +396,7 @@ fn prune_at(drafts: &Path, now: u64) -> Result<()> {
             fs::remove_file(path)?;
         }
     }
+    #[cfg(unix)]
     File::open(folder)?.sync_all()?;
     journal_cleanup
 }
@@ -331,12 +425,7 @@ fn prune_clean_journals(drafts: &Path, now: u64) -> Result<()> {
             let _lock = match crate::file_editor::EditorLock::acquire(&path.with_extension("lock"))
             {
                 Ok(lock) => lock,
-                Err(error)
-                    if error.downcast_ref::<rustix::io::Errno>()
-                        == Some(&rustix::io::Errno::WOULDBLOCK) =>
-                {
-                    return Ok(())
-                }
+                Err(error) if crate::file_editor::lock_busy(&error) => return Ok(()),
                 Err(error) => return Err(error),
             };
             let Ok(bytes) = fs::read(&path) else {
@@ -361,6 +450,7 @@ fn prune_clean_journals(drafts: &Path, now: u64) -> Result<()> {
             );
             if age > MAX_AGE {
                 fs::remove_file(path)?;
+                #[cfg(unix)]
                 File::open(drafts)?.sync_all()?;
             }
             Ok(())
@@ -499,6 +589,7 @@ fn prune_moves_at(state: &Path, root: &Path, now: u64) -> Result<()> {
         if op.root == root && (op.complete || op.reverted) && now.saturating_sub(modified) > MAX_AGE
         {
             fs::remove_file(&path)?;
+            #[cfg(unix)]
             File::open(path.parent().unwrap())?.sync_all()?;
         }
     }
@@ -579,7 +670,7 @@ pub fn legacy_preimages(root: &Path) -> Result<Listing> {
     Ok(listing)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::file_editor::{FileEditor, Save};

@@ -153,15 +153,15 @@ struct Settings {
     reader: Option<WeakEntity<Reader>>,
     focus: FocusHandle,
     _reader_changes: Option<Subscription>,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     template_root: Option<PathBuf>,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     template_folder: String,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     template_error: Option<String>,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     template_pending: bool,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     template_epoch: u64,
 }
 impl Settings {
@@ -183,15 +183,15 @@ impl Settings {
             reader,
             focus: cx.focus_handle(),
             _reader_changes: observer,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             template_root: None,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             template_folder: reader_templates::DEFAULT_FOLDER.into(),
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             template_error: None,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             template_pending: false,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             template_epoch: 0,
         }
     }
@@ -226,7 +226,7 @@ impl Settings {
             .and_then(WeakEntity::upgrade)
             .filter(|reader| !reader.read(cx).vault_root.as_os_str().is_empty())
     }
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn refresh_template_folder(&mut self, cx: &mut Context<Self>) {
         let current = self.vault(cx).map(|reader| {
             let reader = reader.read(cx);
@@ -269,7 +269,7 @@ impl Settings {
         })
         .detach();
     }
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn choose_template_folder(&mut self, cx: &mut Context<Self>) {
         let Some(reader) = self.vault(cx) else {
             return;
@@ -334,7 +334,7 @@ impl Settings {
         .detach();
     }
     fn template_controls(&self, cx: &mut Context<Self>) -> AnyElement {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             let has_storage = self
                 .vault(cx)
@@ -382,7 +382,7 @@ impl Settings {
                 }))
                 .into_any_element()
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = cx;
             div().into_any_element()
@@ -691,7 +691,7 @@ impl Settings {
 }
 impl Render for Settings {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         self.refresh_template_folder(cx);
         let p = brand::palette(cx);
         let body = self.body(window, cx);

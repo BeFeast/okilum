@@ -27,15 +27,14 @@ mod reader_app_menu;
 mod reader_cache;
 mod reader_code;
 mod reader_code_language;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod reader_create;
+#[cfg(windows)]
+mod reader_creation_undo_windows;
 mod reader_diagnostics;
 mod reader_document_menu;
 mod reader_drawing;
-#[cfg(unix)]
-mod reader_editor;
-#[cfg(windows)]
-#[path = "reader_editor_windows.rs"]
+#[cfg(any(unix, windows))]
 mod reader_editor;
 mod reader_files;
 mod reader_history;
@@ -46,19 +45,16 @@ mod reader_instance;
 mod reader_layout;
 mod reader_loading;
 mod reader_log;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod reader_move;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod reader_move_picker;
 mod reader_obsidian;
 mod reader_open;
 mod reader_pdf;
 mod reader_properties;
 mod reader_reading_controls;
-#[cfg(unix)]
-mod reader_recovery;
-#[cfg(windows)]
-#[path = "reader_recovery_windows.rs"]
+#[cfg(any(unix, windows))]
 mod reader_recovery;
 mod reader_replay;
 mod reader_right_panel;
@@ -69,20 +65,17 @@ mod reader_settings_sync;
 mod reader_shortcuts;
 mod reader_sidebar;
 use reader_sidebar::SectionAction;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod reader_source_history;
 mod reader_startup;
 #[cfg(test)]
 mod reader_table_tests;
 mod reader_tasks;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod reader_templates;
 #[cfg(any(target_os = "macos", all(test, unix)))]
 mod reader_thumbnail;
-#[cfg(unix)]
-mod reader_timeline;
-#[cfg(windows)]
-#[path = "reader_timeline_windows.rs"]
+#[cfg(any(unix, windows))]
 mod reader_timeline;
 mod reader_toast;
 #[cfg(unix)]
@@ -91,7 +84,7 @@ mod reader_trash;
 mod reader_trash_fs;
 mod reader_tree;
 mod reader_ui_state;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod source_presentation;
 mod text_ranges;
 mod theme_picker;
@@ -236,7 +229,7 @@ const HIDDEN_FILES_KEYS: [&str; 2] = ["ctrl-shift-.", "ctrl->"];
 const HIDDEN_FILES_KEY_MAC: &str = "cmd->";
 
 fn bind_keys(cx: &mut App) {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     reader_move_picker::bind_keys(cx);
     reader_log::bind_keys(cx);
     cx.bind_keys([
@@ -308,14 +301,14 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("up", PalettePrevious, Some("Reader > QuickOpen > Input")),
         KeyBinding::new("escape", Dismiss, Some("Reader > QuickOpen > Input")),
         KeyBinding::new("escape", Dismiss, Some("InlineCreate > Input")),
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         KeyBinding::new("escape", Dismiss, Some("InlineRename > Input")),
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         KeyBinding::new("f2", RenameTreeNote, Some("ReaderTree && !Input")),
         KeyBinding::new("secondary-n", NewNote, ctx),
         #[cfg(unix)]
         KeyBinding::new("secondary-backspace", DeleteNote, Some("Reader && !Input")),
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         KeyBinding::new("secondary-z", UndoTrash, Some("Reader && !Input")),
         KeyBinding::new("secondary-w", CloseNote, ctx),
         KeyBinding::new("secondary-w", CloseNote, Some("Reader > Input")),
@@ -357,9 +350,9 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("up", TreeUp, Some("ReaderTree && !Input")),
         KeyBinding::new("right", TreeRight, Some("ReaderTree && !Input")),
         KeyBinding::new("left", TreeLeft, Some("ReaderTree && !Input")),
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         KeyBinding::new("enter", TreeOpen, Some("ReaderTree && !Input")),
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         KeyBinding::new("enter", RenameTreeNote, Some("ReaderTree && !Input")),
         KeyBinding::new("space", TreeOpen, Some("ReaderTree && !Input")),
         #[cfg(target_os = "macos")]
@@ -569,6 +562,7 @@ struct Opts {
     /// Open the managed workspace chooser only by explicit request.
     managed_workspace: bool,
     /// OS document delivery may arrive after launch; never auto-connect while awaiting it.
+    #[cfg(all(unix, feature = "brain"))]
     defer_saved_connection: bool,
     /// Vault root. Required: there is no default vault, and guessing one would
     /// be a good way to index the wrong directory.
@@ -989,7 +983,7 @@ fn reader_plugins(
     identities: &[tessera_core::document_links::prepared::LinkIdentity],
 ) -> TextView {
     // Use exactly the same eligibility as the Create note hover action.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     let missing_cards = identities
         .iter()
         .filter_map(|identity| {
@@ -997,7 +991,7 @@ fn reader_plugins(
                 .map(|_| identity.url.clone())
         })
         .collect();
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     let missing_cards = {
         let _ = identities;
         std::collections::BTreeSet::new()
@@ -1053,6 +1047,8 @@ enum MarkdownImage {
     Drawing(PathBuf, PathBuf),
     DrawingUnavailable(String),
     Source(ImageSource),
+    // Constructed only by the remote Brain image authority; renderer is shared.
+    #[cfg_attr(not(all(unix, feature = "brain")), allow(dead_code))]
     Unavailable,
 }
 type MarkdownImageResolver = Arc<dyn Fn(&str) -> Option<MarkdownImage> + Send + Sync>;
@@ -1287,25 +1283,25 @@ struct Reader {
     file_preview: Option<reader_files::FilePreview>,
     file_menu: Option<(Entity<gpui_component::menu::PopupMenu>, Point<Pixels>)>,
     editing: Option<reader_editor::Editing>,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     creation: Option<reader_create::Creation>,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     creation_undo: Option<Arc<reader_create::CreatedUndo>>,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     renaming: Option<reader_move::Renaming>,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     move_picker: reader_move_picker::PickerState,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     note_move_pending: bool,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     move_notice_generation: u64,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     move_applying: bool,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     trash_pending: bool,
     #[cfg(unix)]
     trash_undo: reader_trash::UndoHistory,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     move_index: Option<Arc<tessera_core::link_rewrite::CandidateIndex>>,
     recovery_offer: bool,
     recovery_checked: bool,
@@ -1466,6 +1462,7 @@ fn reader_landing_state(
 
 impl Reader {
     /// Share the enclosing Workspace chrome without changing document state.
+    #[cfg(all(unix, feature = "brain"))]
     pub(crate) fn embedded_in_workspace(mut self) -> Self {
         self.embedded_in_workspace = true;
         self
@@ -1573,25 +1570,25 @@ impl Reader {
             shortcut_sheet,
             content,
             editing: None,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             creation: None,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             creation_undo: None,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             renaming: None,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             move_picker: Default::default(),
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             note_move_pending: false,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             move_notice_generation: 0,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             move_applying: false,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             trash_pending: false,
             #[cfg(unix)]
             trash_undo: reader_trash::UndoHistory::default(),
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             move_index: None,
             recovery_offer: false,
             recovery_checked: false,
@@ -2152,12 +2149,12 @@ impl Reader {
     /// Escape clears or dismisses local transient UI; it never toggles panels (#483).
     /// A non-empty focused search field is cleared and keeps focus; an empty one closes.
     fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         if self.renaming.is_some() {
             self.cancel_rename(window, cx);
             return;
         }
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         if self.creation.is_some() {
             self.cancel_creation(window, cx);
             return;
@@ -2725,14 +2722,14 @@ impl Reader {
         }
         items.push(SideItem::Header(Section::Folders, None));
         if open(Section::Folders) {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             let creation = self.creation.as_ref();
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             if let Some(create) = creation.filter(|c| c.folder.is_empty()) {
                 append_creation_rows(&mut items, create, 0);
             }
             for row in self.tree.rows.iter() {
-                #[cfg(unix)]
+                #[cfg(any(unix, windows))]
                 if let Some(rename) = self
                     .renaming
                     .as_ref()
@@ -2766,7 +2763,7 @@ impl Reader {
                     continue;
                 }
                 items.push(SideItem::Tree(row.clone()));
-                #[cfg(unix)]
+                #[cfg(any(unix, windows))]
                 if let Some(create) = creation.filter(|c| c.folder == row.path) {
                     append_creation_rows(&mut items, create, row.depth + 1);
                 }
@@ -2800,7 +2797,7 @@ impl Reader {
                 .as_ref()
                 .is_some_and(|source| source.root == self.vault.root);
             self.tree.refresh(&self.vault_root, &self.vault.entries);
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             if !self.single_file {
                 let folder = self
                     .creation_templates()
@@ -2818,12 +2815,12 @@ impl Reader {
             self.backlinks_expanded.clear();
         }
         let selected = self.selected_file().to_owned();
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         let selected = self
             .creation
             .as_ref()
             .map_or(selected, |create| create.folder.clone());
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         let selected = self
             .renaming
             .as_ref()
@@ -3230,7 +3227,7 @@ impl Reader {
     }
 
     fn render_breadcrumbs(&self, cx: &mut Context<Self>) -> AnyElement {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         if let Some(rename) = self.renaming.as_ref().filter(|r| r.in_header) {
             return v_flex()
                 .id("note-title-rename")
@@ -3421,7 +3418,7 @@ impl Reader {
                     .child(count),
             )
             .when(left, |header| {
-                #[cfg(unix)]
+                #[cfg(any(unix, windows))]
                 let header = header
                     .child(
                         reader_icon_button(
@@ -3599,7 +3596,7 @@ impl Reader {
     /// docs/design/reader.md §Sidebar: Recent, Pinned, Inbox and the real
     /// folder hierarchy (#335, #369), with a quick-open entry point (#433).
     fn render_tree(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         use gpui_component::menu::DropdownMenu as _;
         use gpui_component::menu::{ContextMenuExt as _, PopupMenuItem};
         use reader_sidebar::Section;
@@ -3653,7 +3650,7 @@ impl Reader {
                 }
             };
         let act = Rc::new(act);
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         let drag_root = self.vault_root.clone();
         let render_row = Rc::new(move |item: SideItem, ix: usize| {
             let entity = entity.clone();
@@ -3692,7 +3689,7 @@ impl Reader {
                     })
             };
             match item {
-                #[cfg(unix)]
+                #[cfg(any(unix, windows))]
                 SideItem::Rename(input, depth, directory) => row_base("inline-rename-row".into())
                     .debug_selector(|| "inline-rename-row".into())
                     .key_context("InlineRename")
@@ -3712,7 +3709,7 @@ impl Reader {
                     )
                     .child(div().flex_1().min_w_0().child(Input::new(&input).small()))
                     .into_any_element(),
-                #[cfg(unix)]
+                #[cfg(any(unix, windows))]
                 SideItem::Create(input, depth, directory, templates, selected) => {
                     row_base("inline-create-row".into())
                         .debug_selector(|| "inline-create-row".into())
@@ -3787,7 +3784,7 @@ impl Reader {
                         })
                         .into_any_element()
                 }
-                #[cfg(unix)]
+                #[cfg(any(unix, windows))]
                 SideItem::CreateError(error, depth) => {
                     row_base(format!("inline-create-error-{ix}").into())
                         .pl(px(38. + depth as f32 * 14.))
@@ -3876,7 +3873,7 @@ impl Reader {
                                             })
                                     };
                         row.group(FOLDERS_HEADER_GROUP)
-                            .when(cfg!(unix), |row| {
+                            .when(cfg!(any(unix, windows)), |row| {
                                 row.child(action(
                                     "folders-new-note",
                                     "icons/file-plus.svg",
@@ -3988,7 +3985,7 @@ impl Reader {
                             )
                     })
                     .map(|d| {
-                        #[cfg(unix)]
+                        #[cfg(any(unix, windows))]
                         let d = if section == Section::Folders {
                             reader_move_picker::drop_target(
                                 d,
@@ -4028,7 +4025,7 @@ impl Reader {
                         let entity = entity.clone();
                         let act = act.clone();
                         move |menu, _, _| {
-                            if section != Section::Folders || !cfg!(unix) {
+                            if section != Section::Folders || !cfg!(any(unix, windows)) {
                                 return menu;
                             }
                             let item = |label: &'static str, directory: bool| {
@@ -4254,7 +4251,7 @@ impl Reader {
                     let path = row.path.clone();
                     row_base(group.clone())
                         .map(|d| {
-                            #[cfg(unix)]
+                            #[cfg(any(unix, windows))]
                             let d = {
                                 let root = drag_root.clone();
                                 let d = if directory || row.kind == EntryKind::Markdown {
@@ -4415,7 +4412,7 @@ impl Reader {
                                         });
                                     })
                                 };
-                                menu.when(cfg!(unix), |menu| {
+                                menu.when(cfg!(any(unix, windows)), |menu| {
                                     menu.item(create("New File", false))
                                         .item(create("New Folder", true))
                                 })
@@ -5710,15 +5707,15 @@ enum SideItem {
     More(usize),
     Empty(&'static str),
     Tree(reader_tree::Row),
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     Create(Entity<InputState>, usize, bool, Vec<String>, Option<String>),
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     CreateError(String, usize),
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     Rename(Entity<InputState>, usize, bool),
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn append_creation_rows(items: &mut Vec<SideItem>, create: &reader_create::Creation, depth: usize) {
     items.push(SideItem::Create(
         create.input.clone(),
@@ -5823,7 +5820,7 @@ fn reader_more_menu(
             )
             .menu("Keyboard shortcuts", Box::new(ToggleShortcutSheet))
             .separator()
-            .when(cfg!(unix), |menu| {
+            .when(cfg!(any(unix, windows)), |menu| {
                 menu.menu("New note…", Box::new(NewNote))
                     .menu("New Folder", Box::new(NewFolder))
                     .menu("New note from template…", Box::new(NewFromTemplate))
@@ -6075,7 +6072,7 @@ impl Render for Reader {
             )
             .on_action(cx.listener(|this, _: &RenameNote, window, cx| this.rename_note(window, cx)))
             .map(|view| {
-                #[cfg(unix)]
+                #[cfg(any(unix, windows))]
                 let view = view.on_action(cx.listener(
                     |this, _: &reader_move_picker::MoveToFolder, window, cx| {
                         this.choose_move_folder(this.selected_file().to_owned(), window, cx);
@@ -6083,8 +6080,8 @@ impl Render for Reader {
                 ));
                 view
             })
-            .when(cfg!(unix), |view| {
-                #[cfg(unix)]
+            .when(cfg!(any(unix, windows)), |view| {
+                #[cfg(any(unix, windows))]
                 let view = view.on_action(cx.listener(|this, _: &RenameTreeNote, window, cx| {
                     this.rename_tree_note(window, cx)
                 }));
@@ -6143,17 +6140,12 @@ impl Render for Reader {
             .on_action(cx.listener(|this, _: &FindNext, _, cx| this.find_step(1, cx)))
             .on_action(cx.listener(|this, _: &FindPrev, _, cx| this.find_step(-1, cx)))
             .on_action(cx.listener(|this, _: &UndoTrash, window, cx| {
-                #[cfg(unix)]
-                {
-                    if this.tree_focus.contains_focused(window, cx) && this.creation_undo.is_some()
-                    {
-                        this.undo_creation(None, window, cx);
-                    } else {
-                        this.undo_last_trash(window, cx);
-                    }
+                if this.tree_focus.contains_focused(window, cx) && this.creation_undo.is_some() {
+                    this.undo_creation(None, window, cx);
+                } else {
+                    #[cfg(unix)]
+                    this.undo_last_trash(window, cx);
                 }
-                #[cfg(not(unix))]
-                let _ = (this, window, cx);
             }))
             .on_action(cx.listener(|this, _: &Dismiss, window, cx| this.dismiss(window, cx)))
             .on_action(cx.listener(|this, _: &TreeDown, w, cx| this.tree_key(TreeKey::Down, w, cx)))
@@ -6183,10 +6175,8 @@ impl Render for Reader {
                 cx.listener(|this, _: &ToggleHiddenFiles, _, cx| this.toggle_hidden_files(cx)),
             )
             .on_action(cx.listener(|this, _: &NewFromTemplate, window, cx| {
-                #[cfg(unix)]
+                #[cfg(any(unix, windows))]
                 this.new_from_template(window, cx);
-                #[cfg(windows)]
-                let _ = (this, window, cx);
             }))
             .on_action(cx.listener(|_, _: &reader_settings::OpenSettings, _, cx| {
                 reader_settings::show(Some(cx.entity().downgrade()), cx);
@@ -6401,7 +6391,7 @@ impl Render for Reader {
             }))
             .children(self.render_hover_preview(window, cx))
             .map(|view| {
-                #[cfg(unix)]
+                #[cfg(any(unix, windows))]
                 let view = view.children(self.render_move_picker());
                 view
             })
@@ -6478,11 +6468,12 @@ fn main() {
         let mut opts = opts;
         // Preserve relative CLI arguments before selecting the packaged HLSL base.
         let cwd = std::env::current_dir().expect("Cannot read launch directory");
-        for path in [&mut opts.vault, &mut opts.open_path, &mut opts.index_dir] {
-            if let Some(value) = path {
-                if value.is_relative() {
-                    *value = cwd.join(&*value);
-                }
+        for value in [&mut opts.vault, &mut opts.open_path, &mut opts.index_dir]
+            .into_iter()
+            .flatten()
+        {
+            if value.is_relative() {
+                *value = cwd.join(&*value);
             }
         }
         let executable = std::env::current_exe().expect("Cannot locate Tessera executable");
@@ -6582,6 +6573,7 @@ fn main() {
         }
         if opts.brain_endpoint.is_none() && !opts.managed_workspace {
             reader_startup::launch(opts, cx);
+            #[cfg(all(unix, feature = "brain"))]
             return;
         }
         #[cfg(all(unix, feature = "brain"))]
@@ -6901,7 +6893,7 @@ mod document_link_landing_tests {
             visual.run_until_parked();
             for source in [false, true]
                 .into_iter()
-                .filter(|source| !source || cfg!(unix))
+                .filter(|source| !source || cfg!(any(unix, windows)))
             {
                 for panel in [reader_layout::Panel::Notes, reader_layout::Panel::Backlinks] {
                     reader.update_in(visual, |reader, window, cx| {
@@ -9463,7 +9455,7 @@ fn reader_item_menu(
     cx: &App,
 ) -> gpui_component::menu::PopupMenu {
     let menu = reader_files::menu(menu, reader.read(cx).vault_root.clone(), relative.clone());
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     let menu = {
         let movable =
             reader.read(cx).vault.entries.iter().any(|e| {
@@ -9495,16 +9487,20 @@ fn reader_item_menu(
                 ),
             )
         });
-        let reader = reader.downgrade();
-        menu.separator().item(
-            gpui_component::menu::PopupMenuItem::new("Move to Trash").on_click(
-                move |_, window, cx| {
-                    let _ = reader.update(cx, |this, cx| {
-                        this.delete_path(relative.clone(), window, cx)
-                    });
-                },
-            ),
-        )
+        #[cfg(unix)]
+        let menu = {
+            let reader = reader.downgrade();
+            menu.separator().item(
+                gpui_component::menu::PopupMenuItem::new("Move to Trash").on_click(
+                    move |_, window, cx| {
+                        let _ = reader.update(cx, |this, cx| {
+                            this.delete_path(relative.clone(), window, cx)
+                        });
+                    },
+                ),
+            )
+        };
+        menu
     };
     menu
 }

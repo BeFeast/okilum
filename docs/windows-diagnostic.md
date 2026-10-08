@@ -1,4 +1,9 @@
-# Windows diagnostic (#432)
+# Windows diagnostic (#432) — historical scope
+
+The read-only scope below describes the original #432 artifact. Windows now
+ships through Velopack; #765 enables desktop source editing on local NTFS through
+the [native source filesystem](windows-source-filesystem.md). The Reader/MCP
+protocol remains read-only.
 
 This portable Windows 11 x64 build is a read-only Reader diagnostic. Extract the
 entire ZIP (including `gpui-shaders`), then open `tessera.exe`. Use Open Folder to select your vault, or drag a file

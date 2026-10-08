@@ -65,7 +65,7 @@ pub(super) fn resolved_target(
         .then_some(Target { path, heading })
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(super) fn missing_note_target(
     url: &str,
     states: &prepared_links::States,
@@ -97,7 +97,7 @@ pub(super) fn link_presentation(
 }
 
 impl Reader {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(super) fn missing_note_path(&self, url: &str) -> Option<String> {
         missing_note_target(url, &self.prepared_links, &self.link_identities)
     }
@@ -129,7 +129,7 @@ impl Reader {
         if let Some(target) = resolved_target(url, &self.prepared_links, &self.current_rel) {
             self.hover_note(url.to_owned(), target, position, window, cx);
         }
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         if let Some(path) = self.missing_note_path(url) {
             self.hover_note(
                 url.to_owned(),
@@ -491,7 +491,7 @@ impl Reader {
                                         .child(title),
                                 )
                                 .when(h.missing, |row| {
-                                    #[cfg(unix)]
+                                    #[cfg(any(unix, windows))]
                                     let row = {
                                         let source = h.source.clone().unwrap_or_default();
                                         row.child(
@@ -541,7 +541,7 @@ impl Reader {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn missing_path(from: &str, target: &str) -> Option<String> {
     let note = target.split(['#', '^']).next()?.trim();
     if note.is_empty() || note.contains(':') {
@@ -661,7 +661,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn missing_paths_follow_authored_target_without_alias_or_escape() {
         assert_eq!(
             missing_path("Work/Start.md", "Новая 🧠^block"),
@@ -690,7 +690,7 @@ mod tests {
     }
 
     #[gpui::test]
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn missing_hover_creates_inline_with_default_template_and_resolves_without_watcher(
         cx: &mut gpui::TestAppContext,
     ) {
@@ -828,7 +828,7 @@ mod tests {
     }
 
     #[gpui::test]
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn missing_create_cancel_collision_and_nonmissing_exclusions(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| cx.set_reduce_motion(true));
         let (reader, visual, root) = fixture(cx);

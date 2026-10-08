@@ -203,7 +203,7 @@ pub(super) fn record_scan_with_warnings(
     );
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(super) fn record_move_preview(
     root: &Path,
     state: Option<&Path>,
