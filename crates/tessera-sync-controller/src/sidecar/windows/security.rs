@@ -38,9 +38,14 @@ pub(super) fn sid_string(sid: PSID) -> Result<String> {
 }
 /// Reads the process token, never USERNAME or a caller-supplied SID string.
 pub fn current_sid() -> Result<String> {
+    process_sid(unsafe { GetCurrentProcess() })
+}
+
+/// Query a captured process handle; never reopen an identity by PID.
+pub(crate) fn process_sid(process: HANDLE) -> Result<String> {
     let mut raw = HANDLE::default();
     unsafe {
-        OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut raw)?;
+        OpenProcessToken(process, TOKEN_QUERY, &mut raw)?;
     }
     let token = unsafe { OwnedHandle::from_raw_handle(raw.0) };
     let token = HANDLE(token.as_raw_handle());

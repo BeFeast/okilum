@@ -248,3 +248,41 @@ lost reply/idempotency, response correlation and malformed/oversized frames.
 A real UnixStream pair tests framing only with an injected peer gate; it is not
 native peer-authentication or macOS/Windows supervisor acceptance. Native IPC,
 full updater integration and complete Sync acceptance remain open under #588.
+
+### Windows pipe peer identity primitive
+
+`supervisor::ipc::windows_peer::ProcessPeer` consumes an owned process handle
+obtained by the native launch/signature ownership layer. It never opens a process
+from a PID supplied by a pipe or wire message. The handle must grant query and
+synchronize access; the process must be live and its primary token SID must equal
+the prepared current-user SID. The guard keeps that process object open.
+
+For a connected pipe, it checks file type and endpoint direction, obtains the
+remote process ID through GetNamedPipeServerProcessId/GetNamedPipeClientProcessId,
+and compares it with the captured process. It checks process liveness and token
+ownership again after the query. A same-user but different process, wrong endpoint,
+ordinary file or exited process fails. Pipe I/O is not performed by this primitive.
+
+This is not a full authenticated transport: the caller still must verify the
+expected executable/signature/installation, create an owner-private local-only
+endpoint, retain the connected pipe through the exchange, authenticate discovery
+and generation, enforce the absolute deadline, and confirm owned process exit.
+In particular, no caller may feed an arbitrary remote pipe to this primitive
+and treat a numerically matching PID as local identity. Production endpoint
+construction must enforce local-only access; the transport is not connected yet.
+
+Two Windows-gated fixtures use disposable UUID-named local pipes and owned helper
+processes with cleanup on all return paths. One checks both directions plus SID,
+role and file rejection. The other confirms an actual child connection, refuses
+a different live process of the same user, accepts the captured child, then
+refuses that handle after exit. The fixture's default token pipe DACL is not
+production endpoint ACL acceptance.
+
+The native run on windows-2022, Rust 1.99.0 MSVC passed 41 `sidecar::` tests with
+zero failures or ignored tests, including both named pipe-peer fixtures:
+https://github.com/BeFeast/tessera/actions/runs/37813567283 . Run/source SHA was
+`b4a359be85e3bd62fbaccc1651fb1c9fee046380`, tree
+`97c2613b4335630fb9acf1e589ee265a4401424d`, with no extra source/workflow commit.
+The dispatch used package `tessera-sync-controller`, no features, filter
+`sidecar::`, and one test thread. This confirms this peer-identity primitive,
+not the remaining production transport, private endpoint ACL or Sync acceptance.
