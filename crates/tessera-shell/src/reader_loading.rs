@@ -1546,7 +1546,6 @@ impl Reader {
         // displayed snapshot cancels an older, different in-flight snapshot.
         self.document_reconciliation_generation =
             self.document_reconciliation_generation.wrapping_add(1);
-        let reconciliation = self.document_reconciliation_generation;
         let pending_embed = self.note_source.contains(&format!(
             "{EMBED_LANG} {} ",
             tessera_core::render::EMBED_PENDING
@@ -1555,7 +1554,7 @@ impl Reader {
             self.refresh_link_preparation(cx);
             return;
         }
-        self.reconcile_published_document(window, cx);
+        self.reconcile_document_source(Some(raw.clone()), window, cx);
     }
 
     /// Refresh from the immutable published graph even when a shared worker owns
@@ -1563,6 +1562,15 @@ impl Reader {
     /// window's document refresh merely because another sibling started polling.
     pub(super) fn reconcile_published_document(
         &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.reconcile_document_source(None, window, cx);
+    }
+
+    fn reconcile_document_source(
+        &mut self,
+        raw: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1580,20 +1588,26 @@ impl Reader {
         let navigation = self.navigation_generation;
         let generation = self.document_preparation_generation;
         let html = self.use_html;
-        let raw = raw.clone();
+        self.document_reconciliation_generation =
+            self.document_reconciliation_generation.wrapping_add(1);
+        let reconciliation = self.document_reconciliation_generation;
         cx.spawn_in(window, async move |this, cx| {
             let target = rel.clone();
             let result = cx
                 .background_executor()
                 .spawn(async move {
                     if html {
-                        tessera_core::render::render_html_from_source(
-                            &vault,
-                            &target,
-                            &raw,
-                            "InspiredGitHub",
-                        )
-                        .map(|source| prepared_links::PreparedDocument {
+                        let rendered = if let Some(raw) = raw {
+                            tessera_core::render::render_html_from_source(
+                                &vault,
+                                &target,
+                                &raw,
+                                "InspiredGitHub",
+                            )
+                        } else {
+                            tessera_core::render_html(&vault, &target, "InspiredGitHub")
+                        };
+                        rendered.map(|source| prepared_links::PreparedDocument {
                             source,
                             canonical_source: None,
                             original: None,
@@ -1601,9 +1615,11 @@ impl Reader {
                             frontmatter: None,
                         })
                     } else {
-                        let doc = tessera_core::render::reader_document_from_source(
-                            &vault, &target, &raw,
-                        );
+                        let doc = if let Some(raw) = raw {
+                            tessera_core::render::reader_document_from_source(&vault, &target, &raw)
+                        } else {
+                            tessera_core::render::reader_document(&vault, &target)?
+                        };
                         Ok(prepared_links::PreparedDocument {
                             canonical_source: Some(doc.canonical_source),
                             source: doc.rendered,
@@ -2474,12 +2490,18 @@ mod tests {
         reader.read_with(visual, |r, _| {
             assert_eq!(r.note_canonical_source.as_deref(), Some(changed.as_str()));
         });
+        // Shared-session fallback has no retained source map. Its worker must
+        // publish canonical bytes from the same read as the rendered document.
         reader.update_in(visual, |r, window, cx| {
-            r.reconcile_inventory_document(
-                &std::collections::HashMap::from([("Dashboard.md".into(), initial.into())]),
-                window,
-                cx,
-            );
+            r.reconcile_published_document(window, cx);
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert_eq!(r.note_canonical_source.as_deref(), Some(initial));
+            assert_eq!(r.note_source, rendered);
+        });
+        reader.update_in(visual, |r, window, cx| {
+            r.reconcile_inventory_document(&sources, window, cx);
             r.close_note(window, cx);
         });
         visual.run_until_parked();

@@ -14,3 +14,9 @@ Test exact source through rendering rewrites/BOM/CRLF and native frontmatter-onl
 reconciliation. Existing navigation generations remain the stale-completion guard. Inventory
 reconciliation uses a separate generation so a source refresh cannot cancel an
 in-flight user navigation; reverting to accepted bytes also cancels older work.
+
+Shared-window integration: when the shared worker has detached its mutable source
+baseline, use the existing background document-read path and retain canonical
+bytes from that same read. Inventory-driven updates still render their accepted
+source snapshot directly. Both routes share the reconciliation generation and
+publication guards; neither reads the file on the UI thread.
