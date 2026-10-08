@@ -553,6 +553,31 @@ mod tests {
                 "positive control: creation succeeded"
             );
             let bytes = (!directory).then(|| std::fs::read(root.join(relative)).unwrap());
+            if !directory {
+                visual.simulate_input("temporary text");
+                visual.run_until_parked();
+                reader.read_with(visual, |r, cx| assert!(r.source_is_dirty(cx)));
+                visual.simulate_keystrokes("ctrl-z");
+                visual.run_until_parked();
+                reader.read_with(visual, |r, cx| {
+                    assert_eq!(
+                        r.editing
+                            .as_ref()
+                            .unwrap()
+                            .test_input()
+                            .read(cx)
+                            .value()
+                            .as_ref(),
+                        std::str::from_utf8(bytes.as_ref().unwrap()).unwrap()
+                    );
+                    assert!(
+                        r.creation_undo.is_some(),
+                        "Source Undo must not undo creation"
+                    );
+                    assert!(!r.trash_pending);
+                });
+                assert!(root.join(relative).exists());
+            }
             // Toast stack geometry animates after the previous Undo feedback.
             visual.executor().advance_clock(Duration::from_secs(1));
             visual.run_until_parked();
@@ -603,6 +628,170 @@ mod tests {
                 assert_eq!(std::fs::read(root.join(relative)).unwrap(), bytes);
             }
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn creation_undo_is_scoped_to_its_toast_vault_and_tree(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_reduce_motion(true);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        let other = temp.path().join("other");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(other.join("Second")).unwrap();
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        index_dir: Some(temp.path().join("cache")),
+                        session_directory: Some(temp.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        visual.simulate_resize(size(px(1200.), px(860.)));
+        visual.run_until_parked();
+        let old = reader.update_in(visual, |r, window, cx| {
+            r.new_folder(Some(""), window, cx);
+            r.creation
+                .as_ref()
+                .unwrap()
+                .input
+                .clone()
+                .update(cx, |input, cx| {
+                    input.set_value("First", window, cx);
+                });
+            r.commit_creation(window, cx);
+            r.creation_undo.clone().unwrap()
+        });
+        visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_secs(7));
+        visual.run_until_parked();
+        let latest = reader.update_in(visual, |r, window, cx| {
+            r.new_folder(Some(""), window, cx);
+            r.creation
+                .as_ref()
+                .unwrap()
+                .input
+                .clone()
+                .update(cx, |input, cx| {
+                    input.set_value("Second", window, cx);
+                });
+            r.commit_creation(window, cx);
+            r.creation_undo.clone().unwrap()
+        });
+        visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_secs(1));
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds("undo-create").is_some(),
+            "old timer cannot dismiss a new toast"
+        );
+        reader.update_in(visual, |r, window, cx| {
+            r.undo_creation(Some(&old), window, cx);
+            assert!(Arc::ptr_eq(r.creation_undo.as_ref().unwrap(), &latest));
+            assert!(
+                !r.trash_pending,
+                "stale callback cannot act on latest creation"
+            );
+        });
+        assert!(root.join("First").exists());
+        assert!(root.join("Second").exists());
+        visual.executor().advance_clock(Duration::from_secs(7));
+        visual.run_until_parked();
+        // The lifetime initiates dismissal; allow the notification exit phase
+        // to unmount its action before checking rendered bounds.
+        visual.executor().advance_clock(Duration::from_secs(1));
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds("undo-create").is_none(),
+            "toast disappears after its eight-second lifetime and exit phase"
+        );
+        reader.update_in(visual, |r, window, cx| {
+            assert!(
+                r.creation_undo.is_some(),
+                "keyboard Undo survives toast expiry"
+            );
+            r.new_note(Some(""), window, cx);
+        });
+        visual.run_until_parked();
+        visual.simulate_input("Scratch");
+        visual.run_until_parked();
+        reader.read_with(visual, |r, cx| {
+            assert_eq!(
+                r.creation.as_ref().unwrap().input.read(cx).value().as_ref(),
+                "Scratch"
+            );
+        });
+        visual.simulate_keystrokes("ctrl-z");
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            assert!(
+                r.creation
+                    .as_ref()
+                    .unwrap()
+                    .input
+                    .read(cx)
+                    .value()
+                    .is_empty(),
+                "inline field keeps text Undo"
+            );
+            assert!(r.creation_undo.is_some());
+            assert!(!r.trash_pending);
+            r.cancel_creation(window, cx);
+            r.vault_root = other.clone();
+            r.undo_creation(Some(&latest), window, cx);
+            assert!(
+                !r.trash_pending,
+                "foreign vault callback must not begin deletion"
+            );
+            r.vault_root = root.clone();
+            r.tree_focus.focus(window, cx);
+        });
+        assert!(other.join("Second").exists());
+        assert!(root.join("Second").exists());
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            assert!(
+                r.tree_focus.contains_focused(window, cx),
+                "tree must own keyboard focus"
+            );
+            assert!(r.creation_undo.is_some());
+            assert!(!r.source_is_dirty(cx));
+            assert!(!r.loading.as_ref().is_some_and(|l| l.active));
+        });
+        visual.simulate_keystrokes("ctrl-z");
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert!(
+                r.creation_undo.is_none(),
+                "tree keyboard Undo must reach the handler"
+            );
+        });
+        assert!(
+            !root.join("Second").exists(),
+            "expired toast still supports tree Undo"
+        );
+        assert!(root.join("First").exists());
+        assert!(other.join("Second").exists());
+        reader.update_in(visual, |r, window, cx| r.undo_last_trash(window, cx));
+        visual.run_until_parked();
+        assert!(
+            root.join("Second").exists(),
+            "clean up recoverable Trash fixture"
+        );
     }
 
     #[gpui::test]
