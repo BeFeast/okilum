@@ -147,6 +147,7 @@ struct Settings {
     #[cfg(target_os = "linux")]
     sync: Option<Entity<reader_settings_sync::SyncSettings>>,
     section: Section,
+    theme_picker: Entity<theme_picker::ThemePicker>,
     #[cfg(all(target_os = "linux", feature = "settings-ui-harness"))]
     preview_beta: Option<bool>,
     reader: Option<WeakEntity<Reader>>,
@@ -173,6 +174,7 @@ impl Settings {
             section: Section::Appearance,
             #[cfg(target_os = "linux")]
             sync: None,
+            theme_picker: cx.new(|cx| theme_picker::ThemePicker::new(None, cx)),
             #[cfg(all(target_os = "linux", feature = "settings-ui-harness"))]
             preview_beta: match std::env::var("TESSERA_DEBUG_UPDATER_UI").as_deref() {
                 Ok("sparkle" | "velopack") => Some(false),
@@ -400,9 +402,11 @@ impl Settings {
                 let vault = self
                     .vault(cx)
                     .map(|reader| reader.read(cx).vault_root.clone());
+                self.theme_picker
+                    .update(cx, |picker, cx| picker.set_vault(vault.clone(), cx));
                 content
                     .child(setting_row(
-                        "Theme",
+                        "Mode",
                         "Light, dark, or automatic.",
                         ButtonGroup::new("settings-theme").flex_none().children(
                             [
@@ -443,7 +447,12 @@ impl Settings {
                         cx,
                     ))
                     .child(reader_reading_controls::render(cx))
-                    // #349 inserts its swatch row here, using the same setting_row layout.
+                    .child(
+                        v_flex()
+                            .gap_2()
+                            .child("Color theme")
+                            .child(self.theme_picker.clone()),
+                    )
                     .into_any_element()
             }
             Section::Files => {
@@ -864,13 +873,70 @@ mod tests {
                 assert!(settings.vault(cx).is_none());
             });
         }
+        let theme = visual
+            .debug_bounds("theme-picker-nord")
+            .expect("color themes are hosted in production Settings");
+        visual.simulate_click(theme.center(), Modifiers::default());
+        visual.run_until_parked();
+        visual.update(|_, cx| assert_eq!(brand::theme_id(cx), brand::ThemeId::Nord));
         for (id, label) in [("settings-dark", "Dark"), ("settings-system", "System")] {
             let bounds = visual.debug_bounds(id).expect("appearance option rendered");
             visual.simulate_click(bounds.center(), Modifiers::default());
             visual.run_until_parked();
-            visual.update(|_, cx| assert_eq!(appearance_label(cx), label));
+            visual.update(|_, cx| {
+                assert_eq!(appearance_label(cx), label);
+                assert_eq!(brand::theme_id(cx), brand::ThemeId::Nord);
+            });
         }
     }
+    #[gpui::test]
+    fn color_theme_actions_receive_the_current_canonical_root(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let (root, visual) = cx.add_window_view(|window, cx| {
+            let settings = cx.new(|cx| Settings::new(None, cx));
+            Root::new(settings, window, cx)
+        });
+        let settings = root.read_with(visual, |root, _| {
+            root.view().clone().downcast::<Settings>().unwrap()
+        });
+        let reader =
+            visual.update(|window, cx| cx.new(|cx| Reader::new(Opts::default(), window, cx)));
+        visual.run_until_parked();
+        // No shared store: this is the legacy appearance persistence path.
+        visual.update(|_, cx| assert!(!reader_ui_state::installed(cx)));
+        settings.update(visual, |settings, cx| {
+            settings.set_reader(Some(reader.downgrade()), cx);
+        });
+        for (name, theme) in [("first-vault", "nord"), ("second-vault", "paper")] {
+            let vault = PathBuf::from(name);
+            reader.update(visual, |reader, cx| {
+                reader.vault_root = vault.clone();
+                cx.notify();
+            });
+            visual.run_until_parked();
+            let bounds = visual
+                .debug_bounds(format!("theme-picker-{theme}").leak())
+                .expect("production theme card rendered");
+            visual.simulate_click(bounds.center(), Modifiers::default());
+            visual.run_until_parked();
+            visual.update(|_, cx| {
+                assert_eq!(
+                    cx.global::<theme_picker::ThemeActionVault>().0,
+                    Some(vault),
+                    "theme action must protect the current canonical root after a vault switch"
+                );
+            });
+        }
+        settings.update(visual, |settings, cx| settings.set_reader(None, cx));
+        visual.run_until_parked();
+        let bounds = visual.debug_bounds("theme-picker-tessera").unwrap();
+        visual.simulate_click(bounds.center(), Modifiers::default());
+        visual.run_until_parked();
+        visual.update(|_, cx| {
+            assert_eq!(cx.global::<theme_picker::ThemeActionVault>().0, None);
+        });
+    }
+
     #[gpui::test]
     fn hidden_files_setting_uses_the_reader_toggle(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);

@@ -34,6 +34,7 @@ pub const READER_PIN_ICON: &str = "icons/pin.svg";
 pub const READER_CLOCK_ICON: &str = "icons/clock.svg";
 pub const READER_COLLAPSE_ICON: &str = "icons/chevrons-down-up.svg";
 pub const READER_FOCUS_ICON: &str = "icons/locate-fixed.svg";
+pub const SYSTEM_APPEARANCE_ICON: &str = "icons/monitor.svg";
 const IMAGES: [(&str, &[u8]); 25] = [
     (
         "icons/square-pen.svg",
@@ -48,7 +49,7 @@ const IMAGES: [(&str, &[u8]); 25] = [
         include_bytes!("../assets/icons/pencil.svg"),
     ),
     (
-        "icons/monitor.svg",
+        SYSTEM_APPEARANCE_ICON,
         include_bytes!("../assets/icons/monitor.svg"),
     ),
     (
@@ -169,6 +170,83 @@ pub fn load_fonts(cx: &App) -> anyhow::Result<()> {
     ])
 }
 
+/// A user-selectable color theme (#349). Every theme is a pure token set: the
+/// default `Tessera` is `interface-tokens.json` + `reader-tokens.json`, the others
+/// are `assets/themes/<key>.json`. Light and dark stay a separate choice
+/// (`AppearancePreference`); each theme defines both variants.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ThemeId {
+    #[default]
+    Tessera,
+    Graphite,
+    Paper,
+    HighContrast,
+    Nord,
+}
+
+impl ThemeId {
+    pub const ALL: [Self; 5] = [
+        Self::Tessera,
+        Self::Graphite,
+        Self::Paper,
+        Self::HighContrast,
+        Self::Nord,
+    ];
+
+    /// Stable key for app config and token files.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Tessera => "tessera",
+            Self::Graphite => "graphite",
+            Self::Paper => "paper",
+            Self::HighContrast => "high-contrast",
+            Self::Nord => "nord",
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Tessera => "Tessera",
+            Self::Graphite => "Graphite",
+            Self::Paper => "Paper",
+            Self::HighContrast => "High contrast",
+            Self::Nord => "Nord",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|theme| theme.key() == key)
+    }
+
+    fn tokens(self) -> Option<&'static str> {
+        match self {
+            Self::Tessera => None,
+            Self::Graphite => Some(include_str!("../assets/themes/graphite.json")),
+            Self::Paper => Some(include_str!("../assets/themes/paper.json")),
+            Self::HighContrast => Some(include_str!("../assets/themes/high-contrast.json")),
+            Self::Nord => Some(include_str!("../assets/themes/nord.json")),
+        }
+    }
+
+    fn index(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|theme| *theme == self)
+            .unwrap_or(0)
+    }
+}
+
+/// The selected theme. One app-wide choice, never per vault or in notes.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ThemeChoice(pub ThemeId);
+impl gpui::Global for ThemeChoice {}
+
+pub fn theme_id(cx: &App) -> ThemeId {
+    cx.try_global::<ThemeChoice>()
+        .map(|choice| choice.0)
+        .unwrap_or_default()
+}
+
 /// Interface-owned surface/control aliases plus brand-owned status colors.
 #[derive(Clone, Copy, Debug)]
 pub struct Palette {
@@ -190,27 +268,86 @@ pub struct Palette {
     pub warning: Hsla,
     pub danger: Hsla,
     pub info: Hsla,
+    /// Text and icons on a filled status color.
+    pub on_status: Hsla,
 }
 
-fn palettes() -> &'static [Palette; 2] {
-    static PALETTES: OnceLock<[Palette; 2]> = OnceLock::new();
-    PALETTES.get_or_init(|| {
-        let interface: serde_json::Value =
-            serde_json::from_str(include_str!("../assets/brand/interface-tokens.json"))
-                .expect("validated interface tokens");
-        let brand: serde_json::Value =
-            serde_json::from_str(include_str!("../assets/brand/brand-tokens.json"))
-                .expect("validated brand tokens");
-        ["light", "dark"].map(|mode| {
-            let color = |key: &str| -> Hsla {
-                let value = interface["themes"][mode]
-                    .get(key)
-                    .unwrap_or(&brand["themes"][mode][key]);
-                let hex = value.as_str().expect("validated color string");
-                rgb(u32::from_str_radix(hex.trim_start_matches('#'), 16)
-                    .expect("validated RGB token"))
-                .into()
-            };
+/// Reader-only roles from `reader-tokens.json` (docs/design/reader.md). Reader
+/// components read colors from here or from `Palette`, never from literals.
+#[derive(Clone, Copy, Debug)]
+pub struct ReaderPalette {
+    pub text_faint: Hsla,
+    pub hover: Hsla,
+    pub missing_link: Hsla,
+    pub code_bg: Hsla,
+    pub code_border: Hsla,
+    pub callout_question: Hsla,
+    pub callout_important: Hsla,
+    /// `<mark>` background; translucent so it reads over any surface.
+    pub highlight: Hsla,
+    /// Dims the document under an overlay.
+    pub scrim: Hsla,
+}
+
+/// Status roles may fall back to the brand tokens; every other role must be
+/// named by the theme itself so no theme silently inherits a foreign surface.
+const STATUS_KEYS: [&str; 4] = ["success", "warning", "danger", "info"];
+
+/// `#rrggbb` or `#rrggbbaa`.
+fn parse_color(hex: &str) -> Hsla {
+    let hex = hex.trim_start_matches('#');
+    let value = u32::from_str_radix(hex, 16).expect("validated color token");
+    match hex.len() {
+        6 => rgb(value).into(),
+        8 => gpui::rgba(value).into(),
+        _ => panic!("color token must be #rrggbb or #rrggbbaa: {hex}"),
+    }
+}
+
+/// `#rrggbbaa` for APIs that take color strings (HTML attributes).
+pub fn css_color(color: Hsla) -> String {
+    let c = gpui::Rgba::from(color);
+    let byte = |v: f32| (v.clamp(0., 1.) * 255.).round() as u8;
+    format!(
+        "#{:02x}{:02x}{:02x}{:02x}",
+        byte(c.r),
+        byte(c.g),
+        byte(c.b),
+        byte(c.a)
+    )
+}
+
+type ThemeTokens = [(Palette, ReaderPalette); 2];
+
+fn resolve(theme: ThemeId) -> ThemeTokens {
+    let parse = |json: &str| -> serde_json::Value {
+        serde_json::from_str(json).expect("validated token file")
+    };
+    let brand = parse(include_str!("../assets/brand/brand-tokens.json"));
+    let (layers, own): (Vec<serde_json::Value>, &str) = match theme.tokens() {
+        None => (
+            vec![
+                parse(include_str!("../assets/brand/interface-tokens.json")),
+                parse(include_str!("../assets/reader/reader-tokens.json")),
+            ],
+            "themes",
+        ),
+        Some(json) => (vec![parse(json)], "modes"),
+    };
+    ["light", "dark"].map(|mode| {
+        let color = |key: &str| -> Hsla {
+            let value = layers
+                .iter()
+                .find_map(|layer| layer[own][mode].get(key))
+                .or_else(|| {
+                    STATUS_KEYS
+                        .contains(&key)
+                        .then(|| &brand["themes"][mode][key])
+                })
+                .unwrap_or_else(|| panic!("theme {} {mode} lacks {key}", theme.key()));
+            parse_color(value.as_str().expect("validated color string"))
+        };
+        (
             Palette {
                 canvas: color("canvas"),
                 surface: color("surface"),
@@ -230,38 +367,8 @@ fn palettes() -> &'static [Palette; 2] {
                 warning: color("warning"),
                 danger: color("danger"),
                 info: color("info"),
-            }
-        })
-    })
-}
-
-/// Reader-only roles from `reader-tokens.json` (docs/design/reader.md). Reader
-/// components read colors from here or from `Palette`, never from literals.
-#[derive(Clone, Copy, Debug)]
-pub struct ReaderPalette {
-    pub text_faint: Hsla,
-    pub hover: Hsla,
-    pub missing_link: Hsla,
-    pub code_bg: Hsla,
-    pub code_border: Hsla,
-    pub callout_question: Hsla,
-}
-
-fn reader_palettes() -> &'static [ReaderPalette; 2] {
-    static PALETTES: OnceLock<[ReaderPalette; 2]> = OnceLock::new();
-    PALETTES.get_or_init(|| {
-        let tokens: serde_json::Value =
-            serde_json::from_str(include_str!("../assets/reader/reader-tokens.json"))
-                .expect("validated reader tokens");
-        ["light", "dark"].map(|mode| {
-            let color = |key: &str| -> Hsla {
-                let hex = tokens["themes"][mode][key]
-                    .as_str()
-                    .expect("validated color string");
-                rgb(u32::from_str_radix(hex.trim_start_matches('#'), 16)
-                    .expect("validated RGB token"))
-                .into()
-            };
+                on_status: color("onStatus"),
+            },
             ReaderPalette {
                 text_faint: color("textFaint"),
                 hover: color("hover"),
@@ -269,29 +376,54 @@ fn reader_palettes() -> &'static [ReaderPalette; 2] {
                 code_bg: color("codeBg"),
                 code_border: color("codeBorder"),
                 callout_question: color("calloutQuestion"),
-            }
-        })
+                callout_important: color("calloutImportant"),
+                highlight: color("highlight"),
+                scrim: color("scrim"),
+            },
+        )
     })
 }
 
+fn tokens(theme: ThemeId, dark: bool) -> (Palette, ReaderPalette) {
+    static TOKENS: OnceLock<Vec<ThemeTokens>> = OnceLock::new();
+    TOKENS.get_or_init(|| ThemeId::ALL.map(resolve).to_vec())[theme.index()][usize::from(dark)]
+}
+
+/// Both variants of a theme, for previews that must not depend on the live mode.
+pub fn theme_palette(theme: ThemeId, dark: bool) -> Palette {
+    tokens(theme, dark).0
+}
+
 pub fn reader_palette_for_theme(theme: &Theme) -> ReaderPalette {
-    reader_palettes()[usize::from(theme.is_dark())]
+    tokens(applied_theme(), theme.is_dark()).1
 }
 
 pub fn reader_palette(cx: &App) -> ReaderPalette {
-    reader_palettes()[usize::from(Theme::global(cx).is_dark())]
+    tokens(theme_id(cx), Theme::global(cx).is_dark()).1
 }
 
 /// For render callbacks that have no `App` (link presentation closures). Kept in
 /// step with the live theme by `apply_theme`.
 static APPLIED_DARK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static APPLIED_THEME: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn applied_theme() -> ThemeId {
+    ThemeId::ALL
+        .get(APPLIED_THEME.load(std::sync::atomic::Ordering::Relaxed))
+        .copied()
+        .unwrap_or_default()
+}
 
 pub fn reader_palette_current() -> ReaderPalette {
-    reader_palettes()[usize::from(APPLIED_DARK.load(std::sync::atomic::Ordering::Relaxed))]
+    tokens(
+        applied_theme(),
+        APPLIED_DARK.load(std::sync::atomic::Ordering::Relaxed),
+    )
+    .1
 }
 
 pub fn palette(cx: &App) -> Palette {
-    palettes()[usize::from(Theme::global(cx).is_dark())]
+    tokens(theme_id(cx), Theme::global(cx).is_dark()).0
 }
 
 /// Reapply after `Theme::sync_system_appearance` or `Theme::change`, which resets
@@ -302,6 +434,7 @@ pub fn apply_theme(cx: &mut App) {
         Theme::global(cx).is_dark(),
         std::sync::atomic::Ordering::Relaxed,
     );
+    APPLIED_THEME.store(theme_id(cx).index(), std::sync::atomic::Ordering::Relaxed);
     let t = Theme::global_mut(cx);
     t.font_family = SANS_FONT.into();
     t.mono_font_family = MONO_FONT.into();
@@ -397,11 +530,7 @@ pub fn apply_theme(cx: &mut App) {
     t.warning = p.warning;
     t.danger = p.danger;
     t.info = p.info;
-    let on_status = if t.is_dark() {
-        p.canvas
-    } else {
-        rgb(0xffffff).into()
-    };
+    let on_status = p.on_status;
     t.danger_foreground = on_status;
     t.danger_hover = p.danger.darken(0.04);
     t.danger_active = p.danger.darken(0.08);
@@ -485,6 +614,21 @@ pub fn button(
     }))
 }
 
+/// The mark's single color comes from the brand tokens, not from the selected
+/// theme: the identity stays the same under every theme.
+fn brand_mark(dark: bool) -> Hsla {
+    static MARK: OnceLock<[Hsla; 2]> = OnceLock::new();
+    MARK.get_or_init(|| {
+        let brand: serde_json::Value =
+            serde_json::from_str(include_str!("../assets/brand/brand-tokens.json"))
+                .expect("validated brand tokens");
+        // Primary symbol in brand blue; reversed symbol in the dark text color.
+        [("light", "accent"), ("dark", "text")].map(|(mode, key)| {
+            parse_color(brand["themes"][mode][key].as_str().expect("brand color"))
+        })
+    })[usize::from(dark)]
+}
+
 /// Canonical B geometry, rendered as the approved single-color symbol. SVG masks
 /// intentionally do not pretend to support a multicolor app-icon background.
 pub fn logo(size_px: f32, cx: &App) -> Svg {
@@ -492,7 +636,7 @@ pub fn logo(size_px: f32, cx: &App) -> Svg {
     svg()
         .path(if dark { REVERSED_SYMBOL } else { SYMBOL })
         .size(px(size_px))
-        .text_color(if dark { rgb(0xe9f0fc) } else { rgb(0x2563eb) })
+        .text_color(brand_mark(dark))
 }
 
 #[cfg(test)]
@@ -558,6 +702,165 @@ mod tests {
             );
             assert!(std::str::from_utf8(&data).unwrap().contains("<svg"));
         }
+    }
+
+    /// WCAG 2.x relative luminance of an opaque color.
+    fn luminance(color: Hsla) -> f32 {
+        let c = gpui::Rgba::from(color);
+        let channel = |v: f32| {
+            if v <= 0.04045 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * channel(c.r) + 0.7152 * channel(c.g) + 0.0722 * channel(c.b)
+    }
+
+    fn contrast(a: Hsla, b: Hsla) -> f32 {
+        let (a, b) = (luminance(a), luminance(b));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    #[test]
+    fn contrast_helper_matches_the_wcag_reference_points() {
+        let black: Hsla = rgb(0x000000).into();
+        let white: Hsla = rgb(0xffffff).into();
+        assert!((contrast(black, white) - 21.).abs() < 0.01);
+        assert!((contrast(white, white) - 1.).abs() < 0.01);
+        // #767676 on white is the canonical 4.54:1 AA boundary grey.
+        let grey: Hsla = rgb(0x767676).into();
+        assert!((contrast(grey, white) - 4.54).abs() < 0.01);
+    }
+
+    /// #349: every theme, in both variants, keeps reading text at WCAG AA
+    /// (AAA for the high-contrast theme) on every surface it is drawn on.
+    #[test]
+    fn every_theme_meets_wcag_contrast_for_text_muted_and_links() {
+        let mut failures = Vec::new();
+        for theme in ThemeId::ALL {
+            let reading = if theme == ThemeId::HighContrast {
+                7.0
+            } else {
+                4.5
+            };
+            for dark in [false, true] {
+                let (p, r) = tokens(theme, dark);
+                let mut check = |what: &str, fg: Hsla, bg: Hsla, min: f32| {
+                    let ratio = contrast(fg, bg);
+                    if ratio < min {
+                        failures.push(format!(
+                            "{} {}: {what} {ratio:.2} < {min}",
+                            theme.key(),
+                            if dark { "dark" } else { "light" }
+                        ));
+                    }
+                };
+                for (name, bg) in [
+                    ("surface", p.surface),
+                    ("canvas", p.canvas),
+                    ("sidebar", p.sidebar),
+                ] {
+                    check(&format!("text on {name}"), p.text, bg, reading);
+                    check(&format!("text-muted on {name}"), p.text_muted, bg, reading);
+                }
+                for (name, bg) in [("surface", p.surface), ("canvas", p.canvas)] {
+                    check(&format!("link on {name}"), p.link, bg, reading);
+                    check(
+                        &format!("missing-link on {name}"),
+                        r.missing_link,
+                        bg,
+                        reading,
+                    );
+                }
+                for (name, bg) in [
+                    ("code-bg", r.code_bg),
+                    ("surface-raised", p.surface_raised),
+                    ("selected", p.selected),
+                    ("hover", r.hover),
+                ] {
+                    check(&format!("text on {name}"), p.text, bg, reading);
+                }
+                check("on-accent on accent", p.on_accent, p.accent, 4.5);
+                // Counts and hints are supplementary; still never below 3:1.
+                let faint = if theme == ThemeId::HighContrast {
+                    4.5
+                } else {
+                    3.0
+                };
+                check("text-faint on surface", r.text_faint, p.surface, faint);
+                for (name, status) in [
+                    ("success", p.success),
+                    ("warning", p.warning),
+                    ("danger", p.danger),
+                    ("info", p.info),
+                ] {
+                    check(&format!("{name} on surface"), status, p.surface, 4.5);
+                    check(&format!("on-status on {name}"), p.on_status, status, 4.5);
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn themes_are_distinct_token_sets_with_stable_keys() {
+        for theme in ThemeId::ALL {
+            assert_eq!(ThemeId::from_key(theme.key()), Some(theme));
+            if let Some(json) = theme.tokens() {
+                let file: serde_json::Value = serde_json::from_str(json).unwrap();
+                assert_eq!(file["schema"], "tessera-theme/v1");
+                assert_eq!(file["id"], theme.key());
+            }
+        }
+        assert_eq!(ThemeId::from_key("solarized"), None);
+        for (i, a) in ThemeId::ALL.into_iter().enumerate() {
+            for b in ThemeId::ALL.into_iter().skip(i + 1) {
+                for dark in [false, true] {
+                    let (a, b) = (theme_palette(a, dark), theme_palette(b, dark));
+                    assert!(
+                        a.surface != b.surface || a.accent != b.accent,
+                        "two themes render the same"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn default_theme_keeps_the_approved_reader_tokens() {
+        // Selecting nothing must look exactly like the R1 spec.
+        let (light, reader) = tokens(ThemeId::Tessera, false);
+        assert_eq!(light.surface, rgb(0xffffff).into());
+        assert_eq!(light.text, rgb(0x24262b).into());
+        assert_eq!(light.link, rgb(0x0969e8).into());
+        assert_eq!(reader.missing_link, rgb(0x9a5b00).into());
+        assert_eq!(
+            theme_palette(ThemeId::Tessera, true).surface,
+            rgb(0x202226).into()
+        );
+        assert_eq!(css_color(reader.highlight), "#ffd00066");
+    }
+
+    #[gpui::test]
+    fn selected_theme_drives_palette_and_native_tokens(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        cx.update(|cx| {
+            for theme in [ThemeId::Nord, ThemeId::HighContrast, ThemeId::Tessera] {
+                for mode in [ThemeMode::Light, ThemeMode::Dark] {
+                    cx.set_global(ThemeChoice(theme));
+                    Theme::change(mode, None, cx);
+                    apply_theme(cx);
+                    let expected = theme_palette(theme, mode == ThemeMode::Dark);
+                    let p = palette(cx);
+                    assert_eq!(p.surface, expected.surface);
+                    let t = Theme::global(cx);
+                    assert_eq!(t.background, expected.canvas);
+                    assert_eq!(t.tokens.button_primary.color, expected.accent);
+                    assert_eq!(t.danger_foreground, expected.on_status);
+                }
+            }
+        });
     }
 
     #[gpui::test]
