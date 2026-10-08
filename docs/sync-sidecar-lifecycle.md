@@ -438,7 +438,7 @@ executable signature verification, bounded open/setup and supervisor wiring
 remain outstanding under #588.
 
 
-### Worker-owned client open (acceptance pending)
+### Worker-owned client open
 
 `ClientIo::connect` opens and verifies the private endpoint on the same admitted
 worker that performs I/O. The caller waits for initial verification only until
@@ -456,4 +456,13 @@ exchange with missing/expired refusal, the original read deadline, and an
 explicitly injected setup stall with a completion/release positive control.
 The injected stall is not evidence that a real blocked CreateFileW was cancelled.
 Production Transport, trusted discovery/signature and supervisor wiring remain
-outstanding. Native and full hosted Linux gates are required for this candidate.
+outstanding. Native acceptance passed on exact source
+`8fe4289a2bba183d82a5e867cb90abad5e02de94`, tree
+`1eeead14f490634e8735cefadb4ce0fad06f2a8e`: 58 passed, zero failed or ignored,
+including all three worker-open tests and the previous 16 IPC fixtures.
+https://github.com/BeFeast/tessera/actions/runs/37856660074
+The same source passed the full hosted Linux gate:
+https://github.com/BeFeast/tessera/actions/runs/37856660511
+Native tests used rustc 1.99.0, x86_64-pc-windows-msvc, default features,
+`sidecar::`, one test thread. The injected setup stall validates caller waiting
+and retained cleanup ownership, not cancellation of a real blocked CreateFileW.
