@@ -148,6 +148,63 @@ fn comrak_ranges_cover_reference_title_angle_unicode_and_exclude_code() {
     assert!(parsed.iter().all(|l| !l.wiki));
 }
 
+/// Comrak misplaces some inline source positions (#650). A rewrite into a
+/// wrong range used to splice the resolved URL into the middle of the note.
+#[test]
+fn misreported_comrak_ranges_are_repaired_or_skipped_never_spliced() {
+    let vault = Vault::from_note_paths([]);
+    // A title on the next line: Comrak ends the link at its destination.
+    let source = "text [a](b.md \"t\"\n) z\n\n[link](   /uri\n  \"title\"  ) end\n";
+    let parsed = links::parse(source);
+    assert_eq!(
+        parsed
+            .iter()
+            .map(|l| &source[l.range.clone()])
+            .collect::<Vec<_>>(),
+        ["[a](b.md \"t\"\n)", "[link](   /uri\n  \"title\"  )"]
+    );
+    let rewritten = rewrite_source_links(source, &vault, "note.md");
+    assert!(rewritten.starts_with("text [a](tessera://"), "{rewritten}");
+    assert!(
+        rewritten.contains("\"t\") z\n\n[link](tessera://"),
+        "{rewritten}"
+    );
+    assert!(rewritten.ends_with("\"title\") end\n"), "{rewritten}");
+    // Comrak also stops counting lines after such a link, so a later link in
+    // the same paragraph gets a wrong range and stays as written.
+    let source = "text [a](b.md \"t\"\n) z\n[c](d.md) end\n";
+    let rewritten = rewrite_source_links(source, &vault, "note.md");
+    assert!(rewritten.ends_with(") z\n[c](d.md) end\n"), "{rewritten}");
+    // A paragraph that opens with a reference definition: Comrak places its
+    // inlines as if the definition were absent. Those links stay as written.
+    // Their targets still count, for backlinks and link state.
+    for (source, targets) in [
+        ("[r]: /u\npara [a](x.md) [b](y.md)\n", &["x.md", "y.md"][..]),
+        ("[foo]: /url\n===\n[foo]\n", &["/url"]),
+    ] {
+        let parsed = links::parse(source);
+        assert_eq!(
+            parsed.iter().map(|l| l.target.as_str()).collect::<Vec<_>>(),
+            targets
+        );
+        assert!(parsed.iter().all(|l| !l.exact_range), "{source:?}");
+        assert_eq!(rewrite_source_links(source, &vault, "note.md"), source);
+    }
+    // Positive control: the same link after a blank line is found and rewritten.
+    let source = "[r]: /u\n\npara [a](x.md)\n";
+    assert!(links::parse(source)[0].exact_range);
+    assert_eq!(&source[links::parse(source)[0].range.clone()], "[a](x.md)");
+    assert_ne!(rewrite_source_links(source, &vault, "note.md"), source);
+    // Multi-line labels inside containers keep their exact ranges.
+    for (source, link) in [
+        ("> quote [a\n> b](x.md)\n", "[a\n> b](x.md)"),
+        ("- item [a\n  b](x.md)\n", "[a\n  b](x.md)"),
+        ("para\n[a](\nx.md)\n", "[a](\nx.md)"),
+    ] {
+        assert_eq!(&source[links::parse(source)[0].range.clone()], link);
+    }
+}
+
 #[test]
 fn decoding_once_keeps_encoded_filename_delimiters_separate_from_fragment() {
     assert_eq!(

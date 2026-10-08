@@ -6,12 +6,19 @@ pub(crate) use paths::fallback_links;
 pub use paths::{markdown_path, parse_in_vault};
 
 use crate::{render, Resolution, Vault};
-use comrak::{nodes::NodeValue, parse_document, Arena};
+use comrak::{
+    nodes::{AstNode, NodeValue},
+    parse_document, Arena,
+};
 use std::ops::Range;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParsedLink {
     pub range: Range<usize>,
+    /// False when the range Comrak reported could not be verified (#650).
+    /// The link's target still counts, but its range must not be used to
+    /// edit or mark the source.
+    pub exact_range: bool,
     pub label: String,
     pub title: String,
     pub target: String,
@@ -199,6 +206,17 @@ pub fn parse(source: &str) -> Vec<ParsedLink> {
             let end = lines
                 .get(pos.end.line.checked_sub(1)?)?
                 .checked_add(pos.end.column)?;
+            let checked = checked_link_end(
+                node,
+                &parse_source,
+                &lines,
+                start..end,
+                wiki,
+                &target,
+                &title,
+            );
+            let exact_range = checked.is_some();
+            let end = checked.unwrap_or(end);
             let authored = source.get(start..end)?;
             // A normal Markdown URL/title can itself contain wiki-looking bytes.
             // Parse that isolated link without table splitting to retain its exact
@@ -244,6 +262,7 @@ pub fn parse(source: &str) -> Vec<ParsedLink> {
             };
             Some(ParsedLink {
                 range: start..end,
+                exact_range,
                 label,
                 title,
                 target,
@@ -251,6 +270,80 @@ pub fn parse(source: &str) -> Vec<ParsedLink> {
             })
         })
         .collect()
+}
+
+/// Comrak's inline source positions are wrong in two places (seen in 0.47 and
+/// 0.56, #650): a link whose title or closing parenthesis is on a later line
+/// ends at its destination, and the inlines of a paragraph that opens with a
+/// link reference definition are placed as if the definition were not there.
+/// A rewrite spliced into such a range corrupts the note, so a range is
+/// trusted only when it has the shape of the link. A short inline link is
+/// extended to the first of the next few closing parentheses at which its
+/// text parses on its own as the same link. `None` means the range is not
+/// trustworthy.
+fn checked_link_end<'a>(
+    node: &'a AstNode<'a>,
+    parse_source: &str,
+    lines: &[usize],
+    range: Range<usize>,
+    wiki: bool,
+    url: &str,
+    title: &str,
+) -> Option<usize> {
+    let block = node.ancestors().find(|n| n.data.borrow().value.block())?;
+    let block_pos = block.data.borrow().sourcepos;
+    let block_line = *lines.get(block_pos.start.line.checked_sub(1)?)?;
+    let block_start = block_line.checked_add(block_pos.start.column.checked_sub(1)?)?;
+    let block_end = lines
+        .get(block_pos.end.line.checked_sub(1)?)?
+        .checked_add(block_pos.end.column)?
+        .min(parse_source.len());
+    let first_line = parse_source.get(block_start..)?.lines().next()?;
+    if first_line.starts_with('[') {
+        // A first line that is nothing on its own is a reference definition
+        // Comrak took out of this paragraph: no range in it can be trusted.
+        let arena = Arena::new();
+        parse_document(&arena, first_line, &render::comrak_options()).first_child()?;
+    }
+    let authored = parse_source.get(range.clone())?;
+    let shaped = if wiki {
+        authored.starts_with("[[") && authored.ends_with("]]")
+    } else if authored.starts_with('[') {
+        authored.ends_with(')') || authored.ends_with(']')
+    } else if authored.starts_with('<') {
+        authored.ends_with('>')
+    } else {
+        !authored.is_empty() && !authored.contains(char::is_whitespace)
+    };
+    if shaped {
+        return Some(range.end);
+    }
+    if wiki || !authored.starts_with('[') {
+        return None;
+    }
+    let tail = parse_source.get(range.end..block_end.max(range.end))?;
+    tail.match_indices(')')
+        .map(|(at, _)| range.end + at + 1)
+        .take(8)
+        .find(|&end| is_only_link(&parse_source[range.start..end], url, title))
+}
+
+/// Whether `text` parses on its own as exactly one link to `url`.
+fn is_only_link(text: &str, url: &str, title: &str) -> bool {
+    let arena = Arena::new();
+    let root = parse_document(&arena, text, &render::comrak_options());
+    let Some(paragraph) = root.first_child().filter(|p| p.next_sibling().is_none()) else {
+        return false;
+    };
+    let Some(link) = paragraph
+        .first_child()
+        .filter(|l| l.next_sibling().is_none())
+    else {
+        return false;
+    };
+    let same =
+        matches!(&link.data.borrow().value, NodeValue::Link(l) if l.url == url && l.title == title);
+    same
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

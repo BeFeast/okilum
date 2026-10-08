@@ -258,7 +258,9 @@ fn rewrite_source_links_collect(
         if !identities.contains(&identity) {
             identities.push(identity);
         }
-        if resolved.status == "external" {
+        // An unverified range keeps the link as authored rather than splice
+        // the rewrite into the wrong bytes (#650).
+        if resolved.status == "external" || !link.exact_range {
             continue;
         }
         let label = if link.wiki {
