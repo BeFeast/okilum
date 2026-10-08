@@ -115,3 +115,22 @@ and last-moment replacement. Native acceptance must cover these and the eleven
 `windows_save_*` backend controls at the final SHA; cross-clippy is supplementary.
 Velopack beta QA checks the actual Windows input, Source/Live Preview, navigation,
 Ctrl+S/Ctrl+F, creation/rename and OneDrive/antivirus behavior.
+
+## Windows vault path boundaries (#803, #805)
+
+Filesystem paths keep native Windows spelling for I/O. A path becoming a vault
+identity passes through the scanner's `vault::note_path` conversion to `/`.
+Creation returns this identity before template validation and immediate tree
+publication. Rename normalizes the selected destination before preview; the
+shared preview entrypoint applies the same boundary to native source/destination
+inputs. Unix literal backslashes are preserved by the platform-aware helper.
+
+Approved moved/referring sources retain exact byte validation. If an unrelated
+existing note changes while a preview is open, validation reads it again and
+proves its current links need no move rewrite before proceeding. A new incoming
+link, changed approved source, changed inventory, or unverifiable target still
+requires a new preview. Unrelated external source bytes are never overwritten.
+Native contracts use filesystem joins and `set_file_name` in nested folders,
+round-trip create/template/tree identities, rewrite both wikilinks and the sibling
+Markdown link, and check unrelated-edit/new-referrer controls for indexed and
+full-scan previews.

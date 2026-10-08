@@ -439,12 +439,13 @@ impl Reader {
         if !directory && path.extension().is_none() {
             path.set_extension("md");
         }
-        let to = path
+        let relative = path
             .strip_prefix(&self.vault_root)
-            .map_err(|_| anyhow::anyhow!("Choose a destination inside the open folder"))?
+            .map_err(|_| anyhow::anyhow!("Choose a destination inside the open folder"))?;
+        relative
             .to_str()
-            .ok_or_else(|| anyhow::anyhow!("Use a UTF-8 filename"))?
-            .to_owned();
+            .ok_or_else(|| anyhow::anyhow!("Use a UTF-8 filename"))?;
+        let to = tessera_core::vault::note_path(relative);
         if !directory {
             MovePlan::prepare(&self.vault_root, Path::new(from), Path::new(&to))?;
         }

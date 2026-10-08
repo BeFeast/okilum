@@ -3726,7 +3726,10 @@ impl Reader {
                                     .icon(IconName::ChevronDown)
                                     .tooltip(format!(
                                         "Template: {}",
-                                        selected.as_deref().unwrap_or("Built-in")
+                                        selected
+                                            .as_deref()
+                                            .unwrap_or("Built-in")
+                                            .trim_end_matches(".md")
                                     ))
                                     .dropdown_menu_with_anchor(
                                         Anchor::TopRight,
@@ -3754,8 +3757,10 @@ impl Reader {
                                             let mut menu =
                                                 menu.item(option("Built-in note".into(), None));
                                             for name in &templates {
-                                                menu = menu
-                                                    .item(option(name.clone(), Some(name.clone())));
+                                                menu = menu.item(option(
+                                                    name.trim_end_matches(".md").to_owned(),
+                                                    Some(name.clone()),
+                                                ));
                                             }
                                             menu
                                         },

@@ -61,6 +61,8 @@ impl Tree {
     /// Keep consecutive local operations visible until the watcher catches up.
     #[cfg(any(unix, windows))]
     pub fn entry_created(&mut self, path: &str, kind: EntryKind) {
+        let identity = tessera_core::vault::note_path(Path::new(path));
+        let path = identity.as_str();
         let mut entries: Vec<_> = self
             .kinds
             .iter()
@@ -415,6 +417,29 @@ mod tests {
             path: path.into(),
             kind,
         }
+    }
+    #[test]
+    fn windows_vault_paths_tree_creation_publishes_canonical_ancestry() {
+        let mut tree = Tree::default();
+        tree.refresh(Path::new("/vault"), &[]);
+        let parent = Path::new("Dev").join("Projects").join("tessera-qa");
+        let folder = parent.join("win-qa-folder");
+        tree.entry_created(folder.to_str().unwrap(), EntryKind::Directory);
+        let note = folder.join("win-qa-b.md");
+        tree.entry_created(note.to_str().unwrap(), EntryKind::Markdown);
+        assert!(tree
+            .reveal("Dev/Projects/tessera-qa/win-qa-folder/win-qa-b.md")
+            .is_some());
+        assert!(tree.kinds.keys().all(|path| !path.contains('\\')));
+        assert_eq!(
+            tree.children["Dev/Projects/tessera-qa"][0].path,
+            "Dev/Projects/tessera-qa/win-qa-folder"
+        );
+        assert_eq!(
+            tree.children["Dev/Projects/tessera-qa/win-qa-folder"][0].path,
+            "Dev/Projects/tessera-qa/win-qa-folder/win-qa-b.md"
+        );
+        assert_eq!(tree.rows.last().unwrap().label, "win-qa-b.md");
     }
     #[test]
     fn templates_are_visible_without_revealing_other_hidden_branches() {

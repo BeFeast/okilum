@@ -105,7 +105,7 @@ pub fn typed_path(parent: &Path, name: &str, directory: bool) -> Result<std::pat
                 || p.chars().any(|c| c.is_control() || c == '\\')
         })
     {
-        bail!("Enter a name, or folders/name, without empty, dot or parent segments");
+        bail!("Enter a name or a path such as Folder/Name. Avoid blank names, . and ..");
     }
     if parent
         .components()
@@ -125,7 +125,10 @@ pub fn typed_path(parent: &Path, name: &str, directory: bool) -> Result<std::pat
             .to_string_lossy();
         relative.set_file_name(format!("{filename}.md"));
     }
-    Ok(relative)
+    relative.to_str().context("Use a UTF-8 filename")?;
+    // Filesystem joins introduce native separators. Everything published as a
+    // vault identity (including immediate tree updates) uses the scanner's form.
+    Ok(crate::vault::note_path(&relative).into())
 }
 
 /// Create intermediate real directories via descriptors. Existing final folders
@@ -197,8 +200,9 @@ pub fn create_from_template(
     catalog: &crate::note_templates::Catalog,
     selected: Option<&str>,
 ) -> Result<String> {
-    let name = relative.to_str().context("Use a UTF-8 filename")?;
-    let checked = typed_path(Path::new(""), name, false)?;
+    relative.to_str().context("Use a UTF-8 filename")?;
+    let name = crate::vault::note_path(relative);
+    let checked = typed_path(Path::new(""), &name, false)?;
     if checked != relative {
         bail!("Use a Markdown (.md) filename");
     }
