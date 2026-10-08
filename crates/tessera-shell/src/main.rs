@@ -249,7 +249,6 @@ fn bind_keys(cx: &mut App) {
         // Quick Look is a macOS service; elsewhere Space would only report that.
         #[cfg(target_os = "macos")]
         KeyBinding::new("space", QuickLookFile, Some("ReaderFile && !Input")),
-
     ]);
     // ⌘/Ctrl + and − arrive as `=`/`+` and `-` depending on layout and shift.
     let pdf = Some("ReaderPdf");
