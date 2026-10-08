@@ -1,4 +1,4 @@
-//! Native NTFS mutation primitives. The Reader's Windows editing UI remains off.
+//! Native NTFS mutation primitives for desktop source editing.
 //!
 //! Callers must persist their revision-aware draft before replacement and keep
 //! it until this module reports Saved. All prepared/displaced files survive an
@@ -50,7 +50,7 @@ fn retry<T>(mut operation: impl FnMut() -> std::io::Result<T>) -> std::io::Resul
     }
     operation()
 }
-fn information(file: &File) -> Result<BY_HANDLE_FILE_INFORMATION> {
+pub(crate) fn information(file: &File) -> Result<BY_HANDLE_FILE_INFORMATION> {
     let mut info = BY_HANDLE_FILE_INFORMATION::default();
     // File owns the handle for the complete call; info has the required layout.
     ensure!(
@@ -104,8 +104,8 @@ fn resident_cloud(tag: u32, attributes: u32, directory: bool) -> bool {
                     | FILE_ATTRIBUTE_RECALL_ON_OPEN)
                 == 0)
 }
-fn read_file(path: &Path) -> Result<(File, Vec<u8>, BY_HANDLE_FILE_INFORMATION)> {
-    let mut file = retry(|| {
+pub(crate) fn open_regular(path: &Path) -> Result<(File, BY_HANDLE_FILE_INFORMATION)> {
+    let file = retry(|| {
         OpenOptions::new()
             .read(true)
             .share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE)
@@ -114,6 +114,10 @@ fn read_file(path: &Path) -> Result<(File, Vec<u8>, BY_HANDLE_FILE_INFORMATION)>
     })?;
     let info = information(&file)?;
     plain(&info, false, &file)?;
+    Ok((file, info))
+}
+pub(crate) fn read_file(path: &Path) -> Result<(File, Vec<u8>, BY_HANDLE_FILE_INFORMATION)> {
+    let (mut file, info) = open_regular(path)?;
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)?;
     Ok((file, bytes, info))
@@ -128,6 +132,33 @@ pub struct Directory {
     _ancestors: Vec<File>,
 }
 impl Directory {
+    pub(crate) fn identities(&self) -> Result<Vec<(u32, u32, u32)>> {
+        self._ancestors
+            .iter()
+            .map(|file| information(file).map(|info| identity(&info)))
+            .collect()
+    }
+    pub(crate) fn information(&self) -> Result<BY_HANDLE_FILE_INFORMATION> {
+        information(self._ancestors.last().unwrap())
+    }
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+    pub(crate) fn read(&self, name: &OsStr) -> Result<(File, Vec<u8>, BY_HANDLE_FILE_INFORMATION)> {
+        read_file(&self.child(name)?)
+    }
+    pub(crate) fn open_file(&self, name: &OsStr) -> Result<File> {
+        Ok(open_regular(&self.child(name)?)?.0)
+    }
+    pub(crate) fn create_directory(&self, name: &OsStr) -> Result<()> {
+        let destination = self.child(name)?;
+        let prepared = self
+            .path
+            .join(format!(".tessera-create-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&prepared)?;
+        // WRITE_THROUGH publication and NOREPLACE apply to folders as well.
+        move_no_replace(&prepared, &destination)
+    }
     pub fn open(path: &Path) -> Result<Self> {
         ensure!(path.is_absolute(), "Expected an absolute directory");
         let mut components = path.components();
@@ -205,7 +236,7 @@ impl Directory {
         plain(&information(&file)?, true, &file)?;
         Ok(file)
     }
-    fn child(&self, name: &OsStr) -> Result<PathBuf> {
+    pub(crate) fn child(&self, name: &OsStr) -> Result<PathBuf> {
         let mut components = Path::new(name).components();
         ensure!(
             matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none(),
@@ -502,14 +533,14 @@ impl Drop for Descriptor {
         }
     }
 }
-fn identity(info: &BY_HANDLE_FILE_INFORMATION) -> (u32, u32, u32) {
+pub(crate) fn identity(info: &BY_HANDLE_FILE_INFORMATION) -> (u32, u32, u32) {
     (
         info.dwVolumeSerialNumber,
         info.nFileIndexHigh,
         info.nFileIndexLow,
     )
 }
-fn move_no_replace(source: &Path, destination: &Path) -> Result<()> {
+pub(crate) fn move_no_replace(source: &Path, destination: &Path) -> Result<()> {
     let source = wide(source)?;
     let destination = wide(destination)?;
     retry(|| {
@@ -561,3 +592,77 @@ pub enum Replacement {
 #[cfg(test)]
 #[path = "windows_files/tests.rs"]
 mod tests;
+
+/// Native identity for a checked creation Undo target. Redirecting names fail closed.
+pub fn checked_identity(path: &Path) -> Result<(u64, u64)> {
+    let parent = Directory::open(path.parent().context("Missing parent")?)?;
+    let name = path.file_name().context("Missing filename")?;
+    let child = parent.child(name)?;
+    let info = if std::fs::symlink_metadata(&child)?.is_dir() {
+        Directory::open(&child)?.information()?
+    } else {
+        parent.read(name)?.2
+    };
+    let (volume, high, low) = identity(&info);
+    Ok((u64::from(volume), u64::from(high) << 32 | u64::from(low)))
+}
+
+/// Undo only an untouched creation, through the checked DELETE handle itself.
+/// No path-based unlink can delete a racing replacement. A nonempty folder is refused.
+pub fn undo_created(path: &Path, expected: (u64, u64), source: Option<&[u8]>) -> Result<()> {
+    let parent = Directory::open(path.parent().context("Missing parent")?)?;
+    let child = parent.child(path.file_name().context("Missing filename")?)?;
+    let directory = source.is_none();
+    let mut guard = retry(|| {
+        OpenOptions::new()
+            .read(true)
+            .access_mode(if directory {
+                FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | DELETE
+            } else {
+                GENERIC_READ | DELETE
+            })
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE)
+            .custom_flags(
+                FILE_FLAG_OPEN_REPARSE_POINT
+                    | if directory {
+                        FILE_FLAG_BACKUP_SEMANTICS
+                    } else {
+                        0
+                    },
+            )
+            .open(&child)
+    })?;
+    let info = information(&guard)?;
+    plain(&info, directory, &guard)?;
+    let (volume, high, low) = identity(&info);
+    ensure!(
+        (u64::from(volume), u64::from(high) << 32 | u64::from(low)) == expected,
+        "This item was replaced; it was kept"
+    );
+    if let Some(source) = source {
+        let mut bytes = Vec::new();
+        guard.read_to_end(&mut bytes)?;
+        ensure!(
+            bytes == source,
+            "This note changed after creation; it was kept"
+        );
+    } else {
+        ensure!(
+            std::fs::read_dir(&child)?.next().is_none(),
+            "This folder is no longer empty; it was kept"
+        );
+    }
+    let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+    if unsafe {
+        SetFileInformationByHandle(
+            guard.as_raw_handle(),
+            FileDispositionInfo,
+            (&disposition as *const FILE_DISPOSITION_INFO).cast(),
+            std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32,
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(())
+}

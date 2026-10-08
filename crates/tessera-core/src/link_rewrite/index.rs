@@ -113,7 +113,7 @@ impl CandidateIndex {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(crate) fn select(
         &self,
         root: &Path,

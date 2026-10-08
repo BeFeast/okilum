@@ -923,6 +923,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn sidecars_and_invalid_utf8_do_not_abort_move_or_enter_search() {
         let dir = tempfile::tempdir().unwrap();

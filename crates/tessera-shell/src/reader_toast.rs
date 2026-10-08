@@ -170,11 +170,11 @@ impl Reader {
                 });
             }
         }
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         let history = self
             .active_timeline()
             .and_then(|t| t.message.clone().map(|m| (t.id, t.selection, m)));
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         let history: Option<(uuid::Uuid, uuid::Uuid, String)> = None;
         if history != self.displayed_history_notice {
             self.displayed_history_notice = history.clone();
@@ -201,7 +201,7 @@ impl Reader {
                                         if this.history_notice_generation != generation {
                                             return;
                                         }
-                                        #[cfg(unix)]
+                                        #[cfg(any(unix, windows))]
                                         if let Some(t) = this.timeline.as_mut().filter(|t| {
                                             t.id == id
                                                 && t.selection == selection
@@ -209,7 +209,7 @@ impl Reader {
                                         }) {
                                             t.message = None;
                                         }
-                                        #[cfg(not(unix))]
+                                        #[cfg(not(any(unix, windows)))]
                                         let _ = (id, selection, &message);
                                         this.displayed_history_notice = None;
                                         cx.notify();

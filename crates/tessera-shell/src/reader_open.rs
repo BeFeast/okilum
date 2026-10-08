@@ -1511,7 +1511,7 @@ mod entry_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix, feature = "brain"))]
 pub(crate) fn reader_locations(cx: &App) -> Vec<(PathBuf, String)> {
     cx.global::<Readers>()
         .0

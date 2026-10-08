@@ -1,30 +1,45 @@
 //! Exact UTF-8 file editing, independent of the Brain protocol.
 //! Drafts live in application state; atomic exchanges retain displaced files next
 //! to the note until archived into durable history; racing versions stay protected.
+#[cfg(unix)]
+mod directory;
+#[cfg(windows)]
+#[path = "file_editor/directory_windows.rs"]
 mod directory;
 use anyhow::{bail, Context, Result};
+#[cfg(unix)]
 pub(crate) use directory::open_regular_at;
 use directory::Directory;
+#[cfg(unix)]
 use rustix::fs::{renameat_with, RenameFlags};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(windows)]
+use std::os::windows::fs::OpenOptionsExt;
 use std::{
     fs::{self, File},
-    io::{Read, Write},
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc, Mutex,
     },
 };
+#[cfg(unix)]
+use std::{
+    io::{Read, Write},
+    os::unix::fs::{MetadataExt, OpenOptionsExt},
+};
 
 /// Releases the advisory lock synchronously, even if a fork/dup still holds
 /// the same open-file description. Share ownership with Arc, not cloned files.
 pub struct EditorLock {
+    // On Windows the exclusive sharing mode is held by ownership alone.
+    #[cfg_attr(windows, allow(dead_code))]
     file: File,
+    #[cfg(unix)]
     owner_process: u32,
 }
+#[cfg(unix)]
 fn flock_retry_interrupted(
     file: &File,
     operation: rustix::fs::FlockOperation,
@@ -38,6 +53,7 @@ fn flock_retry_interrupted(
 }
 impl EditorLock {
     pub(crate) fn acquire(path: &Path) -> Result<Self> {
+        #[cfg(unix)]
         let file = fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -45,9 +61,19 @@ impl EditorLock {
             .truncate(false)
             .mode(0o600)
             .open(path)?;
+        #[cfg(windows)]
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .share_mode(0)
+            .open(path)?;
+        #[cfg(unix)]
         flock_retry_interrupted(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive)?;
         Ok(Self {
             file,
+            #[cfg(unix)]
             owner_process: std::process::id(),
         })
     }
@@ -56,6 +82,7 @@ impl Drop for EditorLock {
     fn drop(&mut self) {
         // A forked child must not release its parent's live lock when disposing
         // inherited Rust state. The acquiring process owns explicit unlock.
+        #[cfg(unix)]
         if self.owner_process == std::process::id() {
             let _ = flock_retry_interrupted(&self.file, rustix::fs::FlockOperation::Unlock);
         }
@@ -97,17 +124,42 @@ impl DraftWrite {
         if self.writes.generation.load(Ordering::Acquire) != self.generation {
             return Ok(());
         }
+        #[cfg(unix)]
         let parent = self.journal.parent().unwrap();
-        let mut temp = tempfile::NamedTempFile::new_in(parent)?;
-        temp.write_all(&serde_json::to_vec(&self.draft)?)?;
-        temp.as_file().sync_all()?;
-        let _commit = self.writes.commit.lock().unwrap();
-        if self.writes.generation.load(Ordering::Acquire) != self.generation {
-            return Ok(());
+        #[cfg(unix)]
+        {
+            let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+            temp.write_all(&serde_json::to_vec(&self.draft)?)?;
+            temp.as_file().sync_all()?;
+            let _commit = self.writes.commit.lock().unwrap();
+            if self.writes.generation.load(Ordering::Acquire) != self.generation {
+                return Ok(());
+            }
+            temp.persist(&self.journal)?;
+            File::open(parent)?.sync_all()?;
         }
-        temp.persist(&self.journal)?;
-        File::open(parent)?.sync_all()?;
+        #[cfg(windows)]
+        {
+            let _commit = self.writes.commit.lock().unwrap();
+            if self.writes.generation.load(Ordering::Acquire) != self.generation {
+                return Ok(());
+            }
+            crate::source_state::persist(&self.journal, &serde_json::to_vec(&self.draft)?)?;
+        }
         Ok(())
+    }
+}
+
+pub(crate) fn lock_busy(error: &anyhow::Error) -> bool {
+    #[cfg(unix)]
+    {
+        error.downcast_ref::<rustix::io::Errno>() == Some(&rustix::io::Errno::WOULDBLOCK)
+    }
+    #[cfg(windows)]
+    {
+        error
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|e| matches!(e.raw_os_error(), Some(32 | 33)))
     }
 }
 
@@ -181,11 +233,20 @@ impl FileEditor {
     }
 
     pub fn open(path: &Path, state: &Path) -> Result<Self> {
+        #[cfg(unix)]
         let meta = fs::symlink_metadata(path)?;
+        #[cfg(unix)]
         if !meta.is_file() || meta.nlink() != 1 {
             bail!("Editing requires a regular file without symlinks or hard links");
         }
+        // Pin the original Windows path before canonicalization can resolve a
+        // junction or symlink. Canonicalization must never authorize redirection.
+        #[cfg(windows)]
+        let directory = Directory::open(path.parent().context("Missing source folder")?)?;
+        #[cfg(windows)]
+        let (_, original) = directory.read(path.file_name().context("Missing source filename")?)?;
         let path = path.canonicalize()?;
+        #[cfg(unix)]
         let directory = Directory::open(path.parent().context("Missing source folder")?)?;
         fs::create_dir_all(state)?;
         let key = format!("{:x}", Sha256::digest(path.as_os_str().as_encoded_bytes()));
@@ -193,8 +254,14 @@ impl FileEditor {
             .context("This note is already being edited in another window")?;
         let journal = state.join(format!("{key}.json"));
         let (base, opened) = directory.read(path.file_name().unwrap())?;
+        #[cfg(unix)]
         anyhow::ensure!(
             (meta.dev(), meta.ino()) == (opened.dev(), opened.ino()),
+            "The source file changed while opening; reopen it"
+        );
+        #[cfg(windows)]
+        anyhow::ensure!(
+            original == opened,
             "The source file changed while opening; reopen it"
         );
         directory.validate(path.parent().unwrap())?;
@@ -304,6 +371,7 @@ impl FileEditor {
     pub fn save(&mut self) -> Result<Save> {
         self.save_before_exchange(|| {})
     }
+    #[cfg(unix)]
     fn save_before_exchange(&mut self, before_exchange: impl FnOnce()) -> Result<Save> {
         if !self.dirty() {
             self.directory.validate(self.draft.path.parent().unwrap())?;
@@ -375,9 +443,50 @@ impl FileEditor {
         let _ = crate::source_history::prune(self.journal.parent().unwrap());
         Ok(Save::Saved)
     }
+    #[cfg(windows)]
+    fn save_before_exchange(&mut self, before_exchange: impl FnOnce()) -> Result<Save> {
+        if !self.dirty() {
+            self.directory.validate(self.draft.path.parent().unwrap())?;
+            return Ok(Save::Saved);
+        }
+        self.persist()?;
+        self.directory.validate(self.draft.path.parent().unwrap())?;
+        let current = self.current()?;
+        if current == self.draft.text {
+            self.draft.base = current;
+            self.persist()?;
+            return Ok(Save::Saved);
+        }
+        let directory = self.directory.pin()?;
+        let Some(plan) = directory.prepare_replace(
+            self.draft.path.file_name().unwrap(),
+            self.draft.base.as_bytes(),
+            self.draft.text.as_bytes(),
+        )?
+        else {
+            return Ok(Save::Conflict);
+        };
+        let history = crate::source_history::Preimage::begin_windows(
+            self.journal.parent().unwrap(),
+            &self.draft.path,
+            &self.draft.base,
+            plan.preimage_path(),
+            plan.prepared_path(),
+        )?;
+        before_exchange();
+        match plan.commit()? {
+            crate::windows_files::Replacement::Conflict => return Ok(Save::Conflict),
+            crate::windows_files::Replacement::Saved { .. } => {}
+        }
+        crate::source_history::Preimage::finish_windows(&history, &directory)?;
+        self.draft.base = self.draft.text.clone();
+        self.persist()?;
+        let _ = crate::source_history::prune(self.journal.parent().unwrap());
+        Ok(Save::Saved)
+    }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     #[test]
@@ -867,5 +976,95 @@ mod tests {
             "my unsaved Привет"
         );
         assert_eq!(fs::read_to_string(path).unwrap(), "external conflict");
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_editor_tests {
+    use super::*;
+    #[test]
+    fn windows_editor_unacknowledged_commit_retains_history_and_draft() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let note = root.join("Note.md");
+        let state = fixture.path().join("drafts");
+        fs::write(&note, "base\r\n").unwrap();
+        let mut editor = FileEditor::open(&note, &state).unwrap();
+        editor.set_text("proposed שלום\r\n".into()).unwrap();
+        let directory = editor.directory.pin().unwrap();
+        let plan = directory
+            .prepare_replace(
+                note.file_name().unwrap(),
+                b"base\r\n",
+                editor.text().as_bytes(),
+            )
+            .unwrap()
+            .unwrap();
+        let record = crate::source_history::Preimage::begin_windows(
+            &state,
+            &note,
+            "base\r\n",
+            plan.preimage_path(),
+            plan.prepared_path(),
+        )
+        .unwrap();
+        let preimage = plan.preimage_path().to_owned();
+        assert!(matches!(
+            plan.commit().unwrap(),
+            crate::windows_files::Replacement::Saved { .. }
+        ));
+        // Simulate acknowledgement loss: no history finish or clean draft write.
+        drop(directory);
+        drop(editor);
+        assert!(record.exists() && preimage.exists());
+        let mut recovered = FileEditor::open(&note, &state).unwrap();
+        assert!(recovered.dirty());
+        assert_eq!(recovered.text(), "proposed שלום\r\n");
+        assert_eq!(recovered.save().unwrap(), Save::Saved);
+        assert!(!recovered.dirty());
+        let listing = crate::source_history::list(&state, &root).unwrap();
+        assert!(listing
+            .versions
+            .iter()
+            .any(|v| v.text == "base\r\n" && v.protected));
+    }
+    #[test]
+    fn windows_editor_racing_save_keeps_disk_draft_and_prepared_recovery() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let note = root.join("Note.md");
+        let state = fixture.path().join("drafts");
+        fs::write(&note, "base").unwrap();
+        let mut editor = FileEditor::open(&note, &state).unwrap();
+        editor.set_text("mine".into()).unwrap();
+        assert_eq!(
+            editor
+                .save_before_exchange(|| {
+                    fs::write(root.join("external.md"), "external").unwrap();
+                    fs::rename(root.join("external.md"), &note).unwrap();
+                })
+                .unwrap(),
+            Save::Conflict
+        );
+        assert_eq!(fs::read_to_string(&note).unwrap(), "external");
+        assert!(editor.dirty());
+        drop(editor);
+        let recovered = FileEditor::open(&note, &state).unwrap();
+        assert_eq!(recovered.text(), "mine");
+        assert!(recovered.dirty());
+        let history = crate::source_history::list(&state, &root).unwrap();
+        assert!(history
+            .versions
+            .iter()
+            .any(|v| v.text == "base" && v.protected));
+        assert!(fs::read_dir(&root).unwrap().any(|e| e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".raced")));
     }
 }

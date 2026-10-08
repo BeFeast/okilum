@@ -1,10 +1,10 @@
 //! Explicit ordinary-note filesystem operations; never part of the reader protocol.
 use anyhow::{bail, Context, Result};
+#[cfg(unix)]
 use rustix::fs::{open, openat, Mode, OFlags};
-use std::{
-    fs::File,
-    path::{Component, Path},
-};
+#[cfg(unix)]
+use std::fs::File;
+use std::path::{Component, Path};
 
 /// Create an empty Markdown note exclusively in an existing real folder.
 /// Walk relative directories through descriptors: symlink substitution cannot
@@ -29,51 +29,68 @@ pub fn create_with_source(root: &Path, relative: &Path, source: &[u8]) -> Result
     {
         bail!("Use a Markdown (.md) filename");
     }
-    let mut folder = open(
-        root,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )?;
-    for part in &parts[..parts.len() - 1] {
-        folder = openat(
-            &folder,
-            part.as_os_str(),
+    #[cfg(windows)]
+    {
+        // Validate the original root before canonicalization can follow links.
+        let _root = crate::windows_files::Directory::open(root)?;
+        let folder = crate::windows_files::Directory::open(
+            &root.join(relative.parent().context("Missing destination folder")?),
+        )?;
+        return folder.create(
+            relative
+                .file_name()
+                .context("Missing destination filename")?,
+            source,
+        );
+    }
+    #[cfg(unix)]
+    {
+        let mut folder = open(
+            root,
             OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
             Mode::empty(),
-        )
-        .context("Choose an existing real folder, not a symbolic link")?;
-    }
-    let temporary = format!(".tessera-create-{}", uuid::Uuid::new_v4());
-    let file = openat(
-        &folder,
-        temporary.as_str(),
-        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::from_bits_truncate(0o644),
-    )
-    .context("Cannot create note: the name may already exist or the folder is not writable")?;
-    let result = (|| -> Result<()> {
-        use std::io::Write;
-        let mut file = File::from(file);
-        file.write_all(source)?;
-        file.sync_all()?;
-        rustix::fs::renameat_with(
+        )?;
+        for part in &parts[..parts.len() - 1] {
+            folder = openat(
+                &folder,
+                part.as_os_str(),
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .context("Choose an existing real folder, not a symbolic link")?;
+        }
+        let temporary = format!(".tessera-create-{}", uuid::Uuid::new_v4());
+        let file = openat(
             &folder,
             temporary.as_str(),
-            &folder,
-            parts.last().unwrap().as_os_str(),
-            rustix::fs::RenameFlags::NOREPLACE,
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::from_bits_truncate(0o644),
         )
-        .context("Cannot create note: destination already exists or cannot be written")?;
+        .context("Cannot create note: the name may already exist or the folder is not writable")?;
+        let result = (|| -> Result<()> {
+            use std::io::Write;
+            let mut file = File::from(file);
+            file.write_all(source)?;
+            file.sync_all()?;
+            rustix::fs::renameat_with(
+                &folder,
+                temporary.as_str(),
+                &folder,
+                parts.last().unwrap().as_os_str(),
+                rustix::fs::RenameFlags::NOREPLACE,
+            )
+            .context("Cannot create note: destination already exists or cannot be written")?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = rustix::fs::unlinkat(&folder, temporary.as_str(), rustix::fs::AtFlags::empty());
+        }
+        result?;
+        File::from(folder)
+            .sync_all()
+            .context("The new file exists, but its folder could not be synced")?;
         Ok(())
-    })();
-    if result.is_err() {
-        let _ = rustix::fs::unlinkat(&folder, temporary.as_str(), rustix::fs::AtFlags::empty());
     }
-    result?;
-    File::from(folder)
-        .sync_all()
-        .context("The new file exists, but its folder could not be synced")?;
-    Ok(())
 }
 
 /// Validate typed sidebar paths before any filesystem writes. Empty, absolute,
@@ -120,31 +137,54 @@ pub fn create_folders(root: &Path, relative: &Path, exclusive_last: bool) -> Res
     {
         bail!("Choose a folder inside the vault");
     }
-    let mut folder = open(
-        root,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )?;
-    let parts: Vec<_> = relative.components().collect();
-    for (index, part) in parts.iter().enumerate() {
-        match rustix::fs::mkdirat(&folder, part.as_os_str(), Mode::from_bits_truncate(0o755)) {
-            Ok(()) => {
-                rustix::fs::fsync(&folder)?;
+    #[cfg(windows)]
+    {
+        let mut folder = crate::windows_files::Directory::open(root)?;
+        let parts: Vec<_> = relative.components().collect();
+        for (index, part) in parts.iter().enumerate() {
+            let path = folder.path().join(part.as_os_str());
+            match std::fs::symlink_metadata(&path) {
+                Ok(_) if exclusive_last && index + 1 == parts.len() => {
+                    bail!("The destination already exists")
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    folder.create_directory(part.as_os_str())?
+                }
+                Err(error) => return Err(error.into()),
             }
-            Err(rustix::io::Errno::EXIST) if !exclusive_last || index + 1 != parts.len() => {}
-            Err(error) => {
-                return Err(error).context("Cannot create folder: the name may already exist")
-            }
+            folder = crate::windows_files::Directory::open(&path)?;
         }
-        folder = openat(
-            &folder,
-            part.as_os_str(),
+        Ok(())
+    }
+    #[cfg(unix)]
+    {
+        let mut folder = open(
+            root,
             OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
             Mode::empty(),
-        )
-        .context("Choose a real folder, not a symbolic link")?;
+        )?;
+        let parts: Vec<_> = relative.components().collect();
+        for (index, part) in parts.iter().enumerate() {
+            match rustix::fs::mkdirat(&folder, part.as_os_str(), Mode::from_bits_truncate(0o755)) {
+                Ok(()) => {
+                    rustix::fs::fsync(&folder)?;
+                }
+                Err(rustix::io::Errno::EXIST) if !exclusive_last || index + 1 != parts.len() => {}
+                Err(error) => {
+                    return Err(error).context("Cannot create folder: the name may already exist")
+                }
+            }
+            folder = openat(
+                &folder,
+                part.as_os_str(),
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .context("Choose a real folder, not a symbolic link")?;
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 /// Create-only publication with an explicit vault template and draft protection.
@@ -182,7 +222,7 @@ pub fn create_from_template(
     Ok(source)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     fn create_note(root: &Path, relative: &Path, state: &Path) -> Result<String> {

@@ -1425,7 +1425,7 @@ impl Reader {
             return;
         }
         self.document_preparation_generation = self.document_preparation_generation.wrapping_add(1);
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             self.creation = None;
         }
@@ -1471,7 +1471,7 @@ impl Reader {
             self.loading.as_mut().unwrap().phase = "Checking search data".into();
             self.delay_warm_progress(cx);
         }
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             self.move_index = None;
         }
@@ -1911,7 +1911,7 @@ impl Reader {
         self.projects_done_expanded = false;
         self.incremental_initializing = false;
         self.incremental_active = false;
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             self.move_index = None;
         }
@@ -2202,15 +2202,15 @@ impl Reader {
                                 let epoch = this.incremental_epoch;
                                 let ready_vault = Arc::new(vault);
                                 let state_vault = ready_vault.clone();
-                                #[cfg(unix)]
+                                #[cfg(any(unix, windows))]
                                 { this.move_index = None; }
                                 let index_task = cx.background_executor().spawn(async move {
                                     let tasks = reader_tasks::from_snapshot(&move_snapshot);
                                     let projects = Arc::new(tessera_core::projects::Index::from_snapshot(&move_snapshot));
                                     let state = tessera_core::vault::warm::incremental::State::new((*state_vault).clone(), *move_snapshot);
-                                    #[cfg(unix)]
+                                    #[cfg(any(unix, windows))]
                                     let candidates = state.candidates.clone();
-                                    (state, tasks, projects, { #[cfg(unix)] { Some(candidates) } #[cfg(not(unix))] { None::<()> } })
+                                    (state, tasks, projects, { #[cfg(any(unix, windows))] { Some(candidates) } #[cfg(not(any(unix, windows)))] { None::<()> } })
                                 });
                                 cx.spawn(async move |this, cx| {
                                     let (state, tasks, projects, candidates) = index_task.await;
@@ -2221,10 +2221,10 @@ impl Reader {
                                             this.projects = projects;
                                             this.incremental_state = Some(state);
                                             this.incremental_initializing = false;
-                                            #[cfg(unix)]
+                                            #[cfg(any(unix, windows))]
                                             { this.move_index = candidates; }
                                             this.publish_shared_ready();
-                                            #[cfg(not(unix))]
+                                            #[cfg(not(any(unix, windows)))]
                                             let _ = candidates;
                                             cx.notify();
                                         }

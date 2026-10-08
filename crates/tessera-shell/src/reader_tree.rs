@@ -59,7 +59,7 @@ impl Tree {
     }
 
     /// Keep consecutive local operations visible until the watcher catches up.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub fn entry_created(&mut self, path: &str, kind: EntryKind) {
         let mut entries: Vec<_> = self
             .kinds
@@ -79,7 +79,7 @@ impl Tree {
     }
 
     /// Publish a completed local move before watcher inventory delivery.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub fn note_moved(&mut self, from: &str, to: &str) {
         let entries: Vec<_> = self
             .kinds
@@ -220,7 +220,7 @@ impl Tree {
                 || path.starts_with(&format!("{}/", self.templates_folder)))
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub fn set_templates_folder(&mut self, folder: String) {
         if self.templates_folder != folder {
             self.templates_folder = folder;
@@ -340,7 +340,7 @@ impl Tree {
     }
 
     /// Closest existing directory for a proposed new path, including collapsed branches.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub fn creation_parent(&self, path: &Path) -> String {
         path.parent()
             .into_iter()
@@ -352,7 +352,7 @@ impl Tree {
     }
 
     /// Destination for creation from the selected tree row, even in a collapsed branch.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub fn selected_creation_folder(&self) -> Option<String> {
         let cursor = self.cursor.as_deref()?;
         match self.kinds.get(cursor)? {

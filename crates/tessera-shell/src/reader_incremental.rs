@@ -4,7 +4,7 @@ use super::*;
 impl Reader {
     /// A successful local mutation already knows its endpoints. Queue it even
     /// while another batch/checkpoint is running; watcher hints may follow.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(super) fn queue_vault_mutation(
         &mut self,
         changes: tessera_core::Changes,
@@ -25,7 +25,7 @@ impl Reader {
         .detach();
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(super) fn queue_saved_source(&mut self, cx: &mut Context<Self>) {
         if let Some(trace) = self
             .loading
@@ -148,13 +148,13 @@ impl Reader {
                 state.vault.notes.clone(),
                 &state.vault.entries,
             ));
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             let candidates = Some(state.candidates.clone());
             if let Some(trace) = &worker_trace {
                 trace.event("incremental_update", serde_json::json!({"directory_hints":worker_changes.directories.len(), "topology_changed":batch.topology_changed, "changed": batch.changed.len(), "removed": batch.removed.len(), "read": batch.read, "affected": batch.affected.len(), "source_graph_ms":source_ms, "duration_ms":start.elapsed().as_secs_f64()*1000.}));
             }
             Ok::<_, anyhow::Error>((state, tasks, projects, searcher, sources, titles, batch, published, inventory,
-                { #[cfg(unix)] { candidates } #[cfg(not(unix))] { None::<()> } }))
+                { #[cfg(any(unix, windows))] { candidates } #[cfg(not(any(unix, windows)))] { None::<()> } }))
         });
         cx.spawn_in(window, async move |this, cx| {
             // Pins this root through UI publication and subsequent persistence,
@@ -183,11 +183,11 @@ impl Reader {
                             this.projects = projects;
                             this.vault = published;
                             this.searcher = Some(searcher.clone());
-                            #[cfg(unix)]
+                            #[cfg(any(unix, windows))]
                             {
                                 this.move_index = candidates;
                             }
-                            #[cfg(not(unix))]
+                            #[cfg(not(any(unix, windows)))]
                             let _ = candidates;
                             let known = Arc::make_mut(&mut this.backlink_titles);
                             for path in &batch.removed {

@@ -10,6 +10,7 @@ use std::{
 };
 
 const TIMEOUT: Duration = Duration::from_secs(2);
+#[cfg(target_os = "linux")]
 const MAX_BYTES: usize = 8 * 1024 * 1024;
 
 pub struct WaylandClipboard {

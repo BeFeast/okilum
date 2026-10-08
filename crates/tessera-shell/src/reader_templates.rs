@@ -2,11 +2,11 @@
 use super::*;
 use anyhow::{Context as _, Result};
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use std::io::Read as _;
 
 pub const DEFAULT_FOLDER: &str = "_Assets/Templates";
-#[cfg(test)]
+#[cfg(all(test, unix))]
 const MAX_TEMPLATE_BYTES: u64 = 1024 * 1024;
 
 fn preferences_path(root: &Path, state: &Path) -> Result<PathBuf> {
@@ -99,7 +99,7 @@ fn list(root: &Path, folder: &str) -> Result<Vec<PathBuf>> {
     anyhow::ensure!(!templates.is_empty(), "No Markdown templates in this folder. Add a .md template or choose another folder in Settings → Files");
     Ok(templates)
 }
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn read_template(root: &Path, path: &Path) -> Result<String> {
     let root = root.canonicalize()?;
     let path = path.canonicalize()?;
@@ -117,7 +117,7 @@ fn read_template(root: &Path, path: &Path) -> Result<String> {
     );
     String::from_utf8(bytes).context("Template must be UTF-8 Markdown")
 }
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn expand(template: &str, title: &str, date: &str) -> String {
     regex::Regex::new(r"\{\{(title|date)\}\}")
         .unwrap()
@@ -214,7 +214,7 @@ impl Reader {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;

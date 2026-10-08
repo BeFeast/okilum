@@ -3,9 +3,9 @@
 mod index;
 #[path = "link_rewrite/syntax.rs"]
 pub mod syntax;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::Vault;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use anyhow::{ensure, Result};
 pub use index::CandidateIndex;
 use std::collections::BTreeMap;

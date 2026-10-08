@@ -51,7 +51,7 @@ impl Reader {
     pub(super) fn render_document_header(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
         let is_file = self.file_preview.is_some();
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         let editing = self.editing.is_some();
         let root = self.vault_root.clone();
         let rel = self.selected_file().to_owned();
@@ -65,7 +65,7 @@ impl Reader {
             .px_4()
             .gap_1()
             .child(self.render_breadcrumbs(cx));
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         if !is_file {
             if editing {
                 row = row.child(self.render_save_status(cx)).child(
@@ -118,7 +118,7 @@ impl Reader {
                     )
                     .on_click(cx.listener(|this, _, window, cx| this.open_find(window, cx))),
                 );
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             {
                 row = row.child(
                     reader_icon_button(
@@ -208,7 +208,7 @@ impl Reader {
                             Icon::default().path("icons/text-search.svg"),
                             Box::new(FindInNote),
                         );
-                        #[cfg(unix)]
+                        #[cfg(any(unix, windows))]
                         {
                             menu = menu
                                 .menu(
@@ -367,7 +367,7 @@ impl Reader {
                     .text_color(brand::palette(cx).text_muted)
                     .child(reader_shortcuts::hint("Search notes", &QuickOpen, cx)),
             )
-            .when(cfg!(unix), |view| {
+            .when(cfg!(any(unix, windows)), |view| {
                 view.child(
                     div()
                         .text_color(brand::palette(cx).text_muted)
@@ -550,7 +550,7 @@ mod tests {
         };
         for source in [false, true]
             .into_iter()
-            .filter(|source| !source || cfg!(unix))
+            .filter(|source| !source || cfg!(any(unix, windows)))
         {
             reader.update_in(visual, |this, window, cx| {
                 this.content

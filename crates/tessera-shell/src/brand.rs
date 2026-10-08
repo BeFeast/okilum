@@ -5,11 +5,12 @@
 //! system-appearance sync. Both Reader and AI Brain then share the same typography.
 use std::{borrow::Cow, sync::OnceLock};
 
-use gpui::{px, rgb, svg, App, AssetSource, ElementId, Hsla, SharedString, Styled, Svg};
-use gpui_component::{
-    button::{Button, ButtonCustomVariant, ButtonVariants as _},
-    Colorize as _, Theme,
-};
+#[cfg(all(unix, feature = "brain"))]
+use gpui::ElementId;
+use gpui::{px, rgb, svg, App, AssetSource, Hsla, SharedString, Styled, Svg};
+#[cfg(all(unix, feature = "brain"))]
+use gpui_component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
+use gpui_component::{Colorize as _, Theme};
 
 pub const SANS_FONT: &str = "Noto Sans";
 pub const MONO_FONT: &str = "Cascadia Code";
@@ -18,7 +19,9 @@ pub const READING_FONT_SIZE: f32 = 15.5;
 /// Reader chrome (header, panels, tree) per docs/design/reader.md.
 pub const READER_CHROME_FONT_SIZE: f32 = 13.;
 pub const MONO_FONT_SIZE: f32 = 13.;
+#[cfg(all(unix, feature = "brain"))]
 pub const CONTROL_HEIGHT: f32 = 36.;
+#[cfg(all(unix, feature = "brain"))]
 pub const PRIMARY_HEIGHT: f32 = 38.;
 pub const CONTROL_RADIUS: f32 = 8.;
 
@@ -568,6 +571,7 @@ pub fn apply_theme(cx: &mut App) {
 
 /// Standard secondary control for existing call sites. `.primary()`/`.ghost()`
 /// can still select toolkit variants; geometry and semantic interaction survive.
+#[cfg(all(unix, feature = "brain"))]
 pub fn control(id: impl Into<ElementId>, _cx: &App) -> Button {
     Button::new(id)
         .secondary()
@@ -576,6 +580,7 @@ pub fn control(id: impl Into<ElementId>, _cx: &App) -> Button {
         .px(px(12.))
 }
 
+#[cfg(all(unix, feature = "brain"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ButtonKind {
     Primary,
@@ -586,6 +591,7 @@ pub enum ButtonKind {
 
 /// Native Button retains toolkit focus/disabled/loading/click behavior. The
 /// instance sets geometry only, so semantic state colors remain effective.
+#[cfg(all(unix, feature = "brain"))]
 pub fn button(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
