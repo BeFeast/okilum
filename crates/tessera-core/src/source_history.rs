@@ -244,6 +244,19 @@ fn owned_displaced(record: &Path, entry: &Preimage) -> bool {
     }
 }
 
+/// History preview is bounded independently of recovery retention. An oversized
+/// prepared file stays on disk and produces a warning instead of an allocation.
+#[cfg(any(windows, test))]
+fn prepared_text(file: fs::File) -> Result<String> {
+    use std::io::Read;
+    const TOO_LARGE: &str = "Prepared save is too large to preview; the recovery file is preserved";
+    ensure!(file.metadata()?.len() <= MAX_BYTES as u64, TOO_LARGE);
+    let mut bytes = Vec::new();
+    file.take(MAX_BYTES as u64 + 1).read_to_end(&mut bytes)?;
+    ensure!(bytes.len() <= MAX_BYTES, TOO_LARGE);
+    String::from_utf8(bytes).context("Prepared recovery is not UTF-8")
+}
+
 pub fn list(drafts: &Path, root: &Path) -> Result<Listing> {
     let mut result = Listing::default();
     let root = root.canonicalize()?;
@@ -284,8 +297,7 @@ pub fn list(drafts: &Path, root: &Path) -> Result<Listing> {
                     let recovered = (|| -> Result<String> {
                         let directory =
                             crate::windows_files::Directory::open(prepared.parent().unwrap())?;
-                        let (_, bytes, _) = directory.read(prepared.file_name().unwrap())?;
-                        String::from_utf8(bytes).context("Prepared recovery is not UTF-8")
+                        prepared_text(directory.open_file(prepared.file_name().unwrap())?)
                     })();
                     match recovered {
                         Ok(text) => result.versions.push(Version {
@@ -338,6 +350,59 @@ pub fn list(drafts: &Path, root: &Path) -> Result<Listing> {
         .versions
         .sort_by_key(|v| std::cmp::Reverse(v.created));
     Ok(result)
+}
+
+#[cfg(test)]
+mod recovery_preview_tests {
+    use super::*;
+
+    #[test]
+    fn windows_editor_prepared_recovery_size_guard_preserves_file() {
+        let fixture = tempfile::tempdir().unwrap();
+        let folder = fixture.path().canonicalize().unwrap();
+        let path = folder.join(".tessera-save-preview");
+        let read = || {
+            #[cfg(unix)]
+            let file = fs::File::open(&path).unwrap();
+            #[cfg(windows)]
+            let file = crate::windows_files::Directory::open(&folder)
+                .unwrap()
+                .open_file(path.file_name().unwrap())
+                .unwrap();
+            prepared_text(file)
+        };
+        fs::write(&path, "Recovered שלום\r\n").unwrap();
+        assert_eq!(
+            read().unwrap(),
+            "Recovered שלום\r\n",
+            "read positive control"
+        );
+        let oversized = MAX_BYTES as u64 + 1;
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(oversized)
+            .unwrap();
+        assert!(read()
+            .unwrap_err()
+            .to_string()
+            .contains("too large to preview"));
+        assert_eq!(fs::metadata(&path).unwrap().len(), oversized);
+        fs::write(&path, "Still recoverable").unwrap();
+        assert_eq!(
+            read().unwrap(),
+            "Still recoverable",
+            "file was not deleted or locked"
+        );
+        fs::write(&path, [0xff]).unwrap();
+        assert!(read().unwrap_err().to_string().contains("not UTF-8"));
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            [0xff],
+            "invalid bytes are retained"
+        );
+    }
 }
 
 /// Pending/corrupt/racing entries are deliberately excluded from all limits.

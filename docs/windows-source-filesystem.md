@@ -88,6 +88,10 @@ Before source mutation, history records both prepared and preimage paths.
 Prepared recovery bytes remain discoverable after preparation/publication errors;
 an unacknowledged save keeps protected history and can acknowledge its already
 published exact draft on reopen.
+History preview limits each prepared recovery read to 128 MiB, checking the
+opened file size before allocating and bounding the read itself. Oversized or
+non-UTF-8 prepared bytes remain on disk with a listing warning; this preview
+limit never deletes recovery or limits the source save.
 
 Preimages remain on their source NTFS volume with the source DACL. Folder
 snapshots exclude generated `.tessera-save-*` recovery entries from canonical
