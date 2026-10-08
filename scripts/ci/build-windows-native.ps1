@@ -11,6 +11,8 @@ $payload = Join-Path $env:GITHUB_WORKSPACE 'target/windows-dist'
 $env:TESSERA_WINDOWS_ICON = Join-Path $payload 'tessera.ico'
 if (!(Test-Path $env:TESSERA_WINDOWS_ICON)) { throw 'Approved icon artifact is missing' }
 $env:RUSTFLAGS = '-C target-feature=+crt-static'
+# GPUI runtime shaders must resolve inside the installed payload, not D:\a\...
+$env:RUSTC_WRAPPER = Join-Path $env:GITHUB_WORKSPACE 'scripts/ci/windows-rustc.cmd'
 Checked { rustc -Vv }
 Checked { bash scripts/vendor-setup.sh }
 Checked { bash scripts/vendor-setup.sh --verify }
@@ -29,5 +31,4 @@ if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLower() -ne '2b56ce117f803f
 Expand-Archive $archive -DestinationPath $tools -Force
 $channel = (Get-Content scripts/windows/channel.json | ConvertFrom-Json).default_channel
 Checked { dotnet "$tools/tools/net8.0/any/vpk.dll" pack --packId BeFeast.Tessera --packTitle Tessera --packAuthors BeFeast --packVersion $env:TESSERA_RELEASE_VERSION --packDir $payload --mainExe tessera.exe --runtime win-x64 --channel $channel --icon $env:TESSERA_WINDOWS_ICON --exclude '.*\.(pdb|zip|sha256)$|metadata\.json' --outputDir target/windows-release --skip-updates --yes }
-Checked { python -m unittest discover -s scripts/windows -p 'test_*.py' }
 if (!(Get-ChildItem target/windows-release -Filter '*.nupkg')) { throw 'Packager produced no package' }

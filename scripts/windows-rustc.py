@@ -3,7 +3,7 @@
 
 Cargo's original crate source remains untouched. Only the env! value in the
 Windows target library changes; Linux-hosted build scripts retain their real
-manifest directory. Used exclusively by build-windows-ci.sh.
+manifest directory. Used by cross-build and native Windows PR packaging.
 """
 import os
 import sys
