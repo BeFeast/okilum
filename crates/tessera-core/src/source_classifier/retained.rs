@@ -161,8 +161,8 @@ impl RetainedPresentation {
             .or_else(|| self.reclassify_local_block(current))
     }
 
-    /// S3a's bounded first slice: structural edits inside one already accepted
-    /// top-level block. Unknown/global syntax remains a conservative fallback.
+    /// Reclassify a bounded run of accepted top-level blocks and whitespace gaps.
+    /// Unknown/global syntax remains a conservative fallback.
     fn reclassify_local_block(&self, current: &Snapshot) -> Option<Self> {
         const LOCAL_BYTES: usize = 4096;
         if self.snapshot.document() != current.document()
@@ -192,12 +192,28 @@ impl RetainedPresentation {
         }
         let end = old.len() - tail;
         let new_end = new.len() - tail;
-        let dirty = self.plan.regions().iter().find_map(|r| match r {
-            Region::Conceal { block, .. } if block.start <= start && end <= block.end => {
-                Some(block.clone())
-            }
-            _ => None,
-        })?;
+        // Include both neighbors when an edit joins/splits their whitespace gap.
+        // Never bridge unsupported containers hidden between accepted regions.
+        let source_regions = self.plan.regions();
+        let first = source_regions
+            .iter()
+            .rposition(|r| r.block().start <= start)?;
+        let last = source_regions.iter().position(|r| r.block().end >= end)?;
+        if last < first {
+            return None;
+        }
+        let affected = &source_regions[first..=last];
+        if affected
+            .iter()
+            .any(|r| !matches!(r, Region::Conceal { .. }))
+            || affected.windows(2).any(|pair| {
+                old.get(pair[0].block().end..pair[1].block().start)
+                    .is_none_or(|gap| !gap.trim().is_empty())
+            })
+        {
+            return None;
+        }
+        let dirty = affected.first()?.block().start..affected.last()?.block().end;
         let shift = |offset: usize| offset.checked_add(new_end)?.checked_sub(end);
         let updated = dirty.start..shift(dirty.end)?;
         let fragment = new.get(updated.clone())?;
@@ -232,8 +248,8 @@ impl RetainedPresentation {
             }
         };
         let mut regions = Vec::new();
-        for region in self.plan.regions() {
-            if region.block() == &dirty {
+        for (index, region) in source_regions.iter().enumerate() {
+            if index == first {
                 regions.extend(classified.plan.regions().iter().map(|r| match r {
                     Region::Source(r) => Region::Source(offset(r)),
                     Region::Conceal { block, markers } => Region::Conceal {
@@ -241,7 +257,8 @@ impl RetainedPresentation {
                         markers: markers.iter().map(offset).collect(),
                     },
                 }));
-            } else {
+            }
+            if index < first || index > last {
                 regions.push(match region {
                     Region::Source(r) => Region::Source(map(r)?),
                     Region::Conceal { block, markers } => Region::Conceal {
@@ -545,6 +562,60 @@ mod tests {
     }
 
     #[test]
+    fn structural_cross_block_edits_match_full_parse_and_keep_outer_neighbors() {
+        for (before, after) in [
+            ("TOP text\n\n**bold**", "TOP text\n**bold**"),
+            ("plain **one**\n\nother *two*", "plain **one**other *two*"),
+            ("plain **one**\n\nother *two*", "plain **one**\nother *two*"),
+            ("plain **one**\n\nother *two*", "plain replacement *two*"),
+            (
+                "plain **one**\r\n\r\nother *two*",
+                "plain **one** other *two*",
+            ),
+            (
+                "שלום **one**\n\nother *two*",
+                "שלום **one**\nnew\nother *two*",
+            ),
+        ] {
+            let old = snapshot(1, &format!("# BEFORE\n\n{before}\n\n# AFTER"));
+            let new = snapshot(2, &format!("# BEFORE\n\n{after}\n\n# AFTER"));
+            let retained = RetainedPresentation::new(&classify(&old))
+                .remap(&new)
+                .unwrap();
+            let fresh = RetainedPresentation::new(&classify(&new));
+            for caret in [
+                0,
+                new.source().find("plain").unwrap_or(12),
+                new.source().len(),
+            ] {
+                let active = Active {
+                    selection: Some(caret..caret),
+                    composition: None,
+                };
+                let a = retained.project(&active).unwrap();
+                let b = fresh.project(&active).unwrap();
+                assert_eq!(a.display(), b.display(), "{before:?} -> {after:?}");
+                for offset in 0..=new.source().len() {
+                    assert_eq!(
+                        a.source_to_display(&new, offset),
+                        b.source_to_display(&new, offset)
+                    );
+                }
+            }
+            assert_eq!(retained.styles(), fresh.styles());
+        }
+    }
+
+    #[test]
+    fn structural_cross_block_edit_cannot_bridge_unsupported_source() {
+        let old = snapshot(1, "plain **one**\n\n```\nopaque\n```\n\nother *two*");
+        let new = snapshot(2, "plain replacement *two*");
+        assert!(RetainedPresentation::new(&classify(&old))
+            .remap(&new)
+            .is_none());
+    }
+
+    #[test]
     fn structural_local_parse_refuses_global_context_and_oversized_input() {
         let old = snapshot(1, "plain text\n\n**AFTER**");
         for new in [
@@ -731,7 +802,6 @@ mod tests {
             ("TOP text\n\n**bold**", "```TOP text\n\n**bold**"),
             ("TOP text\n\n**bold**", "TOP text\n```\n\n**bold**"),
             ("[id] text\n\n**bold**", "[id]: dest\n\n**bold**"),
-            ("TOP text\n\n**bold**", "TOP text\n**bold**"),
         ] {
             let retained = RetainedPresentation::new(&classify(&snapshot(2, old)));
             assert!(retained.remap(&snapshot(3, new)).is_none(), "{new}");

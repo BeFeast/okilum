@@ -6,9 +6,10 @@ mouse-up displacement reported on beta 8503.
 
 ## Current implementation
 
-An edit contained in one accepted block can synchronously classify at most
-4 KiB and retain the other blocks' projection and styles. The global async
-classifier remains authoritative. Global syntax, cross-block edits and larger
+An edit spanning a contiguous run of accepted blocks and whitespace gaps can
+synchronously classify at most 4 KiB and retain the other blocks' projection
+and styles. Unsupported source between accepted blocks prevents local reuse. The global async
+classifier remains authoritative. Global syntax, edits crossing unsupported containers and larger
 blocks still fall back conservatively; this is incomplete acceptance, not a
 claim that all Enter paths are fixed. The byte cap is not a measured time bound.
 
