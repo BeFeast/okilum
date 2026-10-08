@@ -26,8 +26,6 @@ use windows::{
 /// parsing and owned supervisor/Job Object handles. Native acceptance is required.
 pub trait TaskGuard {
     type ProcessHandles;
-    fn current_sid(&self) -> Result<String>;
-    fn descriptor_owner_sid(&self, sddl: &str) -> Result<String>;
     fn verify_payload(&mut self, binding: &Binding) -> Result<()>;
     fn running(&mut self, task_name: &str) -> Result<bool>;
     /// Capture authenticated supervisor/child handles BEFORE scheduler Stop.
@@ -89,7 +87,7 @@ impl<G: TaskGuard> NativeTasks<G> {
     }
     fn owned(&mut self, name: &str, definition: &str, owner: &str) -> Result<IRegisteredTask> {
         ensure!(
-            self.guard.current_sid()? == owner,
+            super::security::current_sid()? == owner,
             "task owner differs from current user"
         );
         let task = self
@@ -97,7 +95,7 @@ impl<G: TaskGuard> NativeTasks<G> {
             .ok_or_else(|| anyhow::anyhow!("owned task disappeared"))?;
         let sddl = unsafe { task.GetSecurityDescriptor(1)? }.to_string(); // OWNER_SECURITY_INFORMATION
         ensure!(
-            self.guard.descriptor_owner_sid(&sddl)? == owner,
+            super::security::descriptor_owner_sid(&sddl)? == owner,
             "task security owner changed"
         );
         ensure!(
@@ -116,7 +114,7 @@ fn validate_name(name: &str) -> Result<()> {
 }
 impl<G: TaskGuard> TaskApi for NativeTasks<G> {
     fn current_sid(&self) -> Result<String> {
-        self.guard.current_sid()
+        super::security::current_sid()
     }
     fn read(&mut self, name: &str) -> Result<Option<Task>> {
         let Some(task) = self.task(name)? else {
@@ -124,7 +122,7 @@ impl<G: TaskGuard> TaskApi for NativeTasks<G> {
         };
         let sddl = unsafe { task.GetSecurityDescriptor(1)? }.to_string();
         Ok(Some(Task {
-            owner_sid: self.guard.descriptor_owner_sid(&sddl)?,
+            owner_sid: super::security::descriptor_owner_sid(&sddl)?,
             definition: unsafe { task.Xml()? }.to_string(),
             running: unsafe { task.State()? } == TASK_STATE_RUNNING && self.guard.running(name)?,
         }))

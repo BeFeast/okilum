@@ -174,3 +174,6 @@ impl<A: TaskApi> Platform for TaskScheduler<A> {
 
 #[cfg(target_os = "windows")]
 pub mod native;
+
+#[cfg(target_os = "windows")]
+pub mod security;

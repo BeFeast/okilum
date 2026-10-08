@@ -45,9 +45,12 @@ ownership token. stop_owned must terminate/await the owned Job Object tree befor
 delete. A target-gated COM transport now connects to the local Task Scheduler using the
 current token, reads task XML/security descriptors and uses TASK_CREATE, Run, Stop
 and DeleteTask. It does not invoke schtasks or PowerShell. Its COM apartment is
-thread-bound and outlives the COM interfaces. Security-descriptor decoding/current
-SID, signed-payload verification, authenticated supervisor state and process-handle
-capture/exit confirmation remain mandatory injected guards, not default no-ops.
+thread-bound and outlives the COM interfaces. Current-user SID is read from the process token with TOKEN_QUERY. Task-owner
+SDDL is parsed by Win32 and converted to a canonical SID while its native allocation
+remains alive; a missing owner is rejected. Neither identity is supplied by the
+injected guard. Signed-payload verification, authenticated supervisor state and
+process-handle capture/exit confirmation remain mandatory injected guards, not
+default no-ops.
 The transport is not connected to Reader or installer hooks.
 
 Exported Task Scheduler definitions may contain platform-added defaults. Native
@@ -114,6 +117,8 @@ this avoids GPUI and unrelated native C dependencies. Install the two Rust 1.99.
 standard-library targets first, and invoke the script inside `tessera-build`.
 Both target checks and the 28 Linux controller tests pass. This is type/lint
 validation, not linking a signed application or executing either native API.
+The cross-check includes target-gated tests: Windows descriptor alias/missing-owner
+and process-token round-trip tests compile but still require execution on Windows.
 
 Before native release, implement and test the native ownership guards, locked state stores,
 supervisors and update/rollback journals; stage the pinned upstream payload with
