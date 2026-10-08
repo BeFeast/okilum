@@ -10,6 +10,7 @@ transport = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(transport)
 LANES = {
     'linux': ('linux', 'Run full Linux gate', 3600),
+    'linux-binary': ('linux-binary', 'Build and package Linux QA binary', 5400),
     'brain': ('brain', 'Run Brain tests', 2700),
     'inbox': ('inbox', 'Run Inbox tests', 1800),
     'arch': ('arch', 'Validate Arch package', 5400),
