@@ -503,8 +503,11 @@ truth in `about.rs`. Local builds report development metadata explicitly.
 ### Document actions and empty vault (#474)
 
 The 48 px document header contains breadcrumbs on the left and source/preview
-and document More glyphs on the right. It scrolls away with the document in
-Reader and source mode. Source mode adds a Save glyph (⌘S / Ctrl+S tooltip)
+and document More glyphs on the right. Per Oleg’s decision on 2026-10-08, it
+stays pinned outside the scrollable Reader and Source viewport, like Obsidian.
+Wheel and keyboard scrolling move only the document; fresh and restored sessions
+use the same 48 px header, with no collapse or restore-only exception.
+Source mode adds a Save glyph (⌘S / Ctrl+S tooltip)
 and a quiet unsaved dot; conflict recovery actions remain explicit glyphs with
 tooltips. Attachment headers use the same language: Quick Look (macOS), Open,
 Reveal and Copy path glyphs alongside More.
@@ -630,8 +633,9 @@ The published document's source viewport must become usable independently of
 background search validation; “Checking search data” cannot keep it blank.
 Reader restoration installs the saved block/offset before its first layout, so
 the top of the note never paints before the restored position. Breadcrumbs remain
-visible on restoration, including mid-note; deliberate scrolling resumes the
-usual scrolling-header behavior. Source restoration follows the same header rule.
+visible on restoration, including mid-note, and stay pinned during later scrolling.
+Reader and Source use the same header rule for fresh and restored sessions (Oleg,
+2026-10-08).
 Initial source syntax preparation starts before mounting, without the typing
 debounce. The restored editor is revealed once its scroll and initial highlighting
 are ready; subsequent edits stay visible while syntax updates asynchronously.

@@ -501,7 +501,6 @@ pub(crate) struct Session {
     source: Option<[f32; 2]>,
     source_position_pending: bool,
     source_reader_position: Option<ListOffset>,
-    pub(crate) restored_header: Option<(String, bool)>,
     pub(crate) source_highlight_pending: bool,
     reader_position_pending: bool,
     pub(crate) ready: bool,
@@ -582,8 +581,6 @@ impl Reader {
             }
             if !saved.note.is_empty() && !saved.source {
                 self.cancel_pending_landing();
-                self.ui_state.restored_header = Some((self.current_rel.clone(), false));
-                self.document_header_hidden = px(0.);
                 let positioned = self.content.update(cx, |content, cx| {
                     content.scroll_to_prepared_position(saved.position.list(), cx)
                 });
@@ -644,8 +641,6 @@ impl Reader {
             }
             self.ui_state.source_position_pending = self.editing.is_some();
             if self.editing.is_some() {
-                self.ui_state.restored_header = Some((self.current_rel.clone(), true));
-                self.document_header_hidden = px(0.);
                 self.ui_state.source_highlight_pending = self.source_highlighting_pending(cx);
             }
             self.restore_source_position(offset, window, cx);
@@ -667,15 +662,6 @@ impl Reader {
 
     pub(crate) fn restoring_reader(&self) -> bool {
         self.ui_state.reader_position_pending && self.pending_landing.is_some()
-    }
-
-    pub(crate) fn restored_document_header(&self) -> bool {
-        self.ui_state
-            .restored_header
-            .as_ref()
-            .is_some_and(|(note, source)| {
-                note == &self.current_rel && *source == self.editing.is_some()
-            })
     }
 
     pub(crate) fn record_ui_state(&mut self, active: bool, cx: &mut Context<Self>) {
@@ -1316,7 +1302,6 @@ mod tests {
                         reader.pending_landing.is_none(),
                         "first reader frame is positioned without a timer"
                     );
-                    assert!(reader.restored_document_header());
                 }
                 assert_eq!(
                     layout(&root, cx).unwrap().0.position.item,
@@ -1401,7 +1386,15 @@ mod tests {
             );
         });
         {
-            for expected_height in [24., 0.] {
+            for _ in 0..2 {
+                let before = reader.read_with(visual, |reader, cx| {
+                    let position = reader.content.read(cx).list_state().logical_scroll_top();
+                    (
+                        reader.source_scroll_offset(cx),
+                        position.item_ix,
+                        position.offset_in_item,
+                    )
+                });
                 visual.update(|window, cx| window.draw(cx).clear(cx));
                 let body = visual.debug_bounds("reader-document").unwrap();
                 visual.simulate_event(ScrollWheelEvent {
@@ -1410,15 +1403,15 @@ mod tests {
                     ..Default::default()
                 });
                 visual.run_until_parked();
-                // Source header presentation settles over animation frames;
-                // advancing the injected clock must not change source offsets.
-                for _ in 0..30 {
-                    visual.executor().advance_clock(Duration::from_millis(20));
-                    visual.update(|window, cx| {
-                        window.simulate_next_frame(cx);
-                        window.draw(cx).clear(cx);
-                    });
-                }
+                let after = reader.read_with(visual, |reader, cx| {
+                    let position = reader.content.read(cx).list_state().logical_scroll_top();
+                    (
+                        reader.source_scroll_offset(cx),
+                        position.item_ix,
+                        position.offset_in_item,
+                    )
+                });
+                assert_ne!(before, after, "positive control: restored content scrolls");
                 visual.update(|window, cx| window.draw(cx).clear(cx));
                 assert_eq!(
                     visual
@@ -1426,8 +1419,8 @@ mod tests {
                         .unwrap()
                         .size
                         .height,
-                    px(expected_height),
-                    "explicit scrolling resumes the smooth header transition"
+                    px(48.),
+                    "restored header stays pinned during explicit scrolling"
                 );
             }
         }

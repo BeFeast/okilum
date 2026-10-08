@@ -303,7 +303,6 @@ impl Reader {
                     });
                     self.history_ix = self.history.len() - 1;
                 }
-                self.document_header_hidden = px(0.);
                 let mut preview = preview;
                 if reader_pdf::is_pdf(rel) {
                     let path = preview.path.clone();
