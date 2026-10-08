@@ -17,6 +17,14 @@ pub(crate) fn install(cx: &mut App) {
 }
 
 pub(crate) fn show(reader: Option<WeakEntity<Reader>>, cx: &mut App) {
+    show_section(reader, None, cx);
+}
+
+pub(crate) fn show_about(cx: &mut App) {
+    show_section(None, Some(Section::About), cx);
+}
+
+fn show_section(reader: Option<WeakEntity<Reader>>, section: Option<Section>, cx: &mut App) {
     // Native application-menu actions may bypass the Reader's action handler.
     let active = cx.active_window();
     // Menu dispatch can still hold the active Reader's update borrow.
@@ -35,11 +43,16 @@ pub(crate) fn show(reader: Option<WeakEntity<Reader>>, cx: &mut App) {
         if let Some(handle) = cx.try_global::<SettingsWindow>().and_then(|s| s.0) {
             if handle
                 .update(cx, |root, window, cx| {
-                    if let Some(reader) = reader.clone() {
-                        if let Ok(settings) = root.view().clone().downcast::<Settings>() {
-                            settings
-                                .update(cx, |settings, cx| settings.set_reader(Some(reader), cx));
-                        }
+                    if let Ok(settings) = root.view().clone().downcast::<Settings>() {
+                        settings.update(cx, |settings, cx| {
+                            if let Some(reader) = reader.clone() {
+                                settings.set_reader(Some(reader), cx);
+                            }
+                            if let Some(section) = section {
+                                settings.section = section;
+                                cx.notify();
+                            }
+                        });
                     }
                     window.activate_window();
                 })
@@ -59,7 +72,13 @@ pub(crate) fn show(reader: Option<WeakEntity<Reader>>, cx: &mut App) {
         };
         match cx.open_window(options, move |window, cx| {
             window.set_window_title("Tessera Settings");
-            let settings = cx.new(|cx| Settings::new(reader, cx));
+            let settings = cx.new(|cx| {
+                let mut settings = Settings::new(reader, cx);
+                if let Some(section) = section {
+                    settings.section = section;
+                }
+                settings
+            });
             settings.read(cx).focus.clone().focus(window, cx);
             cx.new(|cx| Root::new(settings, window, cx))
         }) {
@@ -117,6 +136,7 @@ enum Section {
     Appearance,
     Files,
     Updates,
+    About,
     Inbox,
     #[cfg(target_os = "linux")]
     Sync,
@@ -127,6 +147,7 @@ impl Section {
             Self::Appearance => Icon::new(IconName::Palette),
             Self::Files => Icon::new(IconName::Folder),
             Self::Updates => Icon::default().path("icons/arrow-down-circle.svg"),
+            Self::About => Icon::new(IconName::Info),
             Self::Inbox => Icon::new(IconName::Inbox),
             #[cfg(target_os = "linux")]
             Self::Sync => Icon::new(IconName::RotateCw),
@@ -137,6 +158,7 @@ impl Section {
             Self::Appearance => "Appearance",
             Self::Files => "Files",
             Self::Updates => "Updates",
+            Self::About => "About",
             Self::Inbox => "Inbox",
             #[cfg(target_os = "linux")]
             Self::Sync => "Sync",
@@ -692,6 +714,7 @@ impl Settings {
             }
             #[cfg(target_os = "linux")]
             Section::Sync => content.children(self.sync.clone()).into_any_element(),
+            Section::About => content.child(about::content(cx)).into_any_element(),
             Section::Inbox => content
                 .child("Not connected")
                 .child(
@@ -734,6 +757,7 @@ impl Render for Settings {
                             Section::Appearance,
                             Section::Files,
                             Section::Updates,
+                            Section::About,
                             Section::Inbox,
                             #[cfg(target_os = "linux")]
                             Section::Sync,
@@ -829,6 +853,48 @@ mod tests {
     }
 
     #[gpui::test]
+    fn about_routes_reuse_settings_without_a_reader_modal(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| Reader::new(Opts::default(), window, cx));
+            Root::new(reader, window, cx)
+        });
+        visual.update(about::show_about);
+        visual.run_until_parked();
+        let handle = visual.update(|_, cx| cx.global::<SettingsWindow>().0.unwrap());
+        handle
+            .update(visual, |root, _, cx| {
+                let settings = root.view().clone().downcast::<Settings>().unwrap();
+                assert!(settings.read(cx).section == Section::About);
+                settings.update(cx, |this, _| this.section = Section::Appearance);
+            })
+            .unwrap();
+        assert!(
+            visual.debug_bounds("desktop-about").is_none(),
+            "Reader is not covered by About"
+        );
+        visual.update(|_, cx| about::show_from_menu(cx));
+        visual.run_until_parked();
+        visual.update(|_, cx| {
+            assert_eq!(
+                cx.windows().len(),
+                2,
+                "Both About entries reuse one Settings window"
+            );
+            assert_eq!(
+                cx.global::<SettingsWindow>().0.unwrap().window_id(),
+                handle.window_id()
+            );
+        });
+        handle
+            .update(visual, |root, _, cx| {
+                let settings = root.view().clone().downcast::<Settings>().unwrap();
+                assert!(settings.read(cx).section == Section::About);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
     fn reading_controls_update_the_shared_store(cx: &mut TestAppContext) {
         let directory = tempfile::tempdir().unwrap();
         cx.update(|cx| {
@@ -882,6 +948,7 @@ mod tests {
         for (section, selector) in [
             (Section::Files, "settings-section-Files"),
             (Section::Updates, "settings-section-Updates"),
+            (Section::About, "settings-section-About"),
             (Section::Inbox, "settings-section-Inbox"),
             (Section::Appearance, "settings-section-Appearance"),
         ] {

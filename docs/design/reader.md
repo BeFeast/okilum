@@ -651,6 +651,14 @@ existing pinned/recent/Inbox metadata and source/draft recovery keep their
 respective storage contracts. Source contents never enter the UI state file.
 On Linux the default store is `~/.local/state/tessera/reader-ui.json` (or
 `$XDG_STATE_HOME/tessera/reader-ui.json`), beside `reader-diagnostic.log`.
+### About in Settings (#750)
+
+About opens the shared Settings window at About from both the app menu and the
+Reader menu. Repeated invocations reuse that window and leave the document
+uncovered by a modal. Product information, release links and update action remain
+available. Linux says “Updates come from your package manager” without a redundant
+technical channel label. Windows describes the full reader/editor client.
+
 ### Updates visual QA on Linux
 
 The non-publishing Linux branch-dispatch artifact includes the explicit
