@@ -872,6 +872,15 @@ fn handle_link(entity: &WeakEntity<Reader>, url: &str, window: &mut Window, cx: 
                 .then(tessera_core::document_links::prepared::LinkState::unknown)
         })
     });
+    if let Some(path) = prepared
+        .as_ref()
+        .filter(|s| s.status == tessera_core::document_links::prepared::LinkStatus::MissingFile)
+        .and_then(|s| s.action_url.as_deref())
+        .and_then(|u| u.strip_prefix("tessera://missing-file/"))
+    {
+        reader_toast::missing_file(tessera_core::document_links::decode(path), window, cx);
+        return;
+    }
     if prepared
         .as_ref()
         .is_some_and(|state| state.status.is_missing())

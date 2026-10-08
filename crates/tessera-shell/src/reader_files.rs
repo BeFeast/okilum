@@ -197,7 +197,15 @@ impl Reader {
         let popup = PopupMenu::build(window, cx, move |menu, _, _| {
             let path = path.clone();
             let copy = copy.clone();
-            menu.item(
+            menu.item(PopupMenuItem::new("Open with default app").on_click({
+                let path = path.clone();
+                move |_, _, cx| {
+                    if let Ok(url) = url::Url::from_file_path(&path) {
+                        cx.open_url(url.as_str());
+                    }
+                }
+            }))
+            .item(
                 PopupMenuItem::new(label.clone())
                     .on_click(move |_, window, cx| reveal(&path, window, cx)),
             )

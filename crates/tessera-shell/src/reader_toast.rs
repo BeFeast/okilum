@@ -80,6 +80,24 @@ pub(super) fn transient(message: impl Into<SharedString>, window: &mut Window, c
     );
 }
 
+pub(super) fn missing_file(path: String, window: &mut Window, cx: &mut App) {
+    push(
+        Notification::new()
+            .message("File not found")
+            .action(move |_, _, cx| {
+                let path = path.clone();
+                reader_icon_button("copy-missing-file-path", IconName::Copy, "Copy path", cx)
+                    .debug_selector(|| "copy-missing-file-path".into())
+                    .on_click(move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(path.clone()))
+                    })
+            }),
+        Some(Duration::from_secs(4)),
+        window,
+        cx,
+    );
+}
+
 pub(super) fn error(message: impl Into<SharedString>, window: &mut Window, cx: &mut App) {
     push(Notification::new().message(message), None, window, cx);
 }
@@ -307,6 +325,90 @@ mod tests {
     use super::*;
     use ::core::prelude::v1::test;
     use gpui::TestAppContext;
+
+    #[gpui::test]
+    fn local_file_links_missing_click_copies_path_without_navigation_or_reflow(
+        cx: &mut TestAppContext,
+    ) {
+        use tessera_core::document_links::prepared::LinkStatus;
+        cx.update(|cx| {
+            cx.set_reduce_motion(true);
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(
+            root.join("start.md"),
+            "[Missing JSON](missing.json)\n\nStable paragraph",
+        )
+        .unwrap();
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        open_path: Some(root.join("start.md")),
+                        index_dir: Some(temp.path().join("index")),
+                        session_directory: Some(temp.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        let url = reader.read_with(visual, |r, _| {
+            let (url, state) = r
+                .prepared_links
+                .iter()
+                .find(|(_, s)| s.status == LinkStatus::MissingFile)
+                .expect("background missing-file evidence");
+            assert_eq!(state.reason, "File not found");
+            let p = prepared_links::presentation(url, &r.prepared_links);
+            assert!(!p.inert && p.style.color.is_some() && p.style.underline.is_some());
+            assert!(p
+                .tooltip
+                .as_deref()
+                .unwrap()
+                .starts_with("File not found\n"));
+            url.clone()
+        });
+        let before = visual.debug_bounds("reader-document").unwrap();
+        let weak = reader.downgrade();
+        visual.update(|window, cx| handle_link(&weak, &url, window, cx));
+        visual.run_until_parked();
+        visual.update(|window, cx| assert_eq!(window.notifications(cx).len(), 1));
+        reader.read_with(visual, |r, _| {
+            assert_eq!(r.current_rel, "start.md");
+            assert!(r.file_menu.is_none() && r.file_preview.is_none());
+        });
+        assert_eq!(visual.debug_bounds("reader-document").unwrap(), before);
+        let copy = visual
+            .debug_bounds("copy-missing-file-path")
+            .expect("copy action positive control")
+            .center();
+        visual.simulate_click(copy, gpui::Modifiers::default());
+        visual.run_until_parked();
+        visual.update(|_, cx| {
+            assert_eq!(
+                cx.read_from_clipboard().unwrap().text().unwrap(),
+                root.canonicalize()
+                    .unwrap()
+                    .join("missing.json")
+                    .to_string_lossy()
+            )
+        });
+        visual.executor().advance_clock(Duration::from_secs(5));
+        visual.run_until_parked();
+        visual.update(|window, cx| assert!(window.notifications(cx).is_empty()));
+    }
 
     #[gpui::test]
     fn notices_overlay_without_reflow_expire_independently_and_errors_require_dismissal(

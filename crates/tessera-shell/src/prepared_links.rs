@@ -133,8 +133,18 @@ pub(crate) fn presentation(
     }
     let presentation = LinkPresentation {
         style,
-        tooltip: Some(state.reason.clone().into()),
-        inert: state.status.is_missing(),
+        tooltip: Some(
+            match state
+                .action_url
+                .as_deref()
+                .and_then(|u| u.strip_prefix("tessera://missing-file/"))
+            {
+                Some(path) => format!("File not found\n{}", document_links::decode(path)).into(),
+                None => state.reason.clone().into(),
+            },
+        ),
+        inert: state.status.is_missing()
+            && state.status != document_links::prepared::LinkStatus::MissingFile,
         ..Default::default()
     };
     #[cfg(test)]
@@ -304,10 +314,7 @@ impl Reader {
                         let (raw, heading_source) = if target == from {
                             (original.clone(), rendered.clone())
                         } else if !vault.inventory_complete && !vault.single_file {
-                            return Err(
-                                "Link destination is pending background inventory verification."
-                                    .into(),
-                            );
+                            return Err("Link unavailable while the vault is loading.".into());
                         } else {
                             let raw = std::fs::read_to_string(vault.root.join(target))
                                 .map_err(|_| "Document source is unavailable.".to_owned())?;
@@ -322,7 +329,8 @@ impl Reader {
                             supports_setext: true,
                             managed: None,
                         })
-                    });
+                    })
+                    .with_local_files();
                     Arc::new(preparation.identities(&identities))
                 })
                 .await;
