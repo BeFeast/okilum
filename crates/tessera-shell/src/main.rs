@@ -36,6 +36,7 @@ mod reader_document_menu;
 mod reader_drawing;
 #[cfg(any(unix, windows))]
 mod reader_editor;
+mod reader_embeds;
 mod reader_files;
 mod reader_history;
 mod reader_hover;
@@ -705,6 +706,7 @@ struct Embed {
     /// Heading the embed names, if any.
     heading: Option<String>,
     missing: bool,
+    block: Option<tessera_core::render::block_embed::Info>,
     /// Byte offset of the fence in the document; keys the nested TextView's
     /// state so two embeds in one note never share one.
     offset: usize,
@@ -723,6 +725,33 @@ fn parse_embed(
     }
     let meta = code.meta.as_deref().unwrap_or("").trim();
     let offset = cx.offset() + node.position()?.start.offset;
+    if let Some(info) = tessera_core::render::block_embed::Info::parse(meta) {
+        let missing = info.status != tessera_core::render::block_embed::Status::Ready;
+        let mut parsed = MarkdownNode::new(
+            "embed",
+            Embed {
+                path: info.path.clone().unwrap_or_default(),
+                heading: Some(format!("^{}", info.id)),
+                missing,
+                block: Some(info.clone()),
+                offset,
+            },
+        )
+        .text(info.title.clone())
+        .markdown(cx.node_source(node).unwrap_or("").to_string());
+        // Parts follow visual order so find, selection and copy see exactly
+        // the body/error and source label that the renderer displays.
+        if missing {
+            parsed = parsed.plain_part("reason", reader_embeds::explanation(info.status));
+        } else {
+            parsed = parsed.markdown_part("body", code.value.clone());
+        }
+        if info.status != tessera_core::render::block_embed::Status::Pending {
+            parsed = parsed.plain_part("title", info.title);
+        }
+        return Some(parsed);
+    }
+
     let pending = meta
         .strip_prefix(tessera_core::render::EMBED_PENDING)
         .is_some_and(|rest| rest.starts_with(' '));
@@ -757,6 +786,7 @@ fn parse_embed(
                 path,
                 heading,
                 missing,
+                block: None,
                 offset,
             },
         )
@@ -1093,6 +1123,9 @@ fn markdown_plugins(
             let Some(data) = node.data::<Embed>() else {
                 return div().into_any_element();
             };
+            if data.block.is_some() {
+                return reader_embeds::render_block(node, &embed_link_handler, _window, cx);
+            }
             let theme = cx.theme();
             let border = theme.border;
             let muted = theme.muted_foreground;
@@ -5621,40 +5654,7 @@ fn display_title_source(source: &str) -> Option<String> {
 }
 
 fn display_title_bytes(head: &[u8]) -> Option<String> {
-    let text = String::from_utf8_lossy(head);
-    let mut lines = text.lines();
-    let mut frontmatter_title = None;
-    if text.starts_with("---") {
-        lines.next();
-        for line in lines.by_ref() {
-            if line.trim() == "---" {
-                break;
-            }
-            if let Some(value) = line.strip_prefix("title:") {
-                let value = value.trim().trim_matches(|c| c == '"' || c == '\'');
-                if !value.is_empty() {
-                    frontmatter_title = Some(value.to_owned());
-                }
-            }
-        }
-    }
-    let mut fenced = false;
-    // Stop at the first H1 instead of collecting the whole head.
-    for line in lines {
-        if line.trim_start().starts_with("```") {
-            fenced = !fenced;
-            continue;
-        }
-        if !fenced {
-            if let Some(h1) = line.strip_prefix("# ") {
-                let h1 = h1.trim();
-                if !h1.is_empty() {
-                    return Some(h1.to_owned());
-                }
-            }
-        }
-    }
-    frontmatter_title
+    tessera_core::note_title::from_bytes(head)
 }
 
 /// One row of the browsing sidebar (#369).

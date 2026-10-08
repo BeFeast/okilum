@@ -6,6 +6,8 @@ use comrak::plugins::syntect::SyntectAdapter;
 use comrak::{format_html_with_plugins, parse_document, Arena, Options};
 use regex::Regex;
 
+pub mod block_embed;
+
 pub const WIKI_SCHEME: &str = "tessera://open/";
 pub const UNRESOLVED_SCHEME: &str = "tessera://unresolved/";
 /// A link that names several notes. The target is carried verbatim so a client
@@ -831,6 +833,19 @@ fn expand_embeds_structure(
                 continue;
             }
             if !(vault.inventory_complete || vault.single_file && vault.inventory_scanned) {
+                if let Some(id) = block {
+                    let info = block_embed::Info {
+                        path: None,
+                        title: Vault::title_of(base),
+                        id: id.into(),
+                        status: block_embed::Status::Pending,
+                    };
+                    out.push_str(&format!(
+                        "\n~~~~{EMBED_LANG} {}\n~~~~\n\n",
+                        info.fence_meta()
+                    ));
+                    continue;
+                }
                 out.push_str(&format!(
                     "\n~~~~{EMBED_LANG} {EMBED_PENDING} {target}\n~~~~\n\n"
                 ));
@@ -854,6 +869,67 @@ fn expand_embeds_structure(
                 // Match the rendering branch's prose boundaries without reading
                 // embedded notes (resolved, missing, self, and unreadable alike).
                 out.push_str(&format!("\n~~~~{EMBED_LANG}\n~~~~\n\n"));
+                continue;
+            }
+            if let Some(id) = block {
+                use block_embed::{Info, Status};
+                let mut info = Info {
+                    path: (!path.is_empty()).then(|| path.clone()),
+                    title: Vault::title_of(if path.is_empty() { base } else { &path }),
+                    id: id.into(),
+                    status: Status::MissingNote,
+                };
+                let body = if path.is_empty() {
+                    None
+                } else if path == from_note {
+                    info.status = Status::SelfReference;
+                    None
+                } else {
+                    match vault.read_note(&path) {
+                        Ok(raw) => {
+                            info.title = crate::note_title::from_bytes(
+                                &raw.as_bytes()[..raw.len().min(16 * 1024)],
+                            )
+                            .unwrap_or(info.title);
+                            match crate::obsidian::block_section_result(
+                                without_frontmatter(&raw),
+                                id,
+                            ) {
+                                Ok(body) => {
+                                    info.status = Status::Ready;
+                                    Some(body)
+                                }
+                                Err(crate::obsidian::BlockSectionFailure::Missing) => {
+                                    info.status = Status::MissingBlock;
+                                    None
+                                }
+                                Err(crate::obsidian::BlockSectionFailure::Ambiguous) => {
+                                    info.status = Status::DuplicateBlock;
+                                    None
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            info.status = Status::UnreadableNote;
+                            None
+                        }
+                    }
+                };
+                let body = body
+                    .map(|body| {
+                        process_source_collect(&body, vault, &path, false, true, identities)
+                    })
+                    .unwrap_or_default();
+                let fence = "~".repeat(tilde_fence_len(&body));
+                out.push_str(&format!(
+                    "\n{fence}{EMBED_LANG} {}\n{}{fence}\n\n",
+                    info.fence_meta(),
+                    if body.is_empty() {
+                        String::new()
+                    } else {
+                        format!("{}\n", body.trim_end_matches('\n'))
+                    }
+                ));
                 continue;
             }
             let body = if path.is_empty() || path == from_note {
