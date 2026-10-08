@@ -183,8 +183,8 @@ actions!(
         Dismiss,
         QuickOpen,
         FullTextSearch,
-        RecentNext,
-        RecentPrevious,
+        RecentOlder,
+        RecentNewer,
         PaletteNext,
         PalettePrevious,
         HistoryBack,
@@ -299,10 +299,10 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-shift-f", FullTextSearch, ctx),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-shift-f", FullTextSearch, Some("Reader > Input")),
-        KeyBinding::new("ctrl-tab", RecentNext, ctx),
-        KeyBinding::new("ctrl-shift-tab", RecentPrevious, ctx),
-        KeyBinding::new("ctrl-tab", RecentNext, Some("Reader > Input")),
-        KeyBinding::new("ctrl-shift-tab", RecentPrevious, Some("Reader > Input")),
+        KeyBinding::new("ctrl-tab", RecentOlder, ctx),
+        KeyBinding::new("ctrl-shift-tab", RecentNewer, ctx),
+        KeyBinding::new("ctrl-tab", RecentOlder, Some("Reader > Input")),
+        KeyBinding::new("ctrl-shift-tab", RecentNewer, Some("Reader > Input")),
         KeyBinding::new("secondary-/", ToggleShortcutSheet, ctx),
         KeyBinding::new("secondary-/", ToggleShortcutSheet, Some("Reader > Input")),
         KeyBinding::new("escape", Dismiss, Some("Reader > ShortcutSheet > Input")),
@@ -6182,8 +6182,8 @@ impl Render for Reader {
             .on_action(cx.listener(|this, _: &ToggleShortcutSheet, window, cx| {
                 this.toggle_shortcut_sheet(window, cx)
             }))
-            .on_action(cx.listener(|this, _: &RecentNext, _, cx| this.cycle_recent(1, cx)))
-            .on_action(cx.listener(|this, _: &RecentPrevious, _, cx| this.cycle_recent(-1, cx)))
+            .on_action(cx.listener(|this, _: &RecentOlder, _, cx| this.cycle_recent(1, cx)))
+            .on_action(cx.listener(|this, _: &RecentNewer, _, cx| this.cycle_recent(-1, cx)))
             .on_action(cx.listener(|this, _: &PaletteNext, _, cx| this.move_quick_open(1, cx)))
             .on_action(cx.listener(|this, _: &PalettePrevious, _, cx| this.move_quick_open(-1, cx)))
             .on_action(cx.listener(|this, _: &NewNote, window, cx| this.new_note(None, window, cx)))
