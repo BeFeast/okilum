@@ -103,6 +103,18 @@ fn validate(sd: &Descriptor, sid: &str) -> Result<()> {
     Ok(())
 }
 
+// Windows reports the configured remote-client rejection bit as well as end/type.
+// Require it explicitly; do not mask away arbitrary extra bits.
+fn validate_pipe_info(flags: NAMED_PIPE_MODE, instances: u32) -> Result<()> {
+    let expected = PIPE_SERVER_END | PIPE_REJECT_REMOTE_CLIENTS;
+    ensure!(
+        flags == expected && instances == 1,
+        "unexpected pipe type, end or instance limit: flags={:#010x}, max_instances={}, expected_flags={:#010x}, expected_max_instances=1",
+        flags.0, instances, expected.0
+    );
+    Ok(())
+}
+
 /// A fixed local namespace; never accepts a caller-selected host or path.
 pub fn endpoint_name(scope: &Scope) -> Result<String> {
     ensure!(
@@ -187,11 +199,7 @@ impl PrivatePipe {
             GetNamedPipeInfo(raw, Some(&mut flags), None, None, Some(&mut instances))
                 .context("GetNamedPipeInfo(private endpoint)")?;
         }
-        ensure!(
-            flags == PIPE_SERVER_END && instances == 1,
-            "unexpected pipe type, end or instance limit: flags={:#010x}, max_instances={}, expected_flags={:#010x}, expected_max_instances=1",
-            flags.0, instances, PIPE_SERVER_END.0
-        );
+        validate_pipe_info(flags, instances)?;
         Ok(())
     }
 }

@@ -226,3 +226,30 @@ fn native_private_pipe_preserves_shared_existing_endpoint() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn pipe_metadata_requires_server_byte_remote_rejection_and_single_instance() -> Result<()> {
+    use windows::Win32::System::Pipes::PIPE_TYPE_MESSAGE;
+    let expected = PIPE_SERVER_END | PIPE_REJECT_REMOTE_CLIENTS;
+    validate_pipe_info(expected, 1)?;
+    for flags in [
+        PIPE_SERVER_END,
+        PIPE_REJECT_REMOTE_CLIENTS,
+        expected | PIPE_TYPE_MESSAGE,
+        NAMED_PIPE_MODE(expected.0 | 0x100),
+        NAMED_PIPE_MODE(0),
+    ] {
+        ensure!(
+            validate_pipe_info(flags, 1).is_err(),
+            "unexpected flags accepted: {:#x}",
+            flags.0
+        );
+    }
+    for instances in [0, 2, 255, u32::MAX] {
+        ensure!(
+            validate_pipe_info(expected, instances).is_err(),
+            "invalid instance limit accepted"
+        );
+    }
+    Ok(())
+}

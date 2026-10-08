@@ -334,3 +334,12 @@ preservation fixture now passes. The remaining failure is the pipe type/end/
 instance-limit assertion. A diagnostic candidate records the actual flags and
 maximum instance count (including the passing shared fixture); it deliberately
 keeps the acceptance condition unchanged until the returned values are known.
+
+The diagnostic run returned `flags=0x9, max_instances=1` from both private and
+shared pipes: https://github.com/BeFeast/tessera/actions/runs/37821492513 . The extra
+bit is the configured PIPE_REJECT_REMOTE_CLIENTS (0x8), alongside PIPE_SERVER_END
+(0x1); the one-instance limit was correct. Read-back now requires exactly both
+flags, byte type and one instance. It does not mask unknown bits or accept a
+missing remote-rejection bit. A regression rejects client/message pipes, missing
+remote rejection, unknown flags and zero/multiple/unlimited instance limits.
+This corrected candidate still requires its own Windows-native run.
