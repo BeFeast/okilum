@@ -192,6 +192,23 @@ impl Projection {
         }
         Ok(())
     }
+    /// Validate active ranges against this already validated immutable snapshot.
+    /// Callers may reuse the boundary index only for this exact source revision.
+    pub(crate) fn validate_active(&self, active: &Active) -> Result<(), SourceFallback> {
+        for range in [active.selection.as_ref(), active.composition.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            if !valid_range(range, &self.source_boundaries) {
+                return Err(SourceFallback {
+                    reason: FallbackReason::InvalidBoundary,
+                    snapshot: self.snapshot.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// Hidden source boundaries collapse to their one display anchor.
     pub fn source_to_display(&self, current: &Snapshot, offset: usize) -> Result<usize, MapError> {
         self.check(current)?;

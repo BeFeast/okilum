@@ -150,10 +150,10 @@ impl CachedProvider {
         };
         // Independently validate exact native ranges before taking their union.
         // An enclosing union must never hide an invalid/subgrapheme endpoint.
-        let mut projection = retained.project(&reveal).ok()?;
+        retained.validate_active(&reveal).ok()?;
         if let Some(replacement) = active.replacement.as_ref().map(raw_range) {
             retained
-                .project(&Active {
+                .validate_active(&Active {
                     selection: Some(replacement.clone()),
                     composition: None,
                 })
@@ -164,8 +164,8 @@ impl CachedProvider {
                 }
                 None => replacement,
             });
-            projection = retained.project(&reveal).ok()?;
         }
+        let projection = retained.project(&reveal).ok()?;
         let styles = projected_styles(&projection, retained.styles(), colors)?;
         Some(Arc::new(MappedProjection {
             source: source.clone(),
@@ -177,7 +177,7 @@ impl CachedProvider {
 
 struct MappedProjection {
     source: SourceSnapshot,
-    projection: Projection,
+    projection: Arc<Projection>,
     styles: Vec<ProjectionStyle>,
 }
 impl SourceProjection for MappedProjection {

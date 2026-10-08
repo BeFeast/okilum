@@ -144,3 +144,76 @@ Preliminary native X11 fixture checks on the development host:
 Scratch evidence/scripts are in `~/.cache/tessera-qa/754/`. Publication remains
 subject to the executor CI slot; native full Reader light/dark + IME on muninn
 under the shared-screen lock and the owner's Mac gate remain outstanding.
+
+## Fast-input stall investigation and fix (2026-10-08)
+
+The supplemental native narrow-dark run found Hyprland's "Application Not
+Responding" overlay twice. Slower typing was not accepted as a workaround.
+Compare debug builds on **the same muninn session**: PR d492449 and main e912b50
+(including #756), with the same diagnostic counters and bounded attribution spans
+around provider composition, retention, reveal, classifier adoption and layout.
+The recorder dumped after the measured burst; all dumps report zero overflow.
+Temporary instrumentation is preserved with the evidence, not shipped.
+
+The bottleneck was redundant synchronous projection construction, not a remap
+whose cost grows quadratically with queued edits. `RetainedPresentation::project`
+built a complete empty-plan projection merely to validate active boundaries, then
+built the actual projection. `compose_colored` invoked that operation for selection,
+replacement and their union, including ordinary typing outside syntax. Remapping
+also built a validated projection and discarded it. These repeated full-source
+Unicode scans and allocations accumulated UI-thread work during the rapid burst;
+no individual measured remap was itself a multi-second call.
+
+Median synchronous pre-edit reveal time per native edit (milliseconds):
+
+| Fixture | Main | Initial #763 | Fixed |
+| --- | ---: | ---: | ---: |
+| 1,508 bytes, five long links | 0.025 | 9.733 | 0.126 |
+| 5,617 bytes, 50 link/bold fragments | 0.029 | 21.597 | 0.431 |
+| 28,017 bytes, 250 link/bold fragments | 0.045 | 115.758 | 1.189 |
+
+The repeated fragments contain four conceal markers each (link delimiters and bold
+markers), so the two scaling fixtures exercise 200 and 1,000 markers. Initial remap
+medians were 1.739 / 3.639 / 18.681 ms; fixed remap medians were 1.756 / 5.538 /
+22.798 ms. This remains bounded full-document linear work, not a claim of constant
+cost or an incremental parser. The removed repeated reveal work, rather than a
+faster remap, explains the improvement. For the small fixture, reveal p99 fell
+from 19.042 to 0.421 ms. These are attributed stage wall times, **not** claimed
+input-to-photon latency. Main's cheap stale-provider rejection also causes the
+raw/projected flashes fixed by this PR, so its latency alone is not a UX target.
+
+Keep one validated immutable base projection per source revision, including its
+Unicode boundary index. Validate each selection/composition/replacement range
+independently before unioning them, without creating a projection. Reuse the base
+via Arc when no syntax fragment is touched; rebuild only a genuinely revealed
+presentation. A remapped source revision gets a newly validated base. The same-byte
+new-revision path also receives the new snapshot; stale identities are not reused.
+Regression coverage checks cache reuse, a fresh revision, out-of-range composition,
+and scalar offsets inside a combining grapheme. No gpui-core patch or lowered
+Unicode/IME gate is involved.
+
+### Repeat acceptance
+
+The product build excludes the temporary profiling edits. SHA256:
+`13184a3a277f04731e9af137357c8aa2c4f621a5ce4cb0245951c81afacf40fc`.
+Under the muninn lock, native Wayland, 1000×700 window, dark theme, repeat the
+original **20 ms** insert/delete pauses with screenshot sampling (not the slower
+120 ms workaround). Three independent launches each completed 100 cycles:
+
+- All 160/160 unchanged-paragraph samples per run match the projected control;
+  no ANR overlay, raw fallback or moved text appears in those samples.
+- Each run records source generation1→201: exactly200 actual mutations, without
+  the repeated-key buildup seen in a stalled probe.
+- Each copied document matches the original source bytes. A new clipboard sentinel
+  prevents accidentally accepting a previous run's copy.
+- Intentional Source toggling produces a different control crop in all three runs.
+- Existing validation passes:22 classifier/retention tests,17 projection tests,
+  eight provider tests, seven Reader/save-echo tests, fmt, strict shell clippy and
+  cumulative vendor verification. Prior full Reader Wayland light/dark IME checks
+  remain in the native report; Mac acceptance still follows the published build.
+
+Raw traces, same-machine build instrumentation, source fixtures, frame sequences
+and per-run results are kept in `~/.cache/tessera-qa/754/profile/` and the linked
+PR evidence bundle. Muninn was restored to the standard QA vault/workspace5,
+ydotoold stopped and the lock released. Merge remains gated by CI on the updated
+head; the previous native-stall HOLD is addressed by this fix and these three runs.

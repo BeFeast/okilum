@@ -1,11 +1,13 @@
 //! Presentation-only edit mapping. Never reuse stale navigation or parser metadata.
 use super::{Classification, StyleSpan, MAX_BYTES};
 use crate::source_projection::{Active, Plan, Region, Snapshot};
-use std::ops::Range;
+use std::{ops::Range, sync::Arc};
 
 #[derive(Clone)]
 pub struct RetainedPresentation {
     snapshot: Snapshot,
+    base:
+        Result<Arc<crate::source_projection::Projection>, crate::source_projection::SourceFallback>,
     plan: Plan,
     styles: Vec<StyleSpan>,
     marker_scopes: Vec<(Range<usize>, Range<usize>)>,
@@ -15,6 +17,12 @@ impl RetainedPresentation {
     pub fn new(classified: &Classification) -> Self {
         Self {
             snapshot: classified.snapshot.clone(),
+            base: crate::source_projection::project(
+                &classified.snapshot,
+                &classified.plan,
+                &Active::default(),
+            )
+            .map(Arc::new),
             plan: classified.plan.clone(),
             styles: classified.styles.clone(),
             marker_scopes: classified.marker_scopes.clone(),
@@ -31,19 +39,25 @@ impl RetainedPresentation {
         &self.styles
     }
 
+    /// Range validation must not construct another whole-document projection.
+    pub fn validate_active(
+        &self,
+        active: &Active,
+    ) -> Result<(), crate::source_projection::SourceFallback> {
+        self.base
+            .as_ref()
+            .map_err(Clone::clone)?
+            .validate_active(active)
+    }
+
     /// Reveal the syntactic fragment touched by caret/selection/IME, not every
     /// link in its paragraph. Heading markers have their own small scope.
     pub fn project(
         &self,
         active: &Active,
-    ) -> Result<crate::source_projection::Projection, crate::source_projection::SourceFallback>
+    ) -> Result<Arc<crate::source_projection::Projection>, crate::source_projection::SourceFallback>
     {
-        // Validate native ranges independently, including subgrapheme endpoints.
-        crate::source_projection::project(
-            &self.snapshot,
-            &Plan::new(&self.snapshot, vec![]),
-            active,
-        )?;
+        self.validate_active(active)?;
         let touches = |scope: &Range<usize>| {
             [active.selection.as_ref(), active.composition.as_ref()]
                 .into_iter()
@@ -56,6 +70,7 @@ impl RetainedPresentation {
                     }
                 })
         };
+        let mut revealed = false;
         let regions = self
             .plan
             .regions()
@@ -73,18 +88,24 @@ impl RetainedPresentation {
                                 .ok()
                                 .map(|i| &self.marker_scopes[i].1)
                                 .unwrap_or(marker);
-                            !touches(scope)
+                            let touched = touches(scope);
+                            revealed |= touched;
+                            !touched
                         })
                         .cloned()
                         .collect(),
                 },
             })
             .collect();
+        if !revealed {
+            return self.base.clone();
+        }
         crate::source_projection::project(
             &self.snapshot,
             &Plan::new(&self.snapshot, regions),
             &Active::default(),
         )
+        .map(Arc::new)
     }
 
     /// Retain only a proven local inline edit. Structural edits require a fresh
@@ -104,6 +125,12 @@ impl RetainedPresentation {
         if old == new {
             return Some(Self {
                 snapshot: current.clone(),
+                base: crate::source_projection::project(
+                    current,
+                    &Plan::new(current, self.plan.regions().to_vec()),
+                    &Active::default(),
+                )
+                .map(Arc::new),
                 plan: Plan::new(current, self.plan.regions().to_vec()),
                 styles: self.styles.clone(),
                 marker_scopes: self.marker_scopes.clone(),
@@ -213,9 +240,13 @@ impl RetainedPresentation {
                 },
             });
         }
+        let plan = Plan::new(current, regions);
+        // Build and validate once per revision, then reuse during reveal/IME.
+        let base = crate::source_projection::project(current, &plan, &Active::default()).ok()?;
         let result = Self {
             snapshot: current.clone(),
-            plan: Plan::new(current, regions),
+            base: Ok(Arc::new(base)),
+            plan,
             marker_scopes: self
                 .marker_scopes
                 .iter()
@@ -234,7 +265,6 @@ impl RetainedPresentation {
         };
         // This also checks grapheme boundaries after Unicode edits. No rounding
         // of an IME range or stale byte offset is ever accepted.
-        crate::source_projection::project(current, &result.plan, &Active::default()).ok()?;
         Some(result)
     }
 }
@@ -247,6 +277,46 @@ mod tests {
     fn snapshot(generation: u64, text: &str) -> Snapshot {
         Snapshot::new("note", generation, text)
     }
+    #[test]
+    fn unchanged_fragments_reuse_projection_but_validate_each_active_range() {
+        let source = snapshot(1, "plain e\u{301} text [label](destination)");
+        let retained = RetainedPresentation::new(&classify(&source));
+        let base = retained.project(&Active::default()).unwrap();
+        for caret in [0, 1, 4] {
+            let projected = retained
+                .project(&Active {
+                    selection: Some(caret..caret),
+                    composition: None,
+                })
+                .unwrap();
+            assert!(Arc::ptr_eq(&base, &projected));
+        }
+        // A scalar boundary inside a grapheme must not pass the cached path.
+        assert!(retained
+            .project(&Active {
+                selection: Some(7..7),
+                composition: None
+            })
+            .is_err());
+        assert!(retained
+            .validate_active(&Active {
+                selection: None,
+                composition: Some(usize::MAX..usize::MAX)
+            })
+            .is_err());
+        let edited = snapshot(2, "Xplain e\u{301} text [label](destination)");
+        let mapped = retained.remap(&edited).unwrap();
+        let next = mapped.project(&Active::default()).unwrap();
+        assert!(!Arc::ptr_eq(&base, &next));
+        assert_eq!(next.snapshot(), &edited);
+        assert!(mapped
+            .project(&Active {
+                selection: Some(8..8),
+                composition: None
+            })
+            .is_err());
+    }
+
     #[test]
     fn caret_reveals_only_its_fragment_not_all_links_in_paragraph() {
         let text = "plain [first](long-one) and [second](long-two) end";
