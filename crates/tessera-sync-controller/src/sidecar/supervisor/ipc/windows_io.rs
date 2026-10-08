@@ -1,6 +1,10 @@
 //! Deadline-bounded wire I/O on an already connected private client. Not yet a
 //! Transport: authenticated discovery/open and supervisor wiring remain separate.
-use super::{windows_endpoint::PrivateClient, MAX_FRAME};
+use super::{
+    windows_endpoint::{PrivateClient, PrivatePipe},
+    windows_peer::{PeerEnd, ProcessPeer},
+    MAX_FRAME,
+};
 use std::{
     io::{self, Read, Write},
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
@@ -13,9 +17,10 @@ use std::{
 use windows::{
     core::{HRESULT, PCWSTR},
     Win32::{
-        Foundation::{ERROR_IO_PENDING, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
+        Foundation::{ERROR_IO_PENDING, ERROR_PIPE_CONNECTED, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
         Storage::FileSystem::{ReadFile, WriteFile},
         System::{
+            Pipes::ConnectNamedPipe,
             Threading::{CreateEventW, WaitForSingleObject},
             IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED},
         },
@@ -60,6 +65,7 @@ fn native(api: &str, error: windows::core::Error) -> io::Error {
 }
 
 enum Operation {
+    Accept,
     Read(usize),
     Write(Vec<u8>),
 }
@@ -70,6 +76,59 @@ struct Reply {
 struct Request {
     operation: Operation,
     reply: mpsc::SyncSender<io::Result<Reply>>,
+}
+
+enum Endpoint {
+    Client(PrivateClient),
+    Server {
+        pipe: PrivatePipe,
+        peer: ProcessPeer,
+    },
+}
+impl Endpoint {
+    fn handle(&self) -> HANDLE {
+        match self {
+            Self::Client(p) => HANDLE(p.as_raw_handle()),
+            Self::Server { pipe, .. } => HANDLE(pipe.as_raw_handle()),
+        }
+    }
+    fn verify(&self, before_accept: bool) -> io::Result<()> {
+        match self {
+            Self::Client(p) => p.verify(),
+            Self::Server { pipe, peer } => pipe.verify().and_then(|()| {
+                if before_accept {
+                    Ok(())
+                } else {
+                    peer.verify_pipe(pipe, PeerEnd::Client)
+                }
+            }),
+        }
+        .map_err(io::Error::other)
+    }
+}
+
+/// One owned server connection. No reaccept, disconnect/reuse, or permissive
+/// peer discovery: the expected client comes from trusted captured-process setup.
+pub struct ServerIo(ClientIo);
+impl ServerIo {
+    pub fn accept(pipe: PrivatePipe, peer: ProcessPeer, deadline: Instant) -> io::Result<Self> {
+        let mut io = ClientIo::start(Endpoint::Server { pipe, peer }, deadline)?;
+        io.request(Operation::Accept)?;
+        Ok(Self(io))
+    }
+}
+impl Read for ServerIo {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        self.0.read(bytes)
+    }
+}
+impl Write for ServerIo {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.write(bytes)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.flush()
+    }
 }
 
 /// Exclusive client ownership and one immutable deadline for every fragment.
@@ -86,6 +145,9 @@ pub struct ClientIo {
 }
 impl ClientIo {
     pub fn new(client: PrivateClient, deadline: Instant) -> io::Result<Self> {
+        Self::start(Endpoint::Client(client), deadline)
+    }
+    fn start(endpoint: Endpoint, deadline: Instant) -> io::Result<Self> {
         let budget = remaining(deadline)?;
         if budget > Duration::from_secs(30) {
             return Err(io::Error::new(
@@ -111,14 +173,22 @@ impl ClientIo {
                     };
                     // Queries are synchronous; caller waiting remains bounded even
                     // if a query stalls. Admission includes such retained workers.
-                    let result = client.verify().map_err(io::Error::other).and_then(|()| {
+                    let accepting = matches!(request.operation, Operation::Accept);
+                    let result = endpoint.verify(accepting).and_then(|()| {
                         perform_inner(
-                            HANDLE(client.as_raw_handle()),
+                            endpoint.handle(),
                             request.operation,
                             deadline,
                             #[cfg(test)]
                             Some(&worker_evidence),
                         )
+                        .and_then(|reply| {
+                            if accepting {
+                                endpoint.verify(false)?;
+                            }
+                            remaining(deadline)?;
+                            Ok(reply)
+                        })
                     });
                     let stop = result.is_err();
                     let _ = request.reply.send(result);
@@ -126,7 +196,7 @@ impl ClientIo {
                         break;
                     }
                 }
-                drop(client);
+                drop(endpoint);
                 drop(_permit);
                 #[cfg(test)]
                 let _ = done.send(());
@@ -225,21 +295,38 @@ fn perform_inner(
         hEvent: event,
         ..Default::default()
     };
+    let accepting = matches!(operation, Operation::Accept);
     let read = matches!(operation, Operation::Read(_));
     let mut bytes = match operation {
+        Operation::Accept => Vec::new(),
         Operation::Read(n) => vec![0; n],
         Operation::Write(bytes) => bytes,
     };
     let submitted = unsafe {
-        if read {
+        if accepting {
+            ConnectNamedPipe(pipe, Some(&mut overlap))
+        } else if read {
             ReadFile(pipe, Some(&mut bytes), None, Some(&mut overlap))
         } else {
             WriteFile(pipe, Some(&bytes), None, Some(&mut overlap))
         }
     };
     if let Err(error) = submitted {
+        if accepting && error.code() == HRESULT::from_win32(ERROR_PIPE_CONNECTED.0) {
+            remaining(deadline)?;
+            return Ok(Reply { bytes, count: 0 });
+        }
         if error.code() != HRESULT::from_win32(ERROR_IO_PENDING.0) {
-            return Err(native(if read { "ReadFile" } else { "WriteFile" }, error));
+            return Err(native(
+                if accepting {
+                    "ConnectNamedPipe"
+                } else if read {
+                    "ReadFile"
+                } else {
+                    "WriteFile"
+                },
+                error,
+            ));
         }
         #[cfg(test)]
         if let Some(evidence) = evidence {
@@ -283,6 +370,11 @@ fn perform_inner(
     unsafe { GetOverlappedResult(pipe, &overlap, &mut count, true) }
         .map_err(|e| native("GetOverlappedResult", e))?;
     remaining(deadline)?;
+    // ConnectNamedPipe has no byte transfer; GetOverlappedResult does not define
+    // its byte count. Only ReadFile/WriteFile completion lengths are meaningful.
+    if accepting {
+        return Ok(Reply { bytes, count: 0 });
+    }
     if count as usize > bytes.len() {
         return Err(io::Error::other("invalid pipe completion length"));
     }

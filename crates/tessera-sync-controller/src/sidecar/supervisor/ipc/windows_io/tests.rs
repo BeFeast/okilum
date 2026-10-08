@@ -182,3 +182,163 @@ fn native_pipe_io_blocked_write_cancels_after_positive_progress() -> Result<()> 
     eprintln!("pipe I/O: {sent} bytes accepted before blocked write; aborted completion and worker release confirmed");
     Ok(())
 }
+
+fn fresh_scope() -> Scope {
+    Scope {
+        installation: Uuid::new_v4(),
+        instance: Uuid::new_v4(),
+        generation: Uuid::new_v4(),
+    }
+}
+fn self_peer() -> Result<ProcessPeer> {
+    let raw = unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+            false,
+            std::process::id(),
+        )?
+    };
+    ProcessPeer::from_verified_process(
+        unsafe { OwnedHandle::from_raw_handle(raw.0) },
+        &current_sid()?,
+    )
+}
+
+#[test]
+fn native_server_accept_pending_client_and_bidirectional_io() -> Result<()> {
+    let scope = fresh_scope();
+    let pipe = PrivatePipe::create(&scope)?;
+    let peer = self_peer()?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let worker = std::thread::spawn(move || -> io::Result<()> {
+        let mut server = ServerIo::accept(pipe, peer, deadline)?;
+        assert!(
+            server.0.evidence.pending.load(Ordering::Relaxed) > 0,
+            "no pending accept observed"
+        );
+        let mut request = [0; 4];
+        server.read_exact(&mut request)?;
+        assert_eq!(&request, b"ping");
+        server.write_all(b"pong")?;
+        server.read_exact(&mut [0; 1])?;
+        Ok(())
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    let client = PrivateClient::connect(&scope, self_peer()?)?;
+    let mut client = ClientIo::new(client, deadline)?;
+    client.write_all(b"ping")?;
+    let mut reply = [0; 4];
+    client.read_exact(&mut reply)?;
+    ensure!(&reply == b"pong", "server reply mismatch");
+    client.write_all(b"!")?;
+    worker.join().expect("accept fixture panicked")?;
+    eprintln!("server accept: pending connect, captured client, bidirectional I/O passed");
+    Ok(())
+}
+
+#[test]
+fn native_server_accept_timeout_drains_and_releases_namespace() -> Result<()> {
+    let scope = fresh_scope();
+    let pipe = PrivatePipe::create(&scope)?;
+    let deadline = Instant::now() + Duration::from_millis(500);
+    let mut pending = ClientIo::start(
+        Endpoint::Server {
+            pipe,
+            peer: self_peer()?,
+        },
+        deadline,
+    )?;
+    let error = pending
+        .request(Operation::Accept)
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("empty accept succeeded"))?;
+    ensure!(
+        error.kind() == io::ErrorKind::TimedOut,
+        "wrong error: {error}"
+    );
+    pending.completed.recv_timeout(Duration::from_secs(2))?;
+    ensure!(
+        pending.evidence.pending.load(Ordering::Relaxed) > 0,
+        "no pending accept"
+    );
+    ensure!(
+        pending.evidence.cancelled.load(Ordering::Relaxed) > 0,
+        "no aborted accept completion"
+    );
+    // Same namespace can be recreated only after all pending resources close.
+    let pipe = PrivatePipe::create(&scope)?;
+    let client = PrivateClient::connect(&scope, self_peer()?)?;
+    let mut server = ServerIo::accept(pipe, self_peer()?, Instant::now() + Duration::from_secs(5))?;
+    let mut client = ClientIo::new(client, Instant::now() + Duration::from_secs(5))?;
+    client.write_all(b"x")?;
+    let mut byte = [0];
+    server.read_exact(&mut byte)?;
+    ensure!(byte == [b'x'], "preconnected positive control failed");
+    eprintln!("server accept: timeout aborted and drained; namespace recreated, preconnected client accepted");
+    Ok(())
+}
+
+#[test]
+fn native_server_accept_rejects_wrong_captured_client() -> Result<()> {
+    use std::process::{Child, Command, Stdio};
+    use windows::Win32::{
+        Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS},
+        System::Threading::GetCurrentProcess,
+    };
+    struct Guard(Child);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let child = Guard(
+        Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Sleep -Seconds 30",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?,
+    );
+    let mut raw = HANDLE::default();
+    unsafe {
+        DuplicateHandle(
+            GetCurrentProcess(),
+            HANDLE(child.0.as_raw_handle()),
+            GetCurrentProcess(),
+            &mut raw,
+            0,
+            false,
+            DUPLICATE_SAME_ACCESS,
+        )?;
+    }
+    let wrong = ProcessPeer::from_verified_process(
+        unsafe { OwnedHandle::from_raw_handle(raw.0) },
+        &current_sid()?,
+    )?;
+    let scope = fresh_scope();
+    let pipe = PrivatePipe::create(&scope)?;
+    let _client = PrivateClient::connect(&scope, self_peer()?)?;
+    let error = ServerIo::accept(pipe, wrong, Instant::now() + Duration::from_secs(5))
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("wrong captured client accepted"))?;
+    ensure!(
+        error
+            .to_string()
+            .contains("pipe peer is not the captured process"),
+        "wrong refusal: {error}"
+    );
+    let scope = fresh_scope();
+    let pipe = PrivatePipe::create(&scope)?;
+    let _client = PrivateClient::connect(&scope, self_peer()?)?;
+    let _server = ServerIo::accept(pipe, self_peer()?, Instant::now() + Duration::from_secs(5))?;
+    eprintln!(
+        "server accept: same-user wrong captured client refused; actual captured client accepted"
+    );
+    Ok(())
+}
