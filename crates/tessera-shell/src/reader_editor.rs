@@ -440,6 +440,7 @@ impl Reader {
             current_input,
             _subscriptions: vec![changed, blur, clicked, highlighting],
         });
+        self.start_editor_layout_diagnostics(input.clone(), cx);
         input.focus_handle(cx).focus(window, cx);
         cx.notify();
     }
@@ -499,6 +500,10 @@ impl Reader {
     }
 
     pub(super) fn refresh_source_from_disk(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let trace = self
+            .loading
+            .as_ref()
+            .and_then(|load| load.opts.diagnostics.clone());
         let Some(editing) = &mut self.editing else {
             return;
         };
@@ -516,8 +521,10 @@ impl Reader {
                 return;
             }
         }
+        let mut outcome = "unchanged";
         match editing.store.refresh_from_disk() {
             Ok(Save::Conflict) => {
+                outcome = "conflict";
                 editing.conflict_detected = true;
                 if editing.conflict.is_none() {
                     editing.conflict = editing.store.current().ok();
@@ -526,6 +533,7 @@ impl Reader {
             }
             Ok(Save::Saved) => {
                 if editing.store.text() != text {
+                    outcome = "replaced";
                     let updated = editing.store.text().to_owned();
                     editing
                         .input
@@ -538,6 +546,7 @@ impl Reader {
                 }
             }
             Err(error) => {
+                outcome = "error";
                 self.link_notice = Some(
                     format!(
                         "Could not read the changed file: {error:#}. Your edits are still here."
@@ -545,6 +554,14 @@ impl Reader {
                     .into(),
                 );
             }
+        }
+        if let Some(trace) = trace {
+            trace.event(
+                "editor_disk_refresh",
+                serde_json::json!({"outcome": outcome,
+                "generation": editing.input.read(cx).source_stamp().generation,
+                "presentation_epoch": editing.input.read(cx).presentation_epoch()}),
+            );
         }
         cx.notify();
     }

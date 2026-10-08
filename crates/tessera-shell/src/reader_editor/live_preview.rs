@@ -21,6 +21,58 @@ fn projection_colors(cx: &App) -> ProjectionColors {
 }
 
 impl Reader {
+    /// Opt-in, cross-platform diagnostics. Sampling reads state only: no notify/draw.
+    pub(super) fn start_editor_layout_diagnostics(
+        &self,
+        input: Entity<EditorState>,
+        cx: &mut Context<Self>,
+    ) {
+        if std::env::var("TESSERA_EDITOR_LAYOUT_DIAGNOSTICS").as_deref() != Ok("1") {
+            return;
+        }
+        let Some(trace) = self
+            .loading
+            .as_ref()
+            .and_then(|load| load.opts.diagnostics.clone())
+        else {
+            return;
+        };
+        input.update(cx, |input, _| input.enable_layout_diagnostics());
+        cx.spawn(async move |reader, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                let keep = reader.update(cx, |reader, cx| {
+                    let Some(editing) = reader.editing.as_ref().filter(|e| e.input == input) else {
+                        return false;
+                    };
+                    let editor = input.read(cx);
+                    let Some(counts) = editor.layout_diagnostics() else { return false; };
+                    let scroll = editor.scroll_offset();
+                    let bounds = editor.input_bounds();
+                    trace.event("editor_layout_sample", serde_json::json!({
+                        "document": editor.source_stamp().document,
+                        "generation": editor.source_stamp().generation,
+                        "presentation_epoch": editor.presentation_epoch(),
+                        "live": editing.live_preview.enabled,
+                        "classification_in_flight": editing.live_preview.in_flight.get(),
+                        "layout_calls": counts.layout_calls,
+                        "metric_changes": counts.metric_changes,
+                        "provider_applies": counts.provider_applies,
+                        "projection_composes": counts.projection_composes,
+                        "active_changes": counts.active_changes,
+                        "scroll": [f32::from(scroll.x), f32::from(scroll.y)],
+                        "bounds": [f32::from(bounds.origin.x), f32::from(bounds.origin.y),
+                            f32::from(bounds.size.width), f32::from(bounds.size.height)],
+                        "caret": editor.cursor_layout().map(|(b, _)| [f32::from(b.origin.x),
+                            f32::from(b.origin.y), f32::from(b.size.width), f32::from(b.size.height)]),
+                    }));
+                    true
+                }).unwrap_or(false);
+                if !keep { break; }
+            }
+        }).detach();
+    }
+
     pub(super) fn refresh_live_preview_colors(&self, cx: &mut Context<Self>) {
         let Some(editing) = self.editing.as_ref().filter(|e| e.live_preview.enabled) else {
             return;
@@ -227,6 +279,128 @@ mod tests {
         reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
         visual.run_until_parked();
         (reader, visual, directory)
+    }
+
+    #[gpui::test]
+    fn save_echo_batches_preserve_editor_projection_and_viewport(cx: &mut TestAppContext) {
+        let original = format!(
+            "# Echo\n\n{}",
+            "**Bold** wrapped paragraph with [[target|label]].\n\n".repeat(80)
+        );
+        let (reader, visual, dir) = fixture(cx, &original);
+        reader.update_in(visual, |r, window, cx| {
+            r.toggle_live_preview(window, cx);
+            r.editing.as_ref().unwrap().input.update(cx, |input, cx| {
+                input.enable_layout_diagnostics();
+                input.set_value(format!("{original}Saved\n"), window, cx);
+            });
+            assert!(r.save_source(cx));
+        });
+        visual.run_until_parked();
+        reader.update_in(visual, |r, _, cx| {
+            r.editing.as_ref().unwrap().input.update(cx, |input, cx| {
+                input.set_scroll_offset(point(px(0.), px(-120.)), cx);
+            });
+        });
+        visual.run_until_parked();
+        let snapshot = |r: &Reader, cx: &App| {
+            let e = r.editing.as_ref().unwrap();
+            let input = e.input.read(cx);
+            (
+                e.input.entity_id(),
+                input.source_stamp(),
+                input.presentation_epoch(),
+                input.selected_range(),
+                input.scroll_offset(),
+                input.value().to_string(),
+                input.layout_diagnostics().unwrap().provider_applies,
+            )
+        };
+        let before = reader.read_with(visual, snapshot);
+        let accepted = reader.read_with(visual, |r, _| {
+            r.editing
+                .as_ref()
+                .unwrap()
+                .live_preview
+                .accepted
+                .clone()
+                .unwrap()
+        });
+        assert!(
+            before.4.y < px(0.),
+            "positive control: genuinely scrolled editor"
+        );
+        for _ in 0..3 {
+            // Same bytes, new metadata: includes sync/save echo that must still be indexed.
+            let path = dir.path().join("vault/note.md");
+            let bytes = std::fs::read(&path).unwrap();
+            std::fs::write(&path, bytes).unwrap();
+            reader.update_in(visual, |r, window, cx| {
+                r.apply_vault_changes(
+                    tessera_core::Changes {
+                        changed: ["note.md".to_owned()].into(),
+                        directories: [String::new()].into(),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            visual.run_until_parked();
+            assert_eq!(reader.read_with(visual, snapshot), before);
+            reader.read_with(visual, |r, _| {
+                assert!(Arc::ptr_eq(
+                    &accepted,
+                    r.editing
+                        .as_ref()
+                        .unwrap()
+                        .live_preview
+                        .accepted
+                        .as_ref()
+                        .unwrap()
+                ))
+            });
+        }
+        // Different bytes must not be hidden by the echo guard.
+        std::fs::write(dir.path().join("vault/note.md"), "# Real external change\n").unwrap();
+        reader.update_in(visual, |r, window, cx| {
+            r.apply_vault_changes(
+                tessera_core::Changes {
+                    changed: ["note.md".to_owned()].into(),
+                    ..Default::default()
+                },
+                window,
+                cx,
+            )
+        });
+        visual.run_until_parked();
+        let after = reader.read_with(visual, snapshot);
+        assert_ne!(after.1, before.1);
+        assert_eq!(after.5, "# Real external change\n");
+    }
+
+    #[gpui::test]
+    fn layout_counter_sampling_does_not_request_presentation_changes(cx: &mut TestAppContext) {
+        let (reader, visual, _) = fixture(cx, ORIGINAL);
+        reader.update_in(visual, |r, window, cx| {
+            r.editing
+                .as_ref()
+                .unwrap()
+                .input
+                .update(cx, |input, _| input.enable_layout_diagnostics());
+            r.toggle_live_preview(window, cx);
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, cx| {
+            let input = r.editing.as_ref().unwrap().input.read(cx);
+            let counts = input.layout_diagnostics().unwrap();
+            assert!(counts.provider_applies > 0 && counts.projection_composes > 0);
+            let epoch = input.presentation_epoch();
+            for _ in 0..100 {
+                assert_eq!(input.layout_diagnostics(), Some(counts));
+                assert_eq!(input.presentation_epoch(), epoch);
+            }
+        });
     }
 
     #[gpui::test]

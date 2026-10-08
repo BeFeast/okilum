@@ -34,3 +34,15 @@ Positive controls outside the60-second interval: typing one character then Undo 
 ### Next evidence needed
 
 Manager has been asked for the Mac diagnostic log plus a minimal sanitized Markdown fixture and caret/scroll position, font/scale/theme and Find state. Request goes through manager only. Reproduce under the Mac configuration before selecting a fix; #755 is not resolved by the interaction fixes proposed in #754. Priority remains before #753. The exact source/hash and full fixture are in the attached bundle.
+
+## Mac evidence and portable diagnostic follow-up
+
+The owner's 300-record beta8326 tail ends at 06:44:20 UTC (09:44:20 Israel), before the reported idle interval. It contains four `save_source_queued` events; each is followed by three `incremental_update`/`incremental_ui_publish` pairs within six seconds. This supports investigating save echo but does not instrument the idle render path.
+
+`TESSERA_EDITOR_LAYOUT_DIAGNOSTICS=1` enables per-editor counters and one `editor_layout_sample` per second in the normal diagnostic log. It works in debug and release on Linux/macOS without the Linux-only attribution clock. Start a new process with the variable set, enter Source/Live Preview, then leave it untouched for60 seconds. Counter values are cumulative: subtract consecutive samples for the same document ID. New editors have fresh counters. The timer exits when that editor is replaced/closed; sampling neither calls notify nor draws.
+
+Fields distinguish `layout_calls` (including caret repaint), `metric_changes`, `provider_applies`, `projection_composes`, and `active_changes`. Source generation, presentation epoch, content bounds, caret bounds and scroll offsets make changes correlatable. Caret bounds are in editor content coordinates; account for scroll before interpreting screen displacement. No source text, clipboard contents or selections are logged. Existing diagnostic rotation remains in force.
+
+Use `TESSERA_EDITOR_LAYOUT_DIAGNOSTICS=1 /Applications/Tessera.app/Contents/MacOS/tessera` on Mac after closing the ordinary instance. The log is `~/Library/Application Support/uk.oklabs.tessera/reader-diagnostic.log`; on Linux it is `~/.local/state/tessera/reader-diagnostic.log` (or the corresponding XDG_STATE_HOME location). This is process-local; no launchd/system setting changes.
+
+`editor_disk_refresh` reports `unchanged`, `replaced`, `conflict` or `error`, with generation and presentation epoch. The existing refresh compares exact bytes before `set_value` (stronger than content-hash equality); same-content reconciliation is not deliberately skipped for the rest of the vault/index. A regression sends three same-byte metadata/save echoes through actual incremental publication, asserting editor identity, source stamp, projection epoch, provider identity, selection, scroll and source stay unchanged. A different-byte external update is its positive control.
