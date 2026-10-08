@@ -494,3 +494,30 @@ applies when Undo submits previous bytes through an already-open FileEditor.
 Callers reopening an editor for a later Undo must still validate their own stored
 path/revision identity before opening; FileEditor cannot infer a past session's
 intended path from a new open.
+
+## Windows file ownership and failed moves (#820)
+
+Prepared save files first retain source security. If Windows rejects assigning
+that owner with ERROR_INVALID_OWNER (for example Administrators under a
+non-elevated user), creation retries with the current token's default owner/group
+and the original DACL, ACE order and inheritance protection. The ACL and encryption
+are applied before any proposed bytes are written. Other preparation errors still
+fail closed; source attributes, durable history and revision checks are unchanged.
+The fallback verifies effective read/write access before writing bytes. If an
+OWNER RIGHTS ACE would remove that access under the new owner, the source stays
+unchanged rather than publishing an inaccessible replacement.
+
+On an ordinary failed link move, generated link text is removed from editor drafts.
+Already published link changes are rolled back through revision-aware saves when
+still equal to the operation's after bytes. A later external edit or a blocked
+rollback is retained and reported for explicit recovery. Multi-file moves are not
+a filesystem transaction: crashes and racing writers still require the durable
+link-move journal. An ordinary denied rename with no concurrent changes leaves
+original paths, links and clean drafts, and can be retried.
+
+Reader Quit attempts every save, then permits exit when all latest drafts are
+durable even if file access failed. Revision conflicts retain the existing
+explicit Reload/Keep mine decision before app-owned Quit. A failed draft write or an in-flight move
+continues to block this explicit Quit action. This matches recovery-aware OS close
+and updater exit behavior; canonical save errors keep their friendly access notice
+and detailed diagnostics remain in the application log.

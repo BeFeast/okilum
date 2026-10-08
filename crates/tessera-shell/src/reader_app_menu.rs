@@ -7,7 +7,9 @@ pub(crate) fn install(cx: &mut App) {
     cx.on_action(|_: &Quit, cx| {
         // Defer until the dispatching Reader releases its entity borrow.
         cx.defer(|cx| {
-            if crate::reader_editor::save_all(cx) {
+            // A failed canonical save must not trap Quit when every latest
+            // edit is already durable in application draft state.
+            if crate::reader_editor::save_all_for_quit(cx) {
                 cx.quit();
             }
         });
