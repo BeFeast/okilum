@@ -16,6 +16,7 @@ mod index;
 mod json;
 mod level;
 mod logfmt;
+pub mod merge;
 pub mod query;
 mod record;
 pub mod timestamp;
@@ -26,6 +27,7 @@ pub use detect::{detect, Format};
 pub use file::{LogFile, MAP_THRESHOLD_BYTES, MAX_LOG_BYTES};
 pub use index::{LogEntry, LogIndex, LogStats};
 pub use level::Level;
+pub use merge::{FileId, MergeUpdate, MergedLog, MergedRow};
 pub use query::{Query, QueryError};
 pub use record::{Field, Record, Role, ValueKind};
 
