@@ -380,7 +380,7 @@ impl Reader {
                 .key_context("ReaderFile")
                 .track_focus(&self.focus_handle)
                 .size_full()
-                .child(self.render_document_header(cx))
+                .child(self.render_document_header(window, cx))
                 .child(text.clone())
                 .into_any_element();
         }
