@@ -56,3 +56,6 @@ pub use render::render_html;
 pub use search::{SearchHit, Searcher};
 pub use vault::{Backlink, Note, Resolution, Vault};
 pub use watch::{Changes, VaultWatcher};
+
+#[cfg(windows)]
+pub mod windows_files;

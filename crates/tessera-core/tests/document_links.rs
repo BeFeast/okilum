@@ -410,6 +410,7 @@ fn indexed_markdown_lookup_keeps_repeated_extensions_distinct() {
 }
 
 #[test]
+#[cfg(unix)]
 fn obsidian_paths_share_click_backlink_and_rename_identity() {
     use tessera_core::link_rewrite::Preview;
     let temp = tempfile::tempdir().unwrap();
