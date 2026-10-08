@@ -44,8 +44,12 @@ was held. This is a handle-sharing guarantee, not a restriction of the owner's
 full-access DACL. The handle now requests FILE_LIST_DIRECTORY as well as metadata
 access, so it participates in sharing checks; metadata-only access did not enforce
 the intended exclusion. The regression requires a sharing violation while held
-and a successful rename after release. Native confirmation of this fix remains
-pending; the failed run did not reach the shared-directory refusal assertions.
+and a successful rename after release. Native confirmation passed on hosted windows-2022 with Rust 1.99.0 MSVC:
+all four DACL/token SID/preparation tests passed, none ignored, including rename
+prevention while held, rename after release and shared-directory refusal.
+Evidence: https://github.com/BeFeast/tessera/actions/runs/37754095376 (the run's
+Rust source exactly matches the directory-guard candidate; only CI LF preparation
+was added). This does not establish Task Scheduler or Job Object acceptance.
 This is not yet the Windows locked journal, durable file replacement or full
 ancestor/file-identity validation. The Unix journal must not become permission
 no-ops on Windows.
