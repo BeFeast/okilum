@@ -25,3 +25,16 @@ the current tree offset; returning to the top resumes ordinary auto-folding.
 The restore snapshot survives restart. Regression coverage includes all 32 states
 of the five left sections through save/load and repeated scroll observation, plus
 native glyph/Alt-click/shortcuts with content focus and effective visibility.
+
+## Ordinary relaunch correction
+
+Explicit reveals of Recent/Pinned/Inbox at a scrolled tree position persist in
+sidebar state and are restored before the selected note positions the tree.
+Automatic folding remains temporary. Returning to the top clears persisted
+reveals through the existing ordered background sidebar writer. Unknown or
+inapplicable reveal entries are ignored on load.
+
+Regression: create a long tree, expand sections while scrolled, save, close the
+window, and create a fresh Reader from the same profile. Assert the nonzero scroll
+position and effective visibility of all five sections. Linux process evidence
+also uses Ctrl+Q followed by a fresh launch with the same profile in both themes.

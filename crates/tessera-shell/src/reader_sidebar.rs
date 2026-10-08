@@ -74,6 +74,9 @@ pub struct State {
     pub pinned: Vec<String>,
     #[serde(default)]
     pub collapsed: BTreeSet<Section>,
+    /// Explicit reveals while browsing a scrolled tree survive relaunch.
+    #[serde(default)]
+    pub scroll_revealed: BTreeSet<Section>,
     /// Kept outside `collapsed` so an older build, which cannot read the
     /// `Properties` variant, does not discard the whole state.
     #[serde(default)]
@@ -549,7 +552,7 @@ mod tests {
     }
 }
 
-/// Temporary presentation while browsing deeper in Folders. Never persisted.
+/// Automatic folding is temporary; explicit reveals are saved with sidebar state.
 #[derive(Default)]
 pub(crate) struct ScrollSections {
     pub compact: bool,
@@ -559,6 +562,24 @@ pub(crate) struct ScrollSections {
 }
 
 impl ScrollSections {
+    pub fn from_state(state: &State) -> Self {
+        let revealed: BTreeSet<_> = state
+            .scroll_revealed
+            .iter()
+            .copied()
+            .filter(|s| {
+                matches!(s, Section::Recent | Section::Pinned | Section::Inbox)
+                    && !state.is_collapsed(*s)
+            })
+            .collect();
+        Self {
+            compact: !revealed.is_empty(),
+            revealed,
+            ignore_reflow: true,
+            ..Default::default()
+        }
+    }
+
     pub fn closed(&self, section: Section, saved: &BTreeSet<Section>) -> bool {
         saved.contains(&section)
             || (self.compact
