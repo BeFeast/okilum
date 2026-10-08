@@ -213,14 +213,18 @@ impl Reader {
             return;
         }
         self.cancel_pending_landing();
-        self.document_preparation_generation = self.document_preparation_generation.wrapping_add(1);
-        let generation = self.document_preparation_generation;
+        self.navigation.preparation_generation =
+            self.navigation.preparation_generation.wrapping_add(1);
+        let generation = self.navigation.preparation_generation;
         let request = DocumentRequest {
             rel: rel.to_owned(),
             jump: location.0.map(str::to_owned),
             heading: location.1.map(str::to_owned),
-            history_index: self.history_nav,
-            restore_position: self.history_nav.map(|index| self.history_positions[index]),
+            history_index: self.navigation.history_nav,
+            restore_position: self
+                .navigation
+                .history_nav
+                .map(|index| self.navigation.history_positions[index]),
         };
         let vault = self.vault.clone();
         let rel = rel.to_owned();
@@ -278,7 +282,7 @@ impl Reader {
                 document
             });
             let _ = this.update_in(cx, |this, window, cx| {
-                if this.document_preparation_generation != generation {
+                if this.navigation.preparation_generation != generation {
                     return;
                 }
                 let task_landing = document.is_ok().then_some(task_text).flatten();
@@ -301,7 +305,7 @@ impl Reader {
     fn prepare_links(&mut self, original: String, cx: &mut Context<Self>) {
         self.invalidate_links();
         let generation = self.link_preparation_generation;
-        let navigation = self.navigation_generation;
+        let navigation = self.navigation.generation;
         let from = self.current_rel.clone();
         let vault = self.vault.clone();
         let rendered = self.note_source.clone();
@@ -336,7 +340,7 @@ impl Reader {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if this.link_preparation_generation != generation
-                    || this.navigation_generation != navigation
+                    || this.navigation.generation != navigation
                 {
                     return;
                 }
@@ -813,8 +817,8 @@ mod tests {
                 v.content.read(cx).selected_text(),
                 v.content.entity_id(),
                 v.current_rel.clone(),
-                v.history.clone(),
-                v.history_ix,
+                v.navigation.history.clone(),
+                v.navigation.history_ix,
                 v.link_notice.clone(),
                 v.content.read(cx).list_state().logical_scroll_top(),
                 v.note_source.clone(),
@@ -845,8 +849,8 @@ mod tests {
                 );
                 assert_eq!(v.content.entity_id(), before.1);
                 assert_eq!(v.current_rel, before.2);
-                assert_eq!(v.history, before.3);
-                assert_eq!(v.history_ix, before.4);
+                assert_eq!(v.navigation.history, before.3);
+                assert_eq!(v.navigation.history_ix, before.4);
                 assert_eq!(v.link_notice, before.5);
                 let scroll = v.content.read(cx).list_state().logical_scroll_top();
                 assert_eq!(scroll.item_ix, before.6.item_ix);
@@ -968,8 +972,8 @@ mod tests {
         visual.update(|window, cx| handle_link(&reader.downgrade(), url, window, cx));
         reader.update_in(visual, |v, _, _| {
             assert_eq!(v.current_rel, "start.md");
-            assert_eq!(v.history, ["start.md"]);
-            assert_eq!(v.history_ix, 0);
+            assert_eq!(v.navigation.history, ["start.md"]);
+            assert_eq!(v.navigation.history_ix, 0);
             assert_eq!(v.link_notice.as_deref(), Some("Retain notice"));
         });
         for (text, expected) in [
@@ -1001,7 +1005,7 @@ mod tests {
                 assert_eq!(v.prepared_links[url].status, expected);
                 assert_eq!(v.content.read(cx).selected_text(), selection);
                 assert_eq!(v.content.entity_id(), content);
-                assert_eq!(v.history, ["start.md"]);
+                assert_eq!(v.navigation.history, ["start.md"]);
             });
             assert_paint(expected.is_missing());
         }

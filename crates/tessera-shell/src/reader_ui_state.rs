@@ -597,9 +597,10 @@ impl Reader {
                     .get(saved.history_index)
                     .is_some_and(|visit| visit.note == self.current_rel)
             {
-                self.history = visits.iter().map(|visit| visit.note.clone()).collect();
-                self.history_positions = visits.iter().map(|visit| visit.position.list()).collect();
-                self.history_ix = saved.history_index;
+                self.navigation.history = visits.iter().map(|visit| visit.note.clone()).collect();
+                self.navigation.history_positions =
+                    visits.iter().map(|visit| visit.position.list()).collect();
+                self.navigation.history_ix = saved.history_index;
             }
             if !saved.note.is_empty() && !saved.source {
                 self.cancel_pending_landing();
@@ -683,11 +684,11 @@ impl Reader {
     }
 
     pub(crate) fn restoring_reader(&self) -> bool {
-        self.ui_state.reader_position_pending && self.pending_landing.is_some()
+        self.ui_state.reader_position_pending && self.navigation.pending_landing.is_some()
     }
 
     pub(crate) fn record_ui_state(&mut self, active: bool, cx: &mut Context<Self>) {
-        if self.pending_landing.is_none() {
+        if self.navigation.pending_landing.is_none() {
             self.ui_state.reader_position_pending = false;
         }
         if !self.ui_state.ready || self.ui_state.root != self.vault_root {
@@ -714,18 +715,20 @@ impl Reader {
         let position = self
             .ui_state
             .source_reader_position
-            .or(self.pending_landing)
+            .or(self.navigation.pending_landing)
             .unwrap_or_else(|| self.content.read(cx).list_state().logical_scroll_top());
         let history = self
+            .navigation
             .history
             .iter()
             .enumerate()
             .map(|(index, note)| Visit {
                 note: note.clone(),
-                position: if index == self.history_ix {
+                position: if index == self.navigation.history_ix {
                     position.into()
                 } else {
-                    self.history_positions
+                    self.navigation
+                        .history_positions
                         .get(index)
                         .copied()
                         .unwrap_or(ListOffset {
@@ -761,7 +764,7 @@ impl Reader {
             hidden_properties: self.show_hidden_properties,
             note: self.current_rel.clone(),
             history,
-            history_index: self.history_ix,
+            history_index: self.navigation.history_ix,
             position: position.into(),
             source: self.editing.is_some() || self.ui_state.source.is_some(),
             source_scroll: offset,
@@ -1399,7 +1402,7 @@ mod tests {
                         14
                     );
                     assert!(
-                        reader.pending_landing.is_none(),
+                        reader.navigation.pending_landing.is_none(),
                         "first reader frame is positioned without a timer"
                     );
                 }
@@ -1469,8 +1472,8 @@ mod tests {
                 );
                 assert_eq!(reader.source_scroll_offset(cx).unwrap().y, px(-400.));
             }
-            assert_eq!(reader.history, ["other.md", "Folder/note.md"]);
-            assert_eq!(reader.history_ix, 1);
+            assert_eq!(reader.navigation.history, ["other.md", "Folder/note.md"]);
+            assert_eq!(reader.navigation.history_ix, 1);
             assert_eq!(
                 if source {
                     reader.ui_state.source_reader_position.unwrap().item_ix

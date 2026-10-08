@@ -1432,7 +1432,8 @@ impl Reader {
             cx.notify();
             return;
         }
-        self.document_preparation_generation = self.document_preparation_generation.wrapping_add(1);
+        self.navigation.preparation_generation =
+            self.navigation.preparation_generation.wrapping_add(1);
         #[cfg(any(unix, windows))]
         {
             self.creation = None;
@@ -1488,9 +1489,9 @@ impl Reader {
         self.watcher_generation = self.watcher_generation.wrapping_add(1);
         self.deferred_vault_changes = Default::default();
         if !preserve_document {
-            self.history.clear();
-            self.history_positions.clear();
-            self.history_ix = 0;
+            self.navigation.history.clear();
+            self.navigation.history_positions.clear();
+            self.navigation.history_ix = 0;
         }
         self.loading.as_mut().unwrap().published = true;
         reader_open::register(cx.entity().downgrade(), pending.intent.root, cx);
@@ -1553,8 +1554,8 @@ impl Reader {
         // Supersede inventory work without cancelling a user navigation that
         // may already be preparing another note. Even a source equal to the
         // displayed snapshot cancels an older, different in-flight snapshot.
-        self.document_reconciliation_generation =
-            self.document_reconciliation_generation.wrapping_add(1);
+        self.navigation.reconciliation_generation =
+            self.navigation.reconciliation_generation.wrapping_add(1);
         let pending_embed = self.note_source.contains(&format!(
             "{EMBED_LANG} {} ",
             tessera_core::render::EMBED_PENDING
@@ -1594,12 +1595,12 @@ impl Reader {
         let vault = self.vault.clone();
         let rel = self.current_rel.clone();
         let root = self.vault_root.clone();
-        let navigation = self.navigation_generation;
-        let generation = self.document_preparation_generation;
+        let navigation = self.navigation.generation;
+        let generation = self.navigation.preparation_generation;
         let html = self.use_html;
-        self.document_reconciliation_generation =
-            self.document_reconciliation_generation.wrapping_add(1);
-        let reconciliation = self.document_reconciliation_generation;
+        self.navigation.reconciliation_generation =
+            self.navigation.reconciliation_generation.wrapping_add(1);
+        let reconciliation = self.navigation.reconciliation_generation;
         cx.spawn_in(window, async move |this, cx| {
             let target = rel.clone();
             let result = cx
@@ -1642,9 +1643,9 @@ impl Reader {
             let _ = this.update_in(cx, |this, window, cx| {
                 if this.vault_root != root
                     || this.current_rel != rel
-                    || this.navigation_generation != navigation
-                    || this.document_preparation_generation != generation
-                    || this.document_reconciliation_generation != reconciliation
+                    || this.navigation.generation != navigation
+                    || this.navigation.preparation_generation != generation
+                    || this.navigation.reconciliation_generation != reconciliation
                 {
                     return;
                 }
@@ -1662,13 +1663,14 @@ impl Reader {
                 // landing. Carry that intent through this same-document derived
                 // replacement instead of substituting the not-yet-landed top.
                 let position = this
+                    .navigation
                     .pending_landing
                     .unwrap_or_else(|| this.content.read(cx).list_state().logical_scroll_top());
                 let request = prepared_links::DocumentRequest {
                     rel,
                     jump: None,
                     heading: None,
-                    history_index: Some(this.history_ix),
+                    history_index: Some(this.navigation.history_ix),
                     restore_position: Some(position),
                 };
                 this.accept_prepared_document(request, result, window, cx);
@@ -1815,7 +1817,7 @@ impl Reader {
         let identity = (
             self.vault_root.clone(),
             document,
-            self.navigation_generation,
+            self.navigation.generation,
         );
         if self.last_recorded_document.as_ref() == Some(&identity) {
             return;
@@ -1859,8 +1861,8 @@ impl Reader {
             load.active = false;
             load.phase = "Preparation cancelled".into();
             load.opts.cache_lease = None;
-            self.document_preparation_generation =
-                self.document_preparation_generation.wrapping_add(1);
+            self.navigation.preparation_generation =
+                self.navigation.preparation_generation.wrapping_add(1);
             cx.notify();
         }
     }
@@ -2028,7 +2030,8 @@ impl Reader {
             self.loading.as_mut().unwrap().phase = "Checking search data".into();
             self.delay_warm_progress(cx);
         }
-        self.document_preparation_generation = self.document_preparation_generation.wrapping_add(1);
+        self.navigation.preparation_generation =
+            self.navigation.preparation_generation.wrapping_add(1);
         if refresh.is_none() {
             self.cancel_pending_landing();
         }
@@ -4232,7 +4235,7 @@ mod tests {
         visual.run_until_parked();
         let (history, position) = reader.read_with(visual, |v, cx| {
             (
-                v.history.clone(),
+                v.navigation.history.clone(),
                 v.content.read(cx).list_state().logical_scroll_top(),
             )
         });
@@ -4253,7 +4256,7 @@ mod tests {
                 .note_source
                 .contains("EmbeddedPositiveControl changed before watcher"));
             assert!(!v.note_source.contains("pending target"));
-            assert_eq!(v.history, history);
+            assert_eq!(v.navigation.history, history);
             let now = v.content.read(cx).list_state().logical_scroll_top();
             assert_eq!(now.item_ix, position.item_ix);
             assert_eq!(now.offset_in_item, position.offset_in_item);
@@ -4277,7 +4280,7 @@ mod tests {
                 .as_ref()
                 .is_some_and(|notice| notice.contains("no longer available")));
             assert_eq!(v.current_rel, "start.md");
-            assert_eq!(v.history, history);
+            assert_eq!(v.navigation.history, history);
         });
     }
 
@@ -5242,7 +5245,7 @@ mod tests {
         let (late_release, late_hold) = async_channel::bounded(1);
         reader.update_in(visual, |v, window, cx| {
             let content = v.content.entity_id();
-            let history = v.history.clone();
+            let history = v.navigation.history.clone();
             v.start_loading(
                 Opts {
                     vault: Some(root.join("missing")),
@@ -5254,7 +5257,7 @@ mod tests {
             );
             v.cancel_loading(cx);
             assert_eq!(v.content.entity_id(), content);
-            assert_eq!(v.history, history);
+            assert_eq!(v.navigation.history, history);
             assert_eq!(v.vault_root, root.join("a"));
             assert!(v.document_ready());
         });
@@ -5278,7 +5281,7 @@ mod tests {
         reader.update_in(visual, |v, _, cx| {
             assert_eq!(v.current_rel, "second.md");
             assert_eq!(v.vault_root, root.join("b"));
-            assert_eq!(v.history, ["second.md"]);
+            assert_eq!(v.navigation.history, ["second.md"]);
             assert!(v.link_notice.is_none());
             assert!(v.loading.as_ref().unwrap().active);
             v.cancel_loading(cx);
@@ -6147,14 +6150,14 @@ mod tests {
         visual.run_until_parked();
         let (content, history) = reader.update_in(visual, |v, _, _| {
             assert_eq!(v.current_rel, "second.md");
-            (v.content.entity_id(), v.history.clone())
+            (v.content.entity_id(), v.navigation.history.clone())
         });
         release.try_send(()).unwrap();
         visual.run_until_parked();
         reader.update_in(visual, |v, _, _| {
             assert_eq!(v.current_rel, "second.md");
             assert_eq!(v.content.entity_id(), content);
-            assert_eq!(v.history, history);
+            assert_eq!(v.navigation.history, history);
             assert!(v.vault.inventory_complete);
             assert!(
                 v.searcher.is_some(),
@@ -6180,7 +6183,7 @@ mod tests {
             assert!(v.document_ready(), "previous document remains usable");
             assert_eq!(v.current_rel, "second.md");
             assert_eq!(v.content.entity_id(), content);
-            assert_eq!(v.history, history);
+            assert_eq!(v.navigation.history, history);
             assert!(!v.loading.as_ref().unwrap().published);
             assert!(!v.loading.as_ref().unwrap().active);
             assert!(v.loading.as_ref().unwrap().phase.contains("no readable"));
@@ -6392,7 +6395,7 @@ impl Reader {
     fn refresh_quick_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let root = self.vault_root.clone();
         let rel = self.current_rel.clone();
-        let navigation = self.navigation_generation;
+        let navigation = self.navigation.generation;
         cx.spawn_in(window, async move |this, cx| {
             let path = root.join(&rel);
             let source = cx
@@ -6402,7 +6405,7 @@ impl Reader {
             let _ = this.update_in(cx, |this, window, cx| {
                 if !this.single_file
                     || this.vault_root != root
-                    || this.navigation_generation != navigation
+                    || this.navigation.generation != navigation
                 {
                     return;
                 }

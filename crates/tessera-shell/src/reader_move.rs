@@ -812,7 +812,7 @@ impl Reader {
                 self.tree.note_moved(&pending.from, &pending.to);
                 drop(pending.guard);
                 drop(pending.destination_guard);
-                for path in &mut self.history {
+                for path in &mut self.navigation.history {
                     *path =
                         tessera_core::link_rewrite::moved_path(path, &pending.from, &pending.to);
                 }
@@ -858,8 +858,8 @@ impl Reader {
                     return;
                 }
                 self.editing = None;
-                self.document_preparation_generation =
-                    self.document_preparation_generation.wrapping_add(1);
+                self.navigation.preparation_generation =
+                    self.navigation.preparation_generation.wrapping_add(1);
                 let success_message =
                     move_message(&pending.from, &pending.to, update.then_some(&pending.links));
                 let document = tessera_core::render::reader_document(&self.vault, &next_current)

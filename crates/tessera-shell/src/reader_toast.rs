@@ -161,7 +161,7 @@ impl Reader {
             .then(|| {
                 (
                     self.current_rel.clone(),
-                    self.document_preparation_generation,
+                    self.navigation.preparation_generation,
                 )
             });
         if recovery != self.displayed_recovery {
@@ -186,7 +186,7 @@ impl Reader {
                                     .on_click(move |_, window, cx| {
                                         let _ = reader.update(cx, |this, cx| {
                                             if this.current_rel == path
-                                                && this.document_preparation_generation
+                                                && this.navigation.preparation_generation
                                                     == generation
                                                 && this.recovery_offer
                                                 && this.editing.is_none()

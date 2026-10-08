@@ -462,7 +462,7 @@ mod tests {
         visual.executor().advance_clock(Duration::from_millis(100));
         visual.run_until_parked();
         view.read_with(visual, |v, _| {
-            assert!(v.pending_landing.is_none());
+            assert!(v.navigation.pending_landing.is_none());
             assert!(
                 v.typed_navigation.scroll.offset().y > scrolled,
                 "heading link moves the visible surface"

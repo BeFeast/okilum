@@ -1053,15 +1053,15 @@ impl Reader {
     /// Duplicate/unsupported display text stays at its source-bound list, with
     /// an explicit notice instead of selecting another task's first match.
     pub(super) fn land_task_text(&mut self, text: String, cx: &mut Context<Self>) {
-        let generation = self.navigation_generation;
-        let landing = self.landing_generation;
+        let generation = self.navigation.generation;
+        let landing = self.navigation.landing_generation;
         cx.spawn(async move |reader, cx| {
             for _ in 0..100 {
                 cx.background_executor().timer(Duration::from_millis(50)).await;
                 let done = reader.update(cx, |this, cx| {
-                    if this.navigation_generation != generation || this.landing_generation != landing { return true; }
+                    if this.navigation.generation != generation || this.navigation.landing_generation != landing { return true; }
                     if this.link_notice.is_some() { return true; }
-                    if this.pending_landing.is_some() { return false; }
+                    if this.navigation.pending_landing.is_some() { return false; }
                     let unique = this.content.update(cx, |state, cx| {
                         state.set_search_query(text.clone(), cx);
                         if state.search_status().1 == 1 { true }

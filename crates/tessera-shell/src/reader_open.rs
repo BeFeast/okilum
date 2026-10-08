@@ -1236,7 +1236,10 @@ mod entry_tests {
                 "snapshot reaches duplicate restore"
             );
             assert!(second.read(cx).recent_expanded);
-            assert_eq!(second.read(cx).history, first.read(cx).history);
+            assert_eq!(
+                second.read(cx).navigation.history,
+                first.read(cx).navigation.history
+            );
 
             assert!(std::sync::Arc::ptr_eq(
                 first.read(cx).shared_session.as_ref().unwrap(),
@@ -1258,9 +1261,9 @@ mod entry_tests {
         cx.update(|cx| {
             assert_eq!(first.read(cx).current_rel, "a.md");
             assert_eq!(second.read(cx).current_rel, "b.md");
-            assert_eq!(first.read(cx).history, vec!["a.md".to_string()]);
+            assert_eq!(first.read(cx).navigation.history, vec!["a.md".to_string()]);
             assert_eq!(
-                second.read(cx).history,
+                second.read(cx).navigation.history,
                 vec!["a.md".to_string(), "b.md".to_string()]
             );
             second.update(cx, |reader, cx| reader.record_ui_state(true, cx));
