@@ -471,6 +471,11 @@ fn main() {
         .with_assets(gpui_kit_assets::Assets)
         .run(move |cx| {
             gpui_component::init(cx);
+            // Deterministic theme for isolated native acceptance captures.
+            if std::env::var("TESSERA_NATIVE216_DARK").as_deref() == Ok("1") {
+                gpui_component::Theme::change(gpui_component::ThemeMode::Dark, None, cx);
+            }
+
             cx.text_system()
                 .add_fonts(vec![
                     Cow::Borrowed(include_bytes!("../assets/brand/fonts/noto-sans-400.ttf")),
