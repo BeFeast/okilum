@@ -3347,7 +3347,14 @@ impl Reader {
                     .ghost()
                     .small()
                     .label(title)
-                    .flex_1()
+                    .w(px((width
+                        - 24.
+                        - 32. * (actions + usize::from(actions < 3)) as f32)
+                        .max(0.)))
+                    .flex_none()
+                    .justify_start()
+                    .px_1()
+                    .overflow_hidden()
                     .min_w_0()
                     .font_weight(FontWeight::SEMIBOLD)
                     .tooltip(name_tip)

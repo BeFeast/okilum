@@ -372,7 +372,10 @@ mod tests {
         let panel = visual.debug_bounds("reader-notes-panel").unwrap();
         let menu = visual.debug_bounds("sidebar-actions").unwrap();
         let folders = visual.debug_bounds("folders-actions").unwrap();
-        assert!(menu.right() < panel.right());
+        assert!(
+            menu.right() < panel.right(),
+            "menu={menu:?}, panel={panel:?}"
+        );
         assert!(
             folders.right() < panel.right(),
             "Folders actions never clip at 200px"
