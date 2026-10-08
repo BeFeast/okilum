@@ -9,7 +9,7 @@ use crate::source_projection::{self, Active, MapError, Plan, Region, Snapshot};
 
 pub mod decorations;
 mod retained;
-pub use retained::RetainedPresentation;
+pub use retained::{RetainedPresentation, RevealSnapshot};
 
 pub const MAX_BYTES: usize = 64 * 1024;
 pub const MAX_NODES: usize = 4096;

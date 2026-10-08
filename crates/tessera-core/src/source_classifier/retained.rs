@@ -3,6 +3,50 @@ use super::{Classification, StyleSpan, MAX_BYTES};
 use crate::source_projection::{Active, Plan, Region, Snapshot};
 use std::{ops::Range, sync::Arc};
 
+/// One immutable reveal decision and its projection for an exact source revision.
+/// Native adapters additionally bind this value to their layout/gesture epoch.
+/// Paint must consume this value, never reconstruct policy from a live caret.
+#[derive(Clone)]
+pub struct RevealSnapshot {
+    active: Active,
+    projection: Arc<crate::source_projection::Projection>,
+}
+
+impl RevealSnapshot {
+    pub fn projection(&self) -> &Arc<crate::source_projection::Projection> {
+        &self.projection
+    }
+
+    /// Stale identities and invalid cluster boundaries conservatively paint raw.
+    pub fn is_raw(&self, current: &Snapshot, scope: &Range<usize>) -> bool {
+        current != self.projection.snapshot()
+            || self
+                .projection
+                .validate_active(&Active {
+                    selection: Some(scope.clone()),
+                    composition: None,
+                })
+                .is_err()
+            || self.touches(scope)
+    }
+
+    fn touches(&self, scope: &Range<usize>) -> bool {
+        [
+            self.active.selection.as_ref(),
+            self.active.composition.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|r| {
+            if r.is_empty() {
+                scope.start <= r.start && r.start <= scope.end
+            } else {
+                r.start < scope.end && scope.start < r.end
+            }
+        })
+    }
+}
+
 #[derive(Clone)]
 pub struct RetainedPresentation {
     snapshot: Snapshot,
@@ -57,18 +101,19 @@ impl RetainedPresentation {
         active: &Active,
     ) -> Result<Arc<crate::source_projection::Projection>, crate::source_projection::SourceFallback>
     {
+        self.prepare_reveal(active).map(|reveal| reveal.projection)
+    }
+
+    /// Prepare projection and marker visibility together. Replacement ranges must
+    /// already have been validated and merged into composition by the adapter.
+    pub fn prepare_reveal(
+        &self,
+        active: &Active,
+    ) -> Result<RevealSnapshot, crate::source_projection::SourceFallback> {
         self.validate_active(active)?;
-        let touches = |scope: &Range<usize>| {
-            [active.selection.as_ref(), active.composition.as_ref()]
-                .into_iter()
-                .flatten()
-                .any(|r| {
-                    if r.is_empty() {
-                        scope.start <= r.start && r.start <= scope.end
-                    } else {
-                        r.start < scope.end && scope.start < r.end
-                    }
-                })
+        let mut reveal = RevealSnapshot {
+            active: active.clone(),
+            projection: self.base.clone()?,
         };
         let mut revealed = false;
         let regions = self
@@ -88,7 +133,7 @@ impl RetainedPresentation {
                                 .ok()
                                 .map(|i| &self.marker_scopes[i].1)
                                 .unwrap_or(marker);
-                            let touched = touches(scope);
+                            let touched = reveal.touches(scope);
                             revealed |= touched;
                             !touched
                         })
@@ -98,14 +143,14 @@ impl RetainedPresentation {
             })
             .collect();
         if !revealed {
-            return self.base.clone();
+            return Ok(reveal);
         }
-        crate::source_projection::project(
+        reveal.projection = Arc::new(crate::source_projection::project(
             &self.snapshot,
             &Plan::new(&self.snapshot, regions),
             &Active::default(),
-        )
-        .map(Arc::new)
+        )?);
+        Ok(reveal)
     }
 
     /// Retain only a proven local inline edit. Structural edits require a fresh
@@ -271,6 +316,61 @@ impl RetainedPresentation {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reveal_snapshot_keeps_projection_and_marker_policy_on_one_revision() {
+        let text = "plain [first](one) and [second](two)";
+        let source = snapshot(1, text);
+        let retained = RetainedPresentation::new(&classify(&source));
+        let first = text.find("[first]").unwrap()..text.find(" and").unwrap();
+        let second = text.find("[second]").unwrap()..text.len();
+        let mut active = Active {
+            selection: Some(first.start + 2..first.start + 2),
+            composition: None,
+        };
+        let frozen = retained.prepare_reveal(&active).unwrap();
+        assert!(frozen.is_raw(&source, &first));
+        assert!(!frozen.is_raw(&source, &second));
+        assert_eq!(
+            frozen.projection().display(),
+            "plain [first](one) and second"
+        );
+        // Mutating the caller's selection cannot reinterpret an in-flight frame.
+        active.selection = Some(second.start + 2..second.start + 2);
+        let next = retained.prepare_reveal(&active).unwrap();
+        assert!(frozen.is_raw(&source, &first));
+        assert!(!frozen.is_raw(&source, &second));
+        assert!(!next.is_raw(&source, &first));
+        assert!(next.is_raw(&source, &second));
+        active.composition = Some(first.clone());
+        let ime = retained.prepare_reveal(&active).unwrap();
+        assert_eq!(ime.projection().display(), text);
+        assert!(ime.is_raw(&source, &first));
+        assert!(ime.is_raw(&source, &second));
+        for stale in [
+            snapshot(2, text),
+            snapshot(1, "different"),
+            Snapshot::new("another-document", 1, text),
+        ] {
+            assert!(frozen.is_raw(&stale, &second));
+        }
+        assert!(frozen.is_raw(&source, &(0..usize::MAX)));
+    }
+
+    #[test]
+    fn reveal_snapshot_rejects_subgrapheme_scope_and_caret() {
+        let source = snapshot(1, "e\u{301} [label](target)");
+        let retained = RetainedPresentation::new(&classify(&source));
+        let reveal = retained.prepare_reveal(&Active::default()).unwrap();
+        assert!(reveal.is_raw(&source, &(1..3)));
+        assert!(!reveal.is_raw(&source, &(0..3)));
+        assert!(retained
+            .prepare_reveal(&Active {
+                selection: Some(1..1),
+                composition: None,
+            })
+            .is_err());
+    }
+
     use super::*;
     use crate::source_classifier::classify;
     use crate::source_projection::{project, Bias};
