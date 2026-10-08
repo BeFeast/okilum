@@ -180,6 +180,7 @@ mod tests {
     use super::*;
     use crate::vendor_bidi_geometry::Cell;
     use ::core::prelude::v1::test;
+    use gpui_component::{Colorize as _, ThemeMode};
 
     #[gpui::test]
     fn search_label_paints_matches_and_clips_without_marking_cut_text(cx: &mut TestAppContext) {
@@ -189,61 +190,73 @@ mod tests {
             width: f32,
         }
         impl Render for Fixture {
-            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let palette = crate::brand::palette(cx);
                 div()
                     .w(px(self.width))
+                    .bg(palette.canvas)
+                    .text_color(palette.text)
                     .text_size(px(16.))
                     .line_height(px(20.))
                     .child(SearchLabel::new(
                         self.text.clone(),
                         self.matches.clone(),
-                        rgb(0xff0000).into(),
+                        palette.accent.opacity(0.18),
                     ))
             }
         }
         cx.update(gpui_component::init);
-        for (text, needle) in [
-            ("abc שלום xyz", "שלום"),
-            ("ASCII positive control", "positive"),
-        ] {
-            let from = text.find(needle).unwrap();
-            let (view, visual) = cx.add_window_view(|_, _| Fixture {
-                text: text.into(),
-                matches: std::iter::once(from..from + needle.len()).collect(),
-                width: 500.,
-            });
-            visual.update(|window, cx| window.draw(cx).clear(cx));
-            visual.run_until_parked();
-            visual.update(|window, _| {
-                let mark: Background = rgb(0xff0000).into();
-                let quads: Vec<_> = window
-                    .painted_quads()
-                    .into_iter()
-                    .filter(|q| q.background == mark)
-                    .collect();
-                assert!(!quads.is_empty(), "match painting positive control: {text}");
-                assert!(quads
-                    .iter()
-                    .all(|q| q.bounds.size.width > ScaledPixels::from(0.)
-                        && q.bounds.size.height > ScaledPixels::from(0.)));
-            });
-            view.update(visual, |v, cx| {
-                v.width = 1.;
-                cx.notify();
-            });
-            visual.run_until_parked();
-            visual.update(|window, _| {
-                assert!(
-                    !window
+        for mode in [ThemeMode::Light, ThemeMode::Dark] {
+            for (text, needle) in [
+                ("שלום abc xyz", "שלום"),
+                ("abc שלום xyz", "שלום"),
+                ("abc xyz שלום", "שלום"),
+                ("שלום abc 123 עולם 456 xyz", "עולם"),
+                ("שלום abc 123 עולם 456 xyz", "123"),
+                ("שלום abc 123 עולם 456 xyz", "abc"),
+                ("ASCII positive control", "positive"),
+            ] {
+                let from = text.find(needle).unwrap();
+                let (view, visual) = cx.add_window_view(|_, _| Fixture {
+                    text: text.into(),
+                    matches: std::iter::once(from..from + needle.len()).collect(),
+                    width: 500.,
+                });
+                visual.update(|window, cx| crate::set_appearance(Some(mode), None, window, cx));
+                visual.run_until_parked();
+                visual.update(|window, cx| window.draw(cx).clear(cx));
+                visual.update(|window, cx| {
+                    let mark: Background = crate::brand::palette(cx).accent.opacity(0.18).into();
+                    let quads: Vec<_> = window
                         .painted_quads()
+                        .into_iter()
+                        .filter(|q| q.background == mark)
+                        .collect();
+                    assert!(
+                        !quads.is_empty(),
+                        "match painting positive control: {mode:?} {text} / {needle}"
+                    );
+                    assert!(quads
                         .iter()
-                        .any(|q| q.background == Background::from(rgb(0xff0000))),
-                    "no false mark when the entire match is cut"
-                )
-            });
-            view.read_with(visual, |v, _| {
-                assert_eq!(v.text, text, "layout never mutates source order")
-            });
+                        .all(|q| q.bounds.size.width > ScaledPixels::from(0.)
+                            && q.bounds.size.height > ScaledPixels::from(0.)));
+                });
+                view.update(visual, |v, cx| {
+                    v.width = 1.;
+                    cx.notify();
+                });
+                visual.run_until_parked();
+                visual.update(|window, cx| {
+                    let mark: Background = crate::brand::palette(cx).accent.opacity(0.18).into();
+                    assert!(
+                        !window.painted_quads().iter().any(|q| q.background == mark),
+                        "no false mark when the entire match is cut: {mode:?} {text} / {needle}"
+                    )
+                });
+                view.read_with(visual, |v, _| {
+                    assert_eq!(v.text, text, "layout never mutates source order")
+                });
+            }
         }
     }
 
