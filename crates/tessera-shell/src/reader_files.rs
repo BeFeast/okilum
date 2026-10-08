@@ -121,6 +121,8 @@ pub(crate) struct FilePreview {
     pub path: PathBuf,
     pub details: String,
     pub image: bool,
+    /// The inline reader for a PDF (#477); replaces the file card.
+    pub pdf: Option<Entity<reader_pdf::PdfViewer>>,
     #[cfg(any(target_os = "macos", all(test, unix)))]
     pub thumbnail: Option<Entity<reader_thumbnail::Thumbnail>>,
 }
@@ -152,6 +154,7 @@ impl FilePreview {
         Ok(Self {
             #[cfg(any(target_os = "macos", all(test, unix)))]
             thumbnail: None,
+            pdf: None,
             rel: rel.into(),
             path,
             details: format!("{} · {} bytes · {modified}", ext.to_uppercase(), meta.len()),
@@ -292,20 +295,22 @@ impl Reader {
                     self.history_ix = self.history.len() - 1;
                 }
                 self.document_header_hidden = px(0.);
+                let mut preview = preview;
+                if reader_pdf::is_pdf(rel) {
+                    let path = preview.path.clone();
+                    let viewer = cx.new(|cx| reader_pdf::PdfViewer::new(path, window, cx));
+                    cx.subscribe(&viewer, |_, _, _: &reader_pdf::AvailabilityChanged, cx| {
+                        cx.notify()
+                    })
+                    .detach();
+                    preview.pdf = Some(viewer);
+                }
                 #[cfg(target_os = "macos")]
-                let preview = {
-                    let mut preview = preview;
-                    if reader_thumbnail::eligible(rel) {
-                        preview.thumbnail = Some(cx.new(|cx| {
-                            reader_thumbnail::Thumbnail::new(
-                                self.vault_root.clone(),
-                                rel.into(),
-                                cx,
-                            )
-                        }));
-                    }
-                    preview
-                };
+                if preview.pdf.is_none() && reader_thumbnail::eligible(rel) {
+                    preview.thumbnail = Some(cx.new(|cx| {
+                        reader_thumbnail::Thumbnail::new(self.vault_root.clone(), rel.into(), cx)
+                    }));
+                }
                 self.file_preview = Some(preview);
                 self.find_open = false;
                 self.link_notice = None;
@@ -338,6 +343,27 @@ impl Reader {
                     window,
                     cx,
                 ))
+                .into_any_element();
+        }
+        if let Some(pdf) = &preview.pdf {
+            return v_flex()
+                .id("reader-pdf-preview")
+                .key_context("ReaderFile ReaderPdf")
+                .track_focus(&self.focus_handle)
+                .on_action(
+                    cx.listener(|this, _: &PdfZoomIn, _, cx| {
+                        this.pdf_zoom(reader_pdf::Zoom::In, cx)
+                    }),
+                )
+                .on_action(cx.listener(|this, _: &PdfZoomOut, _, cx| {
+                    this.pdf_zoom(reader_pdf::Zoom::Out, cx)
+                }))
+                .on_action(cx.listener(|this, _: &PdfZoomFit, _, cx| {
+                    this.pdf_zoom(reader_pdf::Zoom::Fit, cx)
+                }))
+                .size_full()
+                .child(self.render_document_header(cx))
+                .child(div().flex_1().min_h_0().w_full().child(pdf.clone()))
                 .into_any_element();
         }
         #[cfg(any(target_os = "macos", all(test, unix)))]
@@ -510,6 +536,8 @@ mod tests {
     fn file_selection_stays_in_reader_and_copy_targets_the_file(cx: &mut TestAppContext) {
         let fixture = Fixture::new();
         let root = fixture.0.join("vault");
+        // A PDF selection starts the viewer's real worker thread.
+        cx.executor().allow_parking();
         cx.update(|cx| {
             gpui_component::init(cx);
             bind_keys(cx);
@@ -563,6 +591,7 @@ mod tests {
             );
             reader.preview_file("report.pdf", window, cx);
             assert!(!reader.file_preview.as_ref().unwrap().image);
+            assert!(reader.pdf_viewer().is_some(), "a PDF opens inline");
             assert_eq!(reader.history.last().unwrap(), "report.pdf");
             for (path, name) in [
                 ("Схема.excalidraw.md", "Схема"),
@@ -581,6 +610,36 @@ mod tests {
                     drawing_source
                 );
             }
+        });
+        // The title assertions above deliberately select drawings. Restore the
+        // PDF before testing its real keyboard focus and zoom handlers.
+        reader.update_in(visual, |reader, window, cx| {
+            reader.preview_file("report.pdf", window, cx);
+            assert!(reader.pdf_viewer().is_some(), "restore PDF for zoom checks");
+        });
+        // Zoom keys reach the viewer through the Reader's PDF key context.
+        visual.run_until_parked();
+        let zoom = |visual: &mut VisualTestContext| {
+            reader.read_with(visual, |reader, cx| {
+                reader.pdf_viewer().unwrap().read(cx).zoom_step()
+            })
+        };
+        let fit = zoom(visual);
+        visual.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-="
+        } else {
+            "ctrl-="
+        });
+        assert_eq!(zoom(visual), fit + 1);
+        visual.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-0"
+        } else {
+            "ctrl-0"
+        });
+        assert_eq!(zoom(visual), fit);
+        reader.update_in(visual, |reader, window, cx| {
+            reader.preview_file("diagram.svg", window, cx);
+            assert!(reader.pdf_viewer().is_none());
         });
         assert_eq!(visual.opened_url(), None);
         assert_eq!(

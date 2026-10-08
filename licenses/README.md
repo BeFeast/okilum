@@ -27,6 +27,10 @@ components; this is a conservative superset of any individual release.
 - Shell icons: Lucide ISC, plus Feather MIT for inherited icons (including
   arrow-up-right, clock, link and list). Lucide.txt retains both notices.
   Source: https://github.com/lucide-icons/lucide/blob/main/LICENSE
+- PDF standard fonts: hayro-interpret embeds PDFium's Foxit fonts (BSD-3-Clause)
+  and a CC0 CMYK profile. Foxit-PDFium.txt retains the PDFium/Foxit notice;
+  about.toml clarifies hayro-interpret so cargo-about lists both licences.
+  Source: https://github.com/LaurenzV/hayro/tree/main/hayro-interpret/assets
 - Sparkle 2.10.0: Sparkle.txt includes its bundled third-party notices.
   Source: https://github.com/sparkle-project/Sparkle/blob/2.10.0/LICENSE
 

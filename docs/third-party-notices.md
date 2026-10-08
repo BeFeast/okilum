@@ -8,6 +8,9 @@ license and copyright notices; Tessera's MIT license does not replace them.
   ([Apache 2.0 license](https://github.com/longbridge/gpui-kit/blob/main/LICENSE-APACHE)).
 - [Tantivy](https://github.com/quickwit-oss/tantivy) provides full-text search.
 - [Syntect](https://github.com/trishume/syntect) provides syntax highlighting.
+- [hayro](https://github.com/LaurenzV/hayro) renders PDF pages (MIT or Apache 2.0).
+  It embeds the standard PDF fonts from PDFium, copyright 2014 PDFium Authors and
+  Foxit Software Inc. ([BSD 3-Clause notice](../licenses/Foxit-PDFium.txt)).
 - [Sparkle](https://sparkle-project.org/) provides macOS updates. Its distribution
   includes the framework's license and third-party acknowledgements.
 
