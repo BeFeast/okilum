@@ -181,11 +181,7 @@ impl Reader {
                     reader_icon_button(
                         "source-save",
                         Icon::default().path("icons/save.svg"),
-                        if cfg!(target_os = "macos") {
-                            "Save ⌘S"
-                        } else {
-                            "Save Ctrl+S"
-                        },
+                        reader_shortcuts::hint("Save", &SaveSource, cx),
                         cx,
                     )
                     .debug_selector(|| "source-save".into())
@@ -201,11 +197,7 @@ impl Reader {
                     } else {
                         IconName::FileText
                     },
-                    if cfg!(target_os = "macos") {
-                        "Source / preview ⌘E"
-                    } else {
-                        "Source / preview Ctrl+E"
-                    },
+                    reader_shortcuts::hint("Source / preview", &ToggleSource, cx),
                     cx,
                 )
                 .debug_selector(|| "reader-edit".into())
@@ -257,25 +249,25 @@ impl Reader {
                 (
                     "file-quicklook",
                     IconName::Eye,
-                    "Quick Look · Space",
+                    reader_shortcuts::hint("Quick Look", &QuickLookFile, cx),
                     reader_files::FileAction::QuickLook,
                 ),
                 (
                     "file-open",
                     IconName::ExternalLink,
-                    "Open with default app",
+                    SharedString::from("Open with default app"),
                     reader_files::FileAction::Open,
                 ),
                 (
                     "file-reveal",
                     IconName::FolderOpen,
-                    Os::CURRENT.reveal(),
+                    SharedString::from(Os::CURRENT.reveal()),
                     reader_files::FileAction::Reveal,
                 ),
                 (
                     "file-copy",
                     IconName::Copy,
-                    "Copy path",
+                    SharedString::from("Copy path"),
                     reader_files::FileAction::Absolute,
                 ),
             ];
@@ -284,19 +276,19 @@ impl Reader {
                 (
                     "file-open",
                     IconName::ExternalLink,
-                    "Open with default app",
+                    SharedString::from("Open with default app"),
                     reader_files::FileAction::Open,
                 ),
                 (
                     "file-reveal",
                     IconName::FolderOpen,
-                    Os::CURRENT.reveal(),
+                    SharedString::from(Os::CURRENT.reveal()),
                     reader_files::FileAction::Reveal,
                 ),
                 (
                     "file-copy",
                     IconName::Copy,
-                    "Copy path",
+                    SharedString::from("Copy path"),
                     reader_files::FileAction::Absolute,
                 ),
             ];
@@ -478,22 +470,27 @@ impl Reader {
             .p_8()
             .gap_4()
             .child(div().text_xl().child(name))
-            .child(div().text_color(brand::palette(cx).text_muted).child(
-                if cfg!(target_os = "macos") {
-                    "Search notes ⌘K"
-                } else {
-                    "Search notes Ctrl+K"
-                },
-            ))
+            .child(
+                div()
+                    .text_color(brand::palette(cx).text_muted)
+                    .child(reader_shortcuts::hint("Search notes", &QuickOpen, cx)),
+            )
             .when(cfg!(unix), |view| {
-                view.child(div().text_color(brand::palette(cx).text_muted).child(
-                    if cfg!(target_os = "macos") {
-                        "New note ⌘N"
-                    } else {
-                        "New note Ctrl+N"
-                    },
-                ))
+                view.child(
+                    div()
+                        .text_color(brand::palette(cx).text_muted)
+                        .child(reader_shortcuts::hint("New note", &NewNote, cx)),
+                )
             })
+            .child(
+                div()
+                    .text_color(brand::palette(cx).text_muted)
+                    .child(reader_shortcuts::hint(
+                        "Keyboard shortcuts",
+                        &ToggleShortcutSheet,
+                        cx,
+                    )),
+            )
             .child(div().text_sm().child("Recent"))
             .child(recent)
             .into_any_element()

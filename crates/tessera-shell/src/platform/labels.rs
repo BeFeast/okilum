@@ -63,13 +63,23 @@ impl Os {
             key => key.unwrap_or_default(),
         };
         let has = |name: &str| parts.contains(&name);
-        let command = has("cmd") || (has("secondary") && self == Os::Mac);
+        // GPUI unparses the platform modifier as `super` on Linux and `win`
+        // on Windows; key bindings may also name it `cmd`.
+        let platform = has("cmd") || has("super") || has("win");
+        let command = platform || (has("secondary") && self == Os::Mac);
         let control = has("ctrl") || (has("secondary") && self != Os::Mac);
+        // A shifted punctuation key (`cmd->`, #395) is shown as the key the
+        // user presses: ⇧⌘. rather than ⌘>.
+        let (key, shifted) = match unshifted(key) {
+            Some(base) => (base, true),
+            None => (key, false),
+        };
+        let platform_word = if self == Os::Linux { "Super" } else { "Win" };
         let modifiers = [
             (control, "⌃", "Ctrl"),
             (has("alt"), "⌥", "Alt"),
-            (has("shift"), "⇧", "Shift"),
-            (command, "⌘", "Win"),
+            (has("shift") || shifted, "⇧", "Shift"),
+            (command, "⌘", platform_word),
         ];
         let key = self.key_name(key);
         if self == Os::Mac {
@@ -103,9 +113,35 @@ impl Os {
             "backspace" if mac => "⌫".into(),
             "backspace" => "Backspace".into(),
             "space" => "Space".into(),
+            "escape" => "Esc".into(),
+            "tab" => "Tab".into(),
+            "home" => "Home".into(),
+            "end" => "End".into(),
+            "pageup" => "Page Up".into(),
+            "pagedown" => "Page Down".into(),
+            "delete" if mac => "⌦".into(),
+            "delete" => "Delete".into(),
             key => key.to_uppercase(),
         }
     }
+}
+
+/// The unshifted key of a US-layout shifted punctuation character.
+fn unshifted(key: &str) -> Option<&'static str> {
+    Some(match key {
+        ">" => ".",
+        "<" => ",",
+        "?" => "/",
+        ":" => ";",
+        "\"" => "'",
+        "{" => "[",
+        "}" => "]",
+        "|" => "\\",
+        "~" => "`",
+        "_" => "-",
+        "+" => "=",
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
@@ -154,6 +190,16 @@ mod tests {
         assert_eq!(Os::Mac.shortcut("shift-enter"), "⇧⏎");
         assert_eq!(Os::Mac.shortcut("ctrl-alt-secondary-x"), "⌃⌥⌘X");
         assert_eq!(Os::Mac.shortcut("secondary--"), "⌘-");
+        assert_eq!(Os::Mac.shortcut("cmd->"), "⇧⌘.");
+        assert_eq!(Os::Mac.shortcut("escape"), "Esc");
+        assert_eq!(Os::Mac.shortcut("ctrl-home"), "⌃Home");
+    }
+
+    #[test]
+    fn platform_modifier_uses_the_platform_word() {
+        assert_eq!(Os::Mac.shortcut("alt-super-r"), "⌥⌘R");
+        assert_eq!(Os::Linux.shortcut("alt-super-r"), "Alt+Super+R");
+        assert_eq!(Os::Windows.shortcut("alt-win-r"), "Alt+Win+R");
     }
 
     #[test]
@@ -167,6 +213,10 @@ mod tests {
             assert_eq!(os.shortcut("shift-enter"), "Shift+Enter");
             assert_eq!(os.shortcut("secondary-backspace"), "Ctrl+Backspace");
             assert_eq!(os.shortcut("secondary--"), "Ctrl+-");
+            assert_eq!(os.shortcut("ctrl->"), "Ctrl+Shift+.");
+            assert_eq!(os.shortcut("ctrl-shift-."), "Ctrl+Shift+.");
+            assert_eq!(os.shortcut("escape"), "Esc");
+            assert_eq!(os.shortcut("ctrl-end"), "Ctrl+End");
             for glyph in ["⌘", "⌥", "⇧", "⌃", "⏎"] {
                 assert!(!os
                     .shortcut("ctrl-alt-shift-secondary-enter")
