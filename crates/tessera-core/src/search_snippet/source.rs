@@ -61,7 +61,7 @@ fn property_context(source: &str, marks: &[Range<usize>]) -> Option<MatchContext
     let Ok(properties) = properties::parse(yaml) else {
         return Some(MatchContext {
             text: "Properties".into(),
-            highlights: vec![0..10],
+            highlights: std::iter::once(0..10).collect(),
             ..Default::default()
         });
     };
