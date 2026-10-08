@@ -28,10 +28,10 @@ blocks a real incoming file. The controller reports Needs attention with the act
 This is Syncthing's space-reserve admission check, not an OS ENOSPC simulation.
 
 The combined recovery run passed in 24.64 seconds. The failed attempt to require
-an actionable space explanation exposed #742: `insufficient space in folder` falls
-back to generic diagnostics. That presentation defect remains separate; transport
-recovery passing does not waive it. Case collisions and actual OS disk-full recovery
-also remain open.
+an actionable space explanation exposed #742: `insufficient space in folder` fell
+back to generic diagnostics. It was fixed separately in #747, including placement
+of the explanation immediately below Needs attention. Native case collisions and
+actual OS disk-full recovery remain open.
 
 ## Linux case variants and rename
 
