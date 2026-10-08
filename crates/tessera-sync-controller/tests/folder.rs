@@ -25,6 +25,7 @@ struct Peer {
     home: PathBuf,
     vault: PathBuf,
     api: Syncthing,
+    api_key: String,
     rest: SocketAddr,
     listen: SocketAddr,
     id: String,
@@ -78,6 +79,7 @@ print(g.find('apikey').text)
             home,
             vault,
             api,
+            api_key: key.trim().to_owned(),
             rest,
             listen,
             id: String::new(),
@@ -88,6 +90,20 @@ print(g.find('apikey').text)
             .context("identity absent")?
             .into();
         Ok(peer)
+    }
+    // Fixture-only connection control; production enrollment deliberately refuses
+    // to mutate existing devices through add_device.
+    fn pause_remote(&self, id: &str, paused: bool) -> Result<()> {
+        reqwest::blocking::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(10))
+            .build()?
+            .patch(format!("http://{}/rest/config/devices/{id}", self.rest))
+            .header("X-API-Key", &self.api_key)
+            .json(&json!({"paused":paused}))
+            .send()?
+            .error_for_status()?;
+        Ok(())
     }
     fn start(&mut self) -> Result<()> {
         let log = fs::File::create(self.home.join("fixture.log"))?;
@@ -460,6 +476,9 @@ fn owned_folder_and_external_replica_keep_their_boundaries() -> Result<()> {
     })?;
     let hub_certificate = fs::read(hub.home.join("cert.pem"))?;
     let client_certificate = fs::read(client.home.join("cert.pem"))?;
+    // Keep the restarted hub disconnected until its offline edit has been
+    // indexed. This establishes concurrent versions before index exchange.
+    hub.pause_remote(&client.id, true)?;
     hub.stop()?;
     wait("controller observes disconnected hub", || {
         Ok(!reopened.status()?.hub_connected)
@@ -487,6 +506,8 @@ fn owned_folder_and_external_replica_keep_their_boundaries() -> Result<()> {
     hub.start()?;
     hub.api.verify_identity(&hub.id)?;
     assert_eq!(fs::read(hub.home.join("cert.pem"))?, hub_certificate);
+    hub.api.scan("controller-fixture")?;
+    hub.pause_remote(&client.id, false)?;
     client.api.scan("controller-fixture")?;
     wait(
         "offline edit and delete propagate after both restarts",
