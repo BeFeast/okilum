@@ -60,7 +60,9 @@ jobs:
           cargo clippy --locked --workspace --all-targets -- -D warnings
           cargo test --locked --workspace
       - name: Consistent SQLite backup and restore
-        run: python3 inbox/deploy/test_backup.py
+        run: |
+          python3 inbox/deploy/test_backup.py
+          python3 -m unittest discover -s inbox/deploy -p 'test_restart.py' -v
       - name: Web outbox and WebAuthn encoding tests
         working-directory: web/inbox
         run: |
