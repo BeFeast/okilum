@@ -554,7 +554,7 @@ fn markdown_link(s: &mut Stripper, i: usize, to: usize) -> usize {
     let shown = shown_start..s.out.len();
     s.hidden.push(HiddenDestination {
         range: mid + 2..close,
-        url: s.src[mid + 2..close].contains(':') || s.src[mid + 2..close].starts_with("//"),
+        url: crate::document_links::is_external_url(&s.src[mid + 2..close]),
         wiki: false,
     });
     let end = if close < to { close + 1 } else { close };
@@ -828,5 +828,23 @@ mod tests {
             .collect();
         assert_eq!(words, ["Human Hebrew title", "Other guide", "needle"]);
         assert!(reason.links.is_empty());
+    }
+
+    #[test]
+    fn colon_in_local_target_does_not_bypass_human_link_context() {
+        let mut reason =
+            plain_snippet("[alias](notes/<b>12:30</b>.md) [web](https://example.test/<b>term</b>)")
+                .hidden_match
+                .unwrap();
+        reason.resolve_link_labels(|target, wiki| {
+            assert!(!wiki);
+            assert_eq!(target, "notes/12:30.md");
+            "Meeting note".into()
+        });
+        assert_eq!(
+            reason.text,
+            "Link target: Meeting note · Link URL: https://example.test/term"
+        );
+        assert_eq!(&reason.text[reason.highlights[0].clone()], "Meeting note");
     }
 }
