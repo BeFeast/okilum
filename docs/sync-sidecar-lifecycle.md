@@ -199,3 +199,16 @@ parsing a decoded BSTR as UTF-8 while its XML declaration still said UTF-16.
 Canonical comparison now removes the transport declaration before parsing,
 retains content/attribute checks, and has a Linux Unicode regression test.
 The next native run must still validate the complete registration/removal test.
+
+The next run reached definition comparison and exposed Scheduler serialization:
+https://github.com/BeFeast/tessera/actions/runs/37756234878 . The exact expected
+and returned XML are retained as regression fixtures. Comparison now ignores
+field order, RegistrationInfo URI/SecurityDescriptor (owner is checked separately),
+and only the named default values: LeastPrivilege, enabled logon trigger/task,
+unified scheduling enabled, idle StopOnIdleEnd=true and RestartOnIdle=false.
+Non-default values and unknown fields remain significant; duplicate actions,
+changed command/arguments/context/principal, privilege escalation and unknown
+settings remain mismatches. Native account spellings in principal/logon trigger
+are resolved with LookupAccountNameW to SID, never compared by username alone.
+The recorded XML passes the portable comparison and mutation regression tests;
+full native Scheduler acceptance remains pending the next dispatch.

@@ -99,7 +99,10 @@ impl<G: TaskGuard> NativeTasks<G> {
             "task security owner changed"
         );
         ensure!(
-            canonical(&unsafe { task.Xml()? }.to_string())? == canonical(definition)?,
+            canonical(&super::resolve_task_accounts(
+                &unsafe { task.Xml()? }.to_string(),
+                super::security::resolve_account_sid
+            )?)? == canonical(definition)?,
             "task definition changed"
         );
         Ok(task)
@@ -123,7 +126,10 @@ impl<G: TaskGuard> TaskApi for NativeTasks<G> {
         let sddl = unsafe { task.GetSecurityDescriptor(1)? }.to_string();
         Ok(Some(Task {
             owner_sid: super::security::descriptor_owner_sid(&sddl)?,
-            definition: unsafe { task.Xml()? }.to_string(),
+            definition: super::resolve_task_accounts(
+                &unsafe { task.Xml()? }.to_string(),
+                super::security::resolve_account_sid,
+            )?,
             running: unsafe { task.State()? } == TASK_STATE_RUNNING && self.guard.running(name)?,
         }))
     }

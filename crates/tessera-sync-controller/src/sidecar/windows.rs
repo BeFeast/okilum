@@ -70,37 +70,7 @@ pub fn definition(binding: &Binding) -> Result<String> {
         xml(state)
     ))
 }
-fn canonical(source: &str) -> Result<String> {
-    use xmltree::{Element, XMLNode};
-    fn visit(node: &Element, out: &mut String) {
-        // Length-delimited fields avoid ambiguous concatenations; unknown nodes
-        // and attributes remain significant, so extra privileged actions fail.
-        fn field(out: &mut String, value: &str) {
-            out.push_str(&format!("{}:{value}", value.len()));
-        }
-        field(out, &node.name);
-        field(out, node.namespace.as_deref().unwrap_or(""));
-        let mut attrs: Vec<_> = node.attributes.iter().collect();
-        attrs.sort();
-        out.push('[');
-        for (key, value) in attrs {
-            field(out, key);
-            field(out, value);
-        }
-        out.push(']');
-        out.push('{');
-        for child in &node.children {
-            match child {
-                XMLNode::Element(el) => visit(el, out),
-                XMLNode::Text(s) | XMLNode::CData(s) if !s.trim().is_empty() => field(out, s),
-                _ => {}
-            }
-        }
-        out.push('}');
-    }
-    // COM has already decoded its UTF-16 BSTR into this Rust UTF-8 string.
-    // The original transport declaration is not part of task identity and must
-    // not instruct the byte parser to decode these UTF-8 bytes a second time.
+fn parse_task(source: &str) -> Result<xmltree::Element> {
     let source = source.trim_start_matches('\u{feff}');
     let source = if source
         .strip_prefix("<?xml")
@@ -113,10 +83,120 @@ fn canonical(source: &str) -> Result<String> {
     } else {
         source
     };
-    let element = Element::parse(source.as_bytes())?;
-    let mut out = String::new();
-    visit(&element, &mut out);
-    Ok(out)
+    Ok(xmltree::Element::parse(source.as_bytes())?)
+}
+fn canonical(source: &str) -> Result<String> {
+    use xmltree::{Element, XMLNode};
+    const NS: &str = "http://schemas.microsoft.com/windows/2004/02/mit/task";
+    fn plain(node: &Element, text: &str) -> bool {
+        node.attributes.is_empty()
+            && node
+                .children
+                .iter()
+                .all(|c| matches!(c, XMLNode::Text(_) | XMLNode::CData(_)))
+            && node.get_text().as_deref() == Some(text)
+    }
+    fn normalize(node: &mut Element, parent: &str) {
+        let path = format!("{parent}/{}", node.name);
+        for child in &mut node.children {
+            if let XMLNode::Element(el) = child {
+                normalize(el, &path);
+            }
+        }
+        node.children.retain(|child| {
+            let XMLNode::Element(el) = child else {
+                return true;
+            };
+            if el.namespace.as_deref() != Some(NS) {
+                return true;
+            }
+            let ignored_metadata = path == "/Task/RegistrationInfo"
+                && matches!(el.name.as_str(), "URI" | "SecurityDescriptor");
+            let default = match (path.as_str(), el.name.as_str()) {
+                ("/Task/Principals/Principal", "RunLevel") => Some("LeastPrivilege"),
+                ("/Task/Triggers/LogonTrigger", "Enabled") | ("/Task/Settings", "Enabled") => {
+                    Some("true")
+                }
+                ("/Task/Settings", "UseUnifiedSchedulingEngine") => Some("true"),
+                ("/Task/Settings/IdleSettings", "StopOnIdleEnd") => Some("true"),
+                ("/Task/Settings/IdleSettings", "RestartOnIdle") => Some("false"),
+                _ => None,
+            };
+            let empty_idle = path == "/Task/Settings"
+                && el.name == "IdleSettings"
+                && el.attributes.is_empty()
+                && el
+                    .children
+                    .iter()
+                    .all(|c| matches!(c, XMLNode::Text(t) if t.trim().is_empty()));
+            !(ignored_metadata || default.is_some_and(|value| plain(el, value)) || empty_idle)
+        });
+    }
+    fn visit(node: &Element) -> String {
+        fn field(out: &mut String, value: &str) {
+            out.push_str(&format!("{}:{value}", value.len()));
+        }
+        let mut out = String::new();
+        field(&mut out, &node.name);
+        field(&mut out, node.namespace.as_deref().unwrap_or(""));
+        let mut attrs: Vec<_> = node.attributes.iter().collect();
+        attrs.sort();
+        out.push('[');
+        for (key, value) in attrs {
+            field(&mut out, key);
+            field(&mut out, value);
+        }
+        out.push(']');
+        out.push('{');
+        let mut children = Vec::new();
+        for child in &node.children {
+            match child {
+                XMLNode::Element(el) => children.push(visit(el)),
+                XMLNode::Text(s) | XMLNode::CData(s) if !s.trim().is_empty() => field(&mut out, s),
+                _ => (),
+            }
+        }
+        // The owned definition has one principal, trigger and action. Sorting
+        // fields preserves duplicates and unknown nodes, which still mismatch.
+        children.sort();
+        for child in children {
+            field(&mut out, &child);
+        }
+        out.push('}');
+        out
+    }
+    let mut element = parse_task(source)?;
+    normalize(&mut element, "");
+    Ok(visit(&element))
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn resolve_task_accounts(source: &str, resolve: impl Fn(&str) -> Result<String>) -> Result<String> {
+    use xmltree::XMLNode;
+    let mut root = parse_task(source)?;
+    for (section, item) in [("Principals", "Principal"), ("Triggers", "LogonTrigger")] {
+        if let Some(section) = root.get_mut_child(section) {
+            for child in &mut section.children {
+                if let XMLNode::Element(node) = child {
+                    if node.name == item {
+                        if let Some(user) = node.get_mut_child("UserId") {
+                            ensure!(
+                                user.children
+                                    .iter()
+                                    .all(|c| matches!(c, XMLNode::Text(_) | XMLNode::CData(_))),
+                                "invalid task user identity"
+                            );
+                            let sid = resolve(user.get_text().as_deref().unwrap_or(""))?;
+                            user.children = vec![XMLNode::Text(sid)];
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut bytes = Vec::new();
+    root.write(&mut bytes)?;
+    Ok(String::from_utf8(bytes)?)
 }
 impl<A: TaskApi> TaskScheduler<A> {
     fn expected(&self, binding: &Binding) -> Result<String> {
@@ -212,5 +292,62 @@ mod xml_tests {
         );
         assert!(canonical("<?xml version=\"1.0\" <Task/>").is_err());
         assert!(canonical("<?xml version=\"1.0\" encoding=\"UTF-16\"?><Task>").is_err());
+    }
+}
+
+#[cfg(test)]
+mod scheduler_roundtrip_tests {
+    use super::*;
+    const EXPECTED: &str = include_str!("../../tests/fixtures/scheduler-expected.xml");
+    const RETURNED: &str = include_str!("../../tests/fixtures/scheduler-returned.xml");
+    fn resolve(value: &str) -> Result<String> {
+        if value == r"runnervmdlhio\runneradmin" {
+            Ok("S-1-5-21-3827877701-3061038111-106515639-500".into())
+        } else if value.starts_with("S-1-") {
+            Ok(value.into())
+        } else {
+            anyhow::bail!("unknown fixture account")
+        }
+    }
+    #[test]
+    fn recorded_windows_xml_matches_owned_definition_semantically() {
+        let actual = resolve_task_accounts(RETURNED, resolve).unwrap();
+        assert_eq!(canonical(EXPECTED).unwrap(), canonical(&actual).unwrap());
+    }
+    #[test]
+    fn scheduler_normalization_preserves_identity_and_execution_boundaries() {
+        for changed in [
+            RETURNED.replace("never-executed.exe", "foreign.exe"),
+            RETURNED.replace("--instance", "--foreign"),
+            RETURNED.replace("S-1-5-21-3827877701-3061038111-106515639-500", "S-1-5-18"),
+            RETURNED.replace(
+                "</Principal>",
+                "<RunLevel>HighestAvailable</RunLevel></Principal>",
+            ),
+            RETURNED.replace("InteractiveToken", "Password"),
+            RETURNED.replace("<LogonTrigger>", "<LogonTrigger><Enabled>false</Enabled>"),
+            RETURNED.replace("<Count>3</Count>", "<Count>4</Count>"),
+            RETURNED.replace("Context=\"Owner\"", "Context=\"Foreign\""),
+            RETURNED.replace(
+                "</Settings>",
+                "<UnknownOption>true</UnknownOption></Settings>",
+            ),
+            RETURNED.replace(
+                "</Actions>",
+                "<Exec><Command>foreign.exe</Command></Exec></Actions>",
+            ),
+            RETURNED.replace(
+                "<RestartOnIdle>false</RestartOnIdle>",
+                "<RestartOnIdle>true</RestartOnIdle>",
+            ),
+        ] {
+            let actual = resolve_task_accounts(&changed, resolve).unwrap();
+            assert_ne!(canonical(EXPECTED).unwrap(), canonical(&actual).unwrap());
+        }
+        assert!(resolve_task_accounts(
+            &RETURNED.replace(r"runnervmdlhio\runneradmin", "foreign-user"),
+            resolve
+        )
+        .is_err());
     }
 }
