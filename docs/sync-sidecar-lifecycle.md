@@ -326,3 +326,11 @@ unsupported bit and keeps mandatory security read-back and all assertions.
 Creation and read-back errors now identify the failing native call. This is a
 candidate fix pending another native run, not a passing acceptance claim.
 API contract: https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-createnamedpipew
+
+The second exact-source native run passed 42 tests and failed the two private
+endpoint fixtures after successful creation and security read-back:
+https://github.com/BeFeast/tessera/actions/runs/37820416150 . The shared endpoint
+preservation fixture now passes. The remaining failure is the pipe type/end/
+instance-limit assertion. A diagnostic candidate records the actual flags and
+maximum instance count (including the passing shared fixture); it deliberately
+keeps the acceptance condition unchanged until the returned values are known.

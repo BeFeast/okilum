@@ -189,7 +189,8 @@ impl PrivatePipe {
         }
         ensure!(
             flags == PIPE_SERVER_END && instances == 1,
-            "unexpected pipe type, end or instance limit"
+            "unexpected pipe type, end or instance limit: flags={:#010x}, max_instances={}, expected_flags={:#010x}, expected_max_instances=1",
+            flags.0, instances, PIPE_SERVER_END.0
         );
         Ok(())
     }

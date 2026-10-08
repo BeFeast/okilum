@@ -184,6 +184,22 @@ fn native_private_pipe_preserves_shared_existing_endpoint() -> Result<()> {
         return Err(windows::core::Error::from_win32()).context("CreateNamedPipeW(shared fixture)");
     }
     let foreign = unsafe { OwnedHandle::from_raw_handle(raw.0) };
+    let mut flags = NAMED_PIPE_MODE::default();
+    let mut max_instances = 0;
+    unsafe {
+        GetNamedPipeInfo(
+            HANDLE(foreign.as_raw_handle()),
+            Some(&mut flags),
+            None,
+            None,
+            Some(&mut max_instances),
+        )
+        .context("GetNamedPipeInfo(shared fixture)")?;
+    }
+    eprintln!(
+        "shared fixture pipe read-back: flags={:#010x}, max_instances={max_instances}",
+        flags.0
+    );
     let before = read_descriptor(HANDLE(foreign.as_raw_handle()))?;
     ensure!(
         validate(&before, &sid).is_err(),
