@@ -1,16 +1,18 @@
 --- a/crates/base/src/input/base/state.rs
 +++ b/crates/base/src/input/base/state.rs
-@@ -316,6 +316,7 @@
+@@ -316,7 +316,8 @@
      pub(super) text: Rope,
      pub(super) projection: ProjectionSession,
+     pub(super) marker_source_cache: std::cell::RefCell<Option<std::sync::Arc<super::marker_paint::MarkerSource>>>,
      exact_clipboard: ClipboardSession,
 +    projection_mouse_hold: bool,
      pub(super) projection_pending_click: Option<(MouseDownEvent, bool)>,
      pub(super) projection_pending_vertical: Option<super::movement::PendingVertical>,
      pub(super) projection_ime_bounds: Option<Bounds<Pixels>>,
-@@ -660,6 +661,7 @@
+@@ -661,7 +662,8 @@
              text: "".into(),
              projection: ProjectionSession::default(),
+             marker_source_cache: Default::default(),
              exact_clipboard: ClipboardSession::default(),
 +            projection_mouse_hold: false,
              projection_pending_click: None,
