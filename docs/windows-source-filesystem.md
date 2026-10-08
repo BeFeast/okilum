@@ -103,8 +103,11 @@ the existing 20-version/30-day/128-MiB retention. A crash during cleanup or a
 sharing error leaves an identified cleanup record; startup retries only these
 acknowledged records for the opened vault. Interrupted saves, changed/replaced
 preimages, reparse points, and unassigned synced leftovers remain protected.
-Strict UUID `.tessera-save-<uuid>.previous` names are excluded from inventory,
-search and the tree on every platform, even with Show hidden enabled. Unassigned
+All `.tessera-save-*` names are excluded from inventory, search and the tree on
+every platform, even with Show hidden enabled. This includes old six-character
+tempfile names, native prepared/raced files and synced preimages. Visibility is
+separate from cleanup ownership: only acknowledged identity-bound preimages are
+automatically removed. Unassigned
 legacy files can still be inspected through recovery; they require a separate
 dry-run inventory and owner approval before one-time deletion. Folder
 snapshots exclude generated `.tessera-save-*` recovery entries from canonical
@@ -113,6 +116,21 @@ The link-move journal retains complete before/after bytes even when vault-side
 history names move with a folder. No automatic rollback overwrites a concurrent
 writer; post-publication verification failures are reported as completed moves
 requiring inspection.
+
+`python scripts/tessera-save-dry-run.py /absolute/vault/root` prints a read-only
+JSON inventory grouped into canonical Windows UUID `.previous` names, legacy
+six-character tempfile names and other `.tessera-save-*` entries. It reads only
+directory entries and metadata, never file contents, and does not follow symlinks
+or Windows reparse directories. Scan errors are reported explicitly. Send the
+exact report to the owner before considering any legacy cleanup; a matching name
+alone is not proof that the bytes are safe to delete.
+
+Old Unix saves used `tempfile::Builder` with this prefix and intentionally kept
+displaced inodes without ownership records. Commit b2d1fcff replaced that path
+with directory-bound UUID names and durable history archival. Current Unix saves
+archive to application state; a cross-device archive retains the identity-bound
+vault preimage under history retention. Historical unassigned names are not
+automatically adopted or deleted.
 
 Creation Undo checks the original identity and exact initial source (or empty
 folder), then marks that checked native DELETE handle for deletion. It refuses

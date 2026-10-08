@@ -715,7 +715,7 @@ mod preimage_visibility_tests {
     fn windows_history_tree_hides_native_preimages_even_when_hidden_files_are_enabled() {
         let mut tree = Tree::default();
         let preimage = "nested/.tessera-save-7d7d7698-4f47-4a9f-9a7b-2bb5e01f3718.previous";
-        let entries = [
+        let mut entries = vec![
             VaultEntry {
                 path: "nested".into(),
                 kind: EntryKind::Directory,
@@ -729,10 +729,20 @@ mod preimage_visibility_tests {
                 kind: EntryKind::Attachment,
             },
             VaultEntry {
-                path: "nested/.tessera-save-user.previous".into(),
-                kind: EntryKind::Attachment,
+                path: "nested/.ordinary.md".into(),
+                kind: EntryKind::Markdown,
             },
         ];
+        let service_names = [
+            ".tessera-save-icf3uR",
+            ".tessera-save-legacy.md",
+            ".tessera-save-proposed.prepared",
+            ".tessera-save-user.previous",
+        ];
+        entries.extend(service_names.into_iter().map(|name| VaultEntry {
+            path: format!("nested/{name}"),
+            kind: EntryKind::Attachment,
+        }));
         tree.refresh(Path::new("vault"), &entries);
         tree.set_show_hidden(true);
         tree.set_subtree("nested", true);
@@ -740,7 +750,12 @@ mod preimage_visibility_tests {
         assert!(tree
             .rows
             .iter()
-            .any(|row| row.path == "nested/.tessera-save-user.previous"));
+            .any(|row| row.path == "nested/.ordinary.md"));
+        for name in service_names {
+            let path = format!("nested/{name}");
+            assert!(!tree.kinds.contains_key(&path));
+            assert!(tree.reveal(&path).is_none());
+        }
         assert!(!tree.rows.iter().any(|row| row.path == preimage));
         assert!(tree.reveal(preimage).is_none());
         assert!(!tree.kinds.contains_key(preimage));

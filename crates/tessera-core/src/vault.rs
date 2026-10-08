@@ -129,7 +129,7 @@ pub fn windows_preimage_name(name: &std::ffi::OsStr) -> bool {
 pub fn service_path(path: &Path) -> bool {
     path.components().any(|component| {
         let name = component.as_os_str();
-        windows_preimage_name(name)
+        name.as_encoded_bytes().starts_with(b".tessera-save-")
             || name.as_encoded_bytes().starts_with(b"._")
             || name.to_str().is_some_and(|name| SKIP_DIRS.contains(&name))
     })
@@ -1626,18 +1626,27 @@ mod preimage_visibility_tests {
         let hidden = root.join("nested").join(&filename);
         fs::write(&hidden, "source preimage").unwrap();
         fs::write(root.join("nested/Visible.md"), "# positive control").unwrap();
+        let service_names = [
+            ".tessera-save-user.previous",
+            ".tessera-save-icf3uR",
+            ".tessera-save-legacy.md",
+            ".tessera-save-proposed.prepared",
+            ".tessera-save-conflict.raced",
+        ];
+        for name in service_names {
+            fs::write(root.join("nested").join(name), "protected recovery bytes").unwrap();
+            assert!(service_path(Path::new(&format!("nested/{name}"))));
+        }
         fs::write(
-            root.join("nested/.tessera-save-user.previous"),
-            "ordinary user file",
+            root.join("nested/.ordinary.md"),
+            "# ordinary hidden control",
         )
         .unwrap();
         assert!(service_path(Path::new(&format!("nested/{filename}"))));
         assert!(!windows_preimage_name(std::ffi::OsStr::new(
             ".tessera-save-user.previous"
         )));
-        assert!(!service_path(Path::new(
-            "nested/.tessera-save-user.previous"
-        )));
+        assert!(!service_path(Path::new("nested/.ordinary.md")));
         assert!(!windows_preimage_name(std::ffi::OsStr::new(
             &filename.replace('-', "")
         )));
@@ -1646,7 +1655,21 @@ mod preimage_visibility_tests {
         assert!(vault
             .entries
             .iter()
-            .any(|e| e.path == "nested/.tessera-save-user.previous"));
+            .any(|e| e.path == "nested/.ordinary.md"));
+        assert!(vault
+            .entries
+            .iter()
+            .all(|entry| !service_path(Path::new(&entry.path))));
+        assert!(vault
+            .notes
+            .iter()
+            .all(|note| !service_path(Path::new(&note.path))));
+        for name in service_names {
+            assert!(
+                fs::read(root.join("nested").join(name)).is_ok(),
+                "inventory preserves recovery bytes"
+            );
+        }
         assert!(!vault.entries.iter().any(|e| e.path.ends_with(&filename)));
         assert!(
             fs::read(&hidden).is_ok(),
@@ -1654,21 +1677,26 @@ mod preimage_visibility_tests {
         );
         // Older cached inventories may still contain this attachment. Quick Open
         // must suppress it before offering file-name matches as well.
-        let cached = [
+        let mut cached = vec![
             VaultEntry {
                 path: format!("nested/{filename}"),
                 kind: EntryKind::Attachment,
             },
             VaultEntry {
-                path: "nested/.tessera-save-user.previous".into(),
-                kind: EntryKind::Attachment,
+                path: "nested/.ordinary.md".into(),
+                kind: EntryKind::Markdown,
             },
         ];
+        cached.extend(service_names.into_iter().map(|name| VaultEntry {
+            path: format!("nested/{name}"),
+            kind: EntryKind::Attachment,
+        }));
         let palette = crate::quick_open::inventory(vault.notes.clone(), &cached);
         assert!(palette.iter().any(|n| n.path == "nested/Visible.md"));
+        assert!(palette.iter().any(|n| n.path == "nested/.ordinary.md"));
         assert!(palette
             .iter()
-            .any(|n| n.path == "nested/.tessera-save-user.previous"));
+            .all(|note| !service_path(Path::new(&note.path))));
         assert!(!palette.iter().any(|n| n.path.ends_with(&filename)));
     }
 }
