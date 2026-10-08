@@ -1,4 +1,4 @@
-# One-day opt-in Forgejo PR pilot. No secrets, publication or signing.
+# Permanent Forgejo PR lane. No secrets, publication or signing.
 name: forgejo-linux
 on:
   push:

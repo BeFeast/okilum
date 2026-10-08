@@ -1,0 +1,60 @@
+name: forgejo-windows-release
+on:
+  push:
+    branches: ['forgejo-windows-release-pr/**']
+permissions:
+  contents: read
+concurrency:
+  group: forgejo-windows-release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  icon:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: |
+          python3 -m venv /tmp/icon-env
+          /tmp/icon-env/bin/pip install CairoSVG==2.8.2
+          /tmp/icon-env/bin/python scripts/windows-icon.py crates/tessera-shell/assets/brand/app-icon-light.svg target/windows-dist/tessera.ico
+      - name: Validate cross-build helpers and publication logic
+        run: python3 -m unittest discover -s scripts/windows -p 'test_*.py'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-icon
+          path: target/windows-dist/tessera.ico
+          retention-days: 1
+          if-no-files-found: error
+  windows-release:
+    needs: icon
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - name: Preserve LF before checkout and nested vendor clone
+        shell: bash
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-icon
+          path: target/windows-dist
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build and validate Windows package
+        shell: pwsh
+        run: ./scripts/ci/build-windows-native.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-windows
+          path: target/windows-release/*
+          retention-days: 3
+          if-no-files-found: error

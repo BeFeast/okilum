@@ -1,3 +1,7 @@
+> Historical pilot record. On 2026-10-08 the owner made hosted Linux permanent
+> and disabled automatic expiry. Current executor entrypoint and fallback:
+> [Hosted CI](hosted-ci.md). The rollout instructions below describe the original pilot.
+
 # One-day GitHub-hosted Linux PR pilot (pending owner enablement)
 
 Scope: full Linux PR gate only. Windows packaging stays local for this pilot;

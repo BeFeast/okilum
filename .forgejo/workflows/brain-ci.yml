@@ -7,12 +7,16 @@ on:
       - 'crates/tessera-brain/**'
       - 'crates/tessera-cored/**'
       - '.forgejo/workflows/brain-ci.yml'
+      - '.github/workflows/forgejo-brain.yml'
+      - 'scripts/ci/github-pr.py'
   push:
     branches: [main]
     paths:
       - 'crates/tessera-brain/**'
       - 'crates/tessera-cored/**'
       - '.forgejo/workflows/brain-ci.yml'
+      - '.github/workflows/forgejo-brain.yml'
+      - 'scripts/ci/github-pr.py'
   schedule:
     - cron: '17 3 * * *'
   workflow_dispatch:
@@ -26,6 +30,8 @@ permissions:
 
 jobs:
   brain-tests:
+    if: >-
+      github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || vars.TESSERA_PR_LANE == 'local'
     # Existing baldr Docker label: keep long builds off light/bridge waiters.
     runs-on: docker
     container:
@@ -94,3 +100,23 @@ jobs:
       - name: sccache stats
         if: always()
         run: if [ -n "${RUSTC_WRAPPER:-}" ]; then sccache --show-stats || true; fi
+
+  brain-github:
+    if: >-
+      github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.TESSERA_PR_LANE != 'local'
+    runs-on: bridge
+    timeout-minutes: 125
+    continue-on-error: true
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Wait for exact-head hosted brain
+        env:
+          MIRROR_TOKEN: ${{ secrets.TESSERA_GITHUB_MIRROR }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_LANE: brain
+        run: python3 scripts/ci/github-pr.py
