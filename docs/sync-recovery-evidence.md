@@ -19,6 +19,20 @@ transfers. The observed error and subsequent real transfer are the positive cont
 absence of a file alone is not the assertion of safety. Existing assertions cover
 explicit reuse, durable promotion, offline local removal and cleanup boundaries.
 
+The next increment creates concurrent edits from a shared base while the hub is
+stopped. Both replicas retain both contents (main note plus Syncthing conflict copy)
+after reconnect, and Tessera's bounded conflict inventory finds the actual copy
+without changing either version. A per-folder 100% minimum-free-space setting then
+blocks a real incoming file. The controller reports Needs attention with the actual
+`insufficient space` error; restoring the prior reserve permits the queued transfer.
+This is Syncthing's space-reserve admission check, not an OS ENOSPC simulation.
+
+The combined recovery run passed in 24.64 seconds. The failed attempt to require
+an actionable space explanation exposed #742: `insufficient space in folder` falls
+back to generic diagnostics. That presentation defect remains separate; transport
+recovery passing does not waive it. Case collisions and actual OS disk-full recovery
+also remain open.
+
 ## Reproduce on CT141 only
 
 ```sh
@@ -37,7 +51,7 @@ The log is retained in CT141's issue cache under `589/recovery.log`.
 
 This fixture injects approved pairing and readiness receipts. It does not prove
 browser/passkey → HTTPS service → native Settings, service-side revoke reconciliation,
-disk-full recovery, conflict/case collisions, Windows/macOS lifecycle or login.
+OS disk-full recovery, cross-platform case collisions, Windows/macOS lifecycle or login.
 Those remain separate acceptance work. Native Settings QA uses the published Linux
 beta and the manager's muninn QA session. CT119 rollout still requires its own
 backup/rollback plan and explicit daytime approval. No live rollout is implied.

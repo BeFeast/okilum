@@ -450,12 +450,31 @@ fn owned_folder_and_external_replica_keep_their_boundaries() -> Result<()> {
     })?;
     // #589: actual transport outage, both process restarts and queued local
     // changes. Browser approval is still a synthetic receipt in this fixture.
+    write(&hub.vault, "conflict.md", "shared base")?;
+    hub.api.scan("controller-fixture")?;
+    wait("conflict fixture has a shared base", || {
+        Ok(fs::read_to_string(client.vault.join("conflict.md"))
+            .ok()
+            .as_deref()
+            == Some("shared base"))
+    })?;
     let hub_certificate = fs::read(hub.home.join("cert.pem"))?;
     let client_certificate = fs::read(client.home.join("cert.pem"))?;
     hub.stop()?;
     wait("controller observes disconnected hub", || {
         Ok(!reopened.status()?.hub_connected)
     })?;
+    // Both disconnected replicas change the same indexed note. Distinct explicit
+    // mtimes avoid relying on the filesystem's timestamp resolution in this probe.
+    write(&hub.vault, "conflict.md", "hub offline version")?;
+    write(&client.vault, "conflict.md", "client offline version")?;
+    let time = std::time::SystemTime::now();
+    for (root, offset) in [(&hub.vault, 2), (&client.vault, 4)] {
+        fs::File::options()
+            .write(true)
+            .open(root.join("conflict.md"))?
+            .set_times(fs::FileTimes::new().set_modified(time + Duration::from_secs(offset)))?;
+    }
     write(&client.vault, "offline.md", "queued while hub is down")?;
     fs::remove_file(client.vault.join("published-after-promotion.md"))?;
     client.api.scan("controller-fixture")?;
@@ -481,6 +500,35 @@ fn owned_folder_and_external_replica_keep_their_boundaries() -> Result<()> {
     )?;
     assert_eq!(client.api.folder("unrelated")?, unrelated);
     assert!(!client.vault.join(".tessera-index/excluded").exists());
+    let preserved_versions = |root: &Path| -> Result<bool> {
+        let mut contents = Vec::new();
+        let mut has_conflict_copy = false;
+        for entry in fs::read_dir(root)? {
+            let path = entry?.path();
+            let name = path.file_name().unwrap().to_string_lossy();
+            if name == "conflict.md"
+                || (name.starts_with("conflict.sync-conflict-") && name.ends_with(".md"))
+            {
+                has_conflict_copy |= name.contains(".sync-conflict-");
+                contents.push(fs::read_to_string(path)?);
+            }
+        }
+        Ok(has_conflict_copy
+            && contents.iter().any(|s| s == "hub offline version")
+            && contents.iter().any(|s| s == "client offline version"))
+    };
+    wait("both replicas preserve both conflicting versions", || {
+        Ok(preserved_versions(&hub.vault)? && preserved_versions(&client.vault)?)
+    })?;
+    let inspection = tessera_sync_controller::conflicts::inspect(&client.vault)?;
+    ensure!(
+        inspection.complete && !inspection.copies.is_empty(),
+        "controller must reveal the actual conflict copy"
+    );
+    ensure!(
+        preserved_versions(&client.vault)?,
+        "inspection must preserve both versions"
+    );
     // A missing Syncthing safety marker must stop the folder. Moving it outside
     // the vault prevents it being treated as user content or sent to the hub.
     let marker = client.vault.join(".stfolder");
@@ -492,6 +540,10 @@ fn owned_folder_and_external_replica_keep_their_boundaries() -> Result<()> {
         let status = client.api.status("controller-fixture")?;
         Ok(status["state"] == "error" || status["error"].as_str().is_some_and(|s| !s.is_empty()))
     })?;
+    assert_eq!(
+        tessera_sync_controller::presentation::FolderState::from_local(&reopened.status()?),
+        tessera_sync_controller::presentation::FolderState::NeedsAttention
+    );
     write(
         &hub.vault,
         "after-marker.md",
@@ -507,6 +559,42 @@ fn owned_folder_and_external_replica_keep_their_boundaries() -> Result<()> {
             .as_deref()
             == Some("recover only after marker returns"))
     })?;
+    // Exercise Syncthing's free-space admission check without filling a shared
+    // filesystem. This is a reserve-gate test, not an injected OS ENOSPC proof.
+    let old_reserve = client.api.folder("controller-fixture")?["minDiskFree"].clone();
+    client.api.patch_folder(
+        "controller-fixture",
+        &json!({"minDiskFree":{"value":100,"unit":"%"}}),
+    )?;
+    write(
+        &hub.vault,
+        "needs-space.md",
+        "received after reserve is restored",
+    )?;
+    hub.api.scan("controller-fixture")?;
+    wait("disk reserve is surfaced as needs attention", || {
+        let status = reopened.status()?;
+        Ok(
+            tessera_sync_controller::presentation::FolderState::from_local(&status)
+                == tessera_sync_controller::presentation::FolderState::NeedsAttention
+                && status.errors.to_string().contains("insufficient space"),
+        )
+    })?;
+    assert!(!client.vault.join("needs-space.md").exists());
+    client.api.patch_folder(
+        "controller-fixture",
+        &json!({"paused":true,"minDiskFree":old_reserve}),
+    )?;
+    client
+        .api
+        .patch_folder("controller-fixture", &json!({"paused":false}))?;
+    wait("restored reserve permits queued transfer", || {
+        Ok(fs::read_to_string(client.vault.join("needs-space.md"))
+            .ok()
+            .as_deref()
+            == Some("received after reserve is restored"))
+    })?;
+    assert_eq!(client.api.folder("unrelated")?, unrelated);
     let observed = reopened.last_connected_at()?;
     // Offline Remove is journaled before REST, and restart cannot re-enroll.
     let external_units = root.path().join("external-units-must-not-exist");
