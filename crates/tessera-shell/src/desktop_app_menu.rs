@@ -172,8 +172,11 @@ mod tests {
     }
 
     #[gpui::test]
-    fn about_dialog_opens_and_dismisses(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+    fn about_opens_settings_and_closes_without_covering_reader(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            reader_settings::install(cx);
+        });
         let (_, visual) = cx.add_window_view(|window, cx| {
             let reader = cx.new(|cx| Reader::new(Opts::default(), window, cx));
             Root::new(reader, window, cx)
@@ -181,9 +184,21 @@ mod tests {
         visual.run_until_parked();
         visual.update(show_about);
         visual.run_until_parked();
-        assert!(visual.debug_bounds("desktop-about").is_some());
-        visual.simulate_keystrokes("escape");
-        visual.run_until_parked();
+        assert!(visual.debug_bounds("desktop-about").is_none());
+        let settings_window = visual.update(|reader_window, cx| {
+            assert_eq!(cx.windows().len(), 2);
+            cx.windows()
+                .into_iter()
+                .find(|window| window.window_id() != reader_window.window_handle().window_id())
+                .expect("About opens a separate Settings window")
+        });
+        let settings = gpui::VisualTestContext::from_window(settings_window, visual);
+        let settings = settings.into_mut();
+        settings.run_until_parked();
+        assert!(settings.debug_bounds("desktop-about").is_some());
+        settings.simulate_keystrokes("secondary-w");
+        settings.run_until_parked();
+        visual.update(|_, cx| assert_eq!(cx.windows().len(), 1));
         assert!(visual.debug_bounds("desktop-about").is_none());
     }
 }
