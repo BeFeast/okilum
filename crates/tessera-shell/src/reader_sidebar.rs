@@ -484,6 +484,47 @@ mod tests {
     }
 
     #[test]
+    fn bulk_round_trip_all_sections_after_restart_and_scroll() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("sidebar.json");
+        for mask in 0..32 {
+            let mut state = State::default();
+            for (i, section) in LEFT_SECTIONS.into_iter().enumerate() {
+                state.set_collapsed(section, mask & (1 << i) != 0);
+            }
+            state.properties_collapsed = true;
+            let expected = LEFT_SECTIONS.map(|s| state.is_collapsed(s));
+            state.folders_only(true);
+            state.save(&path).unwrap();
+            let mut state = State::load(&path);
+            state.folders_only(true);
+            let mut scroll = ScrollSections::default();
+            scroll.observe(-120.);
+            scroll.honor_expanded(&state.collapsed);
+            for _ in 0..4 {
+                scroll.observe(-120.);
+            }
+            let visible = |state: &State, scroll: &ScrollSections| {
+                LEFT_SECTIONS.map(|s| {
+                    if s == Section::Projects {
+                        state.projects_collapsed
+                    } else {
+                        scroll.closed(s, &state.collapsed)
+                    }
+                })
+            };
+            assert_eq!(visible(&state, &scroll), expected, "mask {mask}");
+            state.all_sections(false);
+            scroll.honor_expanded(&state.collapsed);
+            for _ in 0..4 {
+                scroll.observe(-120.);
+            }
+            assert_eq!(visible(&state, &scroll), [false; 5]);
+            assert!(state.properties_collapsed);
+        }
+    }
+
+    #[test]
     fn state_recent_pins_sections_round_trip_atomically() {
         let directory =
             std::env::temp_dir().join(format!("tessera-sidebar-{}", uuid::Uuid::new_v4()));
@@ -549,6 +590,17 @@ impl ScrollSections {
         let changed = self.compact;
         *self = Self::default();
         changed
+    }
+
+    /// Explicit bulk choices override automatic folding at the current scroll
+    /// position. Returning to the top restores ordinary automatic behaviour.
+    pub fn honor_expanded(&mut self, saved: &BTreeSet<Section>) {
+        self.compact = true;
+        self.revealed = [Section::Recent, Section::Pinned, Section::Inbox]
+            .into_iter()
+            .filter(|section| !saved.contains(section))
+            .collect();
+        self.ignore_reflow = true;
     }
 
     pub fn reveal(&mut self, section: Section) {
