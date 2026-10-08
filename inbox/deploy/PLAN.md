@@ -31,7 +31,7 @@ This plan is not a claim that a hook or restore test has already been installed.
 
 ## Compose procedure
 
-Copy a reviewed source tree to `/opt/tessera-inbox/source` on CT119. From
+For initial installation only, copy a reviewed source tree to `/opt/tessera-inbox/source` on CT119. From
 `source/inbox/deploy`, run `sudo docker compose build` then `sudo docker compose up -d`.
 The init service creates private data/backups and four allowed fixture folders.
 Provision `/opt/tessera-inbox/secrets/cliproxy-key` as god (uid1000), mode0600,
@@ -55,3 +55,72 @@ service against the restored snapshot. Fixture files and DB must be restored tog
 Pending publication recovery retains its staging hard link to distinguish its own
 file from an unrelated equal-content collision. Do not discard hidden staging files
 while operations remain unconfirmed. They are cleaned after journalled publication.
+
+## Ordered restart and deployment (#729)
+
+For an **existing, enrolled CT119 deployment**, use `restart.py` instead of parallel
+`compose restart inbox ingress`. Ingress shares Inbox's network namespace: an old
+container can keep the old namespace even if local Inbox health is green. Initial
+installation/enrollment remains the procedure above; this tool requires one running
+Inbox and ingress and does not bootstrap an owner.
+
+Run the reviewed tool on CT119 with Docker access. It waits on a deployment lock;
+coordinate the maintenance window with the pilot owner. Do not run another Compose
+mutation alongside it. Never use `down -v`, remove data volumes, restart Syncthing,
+or touch `/srv/vault`.
+
+```sh
+# Read-only public readiness (creates only an anonymous, expiring login challenge).
+python3 inbox/deploy/restart.py --check
+# Same-image restart; ingress may already be running.
+sudo python3 inbox/deploy/restart.py
+# Deploy a reviewed, already-loaded image; mutable tags are resolved to local IDs.
+sudo python3 inbox/deploy/restart.py --image tessera-inbox-qa:reviewed
+# Same-image nginx configuration change, from a separate staged file.
+sudo python3 inbox/deploy/restart.py --nginx-config /path/to/reviewed-nginx.conf
+```
+
+Build/import the reviewed image before this procedure; the tool never pulls or
+builds. An image deploy changes the running application image, not the host source
+checkout. Compose topology, `.env`, credential references and database-schema
+migrations are outside this helper's scope: stage and review those separately,
+with an explicit backwards-compatible rollback plan. Do not overwrite the live
+Compose/nginx files before invoking the helper: it must see the previous config.
+
+Before mutation, the tool runs the existing online SQLite backup, copies the
+completed DB, saves both current Docker images, archives the host source, and
+saves nginx configuration into a new private
+`/opt/tessera-inbox/deployment-state/rollback-*/` directory. `.env`, secrets and
+build caches are excluded from the source archive; credential references remain
+in the original external configuration. Preserve these backups until acceptance.
+Snapshot failure stops before touching either service.
+
+The sequence is explicit: remove only the stateless ingress container, recreate
+Inbox with its existing durable volumes, wait for healthy, then recreate ingress.
+Readiness requires verified public HTTPS **HTTP 200 at `/`** and **HTTP 200 with a
+`publicKey.challenge` from `/api/v1/auth/login/start`**. Redirects, a root-only 200,
+and container-local health alone cannot pass. No challenge response/cookie is
+logged, and no owner login is completed or bypassed.
+
+On failure the tool restores the old nginx bytes and exact image IDs, repeats the
+same ordered procedure and checks public readiness again. The operation still
+exits nonzero after a successful rollback. `receipt.json` distinguishes
+`deployed_public_ready`, `rolled_back_public_ready`, and `rollback_failed`.
+**The DB and other durable volumes are never automatically restored from backup**:
+that could erase operations accepted after the snapshot. An incompatible schema
+or failed rollback needs explicit recovery using the retained backup and journal
+reconciliation; do not replay pending external operations.
+
+`active-image.json` is a Compose override outside the source tree. Subsequent
+restarts/deployments must use this helper so they retain the selected exact images.
+For manual recovery, include `-f compose.yml`, the existing `compose.override.yml`
+(if present), and `-f /opt/tessera-inbox/deployment-state/active-image.json` in that
+order. Never remove the active override merely to make a failing service start.
+If interrupted during deployment, retain the rollback directory; stop ingress,
+restore its saved nginx config and image selection, then run the ordered procedure.
+
+Deterministic tests run in Inbox CI. Live acceptance must additionally exercise a
+same-image restart and a config-only/image deployment on CT119, and deliberately
+break ingress to prove public readiness fails while Inbox health remains green.
+Record receipts and public status only; do not put DB contents, challenge bodies,
+cookies or credentials into evidence.
