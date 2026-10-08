@@ -87,6 +87,7 @@ fn catalog() -> Vec<Entry> {
         entry::<QuickOpen>("Quick open", Search),
         entry::<FullTextSearch>("Search note contents", Search),
         entry::<FindInNote>("Find in note", Search),
+        entry::<reader_log::FocusLogFilter>("Filter log", Search),
         entry::<RecentOlder>("Previous recent note", Navigation),
         entry::<RecentNewer>("Next recent note", Navigation),
         entry::<PaletteNext>("Next result", Search),
