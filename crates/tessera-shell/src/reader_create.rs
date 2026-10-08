@@ -1,5 +1,57 @@
 //! Inline, create-only Reader actions (#466).
 use super::*;
+use gpui_component::{notification::Notification, WindowExt};
+use std::{io::Read as _, os::unix::fs::MetadataExt as _};
+
+pub(super) struct CreatedUndo {
+    pub root: PathBuf,
+    pub relative: String,
+    source: Option<String>,
+    identity: (u64, u64),
+}
+
+impl CreatedUndo {
+    fn capture(root: &Path, relative: &str, source: Option<String>) -> anyhow::Result<Self> {
+        let root = root.canonicalize()?;
+        let metadata = std::fs::symlink_metadata(root.join(relative))?;
+        let item = Self {
+            root,
+            relative: relative.into(),
+            source,
+            identity: (metadata.dev(), metadata.ino()),
+        };
+        item.verify()?;
+        Ok(item)
+    }
+
+    pub(super) fn verify(&self) -> anyhow::Result<()> {
+        let path = self.root.join(&self.relative);
+        let metadata = std::fs::symlink_metadata(&path)?;
+        anyhow::ensure!(
+            (metadata.dev(), metadata.ino()) == self.identity && !metadata.file_type().is_symlink(),
+            "This item was replaced; it was kept"
+        );
+        if let Some(source) = &self.source {
+            anyhow::ensure!(metadata.is_file(), "This item changed; it was kept");
+            let mut bytes = Vec::new();
+            std::fs::File::open(path)?
+                .take(source.len() as u64 + 1)
+                .read_to_end(&mut bytes)?;
+            anyhow::ensure!(
+                bytes == source.as_bytes(),
+                "This note changed after creation; it was kept"
+            );
+        } else {
+            anyhow::ensure!(metadata.is_dir(), "This item changed; it was kept");
+            anyhow::ensure!(
+                std::fs::read_dir(path)?.next().is_none(),
+                "This folder is no longer empty; it was kept"
+            );
+        }
+        Ok(())
+    }
+}
+struct CreationToast;
 
 pub(super) struct Creation {
     root: PathBuf,
@@ -13,6 +65,115 @@ pub(super) struct Creation {
 }
 
 impl Reader {
+    pub(super) fn invalidate_creation_undo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.creation_undo = None;
+        window.remove_notification::<CreationToast>(cx);
+    }
+
+    fn announce_creation(
+        &mut self,
+        relative: &str,
+        source: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let title = if source.is_some() {
+            reader_move::display_name(relative)
+        } else {
+            Path::new(relative)
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned()
+        };
+        let Ok(item) = CreatedUndo::capture(&self.vault_root, relative, source) else {
+            self.invalidate_creation_undo(window, cx);
+            reader_toast::transient(format!("Created {title} — Undo unavailable"), window, cx);
+            return;
+        };
+        let item = Arc::new(item);
+        self.creation_undo = Some(item.clone());
+        let reader = cx.weak_entity();
+        let announced = item.clone();
+        window.push_notification(
+            Notification::new()
+                .id::<CreationToast>()
+                .message(format!("Created {title}"))
+                .placement(Anchor::BottomRight)
+                .py_2()
+                .autohide(false)
+                .action(move |_, _, cx| {
+                    let reader = reader.clone();
+                    let announced = announced.clone();
+                    reader_icon_button(
+                        "undo-create",
+                        IconName::Undo2,
+                        if cfg!(target_os = "macos") {
+                            "Undo (⌘Z)"
+                        } else {
+                            "Undo (Ctrl+Z)"
+                        },
+                        cx,
+                    )
+                    .debug_selector(|| "undo-create".into())
+                    .on_click(move |_, window, cx| {
+                        let _ = reader.update(cx, |this, cx| {
+                            this.undo_creation(Some(&announced), window, cx)
+                        });
+                    })
+                }),
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(Duration::from_secs(8)).await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this
+                    .creation_undo
+                    .as_ref()
+                    .is_some_and(|current| Arc::ptr_eq(current, &item))
+                {
+                    window.remove_notification::<CreationToast>(cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub(super) fn undo_creation(
+        &mut self,
+        announced: Option<&Arc<CreatedUndo>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(item) = self.creation_undo.clone() else {
+            return;
+        };
+        if announced.is_some_and(|old| !Arc::ptr_eq(old, &item)) {
+            return;
+        }
+        if self.creation.is_some()
+            || self.renaming.is_some()
+            || self.trash_pending
+            || self.note_move_pending
+        {
+            return;
+        }
+        let error = if self.vault_root != item.root {
+            Some("Open the original vault to undo creation".to_owned())
+        } else if self.source_is_dirty(cx) {
+            Some("Finish editing before undoing creation; your note was kept".to_owned())
+        } else {
+            item.verify()
+                .err()
+                .map(|error| format!("Cannot undo creation: {error}"))
+        };
+        window.remove_notification::<CreationToast>(cx);
+        if let Some(error) = error {
+            reader_toast::transient(error, window, cx);
+            return;
+        }
+        self.delete_created_path(item, window, cx);
+    }
     pub(super) fn creation_templates(
         &self,
     ) -> anyhow::Result<tessera_core::note_templates::Catalog> {
@@ -264,11 +425,7 @@ impl Reader {
                     cx,
                 );
                 self.toggle_source(window, cx);
-                reader_toast::transient(
-                    format!("Created {}", super::reader_move::display_name(&created)),
-                    window,
-                    cx,
-                );
+                self.announce_creation(&created, Some(source), window, cx);
                 self.queue_vault_mutation(
                     tessera_core::Changes {
                         changed: std::collections::BTreeSet::from([created]),
@@ -283,17 +440,7 @@ impl Reader {
                 self.tree
                     .entry_created(&rel, tessera_core::vault::EntryKind::Directory);
                 self.reveal_in_tree(&rel, window, cx);
-                reader_toast::transient(
-                    format!(
-                        "Created {}",
-                        Path::new(&rel)
-                            .file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                    ),
-                    window,
-                    cx,
-                );
+                self.announce_creation(&rel, None, window, cx);
                 self.queue_vault_mutation(
                     tessera_core::Changes {
                         directories: std::collections::BTreeSet::from([rel]),
@@ -317,7 +464,336 @@ impl Reader {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
-    use gpui_component::WindowExt as _;
+    #[test]
+    fn creation_undo_guard_preserves_changed_replaced_and_nonempty_items() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let path = root.join("Created.md");
+        std::fs::write(&path, "# Created\n").unwrap();
+        let note = CreatedUndo::capture(root, "Created.md", Some("# Created\n".into())).unwrap();
+        assert!(note.verify().is_ok());
+        std::fs::write(&path, "user content").unwrap();
+        assert!(note.verify().is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "user content");
+        std::fs::rename(&path, root.join("Original.md")).unwrap();
+        std::fs::write(&path, "# Created\n").unwrap();
+        assert!(
+            note.verify().is_err(),
+            "same bytes do not authorize a replacement inode"
+        );
+        std::fs::create_dir(root.join("Folder")).unwrap();
+        let folder = CreatedUndo::capture(root, "Folder", None).unwrap();
+        assert!(folder.verify().is_ok());
+        std::fs::write(root.join("Folder/Keep.md"), "keep").unwrap();
+        assert!(folder.verify().is_err());
+        assert!(root.join("Folder/Keep.md").exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn creation_undo_keyboard_and_toast_keep_generated_content_recoverable(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            // Exercise hit testing at settled toast geometry, not animation timing.
+            cx.set_reduce_motion(true);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("Start.md"), "# Start").unwrap();
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("Start.md".into()),
+                        index_dir: Some(temp.path().join("cache")),
+                        session_directory: Some(temp.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        visual.simulate_resize(size(px(1200.), px(860.)));
+        visual.run_until_parked();
+        for directory in [false, true] {
+            let relative = if directory {
+                "Parent/Empty"
+            } else {
+                "Created.md"
+            };
+            reader.update_in(visual, |r, window, cx| {
+                r.begin_create(Some(""), directory, window, cx);
+                r.creation
+                    .as_ref()
+                    .unwrap()
+                    .input
+                    .clone()
+                    .update(cx, |input, cx| {
+                        input.set_value(
+                            if directory { "Parent/Empty" } else { "Created" },
+                            window,
+                            cx,
+                        );
+                    });
+                r.commit_creation(window, cx);
+            });
+            visual.run_until_parked();
+            assert!(
+                root.join(relative).exists(),
+                "positive control: creation succeeded"
+            );
+            let bytes = (!directory).then(|| std::fs::read(root.join(relative)).unwrap());
+            if !directory {
+                visual.simulate_input("temporary text");
+                visual.run_until_parked();
+                reader.read_with(visual, |r, cx| assert!(r.source_is_dirty(cx)));
+                visual.simulate_keystrokes("ctrl-z");
+                visual.run_until_parked();
+                reader.read_with(visual, |r, cx| {
+                    assert_eq!(
+                        r.editing
+                            .as_ref()
+                            .unwrap()
+                            .test_input()
+                            .read(cx)
+                            .value()
+                            .as_ref(),
+                        std::str::from_utf8(bytes.as_ref().unwrap()).unwrap()
+                    );
+                    assert!(
+                        r.creation_undo.is_some(),
+                        "Source Undo must not undo creation"
+                    );
+                    assert!(!r.trash_pending);
+                });
+                assert!(root.join(relative).exists());
+            }
+            // Toast stack geometry animates after the previous Undo feedback.
+            visual.executor().advance_clock(Duration::from_secs(1));
+            visual.run_until_parked();
+            let undo = visual
+                .debug_bounds("undo-create")
+                .expect("creation toast offers Undo");
+            if directory {
+                visual.simulate_click(undo.center(), Modifiers::default());
+            } else {
+                reader.update_in(visual, |r, window, cx| {
+                    let input = r.editing.as_ref().unwrap().test_input();
+                    input.update(cx, |input, cx| input.set_value("Unsaved work", window, cx));
+                    assert!(r.source_is_dirty(cx));
+                    r.undo_creation(None, window, cx);
+                    assert!(
+                        root.join(relative).exists(),
+                        "dirty Source must survive Undo"
+                    );
+                    assert!(r.creation_undo.is_some());
+                    let original = std::str::from_utf8(bytes.as_ref().unwrap()).unwrap();
+                    input.update(cx, |input, cx| input.set_value(original, window, cx));
+                    r.tree_focus.focus(window, cx);
+                });
+                visual.run_until_parked();
+                visual.simulate_keystrokes("ctrl-z");
+            }
+            visual.run_until_parked();
+            reader.read_with(visual, |r, cx| {
+                assert!(r.creation_undo.is_none(),
+                    "Undo dispatched for {relative}: pending={}, dirty={}, loading={}, bounds={undo:?}",
+                    r.trash_pending, r.source_is_dirty(cx),
+                    r.loading.as_ref().is_some_and(|l| l.active));
+            });
+            assert!(
+                !root.join(relative).exists(),
+                "creation Undo removes the target: {relative}"
+            );
+            if directory {
+                assert!(root.join("Parent").is_dir(), "ancestors are not removed");
+            }
+            reader.update_in(visual, |r, window, cx| r.undo_last_trash(window, cx));
+            visual.run_until_parked();
+            assert!(
+                root.join(relative).exists(),
+                "system Trash remains recoverable"
+            );
+            if let Some(bytes) = bytes {
+                assert_eq!(std::fs::read(root.join(relative)).unwrap(), bytes);
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn creation_undo_is_scoped_to_its_toast_vault_and_tree(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_reduce_motion(true);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        let other = temp.path().join("other");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(other.join("Second")).unwrap();
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        index_dir: Some(temp.path().join("cache")),
+                        session_directory: Some(temp.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        visual.simulate_resize(size(px(1200.), px(860.)));
+        visual.run_until_parked();
+        let old = reader.update_in(visual, |r, window, cx| {
+            r.new_folder(Some(""), window, cx);
+            r.creation
+                .as_ref()
+                .unwrap()
+                .input
+                .clone()
+                .update(cx, |input, cx| {
+                    input.set_value("First", window, cx);
+                });
+            r.commit_creation(window, cx);
+            r.creation_undo.clone().unwrap()
+        });
+        visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_secs(7));
+        visual.run_until_parked();
+        let latest = reader.update_in(visual, |r, window, cx| {
+            r.new_folder(Some(""), window, cx);
+            r.creation
+                .as_ref()
+                .unwrap()
+                .input
+                .clone()
+                .update(cx, |input, cx| {
+                    input.set_value("Second", window, cx);
+                });
+            r.commit_creation(window, cx);
+            r.creation_undo.clone().unwrap()
+        });
+        visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_secs(1));
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds("undo-create").is_some(),
+            "old timer cannot dismiss a new toast"
+        );
+        reader.update_in(visual, |r, window, cx| {
+            r.undo_creation(Some(&old), window, cx);
+            assert!(Arc::ptr_eq(r.creation_undo.as_ref().unwrap(), &latest));
+            assert!(
+                !r.trash_pending,
+                "stale callback cannot act on latest creation"
+            );
+        });
+        assert!(root.join("First").exists());
+        assert!(root.join("Second").exists());
+        visual.executor().advance_clock(Duration::from_secs(7));
+        visual.run_until_parked();
+        // The lifetime initiates dismissal; allow the notification exit phase
+        // to unmount its action before checking rendered bounds.
+        visual.executor().advance_clock(Duration::from_secs(1));
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds("undo-create").is_none(),
+            "toast disappears after its eight-second lifetime and exit phase"
+        );
+        reader.update_in(visual, |r, window, cx| {
+            assert!(
+                r.creation_undo.is_some(),
+                "keyboard Undo survives toast expiry"
+            );
+            r.new_note(Some(""), window, cx);
+        });
+        visual.run_until_parked();
+        visual.simulate_input("Scratch");
+        visual.run_until_parked();
+        reader.read_with(visual, |r, cx| {
+            assert_eq!(
+                r.creation.as_ref().unwrap().input.read(cx).value().as_ref(),
+                "Scratch"
+            );
+        });
+        visual.simulate_keystrokes("ctrl-z");
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            assert!(
+                r.creation
+                    .as_ref()
+                    .unwrap()
+                    .input
+                    .read(cx)
+                    .value()
+                    .is_empty(),
+                "inline field keeps text Undo"
+            );
+            assert!(r.creation_undo.is_some());
+            assert!(!r.trash_pending);
+            r.cancel_creation(window, cx);
+            r.vault_root = other.clone();
+            r.undo_creation(Some(&latest), window, cx);
+            assert!(
+                !r.trash_pending,
+                "foreign vault callback must not begin deletion"
+            );
+            r.vault_root = root.clone();
+            r.tree_focus.focus(window, cx);
+        });
+        assert!(other.join("Second").exists());
+        assert!(root.join("Second").exists());
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            assert!(
+                r.tree_focus.contains_focused(window, cx),
+                "tree must own keyboard focus"
+            );
+            assert!(r.creation_undo.is_some());
+            assert!(!r.source_is_dirty(cx));
+            assert!(!r.loading.as_ref().is_some_and(|l| l.active));
+        });
+        visual.simulate_keystrokes("ctrl-z");
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert!(
+                r.creation_undo.is_none(),
+                "tree keyboard Undo must reach the handler"
+            );
+        });
+        assert!(
+            !root.join("Second").exists(),
+            "expired toast still supports tree Undo"
+        );
+        assert!(root.join("First").exists());
+        assert!(other.join("Second").exists());
+        reader.update_in(visual, |r, window, cx| r.undo_last_trash(window, cx));
+        visual.run_until_parked();
+        assert!(
+            root.join("Second").exists(),
+            "clean up recoverable Trash fixture"
+        );
+    }
+
     #[gpui::test]
     fn creation_prefers_tree_selection_then_open_note(cx: &mut TestAppContext) {
         cx.update(|cx| {

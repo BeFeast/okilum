@@ -141,6 +141,7 @@ impl Reader {
             return;
         };
         let reader = cx.weak_entity();
+        self.invalidate_creation_undo(window, cx);
         self.move_notice_generation = self.move_notice_generation.wrapping_add(1);
         let generation = self.move_notice_generation;
         window.push_notification(
