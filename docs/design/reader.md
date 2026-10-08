@@ -687,3 +687,20 @@ The folder tree is unchanged. The future Views slot is absent while no saved vie
 exists; this slice adds neither service views nor a placeholder heading. Linux
 light/dark before/after are captured by the QA sub-session after merge, per the
 owner's delivery instruction for this slice.
+
+### Bulk sidebar folding (#712)
+
+The sidebar header's Folders-only glyph hides the four upper sections and opens
+Folders; a second click restores their previous state. The restore snapshot is
+per-vault and survives restart. Manual section changes invalidate the snapshot.
+Alt-click (Option-click on macOS) on a section header applies its next toggle to
+all five left sections; Properties in the right panel stays independent.
+
+Primary+Shift+Left always selects Folders-only; Primary+Shift+Right expands all
+left sections. Both appear in More. Reveal in sidebar keeps its glyph/menu and
+no longer uses Primary+Shift+Left. Collapse all folders is always visible in the
+Folders header and collapses tree nodes without collapsing the section itself.
+No note files change. The executor landing #663 adds the two shortcut catalog entries afterwards;
+#712 has no dependency on the shortcut sheet. Local Linux X11 light/dark
+before/after accompanies the PR; the QA sub-session checks the released build
+and strict UX on muninn after merge.
