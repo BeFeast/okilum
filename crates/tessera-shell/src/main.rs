@@ -3457,7 +3457,9 @@ impl Reader {
                             "sidebar-folders-only",
                             Icon::default().path(brand::READER_COLLAPSE_ICON),
                             reader_shortcuts::hint(
-                                "Folders only / Restore sections", &CollapseSidebarSections, cx,
+                                "Folders only / Restore sections",
+                                &CollapseSidebarSections,
+                                cx,
                             ),
                             cx,
                         )
@@ -3482,7 +3484,9 @@ impl Reader {
                             .focus(|s| s.bg(brand::reader_palette(cx).hover))
                             .tooltip(|window, cx| {
                                 gpui_component::tooltip::Tooltip::new(reader_shortcuts::hint(
-                                    "Search notes", &QuickOpen, cx,
+                                    "Search notes",
+                                    &QuickOpen,
+                                    cx,
                                 ))
                                 .build(window, cx)
                             })
@@ -3490,7 +3494,7 @@ impl Reader {
                             .when(width >= SEARCH_HINT_MIN_PANEL_WIDTH, |button| {
                                 button.child(
                                     div()
-                                        .text_size(px(11.))
+                                        .text_size(px(12.))
                                         .children(reader_shortcuts::shortcut(&QuickOpen, cx))
                                         .debug_selector(|| "sidebar-search-shortcut".into()),
                                 )
