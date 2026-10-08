@@ -35,3 +35,16 @@ fallback, Source/preview round trip, section order and grouping, midnight query
 refresh, stale displayed evidence, source navigation and collapsed occurrences.
 Capture the same Linux fixture before/after in light and dark; check all ten UI
 rules. Published-beta native QA remains with the dedicated muninn session.
+
+## Native navigation and dates
+
+Incoming heading links land on the unique matching native section in display
+order. Missing or duplicate section labels show a notice with the Source escape
+rather than scrolling a hidden Markdown surface. The Contents list retains
+source identities even when layout reorders sections.
+
+The reschedule popover combines quick due/scheduled actions with the shared
+calendar for arbitrary due dates. Its subscription captures the displayed task,
+index and vault when opened; selecting a date never refreshes that evidence.
+Calendar month/year navigation leaves the popover open; choosing a day dismisses
+it and uses the same worker/save/Undo path as quick actions.

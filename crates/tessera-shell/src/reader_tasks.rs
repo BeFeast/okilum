@@ -948,6 +948,7 @@ impl RenderOnce for TasksList {
                                     menu.separator().label("Choose due date").item(
                                         PopupMenuItem::element(move |_, _| {
                                             div()
+                                                .id("task-due-calendar")
                                                 .on_click(|_, _, cx| cx.stop_propagation())
                                                 .child(Calendar::new(&calendar))
                                         }),

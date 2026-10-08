@@ -392,6 +392,20 @@ mod tests {
                 std::fs::read_to_string(vault.join("Work.md")).unwrap(),
                 "- [ ] Ship dashboard\n"
             );
+            view.update_in(visual, |v, window, cx| {
+                v.apply_task_change(
+                    index.clone(),
+                    task.clone(),
+                    tessera_core::task_edit::Change::Due(time::macros::date!(2027 - 02 - 17)),
+                    window,
+                    cx,
+                );
+            });
+            visual.run_until_parked();
+            assert_eq!(
+                std::fs::read_to_string(vault.join("Work.md")).unwrap(),
+                "- [ ] Ship dashboard 📅 2027-02-17\n"
+            );
             std::fs::write(vault.join("Work.md"), "New prose\n\n- [ ] Ship dashboard\n").unwrap();
             view.update_in(visual, |v, window, cx| {
                 v.apply_task_change(
