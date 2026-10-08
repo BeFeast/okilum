@@ -494,6 +494,40 @@ impl Reader {
                                             .with_highlights(highlights),
                                     ),
                             )
+                            .when_some(
+                                snippet.hidden_match.as_ref(),
+                                |row, reason| {
+                                    let highlights = reason
+                                        .highlights
+                                        .iter()
+                                        .filter_map(|r| {
+                                            text_ranges::safe_highlight(&reason.text, r.clone())
+                                        })
+                                        .map(|r| {
+                                            (
+                                                r,
+                                                HighlightStyle {
+                                                    background_color: Some(mark),
+                                                    color: Some(text),
+                                                    font_weight: Some(FontWeight::SEMIBOLD),
+                                                    ..Default::default()
+                                                },
+                                            )
+                                        })
+                                        .collect::<Vec<_>>();
+                                    row.child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .text_color(muted)
+                                            .overflow_hidden()
+                                            .line_clamp(1)
+                                            .child(
+                                                StyledText::new(reason.text.clone())
+                                                    .with_highlights(highlights),
+                                            ),
+                                    )
+                                },
+                            )
                         })
                 })
                 .collect::<Vec<_>>()

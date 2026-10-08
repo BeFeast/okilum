@@ -25,6 +25,92 @@ pub struct PlainSnippet {
     pub text: String,
     /// Sorted, non-overlapping, non-empty, on char boundaries of `text`.
     pub highlights: Vec<Range<usize>>,
+    /// One secondary reason line, only for matches in hidden link destinations.
+    pub hidden_match: Option<MatchContext>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MatchContext {
+    pub text: String,
+    pub highlights: Vec<Range<usize>>,
+}
+
+#[derive(Clone)]
+struct HiddenDestination {
+    range: Range<usize>,
+    url: bool,
+}
+
+fn hidden_context(
+    raw: &str,
+    marks: &[Range<usize>],
+    destinations: &[HiddenDestination],
+) -> Option<MatchContext> {
+    let mut result = MatchContext::default();
+    for destination in destinations {
+        let span = &destination.range;
+        let hits: Vec<_> = marks
+            .iter()
+            .filter(|m| m.start < span.end && m.end > span.start)
+            .collect();
+        if hits.is_empty() {
+            continue;
+        }
+        if !result.text.is_empty() {
+            result.text.push_str(" · ");
+        }
+        result.text.push_str(if destination.url {
+            "Link URL: "
+        } else {
+            "Link target: "
+        });
+        let source = &raw[span.clone()];
+        let end = source.find(['#', '^']).unwrap_or(source.len());
+        let extension = (!destination.url && source[..end].ends_with(".md"))
+            .then_some(end.saturating_sub(3)..end);
+        // Keep long URLs bounded around the first matching character; byte
+        // positions are still mapped from the exact unescaped source fragment.
+        let chars: Vec<_> = source.char_indices().collect();
+        let first = chars
+            .iter()
+            .position(|(i, c)| span.start + i + c.len_utf8() > hits[0].start)
+            .unwrap_or(0);
+        let from = if destination.url {
+            first.saturating_sub(32)
+        } else {
+            0
+        };
+        let to = if destination.url {
+            (from + 120).min(chars.len())
+        } else {
+            chars.len()
+        };
+        if from > 0 {
+            result.text.push('…');
+        }
+        for &(i, c) in &chars[from..to] {
+            if extension.as_ref().is_some_and(|r| r.contains(&i)) {
+                continue;
+            }
+            let start = result.text.len();
+            result.text.push(if c.is_whitespace() { ' ' } else { c });
+            if hits
+                .iter()
+                .any(|m| m.start < span.start + i + c.len_utf8() && m.end > span.start + i)
+            {
+                let end = result.text.len();
+                if let Some(last) = result.highlights.last_mut().filter(|r| r.end == start) {
+                    last.end = end;
+                } else {
+                    result.highlights.push(start..end);
+                }
+            }
+        }
+        if to < chars.len() {
+            result.text.push('…');
+        }
+    }
+    (!result.text.is_empty()).then_some(result)
 }
 
 /// Snippet HTML (`<b>` marks, escaped text) to a plain-text snippet.
@@ -32,6 +118,7 @@ pub fn plain_snippet(html: &str) -> PlainSnippet {
     let (raw, marks) = parse_marked(html);
     let stripped = strip(&raw);
     let mut highlights: Vec<Range<usize>> = Vec::new();
+    let hidden_match = hidden_context(&raw, &marks, &stripped.hidden);
     for mark in marks {
         let range = stripped.map(mark);
         if range.is_empty() {
@@ -48,6 +135,7 @@ pub fn plain_snippet(html: &str) -> PlainSnippet {
     PlainSnippet {
         text: stripped.text,
         highlights,
+        hidden_match,
     }
 }
 
@@ -89,6 +177,7 @@ fn parse_marked(html: &str) -> (String, Vec<Range<usize>>) {
 /// Stripped text plus, for every source byte offset (and the end), where a
 /// range starting or ending there lands in `text`.
 struct Stripped {
+    hidden: Vec<HiddenDestination>,
     text: String,
     start: Vec<usize>,
     end: Vec<usize>,
@@ -112,6 +201,7 @@ impl Stripped {
 }
 
 struct Stripper<'a> {
+    hidden: Vec<HiddenDestination>,
     src: &'a str,
     out: String,
     start: Vec<usize>,
@@ -123,6 +213,7 @@ struct Stripper<'a> {
 impl<'a> Stripper<'a> {
     fn new(src: &'a str) -> Self {
         Self {
+            hidden: Vec::new(),
             src,
             out: String::with_capacity(src.len()),
             start: vec![0; src.len() + 1],
@@ -225,6 +316,7 @@ fn strip(src: &str) -> Stripped {
         *v = (*v).min(end);
     }
     Stripped {
+        hidden: s.hidden,
         text: s.out,
         start: s.start,
         end: s.end,
@@ -370,6 +462,12 @@ fn wikilink(s: &mut Stripper, i: usize, to: usize) -> usize {
         j = s.copy(j);
     }
     let shown = shown_start..s.out.len();
+    if inner.contains('|') {
+        s.hidden.push(HiddenDestination {
+            range: hidden.start..hidden.end - 1,
+            url: false,
+        });
+    }
     s.hide(hidden.start, hidden.end, shown);
     let end = if found.is_some() { close + 2 } else { close };
     s.skip(close, end);
@@ -391,6 +489,10 @@ fn markdown_link(s: &mut Stripper, i: usize, to: usize) -> usize {
     let shown_start = s.out.len();
     inline(s, i + 1, mid);
     let shown = shown_start..s.out.len();
+    s.hidden.push(HiddenDestination {
+        range: mid + 2..close,
+        url: true,
+    });
     s.hide(mid, close + 1, shown);
     close + 1
 }
@@ -590,5 +692,49 @@ mod tests {
     #[test]
     fn adjacent_matches_merge() {
         check("[[<b>a</b>|x]][[<b>b</b>|x]]", "xx", &["xx"]);
+    }
+    #[test]
+    fn hidden_destinations_explain_only_actual_hidden_matches() {
+        let snippet = plain_snippet("см. [[Inbox|зебрамарс]] и [[<b>зебравенера</b>.md|текст]]");
+        assert_eq!(&snippet.text[snippet.highlights[0].clone()], "текст");
+        let reason = snippet.hidden_match.unwrap();
+        assert_eq!(reason.text, "Link target: зебравенера");
+        assert_eq!(&reason.text[reason.highlights[0].clone()], "зебравенера");
+        for input in [
+            "[[target|<b>alias</b>]]",
+            "<b>ordinary</b> text",
+            "[[<b>visible</b>]]",
+        ] {
+            assert!(plain_snippet(input).hidden_match.is_none(), "{input}");
+        }
+    }
+
+    #[test]
+    fn hidden_context_handles_entities_multiple_links_and_truncation() {
+        let snippet =
+            plain_snippet("[[<b>one</b>|alias]] [label](https://x.test/<b>שלום</b>?q=a&amp;b=c)");
+        let reason = snippet.hidden_match.unwrap();
+        assert_eq!(
+            reason.text,
+            "Link target: one · Link URL: https://x.test/שלום?q=a&b=c"
+        );
+        let hits: Vec<_> = reason
+            .highlights
+            .iter()
+            .map(|r| &reason.text[r.clone()])
+            .collect();
+        assert_eq!(hits, ["one", "שלום"]);
+        let reason = plain_snippet("[[<b>target</b>|alias").hidden_match.unwrap();
+        assert_eq!(reason.text, "Link target: target");
+        let long = format!(
+            "[label](https://x.test/{}<b>שלום</b>{})",
+            "я".repeat(150),
+            "z".repeat(150)
+        );
+        let reason = plain_snippet(&long).hidden_match.unwrap();
+        assert!(reason.text.starts_with("Link URL: …"));
+        assert!(reason.text.ends_with('…'));
+        assert_eq!(&reason.text[reason.highlights[0].clone()], "שלום");
+        assert!(reason.text.chars().count() < 140);
     }
 }
