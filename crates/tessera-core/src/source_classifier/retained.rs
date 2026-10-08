@@ -153,12 +153,143 @@ impl RetainedPresentation {
         Ok(reveal)
     }
 
-    /// Retain only a proven local inline edit. Structural edits require a fresh
-    /// background classification: reference definitions/fences can affect suffixes.
-    /// Unproven edited syntax is Source; other blocks keep exact mapped spans.
-    /// Plain text outside syntax fragments preserves the edited block as well.
+    /// Map proven inline edits, or classify a bounded structural edit inside
+    /// one accepted block. Nonlocal contexts still require fresh classification.
     /// Repeated edits map from the last retained revision, not the original parse.
     pub fn remap(&self, current: &Snapshot) -> Option<Self> {
+        self.remap_inline(current)
+            .or_else(|| self.reclassify_local_block(current))
+    }
+
+    /// S3a's bounded first slice: structural edits inside one already accepted
+    /// top-level block. Unknown/global syntax remains a conservative fallback.
+    fn reclassify_local_block(&self, current: &Snapshot) -> Option<Self> {
+        const LOCAL_BYTES: usize = 4096;
+        if self.snapshot.document() != current.document()
+            || current.generation() <= self.snapshot.generation()
+            || current.source().len() > MAX_BYTES
+        {
+            return None;
+        }
+        let old = self.snapshot.source();
+        let new = current.source();
+        let mut start = old
+            .bytes()
+            .zip(new.bytes())
+            .take_while(|(a, b)| a == b)
+            .count();
+        while !old.is_char_boundary(start) || !new.is_char_boundary(start) {
+            start -= 1;
+        }
+        let mut tail = old[start..]
+            .bytes()
+            .rev()
+            .zip(new[start..].bytes().rev())
+            .take_while(|(a, b)| a == b)
+            .count();
+        while !old.is_char_boundary(old.len() - tail) || !new.is_char_boundary(new.len() - tail) {
+            tail -= 1;
+        }
+        let end = old.len() - tail;
+        let new_end = new.len() - tail;
+        let dirty = self.plan.regions().iter().find_map(|r| match r {
+            Region::Conceal { block, .. } if block.start <= start && end <= block.end => {
+                Some(block.clone())
+            }
+            _ => None,
+        })?;
+        let shift = |offset: usize| offset.checked_add(new_end)?.checked_sub(end);
+        let updated = dirty.start..shift(dirty.end)?;
+        let fragment = new.get(updated.clone())?;
+        // Bound parser input before entering Comrak, not after a long parse.
+        // Fences/HTML/definitions can change nonlocal parsing. Indented blocks
+        // can attach to surrounding containers; do not infer their context.
+        if dirty.len() > LOCAL_BYTES
+            || fragment.len() > LOCAL_BYTES
+            || fragment.contains('\0')
+            || fragment.lines().any(|line| {
+                let plain = line.trim_start();
+                line.len() - plain.len() >= 4
+                    || line.starts_with('\t')
+                    || plain.starts_with(['`', '~', '<', '[', '>'])
+            })
+        {
+            return None;
+        }
+        if updated.start == 0 && fragment.trim_start_matches('\u{feff}').starts_with("---") {
+            return None;
+        }
+        let local = Snapshot::new(current.document(), current.generation(), fragment);
+        let classified = super::classify(&local);
+        let offset = |r: &Range<usize>| updated.start + r.start..updated.start + r.end;
+        let map = |r: &Range<usize>| -> Option<Range<usize>> {
+            if r.end <= dirty.start {
+                Some(r.clone())
+            } else if r.start >= dirty.end {
+                Some(shift(r.start)?..shift(r.end)?)
+            } else {
+                None
+            }
+        };
+        let mut regions = Vec::new();
+        for region in self.plan.regions() {
+            if region.block() == &dirty {
+                regions.extend(classified.plan.regions().iter().map(|r| match r {
+                    Region::Source(r) => Region::Source(offset(r)),
+                    Region::Conceal { block, markers } => Region::Conceal {
+                        block: offset(block),
+                        markers: markers.iter().map(offset).collect(),
+                    },
+                }));
+            } else {
+                regions.push(match region {
+                    Region::Source(r) => Region::Source(map(r)?),
+                    Region::Conceal { block, markers } => Region::Conceal {
+                        block: map(block)?,
+                        markers: markers.iter().map(map).collect::<Option<Vec<_>>>()?,
+                    },
+                });
+            }
+        }
+        let mut styles: Vec<_> = self
+            .styles
+            .iter()
+            .filter_map(|s| {
+                Some(StyleSpan {
+                    range: map(&s.range)?,
+                    style: s.style,
+                })
+            })
+            .collect();
+        styles.extend(classified.styles.iter().map(|s| StyleSpan {
+            range: offset(&s.range),
+            style: s.style,
+        }));
+        styles.sort_by_key(|s| s.range.start);
+        let mut marker_scopes: Vec<_> = self
+            .marker_scopes
+            .iter()
+            .filter_map(|(m, s)| Some((map(m)?, map(s)?)))
+            .collect();
+        marker_scopes.extend(
+            classified
+                .marker_scopes
+                .iter()
+                .map(|(m, s)| (offset(m), offset(s))),
+        );
+        marker_scopes.sort_by_key(|(m, _)| m.start);
+        let plan = Plan::new(current, regions);
+        let base = crate::source_projection::project(current, &plan, &Active::default()).ok()?;
+        Some(Self {
+            snapshot: current.clone(),
+            base: Ok(Arc::new(base)),
+            plan,
+            styles,
+            marker_scopes,
+        })
+    }
+
+    fn remap_inline(&self, current: &Snapshot) -> Option<Self> {
         if self.snapshot.document() != current.document()
             || current.generation() < self.snapshot.generation()
             || current.source().len() > MAX_BYTES
@@ -377,6 +508,61 @@ mod tests {
     fn snapshot(generation: u64, text: &str) -> Snapshot {
         Snapshot::new("note", generation, text)
     }
+    #[test]
+    fn structural_edit_in_one_block_matches_fresh_classification() {
+        for (before, after) in [
+            ("plain text", "plain\ntext"),
+            ("plain text", "plain\n\ntext"),
+            ("plain\ntext", "plaintext"),
+            ("plain text", "# plain text"),
+            ("plain text", "- plain text"),
+            ("plain text", "plain\nnew pasted paragraph\ntext"),
+            ("plain שלום text", "plain שלום\r\ntext"),
+        ] {
+            let old = snapshot(
+                1,
+                &format!("**BEFORE**\n\n{before}\n\n**AFTER** [label](destination)"),
+            );
+            let current = snapshot(
+                2,
+                &format!("**BEFORE**\n\n{after}\n\n**AFTER** [label](destination)"),
+            );
+            let retained = RetainedPresentation::new(&classify(&old))
+                .remap(&current)
+                .unwrap();
+            let actual = retained.project(&Active::default()).unwrap();
+            let fresh = RetainedPresentation::new(&classify(&current))
+                .project(&Active::default())
+                .unwrap();
+            assert_eq!(actual.display(), fresh.display(), "{after:?}");
+            assert!(actual.display().starts_with("BEFORE\n"));
+            assert!(actual.display().ends_with("AFTER label"));
+            assert_eq!(
+                current.copy_source(0..current.source().len()).unwrap(),
+                current.source()
+            );
+        }
+    }
+
+    #[test]
+    fn structural_local_parse_refuses_global_context_and_oversized_input() {
+        let old = snapshot(1, "plain text\n\n**AFTER**");
+        for new in [
+            "---\nplain text\n\n**AFTER**",
+            "plain\n```\ntext\n\n**AFTER**",
+            "plain\n[id]: destination\ntext\n\n**AFTER**",
+            "plain\n<div>\ntext\n\n**AFTER**",
+        ] {
+            assert!(RetainedPresentation::new(&classify(&old))
+                .remap(&snapshot(2, new))
+                .is_none());
+        }
+        let new = format!("plain\n{}\n\n**AFTER**", "x".repeat(4097));
+        assert!(RetainedPresentation::new(&classify(&old))
+            .remap(&snapshot(2, &new))
+            .is_none());
+    }
+
     #[test]
     fn unchanged_fragments_reuse_projection_but_validate_each_active_range() {
         let source = snapshot(1, "plain e\u{301} text [label](destination)");
