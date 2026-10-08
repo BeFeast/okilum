@@ -950,7 +950,7 @@ impl RenderOnce for TasksList {
                                             div()
                                                 .id("task-due-calendar")
                                                 .on_click(|_, _, cx| cx.stop_propagation())
-                                                .child(Calendar::new(&calendar))
+                                                .child(Calendar::new(&calendar).border_0())
                                         }),
                                     )
                                 }),
