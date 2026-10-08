@@ -92,14 +92,14 @@ mod reader_tree;
 mod reader_tree_preview;
 mod reader_typed_view;
 mod reader_ui_state;
+mod search_label;
 #[cfg(any(unix, windows))]
 mod source_presentation;
 mod text_ranges;
 mod theme_picker;
 mod updater;
-// Run the actual vendor geometry regressions in shell CI: gpui-base is not a
-// workspace member, so Cargo cannot run its dev-dependency tests from this root.
-#[cfg(test)]
+// Search labels reuse the editor's glyph-cluster selection geometry. Keep this
+// adapter unchanged here; #780 owns editor layout and geometry refinements.
 #[allow(dead_code)]
 #[path = "../../../vendor/gpui-component/crates/base/src/input/bidi_geometry.rs"]
 mod vendor_bidi_geometry;

@@ -23,6 +23,10 @@ pub struct SearchHit {
     pub score: f32,
     /// Snippet with <b>..</b> around matched terms.
     pub snippet_html: String,
+    /// Source-confirmed display context for the desktop palette. The existing
+    /// reader/MCP response and jump-to-match HTML remain unchanged.
+    #[serde(skip)]
+    pub display_snippet: Option<crate::search_snippet::PlainSnippet>,
 }
 
 /// A caller-read, revision-checked document. Brain retrieval indexes bounded
@@ -117,9 +121,9 @@ const SNIPPET_WINDOW: usize = 1500;
 /// A `window`-byte slice of `body`, centred on the first occurrence of any of
 /// `terms` (case-insensitive), or the head of the body if none is found.
 /// Always cut on char boundaries.
-fn snippet_window<'a>(body: &'a str, terms: &[String], window: usize) -> &'a str {
+fn snippet_window(body: &str, terms: &[String], window: usize) -> std::ops::Range<usize> {
     if body.len() <= window {
-        return body;
+        return 0..body.len();
     }
     let lower = body.to_lowercase();
     // Prefer the adjacent query words over an earlier isolated common term.
@@ -142,7 +146,7 @@ fn snippet_window<'a>(body: &'a str, terms: &[String], window: usize) -> &'a str
             .find('\n')
             .map_or(body.len(), |at| original + at);
         if end - start <= window {
-            return &body[start..end];
+            return start..end;
         }
     }
     let hit = phrase_hit.or_else(|| terms.iter().filter_map(|t| lower.find(t.as_str())).min());
@@ -160,7 +164,7 @@ fn snippet_window<'a>(body: &'a str, terms: &[String], window: usize) -> &'a str
     while end < body.len() && !body.is_char_boundary(end) {
         end += 1;
     }
-    &body[start..end]
+    start..end
 }
 
 /// Path split into searchable segments, so `path:archive` matches
@@ -937,17 +941,21 @@ impl Searcher {
                 .get_first(self.f.body)
                 .and_then(|v| v.as_str())
                 .unwrap_or_default();
-            let window = snippet_window(body, &terms_lower, SNIPPET_WINDOW);
+            let window_range = snippet_window(body, &terms_lower, SNIPPET_WINDOW);
+            let window = &body[window_range.clone()];
             let snippet = snippets.snippet(window);
+            let html = source_confirmed_snippet_html(snippet.to_html(), snippet.fragment(), window);
+            let mut occurrences = window.match_indices(snippet.fragment());
+            let start = occurrences.next().and_then(|(at, _)| {
+                (occurrences.next().is_none()).then_some(window_range.start + at)
+            });
+            let display_snippet = Some(crate::search_snippet::source_snippet(&html, body, start));
             hits.push(SearchHit {
                 path,
                 title,
                 score,
-                snippet_html: source_confirmed_snippet_html(
-                    snippet.to_html(),
-                    snippet.fragment(),
-                    window,
-                ),
+                snippet_html: html,
+                display_snippet,
             });
         }
         Ok(hits)
@@ -972,6 +980,86 @@ fn source_confirmed_snippet_html(mut html: String, fragment: &str, window: &str)
 mod hidden_link_context_tests {
     use super::*;
     use crate::search_snippet::plain_snippet;
+
+    #[test]
+    fn search_snippets_keep_hebrew_byte_marks_and_confirm_property_context() -> Result<()> {
+        let index = tempfile::tempdir()?;
+        let searcher = Searcher::build_documents(
+            &[
+                SearchDocument {
+                    path: "he.md".into(),
+                    title: "Hebrew".into(),
+                    text: "# Hebrew\n\nEnglish שלום Russian проверка.".into(),
+                },
+                SearchDocument {
+                    path: "property.md".into(),
+                    title: "Property".into(),
+                    text: "---\nqa_label: שלום\nupdated: 2026-10-08\n---\n# Title\nBody".into(),
+                },
+                SearchDocument {
+                    path: "prose.md".into(),
+                    title: "Prose".into(),
+                    text: "qa_label: שלום".into(),
+                },
+            ],
+            index.path(),
+        )?;
+        let hits = searcher.search("שלום", 10)?;
+        assert_eq!(
+            hits.len(),
+            3,
+            "actual engine acceptance, not manually marked HTML"
+        );
+        for hit in &hits {
+            assert!(hit.snippet_html.contains("<b>שלום</b>"), "{hit:?}");
+            let snippet = hit.display_snippet.as_ref().unwrap();
+            if hit.path == "property.md" {
+                assert!(!snippet.text.contains("qa_label"));
+                let property = snippet.property_match.as_ref().unwrap();
+                assert_eq!(property.text, "Property · Qa label: שלום");
+                assert_eq!(&property.text[property.highlights[0].clone()], "שלום");
+            } else {
+                assert_eq!(&snippet.text[snippet.highlights[0].clone()], "שלום");
+                assert!(snippet.property_match.is_none());
+            }
+        }
+        let positive_control = searcher.search("проверка", 10)?;
+        assert_eq!(positive_control.len(), 1);
+        let snippet = positive_control[0].display_snippet.as_ref().unwrap();
+        assert_eq!(&snippet.text[snippet.highlights[0].clone()], "проверка");
+        let serialized = serde_json::to_string(&hits[0])?;
+        assert!(
+            !serialized.contains("display_snippet"),
+            "existing reader/MCP response stays stable"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn actual_search_marks_both_source_cuts_and_never_changes_canonical_text() -> Result<()> {
+        let index = tempfile::tempdir()?;
+        let text = format!("{} שלום {}", "intro ".repeat(350), "tail ".repeat(350));
+        let searcher = Searcher::build_documents(
+            &[SearchDocument {
+                path: "long.md".into(),
+                title: "Long".into(),
+                text: text.clone(),
+            }],
+            index.path(),
+        )?;
+        let hit = searcher.search("שלום", 1)?.remove(0);
+        let snippet = hit.display_snippet.unwrap();
+        assert!(
+            snippet.text.starts_with('…') && snippet.text.ends_with('…'),
+            "{snippet:?}"
+        );
+        assert_eq!(&snippet.text[snippet.highlights[0].clone()], "שלום");
+        assert_eq!(
+            crate::quick_open::matched_text(&hit.snippet_html).as_deref(),
+            Some("שלום")
+        );
+        Ok(())
+    }
 
     #[test]
     fn actual_search_recovers_only_source_confirmed_url_delimiter() -> Result<()> {
