@@ -86,12 +86,18 @@ impl Reader {
         }
         self.recent_switcher.invalidate_release();
         let generation = self.recent_switcher.release_generation;
+        let navigation = self.navigation.generation;
         cx.spawn_in(window, async move |reader, cx| {
             cx.background_executor()
                 .timer(Duration::from_millis(100))
                 .await;
             let _ = reader.update_in(cx, |reader, window, cx| {
                 if reader.recent_switcher.release_generation != generation {
+                    return;
+                }
+                if reader.navigation.generation != navigation {
+                    reader.recent_switcher.cancel();
+                    cx.notify();
                     return;
                 }
                 if window.modifiers().control {
