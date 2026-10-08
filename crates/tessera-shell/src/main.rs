@@ -101,6 +101,10 @@ mod updater;
 #[allow(dead_code)]
 #[path = "../../../vendor/gpui-component/crates/base/src/input/bidi_geometry.rs"]
 mod vendor_bidi_geometry;
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../../../vendor/gpui-component/crates/base/src/text_boundary.rs"]
+mod vendor_text_boundary;
 mod window_state;
 #[cfg(all(unix, feature = "brain"))]
 mod workspace;

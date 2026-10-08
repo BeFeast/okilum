@@ -244,14 +244,11 @@
      }
 --- a/crates/base/src/input/base/state.rs
 +++ b/crates/base/src/input/base/state.rs
-@@ -2,6 +2,7 @@
- //!
- //! Based on the `Input` example from the `gpui` crate.
- //! https://github.com/zed-industries/zed/blob/main/crates/gpui/examples/input.rs
+@@ -13,3 +13,4 @@
+ use super::projection::{ConcealBias, SourceUtf16, source_utf16_to_byte};
 +use super::bidi_geometry::Affinity;
- use crate::input::attribution::{Identity as TraceIdentity, Span as TraceSpan};
- use super::clipboard::{
-     ClipboardPasteEvent, ClipboardReadError, ClipboardSession, ExactClipboardProvider,
+ use gpui::TextAlign;
+ use gpui::{
 @@ -349,6 +350,7 @@
      pub(super) show_whitespaces: bool,
      /// This flag tells the renderer to prefer the end of the current visual line.
