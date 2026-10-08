@@ -1,20 +1,16 @@
 # #737 — shared editor bidi geometry
 
-## Native localization (2026-10-08)
+## Problem and native diagnosis
 
-The standalone `bidi737` example shapes real text through the Linux GPUI platform
-text system. It does not create a source projection, write a note, or use IME.
-Run with an available native display:
+The shared editor delegated caret and pointer positions to GPUI's line helpers.
+Those helpers assume either ascending source indices or ascending X in the
+platform glyph collection. Neither ordering holds for all RTL layouts.
 
-```sh
-cargo run -p tessera-shell --example bidi737
-```
+A Linux native shaping probe, without projection or IME, produced these results
+for `abc שלום xyz` at 16 px. The ASCII positive control round-tripped every
+boundary correctly in the same process.
 
-The ASCII positive control asserts that every boundary in `abcd` round-trips
-through `x_for_index` and `closest_index_for_x`. It passes. On the same machine,
-font and process, the mixed line `abc שלום xyz` produces these positions:
-
-| UTF-8 boundary | Current caret X | Hit-test at that X |
+| UTF-8 boundary | Old caret X | Old hit-test at that X |
 | --- | --- | --- |
 | 4 | 33.84375 | 10 |
 | 6 | 33.84375 | 10 |
@@ -22,161 +18,90 @@ font and process, the mixed line `abc שלום xyz` produces these positions:
 | 10 | 33.84375 | 10 |
 | 12 | 69.25 | 12 |
 
-The Hebrew glyphs themselves are correctly positioned: source indices
-`10, 8, 6, 4` have X coordinates `33.84375, 44.460938, 48.820313, 57.914063`.
-The core `LineLayout::x_for_index` returns the first glyph whose source index is
-at least the requested index. This assumes increasing source indices in visual
-order and collapses these four boundaries onto one coordinate.
+The Hebrew glyphs themselves had distinct correct positions. For pure Hebrew,
+source indices increased while X decreased, breaking the inverse hit test too.
+Selection also assumed that the logical end was right of the start. This explains
+both the stuck caret and the whole-word highlight for one selected Hebrew letter.
 
-For a pure Hebrew line `שלום`, the native glyph collection instead has ascending
-source indices and descending X coordinates. `closest_index_for_x` assumes
-ascending X; it maps every tested glyph coordinate to source offset zero.
-Therefore neither glyph collection order nor source order alone can define a
-portable visual boundary map.
+## Vendor repair boundary
 
-## Other shared-editor assumptions
+GPUI core stays unmodified. Patch `0036-editor-bidi-geometry.diff` adds a geometry
+adapter in the shared vendor editor:
 
-- `input/editor/display_map/text_wrapper.rs` delegates caret positions and pointer
-  hit-testing to those core methods, in both Source and Live Preview.
-- `input/base/element.rs::layout_match_range` constructs selection from only the
-  two endpoint carets and clamps `end_x` to at least `start.x + 6px`. Logical
-  endpoints can be reversed in RTL; mixed-direction selections can require
-  multiple disjoint visual rectangles. Swapping two endpoints is insufficient.
-- `input/base/movement.rs::{left,right}` advances previous/next logical grapheme
-  boundaries, not visual neighbors. Selection collapse has the same assumption.
+- Group glyphs by source grapheme and sort visual extents independently of the
+  platform's glyph iteration order. Resolve edge orientation with Unicode bidi
+  levels. Cache the result alongside the shaped rows; plain LTR lines retain the
+  existing fast path.
+- Preserve `(source byte, directional affinity)` separately from soft-wrap
+  affinity. A logical byte offset at an RTL/LTR boundary can own two X positions.
+- Resolve pointer hits through the visual cell under the pointer. Visual arrows
+  select the edge of the cell crossed, not an arbitrary equal-X neighbor. That
+  distinction matters for Shift+Left across the final Hebrew letter.
+- Draw selected cells as separate rectangles. A logical selection across mixed
+  runs can be visually disjoint. Preserve a newline selection marker.
+- Carry row affinity across soft wraps. At an unpainted adjacent row, retain the
+  requested edge and resolve it after the row is laid out. Vertical hits retain
+  their directional affinity; selection collapse compares visual endpoints.
+- Normalize IME bounds so reversed endpoints do not create negative widths.
+  Empty-range candidate bounds use the active caret affinity.
 
-This establishes a shared geometry fault independent of source projection and
-consistent with manager's baseline reproduction. It is not a completed fix or
-native acceptance evidence for a fix.
+Source offsets remain UTF-8 bytes. The adapter never inserts bidi controls,
+reorders canonical text, or disables projection to hide the issue. FileEditor,
+revision checks and the disk-writing protocol are unchanged. Existing Undo/Redo
+transactions still store source edits and selections, not visual ranks.
 
-## Repair boundary and acceptance
+## Reproducible probes
 
-Keep GPUI core unpatched. The vendor editor needs an explicit visual caret/cluster
-map over each shaped display row, using Unicode bidi levels and actual glyph
-cluster extents. Byte indices remain source/display indices, never visual ranks.
+With the full vendor patch stack applied and verified:
 
-The map must support both caret affinities at directional boundaries, spatial
-hit-testing, visual Left/Right and Shift selection, and per-cluster selection
-rectangles. Cache it with the shaped row rather than rebuilding on pointer motion.
-Source projection still owns source/display conversion; do not change source,
-insert bidi controls, or disable Hebrew/projection to conceal the problem.
+```sh
+cargo test -p tessera-shell vendor_bidi_geometry::tests
+cargo run -p tessera-shell --example bidi737
+cargo run -p tessera-shell --example native_bidi737
+```
 
-Before integration, prove the map with native glyphs for LTR, RTL and mixed lines,
-including wrapped rows, combining marks, font fallback and ligatures. Preserve
-logical Home/End/document behavior unless a separate specification changes it.
-Then capture native Linux light/dark Source and Live Preview: Hebrew click,
-Left/Right, Shift+arrows, drag selection, copy and exact save, with English and
-Russian positive controls. IME preedit/cancel and candidate geometry must remain
-correct. A vendor adapter that cannot satisfy these cases is not permission to
-patch GPUI core or weaken acceptance.
+`bidi737` imports the actual vendor module and asserts native glyph geometry for
+ASCII, pure Hebrew, mixed English/Hebrew, niqqud, numbers, a ligature sample and
+Cyrillic/Hebrew. It verifies logical pointer ownership as well as X. Three unit
+regressions cover two positions at a directional boundary, crossed-cell ownership
+and disjoint selection with an ASCII positive control. These tests are included
+in normal shell CI because the vendored crate is not a root workspace member.
 
-Raw local trace: `~/.cache/tessera-qa/737/native-shaping.log`.
+`native_bidi737` is an isolated real shared Editor widget. It observes editor
+notifications and records source bytes, selection and cursor offsets. Ctrl+Alt+R
+records state; Ctrl+Alt+L toggles projection. The provider refreshes after source
+revision changes. Optional environment variables select a fixture text
+(`TESSERA_BIDI_TEXT`), initial projection (`TESSERA_BIDI_LIVE`), dark theme
+(`TESSERA_BIDI_DARK`) and a deterministic 10..12 selection (`TESSERA_BIDI_SELECT`).
+The harness never reads or writes user notes.
 
-## Native geometry prototype
+Native Linux/X11 validation:
 
-The example now includes an isolated `bidi737/geometry.rs` adapter. It groups
-shaped glyphs by source grapheme, sorts visual extents independently of platform
-iteration order, and uses Unicode bidi levels to orient leading/trailing edges.
-It preserves both candidates at a directional boundary and constructs selections
-from visual cells rather than only two logical endpoints. Only a dev dependency
-on the already locked `unicode-bidi` package is added; production is unchanged.
+- Source and Live Preview traverse the first mixed line with offsets
+  `0,1,2,3,4,10,8,6,4,13,14,15,16` while moving visually right.
+- Shift+Left from 10 selects exactly 10..12 (`ם`). Left/Right collapse that selection
+  to the corresponding visual endpoint. Replacement and Undo/Redo restore the
+  exact source in both modes.
+- A long wrapped paragraph reaches EOF in 241 visual arrows and returns in 241.
+  A 22-line viewport case reaches EOF in 289 and returns in 289, without cycles
+  or source changes.
+- Paired Linux light/dark captures use the same widget, selected bytes and host
+  session. Baseline was built without patch 0036 with the remaining stack verified;
+  after was built with the complete verified stack. Baseline highlights the full
+  word, after highlights only `ם`.
 
-On Linux/X11, eight real shaped fixtures pass the probe assertions: ASCII, pure
-Hebrew, Hebrew within English, English within Hebrew, Hebrew with niqqud, mixed
-Hebrew/numbers, a Latin ligature sample, and Cyrillic with Hebrew. Specifically,
-source boundaries 6/8/10 in `abc שלום xyz` have distinct decreasing X coordinates;
-selecting 10..12 occupies only the last Hebrew letter; selecting 0..6 produces two
-disjoint spans. Every visual cell has positive width and its nearest-edge hit test
-returns the corresponding visual position. The ASCII control still round-trips.
+Evidence and drivers are under `~/.cache/tessera-qa/737/`. The first function-key
+probe failed its positive control and is excluded from evidence. The successful
+probe requires actual editor notifications, not merely a visible window.
 
-This is **not** complete editor acceptance. Pointer hits at a directional boundary
-still require choosing and retaining logical affinity; this probe deliberately
-checks visual position rather than claiming both logical indices round-trip from
-one X. Soft-wrapped rows must retain paragraph bidi context. Ligature subdivision
-is provisional, and real caret positions/fallback behavior need further evidence.
-Integration must replace the shared editor's caret, selection and movement paths
-together; patching only `x_for_index` would leave wrong selection and clicks.
+## Merge gate and remaining acceptance
 
-Trace: `~/.cache/tessera-qa/737/native-geometry.log`. Build and strict example clippy
-logs are adjacent. No UI before/after or product fix is claimed by these assertions.
+The PR must remain a draft until native acceptance in the complete Reader on
+muninn: Source/Live Preview, light/dark, ru/he/en, fcitx5 preedit/commit/cancel,
+candidate placement, wrapped-row selection, copy, exact save and Undo/Redo.
+X11 key injection is not evidence of IME acceptance.
 
-### Directional affinity and pointer ownership
-
-The prototype now represents a caret as `(byte index, Before|After)`, independently
-of the existing soft-wrap affinity. It resolves an X hit to the containing visual
-cell before choosing its nearest edge. This fixes a weakness of the first probe:
-globally nearest equal-X edges could return the right coordinate with the wrong
-logical offset. Native assertions now verify the logical index as well as X for
-both sides of every cell in all eight fixtures.
-
-For `abc שלום xyz`, offset 4 has two distinct positions depending on affinity.
-Visual Left/Right traverses increasing/decreasing X and retains edge ownership;
-stepping back restores the prior visual position. The probe does not claim that
-every equivalent equal-X logical state must be identical after a round trip.
-Native run `native-affinity.log` exits successfully. This narrows the integration
-contract but remains isolated: product clicks, selection, IME and wrapped-row
-state have not yet been converted, and #737 is still open.
-
-## Local shared-editor integration (not yet ready for review)
-
-Patch `0036-editor-bidi-geometry.diff` now caches RTL cell maps with shaped rows,
-uses them for caret and pointer positions, carries directional affinity in the
-editor state, and draws disjoint selection rectangles. Left/Right and Shift
-movement use the visual cells. GPUI core is untouched.
-
-The actual shared `EditorState` fixture `native_bidi737` has been driven through
-Source and Live Preview on Linux/X11. The first diagnostic function-key attempt
-failed its positive control and is not evidence. The working fixture observes
-editor notifications and uses Ctrl+Alt+R/L for record/toggle. It records the exact
-source and selection offsets. Both modes traverse the first mixed line visually
-with source offsets `0,1,2,3,4,10,8,6,4,13,14,15,16`. The exact source remains
-unchanged. Shift+Left from offset 10 selects exactly bytes 10..12 (`ם`), and the
-native screenshot confirms a single-letter highlight.
-
-This test caught and repaired an error in the prototype: choosing an arbitrary
-nearest equal-X edge could make Shift+Left select the neighboring LTR prefix.
-Movement now chooses the edge of the cell crossed by the arrow. The isolated
-native geometry probe asserts that ownership explicitly for every tested cell.
-
-Evidence is local under `~/.cache/tessera-qa/737/`: `native-editor-results.json`,
-`native-editor-last-letter.png`, and `crossed-cell-probe.log`.
-
-Outstanding before a PR/acceptance: soft-wrap and row-edge traversal, vertical
-movement affinity, selection collapse at directional boundaries, IME candidate
-bounds, edits/Undo affinity, newline selection, and Linux light/dark before/after.
-The current patch is a local integration checkpoint, not a claim that #737 is fixed.
-
-## Integration validation update
-
-Subsequent integration carries wrap affinity across horizontal row boundaries,
-retains directional affinity on vertical hits, resolves offscreen row edges after
-painting their geometry, collapses selection by visual endpoints, and keeps IME
-bounds non-negative for reversed logical endpoints. Replacements choose the
-inserted text's trailing edge; source and Undo transactions remain byte-based.
-Newline-only selection remains visible when bidi rectangles are used.
-
-The final native shared-editor matrix passes in Source and Live Preview: visual
-arrows, one-letter selection, left/right selection collapse, replacement, Undo,
-Redo and exact source restoration. The fixture refreshes its projection provider
-after source revisions. Long wrapped text and multi-line viewport traversal reach
-EOF without cycles; the wrapped paragraph also returns to its start. Logs and
-scripts remain in `~/.cache/tessera-qa/737/`.
-
-Three focused geometry tests are compiled through the `bidi737` example, importing
-the actual vendor module: directional affinity, crossed-cell ownership for hits
-and Shift movement, and disjoint selection with an ASCII positive control. The
-standalone native shaping probe also consumes that module, not a copied model.
-Direct `cargo test -p gpui-base` is unavailable because the vendored package is not
-a workspace member; that failed invocation is not counted as validation.
-
-Linux before/after light/dark compare the same selected bytes in the actual shared
-Editor widget, same host and session. Baseline was built with only patch 0036
-removed and the remaining vendor stack verified, then the full stack was restored
-and verified before the after build. Baseline highlights the full word; after
-highlights only `ם`. These are isolated native widget captures, not screenshots of
-a mocked interface or full Reader QA.
-
-The PR remains gated on native IME preedit/commit/cancel, candidate geometry and
-wrapped-row acceptance in the complete Reader on muninn. No IME PASS is claimed
-from the X11 keyboard fixture. Ligature subdivision remains approximate within a
-multi-grapheme shaped cluster and needs coverage in that acceptance matrix.
+Within a multi-grapheme shaped ligature, caret positions use subdivision. Relevant
+scripts/fonts need native coverage. Bidi resolution is over the displayed shaped
+rows; paragraph-context behavior around soft wraps also belongs in acceptance.
+Do not treat the local matrix as proof of complete Unicode bidi conformance.
