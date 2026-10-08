@@ -323,8 +323,8 @@ impl Reader {
                     .detach();
                     preview.pdf = Some(viewer);
                 }
-                // Structured logs take precedence in quick-file mode.
-                if self.single_file && tessera_core::log::is_log_path(&preview.path) {
+                // Structured logs take precedence in both vault and quick-file mode.
+                if tessera_core::log::is_log_path(&preview.path) {
                     let (rel, path) = (rel.to_owned(), preview.path.clone());
                     let view = cx.new(|cx| reader_log::LogView::indexing(rel, path, cx));
                     view.read(cx).focus_handle().clone().focus(window, cx);
@@ -664,17 +664,25 @@ mod tests {
                 "plain.txt"
             );
             assert!(!reader.single_file, "vault-mode positive control");
-            for path in ["plain.log", "plain.csv"] {
-                reader.preview_file(path, window, cx);
-                let preview = reader.file_preview.as_ref().unwrap();
-                assert!(preview.text.is_some());
-                assert!(
-                    preview.log.is_none(),
-                    "vault attachments use the literal preview"
-                );
-                assert_eq!(reader.selected_file(), path);
-                assert_eq!(std::fs::read_to_string(root.join(path)).unwrap(), literal);
-            }
+            reader.preview_file("plain.csv", window, cx);
+            let preview = reader.file_preview.as_ref().unwrap();
+            assert!(preview.text.is_some());
+            assert!(
+                preview.log.is_none(),
+                "CSV attachments use the literal preview"
+            );
+            assert_eq!(reader.selected_file(), "plain.csv");
+            assert_eq!(
+                std::fs::read_to_string(root.join("plain.csv")).unwrap(),
+                literal
+            );
+            reader.preview_file("plain.log", window, cx);
+            let preview = reader.file_preview.as_ref().unwrap();
+            assert!(
+                preview.log.is_some(),
+                "vault logs use the structured viewer"
+            );
+            assert!(preview.text.is_none());
             for (path, name) in [
                 ("Схема.excalidraw.md", "Схема"),
                 ("Board.excalidraw", "Board"),

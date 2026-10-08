@@ -32,9 +32,11 @@ Native cold-start acceptance remains a measurement on the owner's Mac: less than
 0.5 seconds to rendered content. Headless tests validate the absence of index
 creation with a full-vault positive control; they do not claim native timing.
 
-Vault attachment previews for `.txt`, `.log` and `.csv` show literal, selectable
+Vault attachment previews for `.txt` and `.csv` show literal, selectable
 UTF-8 text. Reading and preparation run in the background, bounded to the first
 64 KiB with an explicit partial-preview notice and an external-open action.
 An empty file is identified as empty; unreadable or unsupported text has a clear
 fallback with an external-open action. These previews never edit or index the file.
-The structured log viewer (#602) takes precedence where enabled.
+The structured log viewer (#602) opens `.log`, `.jsonl`, `.ndjson` and `.logfmt`
+in both vault and quick-file mode, including vault Quick Open and tree selection.
+Find/filter within a log is a separate #602 S3 slice.

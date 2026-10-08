@@ -1271,6 +1271,13 @@ canaryhidden [[Target]]",
                 v.file_preview.as_ref().map(|preview| preview.rel.as_str()),
                 Some("tg.log")
             );
+            assert!(!v.single_file, "vault-mode positive control");
+            let preview = v.file_preview.as_ref().unwrap();
+            assert!(
+                preview.log.is_some(),
+                "Quick Open mounts the structured log viewer"
+            );
+            assert!(preview.text.is_none());
         });
         std::fs::remove_dir_all(temp).unwrap();
     }

@@ -757,6 +757,94 @@ mod tests {
     }
 
     #[gpui::test]
+    fn vault_tree_logs_publish_records_copy_and_return_to_notes(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::bind_keys(cx);
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("vault");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("start.md"), "# Start").unwrap();
+        let text = "{\"level\":\"info\",\"msg\":\"first\"}\nnot json\n{\"level\":\"error\",\"msg\":\"second\"}\n";
+        for name in ["events.log", "events.jsonl"] {
+            std::fs::write(root.join(name), text).unwrap();
+        }
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("start.md".into()),
+                        index_dir: Some(directory.path().join("index")),
+                        session_directory: Some(directory.path().join("state")),
+                        panel_settings_override: Some(directory.path().join("panels.json")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        visual.run_until_parked();
+        for name in ["events.log", "events.jsonl"] {
+            reader.update_in(visual, |reader, window, cx| {
+                assert!(!reader.single_file && reader.searcher.is_some());
+                let row = reader
+                    .tree
+                    .rows
+                    .iter()
+                    .find(|row| row.path == name)
+                    .unwrap()
+                    .clone();
+                assert_eq!(row.kind, tessera_core::vault::EntryKind::Attachment);
+                reader.activate_tree_row(&row, window, cx);
+                let preview = reader.file_preview.as_ref().unwrap();
+                assert!(preview.log.is_some());
+                assert!(preview.text.is_none());
+                assert_eq!(reader.selected_file(), name);
+            });
+            visual.run_until_parked();
+            let view = log_view(&reader, visual);
+            view.read_with(visual, |view, _| {
+                let file = view
+                    .file()
+                    .expect("vault log completed background indexing");
+                assert_eq!(file.index().len(), 3);
+                assert_eq!(file.index().get(0).unwrap().level(), Level::Info);
+                assert_eq!(file.index().get(2).unwrap().level(), Level::Error);
+            });
+            // Tree activation retains navigator focus; a row selection gives
+            // the log its normal keyboard context before Copy.
+            view.update_in(visual, |view, window, cx| view.select(1, true, window, cx));
+            visual.simulate_keystrokes(if cfg!(target_os = "macos") {
+                "cmd-c"
+            } else {
+                "ctrl-c"
+            });
+            visual.read(|cx| {
+                assert_eq!(
+                    cx.read_from_clipboard().unwrap().text().unwrap(),
+                    "not json"
+                )
+            });
+            reader.update_in(visual, |reader, window, cx| {
+                reader.open_note("start.md", None, window, cx)
+            });
+            visual.run_until_parked();
+            reader.read_with(visual, |reader, _| {
+                assert!(reader.file_preview.is_none());
+                assert_eq!(reader.current_rel, "start.md");
+            });
+            assert_eq!(std::fs::read_to_string(root.join(name)).unwrap(), text);
+        }
+    }
+
+    #[gpui::test]
     fn a_log_opens_in_the_quick_viewer_and_copies_its_raw_line(cx: &mut TestAppContext) {
         cx.update(|cx| {
             gpui_component::init(cx);
