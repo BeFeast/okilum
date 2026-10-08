@@ -20,6 +20,18 @@ are on different filesystems, the completed snapshot stays in durable JSON and t
 beside the note until its retention deadline. Cleanup verifies its recorded inode
 and exact bytes; an unexpected change protects it from expiration.
 
+Windows saves also record the complete proposed UTF-8 bytes and the checked
+staging identity in durable app-state history before publication. After a refused
+save, the owned `.prepared` inode is removed only through an identity- and
+byte-checked native DELETE handle; its pending recovery snapshot remains protected
+outside the vault. Startup retries this cleanup after interruption or a sharing
+lock. Changed, replaced, hard-linked or redirecting staging files remain in place
+with their snapshot and any readable unexpected version available for recovery.
+Older records without a captured identity/snapshot and unassigned synced copies
+are not cleanup authority. An assigned prepared file appears once in recovery,
+not again as an unassigned displaced source. Successful save acknowledgement
+discards the redundant proposed snapshot while retaining normal preimage history.
+
 Normal completed history keeps at most 20 versions per note for 30 days, within
 a 128 MiB completed-history budget. Cleanup runs on save and when history is
 opened, not on an idle timer. Inactive acknowledged draft journals expire after

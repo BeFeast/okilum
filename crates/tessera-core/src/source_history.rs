@@ -29,6 +29,12 @@ pub struct Preimage {
     external_inode: Option<(u64, u64)>,
     #[serde(default)]
     prepared: Option<PathBuf>,
+    // Proposed bytes are durable outside the vault before native publication.
+    // Cleanup authority binds the staging name to the recorded inode AND bytes.
+    #[serde(default)]
+    prepared_snapshot: Option<String>,
+    #[serde(default)]
+    prepared_identity: Option<(u64, u64)>,
     // A completed Windows record owns a durable full-text snapshot in app state.
     // external_inode remains set only while checked vault-side cleanup is pending.
     #[serde(default)]
@@ -76,6 +82,7 @@ fn persist(path: &Path, value: &Preimage) -> Result<()> {
     Ok(())
 }
 impl Preimage {
+    #[cfg(any(unix, test))]
     pub(crate) fn begin(drafts: &Path, note: &Path, text: &str, backup: &Path) -> Result<PathBuf> {
         let path = directory(drafts).join(format!("{}.json", uuid::Uuid::new_v4()));
         persist(
@@ -88,6 +95,8 @@ impl Preimage {
                 displaced: backup.to_owned(),
                 external_inode: None,
                 prepared: None,
+                prepared_snapshot: None,
+                prepared_identity: None,
                 snapshot_only: false,
             },
         )?;
@@ -101,11 +110,61 @@ impl Preimage {
         backup: &Path,
         prepared: &Path,
     ) -> Result<PathBuf> {
-        let path = Self::begin(drafts, note, text, backup)?;
-        let mut entry = Self::load(&path)?;
-        entry.prepared = Some(prepared.to_owned());
+        ensure!(
+            owned_prepared_name(note, prepared),
+            "Invalid prepared recovery identity"
+        );
+        let (_, bytes, info) = crate::windows_files::read_file(prepared)?;
+        let snapshot = String::from_utf8(bytes).context("Prepared source is not UTF-8")?;
+        let (volume, high, low) = crate::windows_files::identity(&info);
+        let path = directory(drafts).join(format!("{}.json", uuid::Uuid::new_v4()));
+        let entry = Self {
+            note: note.to_owned(),
+            created: now(),
+            text: text.to_owned(),
+            pending: true,
+            displaced: backup.to_owned(),
+            external_inode: None,
+            prepared: Some(prepared.to_owned()),
+            prepared_snapshot: Some(snapshot),
+            prepared_identity: Some((u64::from(volume), u64::from(high) << 32 | u64::from(low))),
+            snapshot_only: false,
+        };
         persist(&path, &entry)?;
         Ok(path)
+    }
+    /// A failed/interrupted save keeps recovery, but its owned staging inode
+    /// need not remain in a synced vault once the exact bytes are durable here.
+    #[cfg(windows)]
+    pub(crate) fn archive_prepared_windows(path: &Path) -> Result<()> {
+        let mut entry = Self::load(path)?;
+        let Some(prepared) = entry.prepared.as_ref() else {
+            return Ok(());
+        };
+        let (Some(snapshot), Some(identity)) =
+            (entry.prepared_snapshot.as_ref(), entry.prepared_identity)
+        else {
+            // Older records have no checked inode/snapshot. A path or matching
+            // UUID alone is never authority to remove an existing sync copy.
+            return Ok(());
+        };
+        ensure!(
+            owned_prepared_name(&entry.note, prepared),
+            "Unassigned prepared recovery is protected"
+        );
+        // undo_created validates regular file, single link, identity and bytes
+        // while holding DELETE on that inode; it cannot unlink a racing path.
+        match crate::windows_files::undo_created(prepared, identity, Some(snapshot.as_bytes())) {
+            Ok(()) => {}
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) => {}
+            Err(error) => return Err(error),
+        }
+        entry.prepared = None;
+        entry.prepared_identity = None;
+        persist(path, &entry)
     }
     #[cfg(windows)]
     pub(crate) fn finish_windows(
@@ -134,6 +193,8 @@ impl Preimage {
         entry.external_inode = Some(expected_identity);
         entry.pending = false;
         entry.prepared = None;
+        entry.prepared_snapshot = None;
+        entry.prepared_identity = None;
         entry.snapshot_only = true;
         persist(path, &entry)?;
         // Cleanup errors retain the verified preimage and do not turn a durable
@@ -274,6 +335,16 @@ impl Preimage {
     }
 }
 
+#[cfg(windows)]
+fn owned_prepared_name(note: &Path, prepared: &Path) -> bool {
+    prepared.parent() == note.parent()
+        && prepared
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.strip_prefix(".tessera-save-")?.strip_suffix(".prepared"))
+            .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() == id))
+}
+
 /// A changed inode is recovery, never an ordinary expirable history entry.
 fn protected(entry: &Preimage) -> bool {
     if entry.snapshot_only {
@@ -317,8 +388,9 @@ fn owned_displaced(record: &Path, entry: &Preimage) -> bool {
     }
 }
 
-/// Retry only acknowledged, identity-bound native preimages for this vault.
-/// Unassigned synced leftovers and interrupted/raced recovery are never deleted.
+/// Retry acknowledged preimages and snapshot-backed prepared staging for this
+/// vault. Interrupted recovery bytes stay protected outside the vault; changed,
+/// raced and unassigned synced inodes are never deleted.
 #[cfg(windows)]
 pub fn cleanup_windows(drafts: &Path, root: &Path) -> Result<Vec<String>> {
     let root = root.canonicalize()?;
@@ -333,13 +405,14 @@ pub fn cleanup_windows(drafts: &Path, root: &Path) -> Result<Vec<String>> {
             continue;
         }
         match Preimage::load(&path) {
-            Ok(mut entry)
-                if entry.note.starts_with(&root)
-                    && !entry.pending
-                    && entry.external_inode.is_some() =>
-            {
-                if let Err(error) = Preimage::clean_windows(&path, &mut entry) {
-                    warnings.push(format!("Save recovery retained: {error:#}"));
+            Ok(mut entry) if entry.note.starts_with(&root) => {
+                if let Err(error) = Preimage::archive_prepared_windows(&path) {
+                    warnings.push(format!("Prepared recovery retained: {error:#}"));
+                }
+                if !entry.pending && entry.external_inode.is_some() {
+                    if let Err(error) = Preimage::clean_windows(&path, &mut entry) {
+                        warnings.push(format!("Save recovery retained: {error:#}"));
+                    }
                 }
             }
             Ok(_) => {}
@@ -393,6 +466,19 @@ pub fn list(drafts: &Path, root: &Path) -> Result<Listing> {
                     link_move: false,
                 });
                 #[cfg(windows)]
+                if entry.pending {
+                    if let Some(text) = entry.prepared_snapshot.as_ref() {
+                        result.versions.push(Version {
+                            note: entry.note.clone(),
+                            text: text.clone(),
+                            created: entry.created,
+                            label: "Prepared save — protected".into(),
+                            protected: true,
+                            link_move: false,
+                        });
+                    }
+                }
+                #[cfg(windows)]
                 if let Some(prepared) = entry.prepared.as_ref().filter(|path| {
                     path.parent() == entry.note.parent()
                         && path.file_name().is_some_and(|name| {
@@ -405,14 +491,22 @@ pub fn list(drafts: &Path, root: &Path) -> Result<Listing> {
                         prepared_text(directory.open_file(prepared.file_name().unwrap())?)
                     })();
                     match recovered {
-                        Ok(text) => result.versions.push(Version {
-                            note: entry.note.clone(),
-                            text,
-                            created: entry.created,
-                            label: "Prepared save — protected".into(),
-                            protected: true,
-                            link_move: false,
-                        }),
+                        Ok(text) if entry.prepared_snapshot.as_ref() != Some(&text) => {
+                            result.versions.push(Version {
+                                note: entry.note.clone(),
+                                text,
+                                created: entry.created,
+                                label: if entry.prepared_snapshot.is_some() {
+                                    "Unexpected prepared version — protected"
+                                } else {
+                                    "Prepared save — protected"
+                                }
+                                .into(),
+                                protected: true,
+                                link_move: false,
+                            })
+                        }
+                        Ok(_) => {}
                         Err(error)
                             if error
                                 .downcast_ref::<std::io::Error>()
@@ -481,6 +575,29 @@ pub fn list(drafts: &Path, root: &Path) -> Result<Listing> {
 #[cfg(test)]
 mod recovery_preview_tests {
     use super::*;
+
+    #[test]
+    fn prepared_snapshot_schema_preserves_exact_bytes_and_legacy_defaults() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().canonicalize().unwrap();
+        let legacy = serde_json::json!({
+            "note": root.join("note.md"), "created": 1, "text": "base\r\n",
+            "pending": true, "displaced": root.join(".tessera-save-old.previous"),
+            "prepared": root.join(".tessera-save-old.prepared")
+        });
+        let mut entry: Preimage = serde_json::from_value(legacy).unwrap();
+        assert!(entry.prepared_snapshot.is_none() && entry.prepared_identity.is_none());
+        let proposed = "\u{feff}# Proposed שלום e\u{301}\r\n";
+        entry.prepared_snapshot = Some(proposed.into());
+        entry.prepared_identity = Some((42, 73));
+        let path = root.join("state/source-history/record.json");
+        persist(&path, &entry).unwrap();
+        let recovered = Preimage::load(&path).unwrap();
+        assert_eq!(recovered.prepared_snapshot.as_deref(), Some(proposed));
+        assert_eq!(recovered.prepared_identity, Some((42, 73)));
+        assert!(recovered.pending);
+        assert_eq!(recovered.text, "base\r\n");
+    }
 
     #[test]
     fn windows_editor_prepared_recovery_size_guard_preserves_file() {
@@ -833,9 +950,27 @@ pub fn save_copy(root: &Path, relative: &Path, drafts: &Path, text: &str) -> Res
 
 /// Old releases did not record which note a displaced inode belonged to.
 /// Offer exact copies, but never guess its owner or delete an unassigned file.
-pub fn legacy_preimages(root: &Path) -> Result<Listing> {
+pub fn legacy_preimages(drafts: &Path, root: &Path) -> Result<Listing> {
     let mut listing = Listing::default();
-    for item in walkdir::WalkDir::new(root).follow_links(false) {
+    let root = root.canonicalize()?;
+    // A recorded prepared version is already presented by list(), including
+    // changed bytes/warnings. Do not call the same inode "unassigned" as well.
+    #[cfg(windows)]
+    let assigned: std::collections::HashSet<_> = fs::read_dir(directory(drafts))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|item| Preimage::load(&item.path()).ok())
+        .filter(|entry| entry.note.starts_with(&root))
+        .filter_map(|entry| {
+            entry
+                .prepared
+                .filter(|p| owned_prepared_name(&entry.note, p))
+        })
+        .collect();
+    #[cfg(not(windows))]
+    let _ = drafts;
+    for item in walkdir::WalkDir::new(&root).follow_links(false) {
         let item = match item {
             Ok(item) => item,
             Err(error) => {
@@ -849,6 +984,10 @@ pub fn legacy_preimages(root: &Path) -> Result<Listing> {
                 .to_string_lossy()
                 .starts_with(".tessera-save-")
         {
+            continue;
+        }
+        #[cfg(windows)]
+        if assigned.contains(item.path()) {
             continue;
         }
         match fs::read_to_string(item.path()) {
@@ -1276,11 +1415,182 @@ mod windows_cleanup_tests {
             let mut entry = Preimage::load(&record).unwrap();
             entry.pending = false;
             entry.prepared = None;
+            entry.prepared_snapshot = None;
+            entry.prepared_identity = None;
             entry.external_inode = Some((u64::from(v), u64::from(h) << 32 | u64::from(l)));
             entry.snapshot_only = snapshot;
             persist(&record, &entry).unwrap();
         }
         (record, backup)
+    }
+    fn prepared(root: &Path, drafts: &Path, name: &str) -> (PathBuf, PathBuf) {
+        let note = root.join(name);
+        fs::write(&note, "base\r\n").unwrap();
+        let directory = Directory::open(root).unwrap();
+        let plan = directory
+            .prepare_replace(
+                note.file_name().unwrap(),
+                b"base\r\n",
+                "proposed שלום\r\n".as_bytes(),
+            )
+            .unwrap()
+            .unwrap();
+        let prepared = plan.prepared_path().to_owned();
+        let record =
+            Preimage::begin_windows(drafts, &note, "base\r\n", plan.preimage_path(), &prepared)
+                .unwrap();
+        assert_eq!(
+            Preimage::load(&record)
+                .unwrap()
+                .prepared_snapshot
+                .as_deref(),
+            Some("proposed שלום\r\n")
+        );
+        (record, prepared)
+    }
+    #[test]
+    fn windows_history_prepared_crash_recovery_moves_to_app_state_without_losing_bytes() {
+        let (_temp, root, drafts) = fixture();
+        let (record, prepared) = prepared(&root, &drafts, "Crash.md");
+        assert!(prepared.exists(), "crash leaves a real staging inode");
+        assert!(
+            legacy_preimages(&drafts, &root)
+                .unwrap()
+                .versions
+                .is_empty(),
+            "assigned staging is not an unassigned duplicate"
+        );
+        assert!(cleanup_windows(&drafts, &root).unwrap().is_empty());
+        assert!(!prepared.exists());
+        assert!(Preimage::load(&record).unwrap().pending);
+        let history = list(&drafts, &root).unwrap();
+        assert_eq!(history.versions.len(), 2);
+        assert!(history.versions.iter().all(|v| v.protected));
+        assert!(history.versions.iter().any(|v| v.text == "base\r\n"));
+        assert!(history
+            .versions
+            .iter()
+            .any(|v| v.text == "proposed שלום\r\n" && v.label == "Prepared save — protected"));
+        assert_eq!(
+            fs::read_to_string(root.join("Crash.md")).unwrap(),
+            "base\r\n"
+        );
+        prune_at(&drafts, now() + MAX_AGE + 1).unwrap();
+        assert_eq!(
+            list(&drafts, &root).unwrap().versions.len(),
+            2,
+            "pending snapshots never expire"
+        );
+        assert!(
+            cleanup_windows(&drafts, &root).unwrap().is_empty(),
+            "restart is idempotent"
+        );
+    }
+    #[test]
+    fn windows_history_prepared_cleanup_refuses_changed_replaced_locked_and_reparse_files() {
+        let (_temp, root, drafts) = fixture();
+        let (_, changed) = prepared(&root, &drafts, "Changed.md");
+        fs::write(&changed, "unexpected proposed bytes").unwrap();
+        let (_, replaced) = prepared(&root, &drafts, "Replaced.md");
+        let replacement = root.join("replacement.tmp");
+        fs::write(&replacement, "proposed שלום\r\n").unwrap();
+        fs::rename(&replacement, &replaced).unwrap();
+        let (_, locked) = prepared(&root, &drafts, "Locked.md");
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&locked)
+            .unwrap();
+        let (_, reparse) = prepared(&root, &drafts, "Reparse.md");
+        let outside = root.parent().unwrap().join("outside.txt");
+        fs::write(&outside, "outside — not recovery").unwrap();
+        fs::remove_file(&reparse).unwrap();
+        std::os::windows::fs::symlink_file(&outside, &reparse)
+            .expect("native reparse positive control");
+        assert_eq!(cleanup_windows(&drafts, &root).unwrap().len(), 4);
+        assert_eq!(
+            fs::read_to_string(&changed).unwrap(),
+            "unexpected proposed bytes"
+        );
+        assert!(replaced.exists() && locked.exists());
+        assert!(fs::symlink_metadata(&reparse)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            fs::read_to_string(&outside).unwrap(),
+            "outside — not recovery"
+        );
+        let history = list(&drafts, &root).unwrap();
+        assert!(history
+            .versions
+            .iter()
+            .any(|v| v.text == "unexpected proposed bytes"
+                && v.label == "Unexpected prepared version — protected"));
+        assert_eq!(
+            history
+                .versions
+                .iter()
+                .filter(|v| v.label == "Prepared save — protected" && v.text == "proposed שלום\r\n")
+                .count(),
+            4
+        );
+        assert!(!history
+            .versions
+            .iter()
+            .any(|v| v.text.contains("outside —")));
+        assert!(legacy_preimages(&drafts, &root)
+            .unwrap()
+            .versions
+            .is_empty());
+        drop(lock);
+        assert_eq!(cleanup_windows(&drafts, &root).unwrap().len(), 3);
+        assert!(!locked.exists());
+    }
+    #[test]
+    fn windows_history_prepared_legacy_other_vault_and_replaced_parent_are_not_cleaned() {
+        let (_temp, root, drafts) = fixture();
+        let (record, legacy) = prepared(&root, &drafts, "Legacy.md");
+        let mut entry = Preimage::load(&record).unwrap();
+        entry.prepared_identity = None;
+        entry.prepared_snapshot = None;
+        persist(&record, &entry).unwrap();
+        let unknown = root.join(format!(".tessera-save-{}.prepared", uuid::Uuid::new_v4()));
+        fs::write(&unknown, "unassigned synced bytes").unwrap();
+        let (_, owned) = prepared(&root, &drafts, "Other.md");
+        let other = root.parent().unwrap().join("other-vault");
+        fs::create_dir(&other).unwrap();
+        assert!(cleanup_windows(&drafts, &other).unwrap().is_empty());
+        assert!(owned.exists());
+        let nested = root.join("nested");
+        fs::create_dir(&nested).unwrap();
+        let (_, old_prepared) = prepared(&nested, &drafts, "Parent.md");
+        let moved = root.join("moved");
+        fs::rename(&nested, &moved).unwrap();
+        fs::create_dir(&nested).unwrap();
+        fs::write(&old_prepared, "proposed שלום\r\n").unwrap();
+        assert_eq!(cleanup_windows(&drafts, &root).unwrap().len(), 1);
+        assert_eq!(
+            fs::read_to_string(&old_prepared).unwrap(),
+            "proposed שלום\r\n"
+        );
+        assert!(moved.join(old_prepared.file_name().unwrap()).exists());
+        assert!(legacy.exists() && unknown.exists());
+        assert!(!owned.exists(), "owned staging positive control");
+        let legacy_listing = legacy_preimages(&drafts, &root).unwrap();
+        assert!(legacy_listing
+            .versions
+            .iter()
+            .any(|v| v.text == "unassigned synced bytes"));
+        assert_eq!(
+            list(&drafts, &root)
+                .unwrap()
+                .versions
+                .iter()
+                .filter(|v| v.text == "proposed שלום\r\n")
+                .count(),
+            3
+        );
     }
     #[test]
     fn windows_history_acknowledgement_refuses_replaced_preimage() {
@@ -1353,8 +1663,12 @@ mod windows_cleanup_tests {
             "unassigned sync copy"
         );
         let history = list(&drafts, &root).unwrap();
-        assert_eq!(history.versions.len(), 3);
-        assert_eq!(history.versions.iter().filter(|v| v.protected).count(), 1);
+        assert_eq!(history.versions.len(), 4);
+        assert_eq!(history.versions.iter().filter(|v| v.protected).count(), 2);
+        assert!(history
+            .versions
+            .iter()
+            .any(|v| v.text == "saved\r\n" && v.protected));
         assert!(cleanup_windows(&drafts, &root).unwrap().is_empty());
     }
     #[test]
