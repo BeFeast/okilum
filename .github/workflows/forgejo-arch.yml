@@ -28,12 +28,8 @@ jobs:
     - name: Build package as an unprivileged user
       run: |
         chown -R builder:builder "$GITHUB_WORKSPACE" /home/builder
-        # Only branch dispatch artifacts may contain the visual QA harness.
-        harness=0
-        if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$GITHUB_REF" != refs/heads/main ]; then
-          harness=1
-        fi
-        runuser -u builder -- env TESSERA_SETTINGS_UI_HARNESS="$harness" TESSERA_BUILD_VERSION="$((5000 + GITHUB_RUN_NUMBER))" bash scripts/arch/build.sh
+        # Unsigned release checks use the production package, without the QA harness.
+        runuser -u builder -- env TESSERA_SETTINGS_UI_HARNESS=0 TESSERA_BUILD_VERSION="$((5000 + GITHUB_RUN_NUMBER))" bash scripts/arch/build.sh
     - name: Validate Arch package
       run: |
         desktop-file-validate scripts/arch/tessera.desktop

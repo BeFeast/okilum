@@ -57,3 +57,25 @@ class HostedPRTests(unittest.TestCase):
                 for field, value in [('head_sha', 'b' * 40), ('head_branch', 'main'), ('path', 'other.yml')]:
                     with self.assertRaises(bridge.transport.Unavailable):
                         check(dict(good, **{field: value}))
+
+    def test_supplemental_routing_is_exclusive_and_keeps_main_and_forks_local(self):
+        import re
+        root = Path(__file__).resolve().parents[2]
+        for file, job, lane in [('brain-ci', 'brain-tests', 'brain'), ('inbox-ci', 'inbox-tests', 'inbox'),
+                                 ('linux-release', 'release', 'arch'), ('windows-diagnostic', 'release', 'windows-release')]:
+            workflow = (root / f'.forgejo/workflows/{file}.yml').read_text()
+            def evaluate(name, event, setting, fork):
+                block = re.search(rf'^  {name}:\n(.*?)(?=^  [\w-]+:|\Z)', workflow, re.M | re.S)[1]
+                expr = re.search(r'    if: (?:>-\n      )?([^\n]+)', block)[1]
+                replacements = {'github.event.pull_request.head.repo.full_name': 'fork/repo' if fork else 'BeFeast/tessera',
+                    'github.repository': 'BeFeast/tessera', 'github.event_name': event, 'vars.TESSERA_PR_LANE': setting,
+                    'needs.select.outputs.build': 'true'}
+                for key, value in replacements.items():
+                    expr = expr.replace(key, repr(value))
+                return eval(expr.replace('&&', ' and ').replace('||', ' or '), {'__builtins__': {}})
+            for event in ['pull_request', 'push', 'schedule', 'workflow_dispatch']:
+                for setting in ['', 'hosted', 'local']:
+                    for fork in [False, True]:
+                        expected = event == 'pull_request' and setting != 'local' and not fork
+                        self.assertEqual(evaluate(lane+'-github', event, setting, fork), expected)
+                        self.assertEqual(evaluate(job, event, setting, fork), not expected)
