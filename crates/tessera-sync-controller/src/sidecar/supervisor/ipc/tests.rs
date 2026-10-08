@@ -268,3 +268,107 @@ fn framing_roundtrips_over_a_real_local_stream_with_deadlines() {
     assert_eq!(response.validate_for(&request).unwrap(), Status::Stopped);
     assert_eq!(worker.join().unwrap(), 1);
 }
+
+fn response_connection(request: &Request, status: Status) -> Connection {
+    let response = Response {
+        version: VERSION,
+        scope: request.scope.clone(),
+        id: request.id,
+        status,
+    };
+    let mut connection = Connection::request(request);
+    let mut bytes = vec![];
+    write_frame(&mut bytes, &response).unwrap();
+    connection.input = Cursor::new(bytes);
+    connection
+}
+
+#[test]
+fn client_authenticates_before_wire_io_and_rejects_wrong_local_binding() {
+    let binding = binding();
+    let server = Server::new(binding.clone(), Runtime::default());
+    let request = Request::new(server.scope().clone(), Command::Status);
+    let mut foreign = response_connection(&request, Status::Running);
+    foreign.authenticated = false;
+    assert!(exchange(&mut foreign, &binding, &request).is_err());
+    assert_eq!(foreign.input.position(), 0);
+    assert!(foreign.output.is_empty());
+    for field in 0..3 {
+        let mut invalid = request.clone();
+        match field {
+            0 => invalid.scope.installation = Uuid::new_v4(),
+            1 => invalid.scope.instance = Uuid::new_v4(),
+            _ => invalid.version += 1,
+        }
+        let mut connection = response_connection(&invalid, Status::Running);
+        assert!(exchange(&mut connection, &binding, &invalid).is_err());
+        assert!(connection.output.is_empty());
+        assert_eq!(connection.input.position(), 0);
+    }
+    let mut valid = response_connection(&request, Status::Running);
+    assert_eq!(
+        exchange(&mut valid, &binding, &request).unwrap(),
+        Status::Running
+    );
+    let sent: Request = read_frame(&mut Cursor::new(valid.output)).unwrap();
+    assert_eq!(sent.id, request.id);
+    assert_eq!(sent.command, Command::Status);
+}
+
+#[test]
+fn client_never_treats_lost_wrong_or_running_stop_reply_as_exit() {
+    let binding = binding();
+    let server = Server::new(binding.clone(), Runtime::default());
+    let request = Request::new(server.scope().clone(), Command::Stop);
+    for field in 0..6 {
+        let mut other = request.clone();
+        match field {
+            0 => other.id = Uuid::new_v4(),
+            1 => other.scope.generation = Uuid::new_v4(),
+            2 => other.scope.instance = Uuid::new_v4(),
+            3 => other.scope.installation = Uuid::new_v4(),
+            _ => (),
+        }
+        let status = if field == 4 {
+            Status::Running
+        } else {
+            Status::Stopped
+        };
+        let mut connection = response_connection(&other, status);
+        if field == 5 {
+            connection.input = Cursor::new(vec![]); // request sent, reply lost
+        }
+        assert!(exchange(&mut connection, &binding, &request).is_err());
+        let mut sent = Cursor::new(connection.output);
+        assert_eq!(read_frame::<Request>(&mut sent).unwrap().id, request.id);
+        assert_eq!(sent.position() as usize, sent.get_ref().len(), "no retry");
+    }
+    for status in [Status::Stopping, Status::Stopped] {
+        let mut connection = response_connection(&request, status);
+        assert_eq!(
+            exchange(&mut connection, &binding, &request).unwrap(),
+            status
+        );
+    }
+}
+
+#[test]
+fn malformed_json_and_trailing_values_fail_before_runtime_effects() {
+    let mut server = Server::new(binding(), Runtime::default());
+    let request = Request::new(server.scope().clone(), Command::Stop);
+    let mut trailing = serde_json::to_vec(&request).unwrap();
+    trailing.extend_from_slice(b" {}");
+    for body in [vec![0xff], b"{".to_vec(), trailing] {
+        let mut bytes = (body.len() as u32).to_be_bytes().to_vec();
+        bytes.extend(body);
+        let mut connection = Connection::request(&request);
+        connection.input = Cursor::new(bytes);
+        assert!(server.serve_one(&mut connection).is_err());
+        assert!(connection.output.is_empty());
+    }
+    assert_eq!(server.runtime.stops + server.runtime.probes, 0);
+    let mut valid = Connection::request(&request);
+    server.serve_one(&mut valid).unwrap();
+    assert_eq!(server.runtime.stops, 1);
+    assert_eq!(valid.reply(&request), Status::Stopped);
+}

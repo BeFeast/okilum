@@ -1,4 +1,4 @@
-//! Bounded supervisor control protocol, independent of the OS transport.
+//! Bounded-frame supervisor control protocol, independent of the OS transport.
 //! Native peer authentication, private endpoints and I/O deadlines are mandatory
 //! transport duties. This module neither starts a process nor installs a service.
 use crate::sidecar::Binding;
@@ -66,15 +66,45 @@ impl Response {
             self.scope == request.scope && self.id == request.id,
             "supervisor reply mismatch"
         );
+        ensure!(
+            request.command != Command::Stop || self.status != Status::Running,
+            "stop reply did not transition runtime"
+        );
         Ok(self.status)
     }
 }
 
 /// Established local connection. Implementations must authenticate the native
 /// peer and endpoint against the prepared binding, never against wire claims.
-/// Reads/writes must have finite deadlines. No permissive default is provided.
+/// A single finite exchange deadline must cover authentication and all I/O,
+/// including fragmented reads; resetting a timeout per byte is insufficient.
+/// No permissive default or production native transport is provided here.
 pub trait Transport: Read + Write {
     fn verify_peer(&mut self, binding: &Binding) -> Result<()>;
+}
+
+/// One authenticated request/reply exchange. The caller discovers the generation
+/// through the native verified endpoint, and persists stop intent before Stop.
+/// A timeout, lost reply or mismatched response is an error, never proof of exit.
+/// This function does not retry, unregister a service or change durable intent.
+pub fn exchange(
+    transport: &mut impl Transport,
+    binding: &Binding,
+    request: &Request,
+) -> Result<Status> {
+    ensure!(
+        request.version == VERSION,
+        "unsupported supervisor protocol"
+    );
+    ensure!(
+        request.scope.installation == binding.installation
+            && request.scope.instance == binding.instance,
+        "supervisor request binding mismatch"
+    );
+    transport.verify_peer(binding)?;
+    write_frame(transport, request)?;
+    let response: Response = read_frame(transport)?;
+    response.validate_for(request)
 }
 
 /// Owns captured process/job handles, never PID lookup. This is not a default

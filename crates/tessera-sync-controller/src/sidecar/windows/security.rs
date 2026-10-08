@@ -95,23 +95,6 @@ pub fn descriptor_owner_sid(sddl: &str) -> Result<String> {
     }
     sid_string(owner)
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn descriptor_aliases_are_resolved_and_missing_owner_is_rejected() {
-        assert_eq!(descriptor_owner_sid("O:SY").unwrap(), "S-1-5-18");
-        assert!(descriptor_owner_sid("D:").is_err());
-        assert!(descriptor_owner_sid("O:SY\0O:BA").is_err());
-        assert!(descriptor_owner_sid("not sddl").is_err());
-    }
-    #[test]
-    fn process_token_roundtrips_through_descriptor() {
-        let sid = current_sid().unwrap();
-        assert_eq!(descriptor_owner_sid(&format!("O:{sid}")).unwrap(), sid);
-    }
-}
-
 /// Resolve scheduler DOMAIN\user spelling through Windows, never string aliases.
 pub fn resolve_account_sid(account: &str) -> Result<String> {
     if account.starts_with("S-1-") {
@@ -169,4 +152,21 @@ pub fn resolve_account_sid(account: &str) -> Result<String> {
         )?;
     }
     sid_string(raw)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn descriptor_aliases_are_resolved_and_missing_owner_is_rejected() {
+        assert_eq!(descriptor_owner_sid("O:SY").unwrap(), "S-1-5-18");
+        assert!(descriptor_owner_sid("D:").is_err());
+        assert!(descriptor_owner_sid("O:SY\0O:BA").is_err());
+        assert!(descriptor_owner_sid("not sddl").is_err());
+    }
+    #[test]
+    fn process_token_roundtrips_through_descriptor() {
+        let sid = current_sid().unwrap();
+        assert_eq!(descriptor_owner_sid(&format!("O:{sid}")).unwrap(), sid);
+    }
 }
