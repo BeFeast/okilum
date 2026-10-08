@@ -1,0 +1,183 @@
+diff --git a/crates/base/src/input/base/movement.rs b/crates/base/src/input/base/movement.rs
+index fe9ceb80..45a4f337 100644
+--- a/crates/base/src/input/base/movement.rs
++++ b/crates/base/src/input/base/movement.rs
+@@ -537,12 +537,19 @@ impl<M: InputModeKind> InputBaseState<M> {
+         if last.source_stamp != self.source_stamp() { return false; }
+         let Some(displayed) = last.project(self.cursor(), ConcealBias::Right) else { return false; };
+         let mut target = None;
++        let mut selection_origin = None;
+         let mut handled = false;
+         for (vi, (line, &start)) in last.lines.iter().zip(&last.visible_line_byte_offsets).enumerate() {
+             if displayed >= start && displayed <= start + line.len() {
+                 if let Some(step) = line.visual_step(displayed - start, self.cursor_bidi_affinity,
+                     self.cursor_line_end_affinity, right) {
+                     handled = true;
++                    if select && self.selected_range.is_empty() {
++                        if let Some((index, wrap, affinity)) = step {
++                            selection_origin = line.visual_step(index, affinity, wrap, !right)
++                                .flatten().and_then(|(origin, _, _)| last.source(start + origin, ConcealBias::Right));
++                        }
++                    }
+                     let next = if let Some((index, wrap, affinity)) = step {
+                         Some((start + index, wrap, affinity))
+                     } else {
+@@ -575,7 +582,13 @@ impl<M: InputModeKind> InputBaseState<M> {
+             return handled;
+         };
+         self.cursor_bidi_affinity = affinity;
+-        if select { self.select_to_with_affinity(offset, wrap, cx); }
++        if select {
++            if let Some(origin) = selection_origin {
++                self.selected_range = (origin..origin).into();
++                self.selection_reversed = false;
++            }
++            self.select_to_with_affinity(offset, wrap, cx);
++        }
+         else { self.move_to_with_affinity(offset, None, wrap, cx); }
+         true
+     }
+@@ -701,6 +714,28 @@ impl<M: InputModeKind> InputBaseState<M> {
+ 
+     pub(super) fn home(&mut self, _: &MoveHome, _: &mut Window, cx: &mut Context<Self>) {
+         self.pause_blink_cursor(cx);
++        // Use the painted row, including projected text and soft-wrap affinity.
++        if let Some(last) = &self.last_layout {
++            if last.source_stamp == self.source_stamp() {
++                if let Some(displayed) = last.project(self.cursor(), ConcealBias::Right) {
++                    for (line, &start) in last.lines.iter().zip(&last.visible_line_byte_offsets) {
++                        if displayed >= start && displayed <= start + line.len() {
++                            if let Some(pos) = line.position_for_caret(displayed - start, last,
++                                self.cursor_line_end_affinity, self.cursor_bidi_affinity) {
++                                if let Some((index, wrap, affinity)) = line.closest_caret_for_position(
++                                    gpui::point(gpui::px(-1.), pos.y), last) {
++                                    if let Some(source) = last.source(start + index, ConcealBias::Left) {
++                                        self.cursor_bidi_affinity = affinity;
++                                        self.move_to_with_affinity(source, Some(MoveDirection::Up), wrap, cx);
++                                        return;
++                                    }
++                                }
++                            }
++                        }
++                    }
++                }
++            }
++        }
+         let offset = self.start_of_line();
+         self.move_to(offset, Some(MoveDirection::Up), cx);
+     }
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+index 82925882..53d13fd6 100644
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -2012,6 +2012,11 @@ impl<M: InputModeKind> InputBaseState<M> {
+ 
+         // Double click to select word
+         if event.button == MouseButton::Left && event.click_count == 2 {
++            // A trailing RTL edge can share its byte offset with following
++            // whitespace. Select the word owned by the clicked cluster.
++            let offset = if bidi_affinity == Affinity::After {
++                self.previous_boundary(offset)
++            } else { offset };
+             self.select_word(offset, window, cx);
+             return;
+         }
+diff --git a/crates/base/src/input/bidi_geometry.rs b/crates/base/src/input/bidi_geometry.rs
+index 636b941b..b5e3fdfe 100644
+--- a/crates/base/src/input/bidi_geometry.rs
++++ b/crates/base/src/input/bidi_geometry.rs
+@@ -267,3 +267,60 @@ mod tests {
+         assert_eq!(map.selection(0..8), vec![px(0.)..px(50.)]);
+     }
+ }
++
++#[cfg(test)]
++mod boundary_extension_tests {
++    use super::*;
++    #[test]
++    fn shift_entry_anchors_to_the_crossed_cluster() {
++        let map = Geometry {
++            cells: [
++                (0..1, false),
++                (1..2, false),
++                (2..3, false),
++                (3..4, false),
++                (10..12, true),
++                (8..10, true),
++                (6..8, true),
++                (4..6, true),
++                (12..13, false),
++                (13..14, false),
++            ]
++            .into_iter()
++            .enumerate()
++            .map(|(i, (source, rtl))| Cell {
++                source,
++                rtl,
++                left: gpui::px(i as f32 * 10.),
++                right: gpui::px((i + 1) as f32 * 10.),
++            })
++            .collect(),
++        };
++        for (caret, right, expected) in [
++            (
++                Caret {
++                    index: 4,
++                    affinity: Affinity::After,
++                },
++                true,
++                10..12,
++            ),
++            (
++                Caret {
++                    index: 12,
++                    affinity: Affinity::Before,
++                },
++                false,
++                4..6,
++            ),
++        ] {
++            let head = map.step(caret, right).unwrap();
++            let anchor = map.step(head, !right).unwrap();
++            assert_eq!(
++                anchor.index.min(head.index)..anchor.index.max(head.index),
++                expected
++            );
++            assert_eq!(map.position(anchor), map.position(caret));
++        }
++    }
++}
+diff --git a/crates/base/src/text_boundary.rs b/crates/base/src/text_boundary.rs
+index 83d15a0a..616d4a23 100644
+--- a/crates/base/src/text_boundary.rs
++++ b/crates/base/src/text_boundary.rs
+@@ -12,7 +12,7 @@ impl From<char> for CharacterKind {
+     fn from(character: char) -> Self {
+         if character == '_'
+             || character.is_ascii_alphanumeric()
+-            || matches!(character, '\u{00C0}'..='\u{024F}' | '\u{0400}'..='\u{04FF}' | '\u{1E00}'..='\u{1EFF}' | '\u{0300}'..='\u{036F}')
++            || matches!(character, '\u{00C0}'..='\u{024F}' | '\u{0400}'..='\u{04FF}' | '\u{1E00}'..='\u{1EFF}' | '\u{0300}'..='\u{036F}' | '\u{05D0}'..='\u{05EA}' | '\u{05EF}'..='\u{05F2}' | '\u{0591}'..='\u{05BD}' | '\u{05BF}' | '\u{05C1}'..='\u{05C2}' | '\u{05C4}'..='\u{05C5}' | '\u{05C7}')
+         {
+             Self::Word
+         } else if matches!(character, '\n' | '\r') {
+@@ -80,3 +80,20 @@ fn clip_offset_left(text: &str, offset: usize) -> usize {
+     }
+     offset
+ }
++
++#[cfg(test)]
++mod hebrew_tests {
++    #[test]
++    fn hebrew_word_and_niqqud_preserve_byte_ranges() {
++        for word in ["שלום", "שָׁלוֹם"] {
++            let text = format!("abc {word} xyz");
++            for (offset, _) in word.char_indices() {
++                assert_eq!(
++                    super::word_range_at(&text, 4 + offset),
++                    Some(4..4 + word.len())
++                );
++            }
++        }
++        assert_eq!(super::word_range_at("abc שלום xyz", 1), Some(0..3));
++    }
++}

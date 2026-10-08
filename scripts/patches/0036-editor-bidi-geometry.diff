@@ -1,0 +1,964 @@
+--- a/crates/base/Cargo.toml
++++ b/crates/base/Cargo.toml
+@@ -45,6 +45,7 @@
+ tracing.workspace = true
+ unicode-linebreak = "0.1.5"
+ unicode-segmentation = "1.12.0"
++unicode-bidi = "0.3.18"
+ web-time = "1"
+ syntect.workspace = true
+
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -513,7 +513,7 @@
+                 let line = &lines[vi];
+                 let line_start = last_layout.visible_line_byte_offsets[vi];
+                 let local = offset.saturating_sub(line_start);
+-                if let Some(pos) = line.position_for_index(local, last_layout, affinity) {
++                if let Some(pos) = line.position_for_caret(local, last_layout, affinity, if offset == cursor { state.cursor_bidi_affinity } else { super::bidi_geometry::Affinity::Before }) {
+                     return line_origin + pos;
+                 }
+             }
+@@ -648,6 +648,26 @@
+             || range.end > last_layout.visible_range_offset.end
+         {
+             return None;
++        }
++
++        if last_layout.lines.iter().any(|line| line.has_bidi()) {
++            let mut builder = gpui::PathBuilder::fill();
++            let mut y = last_layout.visible_top;
++            let mut any = false;
++            for (line, &start) in last_layout.lines.iter().zip(&last_layout.visible_line_byte_offsets) {
++                let local = range.start.saturating_sub(start)..range.end.saturating_sub(start);
++                for mut rect in line.selection_rects(local, last_layout) {
++                    rect.origin += bounds.origin + point(last_layout.line_number_width, y);
++                    builder.move_to(rect.origin);
++                    builder.line_to(rect.top_right());
++                    builder.line_to(rect.bottom_right());
++                    builder.line_to(rect.bottom_left());
++                    builder.close();
++                    any = true;
++                }
++                y += line.size(last_layout.line_height).height;
++            }
++            return if any { builder.build().ok() } else { None };
+         }
+
+         let line_height = last_layout.line_height;
+--- a/crates/base/src/input/base/movement.rs
++++ b/crates/base/src/input/base/movement.rs
+@@ -20,6 +20,8 @@
+     target: usize,
+     preferred: (gpui::Pixels, usize),
+     direction: MoveDirection,
++    edge: Option<bool>,
++    select: bool,
+ }
+
+ impl<M: InputModeKind> InputBaseState<M> {
+@@ -74,13 +76,10 @@
+             cx.notify();
+             return;
+         };
+-        let Some((index, affinity)) = line.closest_index_for_position(
+-            Point {
+-                x: pending.preferred.0,
+-                y: target.local_row * last.line_height,
+-            },
+-            last,
+-        ) else {
++        let hit = if let Some(right) = pending.edge { line.visual_edge(right) } else {
++            line.closest_caret_for_position(Point { x: pending.preferred.0, y: target.local_row * last.line_height }, last)
++        };
++        let Some((index, affinity, bidi_affinity)) = hit else {
+             return;
+         };
+         let Some(vi) = last.visible_buffer_lines.iter().position(|r| *r == row) else {
+@@ -92,7 +91,9 @@
+         ) else {
+             return;
+         };
+-        self.move_to_with_affinity(source, Some(pending.direction), affinity, cx);
++        self.cursor_bidi_affinity = bidi_affinity;
++        if pending.select { self.select_to_with_affinity(source, affinity, cx); }
++        else { self.move_to_with_affinity(source, Some(pending.direction), affinity, cx); }
+         self.preferred_column = Some(pending.preferred);
+     }
+
+@@ -119,7 +120,7 @@
+             .position(|row| *row == point.row)
+             .unwrap();
+         let column = offset.saturating_sub(last_layout.visible_line_byte_offsets[vi]);
+-        let Some(pos) = line.position_for_index(column, last_layout, self.cursor_line_end_affinity)
++        let Some(pos) = line.position_for_caret(column, last_layout, self.cursor_line_end_affinity, self.cursor_bidi_affinity)
+         else {
+             self.preferred_column = None;
+             return;
+@@ -139,6 +140,7 @@
+         direction: Option<MoveDirection>,
+         cx: &mut Context<Self>,
+     ) {
++        self.cursor_bidi_affinity = super::bidi_geometry::Affinity::Before;
+         self.move_to_with_affinity(offset, direction, false, cx);
+     }
+
+@@ -446,6 +448,7 @@
+         let mut new_offset = self.display_map.wrap_display_point_to_offset(display_point);
+
+         let mut new_affinity = false;
++        let mut new_bidi_affinity = super::bidi_geometry::Affinity::Before;
+         if let Some((preferred_x, column)) = was_preferred_column {
+             // Get display point again to update local_row.
+             let mut next_display_point = self.display_map.offset_to_wrap_display_point(new_offset);
+@@ -457,7 +460,7 @@
+
+             // If in visible range, prefer to use position to get column.
+             if let Some(line) = last_layout.line(next_point.row) {
+-                if let Some((x, line_end_affinity)) = line.closest_index_for_position(
++                if let Some((x, line_end_affinity, bidi_affinity)) = line.closest_caret_for_position(
+                     Point {
+                         x: preferred_x,
+                         y: next_display_point.local_row * last_layout.line_height,
+@@ -481,6 +484,7 @@
+                     // Landing on a wrap boundary means the preferred column pointed past the
+                     // last glyph of the target row, so the caret stays on that row.
+                     new_affinity = line_end_affinity;
++                    new_bidi_affinity = bidi_affinity;
+                 }
+             } else if self.projection.enabled && last_layout.projection.is_none() {
+                 // Source fallback may have syntax/decorations with different
+@@ -488,6 +492,8 @@
+                 self.projection_pending_vertical = Some(PendingVertical {
+                     stamp: self.source_stamp(),
+                     active: self.projection.active.clone(),
++                    edge: None,
++                    select: false,
+                     target: self.cursor_boundary(new_offset, Bias::Left),
+                     preferred: (preferred_x, column),
+                     direction: if move_lines < 0 {
+@@ -519,17 +525,93 @@
+         } else {
+             MoveDirection::Down
+         };
++        self.cursor_bidi_affinity = new_bidi_affinity;
+         self.move_to_with_affinity(new_offset, Some(direction), new_affinity, cx);
+         // Set back the preferred_column
+         self.preferred_column = was_preferred_column;
+         cx.notify();
+     }
+
++    pub(super) fn move_visually(&mut self, right: bool, select: bool, cx: &mut Context<Self>) -> bool {
++        let Some(last) = &self.last_layout else { return false; };
++        if last.source_stamp != self.source_stamp() { return false; }
++        let Some(displayed) = last.project(self.cursor(), ConcealBias::Right) else { return false; };
++        let mut target = None;
++        let mut handled = false;
++        for (vi, (line, &start)) in last.lines.iter().zip(&last.visible_line_byte_offsets).enumerate() {
++            if displayed >= start && displayed <= start + line.len() {
++                if let Some(step) = line.visual_step(displayed - start, self.cursor_bidi_affinity,
++                    self.cursor_line_end_affinity, right) {
++                    handled = true;
++                    let next = if let Some((index, wrap, affinity)) = step {
++                        Some((start + index, wrap, affinity))
++                    } else {
++                        let next_vi = if right { vi.checked_add(1).filter(|&i| i < last.lines.len()) }
++                            else { vi.checked_sub(1) };
++                        next_vi.and_then(|i| last.lines[i].visual_edge(!right)
++                            .map(|(index, wrap, affinity)| (last.visible_line_byte_offsets[i] + index, wrap, affinity)))
++                    };
++                    target = next.and_then(|(index, wrap, affinity)| last.source(index, ConcealBias::Right)
++                        .map(|source| (source, wrap, affinity)));
++                }
++                break;
++            }
++        }
++        let Some((offset, wrap, affinity)) = target else {
++            if handled {
++                let row = self.text.offset_to_point(self.cursor()).row;
++                let next_row = if right { row.checked_add(1).filter(|&row| row < self.text.lines_len()) }
++                    else { row.checked_sub(1) };
++                if let Some(row) = next_row {
++                    let target = if right { self.text.line_start_offset(row) } else { self.text.line_end_offset(row) };
++                    self.projection_pending_vertical = Some(PendingVertical {
++                        stamp: self.source_stamp(), active: self.projection.active.clone(), target,
++                        preferred: (gpui::px(0.), 0), direction: if right { MoveDirection::Down } else { MoveDirection::Up },
++                        edge: Some(!right), select,
++                    });
++                    self.resolve_pending_vertical(cx);
++                }
++            }
++            return handled;
++        };
++        self.cursor_bidi_affinity = affinity;
++        if select { self.select_to_with_affinity(offset, wrap, cx); }
++        else { self.move_to_with_affinity(offset, None, wrap, cx); }
++        true
++    }
++
++    fn collapse_visual_selection(&mut self, right: bool, cx: &mut Context<Self>) -> bool {
++        use super::bidi_geometry::Affinity;
++        let Some(last) = &self.last_layout else { return false; };
++        if last.source_stamp != self.source_stamp() || !last.lines.iter().any(|line| line.has_bidi()) { return false; }
++        let locate = |source, affinity, wrap| {
++            let index = last.project(source, ConcealBias::Right)?;
++            let mut y = last.visible_top;
++            for (line, &start) in last.lines.iter().zip(&last.visible_line_byte_offsets) {
++                if index >= start && index <= start + line.len() {
++                    let pos = line.position_for_caret(index - start, last, wrap, affinity)?;
++                    return Some((y + pos.y, pos.x, source, affinity, wrap));
++                }
++                y += line.size(last.line_height).height;
++            }
++            None
++        };
++        let Some(a) = locate(self.selected_range.start, Affinity::Before, false) else { return false; };
++        let Some(b) = locate(self.selected_range.end, Affinity::After, true) else { return false; };
++        let pick_a = if right { (a.0, a.1) >= (b.0, b.1) } else { (a.0, a.1) <= (b.0, b.1) };
++        let (_, _, offset, affinity, wrap) = if pick_a { a } else { b };
++        self.cursor_bidi_affinity = affinity;
++        self.move_to_with_affinity(offset, None, wrap, cx);
++        true
++    }
++
+     pub(super) fn left(&mut self, _: &MoveLeft, _: &mut Window, cx: &mut Context<Self>) {
+         self.pause_blink_cursor(cx);
+         if self.selected_range.is_empty() {
++            if self.move_visually(false, false, cx) { return; }
+             self.move_to(self.previous_boundary(self.cursor()), None, cx);
+         } else {
++            if self.collapse_visual_selection(false, cx) { return; }
+             self.move_to(self.selected_range.start, None, cx)
+         }
+     }
+@@ -537,8 +619,10 @@
+     pub(super) fn right(&mut self, _: &MoveRight, _: &mut Window, cx: &mut Context<Self>) {
+         self.pause_blink_cursor(cx);
+         if self.selected_range.is_empty() {
++            if self.move_visually(true, false, cx) { return; }
+             self.move_to(self.next_boundary(self.selected_range.end), None, cx);
+         } else {
++            if self.collapse_visual_selection(true, cx) { return; }
+             self.move_to(self.selected_range.end, None, cx)
+         }
+     }
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -13,3 +13,4 @@
+ use super::projection::{ConcealBias, SourceUtf16, source_utf16_to_byte};
++use super::bidi_geometry::Affinity;
+ use gpui::TextAlign;
+ use gpui::{
+@@ -349,6 +350,7 @@
+     pub(super) show_whitespaces: bool,
+     /// This flag tells the renderer to prefer the end of the current visual line.
+     pub(crate) cursor_line_end_affinity: bool,
++    pub(crate) cursor_bidi_affinity: Affinity,
+     pub(super) pattern: Option<regex::Regex>,
+     pub(super) validate: Option<Box<dyn Fn(&str, &mut App) -> bool + 'static>>,
+     /// The step strategy for [`super::NumberInput`] to increment/decrement.
+@@ -707,6 +709,7 @@
+             _subscriptions,
+             _pending_update: false,
+             cursor_line_end_affinity: false,
++            cursor_bidi_affinity: Affinity::Before,
+             auto_scroll: AutoScroll::default(),
+         }
+     }
+@@ -1396,12 +1399,18 @@
+
+     pub(super) fn select_left(&mut self, _: &SelectLeft, _: &mut Window, cx: &mut Context<Self>) {
+         self.undo_manager.break_transaction_coalescing();
+-        self.select_to(self.previous_boundary(self.cursor()), cx);
++        if !self.move_visually(false, true, cx) {
++            self.cursor_bidi_affinity = Affinity::Before;
++            self.select_to(self.previous_boundary(self.cursor()), cx);
++        }
+     }
+
+     pub(super) fn select_right(&mut self, _: &SelectRight, _: &mut Window, cx: &mut Context<Self>) {
+         self.undo_manager.break_transaction_coalescing();
+-        self.select_to(self.next_boundary(self.cursor()), cx);
++        if !self.move_visually(true, true, cx) {
++            self.cursor_bidi_affinity = Affinity::Before;
++            self.select_to(self.next_boundary(self.cursor()), cx);
++        }
+     }
+
+     pub(super) fn select_up(&mut self, _: &SelectUp, _: &mut Window, cx: &mut Context<Self>) {
+@@ -1945,7 +1954,7 @@
+         }
+
+         self.selecting = true;
+-        let Some((offset, line_end_affinity)) = self.index_for_mouse_position(event.position)
++        let Some((offset, line_end_affinity, bidi_affinity)) = self.index_for_mouse_position(event.position)
+         else {
+             cx.notify();
+             return;
+@@ -1986,6 +1995,7 @@
+             return;
+         }
+
++        self.cursor_bidi_affinity = bidi_affinity;
+         if event.modifiers.shift {
+             self.select_to_with_affinity(offset, line_end_affinity, cx);
+         } else {
+@@ -2035,7 +2045,7 @@
+         }
+
+         // Show diagnostic popover on mouse move
+-        let Some((offset, _)) = self.index_for_mouse_position(event.position) else {
++        let Some((offset, _, _)) = self.index_for_mouse_position(event.position) else {
+             return;
+         };
+         M::on_mouse_move(self, offset, event, window, cx);
+@@ -2156,7 +2166,7 @@
+                 return;
+             };
+             let column = projected.saturating_sub(last_layout.visible_line_byte_offsets[vi]);
+-            if let Some(pos) = line.position_for_index(column, last_layout, false) {
++            if let Some(pos) = line.position_for_caret(column, last_layout, self.cursor_line_end_affinity, self.cursor_bidi_affinity) {
+                 let bounds_width = bounds.size.width - last_layout.line_number_width;
+                 let col_offset_x = pos.x;
+                 row_offset_y += pos.y;
+@@ -2460,6 +2470,7 @@
+         self.selected_range = (start.min(end)..start.max(end)).into();
+         self.selected_word_range = None;
+         self.cursor_line_end_affinity = false;
++        self.cursor_bidi_affinity = Affinity::Before;
+         self.sync_projection_active();
+         self.refresh_projection();
+         if self
+@@ -2487,7 +2498,7 @@
+     pub(crate) fn index_for_mouse_position(
+         &self,
+         position: Point<Pixels>,
+-    ) -> Option<(usize, bool)> {
++    ) -> Option<(usize, bool, Affinity)> {
+         if self.projection.enabled
+             && self
+                 .last_layout
+@@ -2498,13 +2509,13 @@
+         }
+         // If the text is empty, always return 0
+         if self.text.len() == 0 {
+-            return Some((0, false));
++            return Some((0, false, Affinity::Before));
+         }
+
+         let (Some(bounds), Some(last_layout)) =
+             (self.last_bounds.as_ref(), self.last_layout.as_ref())
+         else {
+-            return Some((0, false));
++            return Some((0, false, Affinity::Before));
+         };
+
+         let line_height = last_layout.line_height;
+@@ -2539,7 +2550,7 @@
+
+             // Return offset by use closest_index_for_x if is single line mode.
+             if self.is_single_line() {
+-                let local_index = line_layout.closest_index_for_x(pos.x, last_layout);
++                let (local_index, _, bidi_affinity) = line_layout.closest_caret_for_position(point(pos.x, px(0.)), last_layout)?;
+                 // A single line never wraps, so there is no boundary to disambiguate.
+                 return Some((
+                     last_layout.source(
+@@ -2547,12 +2558,13 @@
+                         ConcealBias::Right,
+                     )?,
+                     false,
++                    bidi_affinity,
+                 ));
+             }
+
+             // Check if mouse is in this line's bounds
+-            if let Some((local_index, line_end_affinity)) =
+-                line_layout.closest_index_for_position(pos, last_layout)
++            if let Some((local_index, line_end_affinity, affinity)) =
++                line_layout.closest_caret_for_position(pos, last_layout)
+             {
+                 return Some((
+                     last_layout.source(
+@@ -2560,12 +2572,14 @@
+                         ConcealBias::Right,
+                     )?,
+                     line_end_affinity,
++                    affinity,
+                 ));
+             } else if pos.y < px(0.) {
+                 // Mouse is above this line, return start of this line
+                 return Some((
+                     last_layout.source(self.resolve_index(line_start_offset), ConcealBias::Left)?,
+                     false,
++                    Affinity::Before,
+                 ));
+             }
+
+@@ -2578,9 +2592,10 @@
+             return Some((
+                 last_layout.source(last_layout.visible_range_offset.end, ConcealBias::Right)?,
+                 false,
++                Affinity::Before,
+             ));
+         }
+-        Some((self.text.len(), false))
++        Some((self.text.len(), false, Affinity::Before))
+     }
+
+     /// Map a display byte index back to a text offset, undoing the mask expansion when the input
+@@ -2600,6 +2615,7 @@
+     ///
+     /// Ensure the offset use self.next_boundary or self.previous_boundary to get the correct offset.
+     pub(crate) fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
++        self.cursor_bidi_affinity = Affinity::Before;
+         self.select_to_with_affinity(offset, false, cx);
+     }
+
+@@ -2860,11 +2876,12 @@
+         }
+
+         self.auto_scroll.last_drag_position = Some(event.position);
+-        let Some((offset, line_end_affinity)) = self.index_for_mouse_position(event.position)
++        let Some((offset, line_end_affinity, bidi_affinity)) = self.index_for_mouse_position(event.position)
+         else {
+             cx.notify();
+             return;
+         };
++        self.cursor_bidi_affinity = bidi_affinity;
+         self.select_to_with_affinity(offset, line_end_affinity, cx);
+
+         if !self.is_single_line() {
+@@ -2875,11 +2892,12 @@
+                 let current = state.scroll_handle.offset();
+                 state.update_scroll_offset(Some(point(current.x, current.y + delta)), cx);
+                 if let Some(pos) = state.auto_scroll.last_drag_position {
+-                    let Some((offset, line_end_affinity)) = state.index_for_mouse_position(pos)
++                    let Some((offset, line_end_affinity, bidi_affinity)) = state.index_for_mouse_position(pos)
+                     else {
+                         cx.notify();
+                         return;
+                     };
++                    state.cursor_bidi_affinity = bidi_affinity;
+                     state.select_to_with_affinity(offset, line_end_affinity, cx);
+                 }
+             });
+@@ -3320,6 +3338,7 @@
+         self.update_fold_candidates_incremental(&range, new_text);
+         M::refresh_language_features(self, window, cx);
+         self.selected_range = (new_offset..new_offset).into();
++        self.cursor_bidi_affinity = Affinity::After;
+         self.ime_marked_range.take();
+         self.update_preferred_column();
+         self.update_search(cx);
+@@ -3494,20 +3513,22 @@
+             let index_offset = last_layout.visible_line_byte_offsets[vi];
+
+             if start_origin.is_none() && range.start >= index_offset {
+-                if let Some(p) = line.position_for_index(
++                if let Some(p) = line.position_for_caret(
+                     range.start.saturating_sub(index_offset),
+                     last_layout,
+-                    false,
++                    self.cursor_line_end_affinity,
++                    if range.is_empty() { self.cursor_bidi_affinity } else { Affinity::Before },
+                 ) {
+                     start_origin = Some(p + point(px(0.), y_offset));
+                 }
+             }
+
+             if end_origin.is_none() && range.end >= index_offset {
+-                if let Some(p) = line.position_for_index(
++                if let Some(p) = line.position_for_caret(
+                     range.end.saturating_sub(index_offset),
+                     last_layout,
+-                    false,
++                    self.cursor_line_end_affinity,
++                    if range.is_empty() { self.cursor_bidi_affinity } else { Affinity::After },
+                 ) {
+                     end_origin = Some(p + point(px(0.), y_offset));
+                 }
+@@ -3522,9 +3543,9 @@
+         end_origin.y = start_origin.y;
+
+         Some(Bounds::from_corners(
+-            bounds.origin + line_number_origin + start_origin,
++            bounds.origin + line_number_origin + point(start_origin.x.min(end_origin.x), start_origin.y),
+             // + line_height for show IME panel under the cursor line.
+-            bounds.origin + line_number_origin + point(end_origin.x, end_origin.y + line_height),
++            bounds.origin + line_number_origin + point(start_origin.x.max(end_origin.x), end_origin.y + line_height),
+         ))
+     }
+
+@@ -3545,7 +3566,7 @@
+             }
+             return None;
+         }
+-        let (source, _) = self.index_for_mouse_position(point)?;
++        let (source, _, _) = self.index_for_mouse_position(point)?;
+         Some(self.offset_to_utf16(source))
+     }
+ }
+--- /dev/null
++++ b/crates/base/src/input/bidi_geometry.rs
+@@ -0,0 +1,269 @@
++//! Visual caret geometry over platform-shaped glyphs; source bytes remain logical.
++use std::{collections::BTreeMap, ops::Range};
++
++use gpui::{Pixels, ShapedLine};
++use unicode_bidi::BidiInfo;
++use unicode_segmentation::UnicodeSegmentation;
++
++/// Which neighboring logical grapheme owns the caret. This is independent of
++/// soft-wrap affinity; one boolean cannot encode both choices.
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
++pub(crate) enum Affinity {
++    #[default]
++    Before,
++    After,
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) struct Caret {
++    pub(crate) index: usize,
++    pub(crate) affinity: Affinity,
++}
++
++#[derive(Debug)]
++pub(crate) struct Cell {
++    pub(crate) source: Range<usize>,
++    pub(crate) left: Pixels,
++    pub(crate) right: Pixels,
++    pub(crate) rtl: bool,
++}
++
++impl Cell {
++    pub(crate) fn leading(&self) -> Pixels {
++        if self.rtl {
++            self.right
++        } else {
++            self.left
++        }
++    }
++
++    pub(crate) fn trailing(&self) -> Pixels {
++        if self.rtl {
++            self.left
++        } else {
++            self.right
++        }
++    }
++}
++
++#[derive(Debug)]
++pub(crate) struct Geometry {
++    pub(crate) cells: Vec<Cell>,
++}
++
++impl Geometry {
++    pub(crate) fn new(line: &ShapedLine) -> Self {
++        let text = line.text.as_ref();
++        let bidi = BidiInfo::new(text, None);
++        let boundaries: Vec<_> = text
++            .grapheme_indices(true)
++            .map(|(i, _)| i)
++            .chain([text.len()])
++            .collect();
++        // Neither source nor X ordering of platform glyph collections is guaranteed.
++        // Coalesce fallback glyphs/combining marks to their grapheme before sorting.
++        let mut clusters = BTreeMap::<usize, Pixels>::new();
++        for glyph in line.runs.iter().flat_map(|run| &run.glyphs) {
++            let slot = boundaries
++                .partition_point(|&i| i <= glyph.index)
++                .saturating_sub(1);
++            let start = boundaries[slot];
++            clusters
++                .entry(start)
++                .and_modify(|x| *x = (*x).min(glyph.position.x))
++                .or_insert(glyph.position.x);
++        }
++        let starts: Vec<_> = clusters.keys().copied().chain([text.len()]).collect();
++        let mut visual: Vec<_> = clusters.into_iter().collect();
++        visual.sort_by_key(|(_, x)| *x);
++        let mut cells = Vec::new();
++        for (n, &(start, left)) in visual.iter().enumerate() {
++            let right = visual.get(n + 1).map_or(line.width, |(_, x)| *x);
++            let end = starts[starts.binary_search(&start).unwrap() + 1];
++            let graphemes: Vec<_> = boundaries
++                .iter()
++                .copied()
++                .filter(|&i| start <= i && i <= end)
++                .collect();
++            let rtl = bidi.levels[start].is_rtl();
++            let count = graphemes.len() - 1;
++            // A ligature cluster can span several graphemes. Equal subdivision is
++            // provisional: native ligature caret evidence is required before shipping.
++            for (i, pair) in graphemes.windows(2).enumerate() {
++                let visual_i = if rtl { count - i - 1 } else { i };
++                let width = (right - left) / count as f32;
++                cells.push(Cell {
++                    source: pair[0]..pair[1],
++                    left: left + width * visual_i as f32,
++                    right: left + width * (visual_i + 1) as f32,
++                    rtl,
++                });
++            }
++        }
++        cells.sort_by_key(|cell| cell.left);
++        Self { cells }
++    }
++
++    pub(crate) fn position(&self, caret: Caret) -> Option<Pixels> {
++        self.cells.iter().find_map(|cell| match caret.affinity {
++            Affinity::Before if cell.source.start == caret.index => Some(cell.leading()),
++            Affinity::After if cell.source.end == caret.index => Some(cell.trailing()),
++            _ => None,
++        })
++    }
++
++    /// Select the visual cell first, so an equal-X edge in another directional
++    /// run cannot steal its logical index. Preserve ownership at the boundary.
++    pub(crate) fn hit(&self, x: Pixels) -> Option<Caret> {
++        let cell = self.cells.iter().min_by_key(|cell| {
++            if x < cell.left {
++                cell.left - x
++            } else if x > cell.right {
++                x - cell.right
++            } else {
++                gpui::px(0.)
++            }
++        })?;
++        if (cell.leading() - x).abs() <= (cell.trailing() - x).abs() {
++            Some(Caret {
++                index: cell.source.start,
++                affinity: Affinity::Before,
++            })
++        } else {
++            Some(Caret {
++                index: cell.source.end,
++                affinity: Affinity::After,
++            })
++        }
++    }
++
++    /// Move in visual X order, retaining the selected edge's logical ownership.
++    /// At row limits the caller decides paragraph/wrap traversal.
++    pub(crate) fn step(&self, caret: Caret, right: bool) -> Option<Caret> {
++        let x = self.position(caret)?;
++        // Choose the cell crossed by the arrow, not an arbitrary equal-X
++        // neighbor. Shift+Left across the final Hebrew letter must select that
++        // letter, not the LTR prefix that shares its trailing coordinate.
++        let cell = self
++            .cells
++            .iter()
++            .filter(|cell| if right { cell.right > x } else { cell.left < x })
++            .min_by_key(|cell| {
++                if right {
++                    (cell.right - x).abs()
++                } else {
++                    (cell.left - x).abs()
++                }
++            })?;
++        let leading = right == cell.rtl;
++        Some(if leading {
++            Caret {
++                index: cell.source.start,
++                affinity: Affinity::Before,
++            }
++        } else {
++            Caret {
++                index: cell.source.end,
++                affinity: Affinity::After,
++            }
++        })
++    }
++
++    pub(crate) fn selection(&self, range: Range<usize>) -> Vec<Range<Pixels>> {
++        let mut spans: Vec<Range<Pixels>> = Vec::new();
++        for cell in &self.cells {
++            if cell.source.start >= range.end || cell.source.end <= range.start {
++                continue;
++            }
++            if let Some(previous) = spans.last_mut() {
++                if previous.end == cell.left {
++                    previous.end = cell.right;
++                    continue;
++                }
++            }
++            spans.push(cell.left..cell.right);
++        }
++        spans
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use gpui::px;
++
++    fn mixed() -> Geometry {
++        // Platform-independent geometry of "a אב z"; two Hebrew cells are visual-reversed.
++        Geometry {
++            cells: [
++                (0..1, 0., 10., false),
++                (1..2, 10., 15., false),
++                (4..6, 15., 25., true),
++                (2..4, 25., 35., true),
++                (6..7, 35., 40., false),
++                (7..8, 40., 50., false),
++            ]
++            .into_iter()
++            .map(|(source, left, right, rtl)| Cell {
++                source,
++                left: px(left),
++                right: px(right),
++                rtl,
++            })
++            .collect(),
++        }
++    }
++
++    #[test]
++    fn bidi_boundary_has_two_positions_without_changing_source_offset() {
++        let map = mixed();
++        assert_eq!(
++            map.position(Caret {
++                index: 2,
++                affinity: Affinity::Before
++            }),
++            Some(px(35.))
++        );
++        assert_eq!(
++            map.position(Caret {
++                index: 2,
++                affinity: Affinity::After
++            }),
++            Some(px(15.))
++        );
++    }
++
++    #[test]
++    fn hit_and_shift_movement_keep_crossed_hebrew_cell_ownership() {
++        let map = mixed();
++        let right_edge = map.hit(px(24.)).unwrap();
++        assert_eq!(
++            right_edge,
++            Caret {
++                index: 4,
++                affinity: Affinity::Before
++            }
++        );
++        let left_edge = map.step(right_edge, false).unwrap();
++        assert_eq!(
++            left_edge,
++            Caret {
++                index: 6,
++                affinity: Affinity::After
++            }
++        );
++        assert_eq!(map.hit(px(16.)), Some(left_edge));
++        assert_eq!(
++            map.selection(right_edge.index..left_edge.index),
++            vec![px(15.)..px(25.)]
++        );
++    }
++
++    #[test]
++    fn mixed_selection_has_disjoint_spans_and_ascii_control_is_contiguous() {
++        let map = mixed();
++        assert_eq!(map.selection(0..4), vec![px(0.)..px(15.), px(25.)..px(35.)]);
++        assert_eq!(map.selection(0..2), vec![px(0.)..px(15.)]);
++        assert_eq!(map.selection(0..8), vec![px(0.)..px(50.)]);
++    }
++}
+--- a/crates/base/src/input/editor/display_map/text_wrapper.rs
++++ b/crates/base/src/input/editor/display_map/text_wrapper.rs
+@@ -1,3 +1,4 @@
++use crate::input::bidi_geometry::{Affinity, Caret, Geometry};
+ use crate::input::attribution::{self, Identity as TraceIdentity, Span as TraceSpan};
+ use gpui::Half;
+ use std::borrow::Cow;
+@@ -591,6 +592,7 @@
+     /// Whether any run of this line carries a background color, so [`Self::paint_background`]
+     /// can skip the glyph walk for the common case of a line without highlights.
+     has_background: bool,
++    bidi: Vec<Option<Geometry>>,
+ }
+
+ impl LineLayout {
+@@ -603,6 +605,7 @@
+             whitespace_chars: Vec::new(),
+             whitespace_indicators: None,
+             has_background: false,
++            bidi: Vec::new(),
+         }
+     }
+
+@@ -642,6 +645,8 @@
+             .max()
+             .unwrap_or_default();
+         self.longest_width = width;
++        let has_rtl = wrapped_lines.iter().any(|line| unicode_bidi::BidiInfo::new(&line.text, None).has_rtl());
++        self.bidi = wrapped_lines.iter().map(|line| has_rtl.then(|| Geometry::new(line))).collect();
+         self.wrapped_lines = wrapped_lines;
+     }
+
+@@ -690,6 +695,11 @@
+         last_layout: &LastLayout,
+         line_end_affinity: bool,
+     ) -> Option<Point<Pixels>> {
++        self.position_for_caret(offset, last_layout, line_end_affinity, Affinity::Before)
++    }
++
++    pub(crate) fn position_for_caret(&self, offset: usize, last_layout: &LastLayout,
++        line_end_affinity: bool, affinity: Affinity) -> Option<Point<Pixels>> {
+         let mut acc_len = 0;
+         let mut offset_y = px(0.);
+
+@@ -710,7 +720,12 @@
+             };
+
+             if matches {
+-                let x = line.x_for_index(offset.saturating_sub(acc_len))
++                let local = offset.saturating_sub(acc_len);
++                let x = self.bidi[i].as_ref().and_then(|map| {
++                    map.position(Caret { index: local, affinity }).or_else(||
++                        map.position(Caret { index: local, affinity: if affinity == Affinity::Before {
++                            Affinity::After } else { Affinity::Before } }))
++                }).unwrap_or_else(|| line.x_for_index(local))
+                     + x_offset
+                     + self.line_indent(i);
+                 return Some(point(x, offset_y));
+@@ -723,27 +738,6 @@
+         }
+
+         None
+-    }
+-
+-    /// Get the closest index for the given x in this line layout.
+-    ///
+-    /// This ignores y, so it only makes sense for a layout that is known to occupy a single
+-    /// visual line. Wrapped layouts must use [`Self::closest_index_for_position`], which also
+-    /// reports the caret affinity that a wrap boundary needs.
+-    pub(crate) fn closest_index_for_x(&self, x: Pixels, last_layout: &LastLayout) -> usize {
+-        let mut acc_len = 0;
+-        let x_offset = last_layout.alignment_offset(self.longest_width);
+-        let x = x - x_offset;
+-
+-        for (i, line) in self.wrapped_lines.iter().enumerate() {
+-            let line_indent = self.line_indent(i);
+-            if x <= line_indent + line.width {
+-                return acc_len + line.closest_index_for_x(x - line_indent);
+-            }
+-            acc_len += line.len;
+-        }
+-
+-        acc_len
+     }
+
+     /// Resolve `pos` to the wrapped sub-line under it.
+@@ -787,12 +781,83 @@
+         pos: Point<Pixels>,
+         last_layout: &LastLayout,
+     ) -> Option<(usize, bool)> {
++        self.closest_caret_for_position(pos, last_layout).map(|(index, wrap, _)| (index, wrap))
++    }
++
++    pub(crate) fn closest_caret_for_position(&self, pos: Point<Pixels>, last_layout: &LastLayout)
++        -> Option<(usize, bool, Affinity)> {
+         let (i, offset, x) = self.wrapped_line_at(pos, last_layout)?;
+         let line = &self.wrapped_lines[i];
+-        let ix = line.closest_index_for_x(x);
++        let hit = self.bidi[i].as_ref().and_then(|map| map.hit(x));
++        let ix = hit.map_or_else(|| line.closest_index_for_x(x), |caret| caret.index);
+         let line_end_affinity = i + 1 < self.wrapped_lines.len() && ix == line.len;
+
+-        Some((offset + ix, line_end_affinity))
++        Some((offset + ix, line_end_affinity, hit.map_or(Affinity::Before, |caret| caret.affinity)))
++    }
++
++    pub(crate) fn visual_step(&self, offset: usize, affinity: Affinity, wrap_end: bool, right: bool)
++        -> Option<Option<(usize, bool, Affinity)>> {
++        if !self.has_bidi() { return None; }
++        let mut start = 0;
++        for (i, line) in self.wrapped_lines.iter().enumerate() {
++            let last = i + 1 == self.wrapped_lines.len();
++            if offset >= start && (offset < start + line.len || ((last || wrap_end) && offset == start + line.len)) {
++                let map = self.bidi[i].as_ref()?;
++                let caret = Caret { index: offset - start, affinity };
++                let caret = if map.position(caret).is_some() { caret } else {
++                    Caret { affinity: if affinity == Affinity::Before { Affinity::After } else { Affinity::Before }, ..caret }
++                };
++                if let Some(next) = map.step(caret, right) {
++                    return Some(Some((start + next.index, !last && next.index == line.len, next.affinity)));
++                }
++                let next_row = if right { i.checked_add(1).filter(|&n| n < self.wrapped_lines.len()) }
++                    else { i.checked_sub(1) };
++                return Some(next_row.and_then(|row| self.visual_row_edge(row, !right)));
++            }
++            start += line.len;
++        }
++        Some(None)
++    }
++
++    fn visual_row_edge(&self, row: usize, right: bool) -> Option<(usize, bool, Affinity)> {
++        let line = self.wrapped_lines.get(row)?;
++        let offset: usize = self.wrapped_lines[..row].iter().map(|line| line.len).sum();
++        let x = if right { line.width + px(1.) } else { px(-1.) };
++        let hit = self.bidi[row].as_ref().and_then(|map| map.hit(x))
++            .unwrap_or(Caret { index: if right { line.len } else { 0 }, affinity: Affinity::Before });
++        Some((offset + hit.index, row + 1 < self.wrapped_lines.len() && hit.index == line.len, hit.affinity))
++    }
++
++    pub(crate) fn visual_edge(&self, right: bool) -> Option<(usize, bool, Affinity)> {
++        self.visual_row_edge(if right { self.wrapped_lines.len().checked_sub(1)? } else { 0 }, right)
++    }
++
++    pub(crate) fn has_bidi(&self) -> bool { self.bidi.iter().any(Option::is_some) }
++
++    pub(crate) fn selection_rects(&self, range: Range<usize>, last: &LastLayout)
++        -> Vec<gpui::Bounds<Pixels>> {
++        let mut result = Vec::new();
++        let mut start = 0;
++        for (i, line) in self.wrapped_lines.iter().enumerate() {
++            let end = start + line.len;
++            if range.start < end && range.end > start {
++                let local = range.start.saturating_sub(start)..range.end.min(end)-start;
++                let spans = if let Some(map) = &self.bidi[i] { map.selection(local) }
++                    else { vec![line.x_for_index(local.start)..line.x_for_index(local.end)] };
++                let x = last.alignment_offset(self.longest_width) + self.line_indent(i);
++                for span in spans {
++                    result.push(gpui::Bounds::new(point(x + span.start, i * last.line_height),
++                        size(span.end - span.start, last.line_height)));
++                }
++            }
++            start = end;
++        }
++        if range.start <= self.len && range.end > self.len {
++            if let Some(pos) = self.position_for_caret(self.len, last, true, Affinity::After) {
++                result.push(gpui::Bounds::new(pos, size(px(6.), last.line_height)));
++            }
++        }
++        result
+     }
+
+     pub(crate) fn index_for_position(
+@@ -802,6 +867,9 @@
+     ) -> Option<usize> {
+         let (i, offset, x) = self.wrapped_line_at(pos, last_layout)?;
+
++        if let Some(map) = &self.bidi[i] {
++            return map.hit(x).map(|caret| offset + caret.index);
++        }
+         Some(offset + self.wrapped_lines[i].index_for_x(x)?)
+     }
+
+--- a/crates/base/src/input/mod.rs
++++ b/crates/base/src/input/mod.rs
+@@ -49,6 +49,7 @@
+ mod native;
+ pub mod projection;
+ mod projection_layout;
++pub(crate) mod bidi_geometry;
+ #[path = "base/rope_ext.rs"]
+ mod rope_ext;
+ #[path = "editor/search.rs"]

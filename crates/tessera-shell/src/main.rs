@@ -95,6 +95,16 @@ mod source_presentation;
 mod text_ranges;
 mod theme_picker;
 mod updater;
+// Run the actual vendor geometry regressions in shell CI: gpui-base is not a
+// workspace member, so Cargo cannot run its dev-dependency tests from this root.
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../../../vendor/gpui-component/crates/base/src/input/bidi_geometry.rs"]
+mod vendor_bidi_geometry;
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../../../vendor/gpui-component/crates/base/src/text_boundary.rs"]
+mod vendor_text_boundary;
 mod window_state;
 #[cfg(all(unix, feature = "brain"))]
 mod workspace;
