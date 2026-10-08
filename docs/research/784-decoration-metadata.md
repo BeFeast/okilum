@@ -36,3 +36,32 @@ Local validation on CT141: 28 source-classifier unit tests passed, including
 six new metadata tests. The on/off case checks identical plans, styles, reasons,
 rendered projection text and source-to-display maps across caret positions.
 This is core metadata evidence only, not native paint or save/Undo acceptance.
+
+## Shared policy and native shaping spike
+
+The local branch stages only `RevealSnapshot`, `prepare_reveal`, and their two
+unit tests from editing executor's #790 head
+`ce6dcb188aba3d18eb95fecb95e11a4a936890f8`. S3a remap/local parsing and native
+adapter changes are not imported. The example's `MarkerPolicy` only delegates
+to immutable `RevealSnapshot::is_raw`; it takes no live `ActiveSource`.
+
+`cargo run -p tessera-shell --example decoration784` is an isolated native shaping
+probe. It splits already-shaped lines, preserving each retained glyph's font,
+ID, source index and original position, and verifies the original layout is
+unchanged. Cases cover ASCII, Cyrillic, indentation, quote/rule markers, ligatures,
+combining marks and emoji. Missing glyph-cluster boundaries, invalid/overlapping
+ranges and RTL text request original raw paint. A no-suppression positive control
+checks that the original marker glyph remains detectable. This conservative
+prototype excludes all RTL rows, not merely non-monotone glyph ordering.
+
+CT141/Xvfb run: all probe assertions passed with exit 0. The first harness run
+passed its assertions but timed out because quit was called during window
+construction; deferring quit until after construction fixed harness shutdown.
+Core classifier/reveal tests: 30 passed. Targeted example clippy with `-D warnings`
+and formatting passed (existing dependency warnings remain).
+
+This proves glyph partitioning on the tested native shaping backend, not actual
+replacement paint, selection layering, native layout/gesture epoch binding,
+wrap/anchor stability or save/Undo. `input/base/element.rs` is unchanged. Paint
+integration waits for editing-executor approval of the splitting approach and
+its shared native epoch glue. No before/after or delta-Y acceptance is claimed.
