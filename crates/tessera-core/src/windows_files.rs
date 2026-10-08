@@ -193,7 +193,10 @@ impl Directory {
         let file = retry(|| {
             OpenOptions::new()
                 .read(true)
-                .access_mode(FILE_READ_ATTRIBUTES)
+                // Metadata-only handles do not participate in sharing checks.
+                // Directory read access makes the omitted WRITE/DELETE shares
+                // exclude both reparse retagging and ancestor rename.
+                .access_mode(FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES)
                 .share_mode(FILE_SHARE_READ)
                 .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
                 .open(path)

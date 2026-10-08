@@ -11,6 +11,11 @@ tags, hard-linked sources and readonly notes fail closed. Resident CLOUD-family
 files are accepted because their tags do not redirect names; offline/recall
 sources require an external download. Ancestor handles also prevent in-place
 reparse retagging. Real OneDrive save behavior still needs owner QA.
+Ancestor handles request `FILE_LIST_DIRECTORY` as well as attributes: a
+metadata-only handle does not participate in Windows sharing checks. Native
+controls require sharing violation (32) for renaming both the folder and its
+parent, and for opening either for in-place writes; rename must work after the
+guard is released.
 
 `prepare_replace` reads the checked file while excluding in-place writers,
 compares exact bytes, and creates a complete same-folder prepared file. Its DACL
@@ -53,6 +58,11 @@ a custom protected DACL, reparse points, cloud-tag classification, and a
 last-moment symlink target race. Symlink controls require the runner's developer
 or administrator privileges. Cloud-tag classification does not simulate a real
 FileProvider: OneDrive/antivirus interoperability remains native owner QA.
+Permission comparisons check owner/group SIDs, the ordered DACL ACEs (including
+masks and flags), null versus empty DACL, and `SE_DACL_PROTECTED`, on the prepared
+file before publication as well as the source and retained preimage afterward.
+`SE_DACL_AUTO_INHERITED` is Windows bookkeeping for inheritance processing and
+is not compared as a user permission; ACEs and inheritance protection must match.
 
 Linux core clippy and Windows MSVC cross-clippy for the full package, including
 all test targets, supplement these tests; neither substitutes for their execution

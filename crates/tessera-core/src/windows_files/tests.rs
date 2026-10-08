@@ -162,13 +162,29 @@ fn windows_save_create_and_rename_never_overwrite() {
 #[test]
 fn windows_save_parent_identity_hardlinks_and_readonly_fail_closed() {
     let temp = tempfile::tempdir().unwrap();
-    let folder = temp.path().join("folder");
-    fs::create_dir(&folder).unwrap();
+    let parent = temp.path().join("parent");
+    let folder = parent.join("folder");
+    fs::create_dir_all(&folder).unwrap();
     let directory = Directory::open(&folder).unwrap();
-    assert!(
-        fs::rename(&folder, temp.path().join("moved")).is_err(),
-        "ancestor handle excludes parent rename"
-    );
+    for ancestor in [&folder, &parent] {
+        let error = fs::rename(ancestor, temp.path().join("moved")).unwrap_err();
+        assert_eq!(
+            error.raw_os_error(),
+            Some(ERROR_SHARING_VIOLATION as i32),
+            "ancestor handle excludes parent rename: {error}"
+        );
+        let error = OpenOptions::new()
+            .write(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(ancestor)
+            .unwrap_err();
+        assert_eq!(
+            error.raw_os_error(),
+            Some(ERROR_SHARING_VIOLATION as i32),
+            "ancestor handle excludes in-place reparse writers: {error}"
+        );
+    }
     directory.create(OsStr::new("note.md"), b"base").unwrap();
     let path = folder.join("note.md");
     fs::hard_link(&path, folder.join("alias.md")).unwrap();
@@ -185,6 +201,13 @@ fn windows_save_parent_identity_hardlinks_and_readonly_fail_closed() {
         .is_err());
     assert_eq!(fs::read(&path).unwrap(), b"base");
     fs::set_permissions(&path, original).unwrap();
+    drop(directory);
+    fs::rename(&parent, temp.path().join("moved")).unwrap();
+    assert_eq!(
+        fs::read(temp.path().join("moved/folder/note.md")).unwrap(),
+        b"base",
+        "rename succeeds after releasing the ancestor guard"
+    );
 }
 
 #[test]
@@ -214,18 +237,30 @@ fn windows_save_preserves_hidden_attributes() {
     );
 }
 
-fn dacl(path: &Path) -> Vec<u8> {
-    use windows_sys::Win32::Security::{GetFileSecurityW, DACL_SECURITY_INFORMATION};
+#[derive(Debug, PartialEq, Eq)]
+struct Permissions {
+    owner: Vec<u8>,
+    group: Vec<u8>,
+    dacl_present: bool,
+    dacl_protected: bool,
+    // None distinguishes a null DACL (unrestricted) from an empty DACL.
+    // ACE order, masks, flags and SIDs all affect access and must match.
+    aces: Option<Vec<Vec<u8>>>,
+}
+
+fn permissions(path: &Path) -> Permissions {
+    use windows_sys::Win32::Security::{
+        GetAce, GetFileSecurityW, GetLengthSid, GetSecurityDescriptorControl,
+        GetSecurityDescriptorDacl, GetSecurityDescriptorGroup, GetSecurityDescriptorOwner,
+        IsValidSid, ACE_HEADER, DACL_SECURITY_INFORMATION, GROUP_SECURITY_INFORMATION,
+        OWNER_SECURITY_INFORMATION, SE_DACL_PROTECTED,
+    };
+    let requested =
+        DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION;
     let text = wide(path).unwrap();
     let mut size = 0;
     unsafe {
-        GetFileSecurityW(
-            text.as_ptr(),
-            DACL_SECURITY_INFORMATION,
-            std::ptr::null_mut(),
-            0,
-            &mut size,
-        );
+        GetFileSecurityW(text.as_ptr(), requested, std::ptr::null_mut(), 0, &mut size);
     }
     assert!(size > 0, "DACL size positive control");
     let mut bytes = vec![0; size as usize];
@@ -233,7 +268,7 @@ fn dacl(path: &Path) -> Vec<u8> {
         unsafe {
             GetFileSecurityW(
                 text.as_ptr(),
-                DACL_SECURITY_INFORMATION,
+                requested,
                 bytes.as_mut_ptr().cast(),
                 size,
                 &mut size,
@@ -241,7 +276,58 @@ fn dacl(path: &Path) -> Vec<u8> {
         },
         0
     );
-    bytes
+    let descriptor = bytes.as_mut_ptr().cast();
+    let mut owner = std::ptr::null_mut();
+    let mut group = std::ptr::null_mut();
+    let mut defaulted = 0;
+    let mut present = 0;
+    let mut control = 0;
+    let mut revision = 0;
+    let mut acl = std::ptr::null_mut();
+    unsafe {
+        assert_ne!(
+            GetSecurityDescriptorOwner(descriptor, &mut owner, &mut defaulted),
+            0
+        );
+        assert_ne!(
+            GetSecurityDescriptorGroup(descriptor, &mut group, &mut defaulted),
+            0
+        );
+        assert_ne!(
+            GetSecurityDescriptorControl(descriptor, &mut control, &mut revision),
+            0
+        );
+        assert_ne!(
+            GetSecurityDescriptorDacl(descriptor, &mut present, &mut acl, &mut defaulted),
+            0
+        );
+        assert_ne!(IsValidSid(owner), 0);
+        assert_ne!(IsValidSid(group), 0);
+        let aces = if acl.is_null() {
+            None
+        } else {
+            let mut aces = Vec::new();
+            for index in 0..u32::from((*acl).AceCount) {
+                let mut ace = std::ptr::null_mut();
+                assert_ne!(GetAce(acl, index, &mut ace), 0);
+                let size = usize::from((*ace.cast::<ACE_HEADER>()).AceSize);
+                assert!(size >= std::mem::size_of::<ACE_HEADER>());
+                aces.push(std::slice::from_raw_parts(ace.cast::<u8>(), size).to_vec());
+            }
+            Some(aces)
+        };
+        Permissions {
+            owner: std::slice::from_raw_parts(owner.cast::<u8>(), GetLengthSid(owner) as usize)
+                .to_vec(),
+            group: std::slice::from_raw_parts(group.cast::<u8>(), GetLengthSid(group) as usize)
+                .to_vec(),
+            dacl_present: present != 0,
+            dacl_protected: control & SE_DACL_PROTECTED != 0,
+            // SE_DACL_AUTO_INHERITED records Windows inheritance processing,
+            // not a grant or the protected/unprotected inheritance policy.
+            aces,
+        }
+    }
 }
 
 #[test]
@@ -283,16 +369,27 @@ fn windows_save_preserves_custom_dacl_in_source_and_recovery() {
         },
         0
     );
-    let before = dacl(&path);
-    assert_ne!(before, dacl(temp.path()), "custom ACL positive control");
-    let Replacement::Saved { preimage } = directory
-        .replace(OsStr::new("note.md"), b"base", b"mine")
+    let before = permissions(&path);
+    assert!(before.dacl_protected, "protected DACL positive control");
+    assert_ne!(
+        before,
+        permissions(temp.path()),
+        "custom ACL positive control"
+    );
+    let plan = directory
+        .prepare_replace(OsStr::new("note.md"), b"base", b"mine")
         .unwrap()
-    else {
+        .unwrap();
+    assert_eq!(
+        permissions(plan.prepared_path()),
+        before,
+        "proposed bytes retain the source permissions before publication"
+    );
+    let Replacement::Saved { preimage } = plan.commit().unwrap() else {
         panic!("native save");
     };
-    assert_eq!(dacl(&path), before);
-    assert_eq!(dacl(&preimage), before);
+    assert_eq!(permissions(&path), before);
+    assert_eq!(permissions(&preimage), before);
 }
 
 #[test]
