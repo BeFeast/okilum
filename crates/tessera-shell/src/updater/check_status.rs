@@ -49,11 +49,11 @@ impl CheckStatus {
         }
     }
     pub(crate) fn checking(self) -> bool {
-        matches!(self, Self::Checking | Self::Busy)
+        self == Self::Checking
     }
     #[cfg(target_os = "macos")]
     pub(super) fn tracking(self) -> bool {
-        self.checking() || self == Self::Available
+        self.checking() || matches!(self, Self::Available | Self::Busy)
     }
 }
 
@@ -70,6 +70,7 @@ mod tests {
         }
         assert_eq!(CheckStatus::from_native(2), CheckStatus::UpToDate);
         assert!(CheckStatus::from_native(1).checking());
-        assert!(CheckStatus::from_native(10).checking());
+        // An existing Sparkle interaction must remain reachable on every click.
+        assert!(!CheckStatus::from_native(10).checking());
     }
 }

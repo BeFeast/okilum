@@ -149,7 +149,8 @@ pub(crate) fn set_beta(enabled: bool, cx: &mut App) {
 pub(crate) fn action_label() -> &'static str {
     #[cfg(target_os = "macos")]
     match check_status() {
-        CheckStatus::Checking | CheckStatus::Busy => return "Checking for updates…",
+        CheckStatus::Checking => return "Checking for updates…",
+        CheckStatus::Busy | CheckStatus::Available => return "Show update window",
         CheckStatus::Failed => return "Retry update check",
         _ => {}
     }
