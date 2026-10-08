@@ -3949,19 +3949,6 @@ impl Reader {
                                 .text_ellipsis()
                                 .child(label),
                         )
-                        .when(row.hidden, |d| {
-                            d.child(
-                                div()
-                                    .flex_none()
-                                    .px_1()
-                                    .rounded(px(4.))
-                                    .border_1()
-                                    .border_color(p.border_subtle)
-                                    .text_size(px(10.5))
-                                    .text_color(tokens.text_faint)
-                                    .child("hidden"),
-                            )
-                        })
                         .when(pinnable, |d| d.child(pin(path, group.clone(), on)))
                         .on_click({
                             let entity = entity.clone();
