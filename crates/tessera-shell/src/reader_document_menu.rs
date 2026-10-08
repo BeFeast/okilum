@@ -361,6 +361,7 @@ impl Reader {
     }
 
     pub(super) fn show_empty_vault(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.tree_preview.close();
         if !self.save_source(cx) {
             return;
         }

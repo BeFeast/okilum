@@ -792,3 +792,18 @@ rescanned” confirmation and retains the normal network Rescan control. A root 
 failure must not replace the last usable inventory with an empty success.
 Unreadable counts cover inventory entries only; watcher limitations and preparation
 warnings are separate. Native SMB acceptance uses only the disposable #516 fixture.
+
+### Tree file preview (#704)
+
+With tree focus, Space previews the selected non-Markdown file and retains tree
+focus, including an explicitly opened compact sidebar. Up/Down follows attachment
+selection while that preview session is open. Space again or Escape ends the
+session; moving onto a note or folder ends file-preview following. Space on notes
+and folders retains ordinary tree activation. Enter/click navigation keeps its
+existing behavior, including compact-sidebar dismissal.
+
+macOS uses a Reader-owned native Quick Look panel; Linux/Windows use the existing
+main-panel file preview. This does not change supported thumbnail/image formats
+or open external applications on selection. Normal note navigation and closing
+the owning Reader end the native session. Native Mac QA is required for actual
+panel focus and multi-window behavior.

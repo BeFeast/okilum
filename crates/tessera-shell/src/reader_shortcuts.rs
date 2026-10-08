@@ -62,6 +62,7 @@ fn catalog() -> Vec<Entry> {
         entry::<TreeRight>("Expand folder", Navigation),
         entry::<TreeLeft>("Collapse folder", Navigation),
         entry::<TreeOpen>("Open selected row", Navigation),
+        entry::<TreePreview>("Preview selected file", Navigation),
         entry::<TreeExpandSubtree>("Expand folder and subfolders", Navigation),
         entry::<TreeCollapseSubtree>("Collapse folder and subfolders", Navigation),
         entry::<HistoryVersionNext>("Next version in history", Navigation),

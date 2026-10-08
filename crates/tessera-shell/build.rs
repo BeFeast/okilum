@@ -87,6 +87,22 @@ fn main() {
             "-o",
         ])
         .arg(&thumbnail));
+    println!("cargo:rerun-if-changed=src/quicklook/bridge.m");
+    let quicklook = out.join("quicklook.o");
+    run(Command::new("xcrun")
+        .args([
+            "clang",
+            "-fobjc-arc",
+            "-Wall",
+            "-Werror",
+            "-arch",
+            architecture,
+            "-mmacosx-version-min=11.0",
+            "-c",
+            "src/quicklook/bridge.m",
+            "-o",
+        ])
+        .arg(&quicklook));
     let object = out.join("updater.o");
     run(Command::new("xcrun")
         .args([
@@ -105,12 +121,14 @@ fn main() {
         .args(["ar", "crs"])
         .arg(out.join("libtessera_updater.a"))
         .arg(object)
-        .arg(thumbnail));
+        .arg(thumbnail)
+        .arg(quicklook));
     println!("cargo:rustc-link-search=native={}", out.display());
     println!("cargo:rustc-link-lib=static=tessera_updater");
     println!("cargo:rustc-link-search=framework={}", framework.display());
     println!("cargo:rustc-link-lib=framework=Sparkle");
     println!("cargo:rustc-link-lib=framework=AppKit");
+    println!("cargo:rustc-link-lib=framework=Quartz");
     println!("cargo:rustc-link-lib=framework=QuickLookThumbnailing");
     println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path/../Frameworks");
 }
