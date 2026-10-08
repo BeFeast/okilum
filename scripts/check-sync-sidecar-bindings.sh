@@ -19,6 +19,9 @@ edition = "2021"
 [workspace]
 [dependencies]
 anyhow = "1"
+serde_json = "1"
+tempfile = "3"
+rustix = { version = "=1.1.4", features = ["process", "fs"] }
 serde = { version = "1", features = ["derive"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 xmltree = "0.11"

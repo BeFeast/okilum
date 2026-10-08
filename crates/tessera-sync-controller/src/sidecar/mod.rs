@@ -6,6 +6,8 @@ use anyhow::{ensure, Result};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+#[cfg(unix)]
+pub mod journal;
 pub mod macos;
 pub mod supervisor;
 pub mod windows;

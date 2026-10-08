@@ -23,9 +23,17 @@ revocation is a separate durable operation, never a blocking uninstall-hook call
 Local notes, certificate/config and state are not deleted by this controller.
 
 The LockedJournal port requires an exclusive instance lock, atomic durable writes
-and private user-owned storage outside installation/vault/index. Native filesystem
-implementations are not supplied by this increment. Windows needs real owner DACLs
-and file identity/locking; the Linux chmod implementation cannot become a no-op.
+and private user-owned storage outside installation/vault/index. The Unix implementation opens an already prepared private directory without
+creating state and holds an exclusive lock on its directory descriptor. It reads
+and replaces the journal relative to that descriptor, rejects symlinks/hardlinks,
+checks owner/mode and bounded JSON, and flushes the temporary file before rename
+and the directory before returning. Directory replacement or corrupt prior state
+requires recovery rather than a reset. Preparation must persist the private
+directory and its parent before passing it to the journal; it runs only after
+explicit Enable. Linux filesystem tests exercise this implementation and the macOS
+target compiles it, but macOS crash/power-loss acceptance remains native work.
+Windows still needs real owner DACLs and native file identity/locking; this Unix
+implementation must not be replaced by permission no-ops on Windows.
 
 ## Windows adapter
 
@@ -115,12 +123,12 @@ with clippy for aarch64-apple-darwin and x86_64-pc-windows-msvc on CT141. It use
 small generated probe and seeds dependency resolution from the repository lockfile;
 this avoids GPUI and unrelated native C dependencies. Install the two Rust 1.99.0
 standard-library targets first, and invoke the script inside `tessera-build`.
-Both target checks and the 28 Linux controller tests pass. This is type/lint
+Both target checks and the 33 Linux controller tests pass. This is type/lint
 validation, not linking a signed application or executing either native API.
 The cross-check includes target-gated tests: Windows descriptor alias/missing-owner
 and process-token round-trip tests compile but still require execution on Windows.
 
-Before native release, implement and test the native ownership guards, locked state stores,
+Before native release, implement and test the remaining native ownership guards, Windows locked state store,
 supervisors and update/rollback journals; stage the pinned upstream payload with
 notices; sign/notarize distributions. Windows hooks must stay within their bounded
 callbacks and leave durable recovery intent on timeout. Test close Reader/login,
