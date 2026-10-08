@@ -488,9 +488,7 @@ impl Reader {
             }
         });
         if store.dirty() {
-            self.link_notice = Some(
-                "Recovered an unsaved draft. Save to check it against the file on disk.".into(),
-            );
+            reader_toast::transient("Unsaved changes restored", window, cx);
         }
         self.editing = Some(Editing {
             store,

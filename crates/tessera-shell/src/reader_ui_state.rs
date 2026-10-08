@@ -1530,6 +1530,24 @@ mod tests {
             );
         });
         if live_preview {
+            visual.update(|window, cx| {
+                assert!(
+                    !window.notifications(cx).is_empty(),
+                    "positive control: restored draft announces itself"
+                )
+            });
+            visual.executor().advance_clock(Duration::from_secs(5));
+            visual.run_until_parked();
+            visual.update(|window, cx| {
+                assert!(
+                    window.notifications(cx).is_empty(),
+                    "successful recovery notice must expire even while edits remain unsaved"
+                )
+            });
+            reader.read_with(visual, |reader, cx| {
+                assert!(reader.link_notice.is_none());
+                assert!(reader.source_is_dirty(cx));
+            });
             reader.update_in(visual, |reader, _, cx| {
                 reader.open_source_find(cx);
                 reader.record_ui_state(true, cx);
