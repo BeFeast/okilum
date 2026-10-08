@@ -1787,7 +1787,8 @@ impl Reader {
         } = match document {
             Ok(document) => document,
             Err(error) => {
-                self.link_notice = Some(format!("Document unavailable: {error:#}").into());
+                eprintln!("Document unavailable: {error:#}");
+                self.link_notice = Some("This note couldn’t be opened. Check that it is available and you have permission to read it.".into());
                 cx.notify();
                 return;
             }

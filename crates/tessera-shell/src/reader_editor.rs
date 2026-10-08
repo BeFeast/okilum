@@ -42,6 +42,9 @@ pub(super) struct Editing {
     _subscriptions: Vec<Subscription>,
 }
 
+const DRAFT_WRITE_NOTICE: &str =
+    "The recovery copy couldn’t be saved. Keep this window open and retry Save or copy your draft.";
+
 fn file_access_notice(error: &anyhow::Error) -> &'static str {
     if error.chain().any(|cause| {
         #[cfg(unix)]
@@ -374,8 +377,12 @@ impl Reader {
             }
         });
         let changed = cx.subscribe(&input, |this, input, _: &SourceMutation, cx| {
-            let Some(editing) = &mut this.editing else { return; };
-            if editing.input.entity_id() != input.entity_id() { return; }
+            let Some(editing) = &mut this.editing else {
+                return;
+            };
+            if editing.input.entity_id() != input.entity_id() {
+                return;
+            }
             // Includes Silent mutations emitted by native undo and redo.
             let write = editing.store.queue_text(input.read(cx).value().to_string());
             editing.recovery_epoch = editing.recovery_epoch.wrapping_add(1);
@@ -383,18 +390,27 @@ impl Reader {
             let input_id = input.entity_id();
             editing.protecting = true;
             cx.spawn(async move |this, cx| {
-                let result = cx.background_executor().spawn(async move { write.persist() }).await;
+                let result = cx
+                    .background_executor()
+                    .spawn(async move { write.persist() })
+                    .await;
                 let _ = this.update(cx, |this, cx| {
-                    let Some(editing) = &mut this.editing else { return; };
-                    if editing.input.entity_id() != input_id || editing.recovery_epoch != epoch { return; }
+                    let Some(editing) = &mut this.editing else {
+                        return;
+                    };
+                    if editing.input.entity_id() != input_id || editing.recovery_epoch != epoch {
+                        return;
+                    }
                     editing.protecting = false;
                     if let Err(error) = result {
                         editing.save_failed = true;
-                        this.link_notice = Some(format!("Draft recovery could not be saved: {error:#}. Keep this window open and retry Save or copy your draft.").into());
+                        eprintln!("Draft recovery could not be saved: {error:#}");
+                        this.link_notice = Some(DRAFT_WRITE_NOTICE.into());
                     }
                     cx.notify();
                 });
-            }).detach();
+            })
+            .detach();
             this.schedule_live_preview(cx);
             cx.notify();
         });
@@ -662,7 +678,14 @@ impl Reader {
             Err(error) => {
                 editing.save_failed = true;
                 eprintln!("Could not save the edited file: {error:#}");
-                self.link_notice = Some(file_access_notice(&error).into());
+                self.link_notice = Some(
+                    if protected {
+                        file_access_notice(&error)
+                    } else {
+                        DRAFT_WRITE_NOTICE
+                    }
+                    .into(),
+                );
                 cx.notify();
                 false
             }
@@ -1454,6 +1477,91 @@ mod tests {
                 "initial syntax must settle without a debounce timer"
             );
         });
+    }
+
+    #[gpui::test]
+    fn recovery_write_failure_keeps_draft_and_reports_the_recovery_copy(cx: &mut TestAppContext) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        let state = temp.path().join("state");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("note.md"), "original").unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("note.md".into()),
+                        index_dir: Some(temp.path().join("index")),
+                        session_directory: Some(state.clone()),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            r.toggle_source(window, cx);
+            r.editing
+                .as_ref()
+                .unwrap()
+                .set_value("first draft", window, cx);
+        });
+        visual.run_until_parked();
+        let journal = std::fs::read_dir(state.join("editor-drafts"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| p.extension().is_some_and(|e| e == "json"))
+            .unwrap();
+        // A directory at the journal destination causes a real write failure
+        // on either platform without relying on test-user permission privileges.
+        std::fs::remove_file(&journal).unwrap();
+        std::fs::create_dir(&journal).unwrap();
+        reader.update_in(visual, |r, window, cx| {
+            r.editing
+                .as_ref()
+                .unwrap()
+                .set_value("latest draft", window, cx);
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert_eq!(
+                r.link_notice.as_ref().unwrap().to_string(),
+                DRAFT_WRITE_NOTICE
+            );
+        });
+        visual.update(|_, cx| assert!(!save_all_for_quit(cx)));
+        reader.read_with(visual, |r, cx| {
+            assert_eq!(
+                r.link_notice.as_ref().unwrap().to_string(),
+                DRAFT_WRITE_NOTICE
+            );
+            assert_eq!(
+                r.editing.as_ref().unwrap().input.read(cx).value().as_ref(),
+                "latest draft"
+            );
+        });
+        assert_eq!(
+            std::fs::read_to_string(root.join("note.md")).unwrap(),
+            "original"
+        );
+        std::fs::remove_dir(&journal).unwrap();
+        visual.update(|_, cx| assert!(save_all_for_quit(cx)));
+        assert_eq!(
+            std::fs::read_to_string(root.join("note.md")).unwrap(),
+            "latest draft"
+        );
     }
 
     #[gpui::test]

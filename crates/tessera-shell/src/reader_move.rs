@@ -109,16 +109,31 @@ impl Reader {
         } else if message.contains("Restore and save") {
             "Restore and save the draft first.".to_owned()
         } else if message.contains("stale") || message.contains("changed") {
-            "Files changed. Try renaming again.".to_owned()
+            if self.renaming.is_some() {
+                "Files changed. Try renaming again."
+            } else {
+                "Files changed. Try moving again."
+            }
+            .to_owned()
         } else if message.contains("unsaved") {
             "Save or discard unsaved edits first.".to_owned()
         } else if message.contains("inside")
             || message.contains("relative")
             || message.contains("component")
         {
-            "Choose a name inside this vault.".to_owned()
+            if self.renaming.is_some() {
+                "Choose a name inside this vault."
+            } else {
+                "Choose a destination inside this vault."
+            }
+            .to_owned()
         } else {
-            "Could not rename. Check recovery.".to_owned()
+            if self.renaming.is_some() {
+                "Could not rename. Check recovery."
+            } else {
+                "Could not move. Check recovery."
+            }
+            .to_owned()
         };
         self.enable_rename(cx);
         if let Some(rename) = self.renaming.as_mut() {
