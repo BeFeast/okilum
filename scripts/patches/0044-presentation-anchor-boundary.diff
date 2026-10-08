@@ -1,0 +1,171 @@
+diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -71,6 +71,16 @@
+ const MAX_HIGHLIGHT_LINE_LENGTH: usize = 10_000;
+ const FOLD_CHEVRON_RIGHT_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>"#;
+ const FOLD_CHEVRON_DOWN_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>"#;
++
++// Keep a presentation anchor legal even when the new content fits the viewport.
++// The extent is derived from this offset, not accumulated across transitions.
++fn anchored_scroll_y(scroll: Pixels, delta: Pixels, content: Pixels, viewport: Pixels)
++    -> (Pixels, Pixels)
++{
++    let requested = (scroll + delta).min(px(0.));
++    let natural = content.max(viewport);
++    (requested, (viewport - requested - natural).max(px(0.)))
++}
+ 
+ fn compose_decorations(
+     mut styles: Vec<(Range<usize>, HighlightStyle)>,
+@@ -1771,9 +1781,9 @@
+         // Read the old shaped geometry before installing a new projection. The
+         // anchor is canonical source, not a display-row index that rewrap moves.
+         let source_anchor = (|| {
+-            if !initial.projection.enabled || initial.selecting || initial.deferred_scroll_offset.is_some()
++            if !initial.projection.enabled || initial.selecting || initial.deferred_scroll_offset.is_some_and(|offset| offset != initial.scroll_handle.offset())
+                 || initial.text.len() > 256 * 1024 { return None; }
+-            let last = initial.last_layout.as_ref()?;
++            let last = initial.last_layout.as_ref().or(initial.projection_anchor_layout.as_ref())?;
+             if last.source_stamp == initial.source_stamp()
+                 && last.presentation_epoch == initial.presentation_epoch() {
+                 return None;
+@@ -1918,15 +1928,29 @@
+                     offset, affinity).row;
+                 let new_y = window.line_height() * row;
+                 let delta = old_y - new_y;
+-                if delta != px(0.) {
++                {
+                     let mut scroll = state.scroll_handle.offset();
+                     let extra = empty_bottom_height(state.is_code_editor(), state.scroll_beyond_last_line,
+                         bounds.size.height, window.line_height());
+                     let height = window.line_height() * state.display_map.wrap_row_count() + extra;
+-                    scroll.y = (scroll.y + delta).max((bounds.size.height - height).min(px(0.))).min(px(0.));
++                    let (offset, tail) = anchored_scroll_y(scroll.y, delta, height, bounds.size.height);
++                    scroll.y = offset;
++                    state.projection_anchor_tail = tail;
+                     state.scroll_handle.set_offset(scroll);
++                    // A no-op caret-follow target must not overwrite this
++                    // presentation correction later in layout_cursor.
++                    state.deferred_scroll_offset = Some(scroll);
+                 }
+-            }
++            } else if !state.projection.enabled {
++                state.projection_anchor_tail = px(0.);
++            }
++            // User scroll toward the natural extent retires the lease. Never
++            // grow it from scroll alone or retain it after disabling projection.
++            let natural = (window.line_height() * state.display_map.wrap_row_count()
++                + empty_bottom_height(state.is_code_editor(), state.scroll_beyond_last_line,
++                    bounds.size.height, window.line_height())).max(bounds.size.height);
++            let needed = (bounds.size.height - state.scroll_handle.offset().y - natural).max(px(0.));
++            state.projection_anchor_tail = state.projection_anchor_tail.min(needed);
+         });
+         let state = self.state.read(cx);
+         let projected_rope = state
+@@ -2140,7 +2164,7 @@
+             },
+             (total_wrapped_lines as f32 * line_height
+                 + empty_bottom_height.max(ghost_lines_height))
+-            .max(bounds.size.height),
++            .max(bounds.size.height) + state.projection_anchor_tail,
+         );
+ 
+         // TODO: should be add some gap to right, to convenient to focus on boundary position
+@@ -2604,6 +2628,7 @@
+         );
+ 
+         self.state.update(cx, |state, cx| {
++            state.projection_anchor_layout = None;
+             state.last_layout = Some(prepaint.last_layout.clone());
+             state.last_bounds = Some(bounds);
+             state.last_cursor = Some(state.cursor());
+@@ -2888,6 +2913,19 @@
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++
++    #[test]
++    fn presentation_anchor_tail_is_bounded_and_retires_on_adoption() {
++        let (raw, tail) = anchored_scroll_y(px(0.), px(-192.), px(600.), px(624.));
++        assert_eq!((raw, tail), (px(-192.), px(192.)));
++        assert_eq!(anchored_scroll_y(raw, px(192.), px(408.), px(624.)), (px(0.), px(0.)));
++        // Genuine content overflow needs no artificial extent.
++        assert_eq!(anchored_scroll_y(px(-100.), px(-100.), px(1000.), px(624.)),
++            (px(-200.), px(0.)));
++        // Repeated identical adoption cannot accumulate empty space.
++        assert_eq!(anchored_scroll_y(raw, px(0.), px(600.), px(624.)), (raw, tail));
++        assert_eq!(anchored_scroll_y(px(0.), px(192.), px(408.), px(624.)), (px(0.), px(0.)));
++    }
+ 
+     #[test]
+     fn source_anchor_maps_unicode_insert_delete_and_replacement() {
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -347,6 +347,10 @@
+     /// The marked range is the temporary insert text on IME typing.
+     pub(super) ime_marked_range: Option<Selection>,
+     pub(super) last_layout: Option<LastLayout>,
++    // Previous painted geometry for anchoring only; never used for hit testing.
++    pub(super) projection_anchor_layout: Option<LastLayout>,
++    // Temporary scroll extent required by a presentation anchor, never source rows.
++    pub(super) projection_anchor_tail: Pixels,
+     pub(super) last_cursor: Option<usize>,
+     /// The input container bounds
+     pub(super) input_bounds: Bounds<Pixels>,
+@@ -700,6 +704,8 @@
+             number_max: None,
+             mode: LayoutMode::default(),
+             last_layout: None,
++            projection_anchor_layout: None,
++            projection_anchor_tail: px(0.),
+             last_bounds: None,
+             last_selected_range: None,
+             last_cursor: None,
+@@ -1046,7 +1052,12 @@
+         });
+         drop(trace);
+         if self.projection.enabled {
+-            self.last_layout = None;
++            let painted = self.last_layout.take();
++            if matches!(reason, SourceMutationReason::Reset | SourceMutationReason::Silent) {
++                self.projection_anchor_layout = None;
++            } else if painted.is_some() {
++                self.projection_anchor_layout = painted;
++            }
+         }
+         cx.emit(event);
+     }
+@@ -4101,6 +4112,31 @@
+             };
+             (display.0 <= self.text.len()).then_some(SourceByte(index))
+         }
++    }
++
++    #[gpui::test]
++    fn presentation_anchor_survives_unpainted_edits_without_stale_hit_layout(cx: &mut TestAppContext) {
++        cx.update(crate::init);
++        let view = InputView::build_editor(cx, |state| state.folding(false).searchable(false)
++            .wrapping_indent(super::super::WrappingIndent::None));
++        let mut v = VisualTestContext::from_window(view.window_handle.into(), cx);
++        v.update(|window, cx| view.input.update(cx, |state, cx| {
++            state.set_value("plain\n**bold\ntail", window, cx);
++            state.set_projection_provider(Some(Arc::new(PrefixRevealProvider)), cx);
++        }));
++        v.run_until_parked();
++        v.update(|_, cx| view.input.update(cx, |state, cx| {
++            let painted = state.last_layout.as_ref().unwrap().source_stamp;
++            state.record_source_mutation(SourceMutationReason::Edit, cx);
++            assert!(state.last_layout.is_none(), "stale hit geometry must be unavailable");
++            assert_eq!(state.projection_anchor_layout.as_ref().unwrap().source_stamp, painted);
++            state.record_source_mutation(SourceMutationReason::Preedit, cx);
++            assert!(state.last_layout.is_none());
++            assert_eq!(state.projection_anchor_layout.as_ref().unwrap().source_stamp, painted,
++                "a second mutation before paint must retain the displayed revision");
++            state.record_source_mutation(SourceMutationReason::Reset, cx);
++            assert!(state.projection_anchor_layout.is_none(), "document resets must not inherit geometry");
++        }));
+     }
+ 
+     #[gpui::test]

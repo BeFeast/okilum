@@ -146,9 +146,39 @@ Native transition evidence is required before treating this binding as acceptanc
 Native X11 light regression exposed a remaining boundary case: an eight-link
 fixture expands from 17 to 25 visual rows on a global fence-prefix edit, but still
 fits the viewport. The anchor moves from Y611 to Y803 (+192 px) while raw, then
-returns to Y611 after adoption. Legal-scroll clamping rejects the compensation
-because there is no content overflow. Raw source binding is necessary but not
+returns to Y611 after adoption. Tracing subsequently showed that source mutation first clears `last_layout`,
+so no old anchor reaches prepaint. Natural-extent clamping is a second boundary
+condition when there is no content overflow. Raw source binding is necessary but not
 sufficient. Do not mark global fallback stable or merge this slice until the
 boundary policy is resolved and native screen-Y passes; adding arbitrary empty
 scroll space requires explicit geometry/lifetime tests to avoid persistent blank
 bands and scrollbar drift.
+
+## Boundary compensation lease (patch 0044)
+
+When a presentation anchor needs a negative scroll offset beyond the natural
+content extent, retain exactly the additional extent needed to make that offset
+legal. This is a temporary scroll extent, not a source row, changed wrap width,
+or persisted padding. Recompute from the desired offset at each presentation
+transition; do not accumulate deltas. The lease shrinks as user scroll returns
+toward the natural extent and clears when Live Preview is disabled. Adoption
+that restores the original geometry must also return the lease to zero.
+Regression checks cover the fitting-content case, genuine overflow, repeated
+zero-delta frames, and retirement after inverse adoption. Native before/after
+captures are required to establish that cursor layout does not clamp it away.
+
+
+Source edits now move the last painted layout into a separate anchor-only slot.
+Hit testing, caret movement and IME still see no stale `last_layout`. Multiple
+mutations before a frame preserve the same painted revision; resets/silent
+replacement discard it, and publishing a new painted layout retires the slot.
+
+Local native X11 evidence (same maestro session, 1240×850, 500 ms classifier
+delay): eight long links followed by `ANCHOR 781`, insert then delete a fence
+prefix. Baseline anchor ink moves from Y606 to Y798 (+192 px). Candidate light
+retains Y606; dark retains Y605 across raw-pending, adoption, restore-pending and
+restored frames (ΔY=0 in each theme). Both runs assert exact final source bytes.
+The baseline displacement is the positive control for this pixel measurement;
+Ctrl+Home on fitting content is not a scroll positive control. Temporary trace
+output was removed after diagnosis. This closes this local boundary reproduction,
+not the complete Wayland/Reader acceptance matrix.
