@@ -485,3 +485,6 @@ fn windows_save_last_moment_symlink_cannot_modify_its_target() {
     assert_eq!(fs::read(&outside).unwrap(), b"outside");
     assert_eq!(fs::read(temp.path().join("old.md")).unwrap(), b"base");
 }
+
+#[path = "tests/owner.rs"]
+mod owner;

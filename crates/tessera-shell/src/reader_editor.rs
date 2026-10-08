@@ -62,6 +62,7 @@ fn file_access_notice(error: &anyhow::Error) -> &'static str {
 struct Editors(Vec<(WeakEntity<Reader>, AnyWindowHandle)>);
 impl Global for Editors {}
 
+#[cfg(any(test, feature = "brain"))]
 pub(crate) fn save_all(cx: &mut App) -> bool {
     save_all_outcomes(cx).0
 }
@@ -1433,7 +1434,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn quit_flushes_every_editor_even_after_a_conflict(cx: &mut TestAppContext) {
+    fn quit_flushes_every_editor_even_after_conflicts_and_save_errors(cx: &mut TestAppContext) {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("vault");
         let state = temp.path().join("state");
@@ -1486,7 +1487,15 @@ mod tests {
             std::fs::read_to_string(root.join("second.md")).unwrap(),
             "local edits"
         );
+        // A directory in place of the source produces a real access/type error
+        // on both Unix and Windows, independently of elevated test privileges.
+        std::fs::remove_file(root.join("first.md")).unwrap();
+        std::fs::create_dir(root.join("first.md")).unwrap();
+        cx.update(|cx| assert!(protect_all_for_quit(cx)));
+        assert!(readers[0].read_with(cx, |reader, _| reader.editing.as_ref().unwrap().save_failed));
         cx.update(|cx| cx.shutdown());
+        std::fs::remove_dir(root.join("first.md")).unwrap();
+        std::fs::write(root.join("first.md"), "external changes").unwrap();
         assert_eq!(
             std::fs::read_dir(state.join("reader-runs"))
                 .unwrap()

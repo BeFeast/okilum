@@ -340,6 +340,7 @@ impl Preview {
             uuid::Uuid::new_v4()
         ));
         operation.persist(&journal)?;
+        let mut attempted = vec![];
         let result = (|| -> Result<_> {
             for (path, versions) in &operation.files {
                 before_file(path)?;
@@ -349,6 +350,7 @@ impl Preview {
                     "{path} changed during application"
                 );
                 if versions.before != versions.after {
+                    attempted.push(path.clone());
                     editor.set_text(versions.after.clone())?;
                     ensure!(
                         editor.save()? == Save::Saved,
@@ -400,8 +402,47 @@ impl Preview {
                 })
             }
             Err(error) => {
-                // Do not auto-revert over a racing writer. The retained operation
-                // records all before/after bytes even if an acknowledgement failed.
+                // Generated link text belongs to this operation, not to the
+                // user's editor draft. Restore attempted drafts even if a save
+                // failed before publishing. Revert published bytes only through
+                // the revision-aware editor, never over an external writer.
+                let mut rollback_errors = vec![];
+                for path in attempted.iter().rev() {
+                    let versions = &operation.files[path];
+                    let editor = editors.get_mut(path).unwrap();
+                    let rollback = (|| -> Result<()> {
+                        let current = editor.current();
+                        if current.as_ref().is_ok_and(|text| text == &versions.after) {
+                            // A durability/acknowledgement error may have left
+                            // after bytes on disk with the old editor baseline.
+                            // Acknowledge those bytes before a CAS rollback.
+                            ensure!(
+                                editor.save()? == Save::Saved,
+                                "{path} changed before rollback"
+                            );
+                        }
+                        editor.set_text(versions.before.clone())?;
+                        let current = current?;
+                        ensure!(
+                            current == versions.before || current == versions.after,
+                            "{path} changed externally; rollback refused"
+                        );
+                        ensure!(
+                            editor.save()? == Save::Saved,
+                            "{path} changed during rollback"
+                        );
+                        Ok(())
+                    })();
+                    if let Err(failure) = rollback {
+                        // Even a blocked rollback must not expose generated
+                        // links as an ordinary recoverable user edit.
+                        let restore = editor.set_text(versions.before.clone());
+                        rollback_errors.push(format!("{path}: {failure:#}"));
+                        if let Err(failure) = restore {
+                            rollback_errors.push(format!("{path} draft: {failure:#}"));
+                        }
+                    }
+                }
                 let applied: Vec<_> = operation
                     .files
                     .iter()
@@ -412,7 +453,7 @@ impl Preview {
                     })
                     .map(|(p, _)| p.as_str())
                     .collect();
-                Ok(Applied { journal, moved:false, warning:Some(format!("Move interrupted: {error:#}. Applied files: {}. Use Recover link moves to inspect/revert; original bytes are retained.",if applied.is_empty(){"none".into()}else{applied.join(", ")})) })
+                Ok(Applied { journal, moved:false, warning:Some(format!("Move interrupted: {error:#}. Applied files: {}. Use Recover link moves to inspect/revert; original bytes are retained.{}",if applied.is_empty(){"none".into()}else{applied.join(", ")}, if rollback_errors.is_empty() { String::new() } else { format!(" Rollback needs inspection: {}", rollback_errors.join("; ")) })) })
             }
         }
     }
@@ -441,7 +482,7 @@ mod tests {
         assert!(partial.warning.is_some());
         assert_eq!(
             fs::read_to_string(root.path().join("0.md")).unwrap(),
-            "[[Renamed/a|alias]]\r\n"
+            "[[Dir/a|alias]]\r\n"
         );
         assert!(root.path().join("Dir/a.md").exists());
         assert!(!root.path().join("Renamed").exists());
@@ -474,8 +515,8 @@ mod tests {
             })
             .unwrap();
         assert!(!applied.moved);
-        assert!(applied.warning.unwrap().contains("Old/Заметка 🧠.md"));
-        assert_ne!(
+        assert!(applied.warning.unwrap().contains("Injected write failure"));
+        assert_eq!(
             fs::read_to_string(root.join(&preview.from)).unwrap(),
             preview.snapshots[&preview.from]
         );
@@ -492,6 +533,41 @@ mod tests {
             .operations
             .is_empty());
     }
+    #[test]
+    fn windows_editor_failed_link_move_preserves_external_changes_and_original_draft() {
+        let root = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("source.md"), "# Source\n").unwrap();
+        fs::write(root.path().join("0-refs.md"), "[[source]]\n").unwrap();
+        let preview = Preview::prepare(root.path(), "source.md", "target.md").unwrap();
+        let applied = preview
+            .apply_with(root.path(), state.path(), &mut BTreeMap::new(), |path| {
+                if path == "source.md" {
+                    fs::write(root.path().join("0-refs.md"), "External edit\n")?;
+                    bail!("Injected failure after external change");
+                }
+                Ok(())
+            })
+            .unwrap();
+        assert!(!applied.moved);
+        assert!(applied.warning.unwrap().contains("rollback refused"));
+        assert_eq!(
+            fs::read_to_string(root.path().join("0-refs.md")).unwrap(),
+            "External edit\n"
+        );
+        assert!(!root.path().join("target.md").exists());
+        let editor = FileEditor::open(
+            &root.path().join("0-refs.md"),
+            &state.path().join("editor-drafts"),
+        )
+        .unwrap();
+        assert_eq!(
+            editor.text(),
+            "[[source]]\n",
+            "operation text must not become a user draft"
+        );
+    }
+
     #[test]
     fn discovery_keeps_valid_operations_when_another_journal_is_corrupt() {
         let fixture = super::super::tests::fixture();

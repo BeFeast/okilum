@@ -18,12 +18,15 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::{
-        LocalFree, ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION, GENERIC_READ, GENERIC_WRITE,
-        INVALID_HANDLE_VALUE,
+        LocalFree, ERROR_INVALID_OWNER, ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION,
+        GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE,
     },
     Security::{
         Authorization::{GetSecurityInfo, SE_FILE_OBJECT},
-        DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
+        GetSecurityDescriptorControl, GetSecurityDescriptorDacl, InitializeSecurityDescriptor,
+        SetSecurityDescriptorControl, SetSecurityDescriptorDacl, DACL_SECURITY_INFORMATION,
+        GROUP_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+        SECURITY_ATTRIBUTES, SECURITY_DESCRIPTOR, SE_DACL_PROTECTED,
     },
     Storage::FileSystem::*,
     System::{
@@ -274,7 +277,7 @@ impl Directory {
             .path
             .join(format!(".tessera-save-{}.prepared", uuid::Uuid::new_v4()));
         let descriptor = security_source.map(Descriptor::from_file).transpose()?;
-        let attrs = descriptor.as_ref().map(|descriptor| SECURITY_ATTRIBUTES {
+        let mut attrs = descriptor.as_ref().map(|descriptor| SECURITY_ATTRIBUTES {
             nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: descriptor.0,
             bInheritHandle: 0,
@@ -285,7 +288,7 @@ impl Directory {
             .map_or(0, |info| info.dwFileAttributes & FILE_ATTRIBUTE_ENCRYPTED);
         let text = wide(&path)?;
         // Apply the source DACL and encryption at creation, before exposing any draft bytes.
-        let raw = unsafe {
+        let create = |attrs: &Option<SECURITY_ATTRIBUTES>| unsafe {
             CreateFileW(
                 text.as_ptr(),
                 GENERIC_READ | GENERIC_WRITE,
@@ -301,12 +304,52 @@ impl Directory {
                 std::ptr::null_mut(),
             )
         };
-        ensure!(
-            raw != INVALID_HANDLE_VALUE,
-            "Prepare save file: {}",
-            std::io::Error::last_os_error()
-        );
+        let mut raw = create(&attrs);
+        // Source ownership is not an access grant. A non-elevated token
+        // cannot assign Administrators as the replacement file owner.
+        // Retry creation with exactly the same ACL/protection but token-default
+        // owner/group. No draft bytes have been exposed, and other errors retain
+        // their normal failure behavior (never fall back to inherited access).
+        let mut dacl_only;
+        let mut owner_fallback = false;
+        if raw == INVALID_HANDLE_VALUE
+            && std::io::Error::last_os_error().raw_os_error() == Some(ERROR_INVALID_OWNER as i32)
+        {
+            dacl_only = descriptor
+                .as_ref()
+                .context("Missing source DACL")?
+                .dacl_only()?;
+            attrs.as_mut().unwrap().lpSecurityDescriptor =
+                (&mut dacl_only as *mut SECURITY_DESCRIPTOR).cast();
+            raw = create(&attrs);
+            owner_fallback = true;
+        }
+        if raw == INVALID_HANDLE_VALUE {
+            return Err(std::io::Error::last_os_error()).context("Prepare save file");
+        }
         let mut file = unsafe { File::from_raw_handle(raw) };
+        if owner_fallback {
+            // Creation can grant the creator a handle even when OWNER RIGHTS
+            // ACEs deny a later open under the new owner. Exercise effective
+            // access before writing bytes or publishing a canonical replacement.
+            let created = identity(&information(&file)?);
+            drop(file);
+            file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .share_mode(FILE_SHARE_READ)
+                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH)
+                .open(&path)
+                .context(
+                    "The replacement owner cannot retain read/write access; source was not changed",
+                )?;
+            let reopened = information(&file)?;
+            plain(&reopened, false, &file)?;
+            ensure!(
+                identity(&reopened) == created,
+                "Prepared file changed before permission validation"
+            );
+        }
         ensure!(
             encrypted == 0 || information(&file)?.dwFileAttributes & FILE_ATTRIBUTE_ENCRYPTED != 0,
             "The encrypted source needs an encrypted recovery file; no proposed bytes were written"
@@ -507,13 +550,38 @@ impl PreparedReplacement<'_> {
 
 struct Descriptor(PSECURITY_DESCRIPTOR);
 impl Descriptor {
+    /// The ACL points into self's allocation, which must outlive CreateFileW.
+    fn dacl_only(&self) -> Result<SECURITY_DESCRIPTOR> {
+        let mut descriptor = SECURITY_DESCRIPTOR::default();
+        let target = (&mut descriptor as *mut SECURITY_DESCRIPTOR).cast();
+        let mut present = 0;
+        let mut defaulted = 0;
+        let mut dacl = std::ptr::null_mut();
+        let mut control = 0;
+        let mut revision = 0;
+        // A fresh absolute descriptor has no owner or group. Copying a
+        // self-relative descriptor and clearing pointers would be invalid.
+        let ok = unsafe {
+            InitializeSecurityDescriptor(target, 1) != 0
+                && GetSecurityDescriptorDacl(self.0, &mut present, &mut dacl, &mut defaulted) != 0
+                && GetSecurityDescriptorControl(self.0, &mut control, &mut revision) != 0
+                && SetSecurityDescriptorDacl(target, present, dacl, defaulted) != 0
+                && SetSecurityDescriptorControl(
+                    target,
+                    SE_DACL_PROTECTED,
+                    control & SE_DACL_PROTECTED,
+                ) != 0
+        };
+        ensure!(ok, "Copy source DACL: {}", std::io::Error::last_os_error());
+        Ok(descriptor)
+    }
     fn from_file(file: &File) -> Result<Self> {
         let mut raw = std::ptr::null_mut();
         let status = unsafe {
             GetSecurityInfo(
                 file.as_raw_handle(),
                 SE_FILE_OBJECT,
-                DACL_SECURITY_INFORMATION,
+                DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
@@ -523,7 +591,7 @@ impl Descriptor {
         };
         ensure!(
             status == 0,
-            "Read source DACL: {}",
+            "Read source permissions: {}",
             std::io::Error::from_raw_os_error(status as i32)
         );
         ensure!(!raw.is_null(), "Missing source security descriptor");
