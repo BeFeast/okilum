@@ -51,3 +51,35 @@ fn long_note_adjacent_alias_outweighs_short_scattered_matches_after_reopen() -> 
     }
     Ok(())
 }
+
+#[test]
+fn ordinary_punctuation_retains_phrase_preference() -> anyhow::Result<()> {
+    for (query, scattered) in [
+        ("day-to-day billing", "day-to-day unrelated billing"),
+        ("what’s billing", "what’s unrelated billing"),
+        ("what billing?", "what unrelated billing"),
+    ] {
+        let root = tempfile::tempdir()?;
+        let mut documents = vec![SearchDocument {
+            path: "adjacent.md".into(),
+            title: "Long note".into(),
+            text: format!("{} {query}", "unrelated context ".repeat(400)),
+        }];
+        for i in 0..40 {
+            documents.push(SearchDocument {
+                path: format!("other/{i}.md"),
+                title: "Other".into(),
+                text: scattered.into(),
+            });
+        }
+        let searcher = Searcher::build_documents(&documents, root.path())?;
+        let hits = searcher.search(query, 100)?;
+        assert_eq!(hits.len(), 41, "query={query}");
+        assert_eq!(hits[0].path, "adjacent.md", "query={query}");
+        assert!(searcher
+            .search(&format!("path:other {query}"), 100)?
+            .iter()
+            .all(|h| h.path != "adjacent.md"));
+    }
+    Ok(())
+}

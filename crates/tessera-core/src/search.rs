@@ -621,6 +621,9 @@ impl Searcher {
         }
         let lexical = weight.explain(segment, addr.doc_id)?;
         let lexical_score = scorer.score();
+        // This diagnostic is called explicitly by CLI/MCP, not for result rows.
+        // Build the ranked scorer separately: Tantivy's optional phrase weight
+        // explanation can seek backwards for a missing clause and panic.
         let ranked = self.with_phrase_preference(parsed, query);
         let ranked_weight = ranked.weight(tantivy::query::EnableScoring::enabled_from_searcher(
             &searcher,
@@ -786,10 +789,14 @@ impl Searcher {
     // positional postings support this without rebuilding the index.
     fn with_phrase_preference(&self, parsed: Box<dyn Query>, query: &str) -> Box<dyn Query> {
         use tantivy::query::{BooleanQuery, ConstScoreQuery, Occur, PhraseQuery};
-        if !query
-            .chars()
-            .all(|c| c.is_alphanumeric() || c.is_whitespace())
-        {
+        // Field scopes, ranges, quotes, boosts, wildcards and unary/boolean
+        // operators are syntax. Interior hyphens/apostrophes are ordinary text
+        // and use the same tokenizer as their indexed source.
+        let syntax = query.chars().any(|c| "\"():[]{}^~*\\".contains(c))
+            || query
+                .split_whitespace()
+                .any(|word| word.starts_with(['-', '+']) || matches!(word, "AND" | "OR" | "NOT"));
+        if syntax {
             return parsed;
         }
         let mut analyzer = analyzer::analyzer();
