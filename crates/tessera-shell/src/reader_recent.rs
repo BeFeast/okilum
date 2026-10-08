@@ -72,6 +72,11 @@ impl Reader {
         cx.notify();
     }
     pub(super) fn release_recent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !window.is_window_active() {
+            self.recent_switcher.cancel();
+            cx.notify();
+            return;
+        }
         let Some((root, path)) = self.recent_switcher.take() else {
             return;
         };
@@ -254,7 +259,21 @@ mod tests {
             r.quick_open.remember("B.md");
             r.quick_open.remember("A.md");
             r.focus_handle.focus(window, cx);
+            window.activate_window();
         });
+        visual.run_until_parked();
+        // Escape must work with the physical Control/Shift modifiers held.
+        for escape in ["ctrl-escape", "ctrl-shift-escape"] {
+            visual.simulate_keystrokes("ctrl-tab");
+            visual.run_until_parked();
+            assert!(visual.debug_bounds("recent-switcher").is_some());
+            visual.simulate_keystrokes(escape);
+            visual.run_until_parked();
+            assert!(visual.debug_bounds("recent-switcher").is_none());
+            visual.simulate_event(gpui::ModifiersChangedEvent::default());
+            visual.run_until_parked();
+            reader.read_with(visual, |r, _| assert_eq!(r.current_rel, "A.md"));
+        }
         visual.simulate_keystrokes("ctrl-tab");
         visual.run_until_parked();
         assert!(visual.debug_bounds("recent-switcher").is_some());
@@ -267,13 +286,27 @@ mod tests {
         visual.simulate_keystrokes("ctrl-tab");
         visual.run_until_parked();
         assert!(visual.debug_bounds("recent-switcher").is_some());
-        visual.simulate_keystrokes("escape");
+        visual.simulate_keystrokes("ctrl-escape");
         visual.simulate_event(gpui::ModifiersChangedEvent::default());
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
             assert_eq!(r.current_rel, "B.md");
             assert!(r.editing.is_some());
         });
+        // A compositor may deliver the release only after the window returns.
+        reader.update_in(visual, |_, window, _| window.activate_window());
+        visual.run_until_parked();
+        visual.simulate_keystrokes("ctrl-tab");
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("recent-switcher").is_some());
+        visual.deactivate_window();
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| assert!(!r.recent_switcher.open()));
+        reader.update_in(visual, |_, window, _| window.activate_window());
+        visual.run_until_parked();
+        visual.simulate_event(gpui::ModifiersChangedEvent::default());
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| assert_eq!(r.current_rel, "B.md"));
         visual.simulate_keystrokes("ctrl-tab");
         visual.simulate_event(gpui::ModifiersChangedEvent::default());
         visual.run_until_parked();
