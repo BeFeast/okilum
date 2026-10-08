@@ -1,67 +1,75 @@
-# Live Preview decoration metadata (#784)
+# Live Preview marker paint (#784)
 
-This slice adds immutable marker metadata only. It does not enable decorations,
-change projection/reveal policy, or claim native visual acceptance.
+Live Preview replaces unordered markers with • / ◦ / ▪ by nesting depth, draws
+quote bars and thematic rules, and preserves the original shaped rows. Ordered
+numbers, task checkbox source and RTL rows retain their existing rendering.
+The source buffer, glyph advances, indentation, wrapping and row height are not
+changed. Revealed markers use their original foreground.
 
-`Classification::decorations_for` requires the exact classified `Snapshot`,
-including document, generation and source bytes. Stale metadata is rejected;
-there is no retained/remapped decoration inventory. The extractor consumes the
-same Comrak AST after the classifier's existing guards. It does not add a parse,
-change formatting traversal, or modify Plan/Region, styles, links, reasons or
-marker_scopes.
+## Metadata and frame ownership
 
-The inventory contains unordered bullet delimiters and nesting depths, explicit
-quote delimiters with AST container scopes, and AST thematic-break ranges.
-Ordered items and checkbox prefixes retain their current appearance. Frontmatter,
-setext underlines and fenced-code contents are distinguished by AST node type.
-The classifier's configured frontmatter ambiguity remains unchanged.
+A separate metadata-only extractor consumes the classifier's already guarded
+Comrak AST. It does not change formatting traversal, Plan/Region, styles, links,
+reasons or marker_scopes. Each marker and scope has grapheme-aligned endpoints;
+markers are contained in scopes, and scopes may nest or be equal but never cross.
+Invalid coordinates, ambiguous prefixes, overlapping markers or limits discard
+the inventory. Ordered/task, frontmatter, setext and fenced-code cases are
+classified from the AST and exact authored delimiters. Quotes behind a list
+marker conservatively retain raw paint in this first slice.
 
-Raw delimiters are checked against AST source positions. Unsupported coordinates,
-ambiguous prefixes, overlapping ranges or metadata limits discard the complete
-inventory, without changing existing classification results. The initial quote
-prefix extraction supports spaces and nested `>` prefixes; a quote beginning
-behind a list marker is conservatively raw. It does not invent ranges for lazy
-continuation lines; their geometry must be derived from the AST container scope
-by the later paint adapter.
+Metadata is exposed only for the exact classified Snapshot. It is never remapped
+with retained presentation after an edit. The bridge stores it with the immutable
+projection and the shared RevealSnapshot. The shared core API was taken from
+editing executor's ce6dcb1; only the required API and tests were imported, without
+S3a's remap/local-parse implementation. Binding 0040 comes from cb28904 in #790.
 
-Integration remains gated on editing-executor review of the shared reveal and
-mouse gesture epoch adapter. Foreground suppression is a separate review spike
-using existing `ShapedLine::split_at`, never a shaping call. No spike code is
-wired into the editor by this slice. Before enabling paint, require same-prepaint
-LayoutStamp validation, raw fallback on invalid geometry, and native light/dark
-and narrow-width evidence with unchanged row geometry and anchor delta Y = 0.
-Byte-identical save/Undo and IME/selection acceptance remain pending integration.
+Prepaint consumes its LastLayout's PinnedProjection, LayoutStamp, source and safety
+ranges through marker_scope_is_raw. Selection/IME/replacement safety may only
+force raw paint; there is no live-provider recomposition in paint. The painter
+also verifies exact source before suppressing foreground. Missing/stale/invalid
+pin data uses original foreground.
 
-Local validation on CT141: 28 source-classifier unit tests passed, including
-six new metadata tests. The on/off case checks identical plans, styles, reasons,
-rendered projection text and source-to-display maps across caret positions.
-This is core metadata evidence only, not native paint or save/Undo acceptance.
+The optional 0041 seam partitions already-shaped visual rows using split_at.
+Glyph backgrounds and selection keep their original paint pass. Invalid grapheme
+or glyph-cluster boundaries, non-monotone glyph indices and RTL make the WHOLE
+visual row raw, including replacement shapes. Existing whitespace visualization
+and non-left alignment also retain original paint. Bullet replacements stay in
+marker bounds. Quote continuation bars use only existing free indentation; if a
+wrapped continuation has no free gutter, no bar is drawn over its text. Thematic
+rules use the existing content width and row, with no additional block spacing.
+No gpui-core modifications or second layout/shaping of body text are used.
 
-## Shared policy and native shaping spike
+## Native evidence
 
-The local branch stages only `RevealSnapshot`, `prepare_reveal`, and their two
-unit tests from editing executor's #790 head
-`ce6dcb188aba3d18eb95fecb95e11a4a936890f8`. S3a remap/local parsing and native
-adapter changes are not imported. The example's `MarkerPolicy` only delegates
-to immutable `RevealSnapshot::is_raw`; it takes no live `ActiveSource`.
+The isolated native_marker784 fixture runs on CT141/Xvfb with private HOME/XDG.
+Before/after below compare raw foreground (F7 Source) and decorated Live Preview
+on the SAME binary, source, viewport and machine. The fixture has no unrelated
+concealed formatting. These are on/off geometry controls, not screenshots from a
+separately built main binary. No user vault or system daemon is involved.
 
-`cargo run -p tessera-shell --example decoration784` is an isolated native shaping
-probe. It splits already-shaped lines, preserving each retained glyph's font,
-ID, source index and original position, and verifies the original layout is
-unchanged. Cases cover ASCII, Cyrillic, indentation, quote/rule markers, ligatures,
-combining marks and emoji. Missing glyph-cluster boundaries, invalid/overlapping
-ranges and RTL text request original raw paint. A no-suppression positive control
-checks that the original marker glyph remains detectable. This conservative
-prototype excludes all RTL rows, not merely non-monotone glyph ordering.
+| Theme / width | Before | After | Anchor ΔY |
+| --- | --- | --- | --- |
+| light / wide | [raw](https://oklb.uk/amber-hound-9543) | [decorated](https://oklb.uk/rapid-koala) | 0 px |
+| light / narrow | [raw](https://oklb.uk/lucky-bison) | [decorated](https://oklb.uk/gentle-stoat-1788) | 0 px |
+| dark / wide | [raw](https://oklb.uk/snug-swan-0179) | [decorated](https://oklb.uk/merry-owl-2991) | 0 px |
+| dark / narrow | [raw](https://oklb.uk/golden-fox) | [decorated](https://oklb.uk/merry-hare) | 0 px |
 
-CT141/Xvfb run: all probe assertions passed with exit 0. The first harness run
-passed its assertions but timed out because quit was called during window
-construction; deferring quit until after construction fixed harness shutdown.
-Core classifier/reveal tests: 30 passed. Targeted example clippy with `-D warnings`
-and formatting passed (existing dependency warnings remain).
+Wide is 1100×850; narrow is 660×920. Caret entry and the exercised drag selection
+also gave ΔY=0. Scrolling moved the measured anchor by -144 px (positive control).
+A typed positive-control edit changed the source hash; native Undo restored the
+exact 494-byte fixture and SHA256
+06cb08bbd16b651cf58daa9fb7bb1a6d570e31f69d898ca17e7e78a45cf09ea4.
+The core FileEditor roundtrip separately verifies that saving canonical source
+retains markers, Unicode and CRLF bytes. No end-to-end application Save UI claim
+is made by this isolated editor harness.
 
-This proves glyph partitioning on the tested native shaping backend, not actual
-replacement paint, selection layering, native layout/gesture epoch binding,
-wrap/anchor stability or save/Undo. `input/base/element.rs` is unchanged. Paint
-integration waits for editing-executor approval of the splitting approach and
-its shared native epoch glue. No before/after or delta-Y acceptance is claimed.
+Core tests cover grapheme endpoints, scope nesting, AST syntax boundaries, stale
+metadata and projection on/off invariance. Bridge tests cover immutable pin policy,
+selection/IME/replacement safety, invalid/stale stamps and delayed metadata.
+The decoration784 shaping spike checks original glyph IDs/positions with Latin,
+Cyrillic, ligatures, combining marks, emoji/ZWJ and raw RTL controls. The cumulative
+vendor patch stack is verified before native builds.
+
+Remaining acceptance: editing-executor seam review, broader S3a mouse-up/gesture
+acceptance and Mac QA after publication. The measured click/drag result above is
+limited to the fixture and does not claim completion of S3a. #588 stays paused.

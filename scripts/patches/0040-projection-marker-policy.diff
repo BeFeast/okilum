@@ -1,0 +1,78 @@
+--- a/crates/base/src/input/projection.rs
++++ b/crates/base/src/input/projection.rs
+@@ -92,6 +92,12 @@
+ }
+ 
+ pub trait SourceProjection: Send + Sync {
++    /// Immutable reveal decision used to compose this projection. Providers that
++    /// do not expose a policy retain raw marker foreground by default.
++    fn marker_scope_is_raw(&self, _scope: &Range<SourceByte>) -> bool {
++        true
++    }
++
+     fn source(&self) -> &SourceSnapshot;
+     fn text(&self) -> &str;
+     fn styles(&self) -> &[ProjectionStyle];
+@@ -139,6 +145,62 @@
+     pub projection: Arc<dyn SourceProjection>,
+ }
+ impl PinnedProjection {
++    /// Paint-only policy bound to the projection that produced these visual rows.
++    /// Pass the same prepaint's layout stamp, source and safety ranges. The live
++    /// ranges may force raw foreground, but never recompose the pinned hit map.
++    /// Missing/stale geometry must use original foreground without replacements.
++    pub fn marker_scope_is_raw(
++        &self,
++        layout: LayoutStamp,
++        current: &SourceSnapshot,
++        scope: &Range<SourceByte>,
++        safety: &ActiveSource,
++    ) -> bool {
++        let source = self.projection.source();
++        if self.stamp != layout
++            || layout.source != current.stamp
++            || source.stamp != current.stamp
++            || source.text != current.text
++        {
++            return true;
++        }
++        let valid = |range: &Range<SourceByte>| {
++            range.start.0 <= range.end.0
++                && self
++                    .projection
++                    .to_projected(range.start, ConcealBias::Left)
++                    .is_some()
++                && self
++                    .projection
++                    .to_projected(range.end, ConcealBias::Right)
++                    .is_some()
++        };
++        if !valid(scope) {
++            return true;
++        }
++        let selection = SourceByte(safety.anchor.0.min(safety.head.0))
++            ..SourceByte(safety.anchor.0.max(safety.head.0));
++        for range in [
++            Some(&selection),
++            safety.composition.as_ref(),
++            safety.replacement.as_ref(),
++        ]
++        .into_iter()
++        .flatten()
++        {
++            if !valid(range)
++                || if range.start == range.end {
++                    scope.start.0 <= range.start.0 && range.start.0 <= scope.end.0
++                } else {
++                    range.start.0 < scope.end.0 && scope.start.0 < range.end.0
++                }
++            {
++                return true;
++            }
++        }
++        self.projection.marker_scope_is_raw(scope)
++    }
++
+     /// Presentation changes alone do not invalidate the old *displayed* hit
+     /// map. Source changes do: callers must defer instead of guessing an offset.
+     pub fn resolve_hit(

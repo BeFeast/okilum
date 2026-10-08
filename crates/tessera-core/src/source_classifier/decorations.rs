@@ -384,4 +384,28 @@ mod tests {
             .unwrap()
             .is_empty());
     }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn canonical_save_roundtrip_preserves_authored_markers_and_line_endings() {
+        use crate::file_editor::FileEditor;
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("markers.md");
+        let source = "- проверка\r\n  - nested\r\n\r\n> quote\r\n\r\n***\r\n";
+        std::fs::write(&path, source).unwrap();
+        let current = snapshot(source, 1);
+        assert!(!classify(&current)
+            .decorations_for(&current)
+            .unwrap()
+            .is_empty());
+        let mut editor = FileEditor::open(&path, &root.path().join("state")).unwrap();
+        let edited = format!("{source}positive control\r\n");
+        editor.set_text(edited.clone()).unwrap();
+        editor.save().unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), edited.as_bytes());
+        editor
+            .set_text(current.copy_source(0..source.len()).unwrap())
+            .unwrap();
+        editor.save().unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), source.as_bytes());
+    }
 }
