@@ -508,6 +508,14 @@ impl PdfViewer {
     }
 
     #[cfg(test)]
+    pub(crate) fn page_count(&self) -> Option<usize> {
+        match &self.state {
+            State::Ready(sizes) => Some(sizes.len()),
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn zoom_step(&self) -> usize {
         self.zoom
     }
@@ -540,6 +548,35 @@ impl PdfViewer {
             }
         })
         .detach();
+    }
+
+    /// A native write/rename event is stronger than size/mtime equality.
+    /// Cancel old worker delivery and keep this document's reading position.
+    pub(crate) fn reload(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.remember_position(cx);
+        self.path = path;
+        self.revision = None;
+        self.open(cx);
+    }
+
+    /// Stop outstanding work without opening a missing or redirected source,
+    /// and release page textures while the preview is hidden.
+    pub(crate) fn source_unavailable(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.remember_position(cx);
+        self._events = None;
+        self.worker = None;
+        for image in self
+            .cache
+            .clear()
+            .into_iter()
+            .chain(self.released.drain(..))
+        {
+            let _ = window.drop_image(image);
+        }
+        self.revision = None;
+        self.state = State::Unreadable;
+        cx.emit(AvailabilityChanged);
+        cx.notify();
     }
 
     pub(crate) fn zoom(&mut self, zoom: Zoom, cx: &mut Context<Self>) {

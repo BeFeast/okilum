@@ -2,6 +2,7 @@
 use super::*;
 use crate::platform::labels::Os;
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
+mod live;
 
 #[derive(Clone, Copy)]
 pub(crate) enum FileAction {
@@ -127,6 +128,10 @@ pub(crate) struct FilePreview {
     pub path: PathBuf,
     pub details: String,
     pub image: bool,
+    pub unavailable: Option<String>,
+    pub image_cache: Option<Entity<RetainAllImageCache>>,
+    live_identity: Arc<()>,
+    _live: Option<Task<()>>,
     /// The inline reader for a PDF (#477); replaces the file card.
     pub pdf: Option<Entity<reader_pdf::PdfViewer>>,
     pub text: Option<Entity<reader_plain_text::PlainTextPreview>>,
@@ -145,30 +150,19 @@ impl FilePreview {
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
-        let modified = meta
-            .modified()
-            .ok()
-            .map(|t| {
-                let t: time::OffsetDateTime = t.into();
-                format!(
-                    "{} {} {} {:02}:{:02} UTC",
-                    t.day(),
-                    t.month(),
-                    t.year(),
-                    t.hour(),
-                    t.minute()
-                )
-            })
-            .unwrap_or_else(|| "Unknown modified date".into());
         Ok(Self {
             #[cfg(any(target_os = "macos", all(test, unix)))]
             thumbnail: None,
             pdf: None,
             log: None,
             text: None,
+            unavailable: None,
+            image_cache: None,
+            live_identity: Arc::new(()),
+            _live: None,
             rel: rel.into(),
             path,
-            details: format!("{} · {} bytes · {modified}", ext.to_uppercase(), meta.len()),
+            details: live::metadata_label(&ext, &meta),
             image: ["svg", "png", "jpg", "jpeg", "gif", "webp", "bmp"].contains(&ext.as_str())
                 || (cfg!(target_os = "macos") && ["heic", "heif"].contains(&ext.as_str())),
         })
@@ -324,6 +318,7 @@ impl Reader {
                     self.navigation.history_ix = self.navigation.history.len() - 1;
                 }
                 let mut preview = preview;
+                self.observe_preview_file(&mut preview, window, cx);
                 if reader_pdf::is_pdf(rel) {
                     let path = preview.path.clone();
                     let viewer = cx.new(|cx| reader_pdf::PdfViewer::new(path, window, cx));
@@ -381,6 +376,23 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if let Some(message) = &preview.unavailable {
+            return v_flex()
+                .id("reader-file-unavailable")
+                .debug_selector(|| "reader-file-unavailable".into())
+                .key_context("ReaderFile")
+                .track_focus(&self.focus_handle)
+                .size_full()
+                .child(self.render_document_header(window, cx))
+                .child(
+                    div()
+                        .px_6()
+                        .py_4()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(message.clone()),
+                )
+                .into_any_element();
+        }
         if let Some(log) = &preview.log {
             return self.render_log_preview(log, window, cx);
         }
@@ -493,9 +505,13 @@ impl Reader {
                     .child(preview.details.clone()),
             );
         if preview.image {
-            view = view.child(super::reader_image::ReaderImage::new(image_source(
-                preview.path.clone(),
-            )));
+            let image = super::reader_image::ReaderImage::new(image_source(preview.path.clone()))
+                .with_error_message("This image couldn’t be read.");
+            if let Some(cache) = &preview.image_cache {
+                view = view.child(image.with_cache(cache.clone()));
+            } else {
+                view = view.child(image);
+            }
         }
         v_flex()
             .id("reader-file-preview")
