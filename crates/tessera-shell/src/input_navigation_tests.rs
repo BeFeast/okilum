@@ -1,4 +1,5 @@
 //! Exercise shared input navigation through the actual rendered component.
+use ::core::prelude::v1::test;
 use gpui::*;
 use gpui_component::{
     input::{Input, InputState},
