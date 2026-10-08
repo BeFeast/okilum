@@ -190,6 +190,17 @@ post-move race or sync warning occurs, the destination opens in read mode for
 inspection instead of automatically re-entering source mode. File
 contents (including BOM, CRLF and frontmatter) are unchanged by rename/move.
 
+## Immediate move and rename feedback (#722)
+
+Ordinary note rename/move and folder moves apply directly with one timed bottom
+notification and Undo. Unresolved or unreadable links alone do not require a
+confirmation. A single info disclosure in that notification lists affected notes
+once, with folder context, instead of repeated service-status rows. The existing
+large note-link rewrite review (more than 20 affected paths) remains explicit;
+folder moves remain immediate. Revision, collision, dirty-editor checks and the
+durable undo journal still apply. This supersedes the routine confirmation flow
+below for these operations.
+
 ## Update links during rename / move (#440)
 
 This extends the #360 flow above. A scrollable preview lists each changed target

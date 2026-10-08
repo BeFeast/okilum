@@ -77,7 +77,6 @@ fn move_message(from: &str, to: &str, links: Option<&Preview>) -> String {
 }
 
 fn move_link_review(preview: &Preview) -> Option<String> {
-    preview.directory.as_ref()?;
     let paths: std::collections::BTreeSet<_> = preview
         .skipped
         .iter()
@@ -111,13 +110,10 @@ fn undo_message(from: &str, to: &str) -> &'static str {
 }
 
 fn needs_move_confirmation(preview: &Preview) -> bool {
-    // Folder moves are reversible operations, including moves with unresolved
-    // links. Keep revision/lock checks in finish_move, but do not make users
-    // approve an inventory of unchanged links before moving a folder.
-    preview.directory.is_none()
-        && (preview.affected_paths().len() > 20
-            || !preview.skipped.is_empty()
-            || !preview.skipped_files.is_empty())
+    // Unresolved links are information, not writes to approve. Ordinary note
+    // renames and folder moves use the existing journal and Undo directly.
+    // Keep the separate large note-link rewrite review for actual changed files.
+    preview.directory.is_none() && preview.affected_paths().len() > 20
 }
 
 struct MoveProgress;
@@ -656,16 +652,12 @@ impl Reader {
             let paths: std::collections::BTreeSet<_> =
                 display.changes.iter().map(|c| c.path.clone()).collect();
             let names: Vec<_> = paths.iter().map(|path| display_name(path)).collect();
-            let skipped: Vec<_> = display
+            let skipped: std::collections::BTreeSet<_> = display
                 .skipped
                 .iter()
-                .map(|s| format!("{} · link unchanged", display_name(&s.path)))
-                .chain(
-                    display
-                        .skipped_files
-                        .iter()
-                        .map(|s| format!("{} · could not read", display_name(&s.path))),
-                )
+                .map(|s| &s.path)
+                .chain(display.skipped_files.iter().map(|s| &s.path))
+                .map(|path| Path::new(path).with_extension("").display().to_string())
                 .collect();
             let show_unchanged = unchanged_expanded.get();
             let toggle_unchanged = unchanged_expanded.clone();
@@ -1122,7 +1114,7 @@ mod tests {
     }
 
     #[test]
-    fn confirmation_is_reserved_for_large_or_unresolved_changes() {
+    fn confirmation_is_reserved_for_large_actual_changes() {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("Start.md"), "# Heading").unwrap();
         for index in 0..19 {
@@ -1141,7 +1133,26 @@ mod tests {
         std::fs::write(root.path().join("Another.md"), "[[No such note]]").unwrap();
         let unresolved = Preview::prepare(root.path(), "Start.md", "Next.md").unwrap();
         assert!(!unresolved.skipped.is_empty());
-        assert!(needs_move_confirmation(&unresolved));
+        assert!(!needs_move_confirmation(&unresolved));
+        assert_eq!(
+            move_link_review(&unresolved).unwrap(),
+            "Some links could not be updated. Review these notes:\nAnother"
+        );
+        // Repeated unresolved occurrences are one human note name, not nine rows.
+        std::fs::write(root.path().join("Start.md"), "[[Missing]]\n".repeat(9)).unwrap();
+        let repeated = Preview::prepare(root.path(), "Start.md", "Next.md").unwrap();
+        assert_eq!(
+            repeated
+                .skipped
+                .iter()
+                .filter(|s| s.path == "Start.md")
+                .count(),
+            9
+        );
+        assert!(!needs_move_confirmation(&repeated));
+        let review = move_link_review(&repeated).unwrap();
+        assert_eq!(review.lines().filter(|line| *line == "Start").count(), 1);
+        assert!(!review.contains("link unchanged"));
     }
 
     #[gpui::test]
@@ -1568,7 +1579,6 @@ mod tests {
             assert_eq!(reader.current_rel, "Folder/Final.md");
             assert!(reader.editing.is_some());
         });
-        let move_index = reader.read_with(visual, |reader, _| reader.move_index.clone());
         // Missing index uses cancellable background fallback, without another dialog.
         reader.update_in(visual, |r, window, cx| {
             r.move_index = None;
@@ -1610,9 +1620,16 @@ mod tests {
         visual.run_until_parked();
         assert!(root.join("Folder/Final.md").exists());
         assert!(!root.join("Folder/Fallback.md").exists());
-        // Rename a selected row without changing the open source editor.
+        // Rename a selected row containing repeated unresolved links: no modal,
+        // one result disclosure, and exact Undo (manager reproduction #722).
+        let reference_before = format!(
+            "{}\r\n{}",
+            std::fs::read_to_string(root.join("target.md")).unwrap(),
+            "[[Missing target]]\r\n".repeat(9)
+        );
+        std::fs::write(root.join("target.md"), &reference_before).unwrap();
         reader.update_in(visual, |reader, window, cx| {
-            reader.move_index = move_index;
+            reader.move_index = None;
             reader.reveal_in_tree("target.md", window, cx);
             reader.tree_focus.focus(window, cx);
         });
@@ -1628,6 +1645,28 @@ mod tests {
         visual.run_until_parked();
         assert!(root.join("Reference.md").exists());
         assert!(!root.join("target.md").exists());
+        assert!(
+            visual.debug_bounds("move-update").is_none(),
+            "unresolved rename is immediate"
+        );
+        assert!(
+            visual.debug_bounds("move-link-review").is_some(),
+            "one result disclosure"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("Reference.md")).unwrap(),
+            reference_before
+        );
+        let undo = visual
+            .debug_bounds("undo-move")
+            .expect("rename offers Undo");
+        visual.simulate_click(undo.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(!root.join("Reference.md").exists());
+        assert_eq!(
+            std::fs::read_to_string(root.join("target.md")).unwrap(),
+            reference_before
+        );
         reader.read_with(visual, |reader, _| {
             assert_eq!(reader.current_rel, "Folder/Final.md");
             assert!(reader.editing.is_some());
