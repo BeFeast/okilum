@@ -34,7 +34,7 @@ mod source_context;
 mod source_find;
 mod source_input;
 mod source_navigation;
-mod source_projection;
+use crate::source_presentation as source_projection;
 mod source_projection_ui;
 pub(crate) mod source_trace;
 pub(crate) mod suggestions_outbox;

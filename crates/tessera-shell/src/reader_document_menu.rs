@@ -191,6 +191,7 @@ impl Reader {
                     .debug_selector(|| "source-save".into())
                     .on_click(cx.listener(|this, _, _, cx| this.request_source_save(cx))),
                 );
+                row = row.child(self.render_live_preview_control(cx));
             }
             row = row.child(
                 reader_icon_button(

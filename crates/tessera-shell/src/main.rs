@@ -83,6 +83,8 @@ mod reader_trash;
 mod reader_trash_fs;
 mod reader_tree;
 mod reader_ui_state;
+#[cfg(unix)]
+mod source_presentation;
 mod text_ranges;
 mod updater;
 mod window_state;
