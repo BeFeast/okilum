@@ -132,6 +132,26 @@ fn canonical(source: &str) -> Result<String> {
             !(ignored_metadata || default.is_some_and(|value| plain(el, value)) || empty_idle)
         });
     }
+    fn reject_mixed_content(node: &Element) -> Result<()> {
+        let has_elements = node
+            .children
+            .iter()
+            .any(|c| matches!(c, XMLNode::Element(_)));
+        let has_text = node
+            .children
+            .iter()
+            .any(|c| matches!(c, XMLNode::Text(t) | XMLNode::CData(t) if !t.trim().is_empty()));
+        ensure!(
+            !(has_elements && has_text),
+            "mixed task XML content is unsupported"
+        );
+        for child in &node.children {
+            if let XMLNode::Element(el) = child {
+                reject_mixed_content(el)?;
+            }
+        }
+        Ok(())
+    }
     fn visit(node: &Element) -> String {
         fn field(out: &mut String, value: &str) {
             out.push_str(&format!("{}:{value}", value.len()));
@@ -166,6 +186,7 @@ fn canonical(source: &str) -> Result<String> {
         out
     }
     let mut element = parse_task(source)?;
+    reject_mixed_content(&element)?;
     normalize(&mut element, "");
     Ok(visit(&element))
 }
@@ -307,6 +328,18 @@ mod scheduler_roundtrip_tests {
             Ok(value.into())
         } else {
             anyhow::bail!("unknown fixture account")
+        }
+    }
+    #[test]
+    fn mixed_scheduler_content_is_rejected_before_reordering() {
+        for changed in [
+            RETURNED.replace(
+                "<Actions Context=\"Owner\">",
+                "<Actions Context=\"Owner\">stray",
+            ),
+            RETURNED.replace("</Exec>", "stray</Exec>"),
+        ] {
+            assert!(canonical(&changed).is_err());
         }
     }
     #[test]

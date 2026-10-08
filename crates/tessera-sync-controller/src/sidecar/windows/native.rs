@@ -237,12 +237,13 @@ mod tests {
             .ok_or_else(|| anyhow::anyhow!("diagnostic task missing"))?;
         unsafe {
             let sddl = task.GetSecurityDescriptor(1)?.to_string();
+            let access = task.GetSecurityDescriptor(5)?.to_string();
             let actual = super::super::security::descriptor_owner_sid(&sddl)?;
             let mut principal = BSTR::new();
             task.Definition()?.Principal()?.UserId(&mut principal)?;
             let principal = principal.to_string();
             let state = task.State()?.0;
-            eprintln!("{label}: process_sid={expected}; owner_sid={actual}; owner_sddl={sddl}; principal={principal}; scheduler_state={state}");
+            eprintln!("{label}: process_sid={expected}; owner_sid={actual}; owner_sddl={sddl}; principal={principal}; scheduler_state={state}; owner_and_dacl={access}");
         }
         Ok(())
     }
