@@ -953,7 +953,7 @@ mod tests {
         let at = text.find("שלום").unwrap();
         let original = MatchContext {
             text,
-            highlights: vec![at..at + "שלום".len()],
+            highlights: std::iter::once(at..at + "שלום".len()).collect(),
             ..Default::default()
         };
         let shown = visible_context(&original);
@@ -966,7 +966,7 @@ mod tests {
         );
         let key = MatchContext {
             text: "Property · Title: Value".into(),
-            highlights: vec![12..17],
+            highlights: std::iter::once(12..17).collect(),
             ..Default::default()
         };
         assert_eq!(visible_context(&key), key);

@@ -209,7 +209,7 @@ mod tests {
             let from = text.find(needle).unwrap();
             let (view, visual) = cx.add_window_view(|_, _| Fixture {
                 text: text.into(),
-                matches: vec![from..from + needle.len()],
+                matches: std::iter::once(from..from + needle.len()).collect(),
                 width: 500.,
             });
             visual.update(|window, cx| window.draw(cx).clear(cx));
