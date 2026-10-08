@@ -10,6 +10,29 @@ pub(super) struct Navigation {
     sections: std::cell::RefCell<Vec<(usize, String)>>,
 }
 
+/// Resolve only headings actually represented by the native surface. Duplicate
+/// labels remain ambiguous rather than landing on an arbitrary query.
+fn section_target(sections: &[(usize, String)], title: &str) -> Option<usize> {
+    let mut matches = sections
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, label))| label == title);
+    let (index, _) = matches.next()?;
+    matches.next().is_none().then_some(index + 1)
+}
+
+pub(super) fn land(reader: &Reader, block: usize) -> Result<(), &'static str> {
+    let heading = reader
+        .outline
+        .iter()
+        .find(|heading| heading.target.block == block)
+        .ok_or("This position is not represented in the Tasks view. Open Source to inspect it.")?;
+    let index = section_target(&reader.typed_navigation.sections.borrow(), &heading.text)
+        .ok_or("This heading has no unique Tasks section. Open Source to inspect it.")?;
+    reader.typed_navigation.scroll.scroll_to_top_of_item(index);
+    Ok(())
+}
+
 pub(super) fn outline(reader: &Reader, cx: &mut Context<Reader>) -> Option<AnyElement> {
     if !reader.typed_navigation.active.get() {
         return None;
@@ -275,6 +298,16 @@ mod tests {
         );
         assert!(matches!(cache.view, View::Fallback(_)));
     }
+    #[test]
+    fn heading_landing_uses_display_order_and_rejects_missing_or_duplicate_titles() {
+        let sections = vec![(20, "Later".into()), (4, "Focus".into())];
+        assert_eq!(section_target(&sections, "Focus"), Some(2));
+        assert_eq!(section_target(&sections, "Later"), Some(1));
+        assert_eq!(section_target(&sections, "Missing"), None);
+        let duplicate = vec![(4, "Focus".into()), (20, "Focus".into())];
+        assert_eq!(section_target(&duplicate, "Focus"), None);
+    }
+
     #[gpui::test]
     fn native_dashboard_keeps_source_escape_and_markdown_fallback(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
@@ -400,6 +433,26 @@ mod tests {
         visual.run_until_parked();
         view.read_with(visual, |v, _| {
             assert!(v.typed_navigation.scroll.offset().y < px(0.))
+        });
+        let scrolled = view.read_with(visual, |v, _| v.typed_navigation.scroll.offset().y);
+        view.update(visual, |v, cx| {
+            let block = v
+                .outline
+                .iter()
+                .find(|heading| heading.text == "Focus")
+                .unwrap()
+                .target
+                .block;
+            v.scroll_to_block(block, cx);
+        });
+        visual.executor().advance_clock(Duration::from_millis(100));
+        visual.run_until_parked();
+        view.read_with(visual, |v, _| {
+            assert!(v.pending_landing.is_none());
+            assert!(
+                v.typed_navigation.scroll.offset().y > scrolled,
+                "heading link moves the visible surface"
+            );
         });
         view.update_in(visual, |v, window, cx| {
             v.open_find(window, cx);

@@ -2158,6 +2158,15 @@ impl Reader {
                 cx.background_executor().timer(Duration::from_millis(50)).await;
                 let done = entity.update(cx, |this, cx| {
                     if landing != this.landing_generation { return true; }
+                    if generation == this.navigation_generation && content == this.content.entity_id()
+                        && this.typed_navigation.active.get() {
+                        this.pending_landing = None;
+                        if let Err(reason) = reader_typed_view::land(this, position.item_ix) {
+                            this.link_notice = Some(reason.into());
+                        }
+                        cx.notify();
+                        return true;
+                    }
                     match reader_landing_state(generation == this.navigation_generation,
                         content == this.content.entity_id(), this.content.read(cx).list_state().item_count(), position.item_ix, attempt)
                     {

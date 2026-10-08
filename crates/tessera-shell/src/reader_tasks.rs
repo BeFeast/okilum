@@ -856,7 +856,8 @@ impl RenderOnce for TasksList {
                                 .icon(IconName::Calendar)
                                 .disabled(!writable)
                                 .tooltip("Reschedule task")
-                                .dropdown_menu(move |mut menu, _, _| {
+                                .debug_selector(move || format!("task-date-{offset}-{ix}"))
+                                .dropdown_menu(move |mut menu, window, cx| {
                                     use tessera_core::task_edit::Change;
                                     let tomorrow = today().next_day().unwrap_or(today());
                                     for (label, change) in [
@@ -888,7 +889,69 @@ impl RenderOnce for TasksList {
                                             },
                                         ));
                                     }
-                                    menu
+                                    use gpui_component::calendar::{
+                                        Calendar, CalendarEvent, CalendarState, Date,
+                                    };
+                                    let calendar = cx.new(|cx| {
+                                        let mut state = CalendarState::new(window, cx);
+                                        let initial = date_task.due.unwrap_or_else(today);
+                                        let date = chrono::NaiveDate::from_ymd_opt(
+                                            initial.year(),
+                                            initial.month() as u32,
+                                            initial.day() as u32,
+                                        )
+                                        .expect("valid task date");
+                                        state.set_date(date, window, cx);
+                                        state
+                                    });
+                                    let reader = date_reader.clone();
+                                    let expected_root = date_root.clone();
+                                    let index = date_index.clone();
+                                    let task = date_task.clone();
+                                    cx.subscribe_in(
+                                        &calendar,
+                                        window,
+                                        move |_, _, event, window, cx| {
+                                            let CalendarEvent::Selected(Date::Single(Some(date))) =
+                                                event
+                                            else {
+                                                return;
+                                            };
+                                            use chrono::Datelike;
+                                            let Ok(date) = time::Date::from_calendar_date(
+                                                date.year(),
+                                                (date.month() as u8)
+                                                    .try_into()
+                                                    .expect("calendar month"),
+                                                date.day() as u8,
+                                            ) else {
+                                                return;
+                                            };
+                                            if !writable {
+                                                return;
+                                            }
+                                            let _ = reader.update(cx, |this, cx| {
+                                                if this.vault_root == expected_root {
+                                                    this.apply_task_change(
+                                                        index.clone(),
+                                                        task.clone(),
+                                                        Change::Due(date),
+                                                        window,
+                                                        cx,
+                                                    );
+                                                }
+                                            });
+                                            cx.emit(gpui::DismissEvent);
+                                        },
+                                    )
+                                    .detach();
+                                    menu.separator().label("Choose due date").item(
+                                        PopupMenuItem::element(move |_, _| {
+                                            div()
+                                                .on_click(|_, _, cx| cx.stop_propagation())
+                                                .child(Calendar::new(&calendar))
+                                        }),
+                                    )
                                 }),
                         )
                     })
