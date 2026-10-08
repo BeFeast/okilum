@@ -122,7 +122,30 @@ fn snippet_window<'a>(body: &'a str, terms: &[String], window: usize) -> &'a str
         return body;
     }
     let lower = body.to_lowercase();
-    let hit = terms.iter().filter_map(|t| lower.find(t.as_str())).min();
+    // Prefer the adjacent query words over an earlier isolated common term.
+    // Keep their paragraph together so Tantivy can highlight the whole match.
+    let phrase = (terms.len() >= 2).then(|| terms.join(" "));
+    let phrase_hit = phrase.as_ref().and_then(|p| lower.find(p));
+    if let Some(pos) = phrase_hit {
+        // Lowercasing can change byte lengths; translate back to source bytes.
+        let mut lower_offset = 0;
+        let mut original = 0;
+        for (at, ch) in body.char_indices() {
+            if lower_offset >= pos {
+                original = at;
+                break;
+            }
+            lower_offset += ch.to_lowercase().map(char::len_utf8).sum::<usize>();
+        }
+        let start = body[..original].rfind('\n').map_or(0, |at| at + 1);
+        let end = body[original..]
+            .find('\n')
+            .map_or(body.len(), |at| original + at);
+        if end - start <= window {
+            return &body[start..end];
+        }
+    }
+    let hit = phrase_hit.or_else(|| terms.iter().filter_map(|t| lower.find(t.as_str())).min());
     let start = match hit {
         // The lowercase copy may differ in byte length from the original for
         // non-ASCII text, so the offset is a hint, clamped and boundary-fixed.
@@ -596,7 +619,27 @@ impl Searcher {
         if doc != addr.doc_id {
             return Ok(None);
         }
-        Ok(Some(weight.explain(segment, addr.doc_id)?.to_pretty_json()))
+        let lexical = weight.explain(segment, addr.doc_id)?;
+        let lexical_score = scorer.score();
+        let ranked = self.with_phrase_preference(parsed, query);
+        let ranked_weight = ranked.weight(tantivy::query::EnableScoring::enabled_from_searcher(
+            &searcher,
+        ))?;
+        let mut ranked_scorer = ranked_weight.scorer(segment, 1.0)?;
+        while ranked_scorer.doc() < addr.doc_id {
+            ranked_scorer.advance();
+        }
+        let score = ranked_scorer.score();
+        let mut explanation = tantivy::query::Explanation::new(
+            "lexical relevance plus adjacent phrase preference",
+            score,
+        );
+        explanation.add_detail(lexical);
+        explanation.add_detail(tantivy::query::Explanation::new(
+            "adjacent phrase bonus",
+            score - lexical_score,
+        ));
+        Ok(Some(explanation.to_pretty_json()))
     }
 
     /// Remove one note from the index. A deleted file has nothing to add back.
@@ -737,6 +780,44 @@ impl Searcher {
         self.search_scoped(query, limit, Some(paths))
     }
 
+    // Plain multiword queries remain conjunctive. A matching adjacent phrase
+    // adds a length-independent bonus: a long note should not bury the exact
+    // phrase behind short notes containing the same words far apart. Existing
+    // positional postings support this without rebuilding the index.
+    fn with_phrase_preference(&self, parsed: Box<dyn Query>, query: &str) -> Box<dyn Query> {
+        use tantivy::query::{BooleanQuery, ConstScoreQuery, Occur, PhraseQuery};
+        if !query
+            .chars()
+            .all(|c| c.is_alphanumeric() || c.is_whitespace())
+        {
+            return parsed;
+        }
+        let mut analyzer = analyzer::analyzer();
+        let mut stream = analyzer.token_stream(query);
+        let mut words = Vec::new();
+        while stream.advance() {
+            words.push(stream.token().text.clone());
+        }
+        if !(2..=8).contains(&words.len()) {
+            return parsed;
+        }
+        let mut clauses = vec![(Occur::Must, parsed)];
+        for (field, bonus) in [(self.f.body, 12.0), (self.f.title, 18.0)] {
+            let terms = words
+                .iter()
+                .map(|word| tantivy::Term::from_field_text(field, word))
+                .collect();
+            clauses.push((
+                Occur::Should,
+                Box::new(ConstScoreQuery::new(
+                    Box::new(PhraseQuery::new(terms)),
+                    bonus,
+                )),
+            ));
+        }
+        Box::new(BooleanQuery::new(clauses))
+    }
+
     fn search_scoped(
         &self,
         query: &str,
@@ -801,7 +882,8 @@ impl Searcher {
                 query
             }
         };
-        let filtered = scoped(parsed.box_clone());
+        let ranked = self.with_phrase_preference(parsed.box_clone(), query);
+        let filtered = scoped(ranked);
         let mut top = searcher.search(&filtered, &TopDocs::with_limit(limit).order_by_score())?;
         if top.is_empty() {
             // Nothing exact: allow one typo. The exact query is still what the
@@ -842,9 +924,8 @@ impl Searcher {
             // Measured: search(term, 30) was 20 ms while search(term, 1) was
             // 0.27 ms — the cost was 30 notes' worth of full-body tokenizing
             // through the stemmer, some of them 130 KB, to pick 180 chars.
-            // The window is centred on the first occurrence of any query
-            // term when one is found, so the snippet still comes from the
-            // matching region; otherwise the head of the note.
+            // Prefer the adjacent query phrase's paragraph; otherwise centre
+            // on the first available term, or fall back to the note head.
             let body = retrieved
                 .get_first(self.f.body)
                 .and_then(|v| v.as_str())
