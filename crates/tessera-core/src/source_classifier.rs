@@ -468,24 +468,34 @@ impl<'s> Context<'s> {
         if children.len() != 1 || !matches!(children[0].data.borrow().value, NodeValue::Text(_)) {
             return None;
         }
-        let label = self.range(children[0])?;
-        let label_raw = self.source.get(label.clone())?;
-        plain(label_raw)?;
-        let prefix = self.source.get(range.start..label.start)?;
-        let suffix = self.source.get(label.end..range.end)?;
-        if wiki {
-            if suffix != "]]" || label_raw.contains('|') {
+        let (label, target) = if wiki {
+            // Comrak trims label text before assigning its child coordinates.
+            // Whitespace around the label is syntax to conceal, not evidence
+            // of an unsupported link. Keep the target and source bytes intact.
+            let inner = raw.strip_prefix("[[")?.strip_suffix("]]")?;
+            let (target, authored_label) = inner.split_once('|').unwrap_or((inner, inner));
+            if target.trim().is_empty() || target.contains(['[', ']', '|', '\\']) {
                 return None;
             }
-            if prefix != "[[" {
-                let target = prefix.strip_prefix("[[")?.strip_suffix('|')?;
-                if target.is_empty() || target.contains(['[', ']', '|', '\\']) {
-                    return None;
-                }
-            } else if label_raw.contains(['|', '\\']) {
+            let visible = authored_label.trim();
+            if visible.is_empty() || visible.contains('|') {
                 return None;
             }
+            let label_start = range.end - 2 - authored_label.trim_start().len();
+            let label = label_start..label_start + visible.len();
+            // Comrak's child position starts before leading whitespace even
+            // though its text is trimmed. Derive offsets from the checked raw
+            // delimiters and require agreement with the literal parser text.
+            if !matches!(&children[0].data.borrow().value,
+                NodeValue::Text(text) if text == visible)
+            {
+                return None;
+            }
+            (label, target)
         } else {
+            let label = self.range(children[0])?;
+            let prefix = self.source.get(range.start..label.start)?;
+            let suffix = self.source.get(label.end..range.end)?;
             if prefix != "[" {
                 return None;
             }
@@ -497,16 +507,9 @@ impl<'s> Context<'s> {
             {
                 return None;
             }
-        }
-        let target = if wiki {
-            if prefix == "[[" {
-                label_raw
-            } else {
-                prefix.strip_prefix("[[")?.strip_suffix('|')?
-            }
-        } else {
-            suffix.strip_prefix("](")?.strip_suffix(')')?
+            (label, destination)
         };
+        plain(self.source.get(label.clone())?)?;
         candidate.links.push(NoteLink {
             range: range.clone(),
             label: label.clone(),

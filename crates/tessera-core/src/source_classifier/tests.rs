@@ -385,3 +385,34 @@ fn heading_navigation_refuses_duplicates_and_unsupported_targets() {
         .unwrap_err()
         .contains("64 KiB"));
 }
+
+#[test]
+fn wikilink_whitespace_preserves_source_and_reveals_exact_syntax() {
+    for (raw, expected, target) in [
+        ("[[Target|alias ]]", "alias", "Target"),
+        ("[[Target| alias ]]", "alias", "Target"),
+        ("[[ Target#Heading | alias ]]", "alias", " Target#Heading "),
+        ("[[Target#^block| שם ]]", "שם", "Target#^block"),
+        ("[[ Target ]]", "Target", " Target "),
+        ("[[Target|\talias\t]]", "alias", "Target"),
+    ] {
+        let snap = snapshot(raw);
+        let classified = classify(&snap);
+        assert_eq!(display(raw), expected, "{raw:?}");
+        let links = classified.links_for(&snap).unwrap();
+        assert_eq!(links.len(), 1, "{raw:?}");
+        assert_eq!(&raw[links[0].label.clone()], expected);
+        assert_eq!(links[0].target, target);
+        assert_eq!(snap.copy_source(0..raw.len()).unwrap(), raw);
+        let active = Active {
+            selection: Some(links[0].label.start..links[0].label.start),
+            composition: None,
+        };
+        assert_eq!(
+            project(&snap, classified.plan(), &active)
+                .unwrap()
+                .display(),
+            raw
+        );
+    }
+}
