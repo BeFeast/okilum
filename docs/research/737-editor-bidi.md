@@ -71,3 +71,31 @@ correct. A vendor adapter that cannot satisfy these cases is not permission to
 patch GPUI core or weaken acceptance.
 
 Raw local trace: `~/.cache/tessera-qa/737/native-shaping.log`.
+
+## Native geometry prototype
+
+The example now includes an isolated `bidi737/geometry.rs` adapter. It groups
+shaped glyphs by source grapheme, sorts visual extents independently of platform
+iteration order, and uses Unicode bidi levels to orient leading/trailing edges.
+It preserves both candidates at a directional boundary and constructs selections
+from visual cells rather than only two logical endpoints. Only a dev dependency
+on the already locked `unicode-bidi` package is added; production is unchanged.
+
+On Linux/X11, eight real shaped fixtures pass the probe assertions: ASCII, pure
+Hebrew, Hebrew within English, English within Hebrew, Hebrew with niqqud, mixed
+Hebrew/numbers, a Latin ligature sample, and Cyrillic with Hebrew. Specifically,
+source boundaries 6/8/10 in `abc שלום xyz` have distinct decreasing X coordinates;
+selecting 10..12 occupies only the last Hebrew letter; selecting 0..6 produces two
+disjoint spans. Every visual cell has positive width and its nearest-edge hit test
+returns the corresponding visual position. The ASCII control still round-trips.
+
+This is **not** complete editor acceptance. Pointer hits at a directional boundary
+still require choosing and retaining logical affinity; this probe deliberately
+checks visual position rather than claiming both logical indices round-trip from
+one X. Soft-wrapped rows must retain paragraph bidi context. Ligature subdivision
+is provisional, and real caret positions/fallback behavior need further evidence.
+Integration must replace the shared editor's caret, selection and movement paths
+together; patching only `x_for_index` would leave wrong selection and clicks.
+
+Trace: `~/.cache/tessera-qa/737/native-geometry.log`. Build and strict example clippy
+logs are adjacent. No UI before/after or product fix is claimed by these assertions.
