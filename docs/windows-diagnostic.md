@@ -92,3 +92,15 @@ source path, and the ZIP includes the original pinned HLSL and its license. The 
 Toolkit icons are explicitly embedded even when debug assertions are enabled.
 Normal Linux and macOS release profiles are unchanged.
 The CI job uploads a ZIP and checksum as artifacts, without feed publication.
+
+## CI SDK download cache
+
+The cross-build workflow caches xwin separately from Cargo and vendor downloads.
+The key includes cargo-xwin version, x86_64 and the Microsoft package-manifest
+SHA256. A verified file inventory is required: missing or corrupted SDK entries
+are downloaded again. Runner host configuration is not involved.
+
+The optional manual `cache-benchmark` input measures cold download and warm reuse
+on the same runner before the build. Run 3548 measured 555.86 seconds cold versus
+2.28 seconds warm; the complete Windows build succeeded. This excludes remote
+Actions cache transfer time, so it is not an end-to-end job speedup claim.
