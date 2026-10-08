@@ -180,7 +180,7 @@ mod tests {
     use super::*;
     use crate::vendor_bidi_geometry::Cell;
     use ::core::prelude::v1::test;
-    use gpui_component::{Colorize as _, ThemeMode};
+    use gpui_component::ThemeMode;
 
     #[gpui::test]
     fn search_label_paints_matches_and_clips_without_marking_cut_text(cx: &mut TestAppContext) {
