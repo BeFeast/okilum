@@ -300,10 +300,7 @@ fn content(document: Arc<Document>, width: f32, window: &mut Window, cx: &mut Ap
                 width * document.tree.size().height() / document.tree.size().width()
             ))
             .into_any_element(),
-        Some(Err(error)) => div()
-            .p_3()
-            .child(format!("Drawing unavailable: {error}"))
-            .into_any_element(),
+        Some(Err(error)) => diagnostic("Drawing could not be displayed", error.as_str(), cx),
         None => div().p_3().child("Rendering drawing…").into_any_element(),
     }
 }
@@ -378,13 +375,50 @@ pub(super) fn render(
                 )
                 .into_any_element()
         }
-        Some(Err(error)) => div()
-            .p_3()
-            .child(format!("Drawing unavailable: {error}"))
-            .into_any_element(),
+        Some(Err(error)) => diagnostic("Drawing could not be displayed", error.as_str(), cx),
         None => div().p_3().child("Loading drawing…").into_any_element(),
     }
 }
+// Keep renderer diagnostics available without making them document content.
+fn diagnostic(summary: &'static str, details: &str, cx: &App) -> AnyElement {
+    let details = SharedString::from(details.to_owned());
+    let copy = details.clone();
+    h_flex()
+        .id(summary)
+        .p_3()
+        .gap_2()
+        .text_color(cx.theme().muted_foreground)
+        .child(div().flex_1().child(summary))
+        .child(
+            div()
+                .id("drawing-diagnostic-details")
+                .tooltip(move |window, cx| {
+                    let details = details.clone();
+                    gpui_component::tooltip::Tooltip::element(move |_, _| {
+                        div()
+                            .max_w(px(480.))
+                            .whitespace_normal()
+                            .child(details.clone())
+                    })
+                    .build(window, cx)
+                })
+                .child(Icon::new(IconName::Info).size_4()),
+        )
+        .child(
+            reader_icon_button(
+                "drawing-copy-details",
+                IconName::Copy,
+                "Copy drawing details",
+                cx,
+            )
+            .on_click(move |_, window, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(copy.to_string()));
+                reader_toast::transient("Copied", window, cx);
+            }),
+        )
+        .into_any_element()
+}
+
 fn open_expand(document: Arc<Document>, window: &mut Window, cx: &mut App) {
     let zoom = Rc::new(Cell::new(1f32));
     window.open_dialog(cx, move |dialog, window, cx| {

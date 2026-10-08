@@ -700,6 +700,13 @@ Escape or a click outside dismisses. Self, descendants, and the current parent
 are excluded. Errors stay inside the popover. The existing revision-aware move,
 exceptional link-impact confirmation, and result toast with Undo are unchanged.
 
+### Drawing diagnostics
+
+A failed drawing preview shows a short message. Parser and rasterizer details
+remain available through an Info tooltip and a Copy details glyph, rather than
+technical text in the document. Copy uses the standard transient toast. Rendering,
+partial-render warnings and missing or ambiguous drawing identity are unchanged.
+
 ### Reader keyboard scrolling (#705)
 
 When rendered note text has focus, Up/Down scroll by two text lines and Page
