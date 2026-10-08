@@ -406,6 +406,7 @@ fn sync_appearance(window: &mut Window, cx: &mut App) {
     }
     brand::apply_theme(cx);
 }
+#[cfg(all(unix, feature = "brain"))]
 fn cycle_appearance(window: &mut Window, cx: &mut App) {
     let next = match cx.try_global::<AppearancePreference>().and_then(|p| p.0) {
         None => Some(gpui_component::ThemeMode::Light),

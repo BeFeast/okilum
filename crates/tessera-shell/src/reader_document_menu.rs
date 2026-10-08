@@ -328,7 +328,7 @@ impl Reader {
                     if !is_file {
                         menu = menu.menu("Open in new window", Box::new(reader_open::NewWindow));
                     }
-                    #[cfg(any(unix, windows))]
+                    #[cfg(unix)]
                     {
                         let reader = reader.clone();
                         let rel = rel.clone();
