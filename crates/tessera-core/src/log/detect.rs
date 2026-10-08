@@ -5,7 +5,7 @@ use super::{json, logfmt};
 /// Bytes read for detection.
 pub const SAMPLE_BYTES: usize = 64 * 1024;
 /// Non-blank lines inspected for detection.
-const SAMPLE_LINES: usize = 256;
+pub(super) const SAMPLE_LINES: usize = 256;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Format {

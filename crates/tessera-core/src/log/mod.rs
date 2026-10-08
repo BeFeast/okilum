@@ -17,6 +17,7 @@ mod json;
 mod level;
 mod logfmt;
 mod record;
+pub mod tail;
 pub mod timestamp;
 
 use std::path::Path;
@@ -26,6 +27,7 @@ pub use file::{LogFile, MAP_THRESHOLD_BYTES, MAX_LOG_BYTES};
 pub use index::{LogEntry, LogIndex, LogStats};
 pub use level::Level;
 pub use record::{Field, Record, Role, ValueKind};
+pub use tail::LogTail;
 
 /// File extensions the log viewer opens. Compressed and rotated names
 /// (`.log.1`, `.gz`) are later slices.
