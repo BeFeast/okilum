@@ -63,6 +63,7 @@ pub(crate) struct Layout {
     pub history_index: usize,
     pub position: Position,
     pub source: bool,
+    pub live_preview: bool,
     pub source_scroll: [f32; 2],
 }
 impl Default for Layout {
@@ -88,6 +89,7 @@ impl Default for Layout {
             history_index: 0,
             position: Default::default(),
             source: false,
+            live_preview: false,
             source_scroll: [0.; 2],
         }
     }
@@ -521,6 +523,7 @@ pub(crate) struct Session {
     active: bool,
     tree: Option<Layout>,
     source: Option<[f32; 2]>,
+    live_preview: bool,
     source_position_pending: bool,
     source_reader_position: Option<ListOffset>,
     pub(crate) source_highlight_pending: bool,
@@ -565,6 +568,7 @@ impl Reader {
         self.properties_open = saved.properties_open;
         self.show_hidden_properties = saved.hidden_properties;
         self.ui_state.tree = Some(saved.clone());
+        self.ui_state.live_preview = saved.live_preview;
         if saved.source {
             self.ui_state.source_reader_position =
                 (saved.note == self.current_rel).then(|| saved.position.list());
@@ -655,6 +659,9 @@ impl Reader {
         if self.editing.is_none() && !self.current_rel.is_empty() && self.file_preview.is_none() {
             self.cancel_pending_landing();
             self.toggle_source(window, cx);
+            if self.editing.is_some() && self.ui_state.live_preview {
+                self.toggle_live_preview(window, cx);
+            }
             if self.editing.is_none() {
                 if let Some(position) = self.ui_state.source_reader_position.take() {
                     // If draft recovery cannot open, preserve the preview landing
@@ -767,6 +774,11 @@ impl Reader {
             history_index: self.navigation.history_ix,
             position: position.into(),
             source: self.editing.is_some() || self.ui_state.source.is_some(),
+            live_preview: if self.editing.is_some() {
+                self.source_live_preview()
+            } else {
+                self.ui_state.source.is_some() && self.ui_state.live_preview
+            },
             source_scroll: offset,
         };
         if self.ui_state.last.as_ref() != Some(&saved) || (active && !self.ui_state.active) {
@@ -1252,15 +1264,20 @@ mod tests {
 
     #[gpui::test]
     fn restored_reader_keeps_panels_sections_folders_history_and_scroll(cx: &mut TestAppContext) {
-        restored_document_state(cx, false);
+        restored_document_state(cx, false, false);
     }
 
     #[gpui::test]
     fn restored_source_hides_preview_until_source_viewport_is_ready(cx: &mut TestAppContext) {
-        restored_document_state(cx, true);
+        restored_document_state(cx, true, false);
     }
 
-    fn restored_document_state(cx: &mut TestAppContext, source: bool) {
+    #[gpui::test]
+    fn restores_live_preview_and_recovered_draft(cx: &mut TestAppContext) {
+        restored_document_state(cx, true, true);
+    }
+
+    fn restored_document_state(cx: &mut TestAppContext, source: bool, live_preview: bool) {
         let fixture = tempfile::tempdir().unwrap();
         let root = fixture.path().join("vault");
         std::fs::create_dir_all(root.join("Folder")).unwrap();
@@ -1298,6 +1315,7 @@ mod tests {
             tree_cursor: Some("Folder".into()),
             tree_scroll: -840.,
             source,
+            live_preview,
             source_scroll: [0., -400.],
             note: "Folder/note.md".into(),
             position: Position {
@@ -1327,6 +1345,17 @@ mod tests {
             flush(cx);
             install(&directory, cx);
         });
+        if live_preview {
+            let path = root.join("Folder/note.md");
+            let mut draft = tessera_core::file_editor::FileEditor::open(
+                &path,
+                &directory.join("editor-drafts"),
+            )
+            .unwrap();
+            let text = format!("{}\nUnsaved draft sentinel\n", draft.text());
+            draft.set_text(text).unwrap();
+            cx.update(|cx| cx.set_global(reader_recovery::RecoveryStartup(true)));
+        }
         let (release_search, hold_search) = async_channel::bounded(1);
         let mut reader = None;
         let (_, visual) = cx.add_window_view(|window, cx| {
@@ -1390,7 +1419,10 @@ mod tests {
                         !reader.restoring_source(),
                         "source viewport must be visible"
                     );
-                    assert_eq!(reader.source_scroll_offset(cx).unwrap().y, px(-400.));
+                    assert_eq!(reader.source_live_preview(), live_preview);
+                    if !live_preview {
+                        assert_eq!(reader.source_scroll_offset(cx).unwrap().y, px(-400.));
+                    }
                 } else {
                     assert_eq!(
                         reader
@@ -1470,7 +1502,16 @@ mod tests {
                     !reader.restoring_source(),
                     "restored source must become visible"
                 );
-                assert_eq!(reader.source_scroll_offset(cx).unwrap().y, px(-400.));
+                assert_eq!(reader.source_live_preview(), live_preview);
+                if live_preview {
+                    let input = reader.editing.as_ref().unwrap().test_input();
+                    assert!(input.read(cx).value().contains("Unsaved draft sentinel"));
+                    assert!(!std::fs::read_to_string(root.join("Folder/note.md"))
+                        .unwrap()
+                        .contains("Unsaved draft sentinel"));
+                } else {
+                    assert_eq!(reader.source_scroll_offset(cx).unwrap().y, px(-400.));
+                }
             }
             assert_eq!(reader.navigation.history, ["other.md", "Folder/note.md"]);
             assert_eq!(reader.navigation.history_ix, 1);
@@ -1488,6 +1529,16 @@ mod tests {
                 14
             );
         });
+        if live_preview {
+            reader.update_in(visual, |reader, _, cx| {
+                reader.open_source_find(cx);
+                reader.record_ui_state(true, cx);
+                assert!(
+                    layout(&root, cx).unwrap().0.live_preview,
+                    "temporary Source during Find must not overwrite the saved choice"
+                );
+            });
+        }
         {
             for _ in 0..2 {
                 let before = reader.read_with(visual, |reader, cx| {
