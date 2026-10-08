@@ -1,0 +1,35 @@
+# Heavy checks run in the public mirror; this job only pushes/waits/reports.
+name: commit-ci
+on:
+  push:
+    branches: ['ci/**']
+  workflow_dispatch:
+    inputs:
+      lane:
+        description: 'linux, native-core, native-sync, windows-release, arch, brain, or inbox'
+        required: true
+        default: linux
+permissions:
+  contents: read
+concurrency:
+  group: commit-ci-${{ github.ref }}-${{ inputs.lane || 'linux' }}
+  cancel-in-progress: false
+jobs:
+  hosted:
+    # Do not use this unsigned entrypoint for main/release publication.
+    if: startsWith(github.ref, 'refs/heads/') && github.ref != 'refs/heads/main'
+    runs-on: bridge
+    timeout-minutes: 125
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Run exact commit in hosted CI
+        env:
+          MIRROR_TOKEN: ${{ secrets.TESSERA_GITHUB_MIRROR }}
+          PR_NUMBER: ${{ github.run_number }}
+          PR_HEAD_SHA: ${{ github.sha }}
+          CI_LANE: ${{ inputs.lane || 'linux' }}
+        run: python3 scripts/ci/github-pr.py

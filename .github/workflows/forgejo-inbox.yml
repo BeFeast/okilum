@@ -1,0 +1,51 @@
+name: forgejo-inbox
+'on':
+  push:
+    branches:
+    - forgejo-inbox-pr/**
+permissions:
+  contents: read
+concurrency:
+  group: forgejo-inbox-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  inbox:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_INCREMENTAL: '0'
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - name: Install compiler and pinned Rust
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq --no-install-recommends build-essential curl ca-certificates pkg-config libssl-dev python3-venv
+        curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+        echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+    - name: Format, lint and test isolated Inbox workspace
+      working-directory: inbox
+      run: |
+        # --all follows path dependencies into the Reader workspace, whose
+        # GPUI vendor is intentionally absent from this isolated Inbox job.
+        cargo fmt --check
+        cargo fmt --manifest-path ../crates/tessera-sync/Cargo.toml -p tessera-sync --check
+        cargo clippy --locked --workspace --all-targets -- -D warnings
+        cargo test --locked --workspace
+    - name: Consistent SQLite backup and restore
+      run: python3 inbox/deploy/test_backup.py
+    - name: Web outbox and WebAuthn encoding tests
+      working-directory: web/inbox
+      run: |
+        npm ci --ignore-scripts
+        npm test
+    - name: T3 bridge projection, transport and recovery tests
+      run: |
+        python3 -m venv /tmp/tessera-bridge-tests
+        /tmp/tessera-bridge-tests/bin/pip install --require-hashes --only-binary=:all: -r inbox/bridge/requirements.txt
+        /tmp/tessera-bridge-tests/bin/python -m unittest discover -s inbox/bridge -p 'test_*.py' -v
+    - name: Read-only Forgejo collector pagination and failure tests
+      run: python3 -m unittest discover -s inbox/forgejo -p 'test_*.py' -v
+    - name: Run Inbox tests
+      run: echo "All Inbox checks passed"

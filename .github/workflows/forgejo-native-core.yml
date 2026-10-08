@@ -1,0 +1,42 @@
+name: forgejo-native-core
+'on':
+  push:
+    branches:
+    - forgejo-native-core-pr/**
+permissions:
+  contents: read
+concurrency:
+  group: forgejo-native-core-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  native:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+    - name: Keep checkout and vendor patches in LF format
+      shell: bash
+      run: |
+        git config --global core.autocrlf false
+        git config --global core.eol lf
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - name: Diagnose patch line endings
+      shell: bash
+      run: |
+        git config --show-origin core.autocrlf
+        git ls-files --eol scripts/patches
+        if LC_ALL=C grep -l $'\r' scripts/patches/*.diff; then
+          echo '::error::CRLF detected in vendor patches; checkout must preserve LF'
+          exit 1
+        fi
+    - run: bash scripts/vendor-setup.sh
+    - shell: pwsh
+      env:
+        PKG: tessera-core
+        FEATURES: ''
+        FILTER: windows_
+      run: |
+        Get-Content rust-toolchain.toml; rustup show active-toolchain; if ($LASTEXITCODE) { exit $LASTEXITCODE }; rustc -Vv; if ($LASTEXITCODE) { exit $LASTEXITCODE }
+        $a = @('test', '--locked', '-p', $env:PKG); if ($env:FEATURES) { $a += @('--features', $env:FEATURES) }; if ($env:FILTER) { $a += $env:FILTER }; $a += @('--', '--nocapture', '--test-threads=1'); & cargo @a; exit $LASTEXITCODE
+      name: Run native tests

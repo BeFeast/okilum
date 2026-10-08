@@ -9,6 +9,10 @@ on:
       - 'packaging/**'
       - 'scripts/releases/**'
       - '.forgejo/workflows/windows-diagnostic.yml'
+      - '.github/workflows/forgejo-windows-release.yml'
+      - 'scripts/ci/github-pr.py'
+      - 'scripts/ci/build-windows-native.ps1'
+      - 'scripts/ci/stage-windows-shaders.py'
   # Fixed hourly window; the runner is free between ticks. Manual build now bypasses it.
   schedule:
     - cron: "0 * * * *"
@@ -40,7 +44,7 @@ jobs:
 
   release:
     needs: select
-    if: needs.select.outputs.build == 'true'
+    if: needs.select.outputs.build == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || vars.TESSERA_PR_LANE == 'local')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -145,3 +149,22 @@ jobs:
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FORGEJO_URL: ${{ github.server_url }}
         run: python3 scripts/releases/publication.py dispatch windows
+
+  windows-release-github:
+    if: >-
+      github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.TESSERA_PR_LANE != 'local'
+    runs-on: bridge
+    timeout-minutes: 125
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Wait for exact-head hosted windows-release
+        env:
+          MIRROR_TOKEN: ${{ secrets.TESSERA_GITHUB_MIRROR }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_LANE: windows-release
+        run: python3 scripts/ci/github-pr.py

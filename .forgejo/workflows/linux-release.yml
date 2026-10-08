@@ -9,6 +9,8 @@ on:
       - 'packaging/**'
       - 'scripts/releases/**'
       - '.forgejo/workflows/linux-release.yml'
+      - '.github/workflows/forgejo-arch.yml'
+      - 'scripts/ci/github-pr.py'
   # Build any PR branch manually when shared dependencies need release validation.
   workflow_dispatch:
 
@@ -33,7 +35,7 @@ jobs:
 
   release:
     needs: select
-    if: needs.select.outputs.build == 'true'
+    if: needs.select.outputs.build == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || vars.TESSERA_PR_LANE == 'local')
     runs-on: ubuntu-latest
     container:
       image: archlinux:base-devel@sha256:51dd3d24f7fba779e7c471caeee7804c50e8c134ad948e19685a1c83a42facc3
@@ -104,3 +106,22 @@ jobs:
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FORGEJO_URL: ${{ github.server_url }}
         run: python3 scripts/releases/publication.py dispatch linux
+
+  arch-github:
+    if: >-
+      github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.TESSERA_PR_LANE != 'local'
+    runs-on: bridge
+    timeout-minutes: 125
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Wait for exact-head hosted arch
+        env:
+          MIRROR_TOKEN: ${{ secrets.TESSERA_GITHUB_MIRROR }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_LANE: arch
+        run: python3 scripts/ci/github-pr.py

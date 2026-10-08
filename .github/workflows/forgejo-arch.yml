@@ -1,0 +1,50 @@
+name: forgejo-arch
+'on':
+  push:
+    branches:
+    - forgejo-arch-pr/**
+permissions:
+  contents: read
+concurrency:
+  group: forgejo-arch-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  arch:
+    runs-on: ubuntu-24.04
+    container:
+      image: archlinux:base-devel@sha256:51dd3d24f7fba779e7c471caeee7804c50e8c134ad948e19685a1c83a42facc3
+    timeout-minutes: 90
+    steps:
+    - name: Install Arch build and packaging tools
+      run: |
+        pacman -Syu --noconfirm --needed nodejs git python curl cmake clang mold \
+          wayland libxkbcommon libxkbcommon-x11 fontconfig freetype2 libxcb \
+          vulkan-icd-loader desktop-file-utils xorg-server-xvfb xorg-xauth xdotool vulkan-swrast dbus
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - name: Prepare build user
+      run: useradd -m builder
+    - name: Build package as an unprivileged user
+      run: |
+        chown -R builder:builder "$GITHUB_WORKSPACE" /home/builder
+        # Only branch dispatch artifacts may contain the visual QA harness.
+        harness=0
+        if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$GITHUB_REF" != refs/heads/main ]; then
+          harness=1
+        fi
+        runuser -u builder -- env TESSERA_SETTINGS_UI_HARNESS="$harness" TESSERA_BUILD_VERSION="$((5000 + GITHUB_RUN_NUMBER))" bash scripts/arch/build.sh
+    - name: Validate Arch package
+      run: |
+        desktop-file-validate scripts/arch/tessera.desktop
+        pacman -U --noconfirm dist/arch/tessera-*.pkg.tar.zst
+        tessera --help
+        if ldd /usr/bin/tessera | grep 'not found'; then exit 1; fi
+        python -m unittest discover -s scripts/arch -p 'test_*.py'
+        xvfb-run -a -s '-screen 0 1280x800x24' dbus-run-session -- bash scripts/arch/smoke-x11.sh
+    - uses: actions/upload-artifact@v4
+      with:
+        name: unsigned-arch
+        path: dist/arch/*.pkg.tar.zst
+        retention-days: 3
+        if-no-files-found: error
