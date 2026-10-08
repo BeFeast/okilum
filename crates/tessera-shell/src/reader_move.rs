@@ -574,6 +574,7 @@ impl Reader {
         let (send, receive) = async_channel::bounded(1);
         let display = pending.links.clone();
         let expanded = Rc::new(std::cell::Cell::new(false));
+        let unchanged_expanded = Rc::new(std::cell::Cell::new(false));
         window.open_dialog(cx, move |dialog, _, _| {
             let cancel = send.clone();
             let update = send.clone();
@@ -593,6 +594,8 @@ impl Reader {
                         .map(|s| format!("{} · could not read", display_name(&s.path))),
                 )
                 .collect();
+            let show_unchanged = unchanged_expanded.get();
+            let toggle_unchanged = unchanged_expanded.clone();
             let show_all = expanded.get();
             let toggle = expanded.clone();
             let moving = Path::new(&display.from).parent() != Path::new(&display.to).parent();
@@ -615,7 +618,11 @@ impl Reader {
                         .overflow_y_scroll()
                         .gap_2()
                         .when(!names.is_empty(), |d| {
-                            d.child(format!("{} notes affected", paths.len()))
+                            d.child(if paths.len() == 1 {
+                                "Links will be updated in 1 note".to_string()
+                            } else {
+                                format!("Links will be updated in {} notes", paths.len())
+                            })
                         })
                         .children(
                             names
@@ -640,11 +647,26 @@ impl Reader {
                             )
                         })
                         .when(!skipped.is_empty(), |d| {
-                            d.child(div().mt_2().child("Not updated"))
+                            d.child(
+                                Button::new("move-unchanged-details")
+                                    .ghost()
+                                    .small()
+                                    .icon(if show_unchanged {
+                                        IconName::ChevronDown
+                                    } else {
+                                        IconName::ChevronRight
+                                    })
+                                    .label("Links not updated")
+                                    .on_click(move |_, window, _| {
+                                        toggle_unchanged.set(!toggle_unchanged.get());
+                                        window.refresh();
+                                    }),
+                            )
                         })
                         .children(
                             skipped
                                 .iter()
+                                .take(if show_unchanged { usize::MAX } else { 0 })
                                 .map(|name| div().text_size(px(14.)).child(name.clone())),
                         ),
                 )

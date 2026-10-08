@@ -42,6 +42,22 @@ pub(super) struct Editing {
     _subscriptions: Vec<Subscription>,
 }
 
+fn file_access_notice(error: &anyhow::Error) -> &'static str {
+    if error.chain().any(|cause| {
+        #[cfg(unix)]
+        if cause.downcast_ref::<rustix::io::Errno>() == Some(&rustix::io::Errno::NOENT) {
+            return true;
+        }
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+    }) {
+        "This file was moved or deleted. Your edits are still here. Copy them or close, keeping a draft."
+    } else {
+        "Tessera couldn’t access this file. Your edits are still here. Copy them or close, keeping a draft."
+    }
+}
+
 #[derive(Default)]
 struct Editors(Vec<(WeakEntity<Reader>, AnyWindowHandle)>);
 impl Global for Editors {}
@@ -548,12 +564,9 @@ impl Reader {
             }
             Err(error) => {
                 outcome = "error";
-                self.link_notice = Some(
-                    format!(
-                        "Could not read the changed file: {error:#}. Your edits are still here."
-                    )
-                    .into(),
-                );
+                eprintln!("Could not refresh the edited file: {error:#}");
+                editing.save_failed = true;
+                self.link_notice = Some(file_access_notice(&error).into());
             }
         }
         if let Some(trace) = trace {
@@ -613,8 +626,8 @@ impl Reader {
             }
             Err(error) => {
                 editing.save_failed = true;
-                self.link_notice =
-                    Some(format!("Save failed: {error:#}. Your draft remains open.").into());
+                eprintln!("Could not save the edited file: {error:#}");
+                self.link_notice = Some(file_access_notice(&error).into());
                 cx.notify();
                 false
             }
@@ -763,7 +776,7 @@ impl Reader {
                                 reader_icon_button(
                                     "source-park",
                                     IconName::ArrowRight,
-                                    "Leave, keeping draft",
+                                    "Close, keeping draft",
                                     cx,
                                 )
                                 .on_click(
@@ -1906,7 +1919,16 @@ mod tests {
             editing.conflict = None;
             assert_eq!(editing.status(), "Conflict");
         });
-        assert_eq!(std::fs::read_to_string(path).unwrap(), "external conflict");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "external conflict");
+        std::fs::remove_file(&path).unwrap();
+        reader.update_in(visual, |reader, window, cx| {
+            reader.refresh_source_from_disk(window, cx);
+            assert!(reader.editing.as_ref().unwrap().save_failed);
+            let message = reader.link_notice.as_ref().unwrap().to_string();
+            assert!(message.contains("moved or deleted"));
+            assert!(!message.contains("os error"));
+            assert_eq!(input.read(cx).value().as_ref(), "unsaved external clean");
+        });
         std::fs::remove_dir_all(directory).unwrap();
     }
 
