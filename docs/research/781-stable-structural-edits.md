@@ -60,3 +60,18 @@ missing pin, mismatched epoch or invalid geometry must paint the original row.
 The existing drag path retains the same projection Arc; its immutable reveal
 policy now follows automatically. This seam does not fix mouse-up recomposition
 or authorize independently reconstructing the gesture policy in the renderer.
+
+## Mouse release presentation lease
+
+Patch 0042 removes unconditional projection invalidation on mouse-up, including
+replayed clicks released before their first frame. The final mouse selection is
+synchronized while the gesture still pins the displayed projection. Release
+then retains that geometry. A later keyboard/IME active-range change, explicit
+IME replacement, changed source revision or disabling projection ends the lease.
+The provider may adopt in the meantime, but cannot reinterpret the displayed hit
+map merely because the mouse button was released.
+
+The gpui-kit gesture regression checks release preserves projected text and epoch,
+then uses keyboard movement as a positive control for deferred provider adoption.
+This is not a claim of native wide/narrow anchor or full S3a acceptance; those
+measurements remain required on the final integrated build.
