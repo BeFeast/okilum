@@ -111,6 +111,64 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(self.wait(CannotCancel(
             runs=[dict(RUN, status='in_progress', conclusion=None)])), 'failure')
 
+    def test_default_queue_budget_allows_start_after_old_eight_minute_limit(self):
+        clock = Clock()
+        class SlowQueue(API):
+            def request(self, path, method='GET', data=None):
+                self.runs = [dict(RUN, status='queued', conclusion=None)] if clock() < 600 else [RUN]
+                return super().request(path, method, data)
+        api = SlowQueue()
+        result, _ = bridge.wait_for_run(api, BRANCH, SHA, clock=clock, sleep=clock.sleep)
+        self.assertEqual(result, 'success')
+        self.assertEqual(clock(), 600)
+        self.assertFalse(any(method == 'POST' for _, method in api.calls))
+
+    def test_queue_cancel_refusal_waits_for_exact_run_result(self):
+        for conclusion, expected in [('success', 'success'), ('failure', 'failure')]:
+            clock = Clock()
+            class CancelRace(API):
+                def request(self, path, method='GET', data=None):
+                    if method == 'POST':
+                        self.calls.append((path, method))
+                        raise bridge.Unavailable('cancel refused')
+                    status = 'queued' if clock() < 60 else 'in_progress' if clock() < 80 else 'completed'
+                    self.runs = [dict(RUN, status=status, conclusion=conclusion if status == 'completed' else None)]
+                    return super().request(path, method, data)
+            api = CancelRace()
+            result, _ = bridge.wait_for_run(api, BRANCH, SHA, clock=clock, sleep=clock.sleep,
+                                           queue_timeout=30, run_timeout=60)
+            self.assertEqual(result, expected)
+            self.assertEqual(sum(method == 'POST' for _, method in api.calls), 1)
+
+    def test_refused_queue_cancel_has_bounded_fail_closed_deadline(self):
+        clock = Clock()
+        class Stuck(API):
+            def request(self, path, method='GET', data=None):
+                if method == 'POST':
+                    raise bridge.Unavailable('cancel refused')
+                return super().request(path, method, data)
+        result, _ = bridge.wait_for_run(Stuck(runs=[dict(RUN, status='queued', conclusion=None)]),
+                                       BRANCH, SHA, clock=clock, sleep=clock.sleep,
+                                       queue_timeout=30, run_timeout=60)
+        self.assertEqual(result, 'failure')
+        self.assertLessEqual(clock(), 110)
+
+    def test_missing_run_during_cancel_grace_still_has_deadline(self):
+        clock = Clock()
+        class Disappearing(API):
+            def request(self, path, method='GET', data=None):
+                if method == 'POST':
+                    raise bridge.Unavailable('cancel refused')
+                self.runs = [dict(RUN, status='queued', conclusion=None)] if clock() <= 40 else []
+                # Guard the regression itself from hanging on a broken implementation.
+                if clock() > 120:
+                    raise AssertionError('Grace period lost its deadline')
+                return super().request(path, method, data)
+        result, _ = bridge.wait_for_run(Disappearing(), BRANCH, SHA, clock=clock,
+                                       sleep=clock.sleep, queue_timeout=30, run_timeout=60)
+        self.assertEqual(result, 'failure')
+        self.assertLessEqual(clock(), 110)
+
     def test_startup_failure_and_api_outage_allow_fallback(self):
         with self.assertRaises(bridge.Unavailable):
             self.wait(API(runs=[dict(RUN, conclusion='startup_failure')]))

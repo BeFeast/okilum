@@ -201,7 +201,7 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     # Configure only after the dedicated bridge runner is registered.
     runs-on: ${{ vars.MACOS_BRIDGE_RUNNER || 'light' }}
-    timeout-minutes: 52
+    timeout-minutes: 80
     outputs:
       result: ${{ steps.remote.outputs.result }}
     steps:

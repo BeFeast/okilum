@@ -36,8 +36,12 @@ that can race a newer head.
 Hosted API reads retry three times with 5/10-second backoff within the same
 invocation; they never dispatch duplicate builds.
 
-Missing credentials, an API/push outage, runner startup failure, or eight minutes
-without a running GitHub job fail the hosted gate. No automatic M4 fallback is
+Missing credentials, an API/push outage, runner startup failure, or 30 minutes
+without a running GitHub job fail the hosted gate. If cancellation is refused,
+the bridge observes the same exact run for up to 40 more minutes, allowing its
+verified result to finish instead of immediately reporting unavailability.
+This grace period is bounded and is not reset when the runner starts; expiry
+fails closed. The bridge job allows 80 minutes including transport overhead. No automatic M4 fallback is
 used. Cancellation, skipped/neutral results, execution timeouts and unknown
 bridge failures also fail closed. The explicit owner-approved local lane below
 checks out the same PR-head SHA; it does not authorize shell access to M4.
