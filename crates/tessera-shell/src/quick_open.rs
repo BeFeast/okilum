@@ -251,6 +251,46 @@ fn visible_snippet(snippet: &PlainSnippet) -> PlainSnippet {
     }
 }
 
+/// Keep the reason's human prefix while bringing a distant value match into view.
+fn visible_context(
+    reason: &tessera_core::search_snippet::MatchContext,
+) -> tessera_core::search_snippet::MatchContext {
+    use unicode_segmentation::UnicodeSegmentation;
+    let Some(first) = reason.highlights.first() else {
+        return reason.clone();
+    };
+    let prefix = reason.text.find(": ").map_or(0, |at| at + 2);
+    if first.start <= prefix {
+        return reason.clone();
+    }
+    let start = reason.text[prefix..first.start]
+        .grapheme_indices(true)
+        .rev()
+        .nth(28)
+        .map_or(prefix, |(at, _)| prefix + at);
+    if start == prefix {
+        return reason.clone();
+    }
+    let lead = prefix + '…'.len_utf8();
+    tessera_core::search_snippet::MatchContext {
+        text: format!("{}…{}", &reason.text[..prefix], &reason.text[start..]),
+        highlights: reason
+            .highlights
+            .iter()
+            .filter_map(|r| {
+                if r.end <= prefix {
+                    Some(r.clone())
+                } else if r.end > start {
+                    Some(r.start.max(start) - start + lead..r.end - start + lead)
+                } else {
+                    None
+                }
+            })
+            .collect(),
+        ..Default::default()
+    }
+}
+
 pub(super) struct Palette {
     pub open: bool,
     full_text: bool,
@@ -528,7 +568,6 @@ impl Reader {
         let full_text = self.quick_open.full_text;
         let selected_bg = palette.selected;
         let muted = palette.text_muted;
-        let text = palette.text;
         let mark = palette.accent.opacity(0.18);
         let entity = cx.entity().downgrade();
         let generation = self.quick_open.generation;
@@ -674,6 +713,7 @@ impl Reader {
                                     .into_iter()
                                     .flatten()
                                     {
+                                        let reason = visible_context(reason);
                                         row = row.child(
                                             div()
                                                 .text_size(px(12.))
@@ -901,6 +941,35 @@ mod tests {
             visible_snippet(&PlainSnippet::default()),
             PlainSnippet::default()
         );
+    }
+
+    #[test]
+    fn property_context_keeps_human_label_and_distant_unicode_value_match_visible() {
+        use tessera_core::search_snippet::MatchContext;
+        let text = format!(
+            "Property · Description: {}שלום and tail",
+            "שָׁ text ".repeat(80)
+        );
+        let at = text.find("שלום").unwrap();
+        let original = MatchContext {
+            text,
+            highlights: vec![at..at + "שלום".len()],
+            ..Default::default()
+        };
+        let shown = visible_context(&original);
+        assert!(shown.text.starts_with("Property · Description: …"));
+        assert_eq!(&shown.text[shown.highlights[0].clone()], "שלום");
+        assert!(shown.text[..shown.highlights[0].start].chars().count() < 65);
+        assert_eq!(
+            visible_context(&MatchContext::default()),
+            MatchContext::default()
+        );
+        let key = MatchContext {
+            text: "Property · Title: Value".into(),
+            highlights: vec![12..17],
+            ..Default::default()
+        };
+        assert_eq!(visible_context(&key), key);
     }
 
     #[test]
