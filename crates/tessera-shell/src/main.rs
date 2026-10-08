@@ -65,6 +65,7 @@ mod reader_settings_sync;
 mod reader_shortcuts;
 mod reader_sidebar;
 use reader_sidebar::SectionAction;
+mod reader_recent;
 #[cfg(any(unix, windows))]
 mod reader_source_history;
 mod reader_startup;
@@ -182,6 +183,8 @@ actions!(
         Dismiss,
         QuickOpen,
         FullTextSearch,
+        RecentOlder,
+        RecentNewer,
         PaletteNext,
         PalettePrevious,
         HistoryBack,
@@ -296,6 +299,10 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-shift-f", FullTextSearch, ctx),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-shift-f", FullTextSearch, Some("Reader > Input")),
+        KeyBinding::new("ctrl-tab", RecentOlder, ctx),
+        KeyBinding::new("ctrl-shift-tab", RecentNewer, ctx),
+        KeyBinding::new("ctrl-tab", RecentOlder, Some("Reader > Input")),
+        KeyBinding::new("ctrl-shift-tab", RecentNewer, Some("Reader > Input")),
         KeyBinding::new("secondary-/", ToggleShortcutSheet, ctx),
         KeyBinding::new("secondary-/", ToggleShortcutSheet, Some("Reader > Input")),
         KeyBinding::new("escape", Dismiss, Some("Reader > ShortcutSheet > Input")),
@@ -1356,6 +1363,7 @@ struct Reader {
     incremental_hold: Option<async_channel::Receiver<()>>,
     reader_window: AnyWindowHandle,
     sidebar_search_focus: FocusHandle,
+    recent_switcher: reader_recent::Switcher,
     quick_open: quick_open::Palette,
     shortcut_sheet: reader_shortcuts::Sheet,
     content: Entity<TextViewState>,
@@ -1602,6 +1610,7 @@ impl Reader {
             single_file: false,
             reader_window: window.window_handle(),
             sidebar_search_focus: cx.focus_handle(),
+            recent_switcher: Default::default(),
             quick_open,
             shortcut_sheet,
             content,
@@ -1744,6 +1753,10 @@ impl Reader {
         cx.observe_self(|this, cx| this.record_ui_state(this.ui_state.was_active(), cx))
             .detach();
         cx.observe_window_activation(window, |this, window, cx| {
+            if !window.is_window_active() {
+                this.recent_switcher.cancel();
+                cx.notify();
+            }
             this.record_ui_state(window.is_window_active(), cx);
         })
         .detach();
@@ -2211,6 +2224,11 @@ impl Reader {
     /// Escape clears or dismisses local transient UI; it never toggles panels (#483).
     /// A non-empty focused search field is cleared and keeps focus; an empty one closes.
     fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.recent_switcher.open() {
+            self.recent_switcher.cancel();
+            cx.notify();
+            return;
+        }
         #[cfg(any(unix, windows))]
         if self.renaming.is_some() {
             self.cancel_rename(window, cx);
@@ -6164,6 +6182,8 @@ impl Render for Reader {
             .on_action(cx.listener(|this, _: &ToggleShortcutSheet, window, cx| {
                 this.toggle_shortcut_sheet(window, cx)
             }))
+            .on_action(cx.listener(|this, _: &RecentOlder, _, cx| this.cycle_recent(1, cx)))
+            .on_action(cx.listener(|this, _: &RecentNewer, _, cx| this.cycle_recent(-1, cx)))
             .on_action(cx.listener(|this, _: &PaletteNext, _, cx| this.move_quick_open(1, cx)))
             .on_action(cx.listener(|this, _: &PalettePrevious, _, cx| this.move_quick_open(-1, cx)))
             .on_action(cx.listener(|this, _: &NewNote, window, cx| this.new_note(None, window, cx)))
@@ -6464,6 +6484,9 @@ impl Render for Reader {
                         .size_full(),
                     ),
             )
+            .when(self.recent_switcher.open(), |view| {
+                view.child(self.render_recent(cx))
+            })
             .when(self.quick_open.open, |view| {
                 view.child(self.render_quick_open(cx))
             })
@@ -6476,9 +6499,14 @@ impl Render for Reader {
             .when(self.shortcut_sheet.open, |view| {
                 view.child(self.render_shortcut_sheet(cx))
             })
-            .on_modifiers_changed(
-                cx.listener(|this, _, window, cx| this.hover_modifiers(window, cx)),
-            )
+            .on_modifiers_changed(cx.listener(
+                |this, event: &gpui::ModifiersChangedEvent, window, cx| {
+                    this.hover_modifiers(window, cx);
+                    if !event.modifiers.control {
+                        this.release_recent(window, cx);
+                    }
+                },
+            ))
             .capture_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, _, cx| {
                 if this.hover_preview.is_active() && !this.hover_preview.contains(event.position) {
                     this.clear_hover(cx);
