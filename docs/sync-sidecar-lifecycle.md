@@ -315,3 +315,14 @@ flag, not measured from another host. Native execution is pending; cross-clippy
 alone is not acceptance. Authenticated discovery, client-side endpoint connection,
 signature verification, absolute I/O deadline/cancellation, production transport
 and executable supervisor integration remain outstanding.
+
+The first exact-source endpoint run failed all three new fixtures with
+ERROR_INVALID_PARAMETER (41 existing tests passed):
+https://github.com/BeFeast/tessera/actions/runs/37819621678 . Inspection found
+READ_CONTROL incorrectly combined into CreateNamedPipeW's dwOpenMode in both
+production creation and the shared fixture. It is not a supported creation flag;
+PIPE_ACCESS_DUPLEX supplies generic read/write access. The candidate removes the
+unsupported bit and keeps mandatory security read-back and all assertions.
+Creation and read-back errors now identify the failing native call. This is a
+candidate fix pending another native run, not a passing acceptance claim.
+API contract: https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-createnamedpipew

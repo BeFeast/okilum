@@ -29,7 +29,8 @@ fn read_descriptor(handle: HANDLE) -> Result<Descriptor> {
             None,
             Some(&mut sd),
         )
-        .ok()?;
+        .ok()
+        .context("GetSecurityInfo(fixture pipe, SE_KERNEL_OBJECT)")?;
     }
     Ok(Descriptor(sd))
 }
@@ -170,10 +171,7 @@ fn native_private_pipe_preserves_shared_existing_endpoint() -> Result<()> {
     let raw = unsafe {
         CreateNamedPipeW(
             PCWSTR(wide.as_ptr()),
-            PIPE_ACCESS_DUPLEX
-                | FILE_FLAG_FIRST_PIPE_INSTANCE
-                | FILE_FLAG_OVERLAPPED
-                | FILE_FLAGS_AND_ATTRIBUTES(READ_CONTROL.0),
+            PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE | FILE_FLAG_OVERLAPPED,
             PIPE_TYPE_BYTE | PIPE_REJECT_REMOTE_CLIENTS,
             1,
             4096,
@@ -183,7 +181,7 @@ fn native_private_pipe_preserves_shared_existing_endpoint() -> Result<()> {
         )
     };
     if raw.is_invalid() {
-        return Err(windows::core::Error::from_win32().into());
+        return Err(windows::core::Error::from_win32()).context("CreateNamedPipeW(shared fixture)");
     }
     let foreign = unsafe { OwnedHandle::from_raw_handle(raw.0) };
     let before = read_descriptor(HANDLE(foreign.as_raw_handle()))?;

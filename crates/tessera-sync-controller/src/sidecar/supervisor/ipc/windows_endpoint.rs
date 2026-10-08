@@ -2,7 +2,7 @@
 //! discover a supervisor, authenticate its peer, connect, or perform IPC I/O.
 use super::Scope;
 use crate::sidecar::windows::security::{current_sid, sid_string};
-use anyhow::{ensure, Result};
+use anyhow::{ensure, Context, Result};
 use std::{
     mem::{offset_of, size_of},
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle},
@@ -23,8 +23,8 @@ use windows::{
             SECURITY_ATTRIBUTES, SE_DACL_PROTECTED,
         },
         Storage::FileSystem::{
-            FILE_ALL_ACCESS, FILE_FLAGS_AND_ATTRIBUTES, FILE_FLAG_FIRST_PIPE_INSTANCE,
-            FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX, READ_CONTROL,
+            FILE_ALL_ACCESS, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED,
+            PIPE_ACCESS_DUPLEX,
         },
         System::Pipes::{
             CreateNamedPipeW, GetNamedPipeInfo, NAMED_PIPE_MODE, PIPE_REJECT_REMOTE_CLIENTS,
@@ -133,13 +133,12 @@ impl PrivatePipe {
             bInheritHandle: BOOL(0),
         };
         let name: Vec<_> = name.encode_utf16().chain(Some(0)).collect();
+        // dwOpenMode accepts pipe access/creation flags, not READ_CONTROL.
+        // DUPLEX grants generic read/write; keep the actual security read-back.
         let handle = unsafe {
             CreateNamedPipeW(
                 PCWSTR(name.as_ptr()),
-                PIPE_ACCESS_DUPLEX
-                    | FILE_FLAG_FIRST_PIPE_INSTANCE
-                    | FILE_FLAG_OVERLAPPED
-                    | FILE_FLAGS_AND_ATTRIBUTES(READ_CONTROL.0),
+                PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE | FILE_FLAG_OVERLAPPED,
                 PIPE_TYPE_BYTE | PIPE_REJECT_REMOTE_CLIENTS,
                 1,
                 super::MAX_FRAME as u32,
@@ -149,13 +148,14 @@ impl PrivatePipe {
             )
         };
         if handle.is_invalid() {
-            return Err(windows::core::Error::from_win32().into());
+            return Err(windows::core::Error::from_win32())
+                .context("CreateNamedPipeW(private endpoint)");
         }
         let pipe = Self {
             handle: unsafe { OwnedHandle::from_raw_handle(handle.0) },
             owner_sid: sid,
         };
-        pipe.verify()?;
+        pipe.verify().context("private endpoint read-back")?;
         Ok(pipe)
     }
     /// Read-back only. The handle remains owned; no pathname reopen or ACL repair.
@@ -177,13 +177,15 @@ impl PrivatePipe {
                 None,
                 Some(&mut sd),
             )
-            .ok()?;
+            .ok()
+            .context("GetSecurityInfo(private pipe, SE_KERNEL_OBJECT)")?;
         }
         validate(&Descriptor(sd), &self.owner_sid)?;
         let mut flags = NAMED_PIPE_MODE::default();
         let mut instances = 0;
         unsafe {
-            GetNamedPipeInfo(raw, Some(&mut flags), None, None, Some(&mut instances))?;
+            GetNamedPipeInfo(raw, Some(&mut flags), None, None, Some(&mut instances))
+                .context("GetNamedPipeInfo(private endpoint)")?;
         }
         ensure!(
             flags == PIPE_SERVER_END && instances == 1,
