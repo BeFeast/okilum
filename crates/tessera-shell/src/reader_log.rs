@@ -508,12 +508,18 @@ impl RowBuilder {
             return;
         }
         if !self.text.is_empty() {
-            self.text.push_str("  ");
-            self.chars += 2;
+            for _ in 0..2 {
+                if self.full() {
+                    self.text.push('…');
+                    return;
+                }
+                self.text.push(' ');
+                self.chars += 1;
+            }
         }
         let start = self.text.len();
         for c in segment.chars() {
-            if self.chars == ROW_TEXT_LIMIT {
+            if self.full() {
                 self.text.push('…');
                 break;
             }
@@ -695,6 +701,23 @@ mod tests {
         let row = row_text(&file, 0);
         assert_eq!(row.text.chars().count(), ROW_TEXT_LIMIT + 1);
         assert!(row.text.ends_with('…'));
+    }
+
+    #[test]
+    fn field_separators_cannot_bypass_the_row_limit() {
+        for prefix_len in [ROW_TEXT_LIMIT - 2, ROW_TEXT_LIMIT - 1] {
+            let (_dir, file) = log(&format!(
+                "{{\"msg\":\"{}\",\"k\":\"{}\"}}\n",
+                "ש".repeat(prefix_len),
+                "א".repeat(2_000),
+            ));
+            let row = row_text(&file, 0);
+            assert_eq!(row.text.chars().count(), ROW_TEXT_LIMIT + 1);
+            assert!(row.text.ends_with('…'));
+            for range in row.muted {
+                assert!(row.text.get(range).is_some());
+            }
+        }
     }
 
     #[test]
