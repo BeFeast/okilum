@@ -6,6 +6,7 @@ use tessera_core::{
     source_classifier::{classify, RetainedPresentation},
     source_projection::{Active, Snapshot},
 };
+use unicode_segmentation::UnicodeSegmentation;
 
 fn main() {
     gpui_platform::application().run(|cx| {
@@ -22,7 +23,7 @@ fn main() {
             let stale = Snapshot::new("spike", 2, source.source());
             assert!(paint::MarkerPolicy { reveal: &reveal, current: &stale }.is_raw(&(0..8)));
             println!("POLICY shared snapshot / caret / stale PASS");
-            for text in ["- marker", "  * проверка Billing", "> quote", "***", "- office á", "- 🙂 emoji", "- שלום", "- abc שלום xyz"] {
+            for text in ["- marker", "  * проверка Billing", "> quote", "***", "- office á", "- 🙂 emoji", "- 👩‍💻 ZWJ", "- שלום", "- abc שלום xyz"] {
                 let line = window.text_system().shape_line(text.into(), px(16.), &[TextRun {
                     len: text.len(), font: font("Noto Sans"), color: rgb(0).into(),
                     background_color: None, underline: None, strikethrough: None,
@@ -36,6 +37,14 @@ fn main() {
                     if text.is_char_boundary(index) && !line.runs.iter().flat_map(|r| &r.glyphs).any(|g| g.index == index) {
                         assert!(paint::foreground_pieces(&line, std::slice::from_ref(&(0..index))).is_none());
                         println!("CLUSTER boundary rejection PASS {text:?} at {index}");
+                    }
+                }
+                let graphemes: Vec<_> = text.grapheme_indices(true).map(|(i, _)| i).collect();
+                for index in 1..text.len() {
+                    if text.is_char_boundary(index) && !graphemes.contains(&index) {
+                        assert!(paint::foreground_pieces(&line, std::slice::from_ref(&(0..index))).is_none());
+                        assert!(paint::foreground_pieces(&line, std::slice::from_ref(&(index..text.len()))).is_none());
+                        println!("GRAPHEME start/end rejection PASS {text:?} at {index}");
                     }
                 }
                 let marker = text.find(['-', '*', '>']).unwrap();

@@ -3,6 +3,7 @@
 use gpui::{Pixels, ShapedLine};
 use std::ops::Range;
 use tessera_core::{source_classifier::RevealSnapshot, source_projection::Snapshot};
+use unicode_segmentation::UnicodeSegmentation;
 
 /// Thin read-only adapter over the shared decision; no live caret input.
 pub struct MarkerPolicy<'a> {
@@ -45,8 +46,14 @@ pub fn foreground_pieces(
     if glyphs.windows(2).any(|pair| pair[0].index > pair[1].index) {
         return None;
     }
+    let boundaries: Vec<_> = line
+        .text
+        .grapheme_indices(true)
+        .map(|(i, _)| i)
+        .chain(std::iter::once(line.text.len()))
+        .collect();
     let boundary = |index: usize| {
-        line.text.is_char_boundary(index)
+        boundaries.binary_search(&index).is_ok()
             && (index == line.len() || glyphs.iter().any(|glyph| glyph.index == index))
     };
     let mut end = 0;

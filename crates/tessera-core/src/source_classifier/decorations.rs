@@ -140,6 +140,7 @@ pub(super) fn extract<'a>(root: &'a AstNode<'a>, context: &Context<'_>) -> Optio
             return None;
         }
     }
+    validate_ranges(&markers, context)?;
     markers.sort_by_key(|marker| marker.range.start);
     if markers
         .windows(2)
@@ -148,6 +149,45 @@ pub(super) fn extract<'a>(root: &'a AstNode<'a>, context: &Context<'_>) -> Optio
         return None;
     }
     Some(markers)
+}
+
+/// Marker/scopes must be grapheme-aligned and scopes must form a laminar family.
+/// Equal scopes are expected for multiple explicit delimiters in one quote.
+fn validate_ranges(markers: &[Marker], context: &Context<'_>) -> Option<()> {
+    for marker in markers {
+        if marker.range.start >= marker.range.end
+            || marker.scope.start >= marker.scope.end
+            || marker.range.start < marker.scope.start
+            || marker.range.end > marker.scope.end
+            || ![
+                marker.range.start,
+                marker.range.end,
+                marker.scope.start,
+                marker.scope.end,
+            ]
+            .into_iter()
+            .all(|offset| context.boundary(offset))
+        {
+            return None;
+        }
+    }
+    let mut scopes: Vec<_> = markers.iter().map(|m| m.scope.clone()).collect();
+    scopes.sort_by_key(|scope| (scope.start, std::cmp::Reverse(scope.end)));
+    scopes.dedup();
+    let mut parents: Vec<Range<usize>> = Vec::new();
+    for scope in scopes {
+        while parents
+            .last()
+            .is_some_and(|parent| parent.end <= scope.start)
+        {
+            parents.pop();
+        }
+        if parents.last().is_some_and(|parent| scope.end > parent.end) {
+            return None;
+        }
+        parents.push(scope);
+    }
+    Some(())
 }
 
 #[cfg(test)]
@@ -286,5 +326,62 @@ mod tests {
                 marker.scope.start <= marker.range.start && marker.range.end <= marker.scope.end
             );
         }
+    }
+    #[test]
+    fn marker_and_scope_endpoints_require_graphemes_and_containment() {
+        let context = Context::new("a\u{301}bcdef");
+        let valid = Marker {
+            range: 3..4,
+            scope: 0..8,
+            kind: Kind::ThematicBreak,
+        };
+        assert!(validate_ranges(std::slice::from_ref(&valid), &context).is_some());
+        for (range, scope) in [
+            (1..3, 0..8),
+            (0..1, 0..8),
+            (3..4, 1..8),
+            (3..4, 0..1),
+            (3..4, 4..8),
+            (3..9, 0..9),
+            (4..4, 0..8),
+        ] {
+            let invalid = Marker {
+                range,
+                scope,
+                ..valid.clone()
+            };
+            assert!(validate_ranges(&[invalid], &context).is_none());
+        }
+    }
+
+    #[test]
+    fn scopes_allow_nesting_equality_and_siblings_but_not_crossing() {
+        let context = Context::new("0123456789");
+        let marker = |range, scope| Marker {
+            range,
+            scope,
+            kind: Kind::Quote { depth: 1 },
+        };
+        assert!(validate_ranges(
+            &[
+                marker(0..1, 0..10),
+                marker(2..3, 2..5),
+                marker(3..4, 2..5),
+                marker(7..8, 7..9)
+            ],
+            &context
+        )
+        .is_some());
+        assert!(validate_ranges(&[marker(0..1, 0..6), marker(4..5, 4..8)], &context).is_none());
+    }
+    #[test]
+    fn quote_marker_joined_to_combining_mark_stays_raw() {
+        let valid = snapshot("> quote\n", 1);
+        assert_eq!(classify(&valid).decorations_for(&valid).unwrap().len(), 1);
+        let joined = snapshot(">\u{301}quote\n", 1);
+        assert!(classify(&joined)
+            .decorations_for(&joined)
+            .unwrap()
+            .is_empty());
     }
 }
