@@ -54,7 +54,9 @@ last-moment symlink target race. Symlink controls require the runner's developer
 or administrator privileges. Cloud-tag classification does not simulate a real
 FileProvider: OneDrive/antivirus interoperability remains native owner QA.
 
-Linux core clippy and an isolated Windows cross-clippy typecheck supplement
-these tests; neither substitutes for their execution on Windows. UI remains
+Linux core clippy and Windows MSVC cross-clippy for the full package, including
+all test targets, supplement these tests; neither substitutes for their execution
+on Windows. The Unix rename integration test and inode assertion remain gated
+on Unix; portable search-update assertions still compile on Windows. UI remains
 disabled until the native backend is accepted and the common editor integration
 is reviewed.

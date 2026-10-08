@@ -10,6 +10,7 @@
 //! describes an engine instead of judging one.
 
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -434,13 +435,16 @@ fn c16_editing_one_note_updates_the_index_without_a_full_rebuild() {
     // the shared CI runner (413 ms under two parallel jobs); a directory
     // identity check cannot flake. Verified by mutation: forcing update_note
     // to recreate the directory fails this assertion.
+    #[cfg(unix)]
     let dir_before = std::fs::metadata(&f.index).unwrap();
     let t = Instant::now();
     f.searcher
         .update_note(&vault, "notes/beta.md")
         .expect("the index must accept a single-note update");
     let elapsed = t.elapsed();
+    #[cfg(unix)]
     let dir_after = std::fs::metadata(&f.index).unwrap();
+    #[cfg(unix)]
     assert_eq!(
         (dir_before.ino(), dir_before.created().ok()),
         (dir_after.ino(), dir_after.created().ok()),
