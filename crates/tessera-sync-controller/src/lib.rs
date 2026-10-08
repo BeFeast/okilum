@@ -21,3 +21,12 @@ pub mod readiness;
 
 #[cfg(target_os = "linux")]
 pub mod presentation;
+
+#[cfg(target_os = "linux")]
+pub mod removal;
+
+#[cfg(target_os = "linux")]
+pub mod desktop;
+
+#[cfg(target_os = "linux")]
+pub mod conflicts;

@@ -125,3 +125,63 @@ The dependency does not pin or downgrade the user's Syncthing package; support
 for another version requires updating the isolated compatibility evidence first.
 Arch package installation/lifecycle QA remains a native Linux check, separate
 from the controller's CT141 systemd and fixture tests.
+
+### Desktop Remove coordination
+
+Remove first records terminal intent in the runtime, pairing, and folder journals.
+It attempts local folder cleanup, stops/unregisters only the owned runtime, then
+reconciles service revocation. An unavailable service cannot keep the owned daemon
+running. Retry after restart revokes using saved credentials without starting the
+service again. A reused daemon keeps running; its folder cleanup must complete
+before claiming removal, and the UI must say external sync can continue.
+
+If an owned daemon was already offline, private dormant configuration may remain;
+local files remain in all cases. The removed runtime identity cannot be enabled
+again through its old journal. Disable remains reversible and preserves identity;
+a new connection after Remove requires a fresh explicit enrollment. The real
+CT141 user-systemd fixture verifies stop-before-revoke during a simulated service
+outage, later revocation, and no restart or certificate replacement on retry.
+
+### Settings integration boundary
+
+The Linux Sync section is a separate GPUI component, created only when the user
+opens that section. Discovery and every blocking controller operation run on the
+background executor. Its initial read cannot prepare/register/start Syncthing.
+Explicit Enable persists the chosen HTTPS service, computer name, folder and
+managed/reused runtime before effects. Browser approval shows a grouped matching
+code. A bounded refresh continues pairing and scoped first receipt; local idle
+never substitutes for the readiness predicate. Status distinguishes Preparing,
+paused, hub offline, local errors and caught up with the hub; the last observed
+hub connection remains available offline. It does not claim all computers are
+online or that conflict copies have been resolved.
+
+Disable keeps identity for re-enable. Remove attempts local stop independently of
+remote availability and displays pending until required reconciliation completes.
+Once removal completes, a private generation record retires that connection;
+explicit new setup allocates new journals. Retired authority is never silently
+reused and canonical files are never deleted. Unknown nonempty folders still
+require a separately approved adoption flow. Per-generation records stay outside
+the vault/index; no marker is added to the vault.
+
+Native Linux light/dark before/after evidence and browser-to-daemon end-to-end QA
+are required before publishing the Settings UI. Development still uses only the
+CT141 sandbox. The optional QA trust certificate is compiled only into the
+non-publishing settings harness; shipping builds use system certificate trust.
+
+Folder attention messages distinguish unavailable locations or markers, permissions,
+full disks, and preserved receive-only local edits. They use the existing authenticated
+status/error snapshot and perform no additional file scan. Raw daemon paths and error
+text stay out of the Settings layout. Local edits during first receive report Needs
+attention rather than silently remaining Preparing. These messages never recreate a
+marker, revert local edits, or resolve conflict copies automatically.
+
+Conflict-copy inspection is an explicit Settings action, not a periodic vault scan.
+It checks local filenames using Syncthing's timestamp/device suffix convention,
+without reading contents or writing either version. Results are possible copies
+from that check, not proof of unresolved conflicts. File Manager reveal is explicit;
+there is no automatic resolve/delete. The walker does not follow directory symlinks,
+and omits Syncthing history/marker and Tessera index directories. Enumeration uses
+open directory descriptors and is limited to 100,000 entries, 50 results, 64 nested
+directories and a cooperative two-second budget. Unreadable entries or exhausted
+limits produce an incomplete result, never a false all-clear. Kernel filesystem
+calls may still block on an unavailable mount; the UI thread remains independent.

@@ -58,6 +58,8 @@ mod reader_recovery;
 mod reader_replay;
 mod reader_right_panel;
 mod reader_settings;
+#[cfg(target_os = "linux")]
+mod reader_settings_sync;
 mod reader_sidebar;
 #[cfg(unix)]
 mod reader_source_history;

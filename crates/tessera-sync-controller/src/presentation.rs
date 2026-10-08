@@ -38,18 +38,18 @@ impl FolderState {
         {
             return Self::NeedsAttention;
         }
+        if status["receiveOnlyTotalItems"]
+            .as_u64()
+            .is_some_and(|n| n > 0)
+        {
+            return Self::NeedsAttention;
+        }
         // Local idle/zero need is not a first-receive completion receipt.
         if local.preparing {
             return Self::Preparing;
         }
         if !local.hub_connected {
             return Self::Offline;
-        }
-        if status["receiveOnlyTotalItems"]
-            .as_u64()
-            .is_some_and(|n| n > 0)
-        {
-            return Self::NeedsAttention;
         }
         if status["needTotalItems"].as_u64().is_some_and(|n| n > 0) || status["state"] == "syncing"
         {
@@ -87,6 +87,63 @@ impl FolderState {
             Self::Removed => "Removed",
         }
     }
+}
+
+/// Explain observed folder problems without exposing raw filesystem paths or
+/// treating unavailable error snapshots as a clean bill of health.
+pub fn attention_messages(local: &LocalStatus) -> Vec<&'static str> {
+    if local.removed || local.removal_pending || local.folder["paused"] == true {
+        return Vec::new();
+    }
+    let mut messages = Vec::new();
+    let mut add = |raw: &str| {
+        if raw.is_empty() {
+            return;
+        }
+        let lower = raw.to_ascii_lowercase();
+        let message = if lower.contains("folder marker missing") {
+            "The sync folder marker is missing. Check that the correct drive is mounted before recovering this folder."
+        } else if lower.contains("folder path missing")
+            || lower.contains("no such file or directory")
+        {
+            "A required file or folder is unavailable. Check its location and connected drives."
+        } else if lower.contains("permission denied") || lower.contains("access is denied") {
+            "Syncthing cannot access some files. Check the folder’s access permissions."
+        } else if lower.contains("no space left") || lower.contains("disk full") {
+            "There is not enough disk space to receive files. Free space on the destination drive."
+        } else {
+            "Syncthing reported a folder problem. Check its diagnostics before continuing."
+        };
+        if !messages.contains(&message) {
+            messages.push(message);
+        }
+    };
+    for field in ["error", "invalid", "watchError"] {
+        if let Some(raw) = local.status[field].as_str() {
+            add(raw);
+        }
+    }
+    if let Some(errors) = local.errors["errors"].as_array() {
+        for error in errors {
+            add(error["error"]
+                .as_str()
+                .unwrap_or("unavailable error detail"));
+        }
+    }
+    if messages.is_empty()
+        && ["errors", "pullErrors"]
+            .iter()
+            .any(|field| local.status[field].as_u64().is_some_and(|n| n > 0))
+    {
+        messages.push("Some files could not be synced. Check Syncthing’s diagnostics for details.");
+    }
+    if local.status["receiveOnlyTotalItems"]
+        .as_u64()
+        .is_some_and(|n| n > 0)
+    {
+        messages.push("This receiving folder has local changes. They are preserved; review them before enabling two-way sync.");
+    }
+    messages
 }
 
 #[cfg(test)]
@@ -133,5 +190,36 @@ mod tests {
         assert_eq!(FolderState::from_local(&local), FolderState::NeedsAttention);
         local.folder["paused"] = json!(true);
         assert_eq!(FolderState::from_local(&local), FolderState::Paused);
+    }
+    #[test]
+    fn folder_problems_are_actionable_without_leaking_paths() {
+        let mut local = local();
+        local.status["error"] = json!("folder marker missing: /private/vault/.stfolder");
+        local.errors = json!({"errors":[
+            {"path":"secret.md", "error":"open /private/vault/secret.md: permission denied"},
+            {"path":"other.md", "error":"permission denied"}
+        ]});
+        let messages = attention_messages(&local);
+        assert_eq!(messages.len(), 2);
+        assert!(messages[0].contains("mounted"));
+        assert!(messages[1].contains("permissions"));
+        assert!(messages
+            .iter()
+            .all(|s| !s.contains("/private") && !s.contains("secret.md")));
+        local.removal_pending = true;
+        assert!(attention_messages(&local).is_empty());
+    }
+    #[test]
+    fn first_receive_local_changes_get_explanation_and_unknown_errors_are_not_silent() {
+        let mut local = local();
+        local.status["receiveOnlyTotalItems"] = json!(1);
+        local.errors = json!({"errors":[{"path":"a.md"}]});
+        assert_eq!(FolderState::from_local(&local), FolderState::NeedsAttention);
+        let messages = attention_messages(&local);
+        assert_eq!(messages.len(), 2);
+        assert!(messages[0].contains("diagnostics"));
+        assert!(messages[1].contains("preserved"));
+        local.folder["paused"] = json!(true);
+        assert!(attention_messages(&local).is_empty());
     }
 }

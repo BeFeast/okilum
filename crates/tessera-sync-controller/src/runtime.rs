@@ -20,6 +20,8 @@ pub enum Selection {
 pub struct Snapshot {
     pub selection: Selection,
     pub desired_enabled: bool,
+    #[serde(default)]
+    pub removed: bool,
     pub identity: Option<DaemonIdentity>,
 }
 pub struct Runtime {
@@ -64,9 +66,14 @@ impl Runtime {
             Snapshot {
                 selection,
                 desired_enabled: false,
+                removed: false,
                 identity: None,
             }
         };
+        ensure!(
+            !saved.removed,
+            "runtime was removed; fresh enrollment required"
+        );
         saved.desired_enabled = true;
         self.save(&saved)?;
         self.enable_locked(saved)
@@ -79,7 +86,7 @@ impl Runtime {
         }
         let _lock = private::lock(&self.state)?;
         let saved = self.snapshot()?.context("runtime journal disappeared")?;
-        if saved.desired_enabled {
+        if saved.desired_enabled && !saved.removed {
             Ok(Some(self.enable_locked(saved)?))
         } else {
             if matches!(saved.selection, Selection::Managed(_)) {
@@ -102,6 +109,18 @@ impl Runtime {
             self.lifecycle().disable()?;
         }
         Ok(Some(saved))
+    }
+    /// Durable removal is terminal for this runtime identity. Unlike Disable,
+    /// later Enable cannot silently resurrect its old folder/grant configuration.
+    pub fn request_remove(&self) -> Result<()> {
+        if self.snapshot()?.is_none() {
+            return Ok(());
+        }
+        let _lock = private::lock(&self.state)?;
+        let mut saved = self.snapshot()?.context("runtime journal disappeared")?;
+        saved.desired_enabled = false;
+        saved.removed = true;
+        self.save(&saved)
     }
     fn enable_locked(&self, mut saved: Snapshot) -> Result<Snapshot> {
         let identity = match &saved.selection {

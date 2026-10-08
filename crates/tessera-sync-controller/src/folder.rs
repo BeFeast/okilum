@@ -367,6 +367,19 @@ impl FolderController {
     }
     /// Persist cooperative removal even if the daemon is offline. Does not revoke
     /// the service grant: caller must also reconcile Enrollment::remove.
+    /// Persist the local deny intent without needing a reachable daemon.
+    pub fn request_remove(&self) -> Result<()> {
+        if !self.file().try_exists()? {
+            return Ok(());
+        }
+        let _lock = private::lock(&self.state)?;
+        let mut j = self.load()?;
+        j.remove_requested = true;
+        self.save(&j)
+    }
+    pub fn exists(&self) -> Result<bool> {
+        self.file().try_exists().map_err(Into::into)
+    }
     pub fn remove(&self) -> Result<LocalStatus> {
         let _lock = private::lock(&self.state)?;
         let mut j = self.load()?;

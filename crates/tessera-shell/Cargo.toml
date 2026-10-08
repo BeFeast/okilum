@@ -53,6 +53,7 @@ gpui = { workspace = true, features = ["test-support"] }
 signal-hook-registry = "1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
+tessera-sync-controller = { path = "../tessera-sync-controller" }
 wayland-client = "=0.31.15"
 wayland-protocols-wlr = { version = "=0.3.12", features = ["client"] }
 rustix = { version = "=1.1.4", features = ["event", "net", "pipe", "fs", "process"] }

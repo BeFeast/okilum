@@ -118,6 +118,8 @@ enum Section {
     Files,
     Updates,
     Inbox,
+    #[cfg(target_os = "linux")]
+    Sync,
 }
 impl Section {
     fn icon(self) -> Icon {
@@ -126,6 +128,8 @@ impl Section {
             Self::Files => Icon::new(IconName::Folder),
             Self::Updates => Icon::default().path("icons/arrow-down-circle.svg"),
             Self::Inbox => Icon::new(IconName::Inbox),
+            #[cfg(target_os = "linux")]
+            Self::Sync => Icon::new(IconName::RotateCw),
         }
     }
     fn label(self) -> &'static str {
@@ -134,10 +138,14 @@ impl Section {
             Self::Files => "Files",
             Self::Updates => "Updates",
             Self::Inbox => "Inbox",
+            #[cfg(target_os = "linux")]
+            Self::Sync => "Sync",
         }
     }
 }
 struct Settings {
+    #[cfg(target_os = "linux")]
+    sync: Option<Entity<reader_settings_sync::SyncSettings>>,
     section: Section,
     #[cfg(all(target_os = "linux", feature = "settings-ui-harness"))]
     preview_beta: Option<bool>,
@@ -163,6 +171,8 @@ impl Settings {
             .map(|reader| cx.observe(&reader, |_, _, cx| cx.notify()));
         Self {
             section: Section::Appearance,
+            #[cfg(target_os = "linux")]
+            sync: None,
             #[cfg(all(target_os = "linux", feature = "settings-ui-harness"))]
             preview_beta: match std::env::var("TESSERA_DEBUG_UPDATER_UI").as_deref() {
                 Ok("sparkle" | "velopack") => Some(false),
@@ -656,6 +666,8 @@ impl Settings {
                         .into_any_element()
                 }
             }
+            #[cfg(target_os = "linux")]
+            Section::Sync => content.children(self.sync.clone()).into_any_element(),
             Section::Inbox => content
                 .child("Not connected")
                 .child(
@@ -699,6 +711,8 @@ impl Render for Settings {
                             Section::Files,
                             Section::Updates,
                             Section::Inbox,
+                            #[cfg(target_os = "linux")]
+                            Section::Sync,
                         ]
                         .map(|section| {
                             div()
@@ -718,7 +732,14 @@ impl Render for Settings {
                                                 .child(section.label()),
                                         )
                                         .selected(self.section == section)
-                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            #[cfg(target_os = "linux")]
+                                            if section == Section::Sync && this.sync.is_none() {
+                                                this.sync =
+                                                    Some(reader_settings_sync::shared(window, cx));
+                                            }
+                                            #[cfg(not(target_os = "linux"))]
+                                            let _ = window;
                                             this.section = section;
                                             cx.notify();
                                         })),
