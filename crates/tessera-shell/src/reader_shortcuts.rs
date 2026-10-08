@@ -47,6 +47,8 @@ fn catalog() -> Vec<Entry> {
     vec![
         entry::<HistoryBack>("Back", Navigation),
         entry::<HistoryForward>("Forward", Navigation),
+        entry::<reader_log::SelectPreviousRecord>("Previous log record", Navigation),
+        entry::<reader_log::SelectNextRecord>("Next log record", Navigation),
         entry::<ListNext>("Next note in list", Navigation),
         entry::<ListPrev>("Previous note in list", Navigation),
         entry::<ReaderScrollDown>("Scroll down", Navigation),
@@ -76,6 +78,7 @@ fn catalog() -> Vec<Entry> {
         entry::<UndoTrash>("Undo Move to Trash", Notes),
         entry::<RevealFile>(Os::CURRENT.reveal(), Notes),
         entry::<CopyVaultPath>("Copy vault path", Notes),
+        entry::<reader_log::CopyRawLine>("Copy raw log line", Notes),
         entry::<QuickLookFile>("Quick Look", Notes),
         entry::<reader_open::OpenFile>("Open file", Notes),
         entry::<reader_open::OpenFolder>("Open folder", Notes),
@@ -94,6 +97,7 @@ fn catalog() -> Vec<Entry> {
         entry::<ToggleBacklinks>("On this page panel", View),
         entry::<ToggleHiddenFiles>("Show hidden files", View),
         entry::<ToggleShortcutSheet>("Keyboard shortcuts", View),
+        entry::<reader_open::NewWindow>("New window", View),
         entry::<reader_settings::OpenSettings>("Settings", View),
         entry::<Dismiss>("Close or clear", View),
     ]
