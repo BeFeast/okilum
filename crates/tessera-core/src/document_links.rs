@@ -1,5 +1,6 @@
 //! Document link syntax and navigation intent shared by all reader surfaces.
 //! Comrak defines syntax; byte ranges refer to the untouched authored source.
+mod local_files;
 mod paths;
 pub mod prepared;
 pub(crate) use paths::fallback_links;

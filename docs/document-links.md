@@ -149,3 +149,24 @@ the note. Changing preview ownership clears the image. Backend paths never becom
 desktop file paths or OS-launch requests. Unsupported, unreadable or ambiguous
 images give an explicit reason. Old replies without the attachment capability
 cannot open an image. Sources remain unchanged.
+
+## Desktop local-file evidence (#787)
+
+Reader opts into local filesystem checks in its source-bound background link
+preparation job. It verifies relative attachment paths, absolute local paths and
+local-host `file://` URLs once per authored target per generation. Cached graph
+snapshots do not leave attachments permanently pending. Refresh replaces action
+evidence under the original emitted URL and retains generation guards.
+
+Missing file destinations use the existing missing-link appearance. Activation
+shows one bottom overlay toast, “File not found”, with a Copy path action; it does
+not navigate or open a modal. Occupied invalid, inaccessible or dangling paths
+remain unavailable rather than permitting a fallback or claiming absence. Local
+file URLs to notes retain document heading validation. Existing outside files
+have an explicit Open with default app action alongside Reveal and Copy.
+The missing-file tooltip shows “File not found” above a muted 12 px path detail;
+patch 0042 supplies secondary lines for TextView's existing multiline tooltips.
+
+Managed preview does not enable this desktop opt-in: its source and attachment
+scope remains authoritative. HTTP and other web links retain their system URL
+handler; network file authorities and UNC spellings are not probed.

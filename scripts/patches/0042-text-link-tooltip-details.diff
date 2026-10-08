@@ -1,0 +1,20 @@
+diff --git a/crates/base/src/text/inline.rs b/crates/base/src/text/inline.rs
+--- a/crates/base/src/text/inline.rs
++++ b/crates/base/src/text/inline.rs
+@@ -11,7 +11,15 @@
+             .bg(gpui::rgb(0x242424))
+             .text_color(gpui::rgb(0xffffff))
+             .max_w(gpui::px(420.))
+-            .child(self.0.clone())
++            .flex()
++            .flex_col()
++            .child(self.0.lines().next().unwrap_or_default().to_owned())
++            .children(self.0.lines().skip(1).map(|line| {
++                gpui::div()
++                    .text_size(gpui::px(12.))
++                    .text_color(gpui::rgb(0xbdbdbd))
++                    .child(line.to_owned())
++            }))
+     }
+ }
+ use std::cell::OnceCell;

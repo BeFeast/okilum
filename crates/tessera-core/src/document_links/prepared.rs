@@ -10,6 +10,7 @@ use std::{collections::BTreeMap, path::Path};
 pub enum LinkStatus {
     Resolved,
     MissingDocument,
+    MissingFile,
     MissingHeading,
     Ambiguous,
     Unsupported,
@@ -18,7 +19,10 @@ pub enum LinkStatus {
 }
 impl LinkStatus {
     pub fn is_missing(self) -> bool {
-        matches!(self, Self::MissingDocument | Self::MissingHeading)
+        matches!(
+            self,
+            Self::MissingDocument | Self::MissingFile | Self::MissingHeading
+        )
     }
 }
 
@@ -32,12 +36,9 @@ pub struct LinkState {
 }
 impl LinkState {
     pub fn unknown() -> Self {
-        Self::new(
-            LinkStatus::Unknown,
-            "Link destination has not been verified yet.",
-        )
+        Self::new(LinkStatus::Unknown, "Link unavailable.")
     }
-    fn new(status: LinkStatus, reason: impl Into<String>) -> Self {
+    pub(super) fn new(status: LinkStatus, reason: impl Into<String>) -> Self {
         Self {
             status,
             reason: reason.into(),
@@ -72,6 +73,7 @@ pub struct LinkPreparation<'a, F> {
     vault: &'a Vault,
     from: String,
     load: F,
+    local_files: Option<Vault>,
     targets: BTreeMap<String, Result<TargetSnapshot, String>>,
     results: BTreeMap<(String, bool, String), (ResolvedLink, LinkState)>,
 }
@@ -81,10 +83,20 @@ impl<'a, F: FnMut(&str) -> Result<TargetSnapshot, String>> LinkPreparation<'a, F
             vault,
             from: from.to_owned(),
             load,
+            local_files: None,
             targets: BTreeMap::new(),
             results: BTreeMap::new(),
         }
     }
+    /// Desktop Reader only: filesystem checks run in the caller's background job.
+    /// Managed previews retain their scoped source/asset authority by default.
+    pub fn with_local_files(mut self) -> Self {
+        let mut live = self.vault.clone();
+        live.graph_root = None;
+        self.local_files = Some(live);
+        self
+    }
+
     pub fn readable(&mut self, path: &str) -> bool {
         self.targets
             .entry(path.to_owned())
@@ -99,7 +111,18 @@ impl<'a, F: FnMut(&str) -> Result<TargetSnapshot, String>> LinkPreparation<'a, F
         if let Some(result) = self.results.get(&key) {
             return result.clone();
         }
-        let resolved = resolve(target, wiki, self.vault, from);
+        let mut local_document = None;
+        if let Some(live) = &self.local_files {
+            if let Some(result) = super::local_files::prepare(live, from, target, wiki) {
+                if result.0.status == "resolved" {
+                    local_document = Some(result.0);
+                } else {
+                    self.results.insert(key, result.clone());
+                    return result;
+                }
+            }
+        }
+        let resolved = local_document.unwrap_or_else(|| resolve(target, wiki, self.vault, from));
         let mut state = match resolved.status {
             "external" => LinkState::new(LinkStatus::External, "External link"),
             "unsupported" => LinkState::new(
@@ -186,7 +209,7 @@ impl<'a, F: FnMut(&str) -> Result<TargetSnapshot, String>> LinkPreparation<'a, F
             && !matches!(state.status, LinkStatus::External | LinkStatus::Unsupported)
         {
             state = LinkState::unknown();
-            state.reason = "Document inventory is incomplete. Refresh to verify this link.".into();
+            state.reason = "Link unavailable while the vault is loading.".into();
         }
         state.action_url = Some(resolved.url.clone());
         self.results.insert(key, (resolved.clone(), state.clone()));
