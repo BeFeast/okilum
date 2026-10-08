@@ -1468,6 +1468,25 @@ impl Reader {
             self.refresh_link_preparation(cx);
             return;
         }
+        self.reconcile_published_document(window, cx);
+    }
+
+    /// Refresh from the immutable published graph even when a shared worker owns
+    /// the mutable source baseline. Consuming a publication must not lose this
+    /// window's document refresh merely because another sibling started polling.
+    pub(super) fn reconcile_published_document(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.current_rel.is_empty() {
+            return;
+        }
+        if self.editing.is_some() {
+            self.refresh_source_from_disk(window, cx);
+            self.refresh_link_preparation(cx);
+            return;
+        }
         let vault = self.vault.clone();
         let rel = self.current_rel.clone();
         let root = self.vault_root.clone();

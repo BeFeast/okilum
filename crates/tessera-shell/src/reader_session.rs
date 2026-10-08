@@ -36,6 +36,18 @@ pub(crate) struct Session {
 
 pub(crate) type Shared = Arc<Mutex<Session>>;
 
+#[cfg(test)]
+pub(crate) fn with_worker_baseline_detached(session: &Shared, f: impl FnOnce()) {
+    let state = session
+        .lock()
+        .unwrap()
+        .state
+        .take()
+        .expect("published baseline");
+    f();
+    session.lock().unwrap().state = Some(state);
+}
+
 fn merge(into: &mut tessera_core::Changes, changes: tessera_core::Changes) {
     into.changed.extend(changes.changed);
     into.removed.extend(changes.removed);
@@ -178,6 +190,8 @@ impl Reader {
             // and search work has already happened once in the session worker.
             if let Some(sources) = sources {
                 self.reconcile_inventory_document(&sources, window, cx);
+            } else {
+                self.reconcile_published_document(window, cx);
             }
         }
         cx.notify();

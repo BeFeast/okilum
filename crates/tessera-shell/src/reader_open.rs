@@ -1307,6 +1307,29 @@ mod entry_tests {
         });
         release.try_send(()).unwrap();
         cx.run_until_parked();
+        // Another sibling's poll can own the baseline while this window consumes
+        // the completed publication. A refresh must survive that exact ordering.
+        let shared = cx.update(|cx| second.read(cx).shared_session.clone().unwrap());
+        super::super::reader_session::with_worker_baseline_detached(&shared, || {
+            cx.update(|cx| {
+                let handle = second.read(cx).reader_window;
+                handle
+                    .update(cx, |_, window, cx| {
+                        second.update(cx, |reader, cx| reader.poll_shared_session(window, cx));
+                    })
+                    .unwrap();
+            });
+            cx.run_until_parked();
+            cx.update(|cx| {
+                assert!(
+                    second
+                        .read(cx)
+                        .note_source
+                        .contains("Changed after first window closed"),
+                    "published document refresh cannot depend on worker-owned baseline"
+                );
+            });
+        });
         cx.executor()
             .advance_clock(std::time::Duration::from_millis(300));
         cx.run_until_parked();
