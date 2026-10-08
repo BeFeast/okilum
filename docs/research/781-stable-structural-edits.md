@@ -98,3 +98,35 @@ These are diagnostic debug measurements, not a release frame-budget PASS.
 The parser cap alone does not bound whole-plan mapping/projection cost. A controlled
 optimized run and isolation of projection rebuilding are still required before
 claiming the synchronous path meets the interaction budget.
+
+## Global-context fallback decision
+
+Do not retain semantically stale concealment across fences, HTML, reference
+bindings, frontmatter, or edits whose container context cannot be established.
+Those edits use exact current source while the authoritative classifier works.
+Both transitions (projected → raw and raw → adopted projection) must carry the
+same source-anchored screen-Y compensation. Source fallback must remain editable;
+it must not freeze an old buffer, synchronously parse the whole document, or
+silently pretend the global edit was local. Above the supported classification
+size, keep the same anchored raw presentation without repeated adoption attempts.
+
+This is an implementation requirement, not a PASS claim: the existing native
+anchor currently requires a previous projection and filters out a raw destination.
+It needs a revision-bound source snapshot for raw layouts and compensation in both
+directions before the fallback can meet the no-jump acceptance criterion.
+
+## Accepted release probe budget on muninn
+
+Manager budget: median ≤4 ms and p95 ≤8 ms for the existing 600-block probe.
+On 2026-10-08, head `7b489e8c9768c357e185fdee1c3cbf0b41ac358c` was built
+with the repository's beta release profile (`cargo test --release`; opt-level 3,
+no debug assertions, no overflow checks, no custom profile overrides). The test
+executable was transferred to muninn and executed there with one test thread.
+Binary SHA256: `96d21969df84007739504311895dc09ef14dcffbcf2653afe254439f8ad45f11`.
+
+For 600 blocks / 58,612 bytes, 100 samples of remap+projection gave median
+**3.812 ms**, p95 **4.438 ms**, maximum **6.498 ms**. Full classification+projection
+in the same process gave median 10.492 ms and p95 12.795 ms. Every iteration
+asserted identical displayed text. Thus the specified core probe budget passes
+without a new optimization. This is not an end-to-end keyboard/layout latency
+measurement, nor a native global-fallback acceptance result.
