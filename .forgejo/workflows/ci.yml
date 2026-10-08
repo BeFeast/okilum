@@ -244,7 +244,7 @@ jobs:
         run: echo '::warning::Native thumbnail evidence upload failed; see upload logs. Compile/test results remain authoritative.'
 
   # This job preserves the required Forgejo `ci / macos` status. Only the
-  # exact-head result from the selected lane passes; there is no failure fallback.
+  # exact-head result from exactly one executed lane passes; no failure fallback.
   macos:
     needs: [linux, native-scope, macos-github, macos-local]
     if: always() && github.event_name == 'pull_request'
@@ -259,7 +259,6 @@ jobs:
           HOSTED_JOB: ${{ needs.macos-github.result }}
           HOSTED_RESULT: ${{ needs.macos-github.outputs.result }}
           LOCAL_RESULT: ${{ needs.macos-local.result }}
-          MACOS_LANE: ${{ vars.TESSERA_MACOS_LANE || 'hosted' }}
         run: |
           set -euo pipefail
           test "$LINUX_RESULT" = success
@@ -267,18 +266,18 @@ jobs:
           case "$MACOS_REQUIRED" in
             false) echo "Documentation-only PR: native runner not needed" ;;
             true)
-              case "$MACOS_LANE" in
-                local)
-                  test "$HOSTED_JOB" = skipped
-                  test "$LOCAL_RESULT" = success ;;
-                hosted)
-                  test "$HOSTED_JOB" = success
-                  test "$LOCAL_RESULT" = skipped
+              # The repository variable may change while this run is queued.
+              # Judge this run's actual jobs, never the currently selected lane.
+              case "$HOSTED_JOB:$LOCAL_RESULT" in
+                skipped:success) echo "Local native check passed" ;;
+                success:skipped)
                   if [ "$HOSTED_RESULT" != success ]; then
                     echo "GitHub macOS unavailable or failed — rerun later"
                     exit 1
                   fi ;;
-                *) echo "Unknown macOS lane: $MACOS_LANE"; exit 1 ;;
+                *)
+                  echo "Expected exactly one successful native lane; hosted=$HOSTED_JOB local=$LOCAL_RESULT"
+                  exit 1 ;;
               esac ;;
             *) exit 1 ;;
           esac

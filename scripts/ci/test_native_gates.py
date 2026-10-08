@@ -26,6 +26,19 @@ class NativeGates(unittest.TestCase):
         self.assertTrue(gate('macos', MACOS_LANE='hosted', HOSTED_JOB='success',
                              HOSTED_RESULT='success', LOCAL_RESULT='skipped'))
 
+    def test_lane_switch_after_native_completion(self):
+        # 03:05: hosted finished, but the repository variable now says local.
+        self.assertTrue(gate('macos', MACOS_LANE='local', HOSTED_JOB='success',
+                             HOSTED_RESULT='success', LOCAL_RESULT='skipped'))
+        # 09:00: local finished, but the repository variable now says hosted.
+        self.assertTrue(gate('macos', MACOS_LANE='hosted'))
+
+    def test_exactly_one_lane_must_execute_successfully(self):
+        self.assertFalse(gate('macos', LOCAL_RESULT='skipped'))
+        self.assertFalse(gate('macos', HOSTED_JOB='success', HOSTED_RESULT='success'))
+        self.assertFalse(gate('macos', HOSTED_JOB='failure'))
+        self.assertFalse(gate('macos', HOSTED_JOB='cancelled'))
+
     def test_linux_or_scope_failure_never_passes(self):
         for key in ('LINUX_RESULT', 'SCOPE_RESULT'):
             for status in ('failure', 'cancelled', 'skipped', ''):
@@ -42,7 +55,6 @@ class NativeGates(unittest.TestCase):
     def test_docs_skip_and_unknown_scope(self):
         self.assertTrue(gate('macos', MACOS_REQUIRED='false', LOCAL_RESULT='skipped'))
         self.assertFalse(gate('macos', MACOS_REQUIRED=''))
-        self.assertFalse(gate('macos', MACOS_LANE='unknown'))
 
     def test_check_still_requires_native_for_code(self):
         self.assertTrue(gate('check'))

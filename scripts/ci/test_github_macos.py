@@ -183,9 +183,9 @@ class BridgeTests(unittest.TestCase):
                 ['success', 'failure', 'cancelled', 'skipped'], ['success', 'failure']):
             expected = linux == 'success' and (required == 'false' or
                 (required == 'true' and (
-                    (lane == 'hosted' and hosted_job == 'success' and
+                    (hosted_job == 'success' and
                      hosted == 'success' and local == 'skipped') or
-                    (lane == 'local' and hosted_job == 'skipped' and local == 'success'))))
+                    (hosted_job == 'skipped' and local == 'success'))))
             result = subprocess.run(['bash', '-c', script], capture_output=True,
                 env=dict(os.environ, SCOPE_RESULT="success", LINUX_RESULT=linux, MACOS_REQUIRED=required,
                          MACOS_LANE=lane, HOSTED_JOB=hosted_job,
