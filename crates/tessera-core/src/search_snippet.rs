@@ -478,12 +478,10 @@ fn wikilink(s: &mut Stripper, i: usize, to: usize) -> usize {
 /// stripped), the URL stands behind it. A bracket that does not open a link
 /// is left as written. Returns the offset after what was consumed.
 fn markdown_link(s: &mut Stripper, i: usize, to: usize) -> usize {
-    let found = s.src[i + 1..to].find("](").map(|n| i + 1 + n).map(|mid| {
-        (
-            mid,
-            s.src[mid + 2..to].find(')').map_or(to, |n| mid + 2 + n),
-        )
-    });
+    let found = s.src[i + 1..to]
+        .find("](")
+        .map(|n| i + 1 + n)
+        .and_then(|mid| s.src[mid + 2..to].find(')').map(|n| (mid, mid + 2 + n)));
     let Some((mid, close)) = found else {
         return s.copy(i);
     };
@@ -741,13 +739,10 @@ mod tests {
         assert!(reason.text.chars().count() < 140);
     }
     #[test]
-    fn tantivy_truncated_url_keeps_alias_and_match_reason() {
-        let snippet =
-            plain_snippet("URL fixture [example](https://example.test/<b>зебраюпитер</b>");
-        assert_eq!(snippet.text, "URL fixture example");
-        assert_eq!(&snippet.text[snippet.highlights[0].clone()], "example");
-        let reason = snippet.hidden_match.unwrap();
-        assert_eq!(reason.text, "Link URL: https://example.test/зебраюпитер");
-        assert_eq!(&reason.text[reason.highlights[0].clone()], "зебраюпитер");
+    fn malformed_link_keeps_unclosed_destination_visible() {
+        let snippet = plain_snippet("literal [example](ordinary <b>words</b>");
+        assert!(snippet.text.contains("ordinary words"));
+        assert_eq!(&snippet.text[snippet.highlights[0].clone()], "words");
+        assert!(snippet.hidden_match.is_none());
     }
 }

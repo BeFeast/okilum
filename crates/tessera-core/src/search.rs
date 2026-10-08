@@ -855,9 +855,76 @@ impl Searcher {
                 path,
                 title,
                 score,
-                snippet_html: snippet.to_html(),
+                snippet_html: source_confirmed_snippet_html(
+                    snippet.to_html(),
+                    snippet.fragment(),
+                    window,
+                ),
             });
         }
         Ok(hits)
+    }
+}
+
+// Tantivy stops at token boundaries and can omit a closing URL delimiter.
+// Restore it only from a unique source occurrence, never from a guessed link.
+fn source_confirmed_snippet_html(mut html: String, fragment: &str, window: &str) -> String {
+    if fragment.contains("](") && !fragment.is_empty() {
+        let mut matches = window.match_indices(fragment);
+        if let Some((start, _)) = matches.next() {
+            if matches.next().is_none() && window[start + fragment.len()..].starts_with(')') {
+                html.push(')');
+            }
+        }
+    }
+    html
+}
+
+#[cfg(test)]
+mod hidden_link_context_tests {
+    use super::*;
+    use crate::search_snippet::plain_snippet;
+
+    #[test]
+    fn actual_search_recovers_only_source_confirmed_url_delimiter() -> Result<()> {
+        let index = tempfile::tempdir()?;
+        let searcher = Searcher::build_documents(
+            &[
+                SearchDocument {
+                    path: "valid.md".into(),
+                    title: "Valid".into(),
+                    text: "[example](https://example.test/зебраюпитер)".into(),
+                },
+                SearchDocument {
+                    path: "malformed.md".into(),
+                    title: "Malformed".into(),
+                    text: "[example](ordinary зебраюпитер".into(),
+                },
+            ],
+            index.path(),
+        )?;
+        let hits = searcher.search("зебраюпитер", 10)?;
+        assert_eq!(hits.len(), 2);
+        for hit in hits {
+            let snippet = plain_snippet(&hit.snippet_html);
+            if hit.path == "valid.md" {
+                assert_eq!(snippet.text, "example");
+                let context = snippet.hidden_match.expect("confirmed URL context");
+                assert_eq!(&context.text[context.highlights[0].clone()], "зебраюпитер");
+            } else {
+                assert!(snippet.text.contains("ordinary зебраюпитер"));
+                assert!(snippet.hidden_match.is_none());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn repeated_fragment_does_not_guess_which_source_continuation_applies() {
+        let fragment = "[a](target";
+        assert_eq!(
+            source_confirmed_snippet_html(fragment.into(), fragment, "[a](target) [a](target"),
+            fragment
+        );
     }
 }
