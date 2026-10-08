@@ -11,7 +11,7 @@ spec.loader.exec_module(module)
 
 class CoalescingTests(unittest.TestCase):
     def test_hourly_tick_builds_only_unpublished_source(self):
-        for platform in ['windows', 'macos']:
+        for platform in ['windows', 'macos', 'linux']:
             self.assertTrue(module.needed('schedule', None, 'new', platform))
             self.assertFalse(module.needed('schedule', {'source': 'new', 'platform': platform}, 'new', platform))
 
@@ -54,3 +54,31 @@ class ScheduledMainTests(unittest.TestCase):
         run.side_effect = module.subprocess.TimeoutExpired('git', 15)
         with self.assertRaises(module.subprocess.TimeoutExpired):
             module.current_schedule('schedule', 'old', 'windows')
+
+
+class LinuxWindowTests(unittest.TestCase):
+    @patch.object(module.subprocess, 'run')
+    def test_stale_tick_skips_but_current_tick_builds_and_manual_bypasses(self, run):
+        head = 'a' * 40
+        run.return_value = SimpleNamespace(stdout=head + '\trefs/heads/main\n')
+        self.assertFalse(module.current_schedule('schedule', 'b' * 40, 'linux'))
+        self.assertTrue(module.current_schedule('schedule', head, 'linux'))
+        self.assertTrue(module.needed('schedule', None, head, 'linux'))
+        self.assertFalse(module.needed('schedule', {'source': head, 'platform': 'linux'}, head, 'linux'))
+        run.reset_mock()
+        for event in ['workflow_dispatch', 'pull_request']:
+            self.assertTrue(module.current_schedule(event, 'old', 'linux'))
+            self.assertTrue(module.needed(event, {'source': 'old', 'platform': 'linux'}, 'old', 'linux'))
+        run.assert_not_called()
+
+    def test_linux_workflow_uses_light_selector_and_preserves_publication(self):
+        root = Path(__file__).resolve().parents[2]
+        workflow = (root / '.forgejo/workflows/linux-release.yml').read_text()
+        self.assertIn('cron: "*/30 * * * *"', workflow)
+        self.assertNotIn('  push:', workflow)
+        self.assertIn('  workflow_dispatch:', workflow)
+        self.assertIn('runs-on: bridge', workflow)
+        self.assertIn('python3 scripts/releases/coalesce.py linux', workflow)
+        self.assertIn("if: needs.select.outputs.build == 'true'", workflow)
+        self.assertIn('cancel-in-progress: false', workflow)
+        self.assertIn('python3 scripts/releases/publication.py dispatch linux', workflow)
