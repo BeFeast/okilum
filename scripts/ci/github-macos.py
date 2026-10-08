@@ -5,6 +5,7 @@ No Forgejo credentials reach GitHub. The caller's final `macos` job reports the
 result using Forgejo's normal job status, without using the corporate M4.
 """
 import argparse
+import http.client
 import json
 import os
 from pathlib import Path
@@ -43,7 +44,8 @@ class GitHub:
             with urllib.request.urlopen(request, timeout=30) as response:
                 body = response.read()
                 return json.loads(body) if body else None
-        except (urllib.error.URLError, TimeoutError) as error:
+        except (urllib.error.URLError, TimeoutError,
+                http.client.RemoteDisconnected, ConnectionResetError) as error:
             # Avoid printing HTTP response bodies or credential-bearing commands.
             raise Unavailable(f"GitHub {method} {path.split('?')[0]}: {type(error).__name__}") from None
 
