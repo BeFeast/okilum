@@ -67,34 +67,55 @@ impl Reader {
             .child(self.render_breadcrumbs(cx));
         #[cfg(any(unix, windows))]
         if !is_file {
-            if editing {
-                row = row.child(self.render_save_status(cx)).child(
-                    reader_icon_button(
-                        "source-save",
-                        Icon::default().path("icons/save.svg"),
-                        reader_shortcuts::hint("Save", &SaveSource, cx),
-                        cx,
-                    )
-                    .debug_selector(|| "source-save".into())
-                    .on_click(cx.listener(|this, _, _, cx| this.request_source_save(cx))),
-                );
-                row = row.child(self.render_live_preview_control(cx));
-            }
+            use gpui_component::button::ButtonGroup;
+            let labels = reader_ui_state::toolbar_labels(cx);
             row = row.child(
-                reader_icon_button(
-                    "reader-edit",
-                    if editing {
-                        IconName::Eye
-                    } else {
-                        IconName::FileText
-                    },
-                    reader_shortcuts::hint("Source / preview", &ToggleSource, cx),
-                    cx,
-                )
-                .debug_selector(|| "reader-edit".into())
-                .selected(editing)
-                .on_click(cx.listener(|this, _, window, cx| this.toggle_source(window, cx))),
+                ButtonGroup::new("note-mode").children([
+                    Button::new("reader-read")
+                        .ghost()
+                        .small()
+                        .icon(IconName::BookOpen)
+                        .when(labels, |button| button.label("Read"))
+                        .selected(!editing)
+                        .accessibility_label("Read")
+                        .tooltip(reader_shortcuts::hint("Read", &ToggleSource, cx))
+                        .debug_selector(|| "reader-read".into())
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            if this.editing.is_some() {
+                                this.toggle_source(window, cx);
+                            }
+                        })),
+                    Button::new("reader-edit")
+                        .ghost()
+                        .small()
+                        .icon(Icon::default().path("icons/pencil.svg"))
+                        .when(labels, |button| button.label("Edit"))
+                        .selected(editing)
+                        .accessibility_label("Edit")
+                        .tooltip(reader_shortcuts::hint("Edit", &ToggleSource, cx))
+                        .debug_selector(|| "reader-edit".into())
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            if this.editing.is_none() {
+                                this.toggle_source(window, cx);
+                            }
+                        })),
+                ]),
             );
+            if editing {
+                row = row.child(self.render_live_preview_control(cx));
+                if self.source_is_dirty(cx) {
+                    row = row.child(self.render_save_status(cx)).child(
+                        reader_icon_button(
+                            "source-save",
+                            Icon::default().path("icons/save.svg"),
+                            reader_shortcuts::hint("Save", &SaveSource, cx),
+                            cx,
+                        )
+                        .debug_selector(|| "source-save".into())
+                        .on_click(cx.listener(|this, _, _, cx| this.request_source_save(cx))),
+                    );
+                }
+            }
         }
         if !is_file {
             row = row

@@ -119,6 +119,7 @@ struct Saved {
     reading_width: f32,
     find_case_sensitive: bool,
     typed_views: tessera_core::typed_view::Preferences,
+    toolbar_labels: bool,
     vaults: BTreeMap<PathBuf, Layout>,
     last_layout: Option<Layout>,
     frames: BTreeMap<String, window_state::Frame>,
@@ -134,6 +135,7 @@ impl Default for Saved {
             reading_width: READER_MAX_WIDTH,
             find_case_sensitive: false,
             typed_views: Default::default(),
+            toolbar_labels: false,
             vaults: Default::default(),
             last_layout: None,
             frames: Default::default(),
@@ -151,6 +153,7 @@ struct Store {
     width_changed: bool,
     find_changed: bool,
     typed_views_changed: bool,
+    toolbar_labels_changed: bool,
     frames_changed: BTreeSet<String>,
     last_changed: bool,
     last_frame_changed: bool,
@@ -219,6 +222,7 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         // No migration input: opening a new window must not overwrite a
         // different process's newly saved mappings with our startup defaults.
         typed_views_changed: false,
+        toolbar_labels_changed: false,
         frames_changed: Default::default(),
         last_changed: false,
         last_frame_changed: false,
@@ -342,6 +346,7 @@ struct WriteJob {
     width_changed: bool,
     find_changed: bool,
     typed_views_changed: bool,
+    toolbar_labels_changed: bool,
     serial: Arc<AtomicU64>,
     generation: u64,
 }
@@ -391,6 +396,9 @@ impl WriteJob {
         if self.find_changed {
             latest.find_case_sensitive = self.saved.find_case_sensitive;
         }
+        if self.toolbar_labels_changed {
+            latest.toolbar_labels = self.saved.toolbar_labels;
+        }
         if self.last_changed {
             latest.last_layout = self.saved.last_layout.clone();
         }
@@ -427,6 +435,7 @@ fn job(cx: &App) -> Option<WriteJob> {
             && !state.width_changed
             && !state.find_changed
             && !state.typed_views_changed
+            && !state.toolbar_labels_changed
             && !state.last_changed
             && !state.last_frame_changed)
     {
@@ -445,6 +454,7 @@ fn job(cx: &App) -> Option<WriteJob> {
         width_changed: state.width_changed,
         find_changed: state.find_changed,
         typed_views_changed: state.typed_views_changed,
+        toolbar_labels_changed: state.toolbar_labels_changed,
         serial: state.serial.clone(),
         generation: state.serial.load(Ordering::SeqCst),
     })
@@ -902,6 +912,22 @@ pub(crate) fn set_find_case_sensitive(value: bool, cx: &mut App) {
     cx.refresh_windows();
 }
 
+pub(crate) fn toolbar_labels(cx: &App) -> bool {
+    cx.try_global::<Store>()
+        .is_some_and(|state| state.saved.toolbar_labels)
+}
+
+pub(crate) fn set_toolbar_labels(value: bool, cx: &mut App) {
+    if !installed(cx) || toolbar_labels(cx) == value {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.toolbar_labels = value;
+    state.toolbar_labels_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
 pub(crate) fn font_size(cx: &App) -> f32 {
     cx.try_global::<Store>().map_or(BODY_FONT_SIZE, |state| {
         state.saved.font_size.clamp(12., 24.)
@@ -943,6 +969,7 @@ fn mark_saved(generation: u64, cx: &mut App) {
         state.width_changed = false;
         state.find_changed = false;
         state.typed_views_changed = false;
+        state.toolbar_labels_changed = false;
         state.last_changed = false;
         state.last_frame_changed = false;
     }
@@ -988,6 +1015,8 @@ mod tests {
             set_reading(19.5, 960., cx);
             assert!(!find_case_sensitive(cx));
             set_find_case_sensitive(true, cx);
+            assert!(!toolbar_labels(cx), "toolbar labels are opt-in");
+            set_toolbar_labels(true, cx);
             record(&root, saved.clone(), true, cx);
             assert!(
                 !directory.join("reader-ui.json").exists(),
@@ -997,6 +1026,10 @@ mod tests {
             install(&directory, cx);
             assert!(matches!(appearance(cx).unwrap().0, Some(ThemeMode::Dark)));
             assert_eq!(theme(cx), Some(brand::ThemeId::Nord));
+            assert!(
+                toolbar_labels(cx),
+                "toolbar labels survive relaunch globally"
+            );
             assert_eq!(font_size(cx), 19.5);
             assert_eq!(reading_width(cx), 960.);
             assert!(
@@ -1031,6 +1064,7 @@ mod tests {
         let directory = fixture.path().join("state");
         cx.update(|cx| {
             install(&directory, cx);
+            set_toolbar_labels(true, cx);
             record(&first, Layout::default(), true, cx);
             let stale = job(cx).unwrap();
             let closed = Layout {
@@ -1069,6 +1103,7 @@ mod tests {
                 width_changed: false,
                 find_changed: false,
                 typed_views_changed: true,
+                toolbar_labels_changed: false,
                 frames_changed: Default::default(),
                 last_changed: false,
                 last_frame_changed: false,
@@ -1078,6 +1113,10 @@ mod tests {
             flush(cx);
             independent.run().unwrap();
             let merged = read(&current.path).unwrap();
+            assert!(
+                merged.toolbar_labels,
+                "an unrelated process must not overwrite toolbar preferences"
+            );
             assert_eq!(merged.vaults[&first], closed);
             assert!(merged.vaults.contains_key(&second));
             assert!(
