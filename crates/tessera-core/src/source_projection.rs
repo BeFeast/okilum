@@ -99,7 +99,7 @@ pub enum Region {
     },
 }
 impl Region {
-    fn block(&self) -> &Range<usize> {
+    pub(crate) fn block(&self) -> &Range<usize> {
         match self {
             Self::Source(range) | Self::Conceal { block: range, .. } => range,
         }
@@ -111,6 +111,9 @@ pub struct Plan {
     regions: Vec<Region>,
 }
 impl Plan {
+    pub(crate) fn regions(&self) -> &[Region] {
+        &self.regions
+    }
     pub fn new(snapshot: &Snapshot, regions: Vec<Region>) -> Self {
         Self {
             snapshot: snapshot.clone(),

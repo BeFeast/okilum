@@ -1,13 +1,16 @@
 //! App-owned raw classifier bridge: classify off-thread, compose reviewed source mappings.
-use std::{ops::Range, sync::Arc};
+use std::{
+    ops::Range,
+    sync::{Arc, Mutex},
+};
 
 use gpui_component::input::projection::{
     ActiveSource, ConcealBias, ProjectedByte, ProjectionProvider, ProjectionStyle, SourceByte,
     SourceProjection, SourceSnapshot,
 };
 use tessera_core::{
-    source_classifier::{self, Classification, Style},
-    source_projection::{self, Active, Bias, Projection, Snapshot},
+    source_classifier::{self, Classification, RetainedPresentation, Style},
+    source_projection::{Active, Bias, Projection, Snapshot},
 };
 
 pub const BODY_FONT: &str = "Noto Sans";
@@ -40,6 +43,7 @@ impl ProjectionProvider for ColoredProvider {
 pub struct CachedProvider {
     source: SourceSnapshot,
     classified: Classification,
+    retained: Mutex<RetainedPresentation>,
     links: Vec<source_classifier::NoteLink>,
 }
 
@@ -69,9 +73,11 @@ impl CachedProvider {
         } else {
             Vec::new()
         };
+        let classified = source_classifier::classify(&snapshot);
         Self {
             source,
-            classified: source_classifier::classify(&snapshot),
+            retained: Mutex::new(RetainedPresentation::new(&classified)),
+            classified,
             links,
         }
     }
@@ -128,14 +134,15 @@ impl CachedProvider {
         active: &ActiveSource,
         colors: Option<ProjectionColors>,
     ) -> Option<Arc<dyn SourceProjection>> {
-        if self.source.stamp != source.stamp || self.source.text != source.text {
-            return None;
-        }
         // #214's stricter cap is a presentation limit, not a buffer limit.
         if source.text.len() > source_classifier::MAX_BYTES {
             return None;
         }
-        let snapshot = self.classified.snapshot();
+        let current = core_snapshot(source);
+        let mut retained = self.retained.lock().ok()?;
+        if retained.snapshot() != &current {
+            *retained = retained.remap(&current)?;
+        }
         let selection = active.anchor.0.min(active.head.0)..active.anchor.0.max(active.head.0);
         let mut reveal = Active {
             selection: Some(selection),
@@ -143,32 +150,23 @@ impl CachedProvider {
         };
         // Independently validate exact native ranges before taking their union.
         // An enclosing union must never hide an invalid/subgrapheme endpoint.
-        let mut projection =
-            source_projection::project(snapshot, self.classified.plan(), &reveal).ok()?;
+        let mut projection = retained.project(&reveal).ok()?;
         if let Some(replacement) = active.replacement.as_ref().map(raw_range) {
-            source_projection::project(
-                snapshot,
-                self.classified.plan(),
-                &Active {
+            retained
+                .project(&Active {
                     selection: Some(replacement.clone()),
                     composition: None,
-                },
-            )
-            .ok()?;
+                })
+                .ok()?;
             reveal.composition = Some(match reveal.composition {
                 Some(composition) => {
                     composition.start.min(replacement.start)..composition.end.max(replacement.end)
                 }
                 None => replacement,
             });
-            projection =
-                source_projection::project(snapshot, self.classified.plan(), &reveal).ok()?;
+            projection = retained.project(&reveal).ok()?;
         }
-        let styles = projected_styles(
-            &projection,
-            self.classified.styles_for(snapshot).ok()?,
-            colors,
-        )?;
+        let styles = projected_styles(&projection, retained.styles(), colors)?;
         Some(Arc::new(MappedProjection {
             source: source.clone(),
             projection,
@@ -414,7 +412,7 @@ This paragraph remains ordinary Markdown.
     }
 
     #[test]
-    fn every_stale_identity_falls_back() {
+    fn foreign_or_inconsistent_identity_falls_back() {
         let source = source("**bold**\n\nend");
         let provider = CachedProvider::classify(source.clone());
         for changed in [
@@ -427,7 +425,7 @@ This paragraph remains ordinary Markdown.
             },
             SourceSnapshot {
                 stamp: SourceStamp {
-                    generation: 10,
+                    generation: 8,
                     ..source.stamp
                 },
                 ..source.clone()
@@ -440,6 +438,34 @@ This paragraph remains ordinary Markdown.
             assert!(provider.compose(&changed, &inactive(&changed)).is_none());
         }
     }
+    #[test]
+    fn edits_keep_unchanged_projection_until_background_adoption() {
+        let original = source("TOP text\n\n**bold** [label](destination)\n\nend");
+        let provider = CachedProvider::classify(original.clone());
+        for step in 1..=100 {
+            let changed = SourceSnapshot {
+                stamp: SourceStamp {
+                    generation: original.stamp.generation + step,
+                    ..original.stamp
+                },
+                text: Arc::from(
+                    original
+                        .text
+                        .replace("TOP text", &format!("TOP текст{step}")),
+                ),
+            };
+            let projection = provider.compose(&changed, &inactive(&changed)).unwrap();
+            assert!(projection.text().contains("bold label"));
+            assert_eq!(projection.source().stamp, changed.stamp);
+            assert_eq!(projection.source().text, changed.text);
+            let fresh = CachedProvider::classify(changed.clone());
+            assert_eq!(
+                projection.text(),
+                fresh.compose(&changed, &inactive(&changed)).unwrap().text()
+            );
+        }
+    }
+
     #[test]
     fn explicit_replacement_reveals_without_changing_selection() {
         let source = source("**first**\n\n**second**\n\nend");

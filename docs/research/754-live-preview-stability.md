@@ -80,3 +80,67 @@ This is a pinned source audit, not native acceptance of these products; no upstr
 Lists/blockquote styling and nesting were listed as Later in the approved roadmap; these references justify discussing a dedicated earlier slice, not silently changing that plan. Keep the MIT product/license decision and gpui-core-unpatched rule.
 
 Recommended order: #754 interaction stability (local reveal/adoption + gesture safety + source-anchor compensation) → measured typography (S6 after required foundations) → S7 rich blocks. Confirm priorities with the owner; neither new features nor a different canonical document model are authorized by this comparison.
+
+
+## Approved implementation slice (2026-10-08)
+
+The owner approved stability only, before #753 and alongside the #748 IME gate.
+The implementation pulls presentation retention from S3 forward; it does not
+introduce heading sizes, lists, blockquotes, code blocks or Mermaid.
+
+1. Keep a presentation-only snapshot of accepted regions and styles. Map unchanged
+   ranges through source edits; discard the dirty block's spans. Navigation keeps
+   using revision-checked classification, never retained parser metadata. Bound
+   remapping by the existing 64 KiB input cap and validate the result with the
+   canonical projection validator. Context-changing edits (fences, definitions,
+   structural newlines) must invalidate dependent ranges rather than reuse them.
+2. Make reveal local and coherent across classifier adoption. Selection/IME remain
+   exact source ranges. A paint/blink does not alter reveal. Avoid a debounce-only
+   solution, which merely extends the raw fallback interval.
+3. Capture a canonical source anchor with its screen Y before changing projection
+   geometry, remap through source edits, and compensate scroll after measurement.
+   Explicit user scrolling and viewport edge clamps take precedence.
+4. Pin the displayed projection for a pointer gesture, including Source display;
+   do not adopt a new layout halfway through hit-testing. A source edit needs an
+   explicit remap/cancel policy, never stale coordinates interpreted in new bytes.
+
+Velotype informs fragment-local invalidation and measured caret correction;
+SoloMD informs mapped decorations and drag/IME guards. Ferrite's block editing and
+variable-height cache remain references for later S6/S7. No reference code is
+copied; the license audit above remains authoritative.
+
+Implementation status: local code now maps retained regions/styles between source
+revisions, reveals individual syntax fragments, compensates scroll using a source
+anchor, and pins gesture geometry. A source or metric change cancels a held gesture;
+it never reinterprets its old pointer coordinates. Explicit Source switching and
+blur release the pin. Structural/context-changing edits still conservatively use
+Source until a fresh classification, rather than reuse unproven dependencies.
+
+Preliminary native X11 fixture checks on the development host:
+- Enter/leave plain text in the long-link paragraph: ANCHOR stays at 311 px.
+- An unrelated edit through delayed classifier delivery: ANCHOR stays at 311 px.
+- Begin a paragraph on a scrolled blank line: scroll stays -1046 px before, during
+  and after delivery (the first implementation missed this case; it was fixed).
+- 100 single-character insert/delete cycles: 579 sampled unchanged-paragraph
+  frames matched projected control; zero matched raw control, zero other frames.
+  An actual Source toggle supplies the distinct raw positive control. F7 did not
+  fire in the first probe, so that failed-control run is explicitly discarded;
+  the successful probe used the actual mode button.
+- Wide dark: 1,133 samples; narrow light/dark: 816 / 878 samples. Every
+  unchanged-paragraph sample matches its projected control and differs from the
+  raw positive control. The narrow crop initially included TOP's caret/inserted
+  character; pixel differences were confined to that edited line. Rechecking the
+  paragraph-only crop found no changed pixels. Each run recorded 200 actual
+  source mutations/input changes and recovered the exact initial source bytes.
+- Actual mouse-down before delayed adoption: selection stays 957..957 and TAIL
+  stays at 359 px through adoption. Horizontal drag at the same Y selects exactly
+  957..968 (`lain ending`), with no newline/lower-row text; release preserves it.
+- 21 core classifier/remapping tests, 8 provider tests, 7 Reader Live Preview
+  tests (including save echoes), and 2 vendor gesture/anchor tests pass locally.
+  Shell strict clippy, fmt and cumulative vendor verification pass. Standalone
+  vendor tests resolved their own dependencies; product probes use the root lock.
+  This is not the full native acceptance matrix.
+
+Scratch evidence/scripts are in `~/.cache/tessera-qa/754/`. Publication remains
+subject to the executor CI slot; native full Reader light/dark + IME on muninn
+under the shared-screen lock and the owner's Mac gate remain outstanding.

@@ -7,6 +7,9 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::source_projection::{self, Active, MapError, Plan, Region, Snapshot};
 
+mod retained;
+pub use retained::RetainedPresentation;
+
 pub const MAX_BYTES: usize = 64 * 1024;
 pub const MAX_NODES: usize = 4096;
 pub const MAX_DEPTH: usize = 32;
@@ -59,6 +62,7 @@ pub struct Classification {
     snapshot: Snapshot,
     plan: Plan,
     styles: Vec<StyleSpan>,
+    marker_scopes: Vec<(Range<usize>, Range<usize>)>,
     links: Vec<NoteLink>,
     headings: Vec<Heading>,
     reasons: Vec<SourceReason>,
@@ -140,6 +144,7 @@ fn fallback(snapshot: &Snapshot, reason: SourceReason) -> Classification {
         snapshot: snapshot.clone(),
         plan: Plan::new(snapshot, vec![]),
         styles: vec![],
+        marker_scopes: vec![],
         links: vec![],
         headings: vec![],
         reasons: vec![reason],
@@ -192,6 +197,7 @@ pub fn classify(snapshot: &Snapshot) -> Classification {
     }
     let mut regions = Vec::new();
     let mut styles = Vec::new();
+    let mut marker_scopes = Vec::new();
     let mut links = Vec::new();
     let mut headings = Vec::new();
     let mut reasons = Vec::new();
@@ -238,6 +244,16 @@ pub fn classify(snapshot: &Snapshot) -> Classification {
             range_count += 1 + candidate.markers.len();
             // Every descriptor has one Link style, so the existing style cap
             // bounds its count. Accepted link syntax ranges do not overlap.
+            marker_scopes.extend(candidate.markers.iter().map(|marker| {
+                let scope = candidate
+                    .fragments
+                    .iter()
+                    .filter(|r| r.start <= marker.start && r.end >= marker.end)
+                    .min_by_key(|r| r.len())
+                    .cloned()
+                    .unwrap_or_else(|| marker.clone());
+                (marker.clone(), scope)
+            }));
             links.extend(candidate.links);
             styles.extend(candidate.styles);
             regions.push(Region::Conceal {
@@ -263,6 +279,7 @@ pub fn classify(snapshot: &Snapshot) -> Classification {
         snapshot: snapshot.clone(),
         plan,
         styles,
+        marker_scopes,
         links,
         headings,
         reasons,
@@ -272,6 +289,7 @@ pub fn classify(snapshot: &Snapshot) -> Classification {
 #[derive(Default)]
 struct Candidate {
     markers: Vec<Range<usize>>,
+    fragments: Vec<Range<usize>>,
     styles: Vec<StyleSpan>,
     links: Vec<NoteLink>,
 }
@@ -369,6 +387,9 @@ impl<'s> Context<'s> {
         }
         let range = self.range(node)?;
         let raw = self.source.get(range.clone())?;
+        if !matches!(data.value, NodeValue::Text(_)) {
+            candidate.fragments.push(range.clone());
+        }
         let (width, style) = match &data.value {
             NodeValue::Text(_) => return plain(raw),
             NodeValue::Strong => (2, Style::Strong),
