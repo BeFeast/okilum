@@ -71,20 +71,20 @@ impl Reader {
                 widths.notes + widths.backlinks
             };
         let title_width = toolbar_text_width(&self.selected_title(), FontWeight::MEDIUM, window);
-        let mode_width = if !cfg!(unix) {
+        let mode_width = if !cfg!(any(unix, windows)) {
             0.
         } else if self.editing.is_some() {
             128.
         } else {
             64.
         };
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         let dirty = self.source_is_dirty(cx);
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         let dirty = false;
         let fixed_width = 32. + 64. + 32. + mode_width + if dirty { 100. } else { 0. };
         let show_find = document_width >= fixed_width + title_width + 32.;
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         let labels_width = ["Read", "Edit"]
             .into_iter()
             .chain(if self.editing.is_some() {
@@ -94,7 +94,7 @@ impl Reader {
             })
             .map(|label| toolbar_text_width(label, FontWeight::MEDIUM, window) + 12.)
             .sum::<f32>();
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         let labels = reader_ui_state::toolbar_labels(cx)
             && document_width
                 >= fixed_width + title_width + labels_width + if show_find { 32. } else { 0. };

@@ -305,9 +305,9 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("escape", Dismiss, Some("InlineRename > Input")),
         #[cfg(any(unix, windows))]
         KeyBinding::new("f2", RenameTreeNote, Some("ReaderTree && !Input")),
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         KeyBinding::new("f2", RenameNote, Some("Reader && !ReaderTree && !Input")),
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         KeyBinding::new("f2", RenameNote, Some("ReaderSource > Input")),
         KeyBinding::new("secondary-n", NewNote, ctx),
         #[cfg(unix)]
@@ -3280,7 +3280,7 @@ impl Reader {
                     .cursor_pointer()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        #[cfg(unix)]
+                        #[cfg(any(unix, windows))]
                         if this.file_preview.is_none() {
                             this.rename_note_title(window, cx);
                             return;
@@ -3335,7 +3335,7 @@ impl Reader {
             "On this page".into()
         };
         let name_width = toolbar_text_width(&title, FontWeight::SEMIBOLD, window);
-        let total_actions = if cfg!(unix) { 3 } else { 1 };
+        let total_actions = if cfg!(any(unix, windows)) { 3 } else { 1 };
         let actions = toolbar_visible_actions(width - 24., name_width + 16., total_actions);
         let name_tip = title.clone();
         let reader = cx.entity().downgrade();
@@ -3400,7 +3400,7 @@ impl Reader {
                     .into_any_element()
             })
             .when(left, |mut header| {
-                #[cfg(unix)]
+                #[cfg(any(unix, windows))]
                 {
                     if actions >= 1 {
                         header = header.child(
@@ -3453,7 +3453,7 @@ impl Reader {
                         .dropdown_menu_with_anchor(
                             Anchor::TopRight,
                             move |mut menu, _, _| {
-                                if cfg!(unix) {
+                                if cfg!(any(unix, windows)) {
                                     if actions < 1 {
                                         menu = menu.menu("New note", Box::new(NewNote));
                                     }
@@ -3593,7 +3593,7 @@ impl Reader {
         let folder_actions_overflow = self.panel_widths.notes
             < toolbar_text_width("Folders", FontWeight::SEMIBOLD, window)
                 + 44.
-                + if cfg!(unix) { 5. } else { 3. } * 28.;
+                + if cfg!(any(unix, windows)) { 5. } else { 3. } * 28.;
         let show_hidden = self.sidebar.show_hidden;
         let current = self.selected_file().to_owned();
         let cursor = self
@@ -3811,7 +3811,7 @@ impl Reader {
                                     .debug_selector(|| "folders-actions".into())
                                     .on_click(|_, _, cx| cx.stop_propagation())
                                     .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
-                                        menu.when(cfg!(unix), |menu| {
+                                        menu.when(cfg!(any(unix, windows)), |menu| {
                                             menu.menu("New note", Box::new(NewNote))
                                                 .menu("New folder", Box::new(NewFolder))
                                         })
