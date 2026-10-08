@@ -370,6 +370,11 @@ fn perform_inner(
     unsafe { GetOverlappedResult(pipe, &overlap, &mut count, true) }
         .map_err(|e| native("GetOverlappedResult", e))?;
     remaining(deadline)?;
+    // ConnectNamedPipe has no byte transfer; GetOverlappedResult does not define
+    // its byte count. Only ReadFile/WriteFile completion lengths are meaningful.
+    if accepting {
+        return Ok(Reply { bytes, count: 0 });
+    }
     if count as usize > bytes.len() {
         return Err(io::Error::other("invalid pipe completion length"));
     }
