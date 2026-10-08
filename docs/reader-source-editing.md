@@ -497,6 +497,15 @@ intended path from a new open.
 
 ## Windows file ownership and failed moves (#820)
 
+After native publication, the checked replacement must also retain the displaced
+source's exact DACL ACE bytes/order and protected/unprotected inheritance policy
+(#845). `ReplaceFileW` can insert an explicit Administrators grant when ownership
+falls back to the current user. Tessera compares the published DACL, restores only
+that DACL through a checked native handle when needed, and verifies it before
+acknowledging the save. Owner/group fallback remains unchanged. A raced published
+inode is never a permission-repair target; an unsuccessful repair retains the
+draft and native preimage with an explicit incomplete-save error.
+
 Prepared save files first retain source security. If Windows rejects assigning
 that owner with ERROR_INVALID_OWNER (for example Administrators under a
 non-elevated user), creation retries with the current token's default owner/group
