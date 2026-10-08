@@ -323,12 +323,6 @@ impl Reader {
                     .detach();
                     preview.pdf = Some(viewer);
                 }
-                #[cfg(target_os = "macos")]
-                if preview.pdf.is_none() && reader_thumbnail::eligible(rel) {
-                    preview.thumbnail = Some(cx.new(|cx| {
-                        reader_thumbnail::Thumbnail::new(self.vault_root.clone(), rel.into(), cx)
-                    }));
-                }
                 // Structured logs take precedence in quick-file mode.
                 if self.single_file && tessera_core::log::is_log_path(&preview.path) {
                     let (rel, path) = (rel.to_owned(), preview.path.clone());
@@ -343,6 +337,16 @@ impl Reader {
                             preview.path.clone(),
                             cx,
                         )
+                    }));
+                }
+                #[cfg(target_os = "macos")]
+                if preview.pdf.is_none()
+                    && preview.log.is_none()
+                    && preview.text.is_none()
+                    && reader_thumbnail::eligible(rel)
+                {
+                    preview.thumbnail = Some(cx.new(|cx| {
+                        reader_thumbnail::Thumbnail::new(self.vault_root.clone(), rel.into(), cx)
                     }));
                 }
                 let log = preview.log.is_some();
@@ -664,7 +668,10 @@ mod tests {
                 reader.preview_file(path, window, cx);
                 let preview = reader.file_preview.as_ref().unwrap();
                 assert!(preview.text.is_some());
-                assert!(preview.log.is_none(), "vault attachments use the literal preview");
+                assert!(
+                    preview.log.is_none(),
+                    "vault attachments use the literal preview"
+                );
                 assert_eq!(reader.selected_file(), path);
                 assert_eq!(std::fs::read_to_string(root.join(path)).unwrap(), literal);
             }
