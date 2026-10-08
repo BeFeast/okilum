@@ -432,7 +432,19 @@ pub fn list(drafts: &Path, root: &Path) -> Result<Listing> {
                 } else {
                     path.with_extension("source")
                 };
-                match fs::read_to_string(&displaced) {
+                #[cfg(unix)]
+                let recovered = fs::read_to_string(&displaced).map_err(anyhow::Error::from);
+                #[cfg(windows)]
+                let recovered =
+                    (|| -> Result<String> {
+                        let parent = crate::windows_files::Directory::open(
+                            displaced.parent().context("Missing recovery folder")?,
+                        )?;
+                        prepared_text(parent.open_file(
+                            displaced.file_name().context("Missing recovery filename")?,
+                        )?)
+                    })();
+                match recovered {
                     Ok(text) if text != entry.text => result.versions.push(Version {
                         note: entry.note,
                         text,
@@ -441,9 +453,15 @@ pub fn list(drafts: &Path, root: &Path) -> Result<Listing> {
                         protected: true,
                         link_move: false,
                     }),
-                    Err(error) if error.kind() != std::io::ErrorKind::NotFound => result
-                        .warnings
-                        .push(format!("Cannot read displaced version: {error}")),
+                    Err(error)
+                        if error
+                            .downcast_ref::<std::io::Error>()
+                            .is_none_or(|e| e.kind() != std::io::ErrorKind::NotFound) =>
+                    {
+                        result
+                            .warnings
+                            .push(format!("Cannot read displaced version: {error:#}"))
+                    }
                     _ => {}
                 }
             }
@@ -1356,7 +1374,11 @@ mod windows_cleanup_tests {
             .unwrap();
         let (_, reparse) = staged(&root, &drafts, "Reparse.md", true, false);
         let target = root.join("outside.txt");
-        fs::write(&target, "preimage שלום\r\n").unwrap();
+        fs::write(
+            &target,
+            "different symlink target — must not become recovery",
+        )
+        .unwrap();
         fs::remove_file(&reparse).unwrap();
         std::os::windows::fs::symlink_file(&target, &reparse)
             .expect("native symlink positive control");
@@ -1375,15 +1397,47 @@ mod windows_cleanup_tests {
             .unwrap()
             .file_type()
             .is_symlink());
-        assert_eq!(fs::read_to_string(&target).unwrap(), "preimage שלום\r\n");
         assert_eq!(
-            list(&drafts, &root)
-                .unwrap()
+            fs::read_to_string(&target).unwrap(),
+            "different symlink target — must not become recovery"
+        );
+        let history = list(&drafts, &root).unwrap();
+        // A changed displaced source contributes BOTH its recorded snapshot and
+        // its unexpected bytes. Four cleanup refusals are five recovery versions.
+        assert_eq!(history.versions.len(), 5);
+        assert!(history.versions.iter().all(|v| v.protected));
+        let changed_versions: Vec<_> = history
+            .versions
+            .iter()
+            .filter(|v| v.note == root.join("Changed.md"))
+            .collect();
+        assert_eq!(changed_versions.len(), 2);
+        assert!(changed_versions
+            .iter()
+            .any(|v| v.text == "preimage שלום\r\n"));
+        assert!(changed_versions
+            .iter()
+            .any(|v| v.text == "unexpected displaced version"
+                && v.label == "Unexpected displaced version — protected"));
+        for name in ["Replaced.md", "Locked.md", "Reparse.md"] {
+            let versions: Vec<_> = history
                 .versions
                 .iter()
-                .filter(|v| v.protected)
-                .count(),
-            4
+                .filter(|v| v.note == root.join(name))
+                .collect();
+            assert_eq!(versions.len(), 1, "{name} has its original snapshot only");
+            assert_eq!(versions[0].text, "preimage שלום\r\n");
+        }
+        assert!(!history
+            .versions
+            .iter()
+            .any(|v| v.text.contains("different symlink target")));
+        assert!(
+            history
+                .warnings
+                .iter()
+                .any(|w| w.starts_with("Cannot read displaced version:")),
+            "refused symlink preview must be surfaced, not silently followed"
         );
         drop(lock);
         assert_eq!(cleanup_windows(&drafts, &root).unwrap().len(), 3);
@@ -1407,5 +1461,44 @@ mod windows_cleanup_tests {
         assert_eq!(cleanup_windows(&drafts, &root).unwrap().len(), 1);
         assert_eq!(fs::read_to_string(&arbitrary).unwrap(), "preimage שלום\r\n");
         assert!(arbitrary.exists());
+    }
+}
+
+#[cfg(test)]
+mod displaced_listing_tests {
+    use super::*;
+    #[test]
+    fn changed_displaced_version_is_listed_beside_protected_snapshot() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let drafts = fixture.path().join("drafts");
+        let note = root.join("Changed.md");
+        fs::write(&note, "saved").unwrap();
+        let displaced = root.join(format!(".tessera-save-{}.previous", uuid::Uuid::new_v4()));
+        fs::write(&displaced, "original snapshot").unwrap();
+        Preimage::begin(&drafts, &note, "original snapshot", &displaced).unwrap();
+        fs::write(&displaced, "unexpected displaced version").unwrap();
+        let listing = list(&drafts, &root).unwrap();
+        assert!(listing.warnings.is_empty());
+        assert_eq!(listing.versions.len(), 2);
+        assert!(listing
+            .versions
+            .iter()
+            .all(|v| v.note == note && v.protected));
+        assert!(listing
+            .versions
+            .iter()
+            .any(|v| v.text == "original snapshot"));
+        assert!(listing
+            .versions
+            .iter()
+            .any(|v| v.text == "unexpected displaced version"
+                && v.label == "Unexpected displaced version — protected"));
+        assert_eq!(
+            fs::read_to_string(&displaced).unwrap(),
+            "unexpected displaced version"
+        );
     }
 }

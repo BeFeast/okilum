@@ -89,8 +89,10 @@ Prepared recovery bytes remain discoverable after preparation/publication errors
 an unacknowledged save keeps protected history and can acknowledge its already
 published exact draft on reopen.
 History preview limits each prepared recovery read to 128 MiB, checking the
-opened file size before allocating and bounding the read itself. Oversized or
-non-UTF-8 prepared bytes remain on disk with a listing warning; this preview
+opened file size before allocating and bounding the read itself. Windows displaced
+recovery uses the same bound and checked native open, refusing symlinks, reparse
+redirection and hard links rather than reading their targets. Oversized or
+non-UTF-8 recovery bytes remain on disk with a listing warning; this preview
 limit never deletes recovery or limits the source save.
 
 Native preimages retain the source DACL until a successful save has persisted a
