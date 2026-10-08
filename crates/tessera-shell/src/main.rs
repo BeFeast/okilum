@@ -2325,7 +2325,8 @@ impl Reader {
         let Some(path) = self.sidebar_path.clone() else {
             return;
         };
-        let state = self.sidebar.clone();
+        let mut state = self.sidebar.clone();
+        state.scroll_revealed = self.scroll_sections.revealed.clone();
         let latest = self.sidebar_save_sequence.clone();
         let sequence = latest.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         cx.background_executor()
@@ -2382,7 +2383,7 @@ impl Reader {
                 }
             }
         }
-        self.scroll_sections = Default::default();
+        self.scroll_sections = reader_sidebar::ScrollSections::from_state(&state);
         self.section_scroll = std::array::from_fn(|_| UniformListScrollHandle::new());
         self.sidebar = state;
         self.sidebar_path = path;
@@ -4454,6 +4455,7 @@ impl Reader {
                                         >= px(-0.5)
                                         && this.scroll_sections.restore()
                                     {
+                                        this.save_sidebar(cx);
                                         cx.notify();
                                     }
                                 });
@@ -4477,6 +4479,7 @@ impl Reader {
                                                 this.tree_scroll.0.borrow().base_handle.offset().y,
                                             );
                                             if this.scroll_sections.observe(offset) {
+                                                this.save_sidebar(cx);
                                                 cx.notify();
                                             }
                                         });
@@ -7859,6 +7862,82 @@ mod document_link_landing_tests {
             assert!(row.origin.y >= previous_bottom && row.bottom() <= body.bottom());
             assert!(location.origin.y >= row.origin.y && location.bottom() <= row.bottom());
             previous_bottom = row.bottom();
+        }
+    }
+
+    #[gpui::test]
+    fn sidebar_explicit_sections_survive_save_close_launch_with_scrolled_tree(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use reader_sidebar::{Section, LEFT_SECTIONS};
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        for i in 0..100 {
+            std::fs::write(root.join(format!("Note {i:03}.md")), "# Note").unwrap();
+        }
+        for launch in 0..2 {
+            let mut entity = None;
+            let (_, visual) = cx.add_window_view(|window, cx| {
+                let view = cx.new(|cx| {
+                    Reader::new(
+                        Opts {
+                            vault: Some(root.clone()),
+                            note: Some("Note 090.md".into()),
+                            index_dir: Some(fixture.path().join("cache")),
+                            session_directory: Some(fixture.path().join("state")),
+                            panel_settings_override: Some(fixture.path().join("panels.json")),
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    )
+                });
+                entity = Some(view.clone());
+                Root::new(view, window, cx)
+            });
+            let view = entity.unwrap();
+            visual.simulate_resize(size(px(1400.), px(960.)));
+            visual.run_until_parked();
+            view.update(visual, |v, cx| {
+                v.panels.open(reader_layout::Panel::Notes);
+                v.tree_revealed.clear();
+                cx.notify();
+            });
+            visual.run_until_parked();
+            if launch == 0 {
+                view.update(visual, |v, cx| {
+                    v.panels.open(reader_layout::Panel::Notes);
+                    v.sidebar.pinned = vec!["Note 001.md".into()];
+                    v.tree_scroll.scroll_to_item_strict(80, ScrollStrategy::Top);
+                    cx.notify();
+                });
+                visual.run_until_parked();
+                view.update(visual, |v, cx| {
+                    v.set_sidebar_sections(SectionAction::ExpandAll, cx)
+                });
+                visual.run_until_parked();
+            }
+            view.read_with(visual, |v, _| {
+                assert!(
+                    v.tree_scroll.0.borrow().base_handle.offset().y < px(-100.),
+                    "scrolled positive control on launch {launch}"
+                );
+                for section in LEFT_SECTIONS {
+                    let closed = if section == Section::Projects {
+                        v.sidebar.projects_collapsed
+                    } else {
+                        v.scroll_sections.closed(section, &v.sidebar.collapsed)
+                    };
+                    assert!(!closed, "{section:?} closed on launch {launch}");
+                }
+            });
+            view.update_in(visual, |_, window, _| window.remove_window());
+            visual.run_until_parked();
         }
     }
 
