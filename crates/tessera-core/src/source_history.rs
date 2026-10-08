@@ -115,7 +115,7 @@ impl Preimage {
         // (or a short-name alias). Bind both native ancestries before storing
         // canonical recovery paths; never authorize a redirected parent.
         let note_parent = note.parent().context("Missing source parent")?;
-        let directory = crate::windows_files::Directory::open(
+        let prepared_directory = crate::windows_files::Directory::open(
             prepared.parent().context("Missing prepared parent")?,
         )?;
         let canonical = crate::windows_files::Directory::open(note_parent)?;
@@ -123,7 +123,7 @@ impl Preimage {
             backup.parent().context("Missing preimage parent")?,
         )?;
         ensure!(
-            directory.identities()? == canonical.identities()?
+            prepared_directory.identities()? == canonical.identities()?
                 && backup_directory.identities()? == canonical.identities()?,
             "Prepared recovery parent changed"
         );
@@ -133,7 +133,7 @@ impl Preimage {
             owned_prepared_name(note, &prepared),
             "Invalid prepared recovery identity"
         );
-        let (_, bytes, info) = directory.read(prepared.file_name().unwrap())?;
+        let (_, bytes, info) = prepared_directory.read(prepared.file_name().unwrap())?;
         let snapshot = String::from_utf8(bytes).context("Prepared source is not UTF-8")?;
         let (volume, high, low) = crate::windows_files::identity(&info);
         let path = directory(drafts).join(format!("{}.json", uuid::Uuid::new_v4()));
