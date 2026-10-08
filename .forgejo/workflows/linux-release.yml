@@ -1,7 +1,8 @@
 name: linux-release
 on:
-  push:
-    branches: [main]
+  # Coalesce main updates; workflow_dispatch is the immediate build-now path.
+  schedule:
+    - cron: "*/30 * * * *"
   pull_request:
     paths:
       - 'scripts/arch/**'
@@ -17,7 +18,22 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  select:
+    runs-on: bridge
+    timeout-minutes: 3
+    outputs:
+      build: ${{ steps.select.outputs.build }}
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Select half-hourly or manual build
+        id: select
+        run: python3 scripts/releases/coalesce.py linux
+
   release:
+    needs: select
+    if: needs.select.outputs.build == 'true'
     runs-on: ubuntu-latest
     container:
       image: archlinux:base-devel@sha256:51dd3d24f7fba779e7c471caeee7804c50e8c134ad948e19685a1c83a42facc3

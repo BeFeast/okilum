@@ -1282,6 +1282,8 @@ struct Reader {
     #[cfg(unix)]
     creation: Option<reader_create::Creation>,
     #[cfg(unix)]
+    creation_undo: Option<Arc<reader_create::CreatedUndo>>,
+    #[cfg(unix)]
     renaming: Option<reader_move::Renaming>,
     #[cfg(unix)]
     move_picker: reader_move_picker::PickerState,
@@ -1563,6 +1565,8 @@ impl Reader {
             editing: None,
             #[cfg(unix)]
             creation: None,
+            #[cfg(unix)]
+            creation_undo: None,
             #[cfg(unix)]
             renaming: None,
             #[cfg(unix)]
@@ -6122,7 +6126,14 @@ impl Render for Reader {
             .on_action(cx.listener(|this, _: &FindPrev, _, cx| this.find_step(-1, cx)))
             .on_action(cx.listener(|this, _: &UndoTrash, window, cx| {
                 #[cfg(unix)]
-                this.undo_last_trash(window, cx);
+                {
+                    if this.tree_focus.contains_focused(window, cx) && this.creation_undo.is_some()
+                    {
+                        this.undo_creation(None, window, cx);
+                    } else {
+                        this.undo_last_trash(window, cx);
+                    }
+                }
                 #[cfg(not(unix))]
                 let _ = (this, window, cx);
             }))

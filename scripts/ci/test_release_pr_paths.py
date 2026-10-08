@@ -50,7 +50,7 @@ class ReleasePathsTests(unittest.TestCase):
     def test_main_and_scheduled_delivery_remain_enabled(self):
         linux = (ROOT / '.forgejo/workflows/linux-release.yml').read_text()
         windows = (ROOT / '.forgejo/workflows/windows-diagnostic.yml').read_text()
-        self.assertIn('  push:\n    branches: [main]', linux)
+        self.assertIn('  schedule:', linux)
         self.assertIn('  schedule:', windows)
 
     def test_windows_cross_build_helpers_still_trigger(self):

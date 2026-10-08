@@ -103,6 +103,103 @@ fn result_folder(path: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Literal whole-word highlights for displayed labels. Keep complex search
+/// syntax out of this presentation-only fallback; content marks come from Tantivy.
+fn label_matches(text: &str, query: &str) -> Vec<std::ops::Range<usize>> {
+    let query = query
+        .strip_prefix("path:")
+        .or_else(|| query.strip_prefix("title:"))
+        .unwrap_or(query);
+    if query.contains([':', '"', '(', ')', '[', ']', '{', '}', '^', '~', '*', '\\']) {
+        return vec![];
+    }
+    if query
+        .split_whitespace()
+        .any(|term| matches!(term, "AND" | "OR" | "NOT") || term.starts_with(['-', '+']))
+    {
+        return vec![];
+    }
+    let terms: Vec<_> = query
+        .split_whitespace()
+        .filter(|term| !matches!(*term, "AND" | "OR" | "NOT") && !term.starts_with(['-', '+']))
+        .map(|term| {
+            term.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase()
+        })
+        .filter(|term| !term.is_empty())
+        .collect();
+    let mut ranges = Vec::new();
+    let mut start = None;
+    for (at, ch) in text
+        .char_indices()
+        .chain(std::iter::once((text.len(), ' ')))
+    {
+        if ch.is_alphanumeric() {
+            start.get_or_insert(at);
+        } else if let Some(from) = start.take() {
+            if terms.contains(&text[from..at].to_lowercase()) {
+                ranges.push(from..at);
+            }
+        }
+    }
+    ranges
+}
+
+/// The title already has its own row. Remove only an exact leading repeat
+/// from the display snippet; the original hit still drives jump-to-match.
+/// This intentionally does not parse or filter frontmatter (#746).
+fn without_repeated_title(mut snippet: PlainSnippet, title: &str) -> PlainSnippet {
+    if title.is_empty() {
+        return snippet;
+    }
+    let Some(rest) = snippet.text.strip_prefix(title) else {
+        return snippet;
+    };
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return snippet;
+    }
+    let start = snippet.text.len() - rest.trim_start().len();
+    snippet.text.drain(..start);
+    snippet.highlights = snippet
+        .highlights
+        .into_iter()
+        .filter_map(|range| {
+            (range.end > start).then(|| range.start.saturating_sub(start)..range.end - start)
+        })
+        .collect();
+    snippet
+}
+
+/// A one-line preview must reach the match before the trailing ellipsis.
+/// Retain a little context and remap byte ranges on Unicode boundaries.
+fn visible_snippet(snippet: &PlainSnippet) -> PlainSnippet {
+    let Some(first) = snippet.highlights.first() else {
+        return snippet.clone();
+    };
+    let start = snippet.text[..first.start]
+        .char_indices()
+        .rev()
+        .nth(28)
+        .map_or(0, |(at, _)| at);
+    if start == 0 {
+        return snippet.clone();
+    }
+    let start = snippet.text[start..first.start]
+        .char_indices()
+        .find(|(_, ch)| ch.is_whitespace())
+        .map_or(start, |(at, ch)| start + at + ch.len_utf8());
+    let prefix = "…";
+    PlainSnippet {
+        text: format!("{prefix}{}", &snippet.text[start..]),
+        highlights: snippet
+            .highlights
+            .iter()
+            .map(|r| r.start - start + prefix.len()..r.end - start + prefix.len())
+            .collect(),
+        hidden_match: snippet.hidden_match.clone(),
+    }
+}
+
 pub(super) struct Palette {
     pub open: bool,
     full_text: bool,
@@ -118,7 +215,7 @@ pub(super) struct Palette {
     pending: bool,
     message: String,
     pub recent: Vec<String>,
-    scroll: UniformListScrollHandle,
+    scroll: ScrollHandle,
     #[cfg(test)]
     hold_query: Option<async_channel::Receiver<()>>,
 }
@@ -146,7 +243,7 @@ impl Palette {
             pending: false,
             message: String::new(),
             recent: Vec::new(),
-            scroll: UniformListScrollHandle::new(),
+            scroll: ScrollHandle::new(),
             #[cfg(test)]
             hold_query: None,
         }
@@ -303,7 +400,7 @@ impl Reader {
                 }
                 let snippets = rows
                     .iter()
-                    .map(|hit| plain_snippet(&hit.snippet_html))
+                    .map(|hit| without_repeated_title(plain_snippet(&hit.snippet_html), &hit.title))
                     .collect();
                 (rows, snippets, message)
             })
@@ -329,9 +426,7 @@ impl Reader {
                         }
                         Err(error) => this.quick_open.message = error,
                     }
-                    this.quick_open
-                        .scroll
-                        .scroll_to_item(0, ScrollStrategy::Top);
+                    this.quick_open.scroll.scroll_to_top_of_item(0);
                     cx.notify();
                 }
                 this.start_quick_open_query(cx);
@@ -347,9 +442,7 @@ impl Reader {
         }
         palette.selected =
             (palette.selected as isize + delta).rem_euclid(palette.rows.len() as isize) as usize;
-        palette
-            .scroll
-            .scroll_to_item(palette.selected, ScrollStrategy::Nearest);
+        palette.scroll.scroll_to_item(palette.selected);
         cx.notify();
     }
 
@@ -388,91 +481,33 @@ impl Reader {
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let list = uniform_list("quick-open-results", rows.len(), move |range, _, _| {
-            range
-                .map(|ix| {
-                    let hit = &rows[ix];
-                    let entity = entity.clone();
-                    let root = root.clone();
-                    let hover_entity = entity.clone();
-                    let hover_path = hit.path.clone();
-                    let hover_root = root.clone();
-                    v_flex()
-                        .id(("quick-open-result", ix))
-                        .on_hover(move |active, window, cx| {
-                            let _ = hover_entity.update(cx, |this, cx| {
-                                let key = format!("quick:{generation}:{hover_path}");
-                                if *active
-                                    && this.quick_open.open
-                                    && this.quick_open.generation == generation
-                                    && this.vault_root == hover_root
-                                    && this.watcher_generation == inventory
-                                {
-                                    this.hover_note(
-                                        key,
-                                        reader_hover::Target {
-                                            path: hover_path.clone(),
-                                            heading: None,
-                                        },
-                                        window.mouse_position(),
-                                        window,
-                                        cx,
-                                    );
-                                } else {
-                                    this.leave_hover(&key, cx);
-                                }
-                            });
-                        })
-                        .debug_selector(move || format!("quick-open-result-{ix}"))
-                        .cursor_pointer()
-                        .hover(|row| row.bg(selected_bg))
-                        .on_click(move |_, window, cx| {
-                            let _ = entity.update(cx, |this, cx| {
-                                if this.quick_open.open
-                                    && this.quick_open.generation == generation
-                                    && this.vault_root == root
-                                    && this.watcher_generation == inventory
-                                {
-                                    this.quick_open.selected = ix;
-                                    this.accept_quick_open(window, cx);
-                                }
-                            });
-                        })
-                        .h(px(if full_text { 88. } else { 52. }))
-                        .px_3()
-                        .py_1()
-                        .when(ix == selected, |row| row.bg(selected_bg))
-                        .child(
-                            div()
-                                .text_sm()
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_ellipsis()
-                                .child(hit.title.clone()),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(12.))
-                                .text_color(muted)
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_ellipsis()
-                                .child(if full_text {
-                                    result_folder(&hit.path)
-                                } else {
-                                    result_location(&vault_name, &hit.path)
-                                }),
-                        )
-                        .when_some(snippets.get(ix).filter(|_| full_text), |row, snippet| {
-                            let highlights = snippet
-                                .highlights
-                                .iter()
-                                .filter_map(|r| {
-                                    text_ranges::safe_highlight(&snippet.text, r.clone())
-                                })
-                                .map(|r| {
+        // Results are capped at 100. Content-sized rows avoid reserving blank
+        // snippet/reason lines, and keep the keyboard scroll target exact.
+        let query = self.quick_open.input.read(cx).value().to_string();
+        let list = v_flex()
+            .id("quick-open-results")
+            .debug_selector(|| "quick-open-results".to_string())
+            .w_full()
+            .overflow_y_scroll()
+            .children(
+                (0..rows.len())
+                    .map(|ix| {
+                        let hit = &rows[ix];
+                        let location = if full_text {
+                            result_folder(&hit.path)
+                        } else {
+                            result_location(&vault_name, &hit.path)
+                        };
+                        let label = |value: String| {
+                            let ranges = if full_text {
+                                label_matches(&value, &query)
+                            } else {
+                                vec![]
+                            };
+                            StyledText::new(value).with_highlights(ranges.into_iter().map(
+                                |range| {
                                     (
-                                        r,
+                                        range,
                                         HighlightStyle {
                                             background_color: Some(mark),
                                             color: Some(text),
@@ -480,28 +515,94 @@ impl Reader {
                                             ..Default::default()
                                         },
                                     )
-                                })
-                                .collect::<Vec<_>>();
-                            row.child(
+                                },
+                            ))
+                        };
+                        let entity = entity.clone();
+                        let root = root.clone();
+                        let hover_entity = entity.clone();
+                        let hover_path = hit.path.clone();
+                        let hover_root = root.clone();
+                        v_flex()
+                            .id(("quick-open-result", ix))
+                            .on_hover(move |active, window, cx| {
+                                let _ = hover_entity.update(cx, |this, cx| {
+                                    let key = format!("quick:{generation}:{hover_path}");
+                                    if *active
+                                        && this.quick_open.open
+                                        && this.quick_open.generation == generation
+                                        && this.vault_root == hover_root
+                                        && this.watcher_generation == inventory
+                                    {
+                                        this.hover_note(
+                                            key,
+                                            reader_hover::Target {
+                                                path: hover_path.clone(),
+                                                heading: None,
+                                            },
+                                            window.mouse_position(),
+                                            window,
+                                            cx,
+                                        );
+                                    } else {
+                                        this.leave_hover(&key, cx);
+                                    }
+                                });
+                            })
+                            .debug_selector(move || format!("quick-open-result-{ix}"))
+                            .cursor_pointer()
+                            .hover(|row| row.bg(selected_bg))
+                            .on_click(move |_, window, cx| {
+                                let _ = entity.update(cx, |this, cx| {
+                                    if this.quick_open.open
+                                        && this.quick_open.generation == generation
+                                        && this.vault_root == root
+                                        && this.watcher_generation == inventory
+                                    {
+                                        this.quick_open.selected = ix;
+                                        this.accept_quick_open(window, cx);
+                                    }
+                                });
+                            })
+                            .w_full()
+                            .flex_none()
+                            .px_3()
+                            .py_1()
+                            .when(ix == selected, |row| row.bg(selected_bg))
+                            .child(
                                 div()
-                                    .id(("quick-open-snippet", ix))
-                                    .text_size(px(12.))
-                                    .text_color(muted)
+                                    .text_sm()
+                                    .line_height(px(20.))
+                                    .flex_none()
                                     .overflow_hidden()
-                                    .line_clamp(2)
-                                    .child(
-                                        StyledText::new(snippet.text.clone())
-                                            .with_highlights(highlights),
-                                    ),
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .child(label(hit.title.clone())),
                             )
+                            .when(!location.is_empty(), |row| {
+                                row.child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .line_height(px(18.))
+                                        .flex_none()
+                                        .text_color(muted)
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .text_ellipsis()
+                                        .child(label(location)),
+                                )
+                            })
                             .when_some(
-                                snippet.hidden_match.as_ref(),
-                                |row, reason| {
-                                    let highlights = reason
+                                snippets.get(ix).filter(|s| {
+                                    full_text && (!s.text.is_empty() || s.hidden_match.is_some())
+                                }),
+                                |row, snippet| {
+                                    let snippet = visible_snippet(snippet);
+                                    let highlights = snippet
                                         .highlights
                                         .iter()
                                         .filter_map(|r| {
-                                            text_ranges::safe_highlight(&reason.text, r.clone())
+                                            text_ranges::safe_highlight(&snippet.text, r.clone())
                                         })
                                         .map(|r| {
                                             (
@@ -515,25 +616,70 @@ impl Reader {
                                             )
                                         })
                                         .collect::<Vec<_>>();
-                                    row.child(
-                                        div()
-                                            .text_size(px(12.))
-                                            .text_color(muted)
-                                            .overflow_hidden()
-                                            .line_clamp(1)
-                                            .child(
-                                                StyledText::new(reason.text.clone())
-                                                    .with_highlights(highlights),
-                                            ),
+                                    row.when(!snippet.text.is_empty(), |row| {
+                                        row.child(
+                                            div()
+                                                .id(("quick-open-snippet", ix))
+                                                .text_size(px(12.))
+                                                .line_height(px(18.))
+                                                .flex_none()
+                                                .text_color(muted)
+                                                .overflow_hidden()
+                                                .whitespace_nowrap()
+                                                .text_ellipsis()
+                                                .child(
+                                                    StyledText::new(snippet.text.clone())
+                                                        .with_highlights(highlights),
+                                                ),
+                                        )
+                                    })
+                                    .when_some(
+                                        snippet.hidden_match.as_ref(),
+                                        |row, reason| {
+                                            let highlights = reason
+                                                .highlights
+                                                .iter()
+                                                .filter_map(|r| {
+                                                    text_ranges::safe_highlight(
+                                                        &reason.text,
+                                                        r.clone(),
+                                                    )
+                                                })
+                                                .map(|r| {
+                                                    (
+                                                        r,
+                                                        HighlightStyle {
+                                                            background_color: Some(mark),
+                                                            color: Some(text),
+                                                            font_weight: Some(FontWeight::SEMIBOLD),
+                                                            ..Default::default()
+                                                        },
+                                                    )
+                                                })
+                                                .collect::<Vec<_>>();
+                                            row.child(
+                                                div()
+                                                    .text_size(px(12.))
+                                                    .line_height(px(18.))
+                                                    .flex_none()
+                                                    .text_color(muted)
+                                                    .overflow_hidden()
+                                                    .whitespace_nowrap()
+                                                    .text_ellipsis()
+                                                    .child(
+                                                        StyledText::new(reason.text.clone())
+                                                            .with_highlights(highlights),
+                                                    ),
+                                            )
+                                        },
                                     )
                                 },
                             )
-                        })
-                })
-                .collect::<Vec<_>>()
-        })
-        .track_scroll(&self.quick_open.scroll)
-        .h(px(352.));
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .track_scroll(&self.quick_open.scroll)
+            .h(px(352.));
         div()
             .absolute()
             .inset_0()
@@ -594,6 +740,84 @@ impl Reader {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    #[test]
+    fn search_row_label_marks_are_unicode_whole_words() {
+        let text = "Проверка Billing · billingual";
+        let ranges = label_matches(text, "проверка billing");
+        assert_eq!(
+            ranges.iter().map(|r| &text[r.clone()]).collect::<Vec<_>>(),
+            vec!["Проверка", "Billing"]
+        );
+        assert_eq!(
+            label_matches("Archive › Billing", "path:billing"),
+            vec![12..19]
+        );
+        assert_eq!(label_matches("Billing", "title:billing"), vec![0..7]);
+        assert!(label_matches(text, "billing OR other").is_empty());
+        assert!(label_matches(text, "-billing").is_empty());
+    }
+
+    #[test]
+    fn search_row_omits_only_leading_title_and_preserves_body_marks() {
+        let source = "# Связанный контекст\nRead [[<b>kara</b>|the overview]] and <b>проверка</b>.";
+        let original = plain_snippet(source);
+        let shown = without_repeated_title(original.clone(), "Связанный контекст");
+        assert_eq!(shown.text, "Read the overview and проверка.");
+        assert_eq!(
+            shown
+                .highlights
+                .iter()
+                .map(|r| &shown.text[r.clone()])
+                .collect::<Vec<_>>(),
+            vec!["the overview", "проверка"]
+        );
+        assert_eq!(shown.hidden_match, original.hidden_match);
+        let title_only = without_repeated_title(plain_snippet("# <b>Title</b>"), "Title");
+        assert!(title_only.text.is_empty());
+        assert!(title_only.highlights.is_empty());
+        let hidden_title =
+            without_repeated_title(plain_snippet("[[<b>target</b>|Title]]"), "Title");
+        assert!(hidden_title.text.is_empty());
+        assert!(hidden_title.hidden_match.is_some());
+        for (source, title) in [
+            ("Knowledge workflows are useful", "Knowledge workflow"),
+            ("Read Knowledge workflow next", "Knowledge workflow"),
+            (
+                "title: Kara roadmap Planning and milestones",
+                "Kara roadmap",
+            ),
+            ("Anything", ""),
+        ] {
+            let snippet = plain_snippet(source);
+            assert_eq!(without_repeated_title(snippet.clone(), title), snippet);
+        }
+    }
+
+    #[test]
+    fn search_row_preview_keeps_match_and_hidden_context_after_unicode_crop() {
+        let original = plain_snippet(&format!(
+            "{} [[target|<b>проверка</b> <b>Billing</b>]]",
+            "вводный текст ".repeat(12)
+        ));
+        let shown = visible_snippet(&original);
+        assert!(shown.text.starts_with('…'));
+        assert!(shown.text[..shown.highlights[0].start].chars().count() <= 30);
+        assert_eq!(
+            shown
+                .highlights
+                .iter()
+                .map(|r| &shown.text[r.clone()])
+                .collect::<Vec<_>>(),
+            vec!["проверка", "Billing"]
+        );
+        let hidden = plain_snippet("See [[<b>target</b>|alias]]");
+        assert_eq!(visible_snippet(&hidden), hidden);
+        assert_eq!(
+            visible_snippet(&PlainSnippet::default()),
+            PlainSnippet::default()
+        );
+    }
 
     #[test]
     fn result_titles_keep_file_identity_and_use_folder_for_indexes() {
@@ -1186,6 +1410,16 @@ canaryhidden [[Target]]",
                 );
                 assert_eq!(result_folder(&v.quick_open.rows[0].path), "Memory");
             });
+            let row = visual.debug_bounds("quick-open-result-0").unwrap();
+            let list = visual.debug_bounds("quick-open-results").unwrap();
+            assert_eq!(
+                row.size.width, list.size.width,
+                "selection must span the list"
+            );
+            assert!(
+                row.size.height <= px(64.),
+                "ordinary content result must be compact: {row:?}"
+            );
             if mouse {
                 let bounds = visual
                     .debug_bounds("quick-open-result-0")
