@@ -286,3 +286,55 @@ https://github.com/BeFeast/tessera/actions/runs/37813567283 . Run/source SHA was
 The dispatch used package `tessera-sync-controller`, no features, filter
 `sidecar::`, and one test thread. This confirms this peer-identity primitive,
 not the remaining production transport, private endpoint ACL or Sync acceptance.
+
+### Windows private server endpoint
+
+`supervisor::ipc::windows_endpoint::PrivatePipe` explicitly creates one server
+instance in the fixed local `\\.\pipe\Tessera-Sync-<installation>-<instance>-<generation>`
+namespace. All three identifiers are non-nil UUIDs, not caller paths or hosts.
+It requests FIRST_PIPE_INSTANCE, OVERLAPPED and PIPE_REJECT_REMOTE_CLIENTS with a
+single instance limit. Creation does not connect or read/write, register a task,
+start Syncthing or alter durable intent; only verified explicit-Enable preparation
+may call it. The handle is non-inheritable and owned until drop.
+
+Creation supplies the current process user as security owner and a protected DACL
+with exactly one non-inheritable full-access grant to that SID. Read-back checks
+owner, protection, ACE count/type/flags/mask/SID, server end, byte type and one
+instance. A collision fails without opening, adopting, repairing, disconnecting
+or replacing the existing server. The owner retains Windows ownership rights;
+the DACL is not a security boundary against that owner or system administrators.
+Peer identity/signature validation still provides the process ownership check.
+
+Three native fixtures cover owner read/write and ACL read-back, non-inheritance,
+collision refusal and recreation after all handles close; restricted-token
+read/write denial with an ordinary-owner positive control on the same endpoint;
+and a shared existing endpoint whose descriptor remains identical and whose
+server remains usable after refusal. The restricted token test is not a separate
+user logon test. Remote-client refusal is configured through the native creation
+flag, not measured from another host. Authenticated discovery, client-side endpoint connection,
+signature verification, absolute I/O deadline/cancellation, production transport
+and executable supervisor integration remain outstanding.
+
+Read-back requires exactly PIPE_SERVER_END | PIPE_REJECT_REMOTE_CLIENTS (`0x9`)
+and one instance. A regression rejects client/message pipes, missing remote
+rejection, unknown flags and zero/multiple/unlimited instance limits. Windows
+Server 2022 returns the remote-rejection bit for both private and shared fixtures.
+The SDK defines PIPE_REJECT_REMOTE_CLIENTS as `0x8`, but GetNamedPipeInfo's
+published contract documents only end/type flags; this read-back behavior is
+native evidence for the tested platform, not a documented cross-version promise.
+Unexpected values fail closed. CreateNamedPipeW uses only supported creation
+flags; access rights such as READ_CONTROL are not added to dwOpenMode.
+
+The exact-source native run on windows-2022 passed 45 `sidecar::` tests with zero
+failures or ignored tests, including all three endpoint fixtures, the metadata
+regression and both peer-identity fixtures:
+https://github.com/BeFeast/tessera/actions/runs/37822215299 . Run/source SHA was
+`a3f200239f68aa449a7dfb7cba1199de4eb2afa0`, tree
+`e3bc443677aebcd11a640c490411bb3ecece5c73`, with no extra source/workflow commit.
+The dispatch used package `tessera-sync-controller`, default features, filter
+`sidecar::`, and one test thread. Toolchain: rustc 1.99.0
+(b940084d7 2026-09-28), x86_64-pc-windows-msvc, LLVM 23.1.1.
+The restricted token received ERROR_ACCESS_DENIED for read/write; the ordinary
+owner succeeded on the same endpoint. Shared-endpoint refusal preserved its
+security descriptor and usable server. This validates the endpoint and peer
+primitives, not production transport or complete Sync acceptance.
