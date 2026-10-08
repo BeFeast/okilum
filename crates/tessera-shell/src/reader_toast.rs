@@ -99,7 +99,12 @@ pub(super) fn missing_file(path: String, window: &mut Window, cx: &mut App) {
 }
 
 pub(super) fn error(message: impl Into<SharedString>, window: &mut Window, cx: &mut App) {
-    push(Notification::new().message(message), None, window, cx);
+    push(
+        Notification::new().message(message),
+        Some(Duration::from_secs(4)),
+        window,
+        cx,
+    );
 }
 
 pub(super) fn push(
@@ -478,6 +483,22 @@ mod tests {
                 "old timer leaves new toast alone"
             )
         });
+        visual.executor().advance_clock(Duration::from_secs(3));
+        visual.run_until_parked();
+        visual.update(|window, cx| assert!(window.notifications(cx).is_empty()));
+        // Errors use the same four-second lifetime, with independent occurrences.
+        visual.update(|window, cx| error("Could not create the note", window, cx));
+        visual.run_until_parked();
+        visual.update(|window, cx| assert_eq!(window.notifications(cx).len(), 1));
+        visual.executor().advance_clock(Duration::from_secs(3));
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            assert_eq!(window.notifications(cx).len(), 1);
+            error("Could not create the folder", window, cx);
+        });
+        visual.executor().advance_clock(Duration::from_secs(2));
+        visual.run_until_parked();
+        visual.update(|window, cx| assert_eq!(window.notifications(cx).len(), 1));
         visual.executor().advance_clock(Duration::from_secs(3));
         visual.run_until_parked();
         visual.update(|window, cx| assert!(window.notifications(cx).is_empty()));

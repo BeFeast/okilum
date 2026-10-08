@@ -102,7 +102,11 @@ disappear. While loading is active, the header shows a 14 px spinner and the
 phase text (`text-muted`, 12 px) after the breadcrumbs, plus Cancel. A failed
 load shows the phase text in `danger` plus Retry. Operation feedback uses the bottom notification overlay without reflow (#576):
 four seconds for ordinary feedback, eight seconds with Undo, ×/Esc to close.
-Errors and ambiguous-link choices persist in the overlay until dismissed. Recovery
+Ordinary error toasts also expire after four seconds. Actionable editor recovery
+notices and ambiguous-link choices persist until dismissed with ×/Esc. File-access
+failures use plain language and keep the draft; original errors go to the diagnostic
+log. Rename previews list updated notes separately from the collapsed “Links not
+updated” details and use singular wording for one note. Recovery
 offers use a four-second toast only when a newer draft exists; entering source mode
 can still restore it later. An unclean launch with no unsaved draft is silent. No
 notification adds a full-width row. History actions use a compact floating toolbar.
