@@ -64,6 +64,35 @@ export TESSERA_SYNC_CLIENT="$HOME/.cache/tessera-sync-fixture/syncthing-linux-am
 The first extended run passed in 11.21 seconds, with crate fmt/clippy also passing.
 The log is retained in CT141's issue cache under `589/recovery.log`.
 
+## OS disk-full gate: environment blocked
+
+The 100% reserve test above is not an OS `ENOSPC` test. An attempt on CT141 to
+mount a separate 16 MiB tmpfs at the issue-cache `small-volume` directory was
+rejected by the container (`mount: tmpfs already mounted on /dev/shm`).
+`findmnt -T` confirmed the directory still belongs to the root ext4 filesystem;
+no private filesystem was mounted. `/dev/fuse` is absent, so a userspace filesystem
+is not available either. The empty mountpoint was removed. Container settings,
+shared `/dev/shm`, the root filesystem capacity and production data were unchanged.
+
+A real disk-full acceptance run needs an isolated quota-limited volume from the
+infrastructure owner or a disposable native test host. Proposed procedure:
+
+1. Keep the client config/database outside a private 16 MiB vault volume. Use
+   fresh hub/client identities with loopback addresses and discovery/relay disabled.
+2. Transfer and verify a small canary. Disable only this fixture folder's
+   `minDiskFree` admission threshold so it cannot mask the filesystem error.
+3. Allocate non-sparse filler on that private volume; send a file larger than its
+   remaining capacity from the fixture hub. Require a real `no space left on
+   device` error from Syncthing, Needs attention, and intact canary bytes. Missing
+   incoming content alone is not sufficient evidence.
+4. Delete only the known filler, retry the folder, and require complete incoming
+   bytes plus intact canary. Stop the two owned daemons, unmount only the private
+   volume, and remove its fixture directory. Keep API keys/certificates private.
+
+Do not substitute process file-size limits (`EFBIG`), permission denial (`EACCES`),
+or the Syncthing free-space reserve for this acceptance criterion. No permission
+to alter CT141 mount policy or any production hub is implied by this plan.
+
 ## Remaining gates
 
 This fixture injects approved pairing and readiness receipts. It does not prove
