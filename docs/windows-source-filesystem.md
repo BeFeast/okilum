@@ -5,17 +5,18 @@ not enable Windows Reader editing or write access in the Reader/MCP protocol.
 The subsequent UI slice adapts the existing editor, drafts/history, conflicts,
 creation and rename flows to this backend; their Unix behavior stays intact.
 
-A `Directory` pins every ancestor without WRITE/DELETE sharing and refuses UNC,
+A `Directory` pins every ancestor without DELETE sharing and refuses UNC,
 mapped network drives and non-NTFS volumes. Symlinks, junctions, unknown reparse
 tags, hard-linked sources and readonly notes fail closed. Resident CLOUD-family
 files are accepted because their tags do not redirect names; offline/recall
-sources require an external download. Ancestor handles also prevent in-place
-reparse retagging. Real OneDrive save behavior still needs owner QA.
+sources require an external download. Real OneDrive save behavior still needs
+owner QA.
 Ancestor handles request `FILE_LIST_DIRECTORY` as well as attributes: a
 metadata-only handle does not participate in Windows sharing checks. Native
 controls require sharing violation (32) for renaming both the folder and its
-parent, and for opening either for in-place writes; rename must work after the
-guard is released.
+parent; rename must work after the guard is released. READ and WRITE sharing
+allow the writable parent opens used by our own publication operations. A native
+positive control opens both ancestors for write before creating the note.
 
 `prepare_replace` reads the checked file while excluding in-place writers,
 compares exact bytes, and creates a complete same-folder prepared file. Its DACL

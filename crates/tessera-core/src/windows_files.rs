@@ -119,10 +119,10 @@ fn read_file(path: &Path) -> Result<(File, Vec<u8>, BY_HANDLE_FILE_INFORMATION)>
     Ok((file, bytes, info))
 }
 
-/// Keeps every ancestor open without WRITE/DELETE sharing: neither a parent nor the
+/// Keeps every ancestor open without DELETE sharing: neither a parent nor the
 /// directory itself can be renamed/replaced during an operation. Files remain
-/// visible to ordinary child-file readers/writers. In-place ancestor retagging
-/// through FSCTL_SET_REPARSE_POINT is excluded as well.
+/// visible to ordinary child-file readers/writers. Directory WRITE sharing is
+/// required for our own child-file publication operations too.
 pub struct Directory {
     path: PathBuf,
     _ancestors: Vec<File>,
@@ -194,10 +194,11 @@ impl Directory {
             OpenOptions::new()
                 .read(true)
                 // Metadata-only handles do not participate in sharing checks.
-                // Directory read access makes the omitted WRITE/DELETE shares
-                // exclude both reparse retagging and ancestor rename.
+                // Directory read access makes the omitted DELETE share exclude
+                // ancestor rename. Keep WRITE sharing: publication itself may
+                // open a parent for FILE_ADD_FILE, even in this process.
                 .access_mode(FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES)
-                .share_mode(FILE_SHARE_READ)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
                 .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
                 .open(path)
         })?;
@@ -289,7 +290,7 @@ impl Directory {
     pub fn create(&self, name: &OsStr, bytes: &[u8]) -> Result<()> {
         let destination = self.child(name)?;
         let prepared = self.prepared(bytes, None)?;
-        move_no_replace(&prepared, &destination)?;
+        move_no_replace(&prepared, &destination).context("Publish new file without overwrite")?;
         Ok(())
     }
     /// Performs a same-volume, no-replace rename. The expected bytes are checked

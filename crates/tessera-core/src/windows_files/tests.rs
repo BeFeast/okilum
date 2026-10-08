@@ -174,7 +174,7 @@ fn windows_save_parent_identity_hardlinks_and_readonly_fail_closed() {
             "ancestor handle excludes parent rename: {error}"
         );
         let error = OpenOptions::new()
-            .write(true)
+            .access_mode(DELETE)
             .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
             .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
             .open(ancestor)
@@ -182,8 +182,17 @@ fn windows_save_parent_identity_hardlinks_and_readonly_fail_closed() {
         assert_eq!(
             error.raw_os_error(),
             Some(ERROR_SHARING_VIOLATION as i32),
-            "ancestor handle excludes in-place reparse writers: {error}"
+            "ancestor handle excludes delete access: {error}"
         );
+        // Publication needs a writable parent handle in this same process.
+        // The guard must deny DELETE sharing, while allowing this open.
+        let writer = OpenOptions::new()
+            .write(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(ancestor)
+            .expect("ancestor guard must allow our writable parent open");
+        drop(writer);
     }
     directory.create(OsStr::new("note.md"), b"base").unwrap();
     let path = folder.join("note.md");
