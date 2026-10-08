@@ -85,6 +85,10 @@ pub(super) fn link_presentation(
     states: &prepared_links::States,
     missing_cards: &std::collections::BTreeSet<String>,
 ) -> gpui_component::text::LinkPresentation {
+    // In-document footnote links are neither notes nor unknown links (#651).
+    if url.starts_with(tessera_core::obsidian::FOOTNOTE_SCHEME) {
+        return gpui_component::text::LinkPresentation::default();
+    }
     let mut presentation = prepared_links::presentation(url, states);
     if resolved_target(url, states, "").is_some() || missing_cards.contains(url) {
         presentation.tooltip = None;

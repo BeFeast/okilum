@@ -123,8 +123,9 @@ Document links retain their heading intent across Reader, managed rendered
 preview and explicit Source/Live Preview Open link. A missing, duplicate,
 unsupported or stale heading cannot silently become a successful note-top
 navigation. Reader retains Setext heading support; a limited managed surface
-reports its unsupported syntax explicitly. Block references, extensionless
-Markdown inference and attachment actions remain separate capabilities.
+reports its unsupported syntax explicitly. Reader lands block references
+(`#^id`, #651) under the same rules; extensionless Markdown inference and
+attachment actions remain separate capabilities.
 See [the document link contract](document-links.md) for parsing and acceptance.
 
 Consequence accepted: a rename breaks links exactly as it does today. Rename tracking
@@ -165,8 +166,8 @@ frequency decides order; anything at zero waits for a trigger:
 | PDF links | 24 | plain link |
 | mermaid | 20 | code block |
 | html tags | 16 | passed through |
-| footnotes | 10 | parsed, rendering to verify |
-| block refs `^id` | 0 | wait |
+| footnotes | 10 | rendered with back-links ([#651](obsidian-syntax.md)) |
+| block refs `^id` | 0 | hidden, links land, block embeds ([#651](obsidian-syntax.md)) |
 | audio | 0 | wait |
 
 ## 6. Search
