@@ -71,7 +71,13 @@ impl Reader {
                 widths.notes + widths.backlinks
             };
         let title_width = toolbar_text_width(&self.selected_title(), FontWeight::MEDIUM, window);
-        let mode_width = if self.editing.is_some() { 128. } else { 64. };
+        let mode_width = if !cfg!(unix) {
+            0.
+        } else if self.editing.is_some() {
+            128.
+        } else {
+            64.
+        };
         #[cfg(unix)]
         let dirty = self.source_is_dirty(cx);
         #[cfg(not(unix))]

@@ -305,6 +305,10 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("escape", Dismiss, Some("InlineRename > Input")),
         #[cfg(any(unix, windows))]
         KeyBinding::new("f2", RenameTreeNote, Some("ReaderTree && !Input")),
+        #[cfg(unix)]
+        KeyBinding::new("f2", RenameNote, Some("Reader && !ReaderTree && !Input")),
+        #[cfg(unix)]
+        KeyBinding::new("f2", RenameNote, Some("ReaderSource > Input")),
         KeyBinding::new("secondary-n", NewNote, ctx),
         #[cfg(unix)]
         KeyBinding::new("secondary-backspace", DeleteNote, Some("Reader && !Input")),
@@ -3331,7 +3335,8 @@ impl Reader {
             "On this page".into()
         };
         let name_width = toolbar_text_width(&title, FontWeight::SEMIBOLD, window);
-        let actions = toolbar_visible_actions(width - 24., name_width + 16., 3);
+        let total_actions = if cfg!(unix) { 3 } else { 1 };
+        let actions = toolbar_visible_actions(width - 24., name_width + 16., total_actions);
         let name_tip = title.clone();
         let reader = cx.entity().downgrade();
         h_flex()
@@ -3349,7 +3354,9 @@ impl Reader {
                     .label(title)
                     .w(px((width
                         - 24.
-                        - 32. * (actions + usize::from(actions < 3)) as f32)
+                        - 32.
+                            * (actions + usize::from(actions < total_actions))
+                                as f32)
                         .max(0.)))
                     .flex_none()
                     .justify_start()
@@ -3424,7 +3431,7 @@ impl Reader {
                             );
                     }
                 }
-                if actions == 3 {
+                if actions == total_actions {
                     header = header.child(
                         reader_icon_button(
                             "sidebar-collapse-all",
@@ -3584,7 +3591,9 @@ impl Reader {
         })
         .collect();
         let folder_actions_overflow = self.panel_widths.notes
-            < toolbar_text_width("Folders", FontWeight::SEMIBOLD, window) + 44. + 5. * 28.;
+            < toolbar_text_width("Folders", FontWeight::SEMIBOLD, window)
+                + 44.
+                + if cfg!(unix) { 5. } else { 3. } * 28.;
         let show_hidden = self.sidebar.show_hidden;
         let current = self.selected_file().to_owned();
         let cursor = self

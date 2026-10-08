@@ -346,6 +346,13 @@ mod tests {
             icon_width,
             "optional labels yield to glyphs in a narrow editor"
         );
+        visual.simulate_keystrokes("f2");
+        visual.run_until_parked();
+        reader.read_with(visual, |reader, _| {
+            assert!(reader.renaming.as_ref().unwrap().in_header)
+        });
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
         let header = visual.debug_bounds("document-header").unwrap();
         for control in [
             "reader-history-back",

@@ -207,7 +207,7 @@ impl Reader {
         if self.file_preview.is_some() {
             return;
         }
-        self.begin_rename(self.current_rel.clone(), window, cx);
+        self.rename_note_title(window, cx);
     }
 
     pub(super) fn rename_tree_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {

@@ -748,6 +748,7 @@ impl Reader {
         let editing = self.editing.as_ref().unwrap();
         let palette = brand::palette(cx);
         v_flex()
+            .key_context("ReaderSource")
             .size_full()
             .min_w_0()
             .when(editing.save_failed || editing.conflict_detected, |column| {
