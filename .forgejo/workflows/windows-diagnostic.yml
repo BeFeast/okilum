@@ -14,6 +14,11 @@ on:
     - cron: "0 * * * *"
   # Build any PR branch manually when shared dependencies need release validation.
   workflow_dispatch:
+    inputs:
+      cache-benchmark:
+        description: 'Measure cold/warm SDK setup on this runner before building'
+        type: boolean
+        default: false
 
 concurrency:
   group: windows-build-${{ github.ref }}
@@ -48,7 +53,10 @@ jobs:
       AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
       CARGO_INCREMENTAL: "0"
       CARGO_BUILD_JOBS: "4"
-      XWIN_CACHE_DIR: ${{ github.workspace }}/target/xwin
+      XWIN_CACHE_DIR: ${{ github.workspace }}/target/xwin-sdk
+      XWIN_ARCH: x86_64
+      XWIN_VARIANT: desktop
+      XWIN_VERSION: "17"
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
@@ -72,9 +80,25 @@ jobs:
           path: |
             ~/.cargo/registry/
             ~/.cargo/git/
-            target/xwin/
             vendor/gpui-component/
           key: tessera-windows-downloads-v1-${{ hashFiles('Cargo.lock', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff', '.forgejo/workflows/windows-diagnostic.yml') }}
+      - name: Identify Microsoft SDK manifest
+        id: xwin-key
+        run: python3 scripts/ci/xwin-cache.py key
+      - name: Restore independent xwin SDK
+        uses: https://code.forgejo.org/actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        continue-on-error: true
+        with:
+          path: target/xwin-sdk/
+          key: ${{ steps.xwin-key.outputs.key }}
+      - name: Verify SDK cache or download
+        env:
+          XWIN_CACHE_KEY: ${{ steps.xwin-key.outputs.key }}
+          BENCHMARK: ${{ inputs.cache-benchmark }}
+        run: |
+          mode=prepare
+          if [ "$BENCHMARK" = true ]; then mode=benchmark; fi
+          python3 scripts/ci/xwin-cache.py "$mode"
       - name: Prepare pinned vendor
         run: |
           scripts/vendor-setup.sh
