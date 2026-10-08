@@ -436,3 +436,24 @@ refusal with a positive captured-client control. Native acceptance is required
 before this slice is considered complete. Production Transport/binding discovery,
 executable signature verification, bounded open/setup and supervisor wiring
 remain outstanding under #588.
+
+
+### Worker-owned client open (acceptance pending)
+
+`ClientIo::connect` opens and verifies the private endpoint on the same admitted
+worker that performs I/O. The caller waits for initial verification only until
+the supplied absolute deadline, which remains unchanged for subsequent reads
+and writes. Missing endpoints are not retried. Setup is not begun by a worker
+that starts after the deadline. A result arriving after timeout is discarded;
+the connection cannot be revived or reused.
+
+This bounds caller waiting for synchronous open/identity queries after worker
+creation; it does not cancel CreateFileW or promise kernel setup completion.
+A stalled setup retains the worker permit and its captured resources until it
+returns, counting against the same eight-worker admission limit. Thread creation
+remains synchronous. Native fixtures combine an actual private bidirectional
+exchange with missing/expired refusal, the original read deadline, and an
+explicitly injected setup stall with a completion/release positive control.
+The injected stall is not evidence that a real blocked CreateFileW was cancelled.
+Production Transport, trusted discovery/signature and supervisor wiring remain
+outstanding. Native and full hosted Linux gates are required for this candidate.
