@@ -702,6 +702,8 @@ exceptional link-impact confirmation, and result toast with Undo are unchanged.
 
 ### Drawing diagnostics
 
+Missing drawing embeds show “Drawing not found” and a muted filename without the drawing extension. Ambiguous embeds show “Several drawings match this name”; the original target and candidate paths remain in the details disclosure and Copy details. Resolution never chooses an arbitrary match (QA follow-up, 2026-10-08).
+
 A failed drawing preview shows a short message. Parser and rasterizer details
 remain available through an Info tooltip and a Copy details glyph, rather than
 technical text in the document. Copy uses the standard transient toast. Rendering,

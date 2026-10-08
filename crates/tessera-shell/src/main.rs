@@ -1005,8 +1005,8 @@ fn reader_plugins(
             }
         }),
         Arc::new(move |url| {
-            if url.starts_with("tessera-drawing-unavailable:") {
-                return Some(MarkdownImage::DrawingUnavailable);
+            if let Some(payload) = url.strip_prefix("tessera-drawing-unavailable:") {
+                return Some(MarkdownImage::DrawingUnavailable(payload.to_owned()));
             }
             if let Some(path) = url::Url::parse(url)
                 .ok()
@@ -1040,7 +1040,7 @@ fn reader_plugins(
 type MarkdownLinkHandler = Arc<dyn Fn(&str, &ClickEvent, &mut Window, &mut App) + Send + Sync>;
 enum MarkdownImage {
     Drawing(PathBuf, PathBuf),
-    DrawingUnavailable,
+    DrawingUnavailable(String),
     Source(ImageSource),
     Unavailable,
 }
@@ -1110,11 +1110,8 @@ fn markdown_plugins(
                                 cx,
                             )
                         }
-                        Some(MarkdownImage::DrawingUnavailable) => {
-                            return div()
-                                .p_3()
-                                .child("Drawing unavailable: missing or ambiguous target")
-                                .into_any_element()
+                        Some(MarkdownImage::DrawingUnavailable(payload)) => {
+                            return reader_drawing::unavailable(&payload, cx);
                         }
                         _ => {}
                     }

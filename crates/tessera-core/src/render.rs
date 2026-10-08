@@ -293,12 +293,24 @@ pub fn rewrite_source_images(text: &str, vault: &Vault, note_rel: &str) -> Strin
         }
         let raw = percent_decode(url);
         if crate::excalidraw::is_drawing(&raw) {
-            let candidate = match crate::document_links::resolve(&raw, true, vault, note_rel) {
+            let link = crate::document_links::resolve(&raw, true, vault, note_rel);
+            let mut candidates = if link.status == "ambiguous" {
+                link.candidates.clone()
+            } else {
+                Vec::new()
+            };
+            let candidate = match link {
                 link if link.status == "attachment" && link.candidates.len() == 1 => {
                     Some(vault.root.join(&link.candidates[0]))
                 }
                 _ => match vault.resolve_from(&raw, note_rel) {
                     crate::Resolution::Resolved { path } => Some(vault.root.join(path)),
+                    crate::Resolution::Ambiguous {
+                        candidates: matches,
+                    } => {
+                        candidates = matches;
+                        None
+                    }
                     _ => None,
                 },
             };
@@ -315,7 +327,13 @@ pub fn rewrite_source_images(text: &str, vault: &Vault, note_rel: &str) -> Strin
                     .unwrap_or_else(|| {
                         format!(
                             "tessera-drawing-unavailable:{}",
-                            crate::document_links::encode(&raw)
+                            crate::document_links::encode(
+                                &serde_json::to_string(&crate::excalidraw::UnavailableDrawing {
+                                    target: raw.clone(),
+                                    candidates,
+                                })
+                                .expect("serializable drawing failure")
+                            )
                         )
                     }),
             );
