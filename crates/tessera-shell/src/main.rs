@@ -1310,12 +1310,14 @@ struct Reader {
     tree_revealed: String,
     tree_focus: FocusHandle,
     tree_scroll: UniformListScrollHandle,
-    section_scroll: [UniformListScrollHandle; 3],
+    section_scroll: [UniformListScrollHandle; 4],
     scroll_sections: reader_sidebar::ScrollSections,
     /// Recent / Pinned / collapsed sections for this root (#369), app state.
     sidebar: reader_sidebar::State,
     sidebar_path: Option<PathBuf>,
     inbox: Vec<reader_sidebar::InboxItem>,
+    projects: Arc<tessera_core::projects::Index>,
+    projects_done_expanded: bool,
     inbox_source: Option<Arc<Vault>>,
     recent_expanded: bool,
     sidebar_save_sequence: Arc<std::sync::atomic::AtomicU64>,
@@ -1550,6 +1552,8 @@ impl Reader {
             sidebar: reader_sidebar::State::default(),
             sidebar_path: None,
             inbox: Vec::new(),
+            projects: Arc::default(),
+            projects_done_expanded: false,
             inbox_source: None,
             recent_expanded: false,
             sidebar_save_sequence: Arc::default(),
@@ -2293,6 +2297,7 @@ impl Reader {
         self.sidebar = state;
         self.sidebar_path = path;
         self.inbox.clear();
+        self.projects_done_expanded = false;
         self.inbox_source = None;
         self.recent_expanded = false;
         self.tree_revealed.clear();
@@ -2486,6 +2491,9 @@ impl Reader {
         }
         let now = reader_sidebar::now();
         let open = |section| {
+            if section == Section::Projects {
+                return !self.sidebar.projects_collapsed;
+            }
             !self
                 .scroll_sections
                 .closed(section, &self.sidebar.collapsed)
@@ -2570,6 +2578,29 @@ impl Reader {
                     location: Some(quick_open::result_location(vault_name, &item.path)),
                     folder: false,
                 });
+            }
+        }
+        items.push(SideItem::Header(Section::Projects, None));
+        if open(Section::Projects) {
+            use tessera_core::projects::Status;
+            let rows = self.projects.rows();
+            items.extend(
+                rows.iter()
+                    .filter(|p| p.status != Status::Done)
+                    .cloned()
+                    .map(SideItem::Project),
+            );
+            let done = rows.iter().filter(|p| p.status == Status::Done).count();
+            if done > 0 {
+                items.push(SideItem::ProjectsDone(done, self.projects_done_expanded));
+                if self.projects_done_expanded {
+                    items.extend(
+                        rows.iter()
+                            .filter(|p| p.status == Status::Done)
+                            .cloned()
+                            .map(SideItem::Project),
+                    );
+                }
             }
         }
         items.push(SideItem::Header(Section::Folders, None));
@@ -3410,10 +3441,14 @@ impl Reader {
             Section::Recent,
             Section::Pinned,
             Section::Inbox,
+            Section::Projects,
             Section::Folders,
         ]
         .into_iter()
         .filter(|section| {
+            if *section == Section::Projects {
+                return self.sidebar.projects_collapsed;
+            }
             self.scroll_sections
                 .closed(*section, &self.sidebar.collapsed)
         })
@@ -3596,6 +3631,7 @@ impl Reader {
                         Section::Recent => Icon::default().path(brand::READER_CLOCK_ICON),
                         Section::Pinned => Icon::default().path(brand::READER_PIN_ICON),
                         Section::Inbox => Icon::new(IconName::Inbox),
+                        Section::Projects => Icon::new(IconName::Folder),
                         Section::Folders => Icon::new(IconName::Folder),
                         Section::Properties => Icon::default().path(READER_SLIDERS_ICON),
                     };
@@ -3815,6 +3851,87 @@ impl Reader {
                         }
                     })
                     .into_any_element()
+                }
+                SideItem::ProjectsDone(count, expanded) => row_base("projects-done".into())
+                    .pl(px(30.))
+                    .text_size(px(12.))
+                    .text_color(tokens.text_faint)
+                    .cursor_pointer()
+                    .hover(move |d| d.bg(tokens.hover))
+                    .debug_selector(|| "projects-done".into())
+                    .child(if expanded {
+                        "Hide done".into()
+                    } else {
+                        format!("Show {count} done")
+                    })
+                    .on_click(move |_, window, cx| {
+                        act(&entity, window, cx, &|this, _, cx| {
+                            this.projects_done_expanded = !this.projects_done_expanded;
+                            cx.notify();
+                        })
+                    })
+                    .into_any_element(),
+                SideItem::Project(project) => {
+                    use tessera_core::projects::Status;
+                    let path = project.path.clone();
+                    let selector = format!("side-project-{path}");
+                    let is_current = path == current;
+                    let icon = match project.status {
+                        Status::Active => Icon::default().path("icons/project-active.svg"),
+                        Status::Planned => Icon::default().path("icons/project-planned.svg"),
+                        Status::Done => Icon::new(IconName::CircleCheck),
+                        Status::Other => Icon::default().path(brand::READER_CLOCK_ICON),
+                    };
+                    let location = path
+                        .strip_suffix("/_index.md")
+                        .unwrap_or(&path)
+                        .replace('/', " › ");
+                    let status = format!("{} · {}", project.status_label, location);
+                    row_base(selector.clone().into())
+                        .pl(px(10.))
+                        .debug_selector(move || selector.clone())
+                        .cursor_pointer()
+                        .hover(move |d| d.bg(tokens.hover))
+                        .when(is_current, |d| {
+                            d.bg(p.selected).font_weight(FontWeight::MEDIUM)
+                        })
+                        .child(icon.small().text_color(p.text_muted))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .child(project.title),
+                        )
+                        .when_some(project.domain, |d, domain| {
+                            d.child(
+                                div()
+                                    .text_size(px(12.))
+                                    .text_color(tokens.text_faint)
+                                    .max_w(px(72.))
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .child(domain),
+                            )
+                        })
+                        .when(project.open_tasks > 0, |d| {
+                            d.child(
+                                div()
+                                    .text_size(px(12.))
+                                    .text_color(tokens.text_faint)
+                                    .child(project.open_tasks.to_string()),
+                            )
+                        })
+                        .tooltip(move |window, cx| {
+                            gpui_component::tooltip::Tooltip::new(status.clone()).build(window, cx)
+                        })
+                        .on_click(move |_, window, cx| {
+                            act(&entity, window, cx, &|this, window, cx| {
+                                this.activate_side_entry(&path, false, window, cx);
+                            })
+                        })
+                        .into_any_element()
                 }
                 SideItem::More(more) => row_base(SharedString::from("side-recent-more"))
                     .pl(px(30.))
@@ -4128,9 +4245,12 @@ impl Reader {
             .filter(|(s, _, rows)| *s != Section::Folders && !rows.is_empty())
             .count()
             .max(1);
-        let upper_budget =
-            (f32::from(self.body_bounds.size.height) - READER_HEADER_HEIGHT - 4. * 28. - 8. - 140.)
-                .max(0.);
+        let upper_budget = (f32::from(self.body_bounds.size.height)
+            - READER_HEADER_HEIGHT
+            - sections.len() as f32 * 28.
+            - 8.
+            - 140.)
+            .max(0.);
         let per_section = upper_budget / expanded as f32;
         let mut section_views = Vec::new();
         for (index, (section, header, rows)) in sections.into_iter().enumerate() {
@@ -5386,6 +5506,8 @@ enum SideItem {
         location: Option<String>,
         folder: bool,
     },
+    Project(tessera_core::projects::Project),
+    ProjectsDone(usize, bool),
     More(usize),
     Empty(&'static str),
     Tree(reader_tree::Row),
@@ -7161,6 +7283,7 @@ mod document_link_landing_tests {
                     (Section::Recent, None),
                     (Section::Pinned, None),
                     (Section::Inbox, None),
+                    (Section::Projects, None),
                     (Section::Folders, None),
                 ]
             );
@@ -7179,6 +7302,7 @@ mod document_link_landing_tests {
                     (Section::Recent, Some(1)),
                     (Section::Pinned, Some(1)),
                     (Section::Inbox, Some(1)),
+                    (Section::Projects, None),
                     (Section::Folders, None),
                 ]
             );
@@ -7553,6 +7677,128 @@ mod document_link_landing_tests {
             assert!(location.origin.y >= row.origin.y && location.bottom() <= row.bottom());
             previous_bottom = row.bottom();
         }
+    }
+
+    #[gpui::test]
+    fn projects_sidebar_refreshes_and_opens_canonical_note(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        let first = "Work/Projects/One/_index.md";
+        let done = "Home/Projects/Done/_index.md";
+        let source = "---\ntype: project\nstatus: active\n---\n# One\n- [ ] Next\n";
+        for path in [first, done] {
+            std::fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+        }
+        std::fs::write(root.join(first), source).unwrap();
+        std::fs::write(root.join(done), source.replace("active", "closed")).unwrap();
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some(first.into()),
+                        index_dir: Some(temp.path().join("cache")),
+                        session_directory: Some(temp.path().join("state")),
+                        panel_settings_override: Some(temp.path().join("panels.json")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let view = entity.unwrap();
+        visual.simulate_resize(size(px(1400.), px(960.)));
+        visual.run_until_parked();
+        view.update_in(visual, |v, window, cx| {
+            v.panels.open(reader_layout::Panel::Notes);
+            v.sidebar.projects_collapsed = false;
+            v.projects_done_expanded = false;
+            v.sync_tree();
+            cx.notify();
+            let _ = window;
+        });
+        visual.run_until_parked();
+        view.read_with(visual, |v, _| {
+            use reader_sidebar::Section;
+            let headers: Vec<_> = v
+                .sidebar_items()
+                .into_iter()
+                .filter_map(|i| {
+                    if let SideItem::Header(s, _) = i {
+                        Some(s)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            assert_eq!(
+                headers,
+                [
+                    Section::Recent,
+                    Section::Pinned,
+                    Section::Inbox,
+                    Section::Projects,
+                    Section::Folders
+                ]
+            );
+            assert_eq!(v.projects.rows().len(), 2);
+            assert!(v
+                .sidebar_items()
+                .iter()
+                .any(|i| matches!(i, SideItem::ProjectsDone(1, false))));
+            assert_eq!(
+                v.sidebar_items()
+                    .iter()
+                    .filter(|i| matches!(i, SideItem::Project(_)))
+                    .count(),
+                1
+            );
+        });
+        assert!(
+            visual
+                .debug_bounds("side-project-Work/Projects/One/_index.md")
+                .is_some(),
+            "positive control: active row rendered"
+        );
+        let button = visual.debug_bounds("projects-done").unwrap();
+        visual.simulate_click(button.center(), Modifiers::default());
+        visual.run_until_parked();
+        let row = visual
+            .debug_bounds("side-project-Home/Projects/Done/_index.md")
+            .unwrap();
+        visual.simulate_click(row.center(), Modifiers::default());
+        visual.run_until_parked();
+        view.read_with(visual, |v, _| assert_eq!(v.current_rel, done));
+        assert_eq!(std::fs::read_to_string(root.join(first)).unwrap(), source);
+        std::fs::write(
+            root.join(first),
+            source.replace("active", "planned").replace("[ ]", "[x]"),
+        )
+        .unwrap();
+        view.update_in(visual, |v, window, cx| {
+            v.start_incremental(
+                tessera_core::Changes {
+                    changed: [first.into()].into_iter().collect(),
+                    ..Default::default()
+                },
+                window,
+                cx,
+            )
+        });
+        visual.run_until_parked();
+        view.read_with(visual, |v, _| {
+            let p = v.projects.rows().iter().find(|p| p.path == first).unwrap();
+            assert_eq!(p.status, tessera_core::projects::Status::Planned);
+            assert_eq!(p.open_tasks, 0);
+        });
     }
 
     #[gpui::test]

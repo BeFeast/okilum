@@ -106,6 +106,7 @@ impl Reader {
         #[cfg(test)]
         let hold = self.incremental_hold.take();
         let mut tasks = self.tasks_index.clone().unwrap_or_default();
+        let mut projects = (*self.projects).clone();
         let task = cx.background_executor().spawn(async move {
             #[cfg(test)]
             if let Some(hold) = hold { let _ = hold.recv().await; }
@@ -113,6 +114,10 @@ impl Reader {
             let start = std::time::Instant::now();
             let batch = state.apply(&worker_changes, &mut |_, _| worker_cancel.check())?;
             let mut next_tasks = (*tasks).clone();
+            for path in &batch.removed { projects.remove(path); }
+            for path in &batch.changed { projects.replace_snapshot(&state.snapshot, path); }
+            projects.refresh();
+            let projects = Arc::new(projects);
             let mut tasks_changed = false;
             for path in &batch.removed { tasks_changed |= next_tasks.remove(path); }
             for path in &batch.changed {
@@ -148,7 +153,7 @@ impl Reader {
             if let Some(trace) = &worker_trace {
                 trace.event("incremental_update", serde_json::json!({"directory_hints":worker_changes.directories.len(), "topology_changed":batch.topology_changed, "changed": batch.changed.len(), "removed": batch.removed.len(), "read": batch.read, "affected": batch.affected.len(), "source_graph_ms":source_ms, "duration_ms":start.elapsed().as_secs_f64()*1000.}));
             }
-            Ok::<_, anyhow::Error>((state, tasks, searcher, sources, titles, batch, published, inventory,
+            Ok::<_, anyhow::Error>((state, tasks, projects, searcher, sources, titles, batch, published, inventory,
                 { #[cfg(unix)] { candidates } #[cfg(not(unix))] { None::<()> } }))
         });
         cx.spawn_in(window, async move |this, cx| {
@@ -165,6 +170,7 @@ impl Reader {
                         Ok((
                             state,
                             tasks,
+                            projects,
                             searcher,
                             sources,
                             titles,
@@ -174,6 +180,7 @@ impl Reader {
                             candidates,
                         )) => {
                             this.tasks_index = Some(tasks);
+                            this.projects = projects;
                             this.vault = published;
                             this.searcher = Some(searcher.clone());
                             #[cfg(unix)]

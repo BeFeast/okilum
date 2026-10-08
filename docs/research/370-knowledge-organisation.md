@@ -1,8 +1,8 @@
 # Research: knowledge organisation model for navigation (#370)
 
-Status: research only. No product code changes. This is a decision document to
-discuss with Oleg; nothing in it is approved until a choice is recorded in
-`docs/design/reader.md`.
+Status: option B approved by Oleg on 2026-10-07. The accepted Projects slice is
+recorded in `docs/design/reader.md`; later Views/service/connector phases below
+remain separate follow-ups.
 
 Question: how should Tessera's sidebar organise a vault, now and once the
 backend service and connectors (Maestro, Linear, Notion-like systems) supply
