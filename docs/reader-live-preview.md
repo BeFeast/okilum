@@ -154,3 +154,52 @@ restoration all passed. The external canonical hash and recovered-draft hash
 match the earlier evidence above. Logs and the probe live under
 `~/.cache/tessera-qa/359/integrated-*`. This closes the local integration check;
 it does not replace muninn's pending Wayland/IME acceptance or imply release.
+
+## S2: themed link and heading styles
+
+S2 is a local follow-up to S1 (#714), not a new editing mode. A narrow gpui-kit
+patch adds an optional foreground to `ProjectionStyle`; absent colors inherit
+exactly as before. Wrapping and painting share the same run builder, including
+IME underline splits. Font size and line height remain unchanged (S6 owns those).
+
+Live Preview uses the existing Reader palette: the link token for Markdown links
+and wikilinks, and the foreground token plus bold weight for headings. A link
+inside a heading retains heading weight and uses link color. Nested emphasis,
+code fonts and strikethrough remain composable. Plain Source remains unchanged.
+
+Theme colors wrap the accepted immutable classifier result. Changing theme
+reinstalls only that presentation wrapper; it does not reparse Markdown, replace
+the buffer, save, alter the source revision or add an Undo transaction. Colors are
+chosen again when a background classification result is accepted, so a job that
+finishes after a theme change cannot reinstall the old palette. The Reader render
+path also refreshes the wrapper when an accepted editor's palette changes.
+
+The S1 native acceptance gate still applies. S2 additionally checks both themes,
+link color across wrapped rows, mixed heading/link emphasis, and changing theme
+without typing. Neither a provider test nor a screenshot replaces muninn IME QA.
+
+### S2 local validation (2026-10-07)
+
+Rust 1.99.0: 17 Reader editor tests and 7 source-presentation tests passed,
+including theme transitions, an unchanged presentation epoch on repeated redraw,
+nested link/heading styles, exact mappings and the native screenshot fixture.
+Strict shell clippy, fmt, build and the complete vendor patch verification passed.
+The added vendor-only marked-run test was not executed: the root workspace cannot
+run gpui-base's dev-dependency tests as a non-member package.
+
+Linux/X11 native light/dark captures show actual concealed Markdown, bold
+headings and link foreground across wrapped rows. The exact clipboard,
+BOM/CRLF/Unicode input, Undo/redo across toggles, explicit Save, external-conflict
+refusal, durable journal and crash recovery probe passed again. Evidence and
+scripts are in `~/.cache/tessera-qa/359-s2/`; before captures are historical S1
+captures on the same host, and the after fixture adds a wrapped link. They are
+visual references, not a timing comparison or a substitute for Wayland IME QA.
+
+Native inspection also found an S1 integration defect: `searchable(true)` makes
+the vendor prepaint discard even an accepted projection. The separate local fix
+`bd37400` disables native source search while Live Preview is active. Invoking
+Find explicitly returns to Source and opens its search; returning to Live Preview
+closes it. The added GPUI regression verifies both transitions without changing
+source revision or bytes. Classifier acceptance alone did not detect this bug;
+the final native captures provide the rendered positive control. S1 must include
+this fix before its final acceptance. No gpui-core patch is involved.

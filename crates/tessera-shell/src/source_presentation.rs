@@ -13,6 +13,30 @@ use tessera_core::{
 pub const BODY_FONT: &str = "Noto Sans";
 pub const CODE_FONT: &str = "Cascadia Code";
 
+/// App theme colors; they do not participate in parsing or source revisions.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ProjectionColors {
+    pub heading: gpui::Hsla,
+    pub link: gpui::Hsla,
+}
+
+// The standalone projection fixture imports this module without app theme colors.
+#[allow(dead_code)]
+struct ColoredProvider {
+    provider: Arc<CachedProvider>,
+    colors: ProjectionColors,
+}
+impl ProjectionProvider for ColoredProvider {
+    fn compose(
+        &self,
+        source: &SourceSnapshot,
+        active: &ActiveSource,
+    ) -> Option<Arc<dyn SourceProjection>> {
+        self.provider
+            .compose_colored(source, active, Some(self.colors))
+    }
+}
+
 pub struct CachedProvider {
     source: SourceSnapshot,
     classified: Classification,
@@ -20,6 +44,15 @@ pub struct CachedProvider {
 }
 
 impl CachedProvider {
+    /// Reuse the classification when the theme changes; never parse on the UI thread.
+    // The standalone projection fixture deliberately uses the unthemed provider.
+    #[allow(dead_code)]
+    pub fn with_colors(self: Arc<Self>, colors: ProjectionColors) -> Arc<dyn ProjectionProvider> {
+        Arc::new(ColoredProvider {
+            provider: self,
+            colors,
+        })
+    }
     /// Call only from a background classification task.
     pub fn classify(source: SourceSnapshot) -> Self {
         let snapshot = core_snapshot(&source);
@@ -85,6 +118,16 @@ impl ProjectionProvider for CachedProvider {
         source: &SourceSnapshot,
         active: &ActiveSource,
     ) -> Option<Arc<dyn SourceProjection>> {
+        self.compose_colored(source, active, None)
+    }
+}
+impl CachedProvider {
+    fn compose_colored(
+        &self,
+        source: &SourceSnapshot,
+        active: &ActiveSource,
+        colors: Option<ProjectionColors>,
+    ) -> Option<Arc<dyn SourceProjection>> {
         if self.source.stamp != source.stamp || self.source.text != source.text {
             return None;
         }
@@ -121,7 +164,11 @@ impl ProjectionProvider for CachedProvider {
             projection =
                 source_projection::project(snapshot, self.classified.plan(), &reveal).ok()?;
         }
-        let styles = projected_styles(&projection, self.classified.styles_for(snapshot).ok()?)?;
+        let styles = projected_styles(
+            &projection,
+            self.classified.styles_for(snapshot).ok()?,
+            colors,
+        )?;
         Some(Arc::new(MappedProjection {
             source: source.clone(),
             projection,
@@ -167,17 +214,17 @@ impl SourceProjection for MappedProjection {
 fn projected_styles(
     projection: &Projection,
     styles: &[source_classifier::StyleSpan],
+    colors: Option<ProjectionColors>,
 ) -> Option<Vec<ProjectionStyle>> {
     let mut events = Vec::new();
     for style in styles {
         let slot = match style.style {
-            Style::Heading(_) | Style::Strong => 0,
+            Style::Strong => 0,
+            Style::Heading(_) => 4,
             Style::Emphasis => 1,
             Style::Strike => 2,
             Style::Code => 3,
-            // Link labels are concealed, but this generic metric API has no
-            // color/underline field. Do not invent metric-changing link styles.
-            Style::Link | Style::WikiLink => continue,
+            Style::Link | Style::WikiLink => 5,
         };
         let start = projection
             .source_to_display(projection.snapshot(), style.range.start)
@@ -190,7 +237,7 @@ fn projected_styles(
         }
     }
     events.sort_unstable();
-    let mut counts = [0i32; 4];
+    let mut counts = [0i32; 6];
     let mut runs = Vec::new();
     let mut index = 0;
     while index < events.len() {
@@ -209,7 +256,17 @@ fn projected_styles(
             runs.push(ProjectionStyle {
                 range: ProjectedByte(start)..ProjectedByte(end),
                 font_family: (counts[3] > 0).then(|| CODE_FONT.to_owned()),
-                bold: counts[0] > 0,
+                color: colors.and_then(|colors| {
+                    // Links retain their affordance inside bold headings.
+                    if counts[5] > 0 {
+                        Some(colors.link)
+                    } else if counts[4] > 0 {
+                        Some(colors.heading)
+                    } else {
+                        None
+                    }
+                }),
+                bold: counts[0] > 0 || counts[4] > 0,
                 italic: counts[1] > 0,
                 strikethrough: counts[2] > 0,
             });
@@ -262,6 +319,100 @@ mod tests {
             Some(SourceByte(3))
         );
     }
+    #[test]
+    fn themed_links_and_headings_preserve_exact_mapping_and_nested_weight() {
+        let source = source("# [Heading](https://example.com)\n\n**[web](https://example.com)** and [[Note|wiki]]\n\nend");
+        let provider = Arc::new(CachedProvider::classify(source.clone()));
+        let active = inactive(&source);
+        let plain = provider.compose(&source, &active).unwrap();
+        for colors in [
+            ProjectionColors {
+                heading: gpui::rgb(0x18202a).into(),
+                link: gpui::rgb(0x005ca8).into(),
+            },
+            ProjectionColors {
+                heading: gpui::rgb(0xf2f4f8).into(),
+                link: gpui::rgb(0x8dc8ff).into(),
+            },
+        ] {
+            let projection = provider
+                .clone()
+                .with_colors(colors)
+                .compose(&source, &active)
+                .unwrap();
+            assert_eq!(projection.text(), plain.text());
+            assert_eq!(projection.source().text.as_ref(), source.text.as_ref());
+            for label in ["Heading", "web", "wiki"] {
+                let offset = projection.text().find(label).unwrap();
+                let style = projection
+                    .styles()
+                    .iter()
+                    .find(|style| style.range.start.0 <= offset && offset < style.range.end.0)
+                    .unwrap();
+                assert_eq!(style.color, Some(colors.link));
+                if label != "wiki" {
+                    assert!(style.bold);
+                }
+            }
+            for (offset, _) in projection.text().char_indices() {
+                for bias in [ConcealBias::Left, ConcealBias::Right] {
+                    assert_eq!(
+                        projection.to_source(ProjectedByte(offset), bias),
+                        plain.to_source(ProjectedByte(offset), bias)
+                    );
+                }
+            }
+        }
+        let source = self::source("# Plain heading\n\nend");
+        let colors = ProjectionColors {
+            heading: gpui::rgb(0x18202a).into(),
+            link: gpui::rgb(0x005ca8).into(),
+        };
+        let projection = Arc::new(CachedProvider::classify(source.clone()))
+            .with_colors(colors)
+            .compose(&source, &inactive(&source))
+            .unwrap();
+        assert!(projection
+            .styles()
+            .iter()
+            .any(|style| style.bold && style.color == Some(colors.heading)));
+    }
+
+    #[test]
+    fn themed_native_fixture_projects_without_fallback() {
+        let source = source(
+            r###"# A quiet place to write
+
+Tessera keeps **the exact Markdown** while showing *readable formatting*.
+
+## Links and code
+
+Visit [[Target|another note]] or [the project](https://github.com/BeFeast/tessera).
+Keep `inline code`, ~~finished thoughts~~ and Unicode: Привет 🧠 é.
+
+## Plain files, safe edits
+
+Selection, copy and Undo use your original text. Source is one click away.
+
+[This intentionally long link label stays blue while wrapping across the editor width, so the second line must preserve the same color and selection behavior](https://example.com). Ordinary text follows.
+
+---
+
+This paragraph remains ordinary Markdown.
+"###,
+        );
+        let provider = Arc::new(CachedProvider::classify(source.clone()));
+        let projection = provider
+            .with_colors(ProjectionColors {
+                heading: gpui::black(),
+                link: gpui::rgb(0x005ca8).into(),
+            })
+            .compose(&source, &inactive(&source))
+            .expect("native fixture must project");
+        assert!(!projection.text().contains("[[Target|"));
+        assert!(!projection.text().contains("**the exact Markdown**"));
+    }
+
     #[test]
     fn every_stale_identity_falls_back() {
         let source = source("**bold**\n\nend");
