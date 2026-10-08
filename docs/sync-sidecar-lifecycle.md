@@ -415,3 +415,24 @@ The single dispatch used default features, package `tessera-sync-controller`,
 filter `sidecar::`, one test thread; rustc 1.99.0 (b940084d7 2026-09-28),
 x86_64-pc-windows-msvc, LLVM 23.1.1. This validates established-client I/O and
 cancellation fixtures, not server transport or full Sync acceptance.
+
+
+### Windows server accept, part 3c
+
+`ServerIo::accept` consumes a private server pipe and an independently captured
+expected client process. It uses the same worker admission limit, absolute
+deadline, owned OVERLAPPED and cancellation drain as client I/O. It verifies the
+private endpoint before ConnectNamedPipe and the captured live client afterward,
+before exposing Read/Write. The already-connected race (ERROR_PIPE_CONNECTED)
+still requires peer verification. Pending accept timeout requests cancellation
+and retains all resources until terminal completion. There is no disconnect,
+reaccept loop, replacement peer lookup or permissive first-client adoption.
+
+The returned server retains the original deadline for subsequent wire I/O.
+Native controls cover delayed connection and bidirectional exchange, silent
+accept cancellation with pending/aborted completion evidence and namespace
+recreation, preconnected-client success, and same-user wrong captured-client
+refusal with a positive captured-client control. Native acceptance is required
+before this slice is considered complete. Production Transport/binding discovery,
+executable signature verification, bounded open/setup and supervisor wiring
+remain outstanding under #588.
