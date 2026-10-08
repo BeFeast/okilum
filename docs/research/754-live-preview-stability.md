@@ -42,20 +42,41 @@ Evidence:
 
 Priority: before P2 #753, alongside #748 CI; #737 native IME gate remains separate.
 
-## Reference versus the approved slice plan
+## Owner correction and priorities (2026-10-08)
 
-The S3–S7 roadmap is in `359-smart-editor.md` §9; `../reader-live-preview.md` records implemented S1/S2.
+The owner confirms that Live Preview is stable at idle. The idle-cycle/blink hypothesis is no longer the leading P1: focus on editing/caret reveal → rewrap, scroll anchoring when block heights change, and save/iCloud echo. The markdownlivepreview screenshot is a render-only visual sample, **not an interaction reference for a live editor**. #755/#756 retain their value as measurement tools, not an independently confirmed idle defect.
 
-| Reference feature | Planned coverage | Metric implications / gap |
+Own-save echo remains a hypothesis for the owner's experience, not a proven editor reset: three same-byte batches through the actual incremental-publication path preserve editor identity, source stamp, accepted provider, presentation epoch, selection and scroll. A different-byte external update is the positive control. Keep `editor_disk_refresh` observations in the Mac probe; do not suppress real external changes or index updates.
+
+## How Velotype / SoloMD handle this
+
+This is a pinned source audit, not native acceptance of these products; no upstream code was copied into Tessera.
+
+**Velotype — GPUI0.2, Apache-2.0.** [Cargo.toml](https://github.com/manyougz/velotype/blob/ed65977be94f2f2703037fcb8b6cbab2e7579571/Cargo.toml) and [LICENSE-APACHE](https://github.com/manyougz/velotype/blob/ed65977be94f2f2703037fcb8b6cbab2e7579571/LICENSE-APACHE) agree (GitHub's generic license API returns NOASSERTION, so the actual files were checked). Apache code can coexist in an MIT product if its license/notice/change obligations are retained; it cannot simply be relabelled MIT. Any selective port still needs file/dependency provenance review. For this task only architectural ideas are used.
+
+- [Inline projection](https://github.com/manyougz/velotype/blob/ed65977be94f2f2703037fcb8b6cbab2e7579571/src/components/block/runtime/projection.rs#L252) is a temporary view over clean inline fragments with clean↔display maps; it expands delimiters only for fragments touched by caret/selection/IME, rather than revealing an entire paragraph just because the caret enters it. This reduces the scope of reflow; it does not mathematically eliminate it.
+- The editor owns distinct block entities and shaped block elements with their own metrics, rather than one fixed-height gpui-kit WrapMap. [Rendering](https://github.com/manyougz/velotype/blob/ed65977be94f2f2703037fcb8b6cbab2e7579571/src/editor/render.rs#L1770) caches measured row strides keyed by block entity; invalidates on column-width changes; skips index-based refresh after structural changes; uses top/bottom spacers and keeps the focused row mounted. Variable-height blocks are part of the model.
+- [Caret visibility](https://github.com/manyougz/velotype/blob/ed65977be94f2f2703037fcb8b6cbab2e7579571/src/editor/render.rs#L433) uses actual caret/block bounds and pixel scroll correction after layout, with a pending recheck; it avoids automatic correction while dragging the scrollbar. This is caret visibility management, not proof of a full source-position viewport-anchor guarantee.
+- Its clean-fragment/block/source-mapping model differs from Tessera's single canonical exact-source buffer. A transplant of the whole editor would endanger our lossless source/Undo/IME contracts; the useful ideas are local projection invalidation, stable block identity, measured heights and coherent pointer coordinates.
+
+**SoloMD — MIT, Tauri + Vue/CodeMirror6 frontend, Rust backend.** [LICENSE](https://github.com/zhitongblog/solomd/blob/154b4723d2c646a367502772fa372a9306430bbc/LICENSE), [frontend dependencies](https://github.com/zhitongblog/solomd/blob/154b4723d2c646a367502772fa372a9306430bbc/app/package.json). The vault note's “entirely native Rust editor” description is not accurate for this repository.
+
+- [cm-live-preview.ts](https://github.com/zhitongblog/solomd/blob/154b4723d2c646a367502772fa372a9306430bbc/app/src/lib/cm-live-preview.ts#L1) retains the canonical Markdown buffer and applies decorations. It reveals marker ranges on selection-touched **source lines**, styles headings at1.7/1.4/1.22/1.1em, and rebuilds on document/viewport/selection events, not blink. Current code hides heading/emphasis/strike markers but deliberately keeps link brackets and code backticks as affordances; this is narrower than the introductory prose suggests.
+- [Drag guard](https://github.com/zhitongblog/solomd/blob/154b4723d2c646a367502772fa372a9306430bbc/app/src/lib/cm-drag-aware.ts) freezes selection-only decoration changes during a real drag and flushes after release, with blur/cancel recovery. [IME guard](https://github.com/zhitongblog/solomd/blob/154b4723d2c646a367502772fa372a9306430bbc/app/src/lib/cm-ime-guard.ts) freezes and **maps decorations through edits**, then rebuilds after composition. These are directly relevant behavioral patterns for #754 and our IME gate.
+- The source explicitly documents an “Always show Markdown markers” option: retaining/dimming markers avoids caret-triggered reflow. Therefore default reveal does not itself guarantee zero jumps. CodeMirror/browser layout supports variable heights; its implementation is not a GPUI patch.
+
+**Ferrite — MIT, egui + comrak.** [LICENSE](https://github.com/OlaProeis/Ferrite/blob/3ba085c561670342d72c560efbf6b0b92b5c0b46/LICENSE), [editor](https://github.com/OlaProeis/Ferrite/blob/3ba085c561670342d72c560efbf6b0b92b5c0b46/src/markdown/editor.rs), [native Mermaid](https://github.com/OlaProeis/Ferrite/blob/3ba085c561670342d72c560efbf6b0b92b5c0b46/src/markdown/mermaid/mod.rs). It uses a rendered block editing session (headings/paragraphs/lists and separate editable table cells), caches block heights by source slice and render parameters (width/font), and progressively measures/culls blocks. This is a useful S7 interaction/reference architecture, not a continuous single-buffer projection implementation. Native Mermaid exists, but completeness/diagram parity and embedding cost must be evaluated separately; no imported renderer is approved here.
+
+## Revised S3–S7 comparison (live-editor references)
+
+| Slice | Reference lesson | Tessera scope / constraints |
 | --- | --- | --- |
-| Link colours, strong/emphasis/strike | S1/S2 | Implemented; stability remains #754. |
-| Inline code | S1 font treatment | Reference pill/background is not an explicit slice; can be paint-only if padding does not change metrics. |
-| Heading sizes and separators | S6 sizes | Different font sizes need variable row metrics; thin rules can be paint-only, but separators are not explicitly planned. |
-| Bullets, nested bullet variants, roman numbering | Later lists conceal, beyond S7 | Explicit marker/numbering rendering is not in S3–S7; can preserve row height but still changes indentation and wrapping. |
-| Images | S5 icon, S7 actual images/embeds | Actual image height requires block replacement, not just S5. |
-| Blockquote stripe and nesting | Later blockquotes conceal | No explicit stripe/nesting slice; stripe can be paint-only, indentation changes wrapping. |
-| Tables | S7 | Measured multi-column blocks conflict with current single-row mapping. |
-| Code block background | Unsupported source today; no explicit slice | Background alone need not change row height; padding, fence conceal and syntax/highlight require a defined scope and mappings. |
-| Mermaid | Not explicit in S3–S7 | Propose a separate S7 block-factory extension, with renderer/lifecycle scope approved first. |
+| S3 block-local classification | Velotype's block identity/cache; SoloMD's mapped decorations through IME | Pull forward unchanged-block retention and dirty-block-only adoption to remove whole-note raw flashes. Do not blindly reuse stale byte maps. |
+| S4 incremental mapping | Velotype clean/display mapping; SoloMD change-mapped ranges | Preserve exact source positions, composition and gesture anchors; local invalidation first, SumTree scaling remains the planned implementation. |
+| S5 replacement runs | SoloMD marker/bullet decorations, Velotype fragment-local editing | Prototype line/fragment-scoped reveal and freeze/remap during drag/IME. S5 image icon is not a full image block. |
+| S6 variable metrics | Velotype measured block strides and caret pixel visibility; SoloMD heading font sizes | Real heading sizes require measured row/block heights, pointer/IME geometry and source-anchor scroll correction. Fixed **row** height never guaranteed a fixed **row count**. |
+| S7 block replacement | Ferrite click-to-edit heading/list/table cells; Velotype block editors; SoloMD block widgets | Images, tables, embeds/callouts need measured-height blocks and explicit edit transitions. Mermaid is a proposed separate renderer integration, not already promised by S7. |
 
-S3 (block cache) and S4 (incremental mapping) are foundations, not visual parity. Constant row height is not a no-reflow guarantee: concealed widths already change the number of rows. Prioritize the stability subset of S3 now; keep S6/S7 as deliberate measured-height work. Do not treat this comparison as approval to implement the new visual scope.
+Lists/blockquote styling and nesting were listed as Later in the approved roadmap; these references justify discussing a dedicated earlier slice, not silently changing that plan. Keep the MIT product/license decision and gpui-core-unpatched rule.
+
+Recommended order: #754 interaction stability (local reveal/adoption + gesture safety + source-anchor compensation) → measured typography (S6 after required foundations) → S7 rich blocks. Confirm priorities with the owner; neither new features nor a different canonical document model are authorized by this comparison.
