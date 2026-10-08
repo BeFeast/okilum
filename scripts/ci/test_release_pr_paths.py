@@ -26,13 +26,34 @@ class ReleasePathsTests(unittest.TestCase):
                          'docs/releases.md', 'README.md', unrelated]:
                 self.assertFalse(any(fnmatch.fnmatchcase(path, p) for p in paths), path)
 
-    def test_packaging_and_shared_build_inputs_still_run(self):
+    def test_packaging_and_release_logic_still_run(self):
         for workflow, platform in [
             ('linux-release.yml', 'scripts/arch/PKGBUILD'),
             ('windows-diagnostic.yml', 'scripts/windows/pack.sh'),
         ]:
             paths = patterns(workflow)
-            for path in [platform, 'rust-toolchain.toml', 'Cargo.lock',
-                         'scripts/ci/release-cache.sh', 'scripts/third-party-notices.py',
-                         'crates/tessera-shell/build.rs', '.forgejo/workflows/' + workflow]:
+            for path in [platform, 'packaging/icons/icon.png', 'scripts/releases/coalesce.py',
+                         '.forgejo/workflows/' + workflow]:
                 self.assertTrue(any(fnmatch.fnmatchcase(path, p) for p in paths), path)
+
+    def test_shared_dependencies_require_explicit_branch_dispatch(self):
+        for workflow in ['linux-release.yml', 'windows-diagnostic.yml']:
+            paths = patterns(workflow)
+            for path in ['Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml',
+                         'crates/tessera-shell/Cargo.toml', 'crates/tessera-shell/build.rs',
+                         'scripts/vendor-setup.sh', 'scripts/patches/0001-test.diff',
+                         'scripts/ci/release-cache.sh']:
+                self.assertFalse(any(fnmatch.fnmatchcase(path, p) for p in paths), path)
+            text = (ROOT / '.forgejo/workflows' / workflow).read_text()
+            self.assertIn('  workflow_dispatch:', text)
+
+    def test_main_and_scheduled_delivery_remain_enabled(self):
+        linux = (ROOT / '.forgejo/workflows/linux-release.yml').read_text()
+        windows = (ROOT / '.forgejo/workflows/windows-diagnostic.yml').read_text()
+        self.assertIn('  push:\n    branches: [main]', linux)
+        self.assertIn('  schedule:', windows)
+
+    def test_windows_cross_build_helpers_still_trigger(self):
+        paths = patterns('windows-diagnostic.yml')
+        for path in ['scripts/build-windows-ci.sh', 'scripts/windows-icons.py']:
+            self.assertTrue(any(fnmatch.fnmatchcase(path, p) for p in paths), path)
