@@ -768,10 +768,6 @@ mod tests {
             assert!(r.note_source.contains("Current"));
             assert!(r.editing.is_none());
         });
-        reader.update_in(visual, |r, _, cx| {
-            r.document_header_hidden = px(21.);
-            cx.notify();
-        });
         visual.update(|w, cx| w.draw(cx).clear(cx));
         assert!(visual.debug_bounds("source-save").is_none());
         let preview = visual.debug_bounds("history-preview").unwrap();
@@ -785,7 +781,6 @@ mod tests {
         });
         visual.run_until_parked();
         reader.read_with(visual, |r, cx| {
-            assert_eq!(r.document_header_hidden, px(21.));
             let offset = r.content.read(cx).list_state().logical_scroll_top();
             assert_eq!(
                 (offset.item_ix, offset.offset_in_item),

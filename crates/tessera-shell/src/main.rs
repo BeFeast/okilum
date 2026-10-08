@@ -1338,7 +1338,6 @@ struct Reader {
     _content_sub: Subscription,
     current_rel: String,
     current_title: String,
-    document_header_hidden: Pixels,
     link_notice: Option<reader_toast::Notice>,
     displayed_notice: Option<reader_toast::Notice>,
     displayed_choices: Vec<(String, Option<String>)>,
@@ -1589,7 +1588,6 @@ impl Reader {
                 .is_some_and(|state| state.0),
             current_rel: String::new(),
             current_title: String::new(),
-            document_header_hidden: px(0.),
             link_notice: None,
             displayed_notice: None,
             displayed_choices: Vec::new(),
@@ -1977,7 +1975,6 @@ impl Reader {
         if request.history_index.is_none() {
             self.quick_open.remember(rel);
         }
-        self.document_header_hidden = px(0.);
         if self.current_rel != rel {
             self.timeline = None;
         }
@@ -6189,7 +6186,6 @@ impl Render for Reader {
             .on_action(cx.listener(|this, _: &ListNext, window, cx| this.list_move(1, window, cx)))
             .on_action(cx.listener(|this, _: &ListPrev, window, cx| this.list_move(-1, window, cx)))
             .on_action(cx.listener(|this, _: &ScrollTop, _, cx| {
-                this.document_header_hidden = px(0.);
                 this.content.read(cx).list_state().scroll_to_reveal_item(0);
                 cx.notify();
             }))
@@ -6992,7 +6988,6 @@ mod document_link_landing_tests {
             document.right() - px(20.),
         ] {
             view.update_in(visual, |v, _, cx| {
-                v.document_header_hidden = px(0.);
                 v.content
                     .read(cx)
                     .list_state()
@@ -7036,7 +7031,6 @@ mod document_link_landing_tests {
                     if open {
                         v.panels.open(panel);
                     }
-                    v.document_header_hidden = px(0.);
                     v.content
                         .read(cx)
                         .list_state()

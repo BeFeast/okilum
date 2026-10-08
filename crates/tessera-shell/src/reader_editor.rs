@@ -731,17 +731,6 @@ impl Reader {
             .as_ref()
             .map(|editing| editing.input.read(cx).scroll_offset())
     }
-    pub(super) fn scroll_source_by(&mut self, delta: Pixels, cx: &mut Context<Self>) -> bool {
-        let Some(editing) = &self.editing else {
-            return false;
-        };
-        editing.input.update(cx, |input, cx| {
-            let mut offset = input.scroll_offset();
-            offset.y += delta;
-            input.set_scroll_offset(offset, cx);
-        });
-        true
-    }
 
     pub(super) fn render_source(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         self.refresh_live_preview_colors(cx);

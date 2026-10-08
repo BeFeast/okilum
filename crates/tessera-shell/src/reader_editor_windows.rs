@@ -22,9 +22,6 @@ impl Reader {
     pub(super) fn source_scroll_offset(&self, _: &App) -> Option<Point<Pixels>> {
         None
     }
-    pub(super) fn scroll_source_by(&mut self, _: Pixels, _: &mut Context<Self>) -> bool {
-        false
-    }
 
     pub(super) fn source_history(&mut self, _: bool, _: &mut Window, cx: &mut Context<Self>) {
         self.link_notice =
