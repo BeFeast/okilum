@@ -1559,7 +1559,7 @@ canaryhidden [[Target]]",
                 assert!(
                     snippet
                         .text
-                        .trim_end_matches('…')
+                        .trim_end_matches(['…', '.'])
                         .ends_with("Unique canaryword landing near the start"),
                     "{snippet:?}"
                 );

@@ -4,7 +4,7 @@ use crate::properties::{self, PropertyValue};
 use std::ops::Range;
 
 pub(crate) fn source_snippet(html: &str, source: &str, start: Option<usize>) -> PlainSnippet {
-    let (raw, marks) = parse_marked(html);
+    let (mut raw, marks) = parse_marked(html);
     let Some(start) = start.filter(|&start| {
         source
             .get(start..)
@@ -13,6 +13,17 @@ pub(crate) fn source_snippet(html: &str, source: &str, start: Option<usize>) -> 
         // Repeated fragments cannot establish which occurrence was selected.
         return plain_marked(&raw, &marks);
     };
+    // Tantivy often stops at the last token, leaving a final period or closing
+    // Markdown delimiter outside its fragment. Recover a short punctuation-only
+    // tail from the confirmed source instead of claiming a complete sentence is cut.
+    let tail = &source[start + raw.len()..];
+    if tail.trim_end().chars().count() <= 16
+        && tail
+            .chars()
+            .all(|c| c.is_whitespace() || c.is_ascii_punctuation())
+    {
+        raw.push_str(tail);
+    }
     let body = crate::render::without_frontmatter(source);
     let body_start = source.len() - body.len();
     let skip = body_start.saturating_sub(start).min(raw.len());
@@ -248,5 +259,11 @@ mod tests {
         assert!(source_snippet("<b>שלום</b>", source, None)
             .property_match
             .is_none());
+        let complete = source_snippet("<b>שלום</b>", "שלום.\n", Some(0));
+        assert_eq!(
+            complete.text, "שלום.",
+            "a complete sentence keeps its source punctuation without a false cut marker"
+        );
+        assert_eq!(&complete.text[complete.highlights[0].clone()], "שלום");
     }
 }
