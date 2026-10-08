@@ -154,6 +154,7 @@ pub(crate) fn presentation(
 }
 
 pub(crate) struct PreparedDocument {
+    pub canonical_source: Option<Arc<str>>,
     pub source: String,
     pub original: Option<String>,
     pub identities: Vec<document_links::prepared::LinkIdentity>,
@@ -222,6 +223,7 @@ impl Reader {
                         tessera_core::render_html(&vault, &rel, "InspiredGitHub").map(|html| {
                             PreparedDocument {
                                 source: html,
+                                canonical_source: None,
                                 original: None,
                                 identities: Vec::new(),
                                 frontmatter: None,
@@ -230,6 +232,7 @@ impl Reader {
                     } else {
                         tessera_core::render::reader_document(&vault, &rel).map(|document| {
                             PreparedDocument {
+                                canonical_source: Some(document.canonical_source),
                                 source: document.rendered,
                                 original: Some(document.original_body),
                                 identities: document.links,

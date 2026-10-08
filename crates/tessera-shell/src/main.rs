@@ -1368,6 +1368,7 @@ struct Reader {
     link_presentations: prepared_links::States,
     link_preparation_generation: u64,
     document_preparation_generation: u64,
+    document_reconciliation_generation: u64,
     link_original_source: Option<String>,
     link_identities: Vec<tessera_core::document_links::prepared::LinkIdentity>,
     history_positions: Vec<ListOffset>,
@@ -1381,6 +1382,7 @@ struct Reader {
     /// Source of the open note as rendered, before any find marks. Kept so
     /// the find bar can re-mark it on every keystroke and restore it on Esc.
     note_source: String,
+    note_canonical_source: Option<Arc<str>>,
     find_input: Entity<InputState>,
     find_open: bool,
     /// Top-level headings of the open document (docs/design/reader.md §Right
@@ -1618,6 +1620,7 @@ impl Reader {
             link_presentations: Arc::default(),
             link_preparation_generation: 0,
             document_preparation_generation: 0,
+            document_reconciliation_generation: 0,
             link_original_source: None,
             link_identities: Vec::new(),
             history_positions: Vec::new(),
@@ -1626,6 +1629,7 @@ impl Reader {
             sel_format,
             focus_handle: cx.focus_handle(),
             note_source: String::new(),
+            note_canonical_source: None,
             find_input,
             find_open: false,
             outline: Vec::new(),
@@ -1881,6 +1885,7 @@ impl Reader {
         }
         self.clear_hover(cx);
         let prepared_links::PreparedDocument {
+            canonical_source,
             source,
             original: original_body,
             identities,
@@ -1986,6 +1991,7 @@ impl Reader {
             .map(tessera_core::properties::parse)
             .unwrap_or_else(|| Ok(Vec::new()));
         self.note_source = source;
+        self.note_canonical_source = canonical_source;
         if request.history_index.is_none() {
             self.quick_open.remember(rel);
         }

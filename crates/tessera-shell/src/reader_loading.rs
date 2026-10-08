@@ -148,6 +148,7 @@ fn prepare_log(path: &Path, root: Option<&Path>, cancel: &Cancellation) -> Resul
         document: Some((
             String::new(),
             prepared_links::PreparedDocument {
+                canonical_source: None,
                 source: String::new(),
                 original: Some(String::new()),
                 identities: Vec::new(),
@@ -212,6 +213,7 @@ fn prepare_first_with_last_document(
         let document = if opts.use_html {
             prepared_links::PreparedDocument {
                 source: tessera_core::render_html(&vault, &rel, "InspiredGitHub")?,
+                canonical_source: None,
                 original: None,
                 identities: Vec::new(),
                 frontmatter: None,
@@ -219,6 +221,7 @@ fn prepare_first_with_last_document(
         } else {
             let document = tessera_core::render::reader_document(&vault, &rel)?;
             prepared_links::PreparedDocument {
+                canonical_source: Some(document.canonical_source),
                 source: document.rendered,
                 original: Some(document.original_body),
                 identities: document.links,
@@ -364,6 +367,7 @@ fn prepare_first_with_last_document(
             let document = if rel.is_empty() {
                 prepared_links::PreparedDocument {
                     source: String::new(),
+                    canonical_source: None,
                     original: Some(String::new()),
                     identities: Vec::new(),
                     frontmatter: None,
@@ -379,6 +383,7 @@ fn prepare_first_with_last_document(
                         )?,
                         None => tessera_core::render_html(&vault, &rel, "InspiredGitHub")?,
                     },
+                    canonical_source: None,
                     original: None,
                     identities: Vec::new(),
                     frontmatter: None,
@@ -391,6 +396,7 @@ fn prepare_first_with_last_document(
                     None => tessera_core::render::reader_document(&vault, &rel)?,
                 };
                 prepared_links::PreparedDocument {
+                    canonical_source: Some(document.canonical_source),
                     source: document.rendered,
                     original: Some(document.original_body),
                     identities: document.links,
@@ -1536,18 +1542,20 @@ impl Reader {
             self.refresh_link_preparation(cx);
             return;
         };
+        // Supersede inventory work without cancelling a user navigation that
+        // may already be preparing another note. Even a source equal to the
+        // displayed snapshot cancels an older, different in-flight snapshot.
+        self.document_reconciliation_generation =
+            self.document_reconciliation_generation.wrapping_add(1);
         let pending_embed = self.note_source.contains(&format!(
             "{EMBED_LANG} {} ",
             tessera_core::render::EMBED_PENDING
         ));
-        if !pending_embed
-            && self.link_original_source.as_deref()
-                == Some(tessera_core::render::without_frontmatter(raw))
-        {
+        if !pending_embed && self.note_canonical_source.as_deref() == Some(raw.as_ref()) {
             self.refresh_link_preparation(cx);
             return;
         }
-        self.reconcile_published_document(window, cx);
+        self.reconcile_document_source(Some(raw.clone()), window, cx);
     }
 
     /// Refresh from the immutable published graph even when a shared worker owns
@@ -1555,6 +1563,15 @@ impl Reader {
     /// window's document refresh merely because another sibling started polling.
     pub(super) fn reconcile_published_document(
         &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.reconcile_document_source(None, window, cx);
+    }
+
+    fn reconcile_document_source(
+        &mut self,
+        raw: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1572,28 +1589,44 @@ impl Reader {
         let navigation = self.navigation_generation;
         let generation = self.document_preparation_generation;
         let html = self.use_html;
+        self.document_reconciliation_generation =
+            self.document_reconciliation_generation.wrapping_add(1);
+        let reconciliation = self.document_reconciliation_generation;
         cx.spawn_in(window, async move |this, cx| {
             let target = rel.clone();
             let result = cx
                 .background_executor()
                 .spawn(async move {
                     if html {
-                        tessera_core::render_html(&vault, &target, "InspiredGitHub").map(|source| {
-                            prepared_links::PreparedDocument {
-                                source,
-                                original: None,
-                                identities: Vec::new(),
-                                frontmatter: None,
-                            }
+                        let rendered = if let Some(raw) = raw {
+                            tessera_core::render::render_html_from_source(
+                                &vault,
+                                &target,
+                                &raw,
+                                "InspiredGitHub",
+                            )
+                        } else {
+                            tessera_core::render_html(&vault, &target, "InspiredGitHub")
+                        };
+                        rendered.map(|source| prepared_links::PreparedDocument {
+                            source,
+                            canonical_source: None,
+                            original: None,
+                            identities: Vec::new(),
+                            frontmatter: None,
                         })
                     } else {
-                        tessera_core::render::reader_document(&vault, &target).map(|doc| {
-                            prepared_links::PreparedDocument {
-                                source: doc.rendered,
-                                original: Some(doc.original_body),
-                                identities: doc.links,
-                                frontmatter: doc.frontmatter,
-                            }
+                        let doc = if let Some(raw) = raw {
+                            tessera_core::render::reader_document_from_source(&vault, &target, &raw)
+                        } else {
+                            tessera_core::render::reader_document(&vault, &target)?
+                        };
+                        Ok(prepared_links::PreparedDocument {
+                            canonical_source: Some(doc.canonical_source),
+                            source: doc.rendered,
+                            original: Some(doc.original_body),
+                            identities: doc.links,
+                            frontmatter: doc.frontmatter,
                         })
                     }
                 })
@@ -1603,11 +1636,13 @@ impl Reader {
                     || this.current_rel != rel
                     || this.navigation_generation != navigation
                     || this.document_preparation_generation != generation
+                    || this.document_reconciliation_generation != reconciliation
                 {
                     return;
                 }
                 if result.as_ref().is_ok_and(|document| {
-                    document.source == this.note_source
+                    document.canonical_source == this.note_canonical_source
+                        && document.source == this.note_source
                         && document.original == this.link_original_source
                 }) {
                     this.refresh_link_preparation(cx);
@@ -2358,6 +2393,126 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[gpui::test]
+    fn canonical_source_refreshes_frontmatter_and_close_rejects_pending_snapshot(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        let initial = "\u{feff}---\r\ntype: dashboard\r\nview: tasks\r\n---\r\n# Same body\r\n";
+        let changed = initial.replace("view: tasks", "view: future-view");
+        std::fs::write(root.join("Dashboard.md"), initial).unwrap();
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("Dashboard.md".into()),
+                        index_dir: Some(fixture.path().join("index")),
+                        session_directory: Some(fixture.path().join("state")),
+                        panel_settings_override: Some(fixture.path().join("panels.json")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        let (old_snapshot, rendered) = reader.read_with(visual, |r, _| {
+            assert_eq!(r.note_canonical_source.as_deref(), Some(initial));
+            (
+                r.note_canonical_source.clone().unwrap(),
+                r.note_source.clone(),
+            )
+        });
+        // The worker must use this accepted inventory snapshot, not reopen the
+        // older file on disk. Only frontmatter differs; rendered body is equal.
+        let sources = std::collections::HashMap::from([("Dashboard.md".into(), changed.clone())]);
+        reader.update_in(visual, |r, window, cx| {
+            r.reconcile_inventory_document(
+                &std::collections::HashMap::from([(
+                    "Dashboard.md".into(),
+                    initial.replace("view: tasks", "view: stale-view"),
+                )]),
+                window,
+                cx,
+            );
+            r.reconcile_inventory_document(&sources, window, cx);
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert_eq!(r.note_source, rendered);
+            assert_eq!(r.note_canonical_source.as_deref(), Some(changed.as_str()));
+            assert_eq!(
+                old_snapshot.as_ref(),
+                initial,
+                "retained evidence stays immutable"
+            );
+            assert_eq!(
+                r.properties,
+                tessera_core::properties::parse(
+                    tessera_core::properties::frontmatter_block(&changed).unwrap()
+                )
+            );
+            assert!(matches!(
+                tessera_core::typed_view::select(
+                    r.note_canonical_source.as_deref().unwrap(),
+                    &Default::default()
+                ),
+                tessera_core::typed_view::Selection::Fallback(_)
+            ));
+        });
+        assert_eq!(
+            std::fs::read_to_string(root.join("Dashboard.md")).unwrap(),
+            initial
+        );
+        // Reverting to the already displayed bytes still cancels older work.
+        reader.update_in(visual, |r, window, cx| {
+            r.reconcile_inventory_document(
+                &std::collections::HashMap::from([("Dashboard.md".into(), initial.into())]),
+                window,
+                cx,
+            );
+            r.reconcile_inventory_document(&sources, window, cx);
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert_eq!(r.note_canonical_source.as_deref(), Some(changed.as_str()));
+        });
+        // Shared-session fallback has no retained source map. Its worker must
+        // publish canonical bytes from the same read as the rendered document.
+        reader.update_in(visual, |r, window, cx| {
+            r.reconcile_published_document(window, cx);
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert_eq!(r.note_canonical_source.as_deref(), Some(initial));
+            assert_eq!(r.note_source, rendered);
+        });
+        reader.update_in(visual, |r, window, cx| {
+            r.reconcile_inventory_document(&sources, window, cx);
+            r.close_note(window, cx);
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert!(r.current_rel.is_empty());
+            assert!(
+                r.note_canonical_source.is_none(),
+                "late preparation cannot revive a closed note"
+            );
+        });
     }
 
     #[gpui::test]

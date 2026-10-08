@@ -298,6 +298,7 @@ impl Reader {
         self.current_rel.clear();
         self.current_title.clear();
         self.note_source.clear();
+        self.note_canonical_source = None;
         self.file_preview = None;
         self.editing = None;
         self.table_overlay = None;

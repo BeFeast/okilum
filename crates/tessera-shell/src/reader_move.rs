@@ -841,6 +841,7 @@ impl Reader {
                     move_message(&pending.from, &pending.to, update.then_some(&pending.links));
                 let document = tessera_core::render::reader_document(&self.vault, &next_current)
                     .map(|d| prepared_links::PreparedDocument {
+                        canonical_source: Some(d.canonical_source),
                         source: d.rendered,
                         original: Some(d.original_body),
                         identities: d.links,

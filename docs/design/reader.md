@@ -760,3 +760,15 @@ No note files change. The executor landing #663 adds the two shortcut catalog en
 #712 has no dependency on the shortcut sheet. Local Linux X11 light/dark
 before/after accompanies the PR; the QA sub-session checks the released build
 and strict UX on muninn after merge.
+
+### Canonical source for typed views (#636)
+
+Markdown preparation retains the exact primary-file source, including frontmatter,
+BOM and line endings, alongside the rendered projection. Reader publishes these
+representations together after its path/generation guards pass. Reconciliation
+renders its accepted inventory snapshot and compares full source bytes, so a
+frontmatter-only change refreshes properties and future native-view selection.
+Newer reconciliation supersedes older work for the same note. Closing the note
+clears canonical source; HTML mode carries no canonical Markdown snapshot.
+This is presentation evidence, not a write capability: native task edits still
+require the displayed Tasks index revision and the guarded FileEditor API.
