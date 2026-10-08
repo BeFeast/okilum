@@ -220,9 +220,7 @@ impl RetainedPresentation {
         // Bound parser input before entering Comrak, not after a long parse.
         // Fences/HTML/definitions can change nonlocal parsing. Indented blocks
         // can attach to surrounding containers; do not infer their context.
-        if dirty.len() > LOCAL_BYTES
-            || fragment.len() > LOCAL_BYTES
-            || fragment.contains('\0')
+        if fragment.contains('\0')
             || fragment.lines().any(|line| {
                 let plain = line.trim_start();
                 line.len() - plain.len() >= 4
@@ -236,7 +234,10 @@ impl RetainedPresentation {
             return None;
         }
         let local = Snapshot::new(current.document(), current.generation(), fragment);
-        let classified = super::classify(&local);
+        // Oversized but context-local edits keep only their dirty run raw until
+        // async adoption. Do not discard the already validated outer blocks.
+        let classified = (dirty.len() <= LOCAL_BYTES && fragment.len() <= LOCAL_BYTES)
+            .then(|| super::classify(&local));
         let offset = |r: &Range<usize>| updated.start + r.start..updated.start + r.end;
         let map = |r: &Range<usize>| -> Option<Range<usize>> {
             if r.end <= dirty.start {
@@ -250,13 +251,22 @@ impl RetainedPresentation {
         let mut regions = Vec::new();
         for (index, region) in source_regions.iter().enumerate() {
             if index == first {
-                regions.extend(classified.plan.regions().iter().map(|r| match r {
-                    Region::Source(r) => Region::Source(offset(r)),
-                    Region::Conceal { block, markers } => Region::Conceal {
-                        block: offset(block),
-                        markers: markers.iter().map(offset).collect(),
-                    },
-                }));
+                if let Some(classified) = &classified {
+                    regions.extend(classified.plan.regions().iter().map(|r| match r {
+                        Region::Source(r) => Region::Source(offset(r)),
+                        Region::Conceal { block, markers } => Region::Conceal {
+                            block: offset(block),
+                            markers: markers.iter().map(offset).collect(),
+                        },
+                    }));
+                } else {
+                    // Empty conceal inventory preserves local-context provenance
+                    // for subsequent edits before the async classifier returns.
+                    regions.push(Region::Conceal {
+                        block: updated.clone(),
+                        markers: Vec::new(),
+                    });
+                }
             }
             if index < first || index > last {
                 regions.push(match region {
@@ -278,10 +288,15 @@ impl RetainedPresentation {
                 })
             })
             .collect();
-        styles.extend(classified.styles.iter().map(|s| StyleSpan {
-            range: offset(&s.range),
-            style: s.style,
-        }));
+        styles.extend(
+            classified
+                .iter()
+                .flat_map(|c| &c.styles)
+                .map(|s| StyleSpan {
+                    range: offset(&s.range),
+                    style: s.style,
+                }),
+        );
         styles.sort_by_key(|s| s.range.start);
         let mut marker_scopes: Vec<_> = self
             .marker_scopes
@@ -290,8 +305,8 @@ impl RetainedPresentation {
             .collect();
         marker_scopes.extend(
             classified
-                .marker_scopes
                 .iter()
+                .flat_map(|c| &c.marker_scopes)
                 .map(|(m, s)| (offset(m), offset(s))),
         );
         marker_scopes.sort_by_key(|(m, _)| m.start);
@@ -616,7 +631,7 @@ mod tests {
     }
 
     #[test]
-    fn structural_local_parse_refuses_global_context_and_oversized_input() {
+    fn structural_local_parse_refuses_global_context() {
         let old = snapshot(1, "plain text\n\n**AFTER**");
         for new in [
             "---\nplain text\n\n**AFTER**",
@@ -628,10 +643,80 @@ mod tests {
                 .remap(&snapshot(2, new))
                 .is_none());
         }
-        let new = format!("plain\n{}\n\n**AFTER**", "x".repeat(4097));
-        assert!(RetainedPresentation::new(&classify(&old))
-            .remap(&snapshot(2, &new))
-            .is_none());
+    }
+
+    #[test]
+    #[ignore = "manual same-host timing probe; run with --ignored --nocapture"]
+    fn structural_edit_timing_probe() {
+        use std::time::Instant;
+        for (count, padding) in [(1, 0), (100, 0), (600, 0), (600, 40_000)] {
+            let original = format!(
+                "plain text\n\n{}{}",
+                "**bold** [label](destination)\n\n".repeat(count),
+                "x".repeat(padding)
+            );
+            let base = RetainedPresentation::new(&classify(&snapshot(1, &original)));
+            let mut local_times = Vec::new();
+            let mut full_times = Vec::new();
+            for iteration in 0..100 {
+                let current = snapshot(2, &original.replacen("plain text", "plain\ntext", 1));
+                let started = Instant::now();
+                let mapped = base.remap(&current).unwrap();
+                std::hint::black_box(mapped.project(&Active::default()).unwrap());
+                local_times.push(started.elapsed().as_micros());
+                let started = Instant::now();
+                let fresh = RetainedPresentation::new(&classify(&current));
+                std::hint::black_box(fresh.project(&Active::default()).unwrap());
+                full_times.push(started.elapsed().as_micros());
+                assert_eq!(
+                    mapped.project(&Active::default()).unwrap().display(),
+                    fresh.project(&Active::default()).unwrap().display(),
+                    "iteration {iteration}"
+                );
+            }
+            local_times.sort_unstable();
+            full_times.sort_unstable();
+            eprintln!("blocks={count} bytes={} local_us p50={} p95={} max={} full_us p50={} p95={} max={}",
+                original.len(), local_times[50], local_times[95], local_times[99],
+                full_times[50], full_times[95], full_times[99]);
+        }
+    }
+
+    #[test]
+    fn oversized_local_edits_keep_outer_projection_until_adoption() {
+        let original = format!(
+            "**BEFORE**\n\nplain {}\n\n**AFTER** [label](destination)",
+            "x".repeat(4097)
+        );
+        let mut retained = RetainedPresentation::new(&classify(&snapshot(1, &original)));
+        for generation in 2..6 {
+            let text = original.replace(
+                "plain ",
+                &format!("plain{}", "\n".repeat(generation as usize)),
+            );
+            let current = snapshot(generation, &text);
+            retained = retained.remap(&current).expect("bounded raw dirty run");
+            let projected = retained.project(&Active::default()).unwrap();
+            assert!(projected.display().starts_with("BEFORE\n\n"));
+            assert!(projected.display().ends_with("AFTER label"));
+            let label = projected.display().rfind("label").unwrap();
+            let source = projected
+                .display_to_source(&current, label, Bias::Right)
+                .unwrap();
+            assert_eq!(&text[source..source + 5], "label");
+            assert_eq!(
+                projected.display(),
+                RetainedPresentation::new(&classify(&current))
+                    .project(&Active::default())
+                    .unwrap()
+                    .display()
+            );
+        }
+        let global = snapshot(6, &original.replace("plain ", "plain\n```\n"));
+        assert!(
+            retained.remap(&global).is_none(),
+            "global context still invalidates retention"
+        );
     }
 
     #[test]

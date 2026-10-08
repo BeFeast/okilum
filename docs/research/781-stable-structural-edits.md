@@ -9,9 +9,12 @@ mouse-up displacement reported on beta 8503.
 An edit spanning a contiguous run of accepted blocks and whitespace gaps can
 synchronously classify at most 4 KiB and retain the other blocks' projection
 and styles. Unsupported source between accepted blocks prevents local reuse. The global async
-classifier remains authoritative. Global syntax, edits crossing unsupported containers and larger
-blocks still fall back conservatively; this is incomplete acceptance, not a
-claim that all Enter paths are fixed. The byte cap is not a measured time bound.
+classifier remains authoritative. Global syntax and edits crossing unsupported containers still fall back
+conservatively. Context-local runs above 4 KiB stay raw only within the edited
+run; validated outer blocks retain their mapped projection and styles. Repeated
+structural edits preserve this local-context provenance until async adoption.
+This is incomplete acceptance, not a claim that all Enter paths are fixed.
+The byte cap is not a measured time bound.
 
 `RetainedPresentation::prepare_reveal` returns an immutable `RevealSnapshot`.
 Its projection and `is_raw(current, scope)` share the same validated selection
@@ -76,3 +79,22 @@ The gpui-kit gesture regression checks release preserves projected text and epoc
 then uses keyboard movement as a positive control for deferred provider adoption.
 This is not a claim of native wide/narrow anchor or full S3a acceptance; those
 measurements remain required on the final integrated build.
+
+## Local-context oversize and initial timing probe
+
+A structural edit above 4 KiB no longer drops all outer projection solely because
+of the local parser cap. Only the dirty run is raw, with no stale inline styles;
+its validated outer ranges and source maps survive repeated edits before adoption.
+Global syntax guards still win over this retention. This does not promise stable
+geometry inside the dirty run when async classification eventually arrives.
+
+The ignored `structural_edit_timing_probe` compares remap+projection with full
+classification+projection on the same host, checking equal displayed text each
+iteration. An initial unoptimized maestro run (100 samples, other builds active)
+reported local/full median milliseconds: 1 block 0.099/0.146; 100 blocks
+7.001/19.555; 600 blocks, 18,612 bytes 43.151/123.571; 600 blocks, 58,612 bytes
+57.611/139.380. Local p95 for the last case was 87.425 ms (max 156.529 ms).
+These are diagnostic debug measurements, not a release frame-budget PASS.
+The parser cap alone does not bound whole-plan mapping/projection cost. A controlled
+optimized run and isolation of projection rebuilding are still required before
+claiming the synchronous path meets the interaction budget.
