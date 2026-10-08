@@ -5,6 +5,20 @@ use gpui::{Pixels, ShapedLine};
 use unicode_bidi::BidiInfo;
 use unicode_segmentation::UnicodeSegmentation;
 
+/// Which neighboring logical grapheme owns the caret. This is independent of
+/// soft-wrap affinity; one boolean cannot encode both choices.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Affinity {
+    Before,
+    After,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Caret {
+    pub index: usize,
+    pub affinity: Affinity,
+}
+
 #[derive(Debug)]
 pub struct Cell {
     pub source: Range<usize>,
@@ -105,17 +119,72 @@ impl Geometry {
         edges
     }
 
-    /// Hit-testing is local to a visual cell, not a search over source-order glyphs.
-    pub fn hit(&self, x: Pixels) -> Option<(usize, Pixels)> {
+    pub fn position(&self, caret: Caret) -> Option<Pixels> {
+        self.cells.iter().find_map(|cell| match caret.affinity {
+            Affinity::Before if cell.source.start == caret.index => Some(cell.leading()),
+            Affinity::After if cell.source.end == caret.index => Some(cell.trailing()),
+            _ => None,
+        })
+    }
+
+    /// Select the visual cell first, so an equal-X edge in another directional
+    /// run cannot steal its logical index. Preserve ownership at the boundary.
+    pub fn hit(&self, x: Pixels) -> Option<Caret> {
+        let cell = self.cells.iter().min_by_key(|cell| {
+            if x < cell.left {
+                cell.left - x
+            } else if x > cell.right {
+                x - cell.right
+            } else {
+                gpui::px(0.)
+            }
+        })?;
+        if (cell.leading() - x).abs() <= (cell.trailing() - x).abs() {
+            Some(Caret {
+                index: cell.source.start,
+                affinity: Affinity::Before,
+            })
+        } else {
+            Some(Caret {
+                index: cell.source.end,
+                affinity: Affinity::After,
+            })
+        }
+    }
+
+    /// Move in visual X order, retaining the selected edge's logical ownership.
+    /// At row limits the caller decides paragraph/wrap traversal.
+    pub fn step(&self, caret: Caret, right: bool) -> Option<Caret> {
+        let x = self.position(caret)?;
         self.cells
             .iter()
             .flat_map(|cell| {
                 [
-                    (cell.source.start, cell.leading()),
-                    (cell.source.end, cell.trailing()),
+                    (
+                        Caret {
+                            index: cell.source.start,
+                            affinity: Affinity::Before,
+                        },
+                        cell.leading(),
+                    ),
+                    (
+                        Caret {
+                            index: cell.source.end,
+                            affinity: Affinity::After,
+                        },
+                        cell.trailing(),
+                    ),
                 ]
             })
-            .min_by_key(|(_, position)| (*position - x).abs())
+            .filter(|(_, candidate)| {
+                if right {
+                    *candidate > x
+                } else {
+                    *candidate < x
+                }
+            })
+            .min_by_key(|(_, candidate)| (*candidate - x).abs())
+            .map(|(caret, _)| caret)
     }
 
     pub fn selection(&self, range: Range<usize>) -> Vec<Range<Pixels>> {

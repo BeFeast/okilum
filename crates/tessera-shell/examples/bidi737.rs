@@ -38,16 +38,31 @@ fn main() {
                     assert!(map.edges(cell.source.end).contains(&cell.trailing()));
                     let near_start = cell.leading() * 0.9 + cell.trailing() * 0.1;
                     let near_end = cell.leading() * 0.1 + cell.trailing() * 0.9;
-                    // At a directional boundary, the same visual X can have two
-                    // logical offsets. Verify position here; affinity is explicit.
-                    assert_eq!(map.hit(near_start).unwrap().1, cell.leading());
-                    assert_eq!(map.hit(near_end).unwrap().1, cell.trailing());
+                    let start_hit = map.hit(near_start).unwrap();
+                    let end_hit = map.hit(near_end).unwrap();
+                    assert_eq!(start_hit.index, cell.source.start);
+                    assert_eq!(end_hit.index, cell.source.end);
+                    assert_eq!(map.position(start_hit), Some(cell.leading()));
+                    assert_eq!(map.position(end_hit), Some(cell.trailing()));
+                    for right in [false, true] {
+                        if let Some(next) = map.step(start_hit, right) {
+                            let next_x = map.position(next).unwrap();
+                            assert!(if right { next_x > cell.leading() }
+                                else { next_x < cell.leading() });
+                            let previous = map.step(next, !right).unwrap();
+                            assert_eq!(map.position(previous), Some(cell.leading()));
+                        }
+                    }
                 }
                 if text == "abc שלום xyz" {
                     let internal: Vec<_> = [6, 8, 10].map(|i| map.edges(i)).into();
                     assert!(internal.iter().all(|edges| edges.len() == 1));
                     assert!(internal[0][0] > internal[1][0]);
                     assert!(internal[1][0] > internal[2][0]);
+                    let before = geometry::Caret { index: 4, affinity: geometry::Affinity::Before };
+                    let after = geometry::Caret { index: 4, affinity: geometry::Affinity::After };
+                    assert_ne!(map.position(before), map.position(after),
+                        "same logical offset has two positions at a bidi boundary");
                     let last_letter = map.selection(10..12);
                     assert_eq!(last_letter.len(), 1);
                     assert!(last_letter[0].end - last_letter[0].start < px(15.));

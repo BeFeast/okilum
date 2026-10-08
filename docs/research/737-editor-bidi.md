@@ -99,3 +99,20 @@ together; patching only `x_for_index` would leave wrong selection and clicks.
 
 Trace: `~/.cache/tessera-qa/737/native-geometry.log`. Build and strict example clippy
 logs are adjacent. No UI before/after or product fix is claimed by these assertions.
+
+### Directional affinity and pointer ownership
+
+The prototype now represents a caret as `(byte index, Before|After)`, independently
+of the existing soft-wrap affinity. It resolves an X hit to the containing visual
+cell before choosing its nearest edge. This fixes a weakness of the first probe:
+globally nearest equal-X edges could return the right coordinate with the wrong
+logical offset. Native assertions now verify the logical index as well as X for
+both sides of every cell in all eight fixtures.
+
+For `abc שלום xyz`, offset 4 has two distinct positions depending on affinity.
+Visual Left/Right traverses increasing/decreasing X and retains edge ownership;
+stepping back restores the prior visual position. The probe does not claim that
+every equivalent equal-X logical state must be identical after a round trip.
+Native run `native-affinity.log` exits successfully. This narrows the integration
+contract but remains isolated: product clicks, selection, IME and wrapped-row
+state have not yet been converted, and #737 is still open.
