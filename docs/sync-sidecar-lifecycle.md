@@ -249,7 +249,7 @@ A real UnixStream pair tests framing only with an injected peer gate; it is not
 native peer-authentication or macOS/Windows supervisor acceptance. Native IPC,
 full updater integration and complete Sync acceptance remain open under #588.
 
-### Windows pipe peer identity primitive (native run pending)
+### Windows pipe peer identity primitive
 
 `supervisor::ipc::windows_peer::ProcessPeer` consumes an owned process handle
 obtained by the native launch/signature ownership layer. It never opens a process
@@ -276,5 +276,13 @@ processes with cleanup on all return paths. One checks both directions plus SID,
 role and file rejection. The other confirms an actual child connection, refuses
 a different live process of the same user, accepts the captured child, then
 refuses that handle after exit. The fixture's default token pipe DACL is not
-production endpoint ACL acceptance. Cross-compilation does not establish that
-these tests ran; Windows runner execution is required before this slice merges.
+production endpoint ACL acceptance.
+
+The native run on windows-2022, Rust 1.99.0 MSVC passed 41 `sidecar::` tests with
+zero failures or ignored tests, including both named pipe-peer fixtures:
+https://github.com/BeFeast/tessera/actions/runs/37813567283 . Run/source SHA was
+`b4a359be85e3bd62fbaccc1651fb1c9fee046380`, tree
+`97c2613b4335630fb9acf1e589ee265a4401424d`, with no extra source/workflow commit.
+The dispatch used package `tessera-sync-controller`, no features, filter
+`sidecar::`, and one test thread. This confirms this peer-identity primitive,
+not the remaining production transport, private endpoint ACL or Sync acceptance.
