@@ -4,6 +4,7 @@ pkg-config
 curl
 git
 mold
+zstd
 libwayland-dev
 libxkbcommon-dev
 libxkbcommon-x11-dev
