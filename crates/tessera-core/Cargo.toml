@@ -30,6 +30,10 @@ euclid = "0.22"
 palette = "0.7"
 # Canonical source/display projection boundaries; already pinned transitively.
 unicode-segmentation = "1.13.3"
+# Log viewer indexing (#602): line splitting and large-file mapping. Both
+# are already in Cargo.lock through tantivy and gpui.
+memchr = "2"
+memmap2 = "0.9"
 
 # Exact source snapshots and durable operation receipts (AI Brain POC).
 sha2 = "0.10"

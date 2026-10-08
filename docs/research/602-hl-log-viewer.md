@@ -665,3 +665,51 @@ grep -c '"level":"error"' app.jsonl                        # 23873, positive con
 The probe crates (`hl` as a path dependency) and the option (c) prototype are
 described in §1.2 and §1.7. They are deliberately not committed: this branch
 carries research only.
+
+## Implementation notes (slices 1–2)
+
+Decisions taken while building `tessera_core::log` and `reader_log.rs`. They
+are open to review; none changes the recommendation above.
+
+- **Snapshot storage.** Files up to 32 MiB are read into a vector; larger
+  files are copied into anonymous mapped pages and then made read-only
+  (`memmap2`, already in `Cargo.lock`). Both keep the bytes and their index
+  unchanged when the canonical log is overwritten or truncated. File-backed
+  mapping was rejected during intake: a truncation regression reproduced
+  SIGBUS. Copying and indexing run on the worker; no snapshot is written to
+  the vault. The snapshot covers at most the size measured on open; if the
+  file shrinks while being read, only the bytes actually read are indexed.
+- **Size cap.** Files above 2 GiB are refused with a message (open question 4
+  above). Nothing is truncated silently.
+- **Index entry.** 32 bytes: offset, timestamp, line number, length, level.
+  Blank lines are not entries but keep line numbering exact.
+- **Formats.** The verdict comes from the first 256 non-blank lines (at most
+  64 KiB, never cutting a line). logfmt requires every token to be `key=value`,
+  so prose such as `Starting server at port=8080` is an unparsed row rather than
+  a record with invented boolean keys. `Mixed` (JSON and logfmt, each at least a
+  tenth of the sample) parses each line by its first byte.
+- **Levels.** A record without a level field is `Missing` (`---`), an unmapped
+  value is `Unknown`, and a line that is not a record is `Unparsed` (`RAW`).
+  Nothing is inferred: Tessera's diagnostic records with an `error` key stay
+  `---`, and the status line says "No record has a level". Numeric levels follow
+  bunyan/pino (10–60); other numbers are `Unknown`.
+- **Timestamps.** RFC 3339 plus space separator, comma fraction and `±HHMM`
+  offsets; epoch numbers by magnitude (s/ms/µs/ns), decimals computed exactly.
+  A value without an offset is read as UTC, which displays it as written. The
+  highest-priority time alias decides; an unparseable one is "no timestamp", not
+  a fallback to another field.
+- **Fields.** Lossless: original key spelling, source order, duplicates kept,
+  numbers as written (`812.50`), nested objects flattened to dotted keys, arrays
+  as raw JSON.
+- **Reader.** A log always opens in the quick viewer, even inside an open
+  folder. The log is the remembered document of that quick viewer, so a restart
+  reopens it. Sibling logs clicked in the quick viewer's tree are indexed off
+  the UI thread; logs inside a vault keep the file card until slice 6.
+- **Measured** on a 4 vCPU Intel Xeon @ 2.10 GHz VM with 15 GiB RAM, release
+  build, warm cache. That is the same VM shape as §1.6/§1.7 but a different
+  session, so it is not a like-for-like comparison with those numbers:
+  the `#[ignore]` probe (`cargo test -p tessera-core --release --lib
+  log::tests::throughput -- --ignored --nocapture`) indexed a 100 MiB seeded
+  JSON-lines file (531,440 records) in 0.18 s on 4 threads and 0.41 s on one,
+  with a 16.2 MiB index. Its counts match both the generator and an independent
+  byte search.

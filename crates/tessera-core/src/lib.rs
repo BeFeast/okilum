@@ -22,6 +22,7 @@ pub mod ir;
 pub mod link_candidates;
 #[cfg(unix)]
 pub mod link_rewrite;
+pub mod log;
 pub mod maestro_observation;
 #[cfg(unix)]
 pub mod note_files;
