@@ -778,3 +778,17 @@ Newer reconciliation supersedes older work for the same note. Closing the note
 clears canonical source; HTML mode carries no canonical Markdown snapshot.
 This is presentation evidence, not a write capability: native task edits still
 require the displayed Tasks index revision and the guarded FileEditor API.
+
+
+### Network vault availability (#816)
+
+A known network vault with no scan progress for five to six seconds shows “Vault location
+is not responding — showing last loaded content”. This is a bounded UI notice,
+not proof of disconnection: a filesystem call may still be waiting inside the OS.
+The last document and drafts remain available. Retry coalesces with the in-flight
+scan rather than creating another blocked worker; once a failed scan has ended,
+Retry starts a new one. Successful reconciliation shows a transient “Back online,
+rescanned” confirmation and retains the normal network Rescan control. A root read
+failure must not replace the last usable inventory with an empty success.
+Unreadable counts cover inventory entries only; watcher limitations and preparation
+warnings are separate. Native SMB acceptance uses only the disposable #516 fixture.
