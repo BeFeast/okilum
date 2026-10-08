@@ -33,6 +33,23 @@ back to generic diagnostics. That presentation defect remains separate; transpor
 recovery passing does not waive it. Case collisions and actual OS disk-full recovery
 also remain open.
 
+## Linux case variants and rename
+
+`linux_case_variants_and_case_only_rename_preserve_content` passed on CT141 in
+8.83 seconds with fresh loopback hub 1.29.5 and client 2.1.6. A successful first
+transfer establishes the positive control; the client then receives both `Case.md`
+and `case.md` with distinct checked contents. Renaming one to a non-colliding name
+and renaming the other only by case both propagate without losing either content.
+
+An initial attempt to require a case-conflict error failed: the Linux receiver
+accepted both names even with `caseSensitiveFS=false`. That option does not emulate
+a case-insensitive filesystem. This Linux result is not evidence for collision
+rejection on default macOS/Windows volumes. Native acceptance remains required on
+an isolated case-insensitive volume: transfer the first spelling, introduce the
+second with different content, observe the explicit collision error and preserve
+the original, then rename the second and verify both contents after recovery.
+Do not run that destructive fixture on a personal vault.
+
 ## Reproduce on CT141 only
 
 ```sh

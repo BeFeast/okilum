@@ -635,6 +635,106 @@ fn owned_folder_and_external_replica_keep_their_boundaries() -> Result<()> {
     Ok(())
 }
 
+/// Linux preserves distinct case variants; this does not emulate macOS/Windows.
+#[test]
+#[ignore = "requires CT141 isolated pinned hub/client binaries"]
+fn linux_case_variants_and_case_only_rename_preserve_content() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let hub = Peer::new(
+        root.path(),
+        "hub",
+        std::env::var_os("TESSERA_SYNC_HUB")
+            .context("hub binary")?
+            .into(),
+    )?;
+    let client = Peer::new(
+        root.path(),
+        "client",
+        std::env::var_os("TESSERA_SYNC_CLIENT")
+            .context("client binary")?
+            .into(),
+    )?;
+    let id = "case-collision-fixture";
+    hub.api.add_device(&device(&client, false))?;
+    client.api.add_device(&device(&hub, false))?;
+    hub.api
+        .add_paused_folder(&folder(&hub, &client, id, "sendreceive"))?;
+    client
+        .api
+        .add_paused_folder(&folder(&client, &hub, id, "sendreceive"))?;
+    // Leave the receiver's default case handling in place. On Linux, false
+    // does not turn the filesystem into a case-insensitive volume.
+    hub.api
+        .patch_folder(id, &json!({"caseSensitiveFS":true,"paused":false}))?;
+    client
+        .api
+        .patch_folder(id, &json!({"caseSensitiveFS":false,"paused":false}))?;
+    write(&hub.vault, "Case.md", "original uppercase note")?;
+    hub.api.scan(id)?;
+    wait("case fixture positive transfer control", || {
+        Ok(fs::read_to_string(client.vault.join("Case.md"))
+            .ok()
+            .as_deref()
+            == Some("original uppercase note"))
+    })?;
+    write(&hub.vault, "case.md", "distinct lowercase note")?;
+    hub.api.scan(id)?;
+    wait("Linux receives distinct case variants", || {
+        Ok(fs::read_to_string(client.vault.join("case.md"))
+            .ok()
+            .as_deref()
+            == Some("distinct lowercase note"))
+    })?;
+    assert_eq!(
+        fs::read_to_string(client.vault.join("Case.md"))?,
+        "original uppercase note"
+    );
+    assert_eq!(
+        fs::read_to_string(hub.vault.join("Case.md"))?,
+        "original uppercase note"
+    );
+    assert_eq!(
+        fs::read_to_string(hub.vault.join("case.md"))?,
+        "distinct lowercase note"
+    );
+    fs::rename(hub.vault.join("case.md"), hub.vault.join("renamed.md"))?;
+    hub.api.scan(id)?;
+    // Resume to retry pending pulls promptly rather than relying on backoff.
+    client.api.patch_folder(id, &json!({"paused":true}))?;
+    client.api.patch_folder(id, &json!({"paused":false}))?;
+    wait(
+        "renamed note transfers without losing either content",
+        || {
+            Ok(fs::read_to_string(client.vault.join("renamed.md"))
+                .ok()
+                .as_deref()
+                == Some("distinct lowercase note"))
+        },
+    )?;
+    assert_eq!(
+        fs::read_to_string(client.vault.join("Case.md"))?,
+        "original uppercase note"
+    );
+    assert!(!client.vault.join("case.md").exists());
+    fs::rename(hub.vault.join("Case.md"), hub.vault.join("CASE.md"))?;
+    hub.api.scan(id)?;
+    wait("case-only rename propagates with content intact", || {
+        Ok(!client.vault.join("Case.md").exists()
+            && fs::read_to_string(client.vault.join("CASE.md"))
+                .ok()
+                .as_deref()
+                == Some("original uppercase note"))
+    })?;
+    assert_eq!(
+        fs::read_to_string(client.vault.join("renamed.md"))?,
+        "distinct lowercase note"
+    );
+    println!(
+        "Linux case variants: both contents retained; distinct and case-only renames propagated"
+    );
+    Ok(())
+}
+
 /// Readiness protocol experiment only: never promotes the folder.
 #[test]
 #[ignore = "requires CT141 isolated hub/client binaries; synthetic large vault"]
