@@ -28,7 +28,7 @@ pub fn format(
     }
     let mut escaped = String::new();
     for c in text.chars() {
-        if "\\[]*_`<>!".contains(c) {
+        if "\\[]*_`<>!&".contains(c) {
             escaped.push('\\');
         }
         escaped.push(c);
@@ -88,6 +88,14 @@ mod tests {
         .unwrap();
         assert!(line.contains(r"Review \[x\](evil) - \[ \] \*second\*"));
         assert_eq!(crate::tasks::parse("Reminders.md", &line).len(), 1);
+        let literal = format(
+            "Keep &amp; literal",
+            "Start.md",
+            None,
+            date!(2026 - 11 - 01),
+        )
+        .unwrap();
+        assert!(literal.contains(r"Keep \&amp; literal"));
     }
 
     #[test]
