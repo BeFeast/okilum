@@ -177,38 +177,31 @@ sleep/offline, update without Reader, moved/duplicate/trashed app, child exit an
 unchanged device identity on real macOS 13+ and Windows. Only synthetic vaults and
 the isolated CT141 test hub are authorized. Production CT119 is not part of this work.
 
-### Native process-tree and scheduler diagnostics
+### Windows native acceptance
 
-The Windows Job Object test passed on hosted windows-2022 / Rust 1.99 MSVC:
-https://github.com/BeFeast/tessera/actions/runs/37754975122 . A live descendant
-was confirmed inside the job before testing explicit termination and kill on
-job close. This establishes that process-tree primitive only.
+Hosted windows-2022 with Rust 1.99.0 (`x86_64-pc-windows-msvc`) verified:
 
-The disabled Task Scheduler fixture failed its owner/state assertion in that
-same run. Its guard reports not-running unconditionally, so the assertion failure
-identifies an owner mismatch; it does not establish which SID Windows selected.
-The next diagnostic logs default and explicit registration owner SDDL/SID,
-principal and native state on the same runner. The candidate supplies an explicit
-owner SID at registration while retaining scheduler default access rules.
-Scheduler acceptance and interactive supervisor execution remain unconfirmed.
+- Private-directory owner/DACL and token SID: four passed, none ignored.
+  https://github.com/BeFeast/tessera/actions/runs/37754095376
+  The held handle prevents rename; releasing it allows rename; an existing shared
+  directory is refused without changing its contents.
+- Process tree and Task Scheduler transport: two passed, none ignored.
+  https://github.com/BeFeast/tessera/actions/runs/37757252886
+  A live parent and descendant are confirmed in the Job Object before explicit
+  stop and kill-on-close. The disabled, uniquely named Scheduler task verifies
+  registration, collision refusal, owner/definition refusal and owned removal.
 
-The subsequent native diagnostic confirmed default owner `Administrators` and
-explicit owner equal to the process user SID; the disabled state was correct.
-https://github.com/BeFeast/tessera/actions/runs/37755638626 . The next failure was
-parsing a decoded BSTR as UTF-8 while its XML declaration still said UTF-16.
-Canonical comparison now removes the transport declaration before parsing,
-retains content/attribute checks, and has a Linux Unicode regression test.
-The next native run must still validate the complete registration/removal test.
+Scheduler registration supplies the process user SID as security owner. The
+runner's default owner was Administrators. Task comparison resolves account names
+with LookupAccountNameW; compares owned fields without ordering; ignores only
+RegistrationInfo URI/SecurityDescriptor and named default values (LeastPrivilege,
+enabled logon trigger/task, unified scheduling, idle StopOnIdleEnd=true and
+RestartOnIdle=false). Unknown fields, non-default privileges, changed execution
+fields and extra actions remain mismatches. Recorded Windows XML and mutation
+cases exercise this comparison on Linux.
 
-The next run reached definition comparison and exposed Scheduler serialization:
-https://github.com/BeFeast/tessera/actions/runs/37756234878 . The exact expected
-and returned XML are retained as regression fixtures. Comparison now ignores
-field order, RegistrationInfo URI/SecurityDescriptor (owner is checked separately),
-and only the named default values: LeastPrivilege, enabled logon trigger/task,
-unified scheduling enabled, idle StopOnIdleEnd=true and RestartOnIdle=false.
-Non-default values and unknown fields remain significant; duplicate actions,
-changed command/arguments/context/principal, privilege escalation and unknown
-settings remain mismatches. Native account spellings in principal/logon trigger
-are resolved with LookupAccountNameW to SID, never compared by username alone.
-The recorded XML passes the portable comparison and mutation regression tests;
-full native Scheduler acceptance remains pending the next dispatch.
+These runs used the verified candidate Rust trees with only CI line-ending
+preparation above them. A combined `sidecar::` native run on the final PR source
+SHA is still required before merge. They do not establish authenticated
+interactive supervisor start/stop, a complete Windows locked journal, or shipped
+Sync lifecycle acceptance. No personal Syncthing state is used.
