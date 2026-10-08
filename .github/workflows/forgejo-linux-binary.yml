@@ -1,0 +1,66 @@
+# Unsigned native QA payload, never a release/publish entrypoint.
+name: forgejo-linux-binary
+on:
+  push:
+    branches: ['forgejo-linux-binary-pr/**']
+permissions:
+  contents: read
+concurrency:
+  group: forgejo-linux-binary-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  linux-binary:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '4'
+      RUSTFLAGS: '-C link-arg=-fuse-ld=mold'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install build and runtime dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            build-essential cmake pkg-config curl git mold zstd \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libfontconfig-dev libfreetype-dev libxcb1-dev libvulkan1
+      - name: Pin source identity
+        id: source
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          echo "sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          rustc -Vv
+      - name: Prepare pinned vendor
+        run: |
+          scripts/vendor-setup.sh
+          scripts/vendor-setup.sh --verify
+          python3 scripts/brand-assets.py verify
+      - name: Build and package Linux QA binary
+        run: |
+          export TESSERA_SOURCE_COMMIT="$GITHUB_SHA"
+          export TESSERA_BUILD_VERSION="$((5000 + GITHUB_RUN_NUMBER))"
+          export TESSERA_RELEASE_VERSION="0.1.$TESSERA_BUILD_VERSION"
+          # Match scripts/arch/PKGBUILD beta profile and default features.
+          cargo build --release --locked -p tessera-shell
+          target/release/tessera --help
+          if ldd target/release/tessera | grep 'not found'; then exit 1; fi
+          python3 scripts/ci/package-linux-binary.py --binary target/release/tessera \
+            --output dist/linux-qa --source-sha "$GITHUB_SHA"
+          cd dist/linux-qa
+          sha256sum -c *.tar.zst.sha256
+          tar --zstd -xf *.tar.zst
+          cd "tessera-linux-x86_64-$GITHUB_SHA"
+          sha256sum -c SHA256SUMS
+          test "$(cat SOURCE_SHA)" = "$GITHUB_SHA"
+          ./tessera --help
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-binary-${{ steps.source.outputs.sha }}
+          path: |
+            dist/linux-qa/*.tar.zst
+            dist/linux-qa/*.tar.zst.sha256
+          retention-days: 3
+          if-no-files-found: error

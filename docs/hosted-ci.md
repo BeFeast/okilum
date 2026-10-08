@@ -15,7 +15,10 @@ cache credentials go to GitHub.
    `native-sync` (sync-controller `sidecar::` tests), `windows-release`, `arch`,
    `brain`, or `inbox`. `linux` is the default. Native tests use default features,
    `--nocapture --test-threads=1` on Windows 2022. For a different package/filter,
-   ask CI owner for one exact-source `windows-native.yml` dispatch.
+   owners use exact-source `windows-native.yml` dispatch; CI owner handles lane failures.
+
+For a runnable Linux QA build, dispatch `commit-ci` with `lane=linux-binary` (`baseline=true` also builds a pinned main snapshot); on muninn download its `linux-binary-<sha>` artifact with `gh run download <run> -R BeFeast/tessera -n linux-binary-<sha>`, verify `sha256sum -c *.tar.zst.sha256`, unpack with `tar --zstd -xf <archive>`, enter the payload directory, verify `sha256sum -c SHA256SUMS` and `SOURCE_SHA`, then run `(flock -w 2700 9 && xvfb-run -a ./tessera --vault /path/to/qa-vault 9>&-) 9>/tmp/tessera-gui-qa.lock` (omit `xvfb-run -a` for a visible session); artifacts expire after three days and require compatible Linux x86_64 runtime libraries.
+
 4. Read the linked GitHub run in the Forgejo job log. Check the run SHA and
    named tests; a green job with zero matches is not acceptance evidence.
    Unsigned release artifacts are available on that GitHub run for three days.
