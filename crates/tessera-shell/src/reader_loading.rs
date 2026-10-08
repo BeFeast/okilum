@@ -148,6 +148,7 @@ fn prepare_log(path: &Path, root: Option<&Path>, cancel: &Cancellation) -> Resul
         document: Some((
             String::new(),
             prepared_links::PreparedDocument {
+                canonical_source: None,
                 source: String::new(),
                 original: Some(String::new()),
                 identities: Vec::new(),
