@@ -34,7 +34,7 @@ pub const READER_PIN_ICON: &str = "icons/pin.svg";
 pub const READER_CLOCK_ICON: &str = "icons/clock.svg";
 pub const READER_COLLAPSE_ICON: &str = "icons/chevrons-down-up.svg";
 pub const READER_FOCUS_ICON: &str = "icons/locate-fixed.svg";
-const IMAGES: [(&str, &[u8]); 23] = [
+const IMAGES: [(&str, &[u8]); 25] = [
     (
         "icons/square-pen.svg",
         include_bytes!("../assets/icons/square-pen.svg"),
@@ -96,6 +96,14 @@ const IMAGES: [(&str, &[u8]); 23] = [
     (
         READER_CLOCK_ICON,
         include_bytes!("../assets/icons/clock.svg"),
+    ),
+    (
+        "icons/project-active.svg",
+        include_bytes!("../assets/icons/project-active.svg"),
+    ),
+    (
+        "icons/project-planned.svg",
+        include_bytes!("../assets/icons/project-planned.svg"),
     ),
     (READER_LIST_ICON, include_bytes!("../assets/icons/list.svg")),
     (READER_LINK_ICON, include_bytes!("../assets/icons/link.svg")),
