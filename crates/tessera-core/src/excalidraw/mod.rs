@@ -11,6 +11,13 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+/// Resolution evidence carried by an internal drawing placeholder URL.
+#[derive(Clone, Debug, serde::Serialize, Deserialize)]
+pub struct UnavailableDrawing {
+    pub target: String,
+    pub candidates: Vec<String>,
+}
+
 pub const MAX_SOURCE_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -235,6 +242,54 @@ mod tests {
 
 #[cfg(test)]
 mod embed_tests {
+    #[test]
+    fn unavailable_embeds_retain_missing_and_ambiguous_evidence() {
+        let temp = tempfile::tempdir().unwrap();
+        for folder in ["Home", "Work"] {
+            std::fs::create_dir(temp.path().join(folder)).unwrap();
+            for name in ["Plan.excalidraw", "Map.excalidraw.md"] {
+                std::fs::write(temp.path().join(folder).join(name), "# Drawing").unwrap();
+            }
+        }
+        std::fs::write(temp.path().join("note.md"), "# Note").unwrap();
+        let vault = crate::Vault::scan(temp.path()).unwrap();
+        for (target, count) in [
+            ("Missing sketch.excalidraw", 0),
+            ("Plan.excalidraw", 2),
+            ("Map.excalidraw.md", 2),
+        ] {
+            let text = crate::render::rewrite_source_images(
+                &crate::render::preprocess(&format!("![[{target}]]")),
+                &vault,
+                "note.md",
+            );
+            let payload = text
+                .split("tessera-drawing-unavailable:")
+                .nth(1)
+                .unwrap()
+                .split([')', ' '])
+                .next()
+                .unwrap();
+            let failure: super::UnavailableDrawing =
+                serde_json::from_str(&crate::document_links::decode(payload)).unwrap();
+            assert_eq!(failure.target, target);
+            assert_eq!(failure.candidates.len(), count, "{text}");
+            if count > 0 {
+                assert_eq!(
+                    failure.candidates,
+                    vec![format!("Home/{target}"), format!("Work/{target}")]
+                );
+            }
+        }
+        let resolved = crate::render::rewrite_source_images(
+            &crate::render::preprocess("![[Home/Plan.excalidraw]]"),
+            &vault,
+            "note.md",
+        );
+        assert!(resolved.contains("file://"), "{resolved}");
+        assert!(!resolved.contains("unavailable"));
+    }
+
     #[test]
     fn embeds_resolve_plugin_notes_and_keep_size_and_code_boundaries() {
         let temp = tempfile::tempdir().unwrap();

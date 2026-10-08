@@ -379,8 +379,63 @@ pub(super) fn render(
         None => div().p_3().child("Loading drawing…").into_any_element(),
     }
 }
+fn unavailable_message(payload: &str) -> (&'static str, String, String) {
+    let decoded = tessera_core::document_links::decode(payload);
+    let (summary, target, details) =
+        match serde_json::from_str::<tessera_core::excalidraw::UnavailableDrawing>(&decoded) {
+            Ok(failure) if failure.candidates.len() > 1 => (
+                "Several drawings match this name",
+                failure.target.clone(),
+                format!(
+                    "Target: {}\nMatches:\n{}",
+                    failure.target,
+                    failure.candidates.join("\n")
+                ),
+            ),
+            Ok(failure) => (
+                "Drawing not found",
+                failure.target.clone(),
+                format!(
+                    "Target: {}\nNo drawing could be opened at this location.",
+                    failure.target
+                ),
+            ),
+            // Old cached placeholders did not retain the resolution reason. Do not
+            // claim absence when that legacy target might have been ambiguous.
+            Err(_) => (
+                "Drawing unavailable",
+                decoded.clone(),
+                format!("Target: {decoded}"),
+            ),
+        };
+    let name = target.rsplit('/').next().unwrap_or(&target);
+    let lower = name.to_ascii_lowercase();
+    let name = if lower.ends_with(".excalidraw.md") {
+        &name[..name.len() - ".excalidraw.md".len()]
+    } else if lower.ends_with(".excalidraw") {
+        &name[..name.len() - ".excalidraw".len()]
+    } else {
+        name
+    };
+    (summary, name.to_owned(), details)
+}
+
+pub(super) fn unavailable(payload: &str, cx: &App) -> AnyElement {
+    let (summary, name, details) = unavailable_message(payload);
+    diagnostic_with_name(summary, Some(name), &details, cx)
+}
+
 // Keep renderer diagnostics available without making them document content.
 fn diagnostic(summary: &'static str, details: &str, cx: &App) -> AnyElement {
+    diagnostic_with_name(summary, None, details, cx)
+}
+
+fn diagnostic_with_name(
+    summary: &'static str,
+    name: Option<String>,
+    details: &str,
+    cx: &App,
+) -> AnyElement {
     let details = SharedString::from(details.to_owned());
     let copy = details.clone();
     h_flex()
@@ -388,7 +443,21 @@ fn diagnostic(summary: &'static str, details: &str, cx: &App) -> AnyElement {
         .p_3()
         .gap_2()
         .text_color(cx.theme().muted_foreground)
-        .child(div().flex_1().child(summary))
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .child(summary)
+                .when_some(name, |view, name| {
+                    view.child(
+                        div()
+                            .text_sm()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(name),
+                    )
+                }),
+        )
         .child(
             div()
                 .id("drawing-diagnostic-details")
@@ -603,6 +672,34 @@ mod tests {
             warnings: vector.warnings,
         }
     }
+    #[test]
+    fn unresolved_drawing_messages_keep_paths_in_details() {
+        let payload = |candidates| {
+            tessera_core::document_links::encode(
+                &serde_json::to_string(&tessera_core::excalidraw::UnavailableDrawing {
+                    target: "Sketches/Weekend.EXCALIDRAW.md".into(),
+                    candidates,
+                })
+                .unwrap(),
+            )
+        };
+        let (summary, name, details) = unavailable_message(&payload(vec![]));
+        assert_eq!(summary, "Drawing not found");
+        assert_eq!(name, "Weekend");
+        assert!(details.contains("Sketches/Weekend.EXCALIDRAW.md"));
+        let (summary, name, details) = unavailable_message(&payload(vec![
+            "Home/Weekend.excalidraw.md".into(),
+            "Work/Weekend.excalidraw.md".into(),
+        ]));
+        assert_eq!(summary, "Several drawings match this name");
+        assert_eq!(name, "Weekend");
+        assert!(details.contains("Home/Weekend.excalidraw.md\nWork/Weekend.excalidraw.md"));
+        assert_eq!(
+            unavailable_message("Old.excalidraw").0,
+            "Drawing unavailable"
+        );
+    }
+
     #[test]
     fn native_fills_and_dark_filter_have_pixel_positive_controls() {
         for style in ["solid", "hachure", "cross-hatch"] {
