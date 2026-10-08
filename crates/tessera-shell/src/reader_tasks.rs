@@ -1041,6 +1041,37 @@ mod tests {
             r.open_note("Dashboard.md", None, window, cx)
         });
         visual.run_until_parked();
+        // A prose edit leaves query rows identical but must publish fresh
+        // revision evidence. An action retained from the old render must fail.
+        let shown_index = reader.update(visual, |r, _| r.tasks_index.clone().unwrap());
+        let shown_rows = shown_index.query(&Query::parse("not done", today()));
+        let prose_changed = format!("{task_source}\nNew prose\n");
+        std::fs::write(root.join("Work.md"), &prose_changed).unwrap();
+        reader.update_in(visual, |r, window, cx| {
+            r.start_incremental(
+                tessera_core::Changes {
+                    changed: ["Work.md".into()].into_iter().collect(),
+                    ..Default::default()
+                },
+                window,
+                cx,
+            );
+        });
+        visual.run_until_parked();
+        reader.update(visual, |r, _| {
+            let fresh_index = r.tasks_index.as_ref().unwrap();
+            assert!(!Arc::ptr_eq(&shown_index, fresh_index));
+            assert_eq!(
+                fresh_index.query(&Query::parse("not done", today())),
+                shown_rows
+            );
+            assert!(shown_index
+                .edit_target(&shown_rows[0], &prose_changed)
+                .is_err());
+            assert!(fresh_index
+                .edit_target(&shown_rows[0], &prose_changed)
+                .is_ok());
+        });
         std::fs::write(
             root.join("Work.md"),
             "# Work\n\n- [x] Finished ✅ 2026-10-06\n",
