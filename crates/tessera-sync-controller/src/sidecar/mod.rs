@@ -10,6 +10,7 @@ use uuid::Uuid;
 pub mod journal;
 pub mod macos;
 pub mod supervisor;
+pub mod update;
 pub mod windows;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
