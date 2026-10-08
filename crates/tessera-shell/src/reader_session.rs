@@ -16,6 +16,7 @@ struct Published {
     titles: Arc<std::collections::HashMap<String, String>>,
     version: u64,
     warnings: Vec<tessera_core::vault::UnreadableEntry>,
+    network: bool,
 }
 
 pub(crate) struct Session {
@@ -72,6 +73,7 @@ impl Reader {
         let state = self.incremental_state.take()?;
         let session = Arc::new(Mutex::new(Session {
             published: Published {
+                network: self.loading.as_ref().is_some_and(|load| load.network),
                 vault: self.vault.clone(),
                 searcher,
                 tasks: self.tasks_index.clone().unwrap_or_default(),
@@ -165,9 +167,13 @@ impl Reader {
                     ..Default::default()
                 },
                 warnings: Vec::new(),
+                network: false,
+                network_waiting: false,
+                progress_revision: 0,
             });
         }
         if let Some(load) = self.loading.as_mut().filter(|load| !load.active) {
+            load.network = published.network;
             load.warnings = published.warnings;
         }
         self.shared_version = published.version;
@@ -211,6 +217,7 @@ impl Reader {
         shared.state = Some(state);
         shared.watcher = self.watcher.take();
         shared.published = Published {
+            network: self.loading.as_ref().is_some_and(|load| load.network),
             vault: self.vault.clone(),
             searcher,
             tasks: self.tasks_index.clone().unwrap_or_default(),
@@ -228,6 +235,15 @@ impl Reader {
         shared.reload = false;
         shared.reload_owner = None;
         self.shared_version = shared.published.version;
+    }
+
+    pub(crate) fn finish_shared_refresh_error(&mut self) {
+        if let Some(session) = &self.shared_session {
+            let mut shared = session.lock().unwrap();
+            shared.busy = false;
+            shared.reload = false;
+            shared.reload_owner = None;
+        }
     }
 
     pub(crate) fn queue_shared_reconcile(

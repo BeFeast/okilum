@@ -38,6 +38,9 @@ pub(crate) struct Loading {
     pub show_progress: bool,
     pub opts: Opts,
     pub warnings: Vec<tessera_core::vault::UnreadableEntry>,
+    pub network: bool,
+    pub network_waiting: bool,
+    pub progress_revision: u64,
 }
 impl Drop for Loading {
     fn drop(&mut self) {
@@ -58,6 +61,7 @@ enum Event {
         /// A log opened in the quick viewer; `document` is then the empty selection.
         log: Option<reader_log::LogDocument>,
     },
+    NetworkRoot(bool),
     Progress(String),
     Siblings(Vault),
     SearchInventory {
@@ -505,6 +509,10 @@ fn prepare_rest_with_snapshot(
     send: &async_channel::Sender<Event>,
     previous: Option<tessera_core::vault::warm::Snapshot>,
 ) -> Result<Event> {
+    send.send_blocking(Event::NetworkRoot(tessera_core::watch::is_network_root(
+        root,
+    )))
+    .map_err(|_| anyhow::anyhow!("Reader closed"))?;
     prepare_rest_with_io_and_snapshot(
         root,
         opts,
@@ -1669,6 +1677,46 @@ impl Reader {
         .detach();
     }
 
+    fn watch_network_progress(&self, cx: &mut Context<Self>) {
+        let generation = self.loading.as_ref().unwrap().generation;
+        cx.spawn(async move |this, cx| {
+            let mut revision = 0;
+            let mut idle_ticks = 0;
+            loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                let keep_waiting = this
+                    .update(cx, |this, cx| {
+                        let Some(load) = this
+                            .loading
+                            .as_mut()
+                            .filter(|load| load.active && load.generation == generation)
+                        else {
+                            return false;
+                        };
+                        if load.progress_revision != revision {
+                            revision = load.progress_revision;
+                            idle_ticks = 0;
+                        } else {
+                            idle_ticks += 1;
+                        }
+                        if load.network && idle_ticks >= 5 && !load.network_waiting {
+                            load.network_waiting = true;
+                            if let Some(trace) = &load.opts.diagnostics {
+                                trace.event("network_not_responding", serde_json::json!({"generation": generation, "idle_seconds": idle_ticks}));
+                            }
+                            cx.notify();
+                        }
+                        true
+                    })
+                    .unwrap_or(false);
+                if !keep_waiting {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
     fn delay_warm_progress(&self, cx: &mut Context<Self>) {
         let generation = self.loading.as_ref().unwrap().generation;
         cx.spawn(async move |this, cx| {
@@ -1851,6 +1899,18 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self
+            .loading
+            .as_ref()
+            .is_some_and(|load| load.active && load.network_waiting)
+        {
+            reader_toast::transient(
+                "Waiting for the vault location; the current scan will resume when it responds.",
+                window,
+                cx,
+            );
+            return;
+        }
         if self.shared_session.is_some() {
             self.queue_shared_reconcile(changes, force_source_read);
             return;
@@ -1885,6 +1945,15 @@ impl Reader {
             use_html: self.use_html,
             ..Default::default()
         };
+        // A stalled filesystem call cannot be cancelled by dropping its task.
+        // Keep one scan in flight even when Retry is clicked repeatedly.
+        if self
+            .loading
+            .as_ref()
+            .is_some_and(|load| load.active && load.network_waiting)
+        {
+            return;
+        }
         self.start_preparation(opts, Some(changes), window, cx);
     }
 
@@ -1926,6 +1995,20 @@ impl Reader {
             .as_ref()
             .map_or(1, |l| l.generation.wrapping_add(1));
         let cancel = Cancellation::default();
+        let network = refresh.is_some() && self.loading.as_ref().is_some_and(|load| load.network);
+        let network_waiting = network
+            && self
+                .loading
+                .as_ref()
+                .is_some_and(|load| load.network_waiting);
+        let warnings = if refresh.is_some() {
+            self.loading
+                .as_ref()
+                .map(|load| load.warnings.clone())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         self.loading = Some(Loading {
             generation,
             cancellation: cancel.clone(),
@@ -1935,8 +2018,12 @@ impl Reader {
             warm: refresh.is_some() && self.vault.inventory_scanned,
             show_progress: !(refresh.is_some() && self.vault.inventory_scanned),
             opts: opts.clone(),
-            warnings: Vec::new(),
+            warnings,
+            network,
+            network_waiting,
+            progress_revision: 0,
         });
+        self.watch_network_progress(cx);
         if self.loading.as_ref().unwrap().warm {
             self.loading.as_mut().unwrap().phase = "Checking search data".into();
             self.delay_warm_progress(cx);
@@ -2153,8 +2240,12 @@ impl Reader {
                                 this.loading.as_mut().unwrap().active = false;
                                 this.loading.as_mut().unwrap().phase = "Ready".into();
                             }
+                            Event::NetworkRoot(network) => {
+                                this.loading.as_mut().unwrap().network |= network;
+                            }
                             Event::Progress(phase) => {
                                 let load = this.loading.as_mut().unwrap();
+                                load.progress_revision = load.progress_revision.wrapping_add(1);
                                 if !load.warm {
                                     load.phase = phase;
                                 }
@@ -2196,6 +2287,15 @@ impl Reader {
                                 sources,
                                 titles,
                             } => {
+                                if this.loading.as_ref().unwrap().network && vault.unreadable.iter().any(|item| item.path == vault.root) {
+                                    let load = this.loading.as_mut().unwrap();
+                                    load.active = false;
+                                    load.network_waiting = true;
+                                    load.phase = "Vault location is unavailable — showing last loaded content".into();
+                                    this.finish_shared_refresh_error();
+                                    cx.notify();
+                                    return;
+                                }
                                 this.incremental_initializing = true;
                                 let index_root = this.vault_root.clone();
                                 let generation = this.loading.as_ref().map(|load| load.generation);
@@ -2239,6 +2339,13 @@ impl Reader {
                                 this.sync_tree();
                                 this.backlink_titles = Arc::new(titles);
                                 this.reconcile_inventory_document(&sources, window, cx);
+                                if this.loading.as_ref().unwrap().network_waiting {
+                                    if let Some(trace) = &this.loading.as_ref().unwrap().opts.diagnostics {
+                                        trace.event("network_recovered", serde_json::json!({"generation": generation}));
+                                    }
+                                    reader_toast::transient("Back online, rescanned", window, cx);
+                                }
+                                this.loading.as_mut().unwrap().network_waiting = false;
                                 this.loading.as_mut().unwrap().active = false;
                                 this.loading.as_mut().unwrap().warnings = warnings;
                                 this.refresh_quick_open(cx);
@@ -2247,8 +2354,13 @@ impl Reader {
                             }
                             Event::Failed(error) => {
                                 this.loading.as_mut().unwrap().active = false;
-                                this.loading.as_mut().unwrap().phase = error;
-                                this.loading.as_mut().unwrap().opts.cache_lease = None;
+                                let load = this.loading.as_mut().unwrap();
+                                load.phase = if load.network {
+                                    load.network_waiting = true;
+                                    "Cannot refresh vault — showing last loaded content".into()
+                                } else { error };
+                                load.opts.cache_lease = None;
+                                this.finish_shared_refresh_error();
                             }
                         }
                         cx.notify();
@@ -2268,8 +2380,17 @@ impl Reader {
         // active loading and failures are visible.
         let muted = cx.theme().muted_foreground;
         let danger = cx.theme().danger;
-        let issue_count = self.vault.unreadable.len()
-            + self.loading.as_ref().map_or(0, |load| load.warnings.len());
+        let issue_count = self.vault.unreadable.len();
+        let warning_count = self.loading.as_ref().map_or(0, |load| {
+            load.warnings
+                .iter()
+                .filter(|warning| !warning.operation.starts_with("watch vault"))
+                .count()
+        });
+        let network_waiting = self
+            .loading
+            .as_ref()
+            .is_some_and(|load| load.network_waiting);
         h_flex()
             .id("reader-loading")
             .flex_shrink(1.)
@@ -2277,7 +2398,7 @@ impl Reader {
             .max_w(px(420.))
             .gap_2()
             .text_xs()
-            .when(issue_count > 0, |view| {
+            .when(issue_count > 0 && !network_waiting, |view| {
                 view.child(
                     Button::new("reader-unreadable-items")
                         .ghost()
@@ -2293,8 +2414,13 @@ impl Reader {
                         })),
                 )
             })
-            .when(self.loading.as_ref().is_some_and(|load| !load.active &&
-                load.warnings.iter().any(|warning| warning.operation.starts_with("watch vault"))), |view| {
+            .when(warning_count > 0 && !network_waiting, |view| {
+                view.child(Button::new("reader-preparation-warnings").ghost().small()
+                    .label(format!("{warning_count} warning{}", if warning_count == 1 { "" } else { "s" }))
+                    .on_click(cx.listener(|this, _, window, cx| this.show_unreadable_items(window, cx))))
+            })
+            .when(self.loading.as_ref().is_some_and(|load| !load.active && !load.network_waiting &&
+                (load.network || load.warnings.iter().any(|warning| warning.operation.starts_with("watch vault")))), |view| {
                 view.child(div().text_color(muted).child("Auto-refresh limited"))
                     .child(Button::new("rescan-network-vault").small().label("Rescan")
                     .tooltip("Automatic refresh is unavailable here. Use Rescan to check changes made by other clients.")
@@ -2305,7 +2431,7 @@ impl Reader {
             .when_some(
                 self.loading.as_ref().filter(|load| {
                     if load.active {
-                        load.show_progress
+                        load.show_progress || load.network_waiting
                     } else {
                         load.phase != "Ready"
                     }
@@ -2322,7 +2448,9 @@ impl Reader {
                         // Error chains can be long; keep Retry and the header
                         // controls reachable and show the full text on hover.
                         let failed = !load.active && !load.phase.contains("cancelled");
-                        let phase = load.phase.clone();
+                        let phase = if load.network_waiting && load.active {
+                            "Vault location is not responding — showing last loaded content".to_string()
+                        } else { load.phase.clone() };
                         div()
                             .id("reader-loading-phase")
                             .min_w_0()
@@ -2330,7 +2458,7 @@ impl Reader {
                             .whitespace_nowrap()
                             .text_ellipsis()
                             .text_color(if failed { danger } else { muted })
-                            .child(load.phase.clone())
+                            .child(phase.clone())
                             .tooltip(move |window, cx| {
                                 gpui_component::tooltip::Tooltip::new(phase.clone())
                                     .build(window, cx)
@@ -2344,7 +2472,7 @@ impl Reader {
                                 .on_click(cx.listener(|this, _, _, cx| this.cancel_loading(cx))),
                         )
                     })
-                    .when(!load.active && load.phase != "Ready", |view| {
+                    .when((!load.active && load.phase != "Ready") || load.network_waiting, |view| {
                         view.child(
                             Button::new("retry-reader-loading")
                                 .label("Retry")
@@ -4172,6 +4300,122 @@ mod tests {
         let mut result = std::collections::BTreeMap::new();
         visit(root, root, &mut result);
         result
+    }
+
+    #[gpui::test]
+    fn network_stall_keeps_document_coalesces_retry_and_recovers(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = TestDirectory::new();
+        let root = temp.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("start.md"), "# Before\nOriginal content").unwrap();
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("start.md".into()),
+                        index_dir: Some(temp.path().join("cache")),
+                        session_directory: Some(temp.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        visual.run_until_parked();
+        // A slow local scan is the negative control: elapsed time alone must
+        // never classify an ordinary folder as a disconnected network vault.
+        for network in [false, true] {
+            let (release, hold) = async_channel::bounded(1);
+            let (content, generation) = reader.update_in(visual, |v, window, cx| {
+                assert!(v.document_ready());
+                assert!(!v.loading.as_ref().unwrap().active);
+                v.loading.as_mut().unwrap().network = network;
+                let mut opts = v.loading.as_ref().unwrap().opts.clone();
+                opts.validation_hold = Some(hold);
+                opts.force_source_read = true;
+                v.start_preparation(opts, Some(Default::default()), window, cx);
+                (
+                    v.content.entity_id(),
+                    v.loading.as_ref().unwrap().generation,
+                )
+            });
+            visual.run_until_parked();
+            for _ in 0..6 {
+                visual.executor().advance_clock(Duration::from_secs(1));
+                visual.run_until_parked();
+            }
+            reader.update_in(visual, |v, window, cx| {
+                let load = v.loading.as_ref().unwrap();
+                assert!(load.active);
+                assert_eq!(load.network_waiting, network);
+                assert_eq!(
+                    v.content.entity_id(),
+                    content,
+                    "last readable document retained"
+                );
+                if network {
+                    v.refresh_inventory(Default::default(), window, cx);
+                    assert_eq!(
+                        v.loading.as_ref().unwrap().generation,
+                        generation,
+                        "Retry must not accumulate blocked filesystem workers"
+                    );
+                }
+            });
+            std::fs::write(
+                root.join("start.md"),
+                format!("# After\nReconnect positive control {network}"),
+            )
+            .unwrap();
+            release.try_send(()).unwrap();
+            visual.run_until_parked();
+            reader.read_with(visual, |v, _| {
+                let load = v.loading.as_ref().unwrap();
+                assert!(!load.active, "released worker completes");
+                assert!(!load.network_waiting);
+                assert_eq!(load.network, network, "network capability survives refresh");
+                assert!(v
+                    .note_source
+                    .contains(&format!("Reconnect positive control {network}")));
+            });
+        }
+        // A completed root failure is different from a blocked syscall: Retry
+        // must start a new scan, while retaining the last usable publication.
+        let offline = temp.path().join("offline");
+        std::fs::rename(&root, &offline).unwrap();
+        let (old_source, failed_generation) = reader.update_in(visual, |v, window, cx| {
+            let old = v.note_source.clone();
+            v.refresh_inventory_unshared(Default::default(), true, window, cx);
+            (old, v.loading.as_ref().unwrap().generation)
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |v, _| {
+            assert!(!v.loading.as_ref().unwrap().active);
+            assert!(v.loading.as_ref().unwrap().network_waiting);
+            assert_eq!(v.note_source, old_source);
+            assert!(!v.vault.notes.is_empty(), "failed root retains inventory");
+        });
+        std::fs::rename(&offline, &root).unwrap();
+        reader.update_in(visual, |v, window, cx| {
+            v.refresh_inventory_unshared(Default::default(), true, window, cx);
+            assert!(v.loading.as_ref().unwrap().generation > failed_generation);
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |v, _| {
+            assert!(!v.loading.as_ref().unwrap().active);
+            assert!(!v.loading.as_ref().unwrap().network_waiting);
+            assert_eq!(v.loading.as_ref().unwrap().phase, "Ready");
+        });
     }
 
     #[test]
