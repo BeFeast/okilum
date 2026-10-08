@@ -16,3 +16,12 @@ slot. The executor supplies local Linux X11 fixture before/after in light and da
 The QA sub-session owns strict UX and released-build verification on muninn;
 executors do not operate that screen. No source-note writes. Test actual glyph clicks, Alt-click,
 keyboard bindings, folder collapse, reversible persistence and Properties isolation.
+
+## QA restoration correction
+
+Bulk actions must restore the effective visible state, including temporary scroll
+folding, rather than only persisted flags. Explicit expansion stays revealed at
+the current tree offset; returning to the top resumes ordinary auto-folding.
+The restore snapshot survives restart. Regression coverage includes all 32 states
+of the five left sections through save/load and repeated scroll observation, plus
+native glyph/Alt-click/shortcuts with content focus and effective visibility.

@@ -2832,13 +2832,31 @@ impl Reader {
     }
 
     fn set_sidebar_sections(&mut self, mode: SectionAction, cx: &mut Context<Self>) {
-        match mode {
-            SectionAction::FoldersOnly => self.sidebar.folders_only(false),
-            SectionAction::ExpandAll => self.sidebar.all_sections(false),
-            SectionAction::ToggleFoldersOnly => self.sidebar.folders_only(true),
-            SectionAction::CollapseAll => self.sidebar.all_sections(true),
+        // Capture the visible state, including automatic folding while scrolling.
+        if self.sidebar.folders_only_restore.is_none()
+            && matches!(
+                mode,
+                SectionAction::FoldersOnly | SectionAction::ToggleFoldersOnly
+            )
+        {
+            self.sidebar.folders_only_restore = Some(reader_sidebar::LEFT_SECTIONS.map(|s| {
+                if s == reader_sidebar::Section::Projects {
+                    self.sidebar.projects_collapsed
+                } else {
+                    self.scroll_sections.closed(s, &self.sidebar.collapsed)
+                }
+            }));
+            // Toggle must enter Folders-only rather than consume the new snapshot.
+            self.sidebar.folders_only(false);
+        } else {
+            match mode {
+                SectionAction::FoldersOnly => self.sidebar.folders_only(false),
+                SectionAction::ExpandAll => self.sidebar.all_sections(false),
+                SectionAction::ToggleFoldersOnly => self.sidebar.folders_only(true),
+                SectionAction::CollapseAll => self.sidebar.all_sections(true),
+            }
         }
-        self.scroll_sections.restore();
+        self.scroll_sections.honor_expanded(&self.sidebar.collapsed);
         self.save_sidebar(cx);
         cx.notify();
     }
@@ -7786,25 +7804,46 @@ mod document_link_landing_tests {
         view.update(visual, |v, cx| {
             v.panels.open(reader_layout::Panel::Notes);
             v.sidebar.toggle_section(Section::Pinned);
+            v.scroll_sections.honor_expanded(&v.sidebar.collapsed);
             cx.notify();
         });
         visual.run_until_parked();
-        let before = view.read_with(visual, |v, _| {
-            LEFT_SECTIONS.map(|s| v.sidebar.is_collapsed(s))
+        let before = view.update(visual, |v, _| {
+            v.scroll_sections.observe(-120.);
+            LEFT_SECTIONS.map(|s| {
+                if s == Section::Projects {
+                    v.sidebar.projects_collapsed
+                } else {
+                    v.scroll_sections.closed(s, &v.sidebar.collapsed)
+                }
+            })
         });
         let toggle = visual.debug_bounds("sidebar-folders-only").unwrap();
         visual.simulate_click(toggle.center(), Modifiers::default());
         visual.run_until_parked();
-        view.read_with(visual, |v, _| {
+        view.update(visual, |v, _| {
+            v.scroll_sections.observe(-120.);
             assert_eq!(
-                LEFT_SECTIONS.map(|s| v.sidebar.is_collapsed(s)),
+                LEFT_SECTIONS.map(|s| if s == Section::Projects {
+                    v.sidebar.projects_collapsed
+                } else {
+                    v.scroll_sections.closed(s, &v.sidebar.collapsed)
+                }),
                 [true, true, true, true, false]
             )
         });
         visual.simulate_click(toggle.center(), Modifiers::default());
         visual.run_until_parked();
-        view.read_with(visual, |v, _| {
-            assert_eq!(LEFT_SECTIONS.map(|s| v.sidebar.is_collapsed(s)), before)
+        view.update(visual, |v, _| {
+            v.scroll_sections.observe(-120.);
+            assert_eq!(
+                LEFT_SECTIONS.map(|s| if s == Section::Projects {
+                    v.sidebar.projects_collapsed
+                } else {
+                    v.scroll_sections.closed(s, &v.sidebar.collapsed)
+                }),
+                before
+            )
         });
         let folders = visual.debug_bounds("sidebar-header-Folders").unwrap();
         // Click the chevron area, not the neighbouring folder actions.
@@ -7816,8 +7855,15 @@ mod document_link_landing_tests {
             },
         );
         visual.run_until_parked();
-        view.read_with(visual, |v, _| {
-            assert!(LEFT_SECTIONS.into_iter().all(|s| v.sidebar.is_collapsed(s)))
+        view.update(visual, |v, _| {
+            v.scroll_sections.observe(-120.);
+            assert!(LEFT_SECTIONS
+                .into_iter()
+                .all(|s| if s == Section::Projects {
+                    v.sidebar.projects_collapsed
+                } else {
+                    v.scroll_sections.closed(s, &v.sidebar.collapsed)
+                }))
         });
         let folders = visual.debug_bounds("sidebar-header-Folders").unwrap();
         visual.simulate_click(
@@ -7828,17 +7874,29 @@ mod document_link_landing_tests {
             },
         );
         visual.run_until_parked();
-        view.read_with(visual, |v, _| {
+        view.update(visual, |v, _| {
+            v.scroll_sections.observe(-120.);
             assert!(LEFT_SECTIONS
                 .into_iter()
-                .all(|s| !v.sidebar.is_collapsed(s)))
+                .all(|s| !if s == Section::Projects {
+                    v.sidebar.projects_collapsed
+                } else {
+                    v.scroll_sections.closed(s, &v.sidebar.collapsed)
+                }))
         });
-        view.update_in(visual, |v, window, cx| v.tree_focus.focus(window, cx));
+        view.update_in(visual, |v, window, cx| {
+            v.content.read(cx).focus_handle().clone().focus(window, cx);
+        });
         visual.simulate_keystrokes(COLLAPSE_SECTIONS_KEY);
         visual.run_until_parked();
-        view.read_with(visual, |v, _| {
+        view.update(visual, |v, _| {
+            v.scroll_sections.observe(-120.);
             assert_eq!(
-                LEFT_SECTIONS.map(|s| v.sidebar.is_collapsed(s)),
+                LEFT_SECTIONS.map(|s| if s == Section::Projects {
+                    v.sidebar.projects_collapsed
+                } else {
+                    v.scroll_sections.closed(s, &v.sidebar.collapsed)
+                }),
                 [true, true, true, true, false]
             )
         });
@@ -7848,15 +7906,21 @@ mod document_link_landing_tests {
             "ctrl-shift-right"
         });
         visual.run_until_parked();
-        view.read_with(visual, |v, _| {
+        view.update(visual, |v, _| {
+            v.scroll_sections.observe(-120.);
             assert!(LEFT_SECTIONS
                 .into_iter()
-                .all(|s| !v.sidebar.is_collapsed(s)))
+                .all(|s| !if s == Section::Projects {
+                    v.sidebar.projects_collapsed
+                } else {
+                    v.scroll_sections.closed(s, &v.sidebar.collapsed)
+                }))
         });
         let collapse = visual.debug_bounds("folders-collapse-all").unwrap();
         visual.simulate_click(collapse.center(), Modifiers::default());
         visual.run_until_parked();
-        view.read_with(visual, |v, _| {
+        view.update(visual, |v, _| {
+            v.scroll_sections.observe(-120.);
             assert!(!v.sidebar.is_collapsed(Section::Folders));
             assert!(!v.tree.rows.iter().any(|row| row.path == "Folder/Note.md"));
         });
