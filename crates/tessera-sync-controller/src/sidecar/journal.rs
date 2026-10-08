@@ -61,12 +61,12 @@ impl UnixJournal {
         Ok(())
     }
 }
-impl LockedJournal for UnixJournal {
-    fn load(&self) -> Result<Option<Journal>> {
+impl UnixJournal {
+    fn read_record<T: serde::de::DeserializeOwned>(&self, name: &str) -> Result<Option<T>> {
         self.check_location()?;
         let fd = match openat(
             &self.directory,
-            NAME,
+            name,
             OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
             Mode::empty(),
         ) {
@@ -91,10 +91,14 @@ impl LockedJournal for UnixJournal {
             serde_json::from_slice(&data).context("invalid sidecar journal; recovery required")?,
         ))
     }
-    fn save(&mut self, journal: &Journal) -> Result<()> {
+    fn write_record<T: serde::Serialize + serde::de::DeserializeOwned>(
+        &mut self,
+        name: &str,
+        journal: &T,
+    ) -> Result<()> {
         self.check_location()?;
         // Refuse corrupt or redirected prior state instead of overwriting it.
-        self.load()?;
+        self.read_record::<T>(name)?;
         let data = serde_json::to_vec(journal)?;
         ensure!(data.len() as u64 <= LIMIT, "sidecar journal exceeds limit");
         let temporary = format!(".sidecar-{}.tmp", Uuid::new_v4());
@@ -109,7 +113,7 @@ impl LockedJournal for UnixJournal {
             file.write_all(&data)?;
             file.sync_all()?;
             self.check_location()?;
-            renameat(&self.directory, temporary.as_str(), &self.directory, NAME)?;
+            renameat(&self.directory, temporary.as_str(), &self.directory, name)?;
             self.directory.sync_all()?;
             Ok(())
         })();
@@ -117,6 +121,39 @@ impl LockedJournal for UnixJournal {
             let _ = unlinkat(&self.directory, temporary.as_str(), AtFlags::empty());
         }
         result
+    }
+}
+impl LockedJournal for UnixJournal {
+    fn load(&self) -> Result<Option<Journal>> {
+        self.read_record(NAME)
+    }
+    fn save(&mut self, value: &Journal) -> Result<()> {
+        self.write_record(NAME, value)
+    }
+}
+impl super::update::Store for UnixJournal {
+    fn load(&self) -> Result<Option<super::update::Update>> {
+        let Some(mut update) = self.read_record::<super::update::Update>("update.json")? else {
+            return Ok(None);
+        };
+        let lifecycle = LockedJournal::load(self)?.context("update has no lifecycle journal")?;
+        ensure!(
+            update.binding == lifecycle.binding,
+            "update binding differs from lifecycle"
+        );
+        update.intent = lifecycle.intent;
+        Ok(Some(update))
+    }
+    fn save(&mut self, update: &super::update::Update) -> Result<()> {
+        let lifecycle =
+            LockedJournal::load(self)?.context("update requires explicit managed enrollment")?;
+        ensure!(
+            update.binding == lifecycle.binding,
+            "update binding differs from lifecycle"
+        );
+        let mut update = update.clone();
+        update.intent = lifecycle.intent;
+        self.write_record("update.json", &update)
     }
 }
 #[cfg(test)]
@@ -207,5 +244,40 @@ mod tests {
         assert!(UnixJournal::open_existing(&link).is_err());
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
         assert!(UnixJournal::open_existing(dir.path()).is_err());
+    }
+    #[test]
+    fn update_reopen_obeys_latest_lifecycle_intent_and_original_binding() {
+        use crate::sidecar::update::{Phase, Runtime, Store, Update};
+        let (dir, mut lifecycle) = fixture();
+        let mut store = UnixJournal::open_existing(dir.path()).unwrap();
+        let runtime = |version: &str| Runtime {
+            version: version.into(),
+            digest: "pinned".into(),
+            location: format!("/private/{version}"),
+        };
+        let mut update = Update {
+            binding: lifecycle.binding.clone(),
+            previous: runtime("old"),
+            candidate: runtime("new"),
+            intent: Intent::Enabled,
+            phase: Phase::Start,
+            rolled_back: false,
+        };
+        assert!(Store::save(&mut store, &update).is_err());
+        LockedJournal::save(&mut store, &lifecycle).unwrap();
+        Store::save(&mut store, &update).unwrap();
+        lifecycle.intent = Intent::Removed;
+        LockedJournal::save(&mut store, &lifecycle).unwrap();
+        drop(store);
+        let mut store = UnixJournal::open_existing(dir.path()).unwrap();
+        let saved = Store::load(&store).unwrap().unwrap();
+        assert_eq!(saved.intent, Intent::Removed);
+        assert_eq!(saved.phase, Phase::Start);
+        update.binding.instance = Uuid::new_v4();
+        assert!(Store::save(&mut store, &update).is_err());
+        assert_eq!(
+            Store::load(&store).unwrap().unwrap().binding,
+            lifecycle.binding
+        );
     }
 }

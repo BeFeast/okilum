@@ -111,6 +111,28 @@ Signature/bundle ownership, authenticated supervisor IPC and stop/reap guards st
 need native implementations. These transports alone cannot establish ownership for
 duplicate/moved bundles or guarantee cleanup on Trash. Those remain native gates.
 
+## Runtime update recovery
+
+The portable update controller performs one persisted phase per call: stop the
+owned instance, select the pre-staged verified candidate, start it, and check its
+actual REST version and device identity. Failed candidate verification/start/health
+selects rollback; rollback stops the instance, re-verifies the previous runtime and
+selects it, then restarts only if lifecycle intent is still Enabled. Host methods
+must enforce a shared hook deadline; this controller neither retries in a loop nor
+downloads payloads in an installer callback.
+
+Selection and start must be idempotent: a crash after an effect but before the
+journal flush replays that phase. An existing pending update cannot be overwritten
+by another candidate or reset by a stale retry. Completion records whether rollback
+occurred. No method creates a new Syncthing identity or edits vault content.
+
+On Unix, `update.json` uses the lifecycle directory lock and the same private,
+atomic, flushed record writer. Each read overlays the current lifecycle intent and
+verifies the original binding; a saved Enabled value cannot override later Remove.
+The native runtime selector, health/version/identity probes, signed payload guards,
+Windows update storage and actual Sparkle/Velopack callbacks remain unimplemented.
+The state-machine tests are injected failure/restart tests, not native updater QA.
+
 ## Validation and remaining delivery
 
 Linux tests cover an inert installation with an Enable positive control; failed
@@ -123,7 +145,7 @@ with clippy for aarch64-apple-darwin and x86_64-pc-windows-msvc on CT141. It use
 small generated probe and seeds dependency resolution from the repository lockfile;
 this avoids GPUI and unrelated native C dependencies. Install the two Rust 1.99.0
 standard-library targets first, and invoke the script inside `tessera-build`.
-Both target checks and the 46 Linux controller tests pass. This is type/lint
+Both target checks and the 54 Linux controller tests pass. This is type/lint
 validation, not linking a signed application or executing either native API.
 The cross-check includes target-gated tests: Windows descriptor alias/missing-owner
 and process-token round-trip tests compile but still require execution on Windows.
