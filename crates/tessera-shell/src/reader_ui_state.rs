@@ -993,6 +993,7 @@ fn mark_saved(generation: u64, cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui_component::WindowExt;
     use ::core::prelude::v1::test;
 
     #[gpui::test]
