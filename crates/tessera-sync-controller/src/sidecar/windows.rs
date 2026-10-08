@@ -24,7 +24,7 @@ pub struct TaskScheduler<A>(pub A);
 pub fn task_name(binding: &Binding) -> String {
     format!("Tessera-Sync-{}", binding.instance)
 }
-fn path(value: &str) -> Result<()> {
+pub(super) fn path(value: &str) -> Result<()> {
     safe_text(value)?;
     let bytes = value.as_bytes();
     ensure!(

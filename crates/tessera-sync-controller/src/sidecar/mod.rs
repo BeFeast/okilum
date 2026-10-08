@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub mod macos;
+pub mod supervisor;
 pub mod windows;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

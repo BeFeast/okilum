@@ -55,6 +55,24 @@ acceptance must capture these and implement explicit semantic normalization if
 needed; do not weaken the comparison to only executable/name or ignore unknown
 fields to make acceptance pass.
 
+## Windows child ownership primitive
+
+The target-gated `supervisor::windows::JobChild` launches the explicit executable
+suspended, attaches it to an unnamed non-inherited Job Object, and only then
+resumes its main thread. The job has kill-on-close enabled, so supervisor exit
+terminates its remaining children. Failed attachment/resume terminates and waits
+for the suspended child. No process is selected for termination by a reused PID.
+Stop terminates the job and waits for both zero active job processes and root
+process exit; a timeout must leave durable removal pending.
+
+Launch arguments disable browser, self-restart and self-upgrade and specify
+separate private config/data paths. Windows quoting, Unicode, spaces and trailing
+backslashes are tested on Linux. The caller must verify immutable staged payload
+and private-directory ownership before launch. This primitive is not yet a
+supervisor executable, authenticated IPC server, TaskGuard implementation or
+native runtime test. Windows acceptance must cover assignment/resume failure,
+supervisor crash, descendants and timeout; cross-clippy cannot prove those effects.
+
 ## macOS adapter
 
 Sync requires macOS 13+, independently of Reader's deployment target. Monterey 12
@@ -94,7 +112,7 @@ with clippy for aarch64-apple-darwin and x86_64-pc-windows-msvc on CT141. It use
 small generated probe and seeds dependency resolution from the repository lockfile;
 this avoids GPUI and unrelated native C dependencies. Install the two Rust 1.99.0
 standard-library targets first, and invoke the script inside `tessera-build`.
-Both target checks and the 26 Linux controller tests pass. This is type/lint
+Both target checks and the 28 Linux controller tests pass. This is type/lint
 validation, not linking a signed application or executing either native API.
 
 Before native release, implement and test the native ownership guards, locked state stores,
