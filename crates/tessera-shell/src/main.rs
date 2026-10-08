@@ -1599,10 +1599,10 @@ impl Reader {
         cx.observe_self(|this, cx| this.record_ui_state(this.ui_state.was_active(), cx))
             .detach();
         cx.observe_window_activation(window, |this, window, cx| {
-            if !window.is_window_active() {
-                this.recent_switcher.cancel();
-                cx.notify();
-            }
+            // Re-entry can precede a compositor's delayed modifier release.
+            // Never carry an unfinished gesture across activation boundaries.
+            this.recent_switcher.cancel();
+            cx.notify();
             this.record_ui_state(window.is_window_active(), cx);
         })
         .detach();
@@ -6352,8 +6352,15 @@ impl Render for Reader {
             .when(reader_ui_state::installed(cx), |view| {
                 view.child(reader_ui_state::capture_scroll(cx.entity().downgrade()))
             })
-            .capture_key_down(cx.listener(|_, _, window, cx| {
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 reader_ui_state::capture_next_frame(cx.entity().downgrade(), window);
+                // Control is still held during the MRU gesture, so the plain
+                // Escape action binding does not match this physical key.
+                if this.recent_switcher.open() && event.keystroke.key == "escape" {
+                    this.recent_switcher.cancel();
+                    cx.stop_propagation();
+                    cx.notify();
+                }
             }))
             .when(self.shortcut_sheet.open, |view| {
                 view.child(self.render_shortcut_sheet(cx))
