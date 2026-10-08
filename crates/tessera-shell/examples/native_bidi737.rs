@@ -26,7 +26,10 @@ impl Fixture {
         println!(
             "{}",
             serde_json::json!({"cursor": editor.cursor(), "selection": editor.selected_range(),
-            "source": editor.value(), "live": self.live})
+            "source": editor.value(), "live": self.live,
+            "caret": editor.cursor_layout().map(|(b, h)| [f32::from(b.origin.x),
+                f32::from(b.origin.y), f32::from(h)]),
+            "scroll": [f32::from(editor.scroll_offset().x), f32::from(editor.scroll_offset().y)]})
         );
     }
 }

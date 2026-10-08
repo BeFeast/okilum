@@ -1,0 +1,97 @@
+--- a/crates/base/src/input/base/movement.rs
++++ b/crates/base/src/input/base/movement.rs
+@@ -712,38 +712,44 @@
+         self.move_vertical(display_lines, window, cx);
+     }
+ 
++    /// Resolve a Home/End target from the painted row, not a separately wrapped
++    /// display map or its leftmost glyph (which can be the logical end in bidi).
++    fn painted_row_boundary(&self, end: bool) -> Option<(usize, bool, super::bidi_geometry::Affinity)> {
++        let last = self.last_layout.as_ref()?;
++        if last.source_stamp != self.source_stamp() { return None; }
++        let displayed = last.project(self.cursor(), ConcealBias::Right)?;
++        for (line, &start) in last.lines.iter().zip(&last.visible_line_byte_offsets) {
++            if displayed >= start && displayed <= start + line.len() {
++                let pos = line.position_for_caret(displayed - start, last,
++                    self.cursor_line_end_affinity, self.cursor_bidi_affinity)?;
++                let (index, wrap, affinity) = line.logical_row_boundary(pos, last, end)?;
++                let bias = if end { ConcealBias::Left } else { ConcealBias::Right };
++                return Some((last.source(start + index, bias)?, wrap, affinity));
++            }
++        }
++        None
++    }
++
+     pub(super) fn home(&mut self, _: &MoveHome, _: &mut Window, cx: &mut Context<Self>) {
+         self.pause_blink_cursor(cx);
+-        // Use the painted row, including projected text and soft-wrap affinity.
+-        if let Some(last) = &self.last_layout {
+-            if last.source_stamp == self.source_stamp() {
+-                if let Some(displayed) = last.project(self.cursor(), ConcealBias::Right) {
+-                    for (line, &start) in last.lines.iter().zip(&last.visible_line_byte_offsets) {
+-                        if displayed >= start && displayed <= start + line.len() {
+-                            if let Some(pos) = line.position_for_caret(displayed - start, last,
+-                                self.cursor_line_end_affinity, self.cursor_bidi_affinity) {
+-                                if let Some((index, wrap, affinity)) = line.closest_caret_for_position(
+-                                    gpui::point(gpui::px(-1.), pos.y), last) {
+-                                    if let Some(source) = last.source(start + index, ConcealBias::Left) {
+-                                        self.cursor_bidi_affinity = affinity;
+-                                        self.move_to_with_affinity(source, Some(MoveDirection::Up), wrap, cx);
+-                                        return;
+-                                    }
+-                                }
+-                            }
+-                        }
+-                    }
+-                }
+-            }
+-        }
+-        let offset = self.start_of_line();
+-        self.move_to(offset, Some(MoveDirection::Up), cx);
++        if let Some((source, wrap, affinity)) = self.painted_row_boundary(false) {
++            self.cursor_bidi_affinity = affinity;
++            self.move_to_with_affinity(source, Some(MoveDirection::Up), wrap, cx);
++        } else {
++            let offset = self.start_of_line();
++            self.move_to(offset, Some(MoveDirection::Up), cx);
++        }
+     }
+ 
+     pub(super) fn end(&mut self, _: &MoveEnd, _: &mut Window, cx: &mut Context<Self>) {
+         self.pause_blink_cursor(cx);
+-        let offset = self.end_of_line();
+-        self.move_to_with_affinity(offset, Some(MoveDirection::Down), true, cx);
++        if let Some((source, wrap, affinity)) = self.painted_row_boundary(true) {
++            self.cursor_bidi_affinity = affinity;
++            self.move_to_with_affinity(source, Some(MoveDirection::Down), wrap, cx);
++        } else {
++            let offset = self.end_of_line();
++            self.move_to_with_affinity(offset, Some(MoveDirection::Down), true, cx);
++        }
+     }
+ 
+     pub(super) fn move_to_start(
+--- a/crates/base/src/input/editor/display_map/text_wrapper.rs
++++ b/crates/base/src/input/editor/display_map/text_wrapper.rs
+@@ -766,6 +766,21 @@
+         None
+     }
+ 
++    /// Logical bounds of the exact shaped row under the caret. A row beginning
++    /// inside an RTL run may have its source start on the right, not the left.
++    /// Keep both affinities: Before owns the first grapheme; After owns the last,
++    /// while wrap affinity keeps a shared end offset on this row.
++    pub(crate) fn logical_row_boundary(&self, pos: Point<Pixels>, last: &LastLayout,
++        end: bool) -> Option<(usize, bool, Affinity)> {
++        let (row, start, _) = self.wrapped_line_at(pos, last)?;
++        let line = &self.wrapped_lines[row];
++        Some(if end {
++            (start + line.len, row + 1 < self.wrapped_lines.len(), Affinity::After)
++        } else {
++            (start, false, Affinity::Before)
++        })
++    }
++
+     /// Get the index for the given position (x, y) in this line layout.
+     ///
+     /// The `pos` is relative to the top-left corner of this line layout, start from (0, 0).
