@@ -1393,6 +1393,7 @@ impl Reader {
             self.move_index = None;
         }
         self.watcher = None;
+        self.watcher_poll_active = false;
         self.watcher_generation = self.watcher_generation.wrapping_add(1);
         self.deferred_vault_changes = Default::default();
         if !preserve_document {
@@ -1422,6 +1423,9 @@ impl Reader {
             );
         }
         self.restore_ui_state(window, cx);
+        if let Some(note) = self.queued_open_note.take() {
+            self.open_note(&note, None, window, cx);
+        }
         self.refresh_quick_open(cx);
         if let Some(trace) = &self.loading.as_ref().unwrap().opts.diagnostics {
             trace.event("document_published", serde_json::json!({ "notes": self.vault.notes.len(), "warm": warm, "unreadable": self.vault.unreadable.len() }));
@@ -1461,6 +1465,25 @@ impl Reader {
             && self.link_original_source.as_deref()
                 == Some(tessera_core::render::without_frontmatter(raw))
         {
+            self.refresh_link_preparation(cx);
+            return;
+        }
+        self.reconcile_published_document(window, cx);
+    }
+
+    /// Refresh from the immutable published graph even when a shared worker owns
+    /// the mutable source baseline. Consuming a publication must not lose this
+    /// window's document refresh merely because another sibling started polling.
+    pub(super) fn reconcile_published_document(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.current_rel.is_empty() {
+            return;
+        }
+        if self.editing.is_some() {
+            self.refresh_source_from_disk(window, cx);
             self.refresh_link_preparation(cx);
             return;
         }
@@ -1686,6 +1709,10 @@ impl Reader {
         }
         self.file_preview = None;
         self.file_menu = None;
+        if opts.vault.as_ref() != Some(&self.vault_root) || opts.open_path.is_some() {
+            self.shared_session = None;
+            self.shared_version = 0;
+        }
         self.start_preparation(opts, None, window, cx);
     }
 
@@ -1698,7 +1725,21 @@ impl Reader {
         self.refresh_inventory_with_read(changes, false, window, cx);
     }
 
-    fn refresh_inventory_with_read(
+    pub(crate) fn refresh_inventory_with_read(
+        &mut self,
+        changes: tessera_core::Changes,
+        force_source_read: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.shared_session.is_some() {
+            self.queue_shared_reconcile(changes, force_source_read);
+            return;
+        }
+        self.refresh_inventory_unshared(changes, force_source_read, window, cx);
+    }
+
+    pub(crate) fn refresh_inventory_unshared(
         &mut self,
         changes: tessera_core::Changes,
         force_source_read: bool,
@@ -2062,6 +2103,7 @@ impl Reader {
                                             this.incremental_initializing = false;
                                             #[cfg(unix)]
                                             { this.move_index = candidates; }
+                                            this.publish_shared_ready();
                                             #[cfg(not(unix))]
                                             let _ = candidates;
                                             cx.notify();

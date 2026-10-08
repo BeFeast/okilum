@@ -42,6 +42,7 @@ mod reader_history;
 mod reader_hover;
 mod reader_image;
 mod reader_incremental;
+mod reader_instance;
 mod reader_layout;
 mod reader_loading;
 #[cfg(unix)]
@@ -60,6 +61,7 @@ mod reader_recovery;
 mod reader_recovery;
 mod reader_replay;
 mod reader_right_panel;
+mod reader_session;
 mod reader_settings;
 #[cfg(target_os = "linux")]
 mod reader_settings_sync;
@@ -515,6 +517,7 @@ struct Opts {
     vault: Option<PathBuf>,
     open_path: Option<PathBuf>,
     single_file: bool,
+    defer_loading: bool,
     reusable_roots: Vec<PathBuf>,
     session_directory: Option<PathBuf>,
     exact_restore: bool,
@@ -1252,6 +1255,9 @@ struct Reader {
     recovery_startup: bool,
     loading: Option<reader_loading::Loading>,
     pending_open_document: Option<reader_loading::PendingDocument>,
+    queued_open_note: Option<String>,
+    shared_session: Option<reader_session::Shared>,
+    shared_version: u64,
     usable_document: bool,
     session_directory: Option<PathBuf>,
     session_records: Option<async_channel::Sender<reader_loading::SessionRecord>>,
@@ -1265,6 +1271,7 @@ struct Reader {
     /// loop only borrows it through the entity.
     watcher: Option<VaultWatcher>,
     watcher_generation: u64,
+    watcher_poll_active: bool,
     #[cfg(test)]
     watcher_poll_hold: Option<async_channel::Receiver<()>>,
     deferred_vault_changes: tessera_core::Changes,
@@ -1473,6 +1480,9 @@ impl Reader {
             ui_state: Default::default(),
             loading: None,
             pending_open_document: None,
+            queued_open_note: None,
+            shared_session: None,
+            shared_version: 0,
             usable_document: false,
             session_directory: opts.session_directory.clone(),
             session_records: None,
@@ -1484,6 +1494,7 @@ impl Reader {
             vault_root: vault_root.clone(),
             watcher: None,
             watcher_generation: 0,
+            watcher_poll_active: false,
             #[cfg(test)]
             watcher_poll_hold: None,
             deferred_vault_changes: Default::default(),
@@ -1640,13 +1651,21 @@ impl Reader {
         .detach();
         this.install_source_lifecycle(window, cx);
         this.start_session_records(cx);
-        this.start_loading(opts, window, cx);
+        if !opts.defer_loading {
+            this.start_loading(opts, window, cx);
+        }
         this
     }
 
     /// Drain/coalesce notifications off the UI thread. Known note batches use
     /// the reconciled baseline, including directory hints. Overflow needs reconcile.
     fn poll_vault(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.shared_session.is_some() {
+            if !self.loading.as_ref().is_some_and(|load| load.active) {
+                self.poll_shared_session(window, cx);
+            }
+            return;
+        }
         if self.loading.as_ref().is_some_and(|l| l.active)
             || self.incremental_active
             || self.incremental_initializing
@@ -1663,6 +1682,7 @@ impl Reader {
         };
         #[cfg(test)]
         let hold = self.watcher_poll_hold.take();
+        self.watcher_poll_active = true;
         let generation = self.watcher_generation;
         let root = self.vault_root.clone();
         cx.spawn_in(window, async move |this, cx| {
@@ -1684,6 +1704,7 @@ impl Reader {
                 {
                     return;
                 }
+                this.watcher_poll_active = false;
                 this.watcher = Some(watcher);
                 if let Some(changes) = changes {
                     if this.loading.as_ref().is_some_and(|load| load.active) {
@@ -1708,6 +1729,16 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.shared_session.is_some() {
+            self.deferred_vault_changes.rescan |= changes.rescan;
+            self.deferred_vault_changes.changed.extend(changes.changed);
+            self.deferred_vault_changes.removed.extend(changes.removed);
+            self.deferred_vault_changes
+                .directories
+                .extend(changes.directories);
+            self.poll_vault(window, cx);
+            return;
+        }
         reader_drawing::invalidate(&self.vault_root, cx);
         if let Some(viewer) = self.pdf_viewer().cloned() {
             viewer.update(cx, |viewer, cx| viewer.check_revision(cx));
@@ -1949,6 +1980,9 @@ impl Reader {
         }
         if let Some(position) = request.restore_position {
             self.scroll_to_position(position, cx);
+        }
+        if self.shared_session.is_some() {
+            self.restore_ui_state(window, cx);
         }
         cx.notify();
     }
@@ -5713,6 +5747,7 @@ fn reader_more_menu(
             .separator()
             .menu("Open file…", Box::new(reader_open::OpenFile))
             .menu("Open folder…", Box::new(reader_open::OpenFolder))
+            .menu("New Window", Box::new(reader_open::NewWindow))
             .separator()
             .item(
                 PopupMenuItem::new(HIDDEN_FILES_MENU)
@@ -6356,6 +6391,22 @@ fn main() {
         opts
     };
 
+    let (instance_lock, instance_requests) = if opts.brain_endpoint.is_none()
+        && !opts.managed_workspace
+    {
+        match reader_instance::connect(&opts) {
+            Ok(reader_instance::Instance::Forwarded) => return,
+            Ok(reader_instance::Instance::Primary(lock, requests)) => (Some(lock), Some(requests)),
+            Err(error) => {
+                eprintln!("Cannot start Reader: {error:#}");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        (None, None)
+    };
+    let _instance_lock = instance_lock;
+
     let platform_phase = diagnostics.phase("platform_application");
     let clipboard = platform::managed_clipboard();
     let app = gpui_platform::application().with_assets(Assets);
@@ -6389,6 +6440,9 @@ fn main() {
         bind_keys(cx);
         reader_open::install(cx);
         reader_open::receive_events(open_rx, cx);
+        if let Some(requests) = instance_requests {
+            reader_instance::receive(requests, cx);
+        }
         #[cfg(all(unix, feature = "brain"))]
         {
             brain::bind_keys(cx);
