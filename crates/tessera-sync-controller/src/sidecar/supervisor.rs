@@ -2,6 +2,8 @@
 //! verification belong to preparation; these primitives are not installer hooks.
 use anyhow::{ensure, Result};
 
+pub mod ipc;
+
 #[derive(Clone, Debug)]
 pub struct Launch {
     pub executable: String,
