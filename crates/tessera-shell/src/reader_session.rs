@@ -65,7 +65,7 @@ impl Reader {
                 tasks: self.tasks_index.clone().unwrap_or_default(),
                 #[cfg(unix)]
                 candidates: self.move_index.clone(),
-                titles: Arc::new(self.backlink_titles.clone()),
+                titles: self.backlink_titles.clone(),
                 version: 1,
                 warnings: self
                     .loading
@@ -166,7 +166,7 @@ impl Reader {
         {
             self.move_index = published.candidates;
         }
-        self.backlink_titles = (*published.titles).clone();
+        self.backlink_titles = published.titles.clone();
         self.backlinks = self.vault.backlinks(&self.current_rel);
         self.quick_open.inventory = Some(Arc::new(self.vault.notes.clone()));
         self.sync_tree();
@@ -202,7 +202,7 @@ impl Reader {
             tasks: self.tasks_index.clone().unwrap_or_default(),
             #[cfg(unix)]
             candidates: self.move_index.clone(),
-            titles: Arc::new(self.backlink_titles.clone()),
+            titles: self.backlink_titles.clone(),
             version: shared.published.version.wrapping_add(1),
             warnings: self
                 .loading
