@@ -8,6 +8,13 @@ use super::*;
 const CARD_WIDTH: f32 = 120.;
 const PREVIEW_HEIGHT: f32 = 64.;
 
+/// Captures the actual UI action's canonical-root guard in tests; preference
+/// writes are disabled by the existing test-only `save_appearance` boundary.
+#[cfg(test)]
+pub(crate) struct ThemeActionVault(pub Option<PathBuf>);
+#[cfg(test)]
+impl Global for ThemeActionVault {}
+
 pub(crate) struct ThemePicker {
     /// Never write presentation state into this vault (see `save_appearance`).
     vault: Option<PathBuf>,
@@ -22,6 +29,15 @@ impl ThemePicker {
             focus: brand::ThemeId::ALL
                 .map(|_| cx.focus_handle().tab_stop(true))
                 .to_vec(),
+        }
+    }
+
+    /// Settings can rebind to another Reader or its Reader can switch vaults.
+    /// Keep the same canonical-root guard as the appearance mode controls.
+    pub(crate) fn set_vault(&mut self, vault: Option<PathBuf>, cx: &mut Context<Self>) {
+        if self.vault != vault {
+            self.vault = vault;
+            cx.notify();
         }
     }
 }

@@ -410,6 +410,8 @@ fn set_appearance(
 }
 /// One app-wide color theme (#349); Light/Dark/System stays a separate choice.
 fn set_theme(theme: brand::ThemeId, vault: Option<&Path>, window: &mut Window, cx: &mut App) {
+    #[cfg(test)]
+    cx.set_global(theme_picker::ThemeActionVault(vault.map(Path::to_path_buf)));
     cx.set_global(brand::ThemeChoice(theme));
     sync_appearance(window, cx);
     window.refresh();
