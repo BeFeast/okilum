@@ -150,6 +150,12 @@ pub(super) fn render(
         }
         View::Tasks(dashboard) => dashboard,
     };
+    // Navigation transfers Markdown focus to the replacement TextView. This
+    // surface hides that view, so keep its keyboard dispatch on the visible
+    // Reader instead. Find/sidebar focus must remain untouched.
+    if reader.content.read(cx).focus_handle().is_focused(window) {
+        reader.focus_handle.focus(window, cx);
+    }
     reader.typed_navigation.active.set(true);
     *reader.typed_navigation.sections.borrow_mut() = dashboard
         .layout
@@ -306,6 +312,103 @@ mod tests {
         assert_eq!(section_target(&sections, "Missing"), None);
         let duplicate = vec![(4, "Focus".into()), (20, "Focus".into())];
         assert_eq!(section_target(&duplicate, "Focus"), None);
+    }
+
+    #[gpui::test]
+    fn heading_navigation_keeps_tasks_keyboard_focus(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let fixture = tempfile::tempdir().unwrap();
+        let vault = fixture.path().join("vault");
+        std::fs::create_dir(&vault).unwrap();
+        std::fs::write(vault.join("Start.md"), "# Start\n\n[[Dashboard#Focus]]\n").unwrap();
+        std::fs::write(
+            vault.join("Dashboard.md"),
+            "---\ntype: dashboard\nview: tasks\n---\n## Focus\n```tasks\nnot done\n```\n",
+        )
+        .unwrap();
+        std::fs::write(
+            vault.join("Work.md"),
+            "- [ ] Ship dashboard\n- [ ] Review checklist\n",
+        )
+        .unwrap();
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(vault.clone()),
+                        note: Some("Start.md".into()),
+                        index_dir: Some(fixture.path().join("index")),
+                        session_directory: Some(fixture.path().join("state")),
+                        panel_settings_override: Some(fixture.path().join("panels.json")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            r.content.read(cx).focus_handle().clone().focus(window, cx)
+        });
+        visual.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-f"
+        } else {
+            "ctrl-f"
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert!(r.find_open, "ordinary note positive control")
+        });
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        // A rendered-link click focuses the Markdown TextView before dispatch.
+        reader.update_in(visual, |r, window, cx| {
+            r.content.read(cx).focus_handle().clone().focus(window, cx);
+        });
+        let url = format!("{WIKI_SCHEME}Dashboard.md#Focus");
+        visual.update(|window, cx| handle_link(&reader.downgrade(), &url, window, cx));
+        visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_millis(100));
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("native-tasks-dashboard").is_some());
+        reader.read_with(visual, |r, _| {
+            assert_eq!(r.current_rel, "Dashboard.md");
+            assert!(r.navigation.pending_landing.is_none());
+        });
+        visual.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-f"
+        } else {
+            "ctrl-f"
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert!(r.find_open, "Find after heading navigation")
+        });
+        visual.simulate_input("Review");
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds("tasks-count-1").is_some(),
+            "Find remains focused and filters native tasks"
+        );
+        visual.simulate_keystrokes("escape escape");
+        visual.run_until_parked();
+        visual.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-k"
+        } else {
+            "ctrl-k"
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert!(r.quick_open.open, "other reader shortcuts remain available")
+        });
     }
 
     #[gpui::test]
