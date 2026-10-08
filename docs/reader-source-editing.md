@@ -516,7 +516,8 @@ link-move journal. An ordinary denied rename with no concurrent changes leaves
 original paths, links and clean drafts, and can be retried.
 
 Reader Quit attempts every save, then permits exit when all latest drafts are
-durable even if a canonical save failed. A failed draft write or an in-flight move
+durable even if file access failed. Revision conflicts retain the existing
+explicit Reload/Keep mine decision before app-owned Quit. A failed draft write or an in-flight move
 continues to block this explicit Quit action. This matches recovery-aware OS close
 and updater exit behavior; canonical save errors keep their friendly access notice
 and detailed diagnostics remain in the application log.

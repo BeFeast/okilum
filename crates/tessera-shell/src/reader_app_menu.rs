@@ -9,7 +9,7 @@ pub(crate) fn install(cx: &mut App) {
         cx.defer(|cx| {
             // A failed canonical save must not trap Quit when every latest
             // edit is already durable in application draft state.
-            if crate::reader_editor::protect_all_for_quit(cx) {
+            if crate::reader_editor::save_all_for_quit(cx) {
                 cx.quit();
             }
         });
