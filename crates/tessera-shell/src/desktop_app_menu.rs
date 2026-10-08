@@ -7,7 +7,7 @@ use gpui::prelude::FluentBuilder;
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 
 #[cfg(all(not(windows), not(target_os = "macos")))]
-const UPDATE_NOTICE: &str = "Updates come through pacman -Syu";
+const UPDATE_NOTICE: &str = "Updates come with system updates";
 #[cfg(windows)]
 const UPDATE_NOTICE: &str = "Windows updates are not available yet — download the new ZIP";
 
