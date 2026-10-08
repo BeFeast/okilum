@@ -338,3 +338,25 @@ The restricted token received ERROR_ACCESS_DENIED for read/write; the ordinary
 owner succeeded on the same endpoint. Shared-endpoint refusal preserved its
 security descriptor and usable server. This validates the endpoint and peer
 primitives, not production transport or complete Sync acceptance.
+
+
+### Windows client connection primitive (native acceptance pending)
+
+`PrivateClient::connect` performs one open of the fixed local scoped name, with
+no wait/retry, fallback path or wire I/O. It requests an overlapped,
+non-inheritable handle and SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION:
+even a colliding server may identify the caller but must not receive execution
+impersonation rights. It checks the owner-private protected DACL through the
+connected handle, byte/client-end/remote-rejection metadata and one-instance
+limit, then verifies the captured live server process. The pipe and process
+handles remain owned together. Missing/busy/shared or wrong-process endpoints
+fail; the code never repairs their descriptor or adopts their process.
+
+This is deliberately not a `Transport` implementation. Scope discovery and the
+expected process still require trusted launch/signature/installation validation.
+CreateFileW and identity/security queries are synchronous: there is no claimed
+absolute timeout from checks before/after those calls. Bounded overlapped I/O,
+cancellation completion/lifetime handling, production transport and supervisor
+wiring remain the next work. Client metadata read-back uses the same tested-server
+expectation for the undocumented returned remote-rejection bit, excluding the
+server-end bit; its Windows-native fixtures must pass before acceptance.

@@ -253,3 +253,158 @@ fn pipe_metadata_requires_server_byte_remote_rejection_and_single_instance() -> 
     }
     Ok(())
 }
+
+fn current_peer() -> Result<ProcessPeer> {
+    use windows::Win32::System::Threading::{
+        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+    };
+    let raw = unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+            false,
+            std::process::id(),
+        )?
+    };
+    ProcessPeer::from_verified_process(
+        unsafe { OwnedHandle::from_raw_handle(raw.0) },
+        &current_sid()?,
+    )
+}
+
+#[test]
+fn native_private_client_accepts_owner_and_refuses_missing_busy_or_nil() -> Result<()> {
+    let scope = scope();
+    ensure!(
+        PrivateClient::connect(&scope, current_peer()?).is_err(),
+        "missing accepted"
+    );
+    let server = PrivatePipe::create(&scope)?;
+    let client = PrivateClient::connect(&scope, current_peer()?)?;
+    client.verify()?;
+    let mut flags = 0;
+    unsafe {
+        GetHandleInformation(HANDLE(client.as_raw_handle()), &mut flags)?;
+    }
+    ensure!(flags & HANDLE_FLAG_INHERIT.0 == 0, "client inherited");
+    ensure!(
+        PrivateClient::connect(&scope, current_peer()?).is_err(),
+        "busy accepted"
+    );
+    let mut invalid = scope.clone();
+    invalid.generation = Uuid::nil();
+    ensure!(
+        PrivateClient::connect(&invalid, current_peer()?).is_err(),
+        "nil accepted"
+    );
+    server.verify()?;
+    eprintln!("private client: captured owner accepted; missing/busy/nil refused; non-inheritance confirmed");
+    Ok(())
+}
+
+#[test]
+fn native_private_client_rejects_shared_descriptor() -> Result<()> {
+    let scope = scope();
+    let sid = current_sid()?;
+    let sd = descriptor(&format!("O:{sid}D:P(A;;FA;;;WD)"))?;
+    let attrs = SECURITY_ATTRIBUTES {
+        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: sd.0 .0,
+        bInheritHandle: BOOL(0),
+    };
+    let name: Vec<_> = endpoint_name(&scope)?
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let raw = unsafe {
+        CreateNamedPipeW(
+            PCWSTR(name.as_ptr()),
+            PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE | FILE_FLAG_OVERLAPPED,
+            PIPE_TYPE_BYTE | PIPE_REJECT_REMOTE_CLIENTS,
+            1,
+            4096,
+            4096,
+            0,
+            Some(&attrs),
+        )
+    };
+    if raw.is_invalid() {
+        return Err(windows::core::Error::from_win32()).context("shared client fixture");
+    }
+    let server = unsafe { OwnedHandle::from_raw_handle(raw.0) };
+    let before = sddl(&read_descriptor(raw)?)?;
+    let error = PrivateClient::connect(&scope, current_peer()?)
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("shared endpoint accepted"))?;
+    ensure!(
+        format!("{error:#}").contains("private client endpoint security"),
+        "wrong rejection: {error:#}"
+    );
+    ensure!(
+        before == sddl(&read_descriptor(raw)?)?,
+        "descriptor changed"
+    );
+    drop(server);
+    let _private = PrivatePipe::create(&scope)?;
+    let _client = PrivateClient::connect(&scope, current_peer()?)?;
+    eprintln!("private client: shared descriptor refused unchanged; private replacement positive control accepted");
+    Ok(())
+}
+
+#[test]
+fn native_private_client_rejects_wrong_captured_server() -> Result<()> {
+    use std::process::{Child, Command, Stdio};
+    use windows::Win32::Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS};
+    struct ChildGuard(Child);
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let child = ChildGuard(
+        Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Sleep -Seconds 30",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?,
+    );
+    let mut raw = HANDLE::default();
+    unsafe {
+        DuplicateHandle(
+            GetCurrentProcess(),
+            HANDLE(child.0.as_raw_handle()),
+            GetCurrentProcess(),
+            &mut raw,
+            0,
+            false,
+            DUPLICATE_SAME_ACCESS,
+        )?;
+    }
+    let wrong = ProcessPeer::from_verified_process(
+        unsafe { OwnedHandle::from_raw_handle(raw.0) },
+        &current_sid()?,
+    )?;
+    let scope = scope();
+    let server = PrivatePipe::create(&scope)?;
+    let error = PrivateClient::connect(&scope, wrong)
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("wrong captured server accepted"))?;
+    ensure!(
+        format!("{error:#}").contains("pipe peer is not the captured process"),
+        "wrong rejection: {error:#}"
+    );
+    server.verify()?;
+    drop(server);
+    let _server = PrivatePipe::create(&scope)?;
+    let _client = PrivateClient::connect(&scope, current_peer()?)?;
+    eprintln!(
+        "private client: same-user wrong captured process refused; actual captured server accepted"
+    );
+    Ok(())
+}
