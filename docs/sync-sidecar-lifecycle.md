@@ -123,7 +123,7 @@ with clippy for aarch64-apple-darwin and x86_64-pc-windows-msvc on CT141. It use
 small generated probe and seeds dependency resolution from the repository lockfile;
 this avoids GPUI and unrelated native C dependencies. Install the two Rust 1.99.0
 standard-library targets first, and invoke the script inside `tessera-build`.
-Both target checks and the 33 Linux controller tests pass. This is type/lint
+Both target checks and the 46 Linux controller tests pass. This is type/lint
 validation, not linking a signed application or executing either native API.
 The cross-check includes target-gated tests: Windows descriptor alias/missing-owner
 and process-token round-trip tests compile but still require execution on Windows.
