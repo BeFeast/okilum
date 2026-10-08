@@ -191,3 +191,11 @@ The next diagnostic logs default and explicit registration owner SDDL/SID,
 principal and native state on the same runner. The candidate supplies an explicit
 owner SID at registration while retaining scheduler default access rules.
 Scheduler acceptance and interactive supervisor execution remain unconfirmed.
+
+The subsequent native diagnostic confirmed default owner `Administrators` and
+explicit owner equal to the process user SID; the disabled state was correct.
+https://github.com/BeFeast/tessera/actions/runs/37755638626 . The next failure was
+parsing a decoded BSTR as UTF-8 while its XML declaration still said UTF-16.
+Canonical comparison now removes the transport declaration before parsing,
+retains content/attribute checks, and has a Linux Unicode regression test.
+The next native run must still validate the complete registration/removal test.

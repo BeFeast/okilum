@@ -299,6 +299,9 @@ mod tests {
             .api
             .read(&fixture.name)?
             .ok_or_else(|| anyhow::anyhow!("created task missing"))?;
+        if canonical(&task.definition)? != canonical(&xml)? {
+            eprintln!("scheduler XML differs after declaration normalization; expected={xml}; returned={}", task.definition);
+        }
         ensure!(
             task.owner_sid == owner,
             "task owner mismatch: expected {owner}, got {}",

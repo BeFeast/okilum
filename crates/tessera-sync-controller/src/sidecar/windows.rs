@@ -98,6 +98,21 @@ fn canonical(source: &str) -> Result<String> {
         }
         out.push('}');
     }
+    // COM has already decoded its UTF-16 BSTR into this Rust UTF-8 string.
+    // The original transport declaration is not part of task identity and must
+    // not instruct the byte parser to decode these UTF-8 bytes a second time.
+    let source = source.trim_start_matches('\u{feff}');
+    let source = if source
+        .strip_prefix("<?xml")
+        .is_some_and(|rest| rest.starts_with([' ', '\t', '\r', '\n']))
+    {
+        let end = source
+            .find("?>")
+            .ok_or_else(|| anyhow::anyhow!("unclosed XML declaration"))?;
+        &source[end + 2..]
+    } else {
+        source
+    };
     let element = Element::parse(source.as_bytes())?;
     let mut out = String::new();
     visit(&element, &mut out);
@@ -180,3 +195,22 @@ pub mod security;
 
 #[cfg(target_os = "windows")]
 pub mod private;
+
+#[cfg(test)]
+mod xml_tests {
+    use super::*;
+
+    #[test]
+    fn decoded_scheduler_utf16_declaration_does_not_change_identity() {
+        let xml =
+            "<Task><Actions><Exec><Command>C:\\Олег\\sync.exe</Command></Exec></Actions></Task>";
+        let decoded = format!("\u{feff}<?xml version=\"1.0\" encoding=\"UTF-16\"?>\r\n{xml}");
+        assert_eq!(canonical(xml).unwrap(), canonical(&decoded).unwrap());
+        assert_ne!(
+            canonical(xml).unwrap(),
+            canonical(&decoded.replace("sync.exe", "other.exe")).unwrap()
+        );
+        assert!(canonical("<?xml version=\"1.0\" <Task/>").is_err());
+        assert!(canonical("<?xml version=\"1.0\" encoding=\"UTF-16\"?><Task>").is_err());
+    }
+}
