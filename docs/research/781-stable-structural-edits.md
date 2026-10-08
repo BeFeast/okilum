@@ -130,3 +130,25 @@ in the same process gave median 10.492 ms and p95 12.795 ms. Every iteration
 asserted identical displayed text. Thus the specified core probe budget passes
 without a new optimization. This is not an end-to-end keyboard/layout latency
 measurement, nor a native global-fallback acceptance result.
+
+## Raw-layout source binding (patch 0043)
+
+`LastLayout` now keeps a persistent Rope clone for Live Preview source anchoring,
+including layouts whose projection is absent. `source_for_anchor` accepts the
+same document only, validates a projected snapshot against the painted source
+stamp, and reads the raw Rope only when a changed layout needs an anchor.
+Unchanged paint frames do not flatten that Rope. Ordinary Source editors do not
+opt into this Live Preview compensation. The destination no longer needs a
+projection, so the existing source-to-visual-row compensation applies in either
+direction. Existing drag/deferred-scroll guards and legal scroll clamping remain.
+Native transition evidence is required before treating this binding as acceptance.
+
+Native X11 light regression exposed a remaining boundary case: an eight-link
+fixture expands from 17 to 25 visual rows on a global fence-prefix edit, but still
+fits the viewport. The anchor moves from Y611 to Y803 (+192 px) while raw, then
+returns to Y611 after adoption. Legal-scroll clamping rejects the compensation
+because there is no content overflow. Raw source binding is necessary but not
+sufficient. Do not mark global fallback stable or merge this slice until the
+boundary policy is resolved and native screen-Y passes; adding arbitrary empty
+scroll space requires explicit geometry/lifetime tests to avoid persistent blank
+bands and scrollbar drift.
