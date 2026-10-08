@@ -1,5 +1,6 @@
 //! Native, read-only Tasks blocks. Index ownership stays with Reader snapshots.
 use super::*;
+use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_component::{checkbox::Checkbox, Disableable};
 use tessera_core::tasks::{Group, Index, Query, Task};
 
@@ -199,6 +200,9 @@ pub(super) fn plugins(view: TextView, reader: WeakEntity<Reader>) -> TextView {
                 has_heading: block.has_heading,
                 layout: Default::default(),
                 title: None,
+                native: false,
+                search: String::new(),
+                case_sensitive: false,
             })
             .into_any_element()
     })
@@ -316,6 +320,9 @@ fn count_badge(results: &Results, cx: &App) -> impl IntoElement {
 
 #[derive(IntoElement)]
 struct TasksList {
+    native: bool,
+    search: String,
+    case_sensitive: bool,
     title: Option<String>,
     layout: tessera_core::typed_view::layout::Defaults,
     has_heading: bool,
@@ -324,6 +331,8 @@ struct TasksList {
     reader: WeakEntity<Reader>,
 }
 struct Results {
+    search: String,
+    case_sensitive: bool,
     index: Arc<Index>,
     today: time::Date,
     query: String,
@@ -347,16 +356,47 @@ impl Results {
         source: &str,
         grouping: tessera_core::typed_view::layout::Grouping,
     ) {
+        self.refresh_filtered(index, now, source, grouping, "", false);
+    }
+    fn refresh_filtered(
+        &mut self,
+        index: Arc<Index>,
+        now: time::Date,
+        source: &str,
+        grouping: tessera_core::typed_view::layout::Grouping,
+        search: &str,
+        case_sensitive: bool,
+    ) {
         use tessera_core::typed_view::layout::Grouping;
+        let search = search.trim();
         if !Arc::ptr_eq(&self.index, &index)
             || self.today != now
             || self.query != source
             || self.grouping != grouping
+            || self.search != search
+            || self.case_sensitive != case_sensitive
         {
             let query = Query::parse(source, now);
             self.tasks = index.query(&query);
             self.tasks.retain(|task| !task_label(task).is_empty());
 
+            if !search.is_empty() {
+                let needle = if case_sensitive {
+                    search.to_owned()
+                } else {
+                    search.to_lowercase()
+                };
+                self.tasks.retain(|task| {
+                    let text = format!("{} {}", task_label(task), source_label(task));
+                    if case_sensitive {
+                        text.contains(&needle)
+                    } else {
+                        text.to_lowercase().contains(&needle)
+                    }
+                });
+            }
+            self.search = search.to_owned();
+            self.case_sensitive = case_sensitive;
             self.explicit_groups = grouping == Grouping::Note
                 || (grouping == Grouping::Query && !query.groups.is_empty());
             self.groups = if query.groups.is_empty() {
@@ -554,6 +594,8 @@ fn results_state(window: &mut Window, cx: &mut App) -> Entity<Results> {
         })
         .detach();
         Results {
+            search: String::new(),
+            case_sensitive: false,
             index: Arc::default(),
             today: now,
             query: String::new(),
@@ -601,7 +643,14 @@ impl RenderOnce for TasksList {
         let now = today();
         let state = results_state(window, cx);
         state.update(cx, |s, _| {
-            s.refresh_grouped(index, now, &self.query, self.layout.grouping)
+            s.refresh_filtered(
+                index,
+                now,
+                &self.query,
+                self.layout.grouping,
+                &self.search,
+                self.case_sensitive,
+            )
         });
         let results = state.read(cx);
         let muted = cx.theme().muted_foreground;
@@ -719,6 +768,13 @@ impl RenderOnce for TasksList {
             let expanded = results.expanded.contains(&task_key);
             let overdue = !task.checked && task.due.is_some_and(|d| d < now);
             let due_color = if overdue { cx.theme().danger } else { muted };
+            let writable = cfg!(unix) && self.native && (copies == 1 || expanded);
+            let displayed_index = results.index.clone();
+            let displayed_task = task.clone();
+            let action_reader = self.reader.clone();
+            let date_reader = self.reader.clone();
+            let date_index = results.index.clone();
+            let date_task = task.clone();
             list = list.child(
                 h_flex()
                     .w_full()
@@ -736,9 +792,27 @@ impl RenderOnce for TasksList {
                     .child(
                         Checkbox::new(("task-check", ix))
                             .checked(task.checked)
-                            .disabled(true)
+                            .disabled(!writable)
                             .accessibility_label(text.clone())
-                            .tooltip("Read-only task — open the source note to edit"),
+                            .tooltip(if self.native && copies > 1 && !expanded {
+                                "Expand notes to change one occurrence"
+                            } else {
+                                "Change task status"
+                            })
+                            .on_click(move |checked, window, cx| {
+                                if !writable {
+                                    return;
+                                }
+                                let _ = action_reader.update(cx, |this, cx| {
+                                    this.apply_task_change(
+                                        displayed_index.clone(),
+                                        displayed_task.clone(),
+                                        tessera_core::task_edit::Change::Checked(*checked),
+                                        window,
+                                        cx,
+                                    );
+                                });
+                            }),
                     )
                     .child(
                         Button::new(("task-title", ix))
@@ -769,6 +843,46 @@ impl RenderOnce for TasksList {
                             .accessibility_label(text.clone())
                             .child(div().flex_1().min_w_0().text_sm().truncate().child(text)),
                     )
+                    .when(self.native, |row| {
+                        row.child(
+                            Button::new(("task-date", ix))
+                                .small()
+                                .ghost()
+                                .icon(IconName::Calendar)
+                                .disabled(!writable)
+                                .tooltip("Reschedule task")
+                                .dropdown_menu(move |mut menu, _, _| {
+                                    use tessera_core::task_edit::Change;
+                                    let tomorrow = today().next_day().unwrap_or(today());
+                                    for (label, change) in [
+                                        ("Due today", Change::Due(today())),
+                                        ("Due tomorrow", Change::Due(tomorrow)),
+                                        ("Snooze until tomorrow", Change::Scheduled(tomorrow)),
+                                    ] {
+                                        let reader = date_reader.clone();
+                                        let index = date_index.clone();
+                                        let task = date_task.clone();
+                                        menu = menu.item(PopupMenuItem::new(label).on_click(
+                                            move |_, window, cx| {
+                                                if !writable {
+                                                    return;
+                                                }
+                                                let _ = reader.update(cx, |this, cx| {
+                                                    this.apply_task_change(
+                                                        index.clone(),
+                                                        task.clone(),
+                                                        change,
+                                                        window,
+                                                        cx,
+                                                    )
+                                                });
+                                            },
+                                        ));
+                                    }
+                                    menu
+                                }),
+                        )
+                    })
                     .when(task.priority != 3, |row| {
                         row.child(priority_icon(task.priority, muted))
                     })
@@ -968,6 +1082,8 @@ mod tests {
     #[test]
     fn index_refresh_keeps_expanded_pagination() {
         let mut results = Results {
+            search: String::new(),
+            case_sensitive: false,
             index: Arc::default(),
             today: today(),
             query: "not done".into(),
@@ -1259,11 +1375,16 @@ pub(super) fn dashboard_section(
     query: String,
     offset: usize,
     layout: tessera_core::typed_view::layout::Defaults,
+    search: String,
+    case_sensitive: bool,
     reader: WeakEntity<Reader>,
 ) -> impl IntoElement {
     div().id(("native-tasks-section", offset)).child(TasksList {
+        native: true,
         query,
         offset,
+        search,
+        case_sensitive,
         layout,
         reader,
         title,
