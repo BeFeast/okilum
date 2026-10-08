@@ -101,6 +101,8 @@ describe how Tessera is meant to behave. The workspace is split into
 
 ## License
 
+Maintained by Oleg Kossoy.
+
 Tessera is licensed under the [MIT License](LICENSE). Dependencies and bundled
 fonts and icons keep their own licenses — see
 [third-party notices](THIRD_PARTY_NOTICES.md) and
