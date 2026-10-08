@@ -3112,26 +3112,16 @@ impl Reader {
                     ))
                     .child(
                         reader_icon_button(
-                            "reader-history-back",
-                            IconName::ArrowLeft,
-                            reader_shortcuts::hint("Back", &HistoryBack, cx),
+                            "reader-search",
+                            IconName::Search,
+                            reader_shortcuts::hint("Search in vault", &FullTextSearch, cx),
                             cx,
                         )
-                        .disabled(self.history_ix == 0)
+                        .debug_selector(|| "reader-search".into())
                         .on_click(
-                            cx.listener(|this, _, window, cx| this.history_move(-1, window, cx)),
-                        ),
-                    )
-                    .child(
-                        reader_icon_button(
-                            "reader-history-forward",
-                            IconName::ArrowRight,
-                            reader_shortcuts::hint("Forward", &HistoryForward, cx),
-                            cx,
-                        )
-                        .disabled(self.history_ix + 1 >= self.history.len())
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.history_move(1, window, cx)),
+                            cx.listener(|this, _, window, cx| {
+                                this.open_quick_open(true, window, cx)
+                            }),
                         ),
                     ),
             )
@@ -3159,20 +3149,6 @@ impl Reader {
                         )
                     })
                     .child(self.render_loading(cx))
-                    .child(
-                        reader_icon_button(
-                            "reader-search",
-                            IconName::Search,
-                            reader_shortcuts::hint("Search in vault", &FullTextSearch, cx),
-                            cx,
-                        )
-                        .debug_selector(|| "reader-search".into())
-                        .on_click(
-                            cx.listener(|this, _, window, cx| {
-                                this.open_quick_open(true, window, cx)
-                            }),
-                        ),
-                    )
                     .child(preserve_reader_selection(
                         "reader-backlinks-preserve",
                         reader_icon_button(
@@ -3186,41 +3162,6 @@ impl Reader {
                             this.toggle_panel(reader_layout::Panel::Backlinks, window, cx)
                         })),
                     ))
-                    .child(
-                        div()
-                            .id("reader-appearance-tooltip")
-                            .tooltip(|window, cx| {
-                                gpui_component::tooltip::Tooltip::element(|_, cx| {
-                                    div().child(format!("Appearance: {}", appearance_label(cx)))
-                                })
-                                .build(window, cx)
-                            })
-                            .child(
-                                Button::new("reader-appearance")
-                                    .ghost()
-                                    .icon(if appearance_label(cx) == "Dark" {
-                                        IconName::Moon
-                                    } else {
-                                        IconName::Sun
-                                    })
-                                    .w(px(28.))
-                                    .h(px(28.))
-                                    .rounded(px(6.))
-                                    .accessibility_label("Appearance")
-                                    .on_click(|_, window, cx| cycle_appearance(window, cx)),
-                            ),
-                    )
-                    .child(
-                        reader_icon_button(
-                            "reader-settings",
-                            IconName::Settings,
-                            reader_shortcuts::hint("Settings", &reader_settings::OpenSettings, cx),
-                            cx,
-                        )
-                        .on_click(cx.listener(|_, _, _, cx| {
-                            reader_settings::show(Some(cx.entity().downgrade()), cx)
-                        })),
-                    )
                     .child(reader_more_menu(
                         self.vault_root.clone(),
                         self.selected_file().to_owned(),
@@ -3315,6 +3256,7 @@ impl Reader {
             .child(
                 div()
                     .id("reader-document-root")
+                    .debug_selector(|| "reader-document-root".into())
                     .flex_shrink_0()
                     .max_w_full()
                     .overflow_hidden()
@@ -3324,6 +3266,11 @@ impl Reader {
                     .cursor_pointer()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(move |this, _, window, cx| {
+                        #[cfg(unix)]
+                        if this.file_preview.is_none() {
+                            this.rename_note_title(window, cx);
+                            return;
+                        }
                         this.reveal_in_tree(&current, window, cx)
                     }))
                     .child(self.selected_title())

@@ -27,7 +27,6 @@ impl Reader {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if self.active_timeline().is_some_and(|t| t.selected.is_some())
-            || self.selected_file().is_empty()
             || self.file_preview.is_some()
         {
             return self.render_main(window, cx);
@@ -53,6 +52,8 @@ impl Reader {
         let is_file = self.file_preview.is_some();
         #[cfg(any(unix, windows))]
         let editing = self.editing.is_some();
+        #[cfg(any(unix, windows))]
+        let reader = cx.entity().downgrade();
         let root = self.vault_root.clone();
         let rel = self.selected_file().to_owned();
         let mut row = h_flex()
@@ -64,7 +65,32 @@ impl Reader {
             .min_w_0()
             .px_4()
             .gap_1()
+            .child(
+                reader_icon_button(
+                    "reader-history-back",
+                    IconName::ArrowLeft,
+                    reader_shortcuts::hint("Back", &HistoryBack, cx),
+                    cx,
+                )
+                .debug_selector(|| "reader-history-back".into())
+                .disabled(self.history_ix == 0)
+                .on_click(cx.listener(|this, _, window, cx| this.history_move(-1, window, cx))),
+            )
+            .child(
+                reader_icon_button(
+                    "reader-history-forward",
+                    IconName::ArrowRight,
+                    reader_shortcuts::hint("Forward", &HistoryForward, cx),
+                    cx,
+                )
+                .debug_selector(|| "reader-history-forward".into())
+                .disabled(self.history_ix + 1 >= self.history.len())
+                .on_click(cx.listener(|this, _, window, cx| this.history_move(1, window, cx))),
+            )
             .child(self.render_breadcrumbs(cx));
+        if rel.is_empty() {
+            return row;
+        }
         #[cfg(any(unix, windows))]
         if !is_file {
             use gpui_component::button::ButtonGroup;
@@ -118,41 +144,15 @@ impl Reader {
             }
         }
         if !is_file {
-            row = row
-                .child(
-                    reader_icon_button(
-                        "note-reveal",
-                        Icon::default().path(brand::READER_FOCUS_ICON),
-                        "Reveal in sidebar",
-                        cx,
-                    )
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.focus_current_folder(window, cx)),
-                    ),
+            row = row.child(
+                reader_icon_button(
+                    "note-find",
+                    Icon::default().path("icons/text-search.svg"),
+                    reader_shortcuts::hint("Find in note", &FindInNote, cx),
+                    cx,
                 )
-                .child(
-                    reader_icon_button(
-                        "note-find",
-                        Icon::default().path("icons/text-search.svg"),
-                        with_shortcut("Find in note", "secondary-f"),
-                        cx,
-                    )
-                    .on_click(cx.listener(|this, _, window, cx| this.open_find(window, cx))),
-                );
-            #[cfg(any(unix, windows))]
-            {
-                row = row.child(
-                    reader_icon_button(
-                        "note-rename",
-                        Icon::default().path("icons/pencil.svg"),
-                        "Rename",
-                        cx,
-                    )
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.rename_note_title(window, cx)),
-                    ),
-                );
-            }
+                .on_click(cx.listener(|this, _, window, cx| this.open_find(window, cx))),
+            );
         }
         if is_file {
             row = row.children(self.render_pdf_controls(cx));
@@ -267,7 +267,23 @@ impl Reader {
                             ));
                         }
                     }
-                    // #466's Delete action joins this document-scoped menu once available.
+                    if !is_file {
+                        menu = menu.menu("Open in new window", Box::new(reader_open::NewWindow));
+                    }
+                    #[cfg(any(unix, windows))]
+                    {
+                        let reader = reader.clone();
+                        let rel = rel.clone();
+                        menu = menu
+                            .separator()
+                            .item(PopupMenuItem::new("Move to Trash").on_click(
+                                move |_, window, cx| {
+                                    let _ = reader.update(cx, |this, cx| {
+                                        this.delete_path(rel.clone(), window, cx);
+                                    });
+                                },
+                            ));
+                    }
                     menu.separator().menu(
                         if is_file { "Close file" } else { "Close note" },
                         Box::new(CloseNote),
@@ -480,6 +496,10 @@ mod tests {
             std::fs::read_to_string(root.join("One.md")).unwrap(),
             "# One\n\nExact text\n"
         );
+        assert!(
+            visual.debug_bounds("reader-history-back").is_some(),
+            "empty selection still offers document history navigation"
+        );
         let before = visual.windows().len();
         visual.simulate_keystrokes(if cfg!(target_os = "macos") {
             "cmd-w"
@@ -586,6 +606,11 @@ mod tests {
             visual.run_until_parked();
             let header = visual.debug_bounds("document-header-viewport").unwrap();
             assert_eq!(header.size.height, px(48.));
+            let back = visual.debug_bounds("reader-history-back").unwrap();
+            let forward = visual.debug_bounds("reader-history-forward").unwrap();
+            let title = visual.debug_bounds("reader-document-root").unwrap();
+            assert!(back.left() < forward.left() && forward.right() <= title.left());
+            assert!(back.top() >= header.top() && back.bottom() <= header.bottom());
             for delta in [-24., -400.] {
                 wheel(visual, delta);
                 assert_eq!(
