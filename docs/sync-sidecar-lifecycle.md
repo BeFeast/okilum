@@ -32,8 +32,16 @@ requires recovery rather than a reset. Preparation must persist the private
 directory and its parent before passing it to the journal; it runs only after
 explicit Enable. Linux filesystem tests exercise this implementation and the macOS
 target compiles it, but macOS crash/power-loss acceptance remains native work.
-Windows still needs real owner DACLs and native file identity/locking; this Unix
-implementation must not be replaced by permission no-ops on Windows.
+The Windows preparation primitive creates a directory with a protected DACL
+containing only an inheritable full-access grant to the current process-token SID.
+Existing directories are checked, never repaired or adopted by changing their ACL.
+Read-back uses an open handle to check owner, protected DACL, exact ACE and absence
+of a reparse point. The handle excludes FILE_SHARE_DELETE while held. Parent paths
+must already exist; no recursive permission changes are made. Native tests for
+shared-directory refusal and rename prevention compile but have not run on Windows.
+This is not yet the Windows locked journal, durable file replacement or full
+ancestor/file-identity validation. The Unix journal must not become permission
+no-ops on Windows.
 
 ## Windows adapter
 
