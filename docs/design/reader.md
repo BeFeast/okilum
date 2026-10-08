@@ -504,7 +504,9 @@ Inbox shows “Not connected”; no connection controls are enabled in this slic
 The deferred local Excalidraw editor needs no editor-URL setting.
 
 Files also selects a templates folder per vault (default `_Assets/Templates`).
-“New note from template…” in the document menu lists Markdown files directly in
+“New note from template…” uses a standard popup menu, without a modal or raw
+folder path. Escape dismisses without creating anything; choosing a template
+starts the existing inline name field. The menu lists Markdown files directly in
 that folder, substitutes `{{title}}` and local `{{date}}`, and creates a new note
 without modifying the template or overwriting an existing destination. Folder
 preferences and template contents are read only for these explicit user actions.
