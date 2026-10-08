@@ -12,7 +12,7 @@ on:
       - '.github/workflows/forgejo-windows-release.yml'
       - 'scripts/ci/github-pr.py'
       - 'scripts/ci/build-windows-native.ps1'
-      - 'scripts/ci/windows-rustc.cmd'
+      - 'scripts/ci/windows-rustc.rs'
       - 'scripts/ci/stage-windows-shaders.py'
   # Fixed hourly window; the runner is free between ticks. Manual build now bypasses it.
   schedule:

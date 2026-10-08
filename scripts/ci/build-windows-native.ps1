@@ -12,7 +12,15 @@ $env:TESSERA_WINDOWS_ICON = Join-Path $payload 'tessera.ico'
 if (!(Test-Path $env:TESSERA_WINDOWS_ICON)) { throw 'Approved icon artifact is missing' }
 $env:RUSTFLAGS = '-C target-feature=+crt-static'
 # GPUI runtime shaders must resolve inside the installed payload, not D:\a\...
-$env:RUSTC_WRAPPER = Join-Path $env:GITHUB_WORKSPACE 'scripts/ci/windows-rustc.cmd'
+$wrapper = Join-Path $env:RUNNER_TEMP 'tessera-rustc-wrapper.exe'
+Checked { rustc --edition=2021 scripts/ci/windows-rustc.rs -o $wrapper }
+# Regression control: cmd.exe used to split quoted --check-cfg values.
+$probe = Join-Path $env:RUNNER_TEMP 'tessera-wrapper-probe.rs'
+'fn main() {}' | Set-Content $probe
+$probeExe = Join-Path $env:RUNNER_TEMP 'tessera-wrapper-probe.exe'
+Checked { & $wrapper (Get-Command rustc).Source $probe --crate-name wrapper_probe --check-cfg 'cfg(feature, values("a b", "c"))' -o $probeExe }
+if (!(Test-Path $probeExe)) { throw 'Wrapper argument-preservation positive control failed' }
+$env:RUSTC_WRAPPER = $wrapper
 Checked { rustc -Vv }
 Checked { bash scripts/vendor-setup.sh }
 Checked { bash scripts/vendor-setup.sh --verify }
