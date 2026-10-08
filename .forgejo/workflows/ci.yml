@@ -163,6 +163,10 @@ jobs:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
+      - name: Register hosted cancellation cleanup
+        uses: ./.forgejo/actions/hosted-cleanup
+        with:
+          token: ${{ secrets.TESSERA_GITHUB_MIRROR }}
       - name: Run exact PR head on GitHub Linux
         id: remote
         env:
@@ -210,6 +214,10 @@ jobs:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
+      - name: Register hosted cancellation cleanup
+        uses: ./.forgejo/actions/hosted-cleanup
+        with:
+          token: ${{ secrets.TESSERA_GITHUB_MIRROR }}
       - name: Run the exact PR head on GitHub macOS
         id: remote
         env:

@@ -1,0 +1,11 @@
+name: Hosted cancellation cleanup
+description: Retain a post-job cleanup hook when the host executor kills the bridge step.
+inputs:
+  token:
+    description: GitHub mirror token, used only on this local bridge runner
+    required: true
+runs:
+  using: node20
+  main: index.js
+  post: index.js
+  post-if: cancelled()

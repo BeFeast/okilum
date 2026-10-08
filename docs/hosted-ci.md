@@ -48,14 +48,18 @@ needed. Linux/Brain consume the existing main cache; new lanes do not save
 large per-branch target caches into the shared 10 GiB quota. Missing caches
 fall back to cold builds. Capacity incidents are reported, not retried in a loop.
 
-Bridge cancellation: SIGINT/SIGTERM (including a superseded Forgejo job) requests
-cancellation of only that invocation's GitHub run. The bridge rechecks the run ID,
-unique ref, workflow and source SHA before POSTing; a replacement invocation is
-never selected by PR number alone. Cleanup uses one-second HTTP timeouts, no
-mutation retries, and at most three discovery reads if cancellation races with
-push/run discovery. Logs distinguish accepted cancellation, already-completed
-runs and unconfirmed cleanup. SIGKILL, host loss, delayed run discovery or an API
-outage can still leave an orphan; report its run URL to the CI owner rather than
-retrying the build. Ordinary queue timeout/cancel refusal retains the existing
-wait-for-the-same-run behavior. Rollback: revert the bridge cancellation commit;
-required gates and exact-source validation remain unchanged.
+Bridge cancellation: a local JavaScript post-action registered before dispatch
+runs on a cancelled Forgejo job, even when its host executor kills the Python
+step with SIGKILL. The bridge atomically records its unique ref, source SHA,
+workflow and discovered run ID in a temporary receipt (no credentials). The
+post-action rechecks that identity before requesting cancellation; a replacement
+invocation is never selected by PR number alone. SIGINT/SIGTERM also trigger the
+same bounded cleanup for coordinators that deliver catchable signals.
+
+Cleanup uses one-second HTTP timeouts, no mutation retries, at most three
+run-discovery reads, and a 15-second outer post-action timeout. Logs distinguish
+accepted cancellation, already-completed runs and unconfirmed cleanup. Host loss,
+delayed run discovery or API failure can still leave an orphan; report its run URL
+to the CI owner rather than retrying the build. Ordinary queue timeout/cancel
+refusal retains the existing wait-for-the-same-run behavior. Rollback: revert this
+cancellation change; required gates and exact-source validation stay unchanged.

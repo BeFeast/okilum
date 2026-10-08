@@ -115,9 +115,21 @@ class Cancellation:
     def __init__(self, api, branch, sha, workflow):
         self.api, self.branch, self.sha, self.workflow = api, branch, sha, workflow
         self.run_id = None
+        self.receipt = os.environ.get("TESSERA_CANCELLATION_RECEIPT")
+        self.persist()
+
+    def persist(self):
+        if self.receipt:
+            receipt = Path(self.receipt)
+            temporary = receipt.with_suffix(".tmp")
+            temporary.write_text(json.dumps(dict(branch=self.branch, sha=self.sha,
+                                                workflow=self.workflow, run_id=self.run_id)))
+            temporary.chmod(0o600)
+            temporary.replace(receipt)
 
     def observed(self, run):
         self.run_id = run["id"]
+        self.persist()
 
     def cancel(self, *, sleep=time.sleep):
         # Runner termination has a short grace period. No normal read retries,

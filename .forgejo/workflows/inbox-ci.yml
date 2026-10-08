@@ -85,6 +85,10 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Register hosted cancellation cleanup
+        uses: ./.forgejo/actions/hosted-cleanup
+        with:
+          token: ${{ secrets.TESSERA_GITHUB_MIRROR }}
       - name: Wait for exact-head hosted inbox
         env:
           MIRROR_TOKEN: ${{ secrets.TESSERA_GITHUB_MIRROR }}
