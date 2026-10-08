@@ -47,3 +47,15 @@ use one job each. Branch pushes run Linux only; request additional lanes when
 needed. Linux/Brain consume the existing main cache; new lanes do not save
 large per-branch target caches into the shared 10 GiB quota. Missing caches
 fall back to cold builds. Capacity incidents are reported, not retried in a loop.
+
+Bridge cancellation: SIGINT/SIGTERM (including a superseded Forgejo job) requests
+cancellation of only that invocation's GitHub run. The bridge rechecks the run ID,
+unique ref, workflow and source SHA before POSTing; a replacement invocation is
+never selected by PR number alone. Cleanup uses one-second HTTP timeouts, no
+mutation retries, and at most three discovery reads if cancellation races with
+push/run discovery. Logs distinguish accepted cancellation, already-completed
+runs and unconfirmed cleanup. SIGKILL, host loss, delayed run discovery or an API
+outage can still leave an orphan; report its run URL to the CI owner rather than
+retrying the build. Ordinary queue timeout/cancel refusal retains the existing
+wait-for-the-same-run behavior. Rollback: revert the bridge cancellation commit;
+required gates and exact-source validation remain unchanged.

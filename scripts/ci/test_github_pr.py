@@ -26,7 +26,11 @@ class HostedPRTests(unittest.TestCase):
                 self.assertTrue(branch.startswith(f'forgejo-{lane}-pr/'))
                 self.assertEqual(push.call_args.args[1], SHA)
                 self.assertEqual(wait.call_args.args[1:], (branch, SHA))
-                self.assertEqual(wait.call_args.kwargs, dict(workflow=f'.github/workflows/forgejo-{lane}.yml',
+                kwargs = dict(wait.call_args.kwargs)
+                owner = kwargs.pop("cancellation")
+                self.assertEqual(owner.sha, SHA)
+                self.assertEqual(owner.workflow, f".github/workflows/forgejo-{lane}.yml")
+                self.assertEqual(kwargs, dict(workflow=f'.github/workflows/forgejo-{lane}.yml',
                     job_name=job, build_step=step, queue_timeout=1800, run_timeout=timeout))
 
     def test_unknown_lane_never_pushes(self):

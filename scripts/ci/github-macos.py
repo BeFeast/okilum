@@ -5,11 +5,13 @@ No Forgejo credentials reach GitHub. The caller's final `macos` job reports the
 result using Forgejo's normal job status, without using the corporate M4.
 """
 import argparse
+from contextlib import contextmanager
 import http.client
 import json
 import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 import tempfile
 import time
@@ -30,6 +32,7 @@ class Unavailable(Exception):
 class GitHub:
     def __init__(self, token):
         self.token = token
+        self.timeout = 30
 
     def request(self, path, method="GET", data=None):
         request = urllib.request.Request(
@@ -41,7 +44,7 @@ class GitHub:
                      "X-GitHub-Api-Version": "2022-11-28"},
         )
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 body = response.read()
                 return json.loads(body) if body else None
         except (urllib.error.URLError, TimeoutError,
@@ -95,9 +98,88 @@ def hosted_request(api, path, *, sleep=time.sleep):
             sleep(5 * (2 ** attempt))
 
 
+class BridgeCancelled(BaseException):
+    """Coordinator termination must not become unavailable/fallback success."""
+
+
+def matching_runs(api, branch, sha, workflow):
+    query = urllib.parse.urlencode({"branch": branch, "head_sha": sha,
+                                    "event": "push", "per_page": 100})
+    runs = api.request(f"actions/runs?{query}")["workflow_runs"]
+    return [run for run in runs if run["head_sha"] == sha
+            and run["head_branch"] == branch and run["event"] == "push"
+            and run["path"] == workflow]
+
+
+class Cancellation:
+    def __init__(self, api, branch, sha, workflow):
+        self.api, self.branch, self.sha, self.workflow = api, branch, sha, workflow
+        self.run_id = None
+
+    def observed(self, run):
+        self.run_id = run["id"]
+
+    def cancel(self, *, sleep=time.sleep):
+        # Runner termination has a short grace period. No normal read retries,
+        # force-cancel, or broad PR-prefix cleanup here. Each HTTP call is bounded.
+        self.api.timeout = 1
+        try:
+            if self.run_id is None:
+                for attempt in range(3):
+                    runs = matching_runs(self.api, self.branch, self.sha, self.workflow)
+                    if len(runs) > 1:
+                        print("::warning::Cancel refused: ambiguous owned GitHub runs", flush=True)
+                        return
+                    if runs:
+                        self.run_id = runs[0]["id"]
+                        break
+                    if attempt < 2:
+                        sleep(0.5)
+                if self.run_id is None:
+                    print("::warning::Cancellation could not discover owned GitHub run; "
+                          f"ref={self.branch} sha={self.sha}", flush=True)
+                    return
+            run = self.api.request(f"actions/runs/{self.run_id}")
+            if (run.get("id") != self.run_id or run.get("head_sha") != self.sha
+                    or run.get("head_branch") != self.branch or run.get("event") != "push"
+                    or run.get("path") != self.workflow):
+                print("::warning::Cancel refused: GitHub run identity mismatch", flush=True)
+                return
+            if run["status"] == "completed":
+                print(f"Owned GitHub run {self.run_id} already completed", flush=True)
+                return
+            self.api.request(f"actions/runs/{self.run_id}/cancel", "POST")
+            print(f"Cancellation accepted for owned GitHub run {self.run_id}", flush=True)
+        except Unavailable as error:
+            print(f"::warning::Owned GitHub cancellation not confirmed: {error}", flush=True)
+
+
+@contextmanager
+def cancellation_scope(api, branch, sha, workflow):
+    cancellation = Cancellation(api, branch, sha, workflow)
+    previous = {}
+
+    def terminate(signum, frame):
+        raise BridgeCancelled(f"Forgejo coordinator received signal {signum}")
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        previous[sig] = signal.signal(sig, terminate)
+    try:
+        yield cancellation
+    except BridgeCancelled:
+        # A second termination signal must not interrupt our bounded cancel request.
+        for sig in previous:
+            signal.signal(sig, signal.SIG_IGN)
+        cancellation.cancel()
+        raise
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
 def wait_for_run(api, branch, sha, *, clock=time.monotonic, sleep=time.sleep,
                  queue_timeout=1800, run_timeout=2400, workflow=WORKFLOW,
-                 job_name="macos", build_step=BUILD_STEP):
+                 job_name="macos", build_step=BUILD_STEP, cancellation=None):
     query = urllib.parse.urlencode({"branch": branch, "head_sha": sha,
                                     "event": "push", "per_page": 100})
     queued_until = clock() + queue_timeout
@@ -111,6 +193,8 @@ def wait_for_run(api, branch, sha, *, clock=time.monotonic, sleep=time.sleep,
             return "failure", "Ambiguous GitHub workflow runs"
         if matches:
             run = matches[0]
+            if cancellation is not None:
+                cancellation.observed(run)
             url = run["html_url"]
             if run["status"] == "completed":
                 if run["conclusion"] == "startup_failure":
@@ -178,9 +262,14 @@ def main():
         sha = os.environ["PR_HEAD_SHA"]
         branch = ref_name(os.environ["PR_NUMBER"], sha, os.environ["GITHUB_RUN_ID"],
                           (os.environ.get("GITHUB_RUN_ATTEMPT") or "1"), uuid.uuid4().hex)
-        push_head(branch, sha, token)
-        result, message = wait_for_run(GitHub(token), branch, sha)
+        api = GitHub(token)
+        with cancellation_scope(api, branch, sha, WORKFLOW) as cancellation:
+            push_head(branch, sha, token)
+            result, message = wait_for_run(api, branch, sha, cancellation=cancellation)
         print(message)
+    except BridgeCancelled as error:
+        print(str(error), flush=True)
+        raise SystemExit(130)
     except Unavailable as error:
         result = "unavailable"
         print(f"GitHub macOS unavailable — rerun later: {error}")

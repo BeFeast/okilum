@@ -35,10 +35,14 @@ def main():
                                     os.environ.get('GITHUB_RUN_ATTEMPT') or '1', uuid.uuid4().hex)
         branch = branch.replace('forgejo-pr/', f'forgejo-{lane}-pr/', 1)
         api = transport.GitHub(token)
-        transport.push_head(branch, sha, token)
-        result, message = transport.wait_for_run(api, branch, sha, workflow=f'.github/workflows/forgejo-{lane}.yml',
-            job_name=job, build_step=step, queue_timeout=1800, run_timeout=timeout)
+        with transport.cancellation_scope(api, branch, sha, f'.github/workflows/forgejo-{lane}.yml') as cancellation:
+            transport.push_head(branch, sha, token)
+            result, message = transport.wait_for_run(api, branch, sha, workflow=f'.github/workflows/forgejo-{lane}.yml',
+                job_name=job, build_step=step, queue_timeout=1800, run_timeout=timeout, cancellation=cancellation)
         print(message)
+    except transport.BridgeCancelled as error:
+        print(str(error), flush=True)
+        raise SystemExit(130)
     except transport.Unavailable as error:
         print(f'Hosted CI unavailable; no fallback success: {error}')
     finally:
