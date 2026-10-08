@@ -7,22 +7,12 @@ on:
       - 'scripts/windows-*.py'
       - 'scripts/build-windows-ci.sh'
       - 'packaging/**'
-      - 'scripts/ci/release-cache.sh'
       - 'scripts/releases/**'
-      - 'scripts/vendor-setup.sh'
-      - 'scripts/patches/**'
-      - 'scripts/brand-assets.py'
-      - 'scripts/third-party-notices.py'
-      - 'rust-toolchain.toml'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'crates/*/Cargo.toml'
-      - 'crates/tessera-shell/build.rs'
-      - 'crates/tessera-shell/assets/brand/**'
       - '.forgejo/workflows/windows-diagnostic.yml'
   # Fixed hourly window; the runner is free between ticks. Manual build now bypasses it.
   schedule:
     - cron: "0 * * * *"
+  # Build any PR branch manually when shared dependencies need release validation.
   workflow_dispatch:
 
 concurrency:
