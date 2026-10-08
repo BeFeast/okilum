@@ -287,7 +287,7 @@ The dispatch used package `tessera-sync-controller`, no features, filter
 `sidecar::`, and one test thread. This confirms this peer-identity primitive,
 not the remaining production transport, private endpoint ACL or Sync acceptance.
 
-### Windows private server endpoint (native run pending)
+### Windows private server endpoint
 
 `supervisor::ipc::windows_endpoint::PrivatePipe` explicitly creates one server
 instance in the fixed local `\\.\pipe\Tessera-Sync-<installation>-<instance>-<generation>`
@@ -311,35 +311,30 @@ read/write denial with an ordinary-owner positive control on the same endpoint;
 and a shared existing endpoint whose descriptor remains identical and whose
 server remains usable after refusal. The restricted token test is not a separate
 user logon test. Remote-client refusal is configured through the native creation
-flag, not measured from another host. Native execution is pending; cross-clippy
-alone is not acceptance. Authenticated discovery, client-side endpoint connection,
+flag, not measured from another host. Authenticated discovery, client-side endpoint connection,
 signature verification, absolute I/O deadline/cancellation, production transport
 and executable supervisor integration remain outstanding.
 
-The first exact-source endpoint run failed all three new fixtures with
-ERROR_INVALID_PARAMETER (41 existing tests passed):
-https://github.com/BeFeast/tessera/actions/runs/37819621678 . Inspection found
-READ_CONTROL incorrectly combined into CreateNamedPipeW's dwOpenMode in both
-production creation and the shared fixture. It is not a supported creation flag;
-PIPE_ACCESS_DUPLEX supplies generic read/write access. The candidate removes the
-unsupported bit and keeps mandatory security read-back and all assertions.
-Creation and read-back errors now identify the failing native call. This is a
-candidate fix pending another native run, not a passing acceptance claim.
-API contract: https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-createnamedpipew
+Read-back requires exactly PIPE_SERVER_END | PIPE_REJECT_REMOTE_CLIENTS (`0x9`)
+and one instance. A regression rejects client/message pipes, missing remote
+rejection, unknown flags and zero/multiple/unlimited instance limits. Windows
+Server 2022 returns the remote-rejection bit for both private and shared fixtures.
+The SDK defines PIPE_REJECT_REMOTE_CLIENTS as `0x8`, but GetNamedPipeInfo's
+published contract documents only end/type flags; this read-back behavior is
+native evidence for the tested platform, not a documented cross-version promise.
+Unexpected values fail closed. CreateNamedPipeW uses only supported creation
+flags; access rights such as READ_CONTROL are not added to dwOpenMode.
 
-The second exact-source native run passed 42 tests and failed the two private
-endpoint fixtures after successful creation and security read-back:
-https://github.com/BeFeast/tessera/actions/runs/37820416150 . The shared endpoint
-preservation fixture now passes. The remaining failure is the pipe type/end/
-instance-limit assertion. A diagnostic candidate records the actual flags and
-maximum instance count (including the passing shared fixture); it deliberately
-keeps the acceptance condition unchanged until the returned values are known.
-
-The diagnostic run returned `flags=0x9, max_instances=1` from both private and
-shared pipes: https://github.com/BeFeast/tessera/actions/runs/37821492513 . The extra
-bit is the configured PIPE_REJECT_REMOTE_CLIENTS (0x8), alongside PIPE_SERVER_END
-(0x1); the one-instance limit was correct. Read-back now requires exactly both
-flags, byte type and one instance. It does not mask unknown bits or accept a
-missing remote-rejection bit. A regression rejects client/message pipes, missing
-remote rejection, unknown flags and zero/multiple/unlimited instance limits.
-This corrected candidate still requires its own Windows-native run.
+The exact-source native run on windows-2022 passed 45 `sidecar::` tests with zero
+failures or ignored tests, including all three endpoint fixtures, the metadata
+regression and both peer-identity fixtures:
+https://github.com/BeFeast/tessera/actions/runs/37822215299 . Run/source SHA was
+`a3f200239f68aa449a7dfb7cba1199de4eb2afa0`, tree
+`e3bc443677aebcd11a640c490411bb3ecece5c73`, with no extra source/workflow commit.
+The dispatch used package `tessera-sync-controller`, default features, filter
+`sidecar::`, and one test thread. Toolchain: rustc 1.99.0
+(b940084d7 2026-09-28), x86_64-pc-windows-msvc, LLVM 23.1.1.
+The restricted token received ERROR_ACCESS_DENIED for read/write; the ordinary
+owner succeeded on the same endpoint. Shared-endpoint refusal preserved its
+security descriptor and usable server. This validates the endpoint and peer
+primitives, not production transport or complete Sync acceptance.
