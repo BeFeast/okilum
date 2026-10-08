@@ -177,3 +177,6 @@ pub mod native;
 
 #[cfg(target_os = "windows")]
 pub mod security;
+
+#[cfg(target_os = "windows")]
+pub mod private;
