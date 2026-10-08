@@ -153,6 +153,22 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(result, 'failure')
         self.assertLessEqual(clock(), 110)
 
+    def test_missing_run_during_cancel_grace_still_has_deadline(self):
+        clock = Clock()
+        class Disappearing(API):
+            def request(self, path, method='GET', data=None):
+                if method == 'POST':
+                    raise bridge.Unavailable('cancel refused')
+                self.runs = [dict(RUN, status='queued', conclusion=None)] if clock() <= 40 else []
+                # Guard the regression itself from hanging on a broken implementation.
+                if clock() > 120:
+                    raise AssertionError('Grace period lost its deadline')
+                return super().request(path, method, data)
+        result, _ = bridge.wait_for_run(Disappearing(), BRANCH, SHA, clock=clock,
+                                       sleep=clock.sleep, queue_timeout=30, run_timeout=60)
+        self.assertEqual(result, 'failure')
+        self.assertLessEqual(clock(), 110)
+
     def test_startup_failure_and_api_outage_allow_fallback(self):
         with self.assertRaises(bridge.Unavailable):
             self.wait(API(runs=[dict(RUN, conclusion='startup_failure')]))

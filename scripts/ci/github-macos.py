@@ -128,13 +128,13 @@ def wait_for_run(api, branch, sha, *, clock=time.monotonic, sleep=time.sleep,
                 return "success", f"GitHub native gate passed: {url}"
             if run["status"] == "in_progress" and running_until is None:
                 running_until = clock() + run_timeout
-            if running_until is not None and clock() >= running_until:
-                # Do not turn a hanging test into a successful retry on another host.
-                try:
-                    api.request(f"actions/runs/{run['id']}/cancel", "POST")
-                except Unavailable:
-                    pass  # A cancellation outage cannot turn a hung test into fallback.
-                return "failure", f"GitHub native gate exceeded its execution deadline: {url}"
+        if running_until is not None and clock() >= running_until:
+            # Do not turn a hanging test into a successful retry on another host.
+            try:
+                api.request(f"actions/runs/{run['id']}/cancel", "POST")
+            except Unavailable:
+                pass  # A cancellation outage cannot turn a hung test into fallback.
+            return "failure", f"GitHub native gate exceeded its execution deadline: {url}"
         if running_until is None and clock() >= queued_until:
             if matches:
                 try:
