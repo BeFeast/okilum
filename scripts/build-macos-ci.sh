@@ -61,6 +61,11 @@ cat >"$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleTypeRole</key><string>Viewer</string>
   <key>LSHandlerRank</key><string>Alternate</string>
   <key>LSItemContentTypes</key><array><string>public.markdown</string><string>net.daringfireball.markdown</string></array>
+</dict><dict>
+  <key>CFBundleTypeName</key><string>Log file</string>
+  <key>CFBundleTypeRole</key><string>Viewer</string>
+  <key>LSHandlerRank</key><string>Alternate</string>
+  <key>LSItemContentTypes</key><array><string>public.log</string><string>com.apple.log</string><string>uk.oklabs.tessera.json-lines</string><string>uk.oklabs.tessera.logfmt</string></array>
 </dict></array>
 <key>UTImportedTypeDeclarations</key>
 <array><dict>
@@ -78,6 +83,20 @@ cat >"$APP/Contents/Info.plist" <<PLIST
   <key>UTTypeTagSpecification</key><dict>
     <key>public.filename-extension</key><array><string>md</string></array>
     <key>public.mime-type</key><string>text/markdown</string>
+  </dict>
+</dict><dict>
+  <key>UTTypeIdentifier</key><string>uk.oklabs.tessera.json-lines</string>
+  <key>UTTypeDescription</key><string>JSON lines log</string>
+  <key>UTTypeConformsTo</key><array><string>public.plain-text</string></array>
+  <key>UTTypeTagSpecification</key><dict>
+    <key>public.filename-extension</key><array><string>jsonl</string><string>ndjson</string></array>
+  </dict>
+</dict><dict>
+  <key>UTTypeIdentifier</key><string>uk.oklabs.tessera.logfmt</string>
+  <key>UTTypeDescription</key><string>logfmt log</string>
+  <key>UTTypeConformsTo</key><array><string>public.plain-text</string></array>
+  <key>UTTypeTagSpecification</key><dict>
+    <key>public.filename-extension</key><array><string>logfmt</string></array>
   </dict>
 </dict></array>
 <key>CFBundleShortVersionString</key><string>$DISPLAY_VERSION</string>

@@ -713,3 +713,39 @@ are open to review; none changes the recommendation above.
   JSON-lines file (531,440 records) in 0.18 s on 4 threads and 0.41 s on one,
   with a 16.2 MiB index. Its counts match both the generator and an independent
   byte search.
+
+## Implementation notes (slice 9)
+
+User guide: `docs/log-viewer.md`.
+
+- **Linux: no log MIME types in `tessera.desktop`.** A desktop entry has no
+  handler rank. GIO's default lookup takes an app that names the exact type
+  before the user's default for a parent type. Measured with `gio mime
+  text/x-log` (GLib 2.80, shared-mime-info 2.4, isolated `XDG_DATA_DIRS`/
+  `XDG_CONFIG_HOME`), with an editor that lists only `text/plain`:
+  - without Tessera listing `text/x-log`, the default for `text/x-log` is
+    the user's `text/plain` default, the editor (control);
+  - with Tessera listing `text/x-log`, the default is Tessera, **even when**
+    `mimeapps.list` sets `text/plain=editor.desktop`.
+
+  So a `MimeType` entry would take `.log` away from the user's editor on
+  desktops that set no explicit `text/x-log` default. The same holds for
+  `.jsonl`/`.ndjson`/`.logfmt`: shared-mime-info (2.4 and upstream master)
+  defines no type for them, so registering them would need a Tessera-owned
+  type that only Tessera handles. Logs therefore stay reachable through
+  "Open With Other Application" (`Exec=tessera %f`), and
+  `scripts/arch/test_desktop.py` guards the decision. The same mechanism
+  applies to the existing `text/markdown` entry when the editor lists only
+  `text/plain`; that is outside this slice.
+- **macOS.** A second `CFBundleDocumentTypes` entry, role Viewer,
+  `LSHandlerRank` Alternate, for `public.log`, `com.apple.log` and two
+  imported (not exported) types: `uk.oklabs.tessera.json-lines` (`jsonl`,
+  `ndjson`) and `uk.oklabs.tessera.logfmt`. Imported declarations yield to an
+  app that exports a type for the same extension; then Tessera is simply not
+  offered for it. Not verified on a Mac in this slice.
+- **Windows.** The Open With ProgID lives in
+  `crates/tessera-shell/src/markdown_handler.rs` (Velopack install/uninstall
+  hooks), not in packaging config. Adding `.log`/`.jsonl`/`.ndjson`/`.logfmt`
+  `OpenWithProgids` values there is a separate change.
+- **Compressed names** (`.log.gz` and so on) are not registered anywhere until
+  the viewer opens them (slice 7).

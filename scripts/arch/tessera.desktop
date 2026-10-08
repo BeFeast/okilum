@@ -1,3 +1,8 @@
+# Log types (text/x-log, .jsonl, .ndjson, .logfmt) are deliberately not listed
+# in MimeType: GIO picks an app that names the exact type over the user's
+# text/plain default, so listing them would take .log away from the editor.
+# Tessera still opens logs via "Open With Other Application" and `tessera %f`.
+# See docs/research/602-hl-log-viewer.md, "Implementation notes (slice 9)".
 [Desktop Entry]
 Type=Application
 Name=Tessera

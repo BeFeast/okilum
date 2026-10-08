@@ -39,4 +39,6 @@ An empty file is identified as empty; unreadable or unsupported text has a clear
 fallback with an external-open action. These previews never edit or index the file.
 The structured log viewer (#602) opens `.log`, `.jsonl`, `.ndjson` and `.logfmt`
 in both vault and quick-file mode, including vault Quick Open and tree selection.
-Find/filter within a log is a separate #602 S3 slice.
+Find/filter within a log is a separate #602 S3 slice. Only macOS offers
+Tessera in Open With for logs (rank Alternate); see `docs/log-viewer.md` and
+the slice 9 notes in `docs/research/602-hl-log-viewer.md`.
