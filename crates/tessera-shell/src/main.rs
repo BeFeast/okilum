@@ -6393,7 +6393,9 @@ impl Render for Reader {
                 |this, event: &gpui::ModifiersChangedEvent, window, cx| {
                     this.hover_modifiers(window, cx);
                     if !event.modifiers.control {
-                        this.release_recent(window, cx);
+                        this.queue_recent_release(window, cx);
+                    } else {
+                        this.recent_switcher.invalidate_release();
                     }
                 },
             ))

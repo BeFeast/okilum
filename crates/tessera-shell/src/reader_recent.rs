@@ -7,6 +7,7 @@ pub(super) struct Switcher {
     selected: usize,
     root: PathBuf,
     scroll: ScrollHandle,
+    release_generation: u64,
 }
 impl Switcher {
     fn begin(
@@ -16,6 +17,7 @@ impl Switcher {
         available: &[tessera_core::vault::Note],
         root: &Path,
     ) {
+        self.invalidate_release();
         let mut paths = vec![];
         for path in std::iter::once(current).chain(recent.iter().rev().map(String::as_str)) {
             if path.to_lowercase().ends_with(".md")
@@ -34,6 +36,7 @@ impl Switcher {
         self.paths.len() > 1
     }
     fn step(&mut self, delta: isize) {
+        self.invalidate_release();
         if self.open() {
             self.selected =
                 (self.selected as isize + delta).rem_euclid(self.paths.len() as isize) as usize;
@@ -48,7 +51,11 @@ impl Switcher {
         result
     }
     pub fn cancel(&mut self) {
+        self.invalidate_release();
         self.paths.clear();
+    }
+    pub fn invalidate_release(&mut self) {
+        self.release_generation = self.release_generation.wrapping_add(1);
     }
 }
 
@@ -71,6 +78,37 @@ impl Reader {
         self.recent_switcher.step(delta);
         cx.notify();
     }
+    /// A compositor can clear modifiers before reporting keyboard focus loss.
+    /// Do not navigate inside that event: allow activation cancellation to win.
+    pub(super) fn queue_recent_release(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.recent_switcher.open() {
+            return;
+        }
+        self.recent_switcher.invalidate_release();
+        let generation = self.recent_switcher.release_generation;
+        let navigation = self.navigation.generation;
+        cx.spawn_in(window, async move |reader, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(100))
+                .await;
+            let _ = reader.update_in(cx, |reader, window, cx| {
+                if reader.recent_switcher.release_generation != generation {
+                    return;
+                }
+                if reader.navigation.generation != navigation {
+                    reader.recent_switcher.cancel();
+                    cx.notify();
+                    return;
+                }
+                if window.modifiers().control {
+                    return;
+                }
+                reader.release_recent(window, cx);
+            });
+        })
+        .detach();
+    }
+
     pub(super) fn release_recent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !window.is_window_active() {
             self.recent_switcher.cancel();
@@ -280,6 +318,8 @@ mod tests {
         reader.read_with(visual, |r, _| assert_eq!(r.current_rel, "A.md"));
         visual.simulate_event(gpui::ModifiersChangedEvent::default());
         visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_millis(100));
+        visual.run_until_parked();
         reader.read_with(visual, |r, _| assert_eq!(r.current_rel, "B.md"));
         reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
         visual.run_until_parked();
@@ -289,9 +329,32 @@ mod tests {
         visual.simulate_keystrokes("ctrl-escape");
         visual.simulate_event(gpui::ModifiersChangedEvent::default());
         visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_millis(100));
+        visual.run_until_parked();
         reader.read_with(visual, |r, _| {
             assert_eq!(r.current_rel, "B.md");
             assert!(r.editing.is_some());
+        });
+        // Wayland can clear Control while the window still reports active,
+        // then deliver deactivation. No navigation may happen in between.
+        visual.simulate_keystrokes("ctrl-tab");
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("recent-switcher").is_some());
+        visual.simulate_event(gpui::ModifiersChangedEvent::default());
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| assert_eq!(r.current_rel, "B.md"));
+        visual.deactivate_window();
+        visual.run_until_parked();
+        reader.update_in(visual, |_, window, _| window.activate_window());
+        visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_millis(100));
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert_eq!(
+                r.current_rel, "B.md",
+                "focus loss cancels the queued release"
+            );
+            assert!(!r.recent_switcher.open());
         });
         // A compositor may deliver the release only after the window returns.
         reader.update_in(visual, |_, window, _| window.activate_window());
@@ -306,9 +369,13 @@ mod tests {
         visual.run_until_parked();
         visual.simulate_event(gpui::ModifiersChangedEvent::default());
         visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_millis(100));
+        visual.run_until_parked();
         reader.read_with(visual, |r, _| assert_eq!(r.current_rel, "B.md"));
         visual.simulate_keystrokes("ctrl-tab");
         visual.simulate_event(gpui::ModifiersChangedEvent::default());
+        visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_millis(100));
         visual.run_until_parked();
         reader.read_with(visual, |r, _| assert_eq!(r.current_rel, "A.md"));
         reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
@@ -318,6 +385,8 @@ mod tests {
         std::fs::write(root.join("A.md"), "external").unwrap();
         visual.simulate_keystrokes("ctrl-tab");
         visual.simulate_event(gpui::ModifiersChangedEvent::default());
+        visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_millis(100));
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
             assert_eq!(r.current_rel, "A.md");
