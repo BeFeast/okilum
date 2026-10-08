@@ -1,0 +1,39 @@
+# Host Docker access is deliberately restricted to an operator dispatch.
+# This creates candidates only; ci.yml is unchanged until paired acceptance.
+name: reader-ci-image
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Push a unique candidate to the LAN registry
+        type: boolean
+        required: true
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: reader-ci-image
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: heavy
+    timeout-minutes: 45
+    steps:
+      - name: Require the approved builder
+        run: test "$(hostname -s)" = baldr
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build and verify candidate
+        env:
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ "$PUBLISH" = true ]; then args+=(--publish); fi
+          python3 scripts/ci/reader-image/build.py "${args[@]}"
+      - name: Save immutable candidate receipt
+        uses: https://code.forgejo.org/actions/upload-artifact@v3
+        with:
+          name: reader-ci-image-receipt
+          path: target/ci-reader-image/receipt.json
