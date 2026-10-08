@@ -110,11 +110,30 @@ impl Preimage {
         backup: &Path,
         prepared: &Path,
     ) -> Result<PathBuf> {
+        // FileEditor pins the supplied Win32 path before canonicalizing note
+        // identity. These may spell the same parent as C:\... and \\?\C:\...
+        // (or a short-name alias). Bind both native ancestries before storing
+        // canonical recovery paths; never authorize a redirected parent.
+        let note_parent = note.parent().context("Missing source parent")?;
+        let directory = crate::windows_files::Directory::open(
+            prepared.parent().context("Missing prepared parent")?,
+        )?;
+        let canonical = crate::windows_files::Directory::open(note_parent)?;
+        let backup_directory = crate::windows_files::Directory::open(
+            backup.parent().context("Missing preimage parent")?,
+        )?;
         ensure!(
-            owned_prepared_name(note, prepared),
+            directory.identities()? == canonical.identities()?
+                && backup_directory.identities()? == canonical.identities()?,
+            "Prepared recovery parent changed"
+        );
+        let prepared = note_parent.join(prepared.file_name().context("Missing prepared filename")?);
+        let backup = note_parent.join(backup.file_name().context("Missing preimage filename")?);
+        ensure!(
+            owned_prepared_name(note, &prepared),
             "Invalid prepared recovery identity"
         );
-        let (_, bytes, info) = crate::windows_files::read_file(prepared)?;
+        let (_, bytes, info) = directory.read(prepared.file_name().unwrap())?;
         let snapshot = String::from_utf8(bytes).context("Prepared source is not UTF-8")?;
         let (volume, high, low) = crate::windows_files::identity(&info);
         let path = directory(drafts).join(format!("{}.json", uuid::Uuid::new_v4()));
@@ -123,9 +142,9 @@ impl Preimage {
             created: now(),
             text: text.to_owned(),
             pending: true,
-            displaced: backup.to_owned(),
+            displaced: backup,
             external_inode: None,
-            prepared: Some(prepared.to_owned()),
+            prepared: Some(prepared),
             prepared_snapshot: Some(snapshot),
             prepared_identity: Some((u64::from(volume), u64::from(high) << 32 | u64::from(low))),
             snapshot_only: false,
@@ -1448,6 +1467,42 @@ mod windows_cleanup_tests {
         );
         (record, prepared)
     }
+    #[test]
+    fn windows_history_prepared_win32_and_verbatim_parent_aliases_share_cleanup_identity() {
+        let (_temp, root, drafts) = fixture();
+        let ordinary = PathBuf::from(
+            root.to_str()
+                .unwrap()
+                .strip_prefix("\\\\?\\")
+                .expect("canonical Windows prefix positive control"),
+        );
+        assert_ne!(ordinary, root, "fixture exercises different path spellings");
+        let note = root.join("Alias.md");
+        fs::write(&note, "base").unwrap();
+        let directory = Directory::open(&ordinary).unwrap();
+        let plan = directory
+            .prepare_replace(std::ffi::OsStr::new("Alias.md"), b"base", b"proposed")
+            .unwrap()
+            .unwrap();
+        let staging = plan.prepared_path().to_owned();
+        assert_ne!(staging.parent(), note.parent());
+        let record =
+            Preimage::begin_windows(&drafts, &note, "base", plan.preimage_path(), &staging)
+                .unwrap();
+        let entry = Preimage::load(&record).unwrap();
+        assert_eq!(entry.prepared.as_ref().unwrap().parent(), note.parent());
+        assert_eq!(entry.displaced.parent(), note.parent());
+        drop(plan);
+        Preimage::archive_prepared_windows(&record).unwrap();
+        assert!(!staging.exists());
+        assert!(list(&drafts, &ordinary)
+            .unwrap()
+            .versions
+            .iter()
+            .any(|v| v.text == "proposed" && v.protected));
+        assert_eq!(fs::read_to_string(&note).unwrap(), "base");
+    }
+
     #[test]
     fn windows_history_prepared_crash_recovery_moves_to_app_state_without_losing_bytes() {
         let (_temp, root, drafts) = fixture();
