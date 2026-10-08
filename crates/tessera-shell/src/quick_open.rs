@@ -1,5 +1,6 @@
 //! Search palette. At most one query runs; intervening edits are coalesced.
 use super::*;
+use tessera_core::search_snippet::{plain_snippet, PlainSnippet};
 use tessera_core::SearchHit;
 
 use std::collections::HashMap;
@@ -94,6 +95,14 @@ pub(super) fn result_location(vault_name: &str, path: &str) -> String {
     }
 }
 
+/// The folder a content-search result lives in, as breadcrumb-style text
+/// (#654). Empty for a note at the vault root.
+fn result_folder(path: &str) -> String {
+    path.rsplit_once('/')
+        .map(|(dir, _)| dir.split('/').collect::<Vec<_>>().join(" › "))
+        .unwrap_or_default()
+}
+
 pub(super) struct Palette {
     pub open: bool,
     full_text: bool,
@@ -101,6 +110,8 @@ pub(super) struct Palette {
     pub inventory: Option<Arc<Vec<tessera_core::vault::Note>>>,
     _subscription: Subscription,
     pub(super) rows: Vec<SearchHit>,
+    /// Plain-text snippet per row of a content search, same order as `rows`.
+    snippets: Vec<PlainSnippet>,
     selected: usize,
     generation: u64,
     running: bool,
@@ -128,6 +139,7 @@ impl Palette {
             inventory: None,
             _subscription: subscription,
             rows: Vec::new(),
+            snippets: Vec::new(),
             selected: 0,
             generation: 0,
             running: false,
@@ -143,6 +155,7 @@ impl Palette {
     pub fn invalidate(&mut self) {
         self.generation = self.generation.wrapping_add(1);
         self.rows.clear();
+        self.snippets.clear();
         self.selected = 0;
         self.pending = false;
     }
@@ -242,7 +255,7 @@ impl Reader {
             }
             let result = if full_text {
                 if query.is_empty() {
-                    return Ok((vec![], "Type to search note contents".to_string()));
+                    return Ok((vec![], vec![], "Type to search note contents".to_string()));
                 }
                 match searcher {
                     Some(searcher) => searcher
@@ -288,7 +301,11 @@ impl Reader {
                 for hit in &mut rows {
                     hit.title = result_title(&title_root, &titles, hit);
                 }
-                (rows, message)
+                let snippets = rows
+                    .iter()
+                    .map(|hit| plain_snippet(&hit.snippet_html))
+                    .collect();
+                (rows, snippets, message)
             })
         });
         cx.spawn(async move |this, cx| {
@@ -301,13 +318,14 @@ impl Reader {
                     && this.watcher_generation == inventory
                 {
                     match result {
-                        Ok((rows, message)) => {
+                        Ok((rows, snippets, message)) => {
                             this.quick_open.message = if rows.is_empty() && message.is_empty() {
                                 "No matches".into()
                             } else {
                                 message
                             };
                             this.quick_open.rows = rows;
+                            this.quick_open.snippets = snippets;
                         }
                         Err(error) => this.quick_open.message = error,
                     }
@@ -354,10 +372,13 @@ impl Reader {
     pub(super) fn render_quick_open(&self, cx: &mut Context<Self>) -> AnyElement {
         let palette = brand::palette(cx);
         let rows = self.quick_open.rows.clone();
+        let snippets = self.quick_open.snippets.clone();
         let selected = self.quick_open.selected;
         let full_text = self.quick_open.full_text;
         let selected_bg = palette.selected;
         let muted = palette.text_muted;
+        let text = palette.text;
+        let mark = palette.accent.opacity(0.18);
         let entity = cx.entity().downgrade();
         let generation = self.quick_open.generation;
         let root = self.vault_root.clone();
@@ -431,18 +452,48 @@ impl Reader {
                         )
                         .child(
                             div()
-                                .text_xs()
+                                .text_size(px(12.))
                                 .text_color(muted)
                                 .overflow_hidden()
                                 .whitespace_nowrap()
                                 .text_ellipsis()
-                                .child(result_location(&vault_name, &hit.path)),
+                                .child(if full_text {
+                                    result_folder(&hit.path)
+                                } else {
+                                    result_location(&vault_name, &hit.path)
+                                }),
                         )
-                        .when(full_text, |row| {
-                            row.child(div().text_xs().overflow_hidden().child(TextView::html(
-                                SharedString::from(format!("quick-open-snippet-{ix}")),
-                                hit.snippet_html.clone(),
-                            )))
+                        .when_some(snippets.get(ix).filter(|_| full_text), |row, snippet| {
+                            let highlights = snippet
+                                .highlights
+                                .iter()
+                                .filter_map(|r| {
+                                    text_ranges::safe_highlight(&snippet.text, r.clone())
+                                })
+                                .map(|r| {
+                                    (
+                                        r,
+                                        HighlightStyle {
+                                            background_color: Some(mark),
+                                            color: Some(text),
+                                            font_weight: Some(FontWeight::SEMIBOLD),
+                                            ..Default::default()
+                                        },
+                                    )
+                                })
+                                .collect::<Vec<_>>();
+                            row.child(
+                                div()
+                                    .id(("quick-open-snippet", ix))
+                                    .text_size(px(12.))
+                                    .text_color(muted)
+                                    .overflow_hidden()
+                                    .line_clamp(2)
+                                    .child(
+                                        StyledText::new(snippet.text.clone())
+                                            .with_highlights(highlights),
+                                    ),
+                            )
                         })
                 })
                 .collect::<Vec<_>>()
@@ -489,7 +540,7 @@ impl Reader {
                             .child(Input::new(&self.quick_open.input).cleanable(true)),
                     )
                     .child(list)
-                    .child(div().px_3().text_xs().text_color(muted).child(
+                    .child(div().px_3().text_size(px(12.)).text_color(muted).child(
                         if self.quick_open.message.is_empty() {
                             if self.quick_open.input.read(cx).value().is_empty() {
                                 "↑ ↓ Select · Enter Open · Esc Close".to_string()
@@ -591,6 +642,13 @@ mod tests {
             assert_eq!(location, expected, "{path}");
             assert!(!location.contains(".md"));
         }
+    }
+
+    #[test]
+    fn result_folders_are_breadcrumbs_without_file_names() {
+        assert_eq!(result_folder("note.md"), "");
+        assert_eq!(result_folder("Memory/_index.md"), "Memory");
+        assert_eq!(result_folder("Areas/tessera/Plan.md"), "Areas › tessera");
     }
 
     #[gpui::test]
@@ -981,7 +1039,7 @@ canaryhidden [[Target]]",
         std::fs::write(
             root.join("Memory/_index.md"),
             format!(
-                "# Target\n\n{}\n\nUnique canaryword landing.",
+                "# Target\n\n{}\n\nUnique **canaryword** landing near [[start|the start]].",
                 "Filler paragraph.\n\n".repeat(50)
             ),
         )
@@ -1075,6 +1133,24 @@ canaryhidden [[Target]]",
                 assert!(v.quick_open.rows[0]
                     .snippet_html
                     .contains("<b>canaryword</b>"));
+                // #654: the row shows plain text with the match marked.
+                let snippet = &v.quick_open.snippets[0];
+                assert!(
+                    snippet
+                        .text
+                        .ends_with("Unique canaryword landing near the start"),
+                    "{snippet:?}"
+                );
+                assert!(!snippet.text.contains(['*', '[', '#']), "{snippet:?}");
+                assert_eq!(
+                    snippet
+                        .highlights
+                        .iter()
+                        .map(|r| &snippet.text[r.clone()])
+                        .collect::<Vec<_>>(),
+                    ["canaryword"]
+                );
+                assert_eq!(result_folder(&v.quick_open.rows[0].path), "Memory");
             });
             if mouse {
                 let bounds = visual
