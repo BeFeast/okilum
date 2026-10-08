@@ -145,3 +145,38 @@ Outstanding before a PR/acceptance: soft-wrap and row-edge traversal, vertical
 movement affinity, selection collapse at directional boundaries, IME candidate
 bounds, edits/Undo affinity, newline selection, and Linux light/dark before/after.
 The current patch is a local integration checkpoint, not a claim that #737 is fixed.
+
+## Integration validation update
+
+Subsequent integration carries wrap affinity across horizontal row boundaries,
+retains directional affinity on vertical hits, resolves offscreen row edges after
+painting their geometry, collapses selection by visual endpoints, and keeps IME
+bounds non-negative for reversed logical endpoints. Replacements choose the
+inserted text's trailing edge; source and Undo transactions remain byte-based.
+Newline-only selection remains visible when bidi rectangles are used.
+
+The final native shared-editor matrix passes in Source and Live Preview: visual
+arrows, one-letter selection, left/right selection collapse, replacement, Undo,
+Redo and exact source restoration. The fixture refreshes its projection provider
+after source revisions. Long wrapped text and multi-line viewport traversal reach
+EOF without cycles; the wrapped paragraph also returns to its start. Logs and
+scripts remain in `~/.cache/tessera-qa/737/`.
+
+Three focused geometry tests are compiled through the `bidi737` example, importing
+the actual vendor module: directional affinity, crossed-cell ownership for hits
+and Shift movement, and disjoint selection with an ASCII positive control. The
+standalone native shaping probe also consumes that module, not a copied model.
+Direct `cargo test -p gpui-base` is unavailable because the vendored package is not
+a workspace member; that failed invocation is not counted as validation.
+
+Linux before/after light/dark compare the same selected bytes in the actual shared
+Editor widget, same host and session. Baseline was built with only patch 0036
+removed and the remaining vendor stack verified, then the full stack was restored
+and verified before the after build. Baseline highlights the full word; after
+highlights only `ם`. These are isolated native widget captures, not screenshots of
+a mocked interface or full Reader QA.
+
+The PR remains gated on native IME preedit/commit/cancel, candidate geometry and
+wrapped-row acceptance in the complete Reader on muninn. No IME PASS is claimed
+from the X11 keyboard fixture. Ligature subdivision remains approximate within a
+multi-grapheme shaped cluster and needs coverage in that acceptance matrix.

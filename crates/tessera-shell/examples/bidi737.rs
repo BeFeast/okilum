@@ -1,6 +1,6 @@
 //! Read-only native shaping probe for #737; includes an ASCII positive control.
 use gpui::*;
-#[path = "bidi737/geometry.rs"]
+#[path = "../../../vendor/gpui-component/crates/base/src/input/bidi_geometry.rs"]
 mod geometry;
 
 fn main() {
@@ -34,8 +34,8 @@ fn main() {
                 println!("VISUAL CELLS {:?}", map.cells);
                 for cell in &map.cells {
                     assert!(cell.right > cell.left, "visible cell must have an extent");
-                    assert!(map.edges(cell.source.start).contains(&cell.leading()));
-                    assert!(map.edges(cell.source.end).contains(&cell.trailing()));
+                    assert!(edges(&map, cell.source.start).contains(&cell.leading()));
+                    assert!(edges(&map, cell.source.end).contains(&cell.trailing()));
                     let near_start = cell.leading() * 0.9 + cell.trailing() * 0.1;
                     let near_end = cell.leading() * 0.1 + cell.trailing() * 0.9;
                     let start_hit = map.hit(near_start).unwrap();
@@ -57,7 +57,7 @@ fn main() {
                     }
                 }
                 if text == "abc שלום xyz" {
-                    let internal: Vec<_> = [6, 8, 10].map(|i| map.edges(i)).into();
+                    let internal: Vec<_> = [6, 8, 10].map(|i| edges(&map, i)).into();
                     assert!(internal.iter().all(|edges| edges.len() == 1));
                     assert!(internal[0][0] > internal[1][0]);
                     assert!(internal[1][0] > internal[2][0]);
@@ -102,4 +102,14 @@ impl Render for Empty {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
     }
+}
+
+fn edges(map: &geometry::Geometry, index: usize) -> Vec<Pixels> {
+    let mut edges: Vec<_> = [geometry::Affinity::Before, geometry::Affinity::After]
+        .into_iter()
+        .filter_map(|affinity| map.position(geometry::Caret { index, affinity }))
+        .collect();
+    edges.sort();
+    edges.dedup();
+    edges
 }

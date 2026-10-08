@@ -17,6 +17,7 @@ actions!(bidi_fixture, [Record, Toggle]);
 struct Fixture {
     editor: Entity<EditorState>,
     live: bool,
+    classified: Option<gpui_component::input::projection::SourceStamp>,
     _subscription: Subscription,
 }
 impl Fixture {
@@ -65,6 +66,12 @@ fn main() {
         .with_assets(gpui_kit_assets::Assets)
         .run(|cx| {
             gpui_component::init(cx);
+            let mode = if std::env::var_os("TESSERA_BIDI_DARK").is_some() {
+                gpui_component::ThemeMode::Dark
+            } else {
+                gpui_component::ThemeMode::Light
+            };
+            gpui_component::Theme::change(mode, None, cx);
             cx.bind_keys([
                 KeyBinding::new("ctrl-alt-r", Record, None),
                 KeyBinding::new("ctrl-alt-l", Toggle, None),
@@ -86,7 +93,14 @@ fn main() {
                             .searchable(false)
                             .soft_wrap(true)
                             .wrapping_indent(WrappingIndent::None);
-                        editor.set_value(TEXT, window, cx);
+                        editor.set_value(
+                            std::env::var("TESSERA_BIDI_TEXT").unwrap_or_else(|_| TEXT.into()),
+                            window,
+                            cx,
+                        );
+                        if std::env::var_os("TESSERA_BIDI_SELECT").is_some() {
+                            editor.set_selected_range(10..12, cx);
+                        }
                         editor
                     });
                     editor.read(cx).focus_handle(cx).focus(window, cx);
@@ -103,11 +117,31 @@ fn main() {
                                 state.set_projection_provider(Some(provider), cx);
                             });
                         }
-                        let subscription =
-                            cx.observe(&editor, |this: &mut Fixture, _, cx| this.record(cx));
+                        let subscription = cx.observe(&editor, |this: &mut Fixture, _, cx| {
+                            let state = this.editor.read(cx);
+                            let stamp = state.source_stamp();
+                            if this.live && this.classified != Some(stamp) {
+                                let provider =
+                                    Arc::new(adapter::CachedProvider::classify(SourceSnapshot {
+                                        stamp,
+                                        text: Arc::from(state.value().as_ref()),
+                                    }));
+                                this.classified = Some(stamp);
+                                this.editor.update(cx, |state, cx| {
+                                    state.set_projection_provider(Some(provider), cx);
+                                });
+                            }
+                            this.record(cx);
+                        });
+                        let classified = if live {
+                            Some(editor.read(cx).source_stamp())
+                        } else {
+                            None
+                        };
                         Fixture {
                             editor,
                             live,
+                            classified,
                             _subscription: subscription,
                         }
                     });
