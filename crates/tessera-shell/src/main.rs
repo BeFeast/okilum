@@ -5261,12 +5261,7 @@ impl Reader {
                 .mx(px(READER_SIDE_PADDING - 10.))
                 .mt(px(16.))
                 .max_h(relative(0.45))
-                .when(open, |d| {
-                    d.border_1()
-                        .border_color(p.border_subtle)
-                        .rounded(px(10.))
-                        .p_1()
-                })
+                .when(open, |d| d.rounded(px(10.)).p_1())
                 .child(header)
                 .when(open, |d| {
                     d.child(
@@ -5288,11 +5283,22 @@ impl Reader {
         let props = match &self.properties {
             Ok(props) => props,
             Err(error) => {
+                let detail = format!("Frontmatter is not valid YAML: {error}");
                 return div()
+                    .id("properties-read-error")
                     .text_xs()
                     .text_color(cx.theme().danger)
-                    .child(format!("Frontmatter is not valid YAML: {error}"))
-                    .into_any_element()
+                    .child("Properties could not be read")
+                    .tooltip(move |window, cx| {
+                        let detail = detail.clone();
+                        let width =
+                            (f32::from(window.viewport_size().width) - 64.).clamp(160., 360.);
+                        gpui_component::tooltip::Tooltip::element(move |_, _| {
+                            div().w(px(width)).whitespace_normal().child(detail.clone())
+                        })
+                        .build(window, cx)
+                    })
+                    .into_any_element();
             }
         };
         let hidden = props.iter().filter(|p| p.hidden()).count();
