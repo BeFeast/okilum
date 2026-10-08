@@ -45,7 +45,7 @@ use the same synthetic vault and machine. Do not publish private vault notes.
   in both themes, and check the previously missing context against the actual
   matching source. Linux synthetic evidence does not close that platform check.
 
-Local automated validation: all 9 `quick_open::tests::` tests pass, including the
+Local automated validation: all 10 `quick_open::tests::` tests pass, including the
 5000-note/superseded-query acceptance test, mouse/keyboard opening with
 jump-to-match, Unicode label marks, one-line preview offset preservation, and
 rendered row width/height assertions. Shell `clippy --tests -- -D warnings` and
@@ -54,8 +54,8 @@ formatting is scoped to the shell package rather than rewriting vendored code.
 
 | Theme | Before | After |
 |---|---|---|
-| Light | [Baseline](https://oklb.uk/proud-sparrow-6798) | [Compact rows](https://oklb.uk/sturdy-otter) |
-| Dark | [Baseline](https://oklb.uk/calm-lynx) | [Compact rows](https://oklb.uk/golden-tiger) |
+| Light | [Baseline](https://oklb.uk/proud-sparrow-6798) | [Compact rows](https://oklb.uk/silly-otter) |
+| Dark | [Baseline](https://oklb.uk/calm-lynx) | [Compact rows](https://oklb.uk/jolly-mole) |
 
 Native title-only and `path:`-only controls show highlighted labels without an
 empty body snippet. The 15-result keyboard control reaches the last item and
@@ -63,3 +63,11 @@ Enter opens that exact note at the highlighted match. The final build also
 retains full-width selection and visible snippets at 2x scale. UI rules 1–10:
 no additional window/frame, short muted breadcrumbs, secondary text at 12 px,
 compact rows, platform shortcuts, and unchanged match navigation.
+
+
+A display snippet omits an exact leading repeat of the displayed title, at a
+word boundary. Body highlight offsets are remapped, and hidden-link explanations
+survive even when the repeated title was the whole visible snippet. The original
+search hit remains intact for jump-to-match. Frontmatter parsing/filtering belongs
+to #746; this shell-only projection deliberately leaves `title: Kara roadmap…`
+unchanged and has a regression control for that boundary.

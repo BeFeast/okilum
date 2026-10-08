@@ -145,6 +145,31 @@ fn label_matches(text: &str, query: &str) -> Vec<std::ops::Range<usize>> {
     ranges
 }
 
+/// The title already has its own row. Remove only an exact leading repeat
+/// from the display snippet; the original hit still drives jump-to-match.
+/// This intentionally does not parse or filter frontmatter (#746).
+fn without_repeated_title(mut snippet: PlainSnippet, title: &str) -> PlainSnippet {
+    if title.is_empty() {
+        return snippet;
+    }
+    let Some(rest) = snippet.text.strip_prefix(title) else {
+        return snippet;
+    };
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return snippet;
+    }
+    let start = snippet.text.len() - rest.trim_start().len();
+    snippet.text.drain(..start);
+    snippet.highlights = snippet
+        .highlights
+        .into_iter()
+        .filter_map(|range| {
+            (range.end > start).then(|| range.start.saturating_sub(start)..range.end - start)
+        })
+        .collect();
+    snippet
+}
+
 /// A one-line preview must reach the match before the trailing ellipsis.
 /// Retain a little context and remap byte ranges on Unicode boundaries.
 fn visible_snippet(snippet: &PlainSnippet) -> PlainSnippet {
@@ -375,7 +400,7 @@ impl Reader {
                 }
                 let snippets = rows
                     .iter()
-                    .map(|hit| plain_snippet(&hit.snippet_html))
+                    .map(|hit| without_repeated_title(plain_snippet(&hit.snippet_html), &hit.title))
                     .collect();
                 (rows, snippets, message)
             })
@@ -568,7 +593,9 @@ impl Reader {
                                 )
                             })
                             .when_some(
-                                snippets.get(ix).filter(|s| full_text && !s.text.is_empty()),
+                                snippets.get(ix).filter(|s| {
+                                    full_text && (!s.text.is_empty() || s.hidden_match.is_some())
+                                }),
                                 |row, snippet| {
                                     let snippet = visible_snippet(snippet);
                                     let highlights = snippet
@@ -589,21 +616,23 @@ impl Reader {
                                             )
                                         })
                                         .collect::<Vec<_>>();
-                                    row.child(
-                                        div()
-                                            .id(("quick-open-snippet", ix))
-                                            .text_size(px(12.))
-                                            .line_height(px(18.))
-                                            .flex_none()
-                                            .text_color(muted)
-                                            .overflow_hidden()
-                                            .whitespace_nowrap()
-                                            .text_ellipsis()
-                                            .child(
-                                                StyledText::new(snippet.text.clone())
-                                                    .with_highlights(highlights),
-                                            ),
-                                    )
+                                    row.when(!snippet.text.is_empty(), |row| {
+                                        row.child(
+                                            div()
+                                                .id(("quick-open-snippet", ix))
+                                                .text_size(px(12.))
+                                                .line_height(px(18.))
+                                                .flex_none()
+                                                .text_color(muted)
+                                                .overflow_hidden()
+                                                .whitespace_nowrap()
+                                                .text_ellipsis()
+                                                .child(
+                                                    StyledText::new(snippet.text.clone())
+                                                        .with_highlights(highlights),
+                                                ),
+                                        )
+                                    })
                                     .when_some(
                                         snippet.hidden_match.as_ref(),
                                         |row, reason| {
@@ -727,6 +756,42 @@ mod tests {
         assert_eq!(label_matches("Billing", "title:billing"), vec![0..7]);
         assert!(label_matches(text, "billing OR other").is_empty());
         assert!(label_matches(text, "-billing").is_empty());
+    }
+
+    #[test]
+    fn search_row_omits_only_leading_title_and_preserves_body_marks() {
+        let source = "# Связанный контекст\nRead [[<b>kara</b>|the overview]] and <b>проверка</b>.";
+        let original = plain_snippet(source);
+        let shown = without_repeated_title(original.clone(), "Связанный контекст");
+        assert_eq!(shown.text, "Read the overview and проверка.");
+        assert_eq!(
+            shown
+                .highlights
+                .iter()
+                .map(|r| &shown.text[r.clone()])
+                .collect::<Vec<_>>(),
+            vec!["the overview", "проверка"]
+        );
+        assert_eq!(shown.hidden_match, original.hidden_match);
+        let title_only = without_repeated_title(plain_snippet("# <b>Title</b>"), "Title");
+        assert!(title_only.text.is_empty());
+        assert!(title_only.highlights.is_empty());
+        let hidden_title =
+            without_repeated_title(plain_snippet("[[<b>target</b>|Title]]"), "Title");
+        assert!(hidden_title.text.is_empty());
+        assert!(hidden_title.hidden_match.is_some());
+        for (source, title) in [
+            ("Knowledge workflows are useful", "Knowledge workflow"),
+            ("Read Knowledge workflow next", "Knowledge workflow"),
+            (
+                "title: Kara roadmap Planning and milestones",
+                "Kara roadmap",
+            ),
+            ("Anything", ""),
+        ] {
+            let snippet = plain_snippet(source);
+            assert_eq!(without_repeated_title(snippet.clone(), title), snippet);
+        }
     }
 
     #[test]
