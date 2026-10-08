@@ -2,6 +2,7 @@
 //! implementation as the Reader editor. Call on a worker; no protocol activation.
 use super::{Change, Plan, Target};
 use crate::file_editor::{FileEditor, Save};
+use crate::tasks::{Index, Task};
 use anyhow::{bail, ensure, Context, Result};
 use std::path::{Component, Path, PathBuf};
 
@@ -50,11 +51,37 @@ pub fn apply(
     let plan = target
         .plan(editor.text(), change)
         .map_err(anyhow::Error::msg)?;
+    commit_plan(root, &mut editor, plan)
+}
+
+/// Apply an occurrence from the immutable index that produced the displayed row.
+/// Run on a worker. Source validation happens while FileEditor owns its lock;
+/// callers must not substitute the latest index for the displayed snapshot.
+pub fn apply_indexed(
+    root: &Path,
+    drafts: &Path,
+    displayed: &Index,
+    task: &Task,
+    change: Change,
+) -> Result<Option<Receipt>> {
+    let root = root.canonicalize()?;
+    let path = bound_path(&root, &task.path)?;
+    let mut editor = open_clean(&path, drafts)?;
+    let target = displayed
+        .edit_target(task, editor.text())
+        .map_err(anyhow::Error::msg)?;
+    let plan = target
+        .plan(editor.text(), change)
+        .map_err(anyhow::Error::msg)?;
+    commit_plan(root, &mut editor, plan)
+}
+
+fn commit_plan(root: PathBuf, editor: &mut FileEditor, plan: Plan) -> Result<Option<Receipt>> {
     if plan.before == plan.after {
         return Ok(None);
     }
     editor.set_text(plan.after.clone())?;
-    save(&mut editor)?;
+    save(editor)?;
     Ok(Some(Receipt { root, plan }))
 }
 fn open_clean(path: &Path, drafts: &Path) -> Result<FileEditor> {
@@ -116,6 +143,143 @@ mod tests {
         std::fs::write(root.join("a.md"), &text).unwrap();
         (temp, root, drafts, text)
     }
+    fn indexed(text: &str) -> (Index, Task) {
+        let mut index = Index::default();
+        index.replace("a.md", text);
+        let task = index
+            .query(&crate::tasks::Query::parse(
+                "",
+                time::macros::date!(2026 - 10 - 07),
+            ))
+            .remove(0);
+        (index, task)
+    }
+
+    #[test]
+    fn indexed_write_and_undo_preserve_occurrence_and_exact_source() {
+        let (_temp, root, drafts, text) = fixture();
+        // Identical labels still denote separate occurrences, never a bulk edit.
+        let task_line = text.lines().last().unwrap();
+        let source = format!("{text}{task_line}\r\n");
+        std::fs::write(root.join("a.md"), &source).unwrap();
+        let (index, task) = indexed(&source);
+        assert!(
+            apply_indexed(&root, &drafts, &index, &task, Change::Checked(false))
+                .unwrap()
+                .is_none()
+        );
+        let receipt = apply_indexed(&root, &drafts, &index, &task, Change::Checked(true))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.md")).unwrap(),
+            source.replacen("[ ]", "[x]", 1)
+        );
+        // The old display cannot write again after this successful source change.
+        assert!(apply_indexed(&root, &drafts, &index, &task, Change::Checked(false)).is_err());
+        receipt.undo(&root, &drafts).unwrap();
+        assert_eq!(std::fs::read_to_string(root.join("a.md")).unwrap(), source);
+        let receipt = apply_indexed(
+            &root,
+            &drafts,
+            &index,
+            &task,
+            Change::Scheduled(time::macros::date!(2026 - 10 - 10)),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.md")).unwrap(),
+            source.replacen("⏳ 2026-10-07", "⏳ 2026-10-10", 1)
+        );
+        receipt.undo(&root, &drafts).unwrap();
+        assert_eq!(std::fs::read_to_string(root.join("a.md")).unwrap(), source);
+    }
+
+    #[test]
+    fn indexed_write_refuses_stale_snapshot_and_fabricated_occurrence() {
+        let (_temp, root, drafts, text) = fixture();
+        let (index, task) = indexed(&text);
+        let mut fabricated = task.clone();
+        fabricated.line += 1;
+        assert!(apply_indexed(&root, &drafts, &index, &fabricated, Change::Checked(true)).is_err());
+        assert!(apply_indexed(
+            &root,
+            &drafts,
+            &Index::default(),
+            &task,
+            Change::Checked(true)
+        )
+        .is_err());
+        assert_eq!(std::fs::read_to_string(root.join("a.md")).unwrap(), text);
+        let external = text + "\r\nExternal prose\r\n";
+        std::fs::write(root.join("a.md"), &external).unwrap();
+        assert!(apply_indexed(&root, &drafts, &index, &task, Change::Checked(true)).is_err());
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.md")).unwrap(),
+            external
+        );
+        let (fresh, fresh_task) = indexed(&external);
+        assert_eq!(
+            task.text, fresh_task.text,
+            "prose changed, the task text did not"
+        );
+        assert_eq!(task.line, fresh_task.line);
+        let receipt = apply_indexed(&root, &drafts, &fresh, &fresh_task, Change::Checked(true))
+            .unwrap()
+            .unwrap();
+        receipt.undo(&root, &drafts).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.md")).unwrap(),
+            external
+        );
+    }
+
+    #[test]
+    fn indexed_write_respects_editor_lock_and_dirty_recovery() {
+        let (_temp, root, drafts, text) = fixture();
+        let (index, task) = indexed(&text);
+        let mut editor = FileEditor::open(&root.join("a.md"), &drafts).unwrap();
+        assert!(apply_indexed(&root, &drafts, &index, &task, Change::Checked(true)).is_err());
+        let draft = text.clone() + "Unsaved draft";
+        editor.set_text(draft.clone()).unwrap();
+        drop(editor);
+        assert!(apply_indexed(&root, &drafts, &index, &task, Change::Checked(true)).is_err());
+        assert_eq!(std::fs::read_to_string(root.join("a.md")).unwrap(), text);
+        let recovered = FileEditor::open(&root.join("a.md"), &drafts).unwrap();
+        assert_eq!(recovered.text(), draft);
+    }
+
+    #[test]
+    fn indexed_undo_preserves_active_edits_and_recovery_until_explicit_reload() {
+        let (_temp, root, drafts, text) = fixture();
+        let (index, task) = indexed(&text);
+        let receipt = apply_indexed(&root, &drafts, &index, &task, Change::Checked(true))
+            .unwrap()
+            .unwrap();
+        let saved = text.replacen("[ ]", "[x]", 1);
+        let path = root.join("a.md");
+        let mut editor = FileEditor::open(&path, &drafts).unwrap();
+        let unsaved = format!("{saved}Unsaved work after checking the task\r\n");
+        editor.set_text(unsaved.clone()).unwrap();
+        assert!(receipt.undo(&root, &drafts).is_err());
+        assert_eq!(editor.text(), unsaved);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+        drop(editor);
+
+        assert!(receipt.undo(&root, &drafts).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+        let mut recovered = FileEditor::open(&path, &drafts).unwrap();
+        assert_eq!(recovered.text(), unsaved);
+        assert!(recovered.dirty());
+        // Only an explicit editor reload discards the retained recovery text.
+        recovered.reload().unwrap();
+        drop(recovered);
+        // Positive control: the same receipt remains usable when the guard clears.
+        receipt.undo(&root, &drafts).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+    }
+
     #[test]
     fn save_and_undo_preserve_exact_bytes_and_archive_history() {
         let (_temp, root, drafts, text) = fixture();
