@@ -181,6 +181,12 @@ impl Editing {
 }
 
 impl Reader {
+    pub(super) fn source_live_preview(&self) -> bool {
+        self.editing.as_ref().is_some_and(|editing| {
+            editing.live_preview.enabled || editing.live_preview.restore_after_find
+        })
+    }
+
     pub(super) fn open_source_find(&mut self, cx: &mut Context<Self>) {
         if let Some(editing) = &mut self.editing {
             if !editing.input.read(cx).search_session().open {

@@ -209,3 +209,12 @@ this fix before its final acceptance. No gpui-core patch is involved.
 ## Roadmap and stability follow-up
 
 The S3–S7 roadmap remains in [research/359-smart-editor.md §9](research/359-smart-editor.md#9-recommendation-and-slice-plan). Native Linux reproduction, acceptance criteria and the owner-reference comparison are in [research/754-live-preview-stability.md](research/754-live-preview-stability.md). The proposed stability work is prioritized before #753; it is not an implementation or acceptance claim.
+
+### Presentation on relaunch (#806)
+
+The saved per-vault editor layout includes Live Preview versus Source. Older
+preferences without this field retain Source. Restoring an editor uses the same
+revision-aware draft recovery as before, then reapplies its saved presentation.
+Find is temporary: a snapshot taken while Find is open preserves the presentation
+from before Find. An explicit Source selection supersedes that choice. Reader
+mode, canonical-file writes and recovery-offer policy are unchanged.
