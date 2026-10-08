@@ -442,11 +442,13 @@ impl Reader {
             .to_string_lossy()
             .into_owned();
         let mut recent = v_flex().gap_1();
-        let recent_notes = self
+        let mut recent_notes = self
             .sidebar
             .recent
             .iter()
-            .filter(|(rel, _)| !self.tree.hidden_by_preference(rel));
+            .filter(|(rel, _)| !self.tree.hidden_by_preference(rel))
+            .peekable();
+        let has_recent = recent_notes.peek().is_some();
         for (ix, item) in recent_notes.take(10).enumerate() {
             let rel = item.0.clone();
             let label = self.vault.note_title(&rel);
@@ -488,8 +490,9 @@ impl Reader {
                         cx,
                     )),
             )
-            .child(div().text_sm().child("Recent"))
-            .child(recent)
+            .when(has_recent, |view| {
+                view.child(div().text_sm().child("Recent")).child(recent)
+            })
             .into_any_element()
     }
 }
