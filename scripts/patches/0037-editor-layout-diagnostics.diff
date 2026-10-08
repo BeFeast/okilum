@@ -1,0 +1,110 @@
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -2,6 +2,16 @@
+ //!
+ //! Based on the `Input` example from the `gpui` crate.
+ //! https://github.com/zed-industries/zed/blob/main/crates/gpui/examples/input.rs
++/// Opt-in, per-editor cumulative counters. Sampling never requests a redraw.
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
++pub struct LayoutDiagnostics {
++    pub layout_calls: u64,
++    pub metric_changes: u64,
++    pub provider_applies: u64,
++    pub projection_composes: u64,
++    pub active_changes: u64,
++}
++
+ use crate::input::attribution::{Identity as TraceIdentity, Span as TraceSpan};
+ use super::clipboard::{
+     ClipboardPasteEvent, ClipboardReadError, ClipboardSession, ExactClipboardProvider,
+@@ -321,6 +331,7 @@
+     pub(super) scroll_beyond_last_line: Option<usize>,
+     pub(super) cursor_surrounding_lines: Option<usize>,
+     pub(super) blink_cursor: Entity<BlinkCursor>,
++    layout_diagnostics: Option<Cell<LayoutDiagnostics>>,
+     pub(super) loading: bool,
+     /// Range in UTF-8 length for the selected text.
+     ///
+@@ -660,6 +671,7 @@
+             scroll_beyond_last_line: None,
+             cursor_surrounding_lines: None,
+             blink_cursor,
++            layout_diagnostics: None,
+             undo_manager,
+             selected_range: Selection::default(),
+             selected_word_range: None,
+@@ -928,12 +940,30 @@
+             },
+         };
+         if active != self.projection.active {
++            self.record_layout_diagnostic(|d| d.active_changes += 1);
+             self.exact_clipboard.invalidate();
+             self.projection_pending_vertical = None;
+         }
+         self.projection.set_active(active);
+     }
+ 
++    /// Enable counters explicitly; no clocks, formatting, I/O or notifications in layout.
++    pub fn enable_layout_diagnostics(&mut self) {
++        self.layout_diagnostics.get_or_insert_with(Default::default);
++    }
++
++    pub fn layout_diagnostics(&self) -> Option<LayoutDiagnostics> {
++        self.layout_diagnostics.as_ref().map(Cell::get)
++    }
++
++    pub(super) fn record_layout_diagnostic(&self, update: impl FnOnce(&mut LayoutDiagnostics)) {
++        if let Some(cell) = &self.layout_diagnostics {
++            let mut value = cell.get();
++            update(&mut value);
++            cell.set(value);
++        }
++    }
++
+     pub(super) fn refresh_projection(&mut self) {
+         let _trace = TraceSpan::new("refresh_projection", TraceIdentity::new(self.source_stamp(), self.presentation_epoch(), self.projection.current.is_some()));
+         self.sync_projection_active();
+@@ -941,6 +971,7 @@
+             return;
+         }
+         if self.projection.provider.is_some() && self.text.len() <= 256 * 1024 {
++            self.record_layout_diagnostic(|d| d.projection_composes += 1);
+             self.projection.compose(Arc::from(self.text.to_string()));
+         } else {
+             self.projection.current = None;
+@@ -970,6 +1001,7 @@
+             active.replacement = Some(SourceByte(range.start)..SourceByte(range.end));
+             self.projection.set_active(active);
+             if self.text.len() <= 256 * 1024 {
++                self.record_layout_diagnostic(|d| d.projection_composes += 1);
+                 self.projection.compose(Arc::from(self.text.to_string()));
+             }
+         }
+@@ -6607,6 +6639,7 @@
+                 *indent_guides = false;
+             }
+         }
++        self.record_layout_diagnostic(|d| d.provider_applies += 1);
+         self.projection.provider = provider;
+         self.projection.presentation_changed();
+         self.refresh_projection();
+diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -1322,6 +1322,7 @@
+         whitespace_indicators: Option<WhitespaceIndicators>,
+         window: &mut Window,
+     ) -> Vec<LineLayout> {
++        state.record_layout_diagnostic(|d| d.layout_calls += 1);
+         let mut trace = TraceSpan::new("layout_lines", TraceIdentity::new(last_layout.source_stamp, last_layout.presentation_epoch, last_layout.projection.is_some()));
+         trace.counts([display_text.len() as u64, last_layout.visible_buffer_lines.len() as u64, runs.len() as u64, 0]);
+         let is_single_line = state.is_single_line();
+@@ -1801,6 +1802,7 @@
+                     || last.content_width != bounds.size.width
+             });
+             if changed {
++                state.record_layout_diagnostic(|d| d.metric_changes += 1);
+                 state.projection.presentation_changed();
+             }
+             state.refresh_projection();
