@@ -178,3 +178,118 @@ impl<G: TaskGuard> TaskApi for NativeTasks<G> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Registration-only transport test. Execution authentication is deliberately
+    // unavailable; this must not be mistaken for supervisor lifecycle acceptance.
+    struct NoExecution;
+    impl TaskGuard for NoExecution {
+        type ProcessHandles = ();
+        fn verify_payload(&mut self, _: &Binding) -> Result<()> {
+            anyhow::bail!("registration fixture cannot execute")
+        }
+        fn running(&mut self, _: &str) -> Result<bool> {
+            Ok(false)
+        }
+        fn capture_owned_processes(&mut self, _: &str) -> Result<()> {
+            anyhow::bail!("registration fixture cannot execute")
+        }
+        fn await_exit(&mut self, _: ()) -> Result<()> {
+            anyhow::bail!("registration fixture cannot execute")
+        }
+    }
+    struct FixtureTask {
+        api: NativeTasks<NoExecution>,
+        name: String,
+        created: bool,
+    }
+    impl Drop for FixtureTask {
+        fn drop(&mut self) {
+            if self.created {
+                // Only the random task successfully created by this test. Also
+                // runs during panic so a failing assertion leaves no logon task.
+                unsafe {
+                    let _ = self.api.folder.DeleteTask(&BSTR::from(&self.name), 0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn native_task_registration_collision_and_owned_removal() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let mut fixture = FixtureTask {
+            api: NativeTasks::connect(NoExecution)?,
+            name: format!("Tessera-Sync-{}", uuid::Uuid::new_v4()),
+            created: false,
+        };
+        let owner = fixture.api.current_sid()?;
+        let binding = Binding {
+            instance: uuid::Uuid::parse_str(fixture.name.strip_prefix("Tessera-Sync-").unwrap())?,
+            installation: uuid::Uuid::new_v4(),
+            owner: owner.clone(),
+            supervisor: root
+                .path()
+                .join("never-executed.exe")
+                .to_string_lossy()
+                .into_owned(),
+            state_directory: root.path().to_string_lossy().into_owned(),
+            device_identity: "native-registration-fixture".into(),
+        };
+        // Disable the disposable registration: no logon/retry process may start.
+        let xml = super::super::definition(&binding)?
+            .replace("<Settings>", "<Settings><Enabled>false</Enabled>");
+        ensure!(
+            fixture.api.read(&fixture.name)?.is_none(),
+            "fixture name collision"
+        );
+        fixture.api.create(&fixture.name, &xml)?;
+        fixture.created = true;
+        let task = fixture
+            .api
+            .read(&fixture.name)?
+            .ok_or_else(|| anyhow::anyhow!("created task missing"))?;
+        ensure!(
+            task.owner_sid == owner && !task.running,
+            "unexpected task owner/state"
+        );
+        ensure!(
+            fixture.api.create(&fixture.name, &xml).is_err(),
+            "TASK_CREATE overwrote existing registration"
+        );
+        let reread = fixture.api.read(&fixture.name)?.unwrap();
+        ensure!(
+            reread.definition == task.definition,
+            "collision changed task"
+        );
+        ensure!(
+            fixture
+                .api
+                .delete_owned(&fixture.name, &xml, "S-1-5-18")
+                .is_err(),
+            "foreign-owner removal accepted"
+        );
+        let changed = xml.replace("native-registration-fixture", "changed-registration");
+        ensure!(
+            fixture
+                .api
+                .delete_owned(&fixture.name, &changed, &owner)
+                .is_err(),
+            "changed-definition removal accepted"
+        );
+        ensure!(
+            fixture.api.read(&fixture.name)?.is_some(),
+            "rejected removal deleted task"
+        );
+        fixture.api.delete_owned(&fixture.name, &xml, &owner)?;
+        fixture.created = false;
+        ensure!(
+            fixture.api.read(&fixture.name)?.is_none(),
+            "owned removal left task behind"
+        );
+        Ok(())
+    }
+}
