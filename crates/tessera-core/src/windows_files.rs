@@ -26,7 +26,8 @@ use windows_sys::Win32::{
         GetSecurityDescriptorControl, GetSecurityDescriptorDacl, InitializeSecurityDescriptor,
         SetSecurityDescriptorControl, SetSecurityDescriptorDacl, DACL_SECURITY_INFORMATION,
         GROUP_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
-        SECURITY_ATTRIBUTES, SECURITY_DESCRIPTOR, SE_DACL_PROTECTED,
+        SECURITY_ATTRIBUTES, SECURITY_DESCRIPTOR, SE_DACL_AUTO_INHERITED, SE_DACL_AUTO_INHERIT_REQ,
+        SE_DACL_PROTECTED,
     },
     Storage::FileSystem::*,
     System::{
@@ -561,16 +562,13 @@ impl Descriptor {
         let mut revision = 0;
         // A fresh absolute descriptor has no owner or group. Copying a
         // self-relative descriptor and clearing pointers would be invalid.
+        let inheritance = SE_DACL_PROTECTED | SE_DACL_AUTO_INHERITED | SE_DACL_AUTO_INHERIT_REQ;
         let ok = unsafe {
             InitializeSecurityDescriptor(target, 1) != 0
                 && GetSecurityDescriptorDacl(self.0, &mut present, &mut dacl, &mut defaulted) != 0
                 && GetSecurityDescriptorControl(self.0, &mut control, &mut revision) != 0
                 && SetSecurityDescriptorDacl(target, present, dacl, defaulted) != 0
-                && SetSecurityDescriptorControl(
-                    target,
-                    SE_DACL_PROTECTED,
-                    control & SE_DACL_PROTECTED,
-                ) != 0
+                && SetSecurityDescriptorControl(target, inheritance, control & inheritance) != 0
         };
         ensure!(ok, "Copy source DACL: {}", std::io::Error::last_os_error());
         Ok(descriptor)

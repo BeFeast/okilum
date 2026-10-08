@@ -462,3 +462,48 @@ fn windows_save_owner_fallback_refuses_effective_access_loss_before_publication(
     assert_eq!(permissions(&path), before);
     assert_access_and_dacl(&path, &before);
 }
+
+#[test]
+fn windows_save_administrators_owner_preserves_inherited_and_explicit_dacl() {
+    use windows_sys::Win32::Security::{INHERITED_ACE, UNPROTECTED_DACL_SECURITY_INFORMATION};
+    let fixture = Fixture::new();
+    let path = fixture.source("note.md", "base");
+    let sd = descriptor(&format!("D:(A;;FA;;;{})(A;;FR;;;OW)", fixture.sid_text));
+    assert_ne!(
+        unsafe {
+            SetFileSecurityW(
+                wide(&path).unwrap().as_ptr(),
+                DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION,
+                sd.0,
+            )
+        },
+        0
+    );
+    let before = permissions(&path);
+    assert_eq!(before.owner, fixture.admin);
+    assert!(!before.dacl_protected);
+    let aces = before.aces.as_ref().unwrap();
+    assert!(
+        aces.iter().any(|ace| ace[1] & INHERITED_ACE as u8 != 0),
+        "inherited ACE positive control"
+    );
+    assert!(
+        aces.iter().any(|ace| ace[1] & INHERITED_ACE as u8 == 0),
+        "explicit ACE positive control"
+    );
+    let _limited = fixture.impersonate();
+    assert_access_and_dacl(&path, &before);
+    let directory = Directory::open(&fixture.root).unwrap();
+    let plan = directory
+        .prepare_replace(OsStr::new("note.md"), b"base", b"mine")
+        .unwrap()
+        .unwrap();
+    assert_eq!(permissions(plan.prepared_path()).owner, fixture.user);
+    assert_access_and_dacl(plan.prepared_path(), &before);
+    let Replacement::Saved { preimage } = plan.commit().unwrap() else {
+        panic!("native replacement");
+    };
+    assert_eq!(fs::read(&path).unwrap(), b"mine");
+    assert_access_and_dacl(&path, &before);
+    assert_eq!(permissions(&preimage), before);
+}
