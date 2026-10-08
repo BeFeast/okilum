@@ -96,7 +96,7 @@ def hosted_request(api, path, *, sleep=time.sleep):
 
 
 def wait_for_run(api, branch, sha, *, clock=time.monotonic, sleep=time.sleep,
-                 queue_timeout=480, run_timeout=2400, workflow=WORKFLOW,
+                 queue_timeout=1800, run_timeout=2400, workflow=WORKFLOW,
                  job_name="macos", build_step=BUILD_STEP):
     query = urllib.parse.urlencode({"branch": branch, "head_sha": sha,
                                     "event": "push", "per_page": 100})
@@ -137,7 +137,15 @@ def wait_for_run(api, branch, sha, *, clock=time.monotonic, sleep=time.sleep,
                 return "failure", f"GitHub native gate exceeded its execution deadline: {url}"
         if running_until is None and clock() >= queued_until:
             if matches:
-                api.request(f"actions/runs/{matches[0]['id']}/cancel", "POST")
+                try:
+                    api.request(f"actions/runs/{matches[0]['id']}/cancel", "POST")
+                except Unavailable:
+                    # Cancellation may race with runner startup or be refused.
+                    # Keep observing this exact run within one execution budget;
+                    # never turn a live run into an unavailable/fallback result.
+                    running_until = clock() + run_timeout
+                    sleep(20)
+                    continue
             raise Unavailable(f"GitHub did not start the gate within {queue_timeout} seconds")
         sleep(20)
 
