@@ -99,6 +99,8 @@ mod source_presentation;
 mod text_ranges;
 mod theme_picker;
 mod updater;
+#[cfg(test)]
+mod input_navigation_tests;
 // Search labels reuse the editor's glyph-cluster selection geometry. Keep this
 // adapter unchanged here; #780 owns editor layout and geometry refinements.
 #[allow(dead_code)]

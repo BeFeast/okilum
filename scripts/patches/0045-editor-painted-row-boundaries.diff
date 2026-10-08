@@ -1,12 +1,14 @@
 --- a/crates/base/src/input/base/movement.rs
 +++ b/crates/base/src/input/base/movement.rs
-@@ -712,38 +712,44 @@
+@@ -712,38 +712,46 @@
          self.move_vertical(display_lines, window, cx);
      }
  
 +    /// Resolve a Home/End target from the painted row, not a separately wrapped
 +    /// display map or its leftmost glyph (which can be the logical end in bidi).
 +    fn painted_row_boundary(&self, end: bool) -> Option<(usize, bool, super::bidi_geometry::Affinity)> {
++        // Mask bullets have different UTF-8 lengths from the underlying value.
++        if self.masked { return None; }
 +        let last = self.last_layout.as_ref()?;
 +        if last.source_stamp != self.source_stamp() { return None; }
 +        let displayed = last.project(self.cursor(), ConcealBias::Right)?;
