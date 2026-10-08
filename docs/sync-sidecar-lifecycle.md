@@ -340,7 +340,7 @@ security descriptor and usable server. This validates the endpoint and peer
 primitives, not production transport or complete Sync acceptance.
 
 
-### Windows client connection primitive (native acceptance pending)
+### Windows client connection primitive
 
 `PrivateClient::connect` performs one open of the fixed local scoped name, with
 no wait/retry, fallback path or wire I/O. It requests an overlapped,
@@ -359,4 +359,17 @@ absolute timeout from checks before/after those calls. Bounded overlapped I/O,
 cancellation completion/lifetime handling, production transport and supervisor
 wiring remain the next work. Client metadata read-back uses the same tested-server
 expectation for the undocumented returned remote-rejection bit, excluding the
-server-end bit; its Windows-native fixtures must pass before acceptance.
+server-end bit. Windows Server 2022 confirms that client-side read-back too.
+
+
+Part 3a native acceptance passed on exact source
+`740110a9ef3d394b802bb8e2d275d93782e3ca5d`, tree
+`8c00df76e15a578144c6434773b73dfd77b7cac3`:
+https://github.com/BeFeast/tessera/actions/runs/37832157442 . The single dispatch
+ran `tessera-sync-controller`, default features, `sidecar::`, one test thread on
+Windows: 48 passed, zero failed or ignored. All three client fixtures and the six
+existing endpoint/metadata/peer tests passed. The positive owner connection and
+negative missing/busy/nil, shared-descriptor and wrong-captured-server controls
+validate this connection primitive. There was no extra source or CI commit.
+Wire I/O, a shared absolute deadline and cancellation remain part 3b; this result
+does not establish production transport or full Sync acceptance.
