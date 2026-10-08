@@ -29,6 +29,15 @@ pub fn builtin(id: &str) -> Option<Descriptor> {
 /// Type names are exact, including case; existing authored values are preserved.
 pub type TypeMappings = BTreeMap<String, String>;
 
+/// App settings payload. Unknown view IDs survive persistence so selection can
+/// explicitly fall back instead of silently deleting future/optional mappings.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Preferences {
+    pub mappings: TypeMappings,
+    pub tasks: layout::Defaults,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Selection {
     Markdown,
