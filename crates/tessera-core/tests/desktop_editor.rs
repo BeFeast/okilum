@@ -116,6 +116,205 @@ fn windows_editor_creation_templates_and_revision_bound_rename() {
     let catalog = tessera_core::note_templates::Catalog::load(&root).unwrap();
     assert!(catalog.default_file().is_some());
 }
+
+#[test]
+fn windows_vault_paths_nested_creation_templates_and_identity() {
+    let (_dir, root, state) = fixture();
+    let parent = Path::new("Dev").join("Projects").join("tessera-qa");
+    note_files::create_folders(&root, &parent, false).unwrap();
+    note_files::create_folders(&root, Path::new("_Assets/Templates"), false).unwrap();
+    fs::write(
+        root.join("_Assets/Templates/Daily Note.md"),
+        "\u{feff}# {{title}}\r\nTemplate body\r\n",
+    )
+    .unwrap();
+    let catalog = tessera_core::note_templates::Catalog::load(&root).unwrap();
+    let now = time::macros::datetime!(2026-10-08 09:07 UTC);
+    let native = parent.join("Native direct.md");
+    #[cfg(windows)]
+    assert!(
+        native.to_str().unwrap().contains('\\'),
+        "native input control"
+    );
+    let direct = note_files::create_from_template(
+        &root,
+        &native,
+        now,
+        &state,
+        &catalog,
+        Some("Daily Note.md"),
+    )
+    .unwrap();
+    assert_eq!(direct, "\u{feff}# Native direct\r\nTemplate body\r\n");
+    assert_eq!(fs::read(root.join(&native)).unwrap(), direct.as_bytes());
+    for (folder, name, template, expected) in [
+        (Path::new(""), "Root note", None, "Root note.md"),
+        (
+            parent.as_path(),
+            "win-qa-b",
+            None,
+            "Dev/Projects/tessera-qa/win-qa-b.md",
+        ),
+        (
+            parent.as_path(),
+            "nested/שלום 🧠",
+            Some("Daily Note.md"),
+            "Dev/Projects/tessera-qa/nested/שלום 🧠.md",
+        ),
+    ] {
+        let relative = note_files::typed_path(folder, name, false).unwrap();
+        assert_eq!(relative.to_str().unwrap(), expected);
+        let source =
+            note_files::create_from_template(&root, &relative, now, &state, &catalog, template)
+                .unwrap();
+        assert_eq!(fs::read(root.join(&relative)).unwrap(), source.as_bytes());
+        if template.is_some() {
+            assert_eq!(source, "\u{feff}# שלום 🧠\r\nTemplate body\r\n");
+        }
+        assert!(
+            note_files::create_from_template(&root, &relative, now, &state, &catalog, template,)
+                .is_err(),
+            "create must not overwrite"
+        );
+        let mut inventory = tessera_core::Vault::scan_metadata(&root).unwrap();
+        // This native join matches the UI's previous broken registration input.
+        let native: std::path::PathBuf = relative.components().collect();
+        inventory.register_created_note(native.to_str().unwrap());
+        assert!(inventory.notes.iter().all(|n| !n.path.contains('\\')));
+        assert!(inventory.notes.iter().any(|n| n.path == expected));
+    }
+    let folder = note_files::typed_path(&parent, "win-qa-folder", true).unwrap();
+    assert_eq!(
+        folder.to_str().unwrap(),
+        "Dev/Projects/tessera-qa/win-qa-folder"
+    );
+    note_files::create_folders(&root, &folder, true).unwrap();
+    assert!(tessera_core::Vault::scan_metadata(&root)
+        .unwrap()
+        .entries
+        .iter()
+        .any(|e| {
+            e.path == "Dev/Projects/tessera-qa/win-qa-folder"
+                && e.kind == tessera_core::vault::EntryKind::Directory
+        }));
+    for invalid in ["../escape", "./note", "a//b", "a\\b"] {
+        assert!(note_files::typed_path(&parent, invalid, false).is_err());
+    }
+    assert!(!root.parent().unwrap().join("escape.md").exists());
+}
+
+#[test]
+fn windows_vault_paths_nested_rename_updates_both_wikilinks_and_relative_link() {
+    let (_dir, root, state) = fixture();
+    let parent = Path::new("Dev").join("Projects").join("tessera-qa");
+    note_files::create_folders(&root, &parent, false).unwrap();
+    let from = parent.join("qa-target.md");
+    let mut to = from.clone();
+    to.set_file_name("qa-target-w.md");
+    #[cfg(windows)]
+    assert!(
+        to.to_str().unwrap().contains('\\'),
+        "native rename input control"
+    );
+    let source = parent.join("qa source.md");
+    fs::write(root.join(&from), "# Target\n").unwrap();
+    fs::write(
+        root.join(&source),
+        "[[qa-target]]\n[[qa-target]]\n[Relative Path, sibling](qa-target.md)\n",
+    )
+    .unwrap();
+    let preview = tessera_core::link_rewrite::Preview::prepare(
+        &root,
+        from.to_str().unwrap(),
+        to.to_str().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(preview.from, "Dev/Projects/tessera-qa/qa-target.md");
+    assert_eq!(preview.to, "Dev/Projects/tessera-qa/qa-target-w.md");
+    assert_eq!(preview.changes.len(), 3);
+    assert!(preview.skipped.is_empty(), "{:?}", preview.skipped);
+    assert!(preview
+        .changes
+        .iter()
+        .all(|c| !c.after.contains("%5C") && !c.after.contains('\\')));
+    let applied = preview
+        .apply(&root, &state, &mut std::collections::BTreeMap::new())
+        .unwrap();
+    assert!(applied.moved && applied.warning.is_none());
+    assert_eq!(
+        fs::read_to_string(root.join(&source)).unwrap(),
+        "[[qa-target-w]]\n[[qa-target-w]]\n[Relative Path, sibling](./qa-target-w.md)\n"
+    );
+    let inventory = tessera_core::Vault::scan_metadata(&root).unwrap();
+    assert_eq!(
+        inventory
+            .resolve_from("qa-target-w", "Dev/Projects/tessera-qa/qa source.md")
+            .path(),
+        Some(preview.to.as_str())
+    );
+    assert_eq!(
+        inventory
+            .resolve_markdown("./qa-target-w.md", "Dev/Projects/tessera-qa/qa source.md")
+            .path(),
+        Some(preview.to.as_str())
+    );
+    assert!(!root.join(from).exists());
+    assert_eq!(fs::read(root.join(to)).unwrap(), b"# Target\n");
+}
+
+#[test]
+fn windows_vault_paths_unrelated_edit_rechecked_new_referrer_refused() {
+    use tessera_core::link_rewrite::{CandidateIndex, Preview};
+    for indexed in [false, true] {
+        let (_dir, root, state) = fixture();
+        fs::write(root.join("Old.md"), "# Old\n").unwrap();
+        fs::write(root.join("ref.md"), "[[Old]]\n").unwrap();
+        fs::write(root.join("unrelated.md"), "plain old text").unwrap();
+        let (_, snapshot, _) =
+            tessera_core::vault::warm::reconcile(&root, None, false, &mut |_, _| Ok(())).unwrap();
+        let index = CandidateIndex::from_snapshot(&snapshot);
+        let preview = Preview::prepare_with(
+            &root,
+            "Old.md",
+            "New.md",
+            indexed.then_some(&index),
+            &mut |_, _| Ok(()),
+        )
+        .unwrap();
+        fs::write(
+            root.join("unrelated.md"),
+            "new unrelated text\n[web](https://example.com)\n",
+        )
+        .unwrap();
+        preview.validate(&root).unwrap();
+        fs::write(root.join("unrelated.md"), "new incoming [[Old]]\n").unwrap();
+        assert!(
+            preview.validate(&root).is_err(),
+            "new referrer must require approval"
+        );
+        fs::write(root.join("unrelated.md"), "new unrelated text\n").unwrap();
+        fs::write(root.join("ref.md"), "external edit [[Old]]\n").unwrap();
+        assert!(
+            preview.validate(&root).is_err(),
+            "approved source remains revision-bound"
+        );
+        fs::write(root.join("ref.md"), "[[Old]]\n").unwrap();
+        assert!(
+            preview
+                .apply(&root, &state, &mut std::collections::BTreeMap::new())
+                .unwrap()
+                .moved
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("unrelated.md")).unwrap(),
+            "new unrelated text\n"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("ref.md")).unwrap(),
+            "[[New]]\n"
+        );
+    }
+}
 #[test]
 fn windows_editor_rename_rewrites_links_and_directory_inventory() {
     let (_dir, root, state) = fixture();

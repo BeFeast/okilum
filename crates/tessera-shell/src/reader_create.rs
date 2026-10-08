@@ -373,10 +373,7 @@ impl Reader {
             );
             let relative =
                 tessera_core::note_files::typed_path(Path::new(&folder), &name, directory)?;
-            let rel = relative
-                .to_str()
-                .ok_or_else(|| anyhow::anyhow!("Use a UTF-8 filename"))?
-                .to_owned();
+            let rel = tessera_core::vault::note_path(&relative);
             let source = if directory {
                 tessera_core::note_files::create_folders(&root, &relative, true)?;
                 None

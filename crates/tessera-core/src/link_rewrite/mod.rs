@@ -44,7 +44,7 @@ pub struct Preview {
     #[serde(default)]
     enumeration_skips: Vec<String>,
     // All scanned notes participate in revision validation: a new incoming link
-    // or new ambiguity invalidates approval just like an edited destination.
+    // invalidates approval; unrelated source changes are rechecked without writes.
     snapshots: BTreeMap<String, String>,
     #[serde(default)]
     unchanged: BTreeMap<String, crate::vault::warm::SourceRevision>,
@@ -76,10 +76,12 @@ impl Preview {
         index: Option<&CandidateIndex>,
         checkpoint: &mut impl FnMut(&str, usize) -> Result<()>,
     ) -> Result<Self> {
+        let from = crate::vault::note_path(Path::new(from));
+        let to = crate::vault::note_path(Path::new(to));
         Self::prepare_with_reader(
             root,
-            from,
-            to,
+            &from,
+            &to,
             index,
             checkpoint,
             &mut crate::vault::read_source,
@@ -339,20 +341,54 @@ impl Preview {
                 );
             }
         }
-        for (path, revision) in &self.unchanged {
-            ensure!(
-                crate::vault::warm::SourceRevision::read(&root.join(path))
-                    .ok()
-                    .as_ref()
-                    == Some(revision),
-                "{path} changed since the link index; preview again. Nothing was written"
-            );
+        let affected = self.editor_paths();
+        let mut protected: std::collections::BTreeSet<_> = affected.iter().cloned().collect();
+        for path in &affected {
+            if let Some(source) = self.snapshots.get(path) {
+                for target in syntax::targets_in_vault(source, &vault, path) {
+                    protected.extend(
+                        crate::document_links::resolve(&target.text, target.wiki, &vault, path)
+                            .candidates,
+                    );
+                }
+            }
         }
-        for (path, before) in &self.snapshots {
+        let mut after = Vault::from_note_paths(
+            vault
+                .notes
+                .iter()
+                .map(|n| moved_path(&n.path, &self.from, &self.to)),
+        );
+        after.root = root.to_path_buf();
+        let validate_unaffected = |path: &str, source: &str| -> Result<()> {
             ensure!(
-                crate::vault::read_source(&root.join(path))? == *before,
+                !protected.contains(path),
                 "{path} changed; preview again. Nothing was written"
             );
+            for target in syntax::targets_in_vault(source, &vault, path) {
+                let unchanged = replacement(&vault, &after, &self.from, &self.to, path, &target)
+                    .is_ok_and(|next| next.is_none_or(|next| next == target.text));
+                ensure!(
+                    unchanged,
+                    "{path} has changed links; preview again. Nothing was written"
+                );
+            }
+            Ok(())
+        };
+        for (path, revision) in &self.unchanged {
+            if crate::vault::warm::SourceRevision::read(&root.join(path))
+                .ok()
+                .as_ref()
+                != Some(revision)
+            {
+                validate_unaffected(path, &crate::vault::read_source(&root.join(path))?)?;
+            }
+        }
+        for (path, before) in &self.snapshots {
+            let current = crate::vault::read_source(&root.join(path))?;
+            if current != *before {
+                validate_unaffected(path, &current)?;
+            }
         }
         if let Some(snapshot) = &self.directory {
             crate::note_move::DirectoryMovePlan::prepare(
