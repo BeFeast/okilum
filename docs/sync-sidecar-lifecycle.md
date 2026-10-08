@@ -375,7 +375,7 @@ Wire I/O, a shared absolute deadline and cancellation remain part 3b; this resul
 does not establish production transport or full Sync acceptance.
 
 
-### Windows wire I/O, part 3b (native acceptance pending)
+### Windows wire I/O, part 3b
 
 `windows_io::ClientIo` consumes an already connected `PrivateClient` and one
 absolute deadline (at most 30 seconds ahead). Read and Write share that deadline
@@ -406,5 +406,12 @@ callers must pass their existing smaller absolute deadline.
 Native fixtures cover actual request/reply and fragmented reads, a silent peer,
 a full pipe with positive write progress, and a shared deadline across successive
 fragments. The timeout probes require actual pending I/O, an aborted completion
-and worker release, plus a readable-peer positive control. Cross-compilation
-passed; Windows execution is still required before acceptance.
+and worker release, plus a readable-peer positive control. The exact-source Windows-native run passed 52 tests, zero failed or ignored,
+including all four I/O fixtures and the nine existing client/endpoint/peer tests:
+https://github.com/BeFeast/tessera/actions/runs/37843885098 . Source SHA
+`7dbb17791b6f62c8e204afc434116def972938fa`, tree
+`c824181ead5f7b276e66cce03002b2813aff7866`; no extra source/CI commit.
+The single dispatch used default features, package `tessera-sync-controller`,
+filter `sidecar::`, one test thread; rustc 1.99.0 (b940084d7 2026-09-28),
+x86_64-pc-windows-msvc, LLVM 23.1.1. This validates established-client I/O and
+cancellation fixtures, not server transport or full Sync acceptance.
