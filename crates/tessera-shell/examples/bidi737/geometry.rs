@@ -156,35 +156,32 @@ impl Geometry {
     /// At row limits the caller decides paragraph/wrap traversal.
     pub fn step(&self, caret: Caret, right: bool) -> Option<Caret> {
         let x = self.position(caret)?;
-        self.cells
+        // Choose the cell crossed by the arrow, not an arbitrary equal-X
+        // neighbor. Shift+Left across the final Hebrew letter must select that
+        // letter, not the LTR prefix that shares its trailing coordinate.
+        let cell = self
+            .cells
             .iter()
-            .flat_map(|cell| {
-                [
-                    (
-                        Caret {
-                            index: cell.source.start,
-                            affinity: Affinity::Before,
-                        },
-                        cell.leading(),
-                    ),
-                    (
-                        Caret {
-                            index: cell.source.end,
-                            affinity: Affinity::After,
-                        },
-                        cell.trailing(),
-                    ),
-                ]
-            })
-            .filter(|(_, candidate)| {
+            .filter(|cell| if right { cell.right > x } else { cell.left < x })
+            .min_by_key(|cell| {
                 if right {
-                    *candidate > x
+                    (cell.right - x).abs()
                 } else {
-                    *candidate < x
+                    (cell.left - x).abs()
                 }
-            })
-            .min_by_key(|(_, candidate)| (*candidate - x).abs())
-            .map(|(caret, _)| caret)
+            })?;
+        let leading = right == cell.rtl;
+        Some(if leading {
+            Caret {
+                index: cell.source.start,
+                affinity: Affinity::Before,
+            }
+        } else {
+            Caret {
+                index: cell.source.end,
+                affinity: Affinity::After,
+            }
+        })
     }
 
     pub fn selection(&self, range: Range<usize>) -> Vec<Range<Pixels>> {

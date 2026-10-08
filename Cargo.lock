@@ -2723,6 +2723,7 @@ dependencies = [
  "smol",
  "syntect",
  "tracing",
+ "unicode-bidi",
  "unicode-linebreak",
  "unicode-segmentation",
  "web-time",

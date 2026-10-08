@@ -44,6 +44,8 @@ fn main() {
                     assert_eq!(end_hit.index, cell.source.end);
                     assert_eq!(map.position(start_hit), Some(cell.leading()));
                     assert_eq!(map.position(end_hit), Some(cell.trailing()));
+                    let crossed = map.step(start_hit, !cell.rtl).unwrap();
+                    assert_eq!(crossed.index, cell.source.end, "arrow must keep crossed-cell ownership");
                     for right in [false, true] {
                         if let Some(next) = map.step(start_hit, right) {
                             let next_x = map.position(next).unwrap();

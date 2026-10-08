@@ -116,3 +116,32 @@ every equivalent equal-X logical state must be identical after a round trip.
 Native run `native-affinity.log` exits successfully. This narrows the integration
 contract but remains isolated: product clicks, selection, IME and wrapped-row
 state have not yet been converted, and #737 is still open.
+
+## Local shared-editor integration (not yet ready for review)
+
+Patch `0036-editor-bidi-geometry.diff` now caches RTL cell maps with shaped rows,
+uses them for caret and pointer positions, carries directional affinity in the
+editor state, and draws disjoint selection rectangles. Left/Right and Shift
+movement use the visual cells. GPUI core is untouched.
+
+The actual shared `EditorState` fixture `native_bidi737` has been driven through
+Source and Live Preview on Linux/X11. The first diagnostic function-key attempt
+failed its positive control and is not evidence. The working fixture observes
+editor notifications and uses Ctrl+Alt+R/L for record/toggle. It records the exact
+source and selection offsets. Both modes traverse the first mixed line visually
+with source offsets `0,1,2,3,4,10,8,6,4,13,14,15,16`. The exact source remains
+unchanged. Shift+Left from offset 10 selects exactly bytes 10..12 (`ם`), and the
+native screenshot confirms a single-letter highlight.
+
+This test caught and repaired an error in the prototype: choosing an arbitrary
+nearest equal-X edge could make Shift+Left select the neighboring LTR prefix.
+Movement now chooses the edge of the cell crossed by the arrow. The isolated
+native geometry probe asserts that ownership explicitly for every tested cell.
+
+Evidence is local under `~/.cache/tessera-qa/737/`: `native-editor-results.json`,
+`native-editor-last-letter.png`, and `crossed-cell-probe.log`.
+
+Outstanding before a PR/acceptance: soft-wrap and row-edge traversal, vertical
+movement affinity, selection collapse at directional boundaries, IME candidate
+bounds, edits/Undo affinity, newline selection, and Linux light/dark before/after.
+The current patch is a local integration checkpoint, not a claim that #737 is fixed.
