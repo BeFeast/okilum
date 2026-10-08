@@ -915,6 +915,7 @@ impl Reader {
                     )
                     .child(
                         Editor::new(&editing.current_input)
+                            .appearance(false)
                             .readonly(true)
                             .font_family("Cascadia Code")
                             .h(px(220.)),
@@ -922,6 +923,7 @@ impl Reader {
             })
             .child(
                 Editor::new(&editing.input)
+                    .appearance(false)
                     .font_family(if editing.live_preview.enabled {
                         crate::source_presentation::BODY_FONT
                     } else {
