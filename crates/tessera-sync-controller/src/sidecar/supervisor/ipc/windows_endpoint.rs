@@ -1,6 +1,9 @@
 //! Explicit opt-in creation of one private local pipe instance. This does not
 //! discover a supervisor, authenticate its peer, connect, or perform IPC I/O.
-use super::Scope;
+use super::{
+    windows_peer::{PeerEnd, ProcessPeer},
+    Scope,
+};
 use crate::sidecar::windows::security::{current_sid, sid_string};
 use anyhow::{ensure, Context, Result};
 use std::{
@@ -204,6 +207,94 @@ impl PrivatePipe {
     }
 }
 impl AsRawHandle for PrivatePipe {
+    fn as_raw_handle(&self) -> RawHandle {
+        self.handle.as_raw_handle()
+    }
+}
+
+/// Connected client primitive, not a deadline-bounded Transport. The caller must
+/// obtain scope and the expected process through authenticated discovery/launch.
+/// No wire bytes are sent until both the descriptor and captured peer pass.
+pub struct PrivateClient {
+    handle: OwnedHandle,
+    // Retain the verified process object for the entire connection lifetime.
+    peer: ProcessPeer,
+}
+impl PrivateClient {
+    /// One local open attempt, with no WaitNamedPipe/retry or fallback namespace.
+    /// Missing, busy, shared or foreign endpoints fail closed. This does not
+    /// impose an absolute deadline on the synchronous open/identity calls.
+    pub fn connect(scope: &Scope, peer: ProcessPeer) -> Result<Self> {
+        use windows::Win32::{
+            Foundation::{GENERIC_READ, GENERIC_WRITE},
+            Storage::FileSystem::{
+                CreateFileW, FILE_SHARE_MODE, OPEN_EXISTING, SECURITY_IDENTIFICATION,
+                SECURITY_SQOS_PRESENT,
+            },
+        };
+        let name = endpoint_name(scope)?;
+        let name: Vec<_> = name.encode_utf16().chain(Some(0)).collect();
+        let raw = unsafe {
+            // Identification prevents even a colliding server from using this
+            // connection to impersonate the caller with execution privileges.
+            CreateFileW(
+                PCWSTR(name.as_ptr()),
+                GENERIC_READ.0 | GENERIC_WRITE.0,
+                FILE_SHARE_MODE(0),
+                None,
+                OPEN_EXISTING,
+                FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
+                None,
+            )
+        }
+        .context("CreateFileW(private pipe client)")?;
+        let client = Self {
+            handle: unsafe { OwnedHandle::from_raw_handle(raw.0) },
+            peer,
+        };
+        client.verify()?;
+        Ok(client)
+    }
+    pub fn verify(&self) -> Result<()> {
+        let mut sd = PSECURITY_DESCRIPTOR::default();
+        unsafe {
+            GetSecurityInfo(
+                HANDLE(self.handle.as_raw_handle()),
+                SE_KERNEL_OBJECT,
+                OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                None,
+                None,
+                None,
+                None,
+                Some(&mut sd),
+            )
+            .ok()
+            .context("GetSecurityInfo(private pipe client)")?;
+        }
+        validate(&Descriptor(sd), &current_sid()?).context("private client endpoint security")?;
+        let mut flags = NAMED_PIPE_MODE::default();
+        let mut instances = 0;
+        unsafe {
+            GetNamedPipeInfo(
+                HANDLE(self.handle.as_raw_handle()),
+                Some(&mut flags),
+                None,
+                None,
+                Some(&mut instances),
+            )
+            .context("GetNamedPipeInfo(private client)")?;
+        }
+        ensure!(
+            flags == PIPE_REJECT_REMOTE_CLIENTS && instances == 1,
+            "unexpected client pipe metadata: flags={:#x}, instances={instances}",
+            flags.0
+        );
+        self.peer
+            .verify_pipe(self, PeerEnd::Server)
+            .context("private client server identity")
+    }
+}
+impl AsRawHandle for PrivateClient {
     fn as_raw_handle(&self) -> RawHandle {
         self.handle.as_raw_handle()
     }
