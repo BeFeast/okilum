@@ -246,6 +246,7 @@ impl Fixture {
         );
         assert_eq!(error.raw_os_error(), Some(ERROR_INVALID_OWNER as i32));
         assert!(!path.exists(), "failed creation must publish no file");
+        eprintln!("Windows owner fixture: restricted token active; CreateFileW rejected Administrators owner with ERROR_INVALID_OWNER (1307)");
         guard
     }
 }
@@ -439,8 +440,19 @@ fn windows_save_owner_fallback_refuses_effective_access_loss_before_publication(
             fixture.sid_text
         ),
     );
-    let before = permissions(&path);
+    // FILE_GENERIC_WRITE also contains READ_CONTROL. The elevated fixture
+    // owner therefore cannot inspect this ACL after installing the deny ACE.
+    // Prove it is active, then read/check the source as the non-owner user who
+    // is actually allowed to edit it before fallback changes ownership.
+    let denied = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .unwrap_err();
+    assert_eq!(denied.kind(), std::io::ErrorKind::PermissionDenied);
     let _limited = fixture.impersonate();
+    let before = permissions(&path);
+    assert_eq!(before.owner, fixture.admin);
     assert_access_and_dacl(&path, &before);
     let directory = Directory::open(&fixture.root).unwrap();
     assert!(directory
