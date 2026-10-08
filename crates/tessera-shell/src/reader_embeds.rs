@@ -14,6 +14,81 @@ pub(super) fn explanation(status: Status) -> &'static str {
     }
 }
 
+pub(super) fn render_block(
+    node: &MarkdownNode,
+    link: &MarkdownLinkHandler,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let Some(data) = node.data::<Embed>() else {
+        return div().into_any_element();
+    };
+    let Some(info) = &data.block else {
+        return div().into_any_element();
+    };
+    let offset = data.offset;
+    let theme = cx.theme();
+    let muted = theme.muted_foreground;
+    let fg = theme.foreground;
+    let border = theme.border;
+    let font_size = reader_ui_state::font_size(cx);
+    let open_url = info.path.as_ref().map(|path| {
+        let fragment = if info.status == Status::Ready {
+            format!(
+                "#{}",
+                tessera_core::document_links::encode(&format!("^{}", info.id))
+            )
+        } else {
+            String::new()
+        };
+        format!(
+            "{WIKI_SCHEME}{}{fragment}",
+            tessera_core::document_links::encode(path)
+        )
+    });
+    let link = link.clone();
+    let source = div()
+        .id(("reader-embed-source", offset as u64))
+        .debug_selector(move || format!("reader-embed-source-{offset}"))
+        .text_color(muted)
+        .text_size(px(12.))
+        .child(node.render_part("title", |style| style, window, cx))
+        .when_some(open_url, |el, url| {
+            el.cursor_pointer()
+                .hover(|s| s.text_color(fg))
+                .on_click(move |event, window, cx| {
+                    cx.stop_propagation();
+                    link(&url, event, window, cx);
+                })
+        });
+    if info.status == Status::Ready {
+        v_flex()
+            .my_1()
+            .pl_3()
+            .gap_1()
+            .border_l_2()
+            .border_color(border)
+            .debug_selector(move || format!("reader-block-embed-{offset}"))
+            .child(div().child(node.render_part(
+                "body",
+                |style| style.with_heading_base_font_size(px(font_size)),
+                window,
+                cx,
+            )))
+            .child(source)
+            .into_any_element()
+    } else {
+        h_flex()
+            .my_1()
+            .text_size(px(12.))
+            .text_color(muted)
+            .debug_selector(move || format!("reader-block-embed-error-{offset}"))
+            .child(node.render_part("reason", |style| style, window, cx))
+            .when(info.status != Status::Pending, |el| el.child(source))
+            .into_any_element()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,80 +197,5 @@ mod tests {
                 }
             );
         }
-    }
-}
-
-pub(super) fn render_block(
-    node: &MarkdownNode,
-    link: &MarkdownLinkHandler,
-    window: &mut Window,
-    cx: &mut App,
-) -> AnyElement {
-    let Some(data) = node.data::<Embed>() else {
-        return div().into_any_element();
-    };
-    let Some(info) = &data.block else {
-        return div().into_any_element();
-    };
-    let offset = data.offset;
-    let theme = cx.theme();
-    let muted = theme.muted_foreground;
-    let fg = theme.foreground;
-    let border = theme.border;
-    let font_size = reader_ui_state::font_size(cx);
-    let open_url = info.path.as_ref().map(|path| {
-        let fragment = if info.status == Status::Ready {
-            format!(
-                "#{}",
-                tessera_core::document_links::encode(&format!("^{}", info.id))
-            )
-        } else {
-            String::new()
-        };
-        format!(
-            "{WIKI_SCHEME}{}{fragment}",
-            tessera_core::document_links::encode(path)
-        )
-    });
-    let link = link.clone();
-    let source = div()
-        .id(("reader-embed-source", offset as u64))
-        .debug_selector(move || format!("reader-embed-source-{offset}"))
-        .text_color(muted)
-        .text_size(px(12.))
-        .child(node.render_part("title", |style| style, window, cx))
-        .when_some(open_url, |el, url| {
-            el.cursor_pointer()
-                .hover(|s| s.text_color(fg))
-                .on_click(move |event, window, cx| {
-                    cx.stop_propagation();
-                    link(&url, event, window, cx);
-                })
-        });
-    if info.status == Status::Ready {
-        v_flex()
-            .my_1()
-            .pl_3()
-            .gap_1()
-            .border_l_2()
-            .border_color(border)
-            .debug_selector(move || format!("reader-block-embed-{offset}"))
-            .child(div().child(node.render_part(
-                "body",
-                |style| style.with_heading_base_font_size(px(font_size)),
-                window,
-                cx,
-            )))
-            .child(source)
-            .into_any_element()
-    } else {
-        h_flex()
-            .my_1()
-            .text_size(px(12.))
-            .text_color(muted)
-            .debug_selector(move || format!("reader-block-embed-error-{offset}"))
-            .child(node.render_part("reason", |style| style, window, cx))
-            .when(info.status != Status::Pending, |el| el.child(source))
-            .into_any_element()
     }
 }
