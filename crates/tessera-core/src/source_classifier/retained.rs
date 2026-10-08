@@ -153,12 +153,175 @@ impl RetainedPresentation {
         Ok(reveal)
     }
 
-    /// Retain only a proven local inline edit. Structural edits require a fresh
-    /// background classification: reference definitions/fences can affect suffixes.
-    /// Unproven edited syntax is Source; other blocks keep exact mapped spans.
-    /// Plain text outside syntax fragments preserves the edited block as well.
+    /// Map proven inline edits, or classify a bounded structural edit inside
+    /// one accepted block. Nonlocal contexts still require fresh classification.
     /// Repeated edits map from the last retained revision, not the original parse.
     pub fn remap(&self, current: &Snapshot) -> Option<Self> {
+        self.remap_inline(current)
+            .or_else(|| self.reclassify_local_block(current))
+    }
+
+    /// Reclassify a bounded run of accepted top-level blocks and whitespace gaps.
+    /// Unknown/global syntax remains a conservative fallback.
+    fn reclassify_local_block(&self, current: &Snapshot) -> Option<Self> {
+        const LOCAL_BYTES: usize = 4096;
+        if self.snapshot.document() != current.document()
+            || current.generation() <= self.snapshot.generation()
+            || current.source().len() > MAX_BYTES
+        {
+            return None;
+        }
+        let old = self.snapshot.source();
+        let new = current.source();
+        let mut start = old
+            .bytes()
+            .zip(new.bytes())
+            .take_while(|(a, b)| a == b)
+            .count();
+        while !old.is_char_boundary(start) || !new.is_char_boundary(start) {
+            start -= 1;
+        }
+        let mut tail = old[start..]
+            .bytes()
+            .rev()
+            .zip(new[start..].bytes().rev())
+            .take_while(|(a, b)| a == b)
+            .count();
+        while !old.is_char_boundary(old.len() - tail) || !new.is_char_boundary(new.len() - tail) {
+            tail -= 1;
+        }
+        let end = old.len() - tail;
+        let new_end = new.len() - tail;
+        // Include both neighbors when an edit joins/splits their whitespace gap.
+        // Never bridge unsupported containers hidden between accepted regions.
+        let source_regions = self.plan.regions();
+        let first = source_regions
+            .iter()
+            .rposition(|r| r.block().start <= start)?;
+        let last = source_regions.iter().position(|r| r.block().end >= end)?;
+        if last < first {
+            return None;
+        }
+        let affected = &source_regions[first..=last];
+        if affected
+            .iter()
+            .any(|r| !matches!(r, Region::Conceal { .. }))
+            || affected.windows(2).any(|pair| {
+                old.get(pair[0].block().end..pair[1].block().start)
+                    .is_none_or(|gap| !gap.trim().is_empty())
+            })
+        {
+            return None;
+        }
+        let dirty = affected.first()?.block().start..affected.last()?.block().end;
+        let shift = |offset: usize| offset.checked_add(new_end)?.checked_sub(end);
+        let updated = dirty.start..shift(dirty.end)?;
+        let fragment = new.get(updated.clone())?;
+        // Bound parser input before entering Comrak, not after a long parse.
+        // Fences/HTML/definitions can change nonlocal parsing. Indented blocks
+        // can attach to surrounding containers; do not infer their context.
+        if fragment.contains('\0')
+            || fragment.lines().any(|line| {
+                let plain = line.trim_start();
+                line.len() - plain.len() >= 4
+                    || line.starts_with('\t')
+                    || plain.starts_with(['`', '~', '<', '[', '>'])
+            })
+        {
+            return None;
+        }
+        if updated.start == 0 && fragment.trim_start_matches('\u{feff}').starts_with("---") {
+            return None;
+        }
+        let local = Snapshot::new(current.document(), current.generation(), fragment);
+        // Oversized but context-local edits keep only their dirty run raw until
+        // async adoption. Do not discard the already validated outer blocks.
+        let classified = (dirty.len() <= LOCAL_BYTES && fragment.len() <= LOCAL_BYTES)
+            .then(|| super::classify(&local));
+        let offset = |r: &Range<usize>| updated.start + r.start..updated.start + r.end;
+        let map = |r: &Range<usize>| -> Option<Range<usize>> {
+            if r.end <= dirty.start {
+                Some(r.clone())
+            } else if r.start >= dirty.end {
+                Some(shift(r.start)?..shift(r.end)?)
+            } else {
+                None
+            }
+        };
+        let mut regions = Vec::new();
+        for (index, region) in source_regions.iter().enumerate() {
+            if index == first {
+                if let Some(classified) = &classified {
+                    regions.extend(classified.plan.regions().iter().map(|r| match r {
+                        Region::Source(r) => Region::Source(offset(r)),
+                        Region::Conceal { block, markers } => Region::Conceal {
+                            block: offset(block),
+                            markers: markers.iter().map(offset).collect(),
+                        },
+                    }));
+                } else {
+                    // Empty conceal inventory preserves local-context provenance
+                    // for subsequent edits before the async classifier returns.
+                    regions.push(Region::Conceal {
+                        block: updated.clone(),
+                        markers: Vec::new(),
+                    });
+                }
+            }
+            if index < first || index > last {
+                regions.push(match region {
+                    Region::Source(r) => Region::Source(map(r)?),
+                    Region::Conceal { block, markers } => Region::Conceal {
+                        block: map(block)?,
+                        markers: markers.iter().map(map).collect::<Option<Vec<_>>>()?,
+                    },
+                });
+            }
+        }
+        let mut styles: Vec<_> = self
+            .styles
+            .iter()
+            .filter_map(|s| {
+                Some(StyleSpan {
+                    range: map(&s.range)?,
+                    style: s.style,
+                })
+            })
+            .collect();
+        styles.extend(
+            classified
+                .iter()
+                .flat_map(|c| &c.styles)
+                .map(|s| StyleSpan {
+                    range: offset(&s.range),
+                    style: s.style,
+                }),
+        );
+        styles.sort_by_key(|s| s.range.start);
+        let mut marker_scopes: Vec<_> = self
+            .marker_scopes
+            .iter()
+            .filter_map(|(m, s)| Some((map(m)?, map(s)?)))
+            .collect();
+        marker_scopes.extend(
+            classified
+                .iter()
+                .flat_map(|c| &c.marker_scopes)
+                .map(|(m, s)| (offset(m), offset(s))),
+        );
+        marker_scopes.sort_by_key(|(m, _)| m.start);
+        let plan = Plan::new(current, regions);
+        let base = crate::source_projection::project(current, &plan, &Active::default()).ok()?;
+        Some(Self {
+            snapshot: current.clone(),
+            base: Ok(Arc::new(base)),
+            plan,
+            styles,
+            marker_scopes,
+        })
+    }
+
+    fn remap_inline(&self, current: &Snapshot) -> Option<Self> {
         if self.snapshot.document() != current.document()
             || current.generation() < self.snapshot.generation()
             || current.source().len() > MAX_BYTES
@@ -378,6 +541,185 @@ mod tests {
         Snapshot::new("note", generation, text)
     }
     #[test]
+    fn structural_edit_in_one_block_matches_fresh_classification() {
+        for (before, after) in [
+            ("plain text", "plain\ntext"),
+            ("plain text", "plain\n\ntext"),
+            ("plain\ntext", "plaintext"),
+            ("plain text", "# plain text"),
+            ("plain text", "- plain text"),
+            ("plain text", "plain\nnew pasted paragraph\ntext"),
+            ("plain שלום text", "plain שלום\r\ntext"),
+        ] {
+            let old = snapshot(
+                1,
+                &format!("**BEFORE**\n\n{before}\n\n**AFTER** [label](destination)"),
+            );
+            let current = snapshot(
+                2,
+                &format!("**BEFORE**\n\n{after}\n\n**AFTER** [label](destination)"),
+            );
+            let retained = RetainedPresentation::new(&classify(&old))
+                .remap(&current)
+                .unwrap();
+            let actual = retained.project(&Active::default()).unwrap();
+            let fresh = RetainedPresentation::new(&classify(&current))
+                .project(&Active::default())
+                .unwrap();
+            assert_eq!(actual.display(), fresh.display(), "{after:?}");
+            assert!(actual.display().starts_with("BEFORE\n"));
+            assert!(actual.display().ends_with("AFTER label"));
+            assert_eq!(
+                current.copy_source(0..current.source().len()).unwrap(),
+                current.source()
+            );
+        }
+    }
+
+    #[test]
+    fn structural_cross_block_edits_match_full_parse_and_keep_outer_neighbors() {
+        for (before, after) in [
+            ("TOP text\n\n**bold**", "TOP text\n**bold**"),
+            ("plain **one**\n\nother *two*", "plain **one**other *two*"),
+            ("plain **one**\n\nother *two*", "plain **one**\nother *two*"),
+            ("plain **one**\n\nother *two*", "plain replacement *two*"),
+            (
+                "plain **one**\r\n\r\nother *two*",
+                "plain **one** other *two*",
+            ),
+            (
+                "שלום **one**\n\nother *two*",
+                "שלום **one**\nnew\nother *two*",
+            ),
+        ] {
+            let old = snapshot(1, &format!("# BEFORE\n\n{before}\n\n# AFTER"));
+            let new = snapshot(2, &format!("# BEFORE\n\n{after}\n\n# AFTER"));
+            let retained = RetainedPresentation::new(&classify(&old))
+                .remap(&new)
+                .unwrap();
+            let fresh = RetainedPresentation::new(&classify(&new));
+            for caret in [
+                0,
+                new.source().find("plain").unwrap_or(12),
+                new.source().len(),
+            ] {
+                let active = Active {
+                    selection: Some(caret..caret),
+                    composition: None,
+                };
+                let a = retained.project(&active).unwrap();
+                let b = fresh.project(&active).unwrap();
+                assert_eq!(a.display(), b.display(), "{before:?} -> {after:?}");
+                for offset in 0..=new.source().len() {
+                    assert_eq!(
+                        a.source_to_display(&new, offset),
+                        b.source_to_display(&new, offset)
+                    );
+                }
+            }
+            assert_eq!(retained.styles(), fresh.styles());
+        }
+    }
+
+    #[test]
+    fn structural_cross_block_edit_cannot_bridge_unsupported_source() {
+        let old = snapshot(1, "plain **one**\n\n```\nopaque\n```\n\nother *two*");
+        let new = snapshot(2, "plain replacement *two*");
+        assert!(RetainedPresentation::new(&classify(&old))
+            .remap(&new)
+            .is_none());
+    }
+
+    #[test]
+    fn structural_local_parse_refuses_global_context() {
+        let old = snapshot(1, "plain text\n\n**AFTER**");
+        for new in [
+            "---\nplain text\n\n**AFTER**",
+            "plain\n```\ntext\n\n**AFTER**",
+            "plain\n[id]: destination\ntext\n\n**AFTER**",
+            "plain\n<div>\ntext\n\n**AFTER**",
+        ] {
+            assert!(RetainedPresentation::new(&classify(&old))
+                .remap(&snapshot(2, new))
+                .is_none());
+        }
+    }
+
+    #[test]
+    #[ignore = "manual same-host timing probe; run with --ignored --nocapture"]
+    fn structural_edit_timing_probe() {
+        use std::time::Instant;
+        for (count, padding) in [(1, 0), (100, 0), (600, 0), (600, 40_000)] {
+            let original = format!(
+                "plain text\n\n{}{}",
+                "**bold** [label](destination)\n\n".repeat(count),
+                "x".repeat(padding)
+            );
+            let base = RetainedPresentation::new(&classify(&snapshot(1, &original)));
+            let mut local_times = Vec::new();
+            let mut full_times = Vec::new();
+            for iteration in 0..100 {
+                let current = snapshot(2, &original.replacen("plain text", "plain\ntext", 1));
+                let started = Instant::now();
+                let mapped = base.remap(&current).unwrap();
+                std::hint::black_box(mapped.project(&Active::default()).unwrap());
+                local_times.push(started.elapsed().as_micros());
+                let started = Instant::now();
+                let fresh = RetainedPresentation::new(&classify(&current));
+                std::hint::black_box(fresh.project(&Active::default()).unwrap());
+                full_times.push(started.elapsed().as_micros());
+                assert_eq!(
+                    mapped.project(&Active::default()).unwrap().display(),
+                    fresh.project(&Active::default()).unwrap().display(),
+                    "iteration {iteration}"
+                );
+            }
+            local_times.sort_unstable();
+            full_times.sort_unstable();
+            eprintln!("blocks={count} bytes={} local_us p50={} p95={} max={} full_us p50={} p95={} max={}",
+                original.len(), local_times[50], local_times[95], local_times[99],
+                full_times[50], full_times[95], full_times[99]);
+        }
+    }
+
+    #[test]
+    fn oversized_local_edits_keep_outer_projection_until_adoption() {
+        let original = format!(
+            "**BEFORE**\n\nplain {}\n\n**AFTER** [label](destination)",
+            "x".repeat(4097)
+        );
+        let mut retained = RetainedPresentation::new(&classify(&snapshot(1, &original)));
+        for generation in 2..6 {
+            let text = original.replace(
+                "plain ",
+                &format!("plain{}", "\n".repeat(generation as usize)),
+            );
+            let current = snapshot(generation, &text);
+            retained = retained.remap(&current).expect("bounded raw dirty run");
+            let projected = retained.project(&Active::default()).unwrap();
+            assert!(projected.display().starts_with("BEFORE\n\n"));
+            assert!(projected.display().ends_with("AFTER label"));
+            let label = projected.display().rfind("label").unwrap();
+            let source = projected
+                .display_to_source(&current, label, Bias::Right)
+                .unwrap();
+            assert_eq!(&text[source..source + 5], "label");
+            assert_eq!(
+                projected.display(),
+                RetainedPresentation::new(&classify(&current))
+                    .project(&Active::default())
+                    .unwrap()
+                    .display()
+            );
+        }
+        let global = snapshot(6, &original.replace("plain ", "plain\n```\n"));
+        assert!(
+            retained.remap(&global).is_none(),
+            "global context still invalidates retention"
+        );
+    }
+
+    #[test]
     fn unchanged_fragments_reuse_projection_but_validate_each_active_range() {
         let source = snapshot(1, "plain e\u{301} text [label](destination)");
         let retained = RetainedPresentation::new(&classify(&source));
@@ -545,7 +887,6 @@ mod tests {
             ("TOP text\n\n**bold**", "```TOP text\n\n**bold**"),
             ("TOP text\n\n**bold**", "TOP text\n```\n\n**bold**"),
             ("[id] text\n\n**bold**", "[id]: dest\n\n**bold**"),
-            ("TOP text\n\n**bold**", "TOP text\n**bold**"),
         ] {
             let retained = RetainedPresentation::new(&classify(&snapshot(2, old)));
             assert!(retained.remap(&snapshot(3, new)).is_none(), "{new}");

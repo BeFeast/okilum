@@ -1,0 +1,142 @@
+diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -1771,18 +1771,17 @@
+         // Read the old shaped geometry before installing a new projection. The
+         // anchor is canonical source, not a display-row index that rewrap moves.
+         let source_anchor = (|| {
+-            if initial.selecting || initial.deferred_scroll_offset.is_some()
++            if !initial.projection.enabled || initial.selecting || initial.deferred_scroll_offset.is_some()
+                 || initial.text.len() > 256 * 1024 { return None; }
+             let last = initial.last_layout.as_ref()?;
+             if last.source_stamp == initial.source_stamp()
+                 && last.presentation_epoch == initial.presentation_epoch() {
+                 return None;
+             }
+-            let previous = last.projection.as_ref()?.projection.source();
+-            if previous.stamp.document != initial.source_stamp().document { return None; }
++            let previous = last.source_for_anchor(initial.source_stamp())?;
+             let current_text = initial.text.to_string();
+             let current_offset = initial.cursor();
+-            let old_offset = previous_source_anchor(&previous.text, &current_text, current_offset)?;
++            let old_offset = previous_source_anchor(&previous, &current_text, current_offset)?;
+             let offset = last.project(old_offset, ConcealBias::Right)?;
+             let mut y = last.visible_top;
+             for (line, start) in last.lines.iter().zip(&last.visible_line_byte_offsets) {
+@@ -1808,7 +1807,7 @@
+                     let screen_y = y + initial.scroll_handle.offset().y;
+                     if screen_y >= px(0.) && screen_y < bounds.size.height {
+                         let old = last.source(projected, ConcealBias::Right)?;
+-                        let current = previous_source_anchor(&current_text, &previous.text, old)?;
++                        let current = previous_source_anchor(&current_text, &previous, old)?;
+                         return Some((current, y, false));
+                     }
+                     projected += row.len;
+@@ -1914,7 +1913,7 @@
+             state
+                 .display_map
+                 .install_projection(state.projection.pin(), &state.text, window, cx);
+-            if let Some((offset, old_y, affinity)) = source_anchor.filter(|_| state.projection.current.is_some()) {
++            if let Some((offset, old_y, affinity)) = source_anchor {
+                 let row = state.display_map.offset_to_wrap_display_point_with_affinity(
+                     offset, affinity).row;
+                 let new_y = window.line_height() * row;
+@@ -1979,6 +1978,7 @@
+ 
+         let mut last_layout = LastLayout {
+             projection: state.projection.pin(),
++            anchor_source: state.projection.enabled.then(|| state.text.clone()),
+             source_stamp: state.source_stamp(),
+             presentation_epoch: state.presentation_epoch(),
+             font: font.clone(),
+diff --git a/crates/base/src/input/base/layout.rs b/crates/base/src/input/base/layout.rs
+--- a/crates/base/src/input/base/layout.rs
++++ b/crates/base/src/input/base/layout.rs
+@@ -1,4 +1,4 @@
+-use std::{ops::Range, rc::Rc};
++use std::{borrow::Cow, ops::Range, rc::Rc};
+ 
+ use gpui::{Bounds, Half, Pixels, ShapedLine, TextAlign, px};
+ 
+@@ -14,6 +14,9 @@
+ #[derive(Clone)]
+ pub(super) struct LastLayout {
+     pub(super) projection: Option<PinnedProjection>,
++    // Cheap persistent source clone bound to this exact painted layout. Needed
++    // when projection is absent during conservative Live Preview fallback.
++    pub(super) anchor_source: Option<ropey::Rope>,
+     pub(super) source_stamp: SourceStamp,
+     pub(super) presentation_epoch: u64,
+     pub(super) font: gpui::Font,
+@@ -36,6 +39,18 @@
+ }
+ 
+ impl LastLayout {
++    pub(super) fn source_for_anchor(&self, current: SourceStamp) -> Option<Cow<'_, str>> {
++        if self.source_stamp.document != current.document {
++            return None;
++        }
++        if let Some(pin) = &self.projection {
++            let source = pin.projection.source();
++            return (source.stamp == self.source_stamp)
++                .then(|| Cow::Borrowed(source.text.as_ref()));
++        }
++        self.anchor_source.as_ref().map(|source| Cow::Owned(source.to_string()))
++    }
++
+     pub(super) fn project(&self, offset: usize, bias: ConcealBias) -> Option<usize> {
+         match &self.projection {
+             Some(p) => p
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -4415,6 +4415,7 @@
+                 state.last_bounds = Some(bounds);
+                 state.scroll_size = gpui::size(px(100.), px(80.));
+                 state.last_layout = Some(LastLayout {
++                    anchor_source: None,
+                     projection: None,
+                     source_stamp: state.source_stamp(),
+                     presentation_epoch: state.presentation_epoch(),
+diff --git a/crates/base/src/input/editor/display_map/text_wrapper.rs b/crates/base/src/input/editor/display_map/text_wrapper.rs
+--- a/crates/base/src/input/editor/display_map/text_wrapper.rs
++++ b/crates/base/src/input/editor/display_map/text_wrapper.rs
+@@ -1312,6 +1312,7 @@
+     /// A layout context whose only load-bearing field is the line height.
+     fn test_last_layout(line_height: Pixels) -> LastLayout {
+         LastLayout {
++            anchor_source: None,
+             projection: None,
+             source_stamp: crate::input::projection::SourceStamp {
+                 document: 0,
+@@ -1335,6 +1336,22 @@
+             text_align: TextAlign::Left,
+             content_width: px(0.),
+         }
++    }
++
++    #[test]
++    fn raw_anchor_source_is_pinned_to_painted_revision() {
++        let mut layout = test_last_layout(px(20.));
++        let mut source = ropey::Rope::from("before שלום");
++        layout.anchor_source = Some(source.clone());
++        source.insert(0, "after ");
++        let mut current = layout.source_stamp;
++        current.generation += 1;
++        assert_eq!(layout.source_for_anchor(current).as_deref(), Some("before שלום"));
++        assert_eq!(layout.project(7, crate::input::projection::ConcealBias::Right), Some(7));
++        current.document += 1;
++        assert!(layout.source_for_anchor(current).is_none());
++        layout.anchor_source = None;
++        assert!(layout.source_for_anchor(layout.source_stamp).is_none());
+     }
+ 
+     #[test]
+@@ -1621,6 +1638,7 @@
+         line_layout = line_layout.wrap_indent(px(20.0));
+ 
+         let last_layout = LastLayout {
++            anchor_source: None,
+             projection: None,
+             source_stamp: crate::input::projection::SourceStamp {
+                 document: 0,

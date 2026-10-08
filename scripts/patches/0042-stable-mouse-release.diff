@@ -1,0 +1,127 @@
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -316,7 +316,8 @@
+     pub(super) text: Rope,
+     pub(super) projection: ProjectionSession,
+     pub(super) marker_source_cache: std::cell::RefCell<Option<std::sync::Arc<super::marker_paint::MarkerSource>>>,
+     exact_clipboard: ClipboardSession,
++    projection_mouse_hold: bool,
+     pub(super) projection_pending_click: Option<(MouseDownEvent, bool)>,
+     pub(super) projection_pending_vertical: Option<super::movement::PendingVertical>,
+     pub(super) projection_ime_bounds: Option<Bounds<Pixels>>,
+@@ -661,7 +662,8 @@
+             text: "".into(),
+             projection: ProjectionSession::default(),
+             marker_source_cache: Default::default(),
+             exact_clipboard: ClipboardSession::default(),
++            projection_mouse_hold: false,
+             projection_pending_click: None,
+             projection_pending_vertical: None,
+             projection_ime_bounds: None,
+@@ -943,6 +945,11 @@
+             },
+         };
+         if active != self.projection.active {
++            // Keyboard/IME selection changes end the mouse presentation lease.
++            // During a drag the same hit map remains authoritative.
++            if !self.selecting {
++                self.projection_mouse_hold = false;
++            }
+             self.record_layout_diagnostic(|d| d.active_changes += 1);
+             self.exact_clipboard.invalidate();
+             self.projection_pending_vertical = None;
+@@ -973,7 +980,7 @@
+         // A gesture uses the geometry it started against, including raw Source.
+         // Provider adoption and selection reveal wait until release. Never carry
+         // that hit map across a source edit: cancel instead of reinterpreting it.
+-        if self.selecting && self.projection.enabled {
++        if (self.selecting || self.projection_mouse_hold) && self.projection.enabled {
+             if let Some(last) = &self.last_layout {
+                 if last.source_stamp == self.source_stamp() {
+                     self.projection.current = last.projection.as_ref().map(|p| p.projection.clone());
+@@ -981,6 +988,7 @@
+                 }
+             }
+             self.selecting = false;
++            self.projection_mouse_hold = false;
+             self.auto_scroll.stop();
+         }
+         if self.projection.current.is_some() {
+@@ -1009,6 +1017,7 @@
+     }
+ 
+     fn reveal_replacement(&mut self, range: &Range<usize>) {
++        self.projection_mouse_hold = false;
+         let mut trace = TraceSpan::new("reveal_replacement", TraceIdentity::new(self.source_stamp(), self.presentation_epoch(), self.projection.current.is_some()));
+         trace.counts([range.start as u64, range.end as u64, self.text.len() as u64, 0]);
+         self.sync_projection_active();
+@@ -1999,6 +2008,7 @@
+         }
+ 
+         self.selecting = true;
++        self.projection_mouse_hold = self.projection.enabled;
+         let Some((offset, line_end_affinity, bidi_affinity)) = self.index_for_mouse_position(event.position)
+         else {
+             cx.notify();
+@@ -2070,11 +2080,20 @@
+         if self.selected_range.is_empty() {
+             self.selection_reversed = false;
+         }
+-        self.selecting = false;
+-        self.projection.presentation_changed();
++        self.finish_projection_mouse_gesture();
+         cx.notify();
+         self.selected_word_range = None;
+         self.auto_scroll.stop();
++    }
++
++    /// Releasing the mouse does not reveal source or adopt a new hit map.
++    /// Capture the final selection while the gesture still pins painted geometry.
++    pub(super) fn finish_projection_mouse_gesture(&mut self) {
++        if self.projection.enabled && self.selecting {
++            self.projection_mouse_hold = true;
++            self.refresh_projection();
++        }
++        self.selecting = false;
+     }
+ 
+     pub(super) fn on_mouse_move(
+@@ -4102,10 +4121,15 @@
+             state.move_to(9, None, cx);
+             state.set_projection_provider(Some(Arc::new(ExactSourceProvider)), cx);
+             assert_eq!(state.projection.current.as_ref().unwrap().text(), painted);
+-            // Release is the positive control: deferred adoption now occurs.
+-            state.selecting = false;
+-            state.projection.presentation_changed();
++            state.finish_projection_mouse_gesture();
++            let released_epoch = state.presentation_epoch();
+             state.refresh_projection();
++            assert_eq!(state.presentation_epoch(), released_epoch);
++            assert_eq!(state.projection.current.as_ref().unwrap().text(), painted);
++            // Keyboard movement is the positive control: deferred adoption occurs.
++            state.move_to(10, None, cx);
++            state.refresh_projection();
++            assert!(!state.projection_mouse_hold);
+             assert!(state.projection.current.is_none());
+             state.selecting = true;
+             state.set_value("replacement source", window, cx);
+@@ -6718,6 +6742,7 @@
+             }
+         }
+         if provider.is_none() {
++            self.projection_mouse_hold = false;
+             self.selecting = false;
+             self.auto_scroll.stop();
+         }
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -2588,8 +2588,7 @@
+             if let Some((event, released)) = state.projection_pending_click.take() {
+                 state.on_mouse_down(&event, window, cx);
+                 if released {
+-                    state.selecting = false;
+-                    state.projection.presentation_changed();
++                    state.finish_projection_mouse_gesture();
+                 }
+             }
+             state.refresh_native_candidate_geometry(window, cx);
