@@ -35,7 +35,7 @@ reading width remain application preferences. Subsequent navigation and scrollin
 are independent, and the active sibling owns persisted viewport state. This does
 not add durable multi-window relaunch or change the preference schema.
 
-A duplicate retains its source window size and display, with a 28 px cascade.
+On macOS, Windows and X11, a duplicate retains its source size/display with a 28 px cascade; on Linux/Wayland, placement and tiling belong to the compositor.
 At work-area edges the position wraps to the visible origin; an oversized window
 is fitted to the work area. Explicit duplication does not restore a saved slot's
 maximized/fullscreen state. Normal launch still restores saved geometry.
