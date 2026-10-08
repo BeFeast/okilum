@@ -25,6 +25,7 @@ struct Peer {
     home: PathBuf,
     vault: PathBuf,
     api: Syncthing,
+    api_key: String,
     rest: SocketAddr,
     listen: SocketAddr,
     id: String,
@@ -78,6 +79,7 @@ print(g.find('apikey').text)
             home,
             vault,
             api,
+            api_key: key.trim().to_owned(),
             rest,
             listen,
             id: String::new(),
@@ -88,6 +90,20 @@ print(g.find('apikey').text)
             .context("identity absent")?
             .into();
         Ok(peer)
+    }
+    // Fixture-only connection control; production enrollment deliberately refuses
+    // to mutate existing devices through add_device.
+    fn pause_remote(&self, id: &str, paused: bool) -> Result<()> {
+        reqwest::blocking::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(10))
+            .build()?
+            .patch(format!("http://{}/rest/config/devices/{id}", self.rest))
+            .header("X-API-Key", &self.api_key)
+            .json(&json!({"paused":paused}))
+            .send()?
+            .error_for_status()?;
+        Ok(())
     }
     fn start(&mut self) -> Result<()> {
         let log = fs::File::create(self.home.join("fixture.log"))?;
@@ -156,7 +172,7 @@ fn folder(peer: &Peer, other: &Peer, id: &str, kind: &str) -> serde_json::Value 
 #[ignore = "requires CT141 and both pinned isolated binaries"]
 fn owned_folder_and_external_replica_keep_their_boundaries() -> Result<()> {
     let root = tempfile::tempdir()?;
-    let hub = Peer::new(
+    let mut hub = Peer::new(
         root.path(),
         "hub",
         std::env::var_os("TESSERA_SYNC_HUB")
@@ -448,6 +464,159 @@ fn owned_folder_and_external_replica_keep_their_boundaries() -> Result<()> {
                 == Some("bidirectional positive control"),
         )
     })?;
+    // #589: actual transport outage, both process restarts and queued local
+    // changes. Browser approval is still a synthetic receipt in this fixture.
+    write(&hub.vault, "conflict.md", "shared base")?;
+    hub.api.scan("controller-fixture")?;
+    wait("conflict fixture has a shared base", || {
+        Ok(fs::read_to_string(client.vault.join("conflict.md"))
+            .ok()
+            .as_deref()
+            == Some("shared base"))
+    })?;
+    let hub_certificate = fs::read(hub.home.join("cert.pem"))?;
+    let client_certificate = fs::read(client.home.join("cert.pem"))?;
+    // Keep the restarted hub disconnected until its offline edit has been
+    // indexed. This establishes concurrent versions before index exchange.
+    hub.pause_remote(&client.id, true)?;
+    hub.stop()?;
+    wait("controller observes disconnected hub", || {
+        Ok(!reopened.status()?.hub_connected)
+    })?;
+    // Both disconnected replicas change the same indexed note. Distinct explicit
+    // mtimes avoid relying on the filesystem's timestamp resolution in this probe.
+    write(&hub.vault, "conflict.md", "hub offline version")?;
+    write(&client.vault, "conflict.md", "client offline version")?;
+    let time = std::time::SystemTime::now();
+    for (root, offset) in [(&hub.vault, 2), (&client.vault, 4)] {
+        fs::File::options()
+            .write(true)
+            .open(root.join("conflict.md"))?
+            .set_times(fs::FileTimes::new().set_modified(time + Duration::from_secs(offset)))?;
+    }
+    write(&client.vault, "offline.md", "queued while hub is down")?;
+    fs::remove_file(client.vault.join("published-after-promotion.md"))?;
+    client.api.scan("controller-fixture")?;
+    client.stop()?;
+    client.start()?;
+    client.api.verify_identity(&client.id)?;
+    assert_eq!(fs::read(client.home.join("cert.pem"))?, client_certificate);
+    assert!(!hub.vault.join("offline.md").exists());
+    assert!(hub.vault.join("published-after-promotion.md").exists());
+    hub.start()?;
+    hub.api.verify_identity(&hub.id)?;
+    assert_eq!(fs::read(hub.home.join("cert.pem"))?, hub_certificate);
+    hub.api.scan("controller-fixture")?;
+    hub.pause_remote(&client.id, false)?;
+    client.api.scan("controller-fixture")?;
+    wait(
+        "offline edit and delete propagate after both restarts",
+        || {
+            Ok(fs::read_to_string(hub.vault.join("offline.md"))
+                .ok()
+                .as_deref()
+                == Some("queued while hub is down")
+                && !hub.vault.join("published-after-promotion.md").exists())
+        },
+    )?;
+    assert_eq!(client.api.folder("unrelated")?, unrelated);
+    assert!(!client.vault.join(".tessera-index/excluded").exists());
+    let preserved_versions = |root: &Path| -> Result<bool> {
+        let mut contents = Vec::new();
+        let mut has_conflict_copy = false;
+        for entry in fs::read_dir(root)? {
+            let path = entry?.path();
+            let name = path.file_name().unwrap().to_string_lossy();
+            if name == "conflict.md"
+                || (name.starts_with("conflict.sync-conflict-") && name.ends_with(".md"))
+            {
+                has_conflict_copy |= name.contains(".sync-conflict-");
+                contents.push(fs::read_to_string(path)?);
+            }
+        }
+        Ok(has_conflict_copy
+            && contents.iter().any(|s| s == "hub offline version")
+            && contents.iter().any(|s| s == "client offline version"))
+    };
+    wait("both replicas preserve both conflicting versions", || {
+        Ok(preserved_versions(&hub.vault)? && preserved_versions(&client.vault)?)
+    })?;
+    let inspection = tessera_sync_controller::conflicts::inspect(&client.vault)?;
+    ensure!(
+        inspection.complete && !inspection.copies.is_empty(),
+        "controller must reveal the actual conflict copy"
+    );
+    ensure!(
+        preserved_versions(&client.vault)?,
+        "inspection must preserve both versions"
+    );
+    // A missing Syncthing safety marker must stop the folder. Moving it outside
+    // the vault prevents it being treated as user content or sent to the hub.
+    let marker = client.vault.join(".stfolder");
+    ensure!(marker.is_dir(), "positive control: managed marker exists");
+    let held_marker = client.home.join("held-marker");
+    fs::rename(&marker, &held_marker)?;
+    let _ = client.api.scan("controller-fixture");
+    wait("missing marker is an explicit folder error", || {
+        let status = client.api.status("controller-fixture")?;
+        Ok(status["state"] == "error" || status["error"].as_str().is_some_and(|s| !s.is_empty()))
+    })?;
+    assert_eq!(
+        tessera_sync_controller::presentation::FolderState::from_local(&reopened.status()?),
+        tessera_sync_controller::presentation::FolderState::NeedsAttention
+    );
+    write(
+        &hub.vault,
+        "after-marker.md",
+        "recover only after marker returns",
+    )?;
+    hub.api.scan("controller-fixture")?;
+    assert!(!client.vault.join("after-marker.md").exists());
+    fs::rename(&held_marker, &marker)?;
+    client.api.scan("controller-fixture")?;
+    wait("restored marker permits real transfer", || {
+        Ok(fs::read_to_string(client.vault.join("after-marker.md"))
+            .ok()
+            .as_deref()
+            == Some("recover only after marker returns"))
+    })?;
+    // Exercise Syncthing's free-space admission check without filling a shared
+    // filesystem. This is a reserve-gate test, not an injected OS ENOSPC proof.
+    let old_reserve = client.api.folder("controller-fixture")?["minDiskFree"].clone();
+    client.api.patch_folder(
+        "controller-fixture",
+        &json!({"minDiskFree":{"value":100,"unit":"%"}}),
+    )?;
+    write(
+        &hub.vault,
+        "needs-space.md",
+        "received after reserve is restored",
+    )?;
+    hub.api.scan("controller-fixture")?;
+    wait("disk reserve is surfaced as needs attention", || {
+        let status = reopened.status()?;
+        Ok(
+            tessera_sync_controller::presentation::FolderState::from_local(&status)
+                == tessera_sync_controller::presentation::FolderState::NeedsAttention
+                && status.errors.to_string().contains("insufficient space"),
+        )
+    })?;
+    assert!(!client.vault.join("needs-space.md").exists());
+    client.api.patch_folder(
+        "controller-fixture",
+        &json!({"paused":true,"minDiskFree":old_reserve}),
+    )?;
+    client
+        .api
+        .patch_folder("controller-fixture", &json!({"paused":false}))?;
+    wait("restored reserve permits queued transfer", || {
+        Ok(fs::read_to_string(client.vault.join("needs-space.md"))
+            .ok()
+            .as_deref()
+            == Some("received after reserve is restored"))
+    })?;
+    assert_eq!(client.api.folder("unrelated")?, unrelated);
+    let observed = reopened.last_connected_at()?;
     // Offline Remove is journaled before REST, and restart cannot re-enroll.
     let external_units = root.path().join("external-units-must-not-exist");
     let runtime = tessera_sync_controller::runtime::Runtime::new(
@@ -484,6 +653,106 @@ fn owned_folder_and_external_replica_keep_their_boundaries() -> Result<()> {
         "after reuse remove"
     );
     client.api.verify_identity(&client.id)?;
+    Ok(())
+}
+
+/// Linux preserves distinct case variants; this does not emulate macOS/Windows.
+#[test]
+#[ignore = "requires CT141 isolated pinned hub/client binaries"]
+fn linux_case_variants_and_case_only_rename_preserve_content() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let hub = Peer::new(
+        root.path(),
+        "hub",
+        std::env::var_os("TESSERA_SYNC_HUB")
+            .context("hub binary")?
+            .into(),
+    )?;
+    let client = Peer::new(
+        root.path(),
+        "client",
+        std::env::var_os("TESSERA_SYNC_CLIENT")
+            .context("client binary")?
+            .into(),
+    )?;
+    let id = "case-collision-fixture";
+    hub.api.add_device(&device(&client, false))?;
+    client.api.add_device(&device(&hub, false))?;
+    hub.api
+        .add_paused_folder(&folder(&hub, &client, id, "sendreceive"))?;
+    client
+        .api
+        .add_paused_folder(&folder(&client, &hub, id, "sendreceive"))?;
+    // Leave the receiver's default case handling in place. On Linux, false
+    // does not turn the filesystem into a case-insensitive volume.
+    hub.api
+        .patch_folder(id, &json!({"caseSensitiveFS":true,"paused":false}))?;
+    client
+        .api
+        .patch_folder(id, &json!({"caseSensitiveFS":false,"paused":false}))?;
+    write(&hub.vault, "Case.md", "original uppercase note")?;
+    hub.api.scan(id)?;
+    wait("case fixture positive transfer control", || {
+        Ok(fs::read_to_string(client.vault.join("Case.md"))
+            .ok()
+            .as_deref()
+            == Some("original uppercase note"))
+    })?;
+    write(&hub.vault, "case.md", "distinct lowercase note")?;
+    hub.api.scan(id)?;
+    wait("Linux receives distinct case variants", || {
+        Ok(fs::read_to_string(client.vault.join("case.md"))
+            .ok()
+            .as_deref()
+            == Some("distinct lowercase note"))
+    })?;
+    assert_eq!(
+        fs::read_to_string(client.vault.join("Case.md"))?,
+        "original uppercase note"
+    );
+    assert_eq!(
+        fs::read_to_string(hub.vault.join("Case.md"))?,
+        "original uppercase note"
+    );
+    assert_eq!(
+        fs::read_to_string(hub.vault.join("case.md"))?,
+        "distinct lowercase note"
+    );
+    fs::rename(hub.vault.join("case.md"), hub.vault.join("renamed.md"))?;
+    hub.api.scan(id)?;
+    // Resume to retry pending pulls promptly rather than relying on backoff.
+    client.api.patch_folder(id, &json!({"paused":true}))?;
+    client.api.patch_folder(id, &json!({"paused":false}))?;
+    wait(
+        "renamed note transfers without losing either content",
+        || {
+            Ok(fs::read_to_string(client.vault.join("renamed.md"))
+                .ok()
+                .as_deref()
+                == Some("distinct lowercase note"))
+        },
+    )?;
+    assert_eq!(
+        fs::read_to_string(client.vault.join("Case.md"))?,
+        "original uppercase note"
+    );
+    assert!(!client.vault.join("case.md").exists());
+    fs::rename(hub.vault.join("Case.md"), hub.vault.join("CASE.md"))?;
+    hub.api.scan(id)?;
+    wait("case-only rename propagates with content intact", || {
+        Ok(!client.vault.join("Case.md").exists()
+            && fs::read_to_string(client.vault.join("CASE.md"))
+                .ok()
+                .as_deref()
+                == Some("original uppercase note"))
+    })?;
+    assert_eq!(
+        fs::read_to_string(client.vault.join("renamed.md"))?,
+        "distinct lowercase note"
+    );
+    println!(
+        "Linux case variants: both contents retained; distinct and case-only renames propagated"
+    );
     Ok(())
 }
 
