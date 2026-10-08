@@ -627,7 +627,16 @@ impl RenderOnce for TasksList {
                     .gap_2()
                     .text_sm()
                     .text_color(muted)
-                    .child(self.title.clone().unwrap_or_else(|| "Tasks".into()))
+                    .child(
+                        div()
+                            .when(self.title.is_some(), |title| {
+                                title
+                                    .text_base()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(cx.theme().foreground)
+                            })
+                            .child(self.title.clone().unwrap_or_else(|| "Tasks".into())),
+                    )
                     .child(count_badge(results, cx)),
             );
         }
@@ -817,7 +826,16 @@ impl RenderOnce for TasksList {
                                 .text_xs()
                                 .text_color(due_color)
                                 .bg(due_color.opacity(0.10))
-                                .child(due.to_string()),
+                                .child(if due == now {
+                                    "Today".to_owned()
+                                } else if Some(due) == now.next_day() {
+                                    "Tomorrow".to_owned()
+                                } else {
+                                    due.format(&time::macros::format_description!(
+                                        "[day padding:none] [month repr:short] [year]"
+                                    ))
+                                    .unwrap_or_default()
+                                }),
                         )
                     }),
             );
@@ -975,6 +993,27 @@ mod tests {
         );
         assert_eq!(results.shown, 150);
         assert!(results.expanded.contains(&("old.md".into(), 1)));
+        results.refresh_grouped(
+            results.index.clone(),
+            today(),
+            "not done\ngroup by filename",
+            tessera_core::typed_view::layout::Grouping::Note,
+        );
+        assert!(results.explicit_groups);
+        assert_eq!(results.rows.len(), 2);
+        results.refresh_grouped(
+            results.index.clone(),
+            today(),
+            "not done\ngroup by filename",
+            tessera_core::typed_view::layout::Grouping::None,
+        );
+        assert!(!results.explicit_groups);
+        assert!(results.groups.is_empty());
+        assert_eq!(
+            results.rows.len(),
+            1,
+            "ungrouped carried copies collapse again"
+        );
         results.refresh(results.index.clone(), today(), "done");
         assert_eq!(results.shown, 20);
         assert!(results.expanded.is_empty());

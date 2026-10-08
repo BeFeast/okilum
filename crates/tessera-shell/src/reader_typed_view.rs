@@ -54,9 +54,14 @@ pub(super) fn render(
     let source = reader.note_canonical_source.clone()?;
     let preferences = reader_ui_state::typed_views(cx);
     let today = reader_tasks::today();
-    let cache = window.use_keyed_state("typed-view-definition", cx, |_, _| {
-        Cached::new(Arc::from(""), Preferences::default(), today)
-    });
+    let cache = window.use_keyed_state(
+        SharedString::from(format!(
+            "typed-view:{}",
+            reader.vault_root.join(reader.selected_file()).display()
+        )),
+        cx,
+        |_, _| Cached::new(Arc::from(""), Preferences::default(), today),
+    );
     let (view, changed) = cache.update(cx, |cached, _| {
         let changed = cached.refresh(source, preferences, today);
         (cached.view.clone(), changed)
