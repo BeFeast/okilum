@@ -509,6 +509,61 @@ mod tests {
         Snapshot::new("note", generation, text)
     }
     #[test]
+    fn reveal_snapshot_keeps_projection_and_marker_policy_on_one_revision() {
+        let text = "plain [first](one) and [second](two)";
+        let source = snapshot(1, text);
+        let retained = RetainedPresentation::new(&classify(&source));
+        let first = text.find("[first]").unwrap()..text.find(" and").unwrap();
+        let second = text.find("[second]").unwrap()..text.len();
+        let mut active = Active {
+            selection: Some(first.start + 2..first.start + 2),
+            composition: None,
+        };
+        let frozen = retained.prepare_reveal(&active).unwrap();
+        assert!(frozen.is_raw(&source, &first));
+        assert!(!frozen.is_raw(&source, &second));
+        assert_eq!(
+            frozen.projection().display(),
+            "plain [first](one) and second"
+        );
+        // Mutating the caller's selection cannot reinterpret an in-flight frame.
+        active.selection = Some(second.start + 2..second.start + 2);
+        let next = retained.prepare_reveal(&active).unwrap();
+        assert!(frozen.is_raw(&source, &first));
+        assert!(!frozen.is_raw(&source, &second));
+        assert!(!next.is_raw(&source, &first));
+        assert!(next.is_raw(&source, &second));
+        active.composition = Some(first.clone());
+        let ime = retained.prepare_reveal(&active).unwrap();
+        assert_eq!(ime.projection().display(), text);
+        assert!(ime.is_raw(&source, &first));
+        assert!(ime.is_raw(&source, &second));
+        for stale in [
+            snapshot(2, text),
+            snapshot(1, "different"),
+            Snapshot::new("another-document", 1, text),
+        ] {
+            assert!(frozen.is_raw(&stale, &second));
+        }
+        assert!(frozen.is_raw(&source, &(0..usize::MAX)));
+    }
+
+    #[test]
+    fn reveal_snapshot_rejects_subgrapheme_scope_and_caret() {
+        let source = snapshot(1, "e\u{301} [label](target)");
+        let retained = RetainedPresentation::new(&classify(&source));
+        let reveal = retained.prepare_reveal(&Active::default()).unwrap();
+        assert!(reveal.is_raw(&source, &(1..3)));
+        assert!(!reveal.is_raw(&source, &(0..3)));
+        assert!(retained
+            .prepare_reveal(&Active {
+                selection: Some(1..1),
+                composition: None,
+            })
+            .is_err());
+    }
+
+    #[test]
     fn structural_edit_in_one_block_matches_fresh_classification() {
         for (before, after) in [
             ("plain text", "plain\ntext"),
