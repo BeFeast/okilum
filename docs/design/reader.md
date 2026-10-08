@@ -256,9 +256,9 @@ is highlighted with `selected` and weight 500, and its ancestors are expanded.
 There is no flat note-list mode in the sidebar and no item cap (#369). Folders whose name starts with `_` or `.` are
 not shown; their notes stay reachable through links and search. Archive folders
 (`Archive`, `4 Archive`, `Архив`) are muted and open only on request or to reveal
-the current note. Navigating to a hidden note shows its branch muted with a
-«hidden» marker until the next note; the tree never highlights a neighbour
-instead. «Show hidden files» (eye button on the Folders header, … menu, ⇧⌘. — bound as `cmd->`, the way macOS reports it) lists
+the current note. Navigating to a hidden note shows its branch muted until the next note;
+hidden rows use subdued styling without a text badge, and the current row keeps
+its normal selection contrast. The tree never highlights a neighbour instead. «Show hidden files» (eye button on the Folders header, … menu, ⇧⌘. — bound as `cmd->`, the way macOS reports it) lists
 them all and is remembered per vault (#395). Recent, Pinned and Inbox follow the
 same rule and update as soon as it changes; quick open and search still find
 hidden notes (#635). Hovering the Folders header
