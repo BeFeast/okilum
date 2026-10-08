@@ -137,7 +137,9 @@ impl Reader {
         if !self.save_source(cx) {
             return;
         }
-        self.invalidate_creation_undo(window, cx);
+        if creation.is_none() {
+            self.invalidate_creation_undo(window, cx);
+        }
         let root = self.vault_root.clone();
         let directory = root.join(&relative).is_dir();
         let targets: Vec<_> = self
@@ -413,6 +415,13 @@ impl Reader {
                 this.trash_pending = false;
                 match result {
                     Ok(trashed) => {
+                        if creation.as_ref().is_some_and(|completed| {
+                            this.creation_undo
+                                .as_ref()
+                                .is_some_and(|current| Arc::ptr_eq(current, completed))
+                        }) {
+                            this.invalidate_creation_undo(window, cx);
+                        }
                         if this.vault_root == root {
                             let mut changes = tessera_core::Changes::default();
                             if directory {
