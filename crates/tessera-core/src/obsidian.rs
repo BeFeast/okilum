@@ -548,7 +548,7 @@ fn list_item_indent(line: &str) -> Option<usize> {
 
 /// The block `![[note#^id]]` embeds, from the note's source: the paragraph or
 /// list item (with its children) the ID ends, or for an ID alone on its line
-/// the block before it. `None` when no block carries the ID.
+/// the block before it. `None` when the ID is missing or ambiguous.
 pub fn block_section(body: &str, id: &str) -> Option<String> {
     let prose = prose_spans(body);
     let lines: Vec<(usize, &str)> = body
@@ -559,10 +559,12 @@ pub fn block_section(body: &str, id: &str) -> Option<String> {
             Some((at, line.trim_end_matches(['\n', '\r'])))
         })
         .collect();
-    let suffix = format!("^{id}");
-    let (k, standalone) = lines.iter().enumerate().find_map(|(k, &(at, line))| {
+    let mut matches = lines.iter().enumerate().filter_map(|(k, &(at, line))| {
         let t = line.trim_end();
-        let marker = t.strip_suffix(&suffix)?;
+        let (marker, found) = t.rsplit_once('^')?;
+        if !is_block_id(found) || !found.eq_ignore_ascii_case(id) {
+            return None;
+        }
         let at_marker = at + marker.len();
         if !is_prose(&prose, at_marker) {
             return None;
@@ -574,7 +576,13 @@ pub fn block_section(body: &str, id: &str) -> Option<String> {
         } else {
             None
         }
-    })?;
+    });
+    let (k, standalone) = matches.next()?;
+    // The heading inventory rejects duplicate IDs case-insensitively. Embeds
+    // must use that same ambiguity contract rather than choose the first block.
+    if matches.next().is_some() {
+        return None;
+    }
     let blank = |l: &str| l.trim().is_empty();
     let stops = |l: &str| {
         let t = l.trim_start();

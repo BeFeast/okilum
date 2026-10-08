@@ -112,3 +112,33 @@ fn embeds_take_a_heading_section_or_one_block() {
     assert!(!out.contains("First item"), "only the block is embedded");
     assert!(out.contains("embed missing obsidian-syntax#^missing"));
 }
+
+#[test]
+fn block_embeds_refuse_ambiguous_ids_without_picking_a_winner() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("target.md"),
+        "First candidate. ^shared\n\nSecond candidate. ^SHARED\n\nUnique candidate. ^unique\n\n```\nCode candidate. ^unique\n```\n",
+    )
+    .unwrap();
+    let vault = Vault::scan(dir.path()).unwrap();
+    let out = reader_document_from_source(
+        &vault,
+        "host.md",
+        "![[target#^shared]]\n\n![[target#^UNIQUE]]\n",
+    )
+    .rendered;
+    assert!(out.contains("embed missing target#^shared"), "{out}");
+    assert!(
+        !out.contains("First candidate"),
+        "an ambiguous embed must not guess"
+    );
+    assert!(
+        !out.contains("Second candidate"),
+        "an ambiguous embed must not guess"
+    );
+    assert!(
+        out.contains("Unique candidate"),
+        "positive control: a unique ID embeds"
+    );
+}
