@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Select hourly release work without occupying a compiler runner while idle."""
+"""Select periodic release work without occupying a compiler runner while idle."""
 import argparse
 import json
 import os
@@ -23,8 +23,8 @@ def needed(event, published, source, platform):
 
 
 def current_schedule(event, source, platform):
-    """Only automatic Windows ticks discard an obsolete main snapshot."""
-    if event != 'schedule' or platform != 'windows':
+    """Only automatic Windows/Linux ticks discard an obsolete main snapshot."""
+    if event != 'schedule' or platform not in ('windows', 'linux'):
         return True
     result = subprocess.run(['git', 'ls-remote', '--exit-code', 'origin',
                              'refs/heads/main'], check=True, capture_output=True,
@@ -33,7 +33,7 @@ def current_schedule(event, source, platform):
     if (len(fields) != 2 or fields[1] != 'refs/heads/main'
             or len(fields[0]) != 40
             or any(c not in '0123456789abcdef' for c in fields[0])):
-        raise ValueError('Cannot identify current main for scheduled Windows build')
+        raise ValueError('Cannot identify current main for scheduled build')
     return fields[0] == source
 
 
@@ -53,14 +53,14 @@ def descriptor(source, platform):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('platform', choices=['macos', 'windows'])
+    parser.add_argument('platform', choices=['macos', 'windows', 'linux'])
     args = parser.parse_args()
     event, source = os.environ['GITHUB_EVENT_NAME'], os.environ['GITHUB_SHA']
     current = current_schedule(event, source, args.platform)
     published = descriptor(source, args.platform) if current and event == 'schedule' else None
     build = current and needed(event, published, source, args.platform)
     if not current:
-        print('Skip obsolete scheduled Windows snapshot; main has advanced')
+        print('Skip obsolete scheduled snapshot; main has advanced')
     with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
         output.write(f'build={str(build).lower()}\n')
     print('Build newest commit' if build else 'No build: coalescing or already published')
