@@ -24,7 +24,7 @@ def package(binary, output, source_sha):
         (root / 'tessera').chmod(0o755)
         (root / 'SOURCE_SHA').write_text(source_sha + '\n')
         for notice in ('LICENSE', 'THIRD_PARTY_NOTICES.md'):
-            shutil.copyfile(notice, root / notice)
+            shutil.copyfile(Path(__file__).resolve().parents[2] / notice, root / notice)
         entries = sorted(root.iterdir())
         (root / 'SHA256SUMS').write_text(''.join(
             hashlib.sha256(path.read_bytes()).hexdigest() + '  ' + path.name + '\n'
