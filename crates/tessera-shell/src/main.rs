@@ -810,7 +810,7 @@ fn handle_link(entity: &WeakEntity<Reader>, url: &str, window: &mut Window, cx: 
     {
         if let Some(entity) = entity.upgrade() {
             entity.update(cx, |this, cx| {
-                this.link_notice = Some(state.reason.clone());
+                this.link_notice = Some(state.reason.clone().into());
                 cx.notify();
             });
         }
@@ -871,7 +871,7 @@ fn handle_link(entity: &WeakEntity<Reader>, url: &str, window: &mut Window, cx: 
     } else if let Some(reason) = url.strip_prefix("tessera://unsupported/") {
         if let Some(entity) = entity.upgrade() {
             entity.update(cx, |this, cx| {
-                this.link_notice = Some(tessera_core::document_links::decode(reason));
+                this.link_notice = Some(tessera_core::document_links::decode(reason).into());
                 this.link_choices.clear();
                 cx.notify();
             });
@@ -879,10 +879,15 @@ fn handle_link(entity: &WeakEntity<Reader>, url: &str, window: &mut Window, cx: 
     } else if url.starts_with(UNRESOLVED_SCHEME) {
         if let Some(entity) = entity.upgrade() {
             entity.update(cx, |this, cx| {
-                this.link_notice = Some(format!(
-                    "No document matches this link: {}",
-                    tessera_core::document_links::decode(url.trim_start_matches(UNRESOLVED_SCHEME))
-                ));
+                this.link_notice = Some(
+                    format!(
+                        "No document matches this link: {}",
+                        tessera_core::document_links::decode(
+                            url.trim_start_matches(UNRESOLVED_SCHEME)
+                        )
+                    )
+                    .into(),
+                );
                 cx.notify();
             });
         }
@@ -1267,8 +1272,8 @@ struct Reader {
     current_rel: String,
     current_title: String,
     document_header_hidden: Pixels,
-    link_notice: Option<String>,
-    displayed_notice: Option<String>,
+    link_notice: Option<reader_toast::Notice>,
+    displayed_notice: Option<reader_toast::Notice>,
     displayed_choices: Vec<(String, Option<String>)>,
     displayed_recovery: Option<(String, u64)>,
     displayed_history_notice: Option<(uuid::Uuid, uuid::Uuid, String)>,
@@ -1778,7 +1783,7 @@ impl Reader {
         } = match document {
             Ok(document) => document,
             Err(error) => {
-                self.link_notice = Some(format!("Document unavailable: {error:#}"));
+                self.link_notice = Some(format!("Document unavailable: {error:#}").into());
                 cx.notify();
                 return;
             }
@@ -2120,7 +2125,7 @@ impl Reader {
         }
         if let Some(path) = &self.panel_settings {
             if let Err(error) = self.panel_widths.save_panel(panel, path) {
-                self.link_notice = Some(format!("Could not save panel width: {error}"));
+                self.link_notice = Some(format!("Could not save panel width: {error}").into());
             }
         }
     }
@@ -5333,7 +5338,7 @@ impl Reader {
                 self.open_note_at(&path, None, heading.as_deref(), window, cx)
             }
             Resolution::Ambiguous { candidates } => {
-                self.link_notice = Some(format!("«{path}» names several notes:"));
+                self.link_notice = Some(format!("«{path}» names several notes:").into());
                 self.link_choices = candidates
                     .into_iter()
                     .map(|c| (c, heading.clone()))
@@ -5341,7 +5346,7 @@ impl Reader {
                 cx.notify();
             }
             Resolution::Unresolved => {
-                self.link_notice = Some(format!("No note named «{path}»."));
+                self.link_notice = Some(format!("No note named «{path}».").into());
                 cx.notify();
             }
         }
