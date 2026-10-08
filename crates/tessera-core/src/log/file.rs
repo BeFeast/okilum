@@ -6,9 +6,8 @@ use anyhow::{ensure, Context, Result};
 
 use super::{LogIndex, Record};
 
-/// Files up to this size are read into memory; larger ones are mapped.
-/// Reading keeps the common small log (Tessera's own is bounded at 4 MiB)
-/// immune to a writer truncating it while it is shown.
+/// Files up to this size use a vector; larger ones use an anonymous mapped
+/// snapshot. Neither storage borrows the mutable canonical file's pages.
 pub const MAP_THRESHOLD_BYTES: u64 = 32 * 1024 * 1024;
 /// Upper bound for one in-memory index. Larger files are refused with a
 /// message, never truncated silently.
@@ -16,7 +15,7 @@ pub const MAX_LOG_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 enum Bytes {
     Owned(Vec<u8>),
-    Mapped(memmap2::Mmap),
+    Mapped { map: memmap2::Mmap, len: usize },
 }
 
 impl std::ops::Deref for Bytes {
@@ -24,7 +23,7 @@ impl std::ops::Deref for Bytes {
     fn deref(&self) -> &[u8] {
         match self {
             Bytes::Owned(bytes) => bytes,
-            Bytes::Mapped(map) => map,
+            Bytes::Mapped { map, len } => &map[..*len],
         }
     }
 }
@@ -53,18 +52,29 @@ impl LogFile {
             MAX_LOG_BYTES >> 30
         );
         let bytes = if len > map_threshold {
-            // SAFETY: the map is read-only and covers the length measured
-            // above, so later appends are simply not visible. A writer that
-            // truncates the file below that length while it is mapped would
-            // fault on access; files that small are read instead, and follow
-            // mode (a later slice) must not map a file it follows.
-            let map = unsafe {
-                memmap2::MmapOptions::new()
-                    .len(len as usize)
-                    .map(&file)
-                    .context("The log file cannot be mapped")?
-            };
-            Bytes::Mapped(map)
+            use std::io::Read;
+            // A canonical log can be truncated or overwritten at any time.
+            // Copy into anonymous pages before publishing a read-only map:
+            // file-backed maps can fault after truncation and expose changed
+            // bytes that no longer match their already-published index.
+            let mut map = memmap2::MmapOptions::new()
+                .len(len as usize)
+                .map_anon()
+                .context("The log snapshot cannot be allocated")?;
+            let mut source = (&file).take(len);
+            let mut copied = 0;
+            while copied < map.len() {
+                match source.read(&mut map[copied..]) {
+                    Ok(0) => break,
+                    Ok(n) => copied += n,
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(error) => return Err(error).context("The log file cannot be read"),
+                }
+            }
+            let map = map
+                .make_read_only()
+                .context("The log snapshot cannot be protected")?;
+            Bytes::Mapped { map, len: copied }
         } else {
             use std::io::Read;
             let mut bytes = Vec::with_capacity(len as usize);
@@ -92,7 +102,7 @@ impl LogFile {
         &self.index
     }
     pub fn is_mapped(&self) -> bool {
-        matches!(self.bytes, Bytes::Mapped(_))
+        matches!(self.bytes, Bytes::Mapped { .. })
     }
     /// The exact bytes of entry `index`, without its line ending.
     pub fn raw(&self, index: usize) -> Option<&[u8]> {
@@ -141,5 +151,54 @@ mod tests {
         std::fs::write(&path, "").unwrap();
         assert!(LogFile::open_with(&path, 0).unwrap().index().is_empty());
         assert!(LogFile::open(&dir.path().join("absent.log")).is_err());
+    }
+    #[test]
+    fn mapped_snapshot_survives_canonical_truncation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mutable.logfmt");
+        std::fs::write(
+            &path,
+            b"level=info message=first\nlevel=error message=second\n",
+        )
+        .unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "log::file::tests::mapped_snapshot_truncation_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("TESSERA_LOG_TRUNCATION_FIXTURE", &path)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("mapped snapshot opened"),
+            "child never opened the snapshot: {stdout}"
+        );
+        assert!(
+            output.status.success(),
+            "truncation child failed: {}\n{stdout}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(stdout.contains("snapshot remained readable after canonical truncation"));
+    }
+
+    #[test]
+    #[ignore = "invoked in an isolated process by mapped_snapshot_survives_canonical_truncation"]
+    fn mapped_snapshot_truncation_child() {
+        let path = PathBuf::from(std::env::var_os("TESSERA_LOG_TRUNCATION_FIXTURE").unwrap());
+        let snapshot = LogFile::open_with(&path, 0).unwrap();
+        assert!(
+            snapshot.is_mapped(),
+            "positive control: exercise the large-file storage path"
+        );
+        println!("mapped snapshot opened");
+        std::fs::write(&path, []).unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+        assert_eq!(snapshot.raw(0).unwrap(), b"level=info message=first");
+        assert_eq!(snapshot.raw(1).unwrap(), b"level=error message=second");
+        println!("snapshot remained readable after canonical truncation");
     }
 }

@@ -671,11 +671,14 @@ carries research only.
 Decisions taken while building `tessera_core::log` and `reader_log.rs`. They
 are open to review; none changes the recommendation above.
 
-- **Mapping.** Files up to 32 MiB are read into memory and larger ones are
-  memory-mapped (`memmap2`, already in `Cargo.lock`). Reading keeps the usual
-  small log, including Tessera's own 4 MiB-bounded diagnostic log, safe from a
-  writer that truncates it while it is shown; a truncated *mapped* file would
-  fault on access. Follow mode (slice 5) must not map the file it follows.
+- **Snapshot storage.** Files up to 32 MiB are read into a vector; larger
+  files are copied into anonymous mapped pages and then made read-only
+  (`memmap2`, already in `Cargo.lock`). Both keep the bytes and their index
+  unchanged when the canonical log is overwritten or truncated. File-backed
+  mapping was rejected during intake: a truncation regression reproduced
+  SIGBUS. Copying and indexing run on the worker; no snapshot is written to
+  the vault. The snapshot covers at most the size measured on open; if the
+  file shrinks while being read, only the bytes actually read are indexed.
 - **Size cap.** Files above 2 GiB are refused with a message (open question 4
   above). Nothing is truncated silently.
 - **Index entry.** 32 bytes: offset, timestamp, line number, length, level.
