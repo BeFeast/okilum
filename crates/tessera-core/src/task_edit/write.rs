@@ -251,6 +251,36 @@ mod tests {
     }
 
     #[test]
+    fn indexed_undo_preserves_active_edits_and_recovery_until_explicit_reload() {
+        let (_temp, root, drafts, text) = fixture();
+        let (index, task) = indexed(&text);
+        let receipt = apply_indexed(&root, &drafts, &index, &task, Change::Checked(true))
+            .unwrap()
+            .unwrap();
+        let saved = text.replacen("[ ]", "[x]", 1);
+        let path = root.join("a.md");
+        let mut editor = FileEditor::open(&path, &drafts).unwrap();
+        let unsaved = format!("{saved}Unsaved work after checking the task\r\n");
+        editor.set_text(unsaved.clone()).unwrap();
+        assert!(receipt.undo(&root, &drafts).is_err());
+        assert_eq!(editor.text(), unsaved);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+        drop(editor);
+
+        assert!(receipt.undo(&root, &drafts).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+        let mut recovered = FileEditor::open(&path, &drafts).unwrap();
+        assert_eq!(recovered.text(), unsaved);
+        assert!(recovered.dirty());
+        // Only an explicit editor reload discards the retained recovery text.
+        recovered.reload().unwrap();
+        drop(recovered);
+        // Positive control: the same receipt remains usable when the guard clears.
+        receipt.undo(&root, &drafts).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+    }
+
+    #[test]
     fn save_and_undo_preserve_exact_bytes_and_archive_history() {
         let (_temp, root, drafts, text) = fixture();
         let target = Target::capture("a.md", &text, 4).unwrap();
