@@ -1,0 +1,47 @@
+--- a/crates/component/src/notification.rs
++++ b/crates/component/src/notification.rs
+@@ -118,6 +118,7 @@
+     placement: Option<Anchor>,
+     delivery: Option<NotificationDelivery>,
+     autohide: bool,
++    timeout: Duration,
+     action_builder: Option<Rc<dyn Fn(&mut Self, &mut Window, &mut Context<Self>) -> Button>>,
+     content_builder: Option<Rc<dyn Fn(&mut Self, &mut Window, &mut Context<Self>) -> AnyElement>>,
+     on_click: Option<Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
+@@ -178,12 +179,19 @@
+             placement: None,
+             delivery: None,
+             autohide: true,
++            timeout: Duration::from_secs(5),
+             action_builder: None,
+             content_builder: None,
+             on_click: None,
+             on_close: None,
+             transition_status: ToastTransitionStatus::Starting,
+         }
++    }
++
++    /// Set the autohide lifetime. Hovering or focusing the stack pauses it.
++    pub fn timeout(mut self, timeout: Duration) -> Self {
++        self.timeout = timeout;
++        self
+     }
+ 
+     /// Set the message of the notification, default is None.
+@@ -814,6 +822,7 @@
+ 
+         let id = notification.id.clone();
+         let autohide = notification.autohide;
++        let timeout = notification.timeout;
+         let window_id = window.window_handle().window_id();
+ 
+         let notification = cx.new(|_| notification);
+@@ -838,7 +847,7 @@
+             id,
+             notification,
+             ToastOptions {
+-                timeout: autohide.then_some(Duration::from_secs(5)),
++                timeout: autohide.then_some(timeout),
+             },
+             cx.background_executor().now(),
+         );

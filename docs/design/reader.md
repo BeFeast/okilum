@@ -102,7 +102,8 @@ disappear. While loading is active, the header shows a 14 px spinner and the
 phase text (`text-muted`, 12 px) after the breadcrumbs, plus Cancel. A failed
 load shows the phase text in `danger` plus Retry. Operation feedback uses the bottom notification overlay without reflow (#576):
 four seconds for ordinary feedback, eight seconds with Undo, ×/Esc to close.
-Ordinary error toasts also expire after four seconds. Actionable editor recovery
+Ordinary error toasts expire after eight seconds of unhovered reading time;
+hovering or focusing their notification stack pauses the timer. Actionable editor recovery
 notices and ambiguous-link choices persist until dismissed with ×/Esc. File-access
 failures use plain language and keep the draft; original errors go to the diagnostic
 log. Rename previews list updated notes separately from the collapsed “Links not

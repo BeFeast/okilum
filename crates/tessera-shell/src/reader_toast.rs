@@ -99,10 +99,21 @@ pub(super) fn missing_file(path: String, window: &mut Window, cx: &mut App) {
 }
 
 pub(super) fn error(message: impl Into<SharedString>, window: &mut Window, cx: &mut App) {
-    push(
-        Notification::new().message(message),
-        Some(Duration::from_secs(4)),
-        window,
+    let key = ("reader-error", NEXT_TOAST.fetch_add(1, Ordering::Relaxed));
+    let message = message.into();
+    window.push_notification(
+        Notification::new()
+            .id1::<Toast>(key)
+            .content(move |_, _, _| {
+                div()
+                    .debug_selector(|| "reader-error-toast".into())
+                    .text_sm()
+                    .child(message.clone())
+                    .into_any_element()
+            })
+            .placement(Anchor::BottomRight)
+            .py_2()
+            .timeout(Duration::from_secs(8)),
         cx,
     );
 }
@@ -486,20 +497,28 @@ mod tests {
         visual.executor().advance_clock(Duration::from_secs(3));
         visual.run_until_parked();
         visual.update(|window, cx| assert!(window.notifications(cx).is_empty()));
-        // Errors use the same four-second lifetime, with independent occurrences.
+        // Errors have eight seconds of reading time; hovering pauses expiry.
         visual.update(|window, cx| error("Could not create the note", window, cx));
         visual.run_until_parked();
         visual.update(|window, cx| assert_eq!(window.notifications(cx).len(), 1));
-        visual.executor().advance_clock(Duration::from_secs(3));
+        visual.executor().advance_clock(Duration::from_secs(7));
         visual.run_until_parked();
-        visual.update(|window, cx| {
-            assert_eq!(window.notifications(cx).len(), 1);
-            error("Could not create the folder", window, cx);
-        });
-        visual.executor().advance_clock(Duration::from_secs(2));
+        let error_bounds = visual.debug_bounds("reader-error-toast").unwrap();
+        visual.simulate_mouse_move(error_bounds.center(), None, gpui::Modifiers::default());
+        visual.run_until_parked();
+        // Let the stack sample its hover state before advancing the long interval.
+        visual.executor().advance_clock(Duration::from_millis(100));
+        visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_secs(20));
         visual.run_until_parked();
         visual.update(|window, cx| assert_eq!(window.notifications(cx).len(), 1));
-        visual.executor().advance_clock(Duration::from_secs(3));
+        visual.simulate_mouse_move(point(px(10.), px(10.)), None, gpui::Modifiers::default());
+        visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_millis(100));
+        visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_secs(2));
+        visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_millis(300));
         visual.run_until_parked();
         visual.update(|window, cx| assert!(window.notifications(cx).is_empty()));
         // Unclean launch without a newer draft is silent; an actual recovery offer
