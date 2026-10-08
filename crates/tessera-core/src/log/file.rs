@@ -42,6 +42,13 @@ impl LogFile {
 
     fn open_with(path: &Path, map_threshold: u64) -> Result<Self> {
         let file = std::fs::File::open(path).context("The log file cannot be opened")?;
+        Self::from_file(path, &file, map_threshold)
+    }
+
+    /// Snapshots and indexes `file` from its current position; `path` is
+    /// what the viewer shows. A decompressed spool enters here too, under
+    /// the compressed source's path.
+    pub(super) fn from_file(path: &Path, file: &std::fs::File, map_threshold: u64) -> Result<Self> {
         let len = file
             .metadata()
             .context("The log file cannot be inspected")?
@@ -61,7 +68,7 @@ impl LogFile {
                 .len(len as usize)
                 .map_anon()
                 .context("The log snapshot cannot be allocated")?;
-            let mut source = (&file).take(len);
+            let mut source = file.take(len);
             let mut copied = 0;
             while copied < map.len() {
                 match source.read(&mut map[copied..]) {
@@ -78,8 +85,7 @@ impl LogFile {
         } else {
             use std::io::Read;
             let mut bytes = Vec::with_capacity(len as usize);
-            (&file)
-                .take(len)
+            file.take(len)
                 .read_to_end(&mut bytes)
                 .context("The log file cannot be read")?;
             Bytes::Owned(bytes)

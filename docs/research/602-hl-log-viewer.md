@@ -644,6 +644,15 @@ can go first.
    relaxing that for logs only?
 3. **xz support.** Is it needed at all? If yes, should it be pure Rust (to be
    evaluated) or C `liblzma`?
+   - Slice 7 decision: no xz decoder for now. Nothing in `Cargo.lock` decodes
+     xz, so any decoder is a new dependency and needs its own reviewed step.
+   - `liblzma`/`xz2` is the reference implementation and what hl uses. It is
+     fast and complete, but it adds C code to every platform build.
+   - `lzma-rs` is pure Rust, so the build stays portable. It is slower and
+     less battle-tested on multi-stream and BCJ-filtered `.xz` files.
+   - Until there is demand, xz is detected by its magic bytes and refused by
+     name ("xz compressed logs cannot be opened yet"). It is never shown as
+     garbage text.
 4. **Size cap.** Default cap for in-memory indexing, and whether tail-first
    loading is acceptable for files above it.
 5. **Upstream hl.** File an issue suggesting a stable library API (public
@@ -713,3 +722,56 @@ are open to review; none changes the recommendation above.
   JSON-lines file (531,440 records) in 0.18 s on 4 threads and 0.41 s on one,
   with a 16.2 MiB index. Its counts match both the generator and an independent
   byte search.
+
+## Implementation notes (slice 7, core)
+
+- **Module.** `tessera_core::log::compressed`. Shell wiring is a separate
+  step.
+- **Detection.** The format comes from magic bytes, not the extension:
+  - gzip `1f 8b 08`
+  - zstd frame `28 b5 2f fd`, or a skippable frame `5x 2a 4d 18` (pzstd
+    writes one first)
+  - bzip2 `BZh1`–`BZh9`
+  - xz `fd 37 7a 58 5a 00`, which is recognised and refused
+
+  A gzip stream named `app.log` still opens; plain text named `app.log.gz`
+  is `NotCompressed`.
+- **Names.** `is_compressed_log_path` sits next to `is_log_path`. It accepts
+  a log name, an optional numeric rotation suffix and `gz`/`zst`/`zstd`/`bz2`,
+  for example `access.log.3.gz`. A bare `archive.gz` is not claimed.
+- **Decoders.** All are already locked; `Cargo.lock` gains only dependency
+  edges:
+  - `flate2` `MultiGzDecoder`
+  - `zstd` streaming decoder, with default features off
+  - `bzip2` `MultiBzDecoder` on the pure-Rust backend
+
+  Concatenated gzip members, zstd frames and bzip2 streams are all read.
+- **Spool.** The decompressed output goes to a named temp file in the system
+  temp directory (`.tessera-log-spool-*`). It is never written next to the
+  source, in a vault or in the index directory.
+  - It is deleted on drop, on every error path, and as soon as `LogFile`
+    has snapshotted it.
+  - A crash can leave the file behind in the OS temp directory. An anonymous
+    (unlinked) spool would avoid that, but its cleanup could not be checked by
+    a test.
+- **Cap.** Decompressed output is counted while it is written. One byte over
+  the cap (default and maximum: the 2 GiB plain-file limit) is
+  `TooLarge`; nothing partial is indexed.
+- **Errors.** `CompressedError` covers:
+  - `Source`
+  - `NotCompressed`
+  - `Unsupported`
+  - `Truncated` (the decoder reports an unexpected EOF)
+  - `Corrupt`
+  - `TooLarge`
+  - `Spool`
+  - `Index`
+
+  Messages name no paths.
+- **Integrity limit.** gzip and bzip2 carry CRCs. zstd has one only when
+  the frame was written with a content checksum, which the CLI does by
+  default.
+  - A checksum-less zstd frame whose payload is damaged but structurally
+    valid decodes to damaged bytes without an error.
+  - The tests use checksummed frames and the module docs state the limit.
+  - Open question: should the viewer say "not verified" for such frames?

@@ -10,6 +10,7 @@
 //! level normalisation and parallel chunked scanning. No hl code is used; see
 //! docs/research/602-hl-log-viewer.md.
 
+pub mod compressed;
 mod detect;
 mod file;
 mod index;
@@ -27,8 +28,8 @@ pub use index::{LogEntry, LogIndex, LogStats};
 pub use level::Level;
 pub use record::{Field, Record, Role, ValueKind};
 
-/// File extensions the log viewer opens. Compressed and rotated names
-/// (`.log.1`, `.gz`) are later slices.
+/// File extensions the log viewer opens. Rotated names (`.log.1`) are a
+/// later slice; compressed names are `compressed::is_compressed_log_path`.
 pub const EXTENSIONS: [&str; 4] = ["log", "jsonl", "ndjson", "logfmt"];
 
 pub fn is_log_path(path: &Path) -> bool {

@@ -7916,8 +7916,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "bzip2",
  "comrak",
  "euclid",
+ "flate2",
  "markdown",
  "memchr",
  "memmap2",
@@ -7941,6 +7943,7 @@ dependencies = [
  "uuid",
  "walkdir",
  "windows-sys 0.61.2",
+ "zstd",
 ]
 
 [[package]]

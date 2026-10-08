@@ -34,6 +34,12 @@ unicode-segmentation = "1.13.3"
 # are already in Cargo.lock through tantivy and gpui.
 memchr = "2"
 memmap2 = "0.9"
+# Compressed log input (#602, slice 7). All three are already in Cargo.lock
+# (flate2 and bzip2 through gpui's HTTP client, zstd through tantivy); bzip2
+# uses the pure-Rust libbz2-rs-sys backend.
+flate2 = "1"
+zstd = { version = "0.13", default-features = false }
+bzip2 = "0.6"
 
 # Exact source snapshots and durable operation receipts (AI Brain POC).
 sha2 = "0.10"
