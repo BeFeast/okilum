@@ -23,7 +23,10 @@ decisions slice 1 made.
   - the file is read into memory, not memory-mapped: a file truncated under a
     map would crash the process. Files over 512 MB are not opened.
   - when the vault watcher reports changes, the viewer compares the file's size
-    and modification time and reopens it if it changed.
+    and modification time and reopens it if it changed. Failed opens retain the
+    attempted revision too, so an incomplete or missing file can recover when it
+    changes. Each open result rechecks the revision to catch writes that finished
+    while the worker was opening the file.
 
 ## Reading
 

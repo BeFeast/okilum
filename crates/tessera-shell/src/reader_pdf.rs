@@ -217,7 +217,10 @@ enum Event {
         sizes: Arc<[PageSize]>,
         revision: Revision,
     },
-    Failed(OpenError),
+    Failed {
+        error: OpenError,
+        revision: Option<Revision>,
+    },
     Page {
         page: usize,
         width: u32,
@@ -288,6 +291,9 @@ fn read_document(path: &Path) -> Result<(PdfDocument, Revision), OpenError> {
 }
 
 fn run_worker(path: &Path, shared: &Shared, events: &async_channel::Sender<Event>) {
+    // Retain the attempted revision even when parsing or reading fails. Capturing
+    // it before the read also lets the UI detect a write that raced the failure.
+    let attempted_revision = Revision::read(path).ok();
     let document = match read_document(path) {
         Ok((document, revision)) => {
             let sizes = document.sizes().into();
@@ -300,7 +306,10 @@ fn run_worker(path: &Path, shared: &Shared, events: &async_channel::Sender<Event
             document
         }
         Err(error) => {
-            let _ = events.send_blocking(Event::Failed(error));
+            let _ = events.send_blocking(Event::Failed {
+                error,
+                revision: attempted_revision,
+            });
             return;
         }
     };
@@ -510,18 +519,19 @@ impl PdfViewer {
 
     /// Re-reads the file when it changed on disk; a no-op otherwise.
     pub(crate) fn check_revision(&mut self, cx: &mut Context<Self>) {
-        let Some(known) = self.revision.clone() else {
+        if matches!(self.state, State::Opening) {
             return;
-        };
+        }
+        let known = self.revision.clone();
         let path = self.path.clone();
         cx.spawn(async move |this, cx| {
             let current = cx
                 .background_executor()
                 .spawn(async move { Revision::read(&path).ok() })
                 .await;
-            if current.as_ref() != Some(&known) {
+            if current != known {
                 let _ = this.update(cx, |this, cx| {
-                    if this.revision.as_ref() == Some(&known) {
+                    if this.revision == known && !matches!(this.state, State::Opening) {
                         this.remember_position(cx);
                         this.revision = None;
                         this.open(cx);
@@ -561,13 +571,18 @@ impl PdfViewer {
                 self.restore = remembered;
                 self.state = State::Ready(sizes);
                 cx.emit(AvailabilityChanged);
+                self.check_revision(cx);
             }
-            Event::Failed(error) => {
+            Event::Failed { error, revision } => {
+                self.revision = revision;
                 self.state = match error {
                     OpenError::Locked => State::Locked,
                     OpenError::Unreadable => State::Unreadable,
                 };
                 cx.emit(AvailabilityChanged);
+                // A watcher event received while Opening was ignored. Recheck
+                // after the result so it cannot strand a now-complete source.
+                self.check_revision(cx);
             }
             Event::Page { page, width, image } => {
                 self.requested.retain(|r| *r != (page, width));
@@ -993,12 +1008,18 @@ mod tests {
         let (_worker, events) = Worker::start(path).unwrap();
         assert!(matches!(
             recv(&events),
-            Event::Failed(OpenError::Unreadable)
+            Event::Failed {
+                error: OpenError::Unreadable,
+                ..
+            }
         ));
         let (_worker, events) = Worker::start(dir.path().join("missing.pdf")).unwrap();
         assert!(matches!(
             recv(&events),
-            Event::Failed(OpenError::Unreadable)
+            Event::Failed {
+                error: OpenError::Unreadable,
+                ..
+            }
         ));
     }
 
@@ -1205,6 +1226,70 @@ mod tests {
         viewer.update(visual, |v, cx| v.check_revision(cx));
         settle(visual, &viewer, |v| matches!(v.state, State::Unreadable));
         assert!(visual.debug_bounds("pdf-viewer").is_none());
+    }
+
+    #[gpui::test]
+    fn failed_open_recovers_after_the_source_changes(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        cx.update(gpui_component::init);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("incoming.pdf");
+        std::fs::write(&path, b"%PDF-1.4 incomplete incoming file").unwrap();
+        let viewer_path = path.clone();
+        let (host, visual) = cx.add_window_view(|window, cx| Host {
+            viewer: Some(cx.new(|cx| PdfViewer::new(viewer_path, window, cx))),
+        });
+        let viewer = host.read_with(visual, |host, _| host.viewer.clone().unwrap());
+        settle(visual, &viewer, |v| matches!(v.state, State::Unreadable));
+        assert_eq!(
+            viewer.read_with(visual, |v, _| v.revision.clone()),
+            Revision::read(&path).ok(),
+            "failed opens retain the attempted revision for watcher recovery"
+        );
+        // An unrelated vault event must not repeatedly parse an unchanged bad PDF.
+        let failed_worker = viewer.read_with(visual, |v, _| v.worker.as_ref().unwrap().0.clone());
+        viewer.update(visual, |v, cx| v.check_revision(cx));
+        draw(visual);
+        assert!(viewer.read_with(visual, |v, _| matches!(v.state, State::Unreadable)));
+        assert!(viewer.read_with(visual, |v, _| {
+            Arc::ptr_eq(&failed_worker, &v.worker.as_ref().unwrap().0)
+        }));
+        std::fs::write(&path, fixture::pdf(&[(300., 400., [0., 0., 1.])])).unwrap();
+        viewer.update(visual, |v, cx| v.check_revision(cx));
+        settle(visual, &viewer, |v| v.is_ready());
+        assert!(viewer.read_with(visual, |v, _| {
+            !Arc::ptr_eq(&failed_worker, &v.worker.as_ref().unwrap().0)
+        }));
+        // A write that completed before a delayed failure was delivered needs
+        // no further watcher event: accepting that result rechecks the revision.
+        let attempted = Revision::read(&path).ok();
+        std::fs::write(
+            &path,
+            fixture::pdf(&[(300., 300., [1., 0., 0.]), (300., 300., [0., 1., 0.])]),
+        )
+        .unwrap();
+        viewer.update(visual, |v, cx| {
+            v.accept(
+                Event::Failed {
+                    error: OpenError::Unreadable,
+                    revision: attempted,
+                },
+                cx,
+            )
+        });
+        settle(
+            visual,
+            &viewer,
+            |v| matches!(&v.state, State::Ready(sizes) if sizes.len() == 2),
+        );
+        // A missing source also recovers when the watcher observes its creation.
+        std::fs::remove_file(&path).unwrap();
+        viewer.update(visual, |v, cx| v.check_revision(cx));
+        settle(visual, &viewer, |v| matches!(v.state, State::Unreadable));
+        assert!(viewer.read_with(visual, |v, _| v.revision.is_none()));
+        std::fs::write(&path, fixture::pdf(&[(300., 300., [1., 0., 0.])])).unwrap();
+        viewer.update(visual, |v, cx| v.check_revision(cx));
+        settle(visual, &viewer, |v| v.is_ready());
     }
 
     fn book(pages: usize) -> Vec<u8> {
