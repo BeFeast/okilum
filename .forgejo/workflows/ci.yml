@@ -51,7 +51,12 @@ jobs:
           needed=$(git diff --name-only -z "$BASE_SHA" HEAD | python3 scripts/ci/macos-scope.py)
           echo "macos=$needed" >> "$GITHUB_OUTPUT"
 
-  linux:
+  linux-local:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name != github.repository ||
+      (vars.TESSERA_LINUX_LANE != 'hosted' &&
+       vars.TESSERA_LINUX_LANE != format('pr-{0}', github.event.pull_request.number))
     runs-on: ubuntu-latest
     timeout-minutes: 45
     # Shared sccache on the LAN S3 backend (private runner operations runbook,
@@ -135,45 +140,57 @@ jobs:
             ~/.cargo/git/
           key: tessera-cargo-v2-${{ runner.os }}-${{ steps.cargo-cache-key.outputs.compatibility }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff', '.cargo/**', '.forgejo/workflows/ci.yml') }}
 
-      - name: rustfmt
-        # No --all: it reaches into the vendored path deps and fails on
-        # upstream's own formatting (crates/story/src/gallery.rs at 1f7f8c6),
-        # which is upstream's business. In a virtual workspace the plain form
-        # already covers every member crate and nothing in vendor/.
-        run: cargo fmt --check
-
-      - name: clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: macOS release script checks
-        run: |
-          python3 -m unittest discover -s scripts/updater -p 'test_*.py'
-          python3 -m unittest discover -s scripts/arch -p 'test_*.py'
-          python3 -m unittest discover -s scripts/windows -p 'test_*.py'
-          python3 -m unittest discover -s scripts/releases -p 'test_*.py'
-          bash -n scripts/releases/mirror.sh
-          # The release build refuses unlisted files under assets/brand.
-          python3 scripts/brand-assets.py verify
-          python3 scripts/test-third-party-notices.py
-          bash -n scripts/build-macos-ci.sh scripts/updater/sign-bundle.sh scripts/ci/check-macos.sh
-          python3 -m unittest discover -s scripts/ci -p 'test_*.py'
-
-      - name: Maintenance matrix script guards
-        run: python3 scripts/test-maintenance-matrix.py
-
-      - name: Reader tests (required)
-        # The Reader's workspace crates are core and shell; all workspace code
-        # still passes fmt and clippy above. Brain is frozen under #380.
-        run: cargo test -p tessera-core -p tessera-shell -p tessera-sync
-
-      - name: Reader-only feature boundary
-        run: |
-          cargo check -p tessera-shell --no-default-features
-          cargo test -p tessera-core --no-default-features --test portable_reader
+      - name: Run full Linux gate
+        run: bash scripts/ci/check-linux.sh
 
       - name: sccache stats
         if: always()
         run: if [ -n "${RUSTC_WRAPPER:-}" ]; then sccache --show-stats || true; fi
+
+  linux-github:
+    if: >-
+      github.event_name == 'pull_request' &&
+      (vars.TESSERA_LINUX_LANE == 'hosted' ||
+       vars.TESSERA_LINUX_LANE == format('pr-{0}', github.event.pull_request.number)) &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: bridge
+    timeout-minutes: 80
+    outputs:
+      result: ${{ steps.remote.outputs.result }}
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - name: Run exact PR head on GitHub Linux
+        id: remote
+        env:
+          MIRROR_TOKEN: ${{ secrets.TESSERA_GITHUB_MIRROR }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/ci/github-linux.py
+
+  # Preserve ci/linux and existing downstream required contexts. A variable
+  # switch in flight never changes which completed lane counts as evidence.
+  linux:
+    needs: [linux-local, linux-github]
+    if: always()
+    runs-on: bridge
+    timeout-minutes: 2
+    steps:
+      - name: Require exactly one successful Linux lane
+        env:
+          LOCAL_RESULT: ${{ needs.linux-local.result }}
+          HOSTED_JOB: ${{ needs.linux-github.result }}
+          HOSTED_RESULT: ${{ needs.linux-github.outputs.result }}
+        run: |
+          set -euo pipefail
+          case "$LOCAL_RESULT:$HOSTED_JOB" in
+            success:skipped) ;;
+            skipped:success) test "$HOSTED_RESULT" = success ;;
+            *) echo "Missing, failed or ambiguous Linux result" >&2; exit 1 ;;
+          esac
 
   macos-github:
     needs: native-scope
