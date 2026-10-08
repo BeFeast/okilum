@@ -166,6 +166,9 @@ impl Editing {
 impl Reader {
     pub(super) fn open_source_find(&mut self, cx: &mut Context<Self>) {
         if let Some(editing) = &mut self.editing {
+            if !editing.input.read(cx).search_session().open {
+                editing.live_preview.restore_after_find = editing.live_preview.enabled;
+            }
             editing.live_preview.enabled = false;
             let sensitive = reader_ui_state::find_case_sensitive(cx);
             editing.input.update(cx, |input, cx| {
@@ -319,7 +322,14 @@ impl Reader {
             input
         });
         let mut last_find_case = reader_ui_state::find_case_sensitive(cx);
-        let highlighting = cx.observe(&input, move |this, input, cx| {
+        let highlighting = cx.observe_in(&input, window, move |this, input, window, cx| {
+            if this.editing.as_ref().is_some_and(|editing| {
+                editing.input == input
+                    && editing.live_preview.restore_after_find
+                    && !input.read(cx).search_session().open
+            }) {
+                this.toggle_live_preview(window, cx);
+            }
             if input.read(cx).search_session().open {
                 let sensitive = !input.read(cx).search_session().case_insensitive;
                 if sensitive != last_find_case {

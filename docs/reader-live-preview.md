@@ -198,8 +198,10 @@ visual references, not a timing comparison or a substitute for Wayland IME QA.
 Native inspection also found an S1 integration defect: `searchable(true)` makes
 the vendor prepaint discard even an accepted projection. The separate local fix
 `bd37400` disables native source search while Live Preview is active. Invoking
-Find explicitly returns to Source and opens its search; returning to Live Preview
-closes it. The added GPUI regression verifies both transitions without changing
+Find temporarily returns to Source and opens its search; closing Find with Escape
+or its close button restores the presentation from before Find (#806). Reopening
+Find while it is open does not overwrite that choice. An explicit switch to Live
+Preview closes search and supersedes the temporary return. The added GPUI regression verifies both transitions without changing
 source revision or bytes. Classifier acceptance alone did not detect this bug;
 the final native captures provide the rendered positive control. S1 must include
 this fix before its final acceptance. No gpui-core patch is involved.
