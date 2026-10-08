@@ -29,6 +29,7 @@ gpui-kit-assets.workspace = true
 rust-embed = { version = "8.12.0", features = ["debug-embed"] }
 anyhow = "1"
 async-channel = "2"
+notify = "7"
 url = "2"
 regex = "1"
 resvg = "=0.45.1"
