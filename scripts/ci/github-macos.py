@@ -96,7 +96,8 @@ def hosted_request(api, path, *, sleep=time.sleep):
 
 
 def wait_for_run(api, branch, sha, *, clock=time.monotonic, sleep=time.sleep,
-                 queue_timeout=480, run_timeout=2400):
+                 queue_timeout=480, run_timeout=2400, workflow=WORKFLOW,
+                 job_name="macos", build_step=BUILD_STEP):
     query = urllib.parse.urlencode({"branch": branch, "head_sha": sha,
                                     "event": "push", "per_page": 100})
     queued_until = clock() + queue_timeout
@@ -105,7 +106,7 @@ def wait_for_run(api, branch, sha, *, clock=time.monotonic, sleep=time.sleep,
         runs = hosted_request(api, f"actions/runs?{query}", sleep=sleep)["workflow_runs"]
         matches = [run for run in runs if run["head_sha"] == sha
                    and run["head_branch"] == branch and run["event"] == "push"
-                   and run["path"] == WORKFLOW]
+                   and run["path"] == workflow]
         if len(matches) > 1:
             return "failure", "Ambiguous GitHub workflow runs"
         if matches:
@@ -118,9 +119,9 @@ def wait_for_run(api, branch, sha, *, clock=time.monotonic, sleep=time.sleep,
                     return "failure", f"GitHub native gate: {run['conclusion']} — {url}"
                 jobs = hosted_request(api, f"actions/runs/{run['id']}/jobs?per_page=100", sleep=sleep)["jobs"]
                 # A green workflow with a skipped/removed native job is not evidence.
-                native = [job for job in jobs if job["name"] == "macos"]
+                native = [job for job in jobs if job["name"] == job_name]
                 if len(native) != 1 or native[0]["conclusion"] != "success" or not any(
-                    step["name"] == BUILD_STEP and step["conclusion"] == "success"
+                    step["name"] == build_step and step["conclusion"] == "success"
                     for step in native[0]["steps"]
                 ):
                     return "failure", f"GitHub did not execute the native gate: {url}"
@@ -137,7 +138,7 @@ def wait_for_run(api, branch, sha, *, clock=time.monotonic, sleep=time.sleep,
         if running_until is None and clock() >= queued_until:
             if matches:
                 api.request(f"actions/runs/{matches[0]['id']}/cancel", "POST")
-            raise Unavailable("GitHub did not start the native gate within eight minutes")
+            raise Unavailable(f"GitHub did not start the gate within {queue_timeout} seconds")
         sleep(20)
 
 

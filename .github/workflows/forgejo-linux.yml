@@ -1,0 +1,51 @@
+# One-day opt-in Forgejo PR pilot. No secrets, publication or signing.
+name: forgejo-linux
+on:
+  push:
+    branches: ['forgejo-linux-pr/**']
+permissions:
+  contents: read
+concurrency:
+  group: forgejo-linux-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install system libraries
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            build-essential cmake pkg-config curl git mold \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libfontconfig-dev libfreetype-dev libxcb1-dev
+      - name: Verify pinned toolchain
+        run: |
+          rustc -Vv
+          cargo clippy --version
+          cargo fmt --version
+      - name: Prepare pinned vendor
+        run: |
+          scripts/vendor-setup.sh
+          scripts/vendor-setup.sh --verify
+      # Consume the existing public-ci main baseline, never add per-PR target
+      # archives to the shared 10 GiB budget. Missing cache is a normal cold build.
+      - name: Restore existing main Cargo cache
+        uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+          key: cargo-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff') }}
+      - name: Run full Linux gate
+        run: bash scripts/ci/check-linux.sh
