@@ -27,7 +27,7 @@ impl Drop for LocalAllocation {
         }
     }
 }
-pub(super) fn sid_string(sid: PSID) -> Result<String> {
+pub(crate) fn sid_string(sid: PSID) -> Result<String> {
     ensure!(!sid.0.is_null(), "security descriptor has no owner SID");
     let mut text = PWSTR::null();
     unsafe {

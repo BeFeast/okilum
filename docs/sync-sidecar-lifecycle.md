@@ -286,3 +286,32 @@ https://github.com/BeFeast/tessera/actions/runs/37813567283 . Run/source SHA was
 The dispatch used package `tessera-sync-controller`, no features, filter
 `sidecar::`, and one test thread. This confirms this peer-identity primitive,
 not the remaining production transport, private endpoint ACL or Sync acceptance.
+
+### Windows private server endpoint (native run pending)
+
+`supervisor::ipc::windows_endpoint::PrivatePipe` explicitly creates one server
+instance in the fixed local `\\.\pipe\Tessera-Sync-<installation>-<instance>-<generation>`
+namespace. All three identifiers are non-nil UUIDs, not caller paths or hosts.
+It requests FIRST_PIPE_INSTANCE, OVERLAPPED and PIPE_REJECT_REMOTE_CLIENTS with a
+single instance limit. Creation does not connect or read/write, register a task,
+start Syncthing or alter durable intent; only verified explicit-Enable preparation
+may call it. The handle is non-inheritable and owned until drop.
+
+Creation supplies the current process user as security owner and a protected DACL
+with exactly one non-inheritable full-access grant to that SID. Read-back checks
+owner, protection, ACE count/type/flags/mask/SID, server end, byte type and one
+instance. A collision fails without opening, adopting, repairing, disconnecting
+or replacing the existing server. The owner retains Windows ownership rights;
+the DACL is not a security boundary against that owner or system administrators.
+Peer identity/signature validation still provides the process ownership check.
+
+Three native fixtures cover owner read/write and ACL read-back, non-inheritance,
+collision refusal and recreation after all handles close; restricted-token
+read/write denial with an ordinary-owner positive control on the same endpoint;
+and a shared existing endpoint whose descriptor remains identical and whose
+server remains usable after refusal. The restricted token test is not a separate
+user logon test. Remote-client refusal is configured through the native creation
+flag, not measured from another host. Native execution is pending; cross-clippy
+alone is not acceptance. Authenticated discovery, client-side endpoint connection,
+signature verification, absolute I/O deadline/cancellation, production transport
+and executable supervisor integration remain outstanding.
