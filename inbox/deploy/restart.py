@@ -112,7 +112,8 @@ class Deployment:
         # symlinks or collecting credentials, build caches, or the live vault/DB.
         source = self.compose_dir.parent.parent
         def include(info):
-            if any(p in {".git", "target", "node_modules", "__pycache__", ".env", "secrets"}
+            if any(p in {".git", "target", "node_modules", "__pycache__", ".env", "secrets",
+                             "data", "backups", "fixture-vault"}
                    for p in Path(info.name).parts):
                 return None
             return info

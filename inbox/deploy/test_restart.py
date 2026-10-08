@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 import tempfile
+import tarfile
 import unittest
 from unittest.mock import patch
 import restart
@@ -143,6 +144,24 @@ class DeploymentTests(unittest.TestCase):
                 self.deploy.deploy()
         public.assert_not_called()
         self.assertFalse(any(c[0] == 'up' and c[-1] == 'ingress' for c in self.mutations()))
+
+    def test_source_snapshot_excludes_runtime_data_and_credentials(self):
+        root = self.deploy.compose_dir.parent.parent
+        (root / 'code.py').write_text('reviewed source')
+        for name in ('data', 'backups', 'fixture-vault', 'secrets'):
+            folder = self.deploy.compose_dir / name
+            folder.mkdir()
+            (folder / 'must-not-copy').write_text('private runtime bytes')
+        (self.deploy.compose_dir / '.env').write_text('private environment')
+        directory = self.deploy.state / 'snapshot-test'
+        directory.mkdir()
+        restart.Deployment.snapshot(self.deploy, directory, {'inbox': 'old-inbox', 'ingress': 'old-ingress'})
+        with tarfile.open(directory / 'source.tar.gz') as archive:
+            names = archive.getnames()
+        self.assertIn('source/code.py', names)
+        self.assertIn('source/inbox/deploy/nginx.conf', names)
+        self.assertFalse(any('must-not-copy' in name or name.endswith('/.env') for name in names))
+        self.assertTrue(any(e[0] == 'compose' and e[1][:3] == ('exec', '-T', 'inbox') for e in self.deploy.events))
 
     def test_broken_rollback_is_never_reported_as_ready(self):
         with patch.object(restart, 'public_ready', side_effect=RuntimeError('503')):
