@@ -111,3 +111,62 @@ mod tests {
         assert_eq!(descriptor_owner_sid(&format!("O:{sid}")).unwrap(), sid);
     }
 }
+
+/// Resolve scheduler DOMAIN\user spelling through Windows, never string aliases.
+pub fn resolve_account_sid(account: &str) -> Result<String> {
+    if account.starts_with("S-1-") {
+        ensure!(
+            account.len() <= 256
+                && account
+                    .bytes()
+                    .all(|c| c.is_ascii_digit() || c == b'S' || c == b'-'),
+            "invalid SID spelling"
+        );
+        return descriptor_owner_sid(&format!("O:{account}"));
+    }
+    ensure!(
+        !account.is_empty() && !account.contains('\0'),
+        "invalid account name"
+    );
+    use windows::Win32::Security::{LookupAccountNameW, SID_NAME_USE};
+    let name: Vec<_> = account.encode_utf16().chain(Some(0)).collect();
+    let mut sid_size = 0;
+    let mut domain_size = 0;
+    let mut kind = SID_NAME_USE::default();
+    let result = unsafe {
+        LookupAccountNameW(
+            PCWSTR::null(),
+            PCWSTR(name.as_ptr()),
+            None,
+            &mut sid_size,
+            None,
+            &mut domain_size,
+            &mut kind,
+        )
+    };
+    ensure!(
+        result.is_err_and(
+            |e| e.code() == windows::core::HRESULT::from_win32(ERROR_INSUFFICIENT_BUFFER.0)
+        ),
+        "account SID sizing failed"
+    );
+    ensure!(
+        (1..=65536).contains(&sid_size) && domain_size <= 65536,
+        "invalid account SID size"
+    );
+    let mut sid = vec![0usize; (sid_size as usize).div_ceil(size_of::<usize>())];
+    let mut domain = vec![0u16; domain_size as usize];
+    let raw = PSID(sid.as_mut_ptr().cast());
+    unsafe {
+        LookupAccountNameW(
+            PCWSTR::null(),
+            PCWSTR(name.as_ptr()),
+            Some(raw),
+            &mut sid_size,
+            Some(PWSTR(domain.as_mut_ptr())),
+            &mut domain_size,
+            &mut kind,
+        )?;
+    }
+    sid_string(raw)
+}

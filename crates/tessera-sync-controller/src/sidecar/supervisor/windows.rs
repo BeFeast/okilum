@@ -144,3 +144,109 @@ impl JobChild {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{fs, process::Command};
+    use windows::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE};
+
+    // A real, disposable native process tree, using the fixed production Launch
+    // argv. No shell, Syncthing install, task registration or personal state.
+    const FIXTURE: &str = r#"
+        fn main() {
+            let args: Vec<_> = std::env::args().collect();
+            if args.get(1).map(String::as_str) == Some("child") {
+                std::thread::sleep(std::time::Duration::from_secs(60));
+                return;
+            }
+            let data = args.windows(2).find(|a| a[0] == "--data").unwrap()[1].clone();
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+                .arg("child").spawn().unwrap();
+            std::fs::write(std::path::Path::new(&data).join("child.pid"), child.id().to_string()).unwrap();
+            let _ = child.wait();
+        }
+    "#;
+
+    #[test]
+    fn native_job_stop_and_drop_terminate_confirmed_descendant() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let source = root.path().join("fixture.rs");
+        let executable = root.path().join("fixture.exe");
+        fs::write(&source, FIXTURE)?;
+        let compiled = Command::new("rustc")
+            .arg("--edition=2021")
+            .arg(&source)
+            .arg("-o")
+            .arg(&executable)
+            .output()?;
+        ensure!(
+            compiled.status.success(),
+            "fixture compilation: {}",
+            String::from_utf8_lossy(&compiled.stderr)
+        );
+        for stop_explicitly in [true, false] {
+            let data = root
+                .path()
+                .join(if stop_explicitly { "stop" } else { "drop" });
+            let config = root.path().join(if stop_explicitly {
+                "config-stop"
+            } else {
+                "config-drop"
+            });
+            fs::create_dir(&data)?;
+            fs::create_dir(&config)?;
+            let job = JobChild::spawn(&Launch {
+                executable: executable.to_string_lossy().into_owned(),
+                config: config.to_string_lossy().into_owned(),
+                data: data.to_string_lossy().into_owned(),
+            })?;
+            let deadline = Instant::now() + Duration::from_secs(15);
+            let pid = loop {
+                if let Ok(text) = fs::read_to_string(data.join("child.pid")) {
+                    if let Ok(pid) = text.parse::<u32>() {
+                        break pid;
+                    }
+                }
+                ensure!(job.running()?, "fixture exited before creating descendant");
+                ensure!(
+                    Instant::now() < deadline,
+                    "fixture descendant readiness timed out"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            };
+            let descendant = unsafe {
+                OwnedHandle::from_raw_handle(OpenProcess(PROCESS_SYNCHRONIZE, false, pid)?.0)
+            };
+            let mut account = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
+            unsafe {
+                QueryInformationJobObject(
+                    Some(raw(&job.job)),
+                    JobObjectBasicAccountingInformation,
+                    &mut account as *mut _ as _,
+                    size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+                    None,
+                )?;
+                ensure!(
+                    WaitForSingleObject(raw(&descendant), 0) == WAIT_TIMEOUT,
+                    "descendant must be alive before termination"
+                );
+            }
+            ensure!(
+                account.ActiveProcesses >= 2,
+                "positive control: job must contain parent and descendant"
+            );
+            if stop_explicitly {
+                job.stop(Duration::from_secs(10))?;
+                ensure!(!job.running()?, "parent still running after stop");
+            }
+            drop(job);
+            ensure!(
+                unsafe { WaitForSingleObject(raw(&descendant), 10000) } == WAIT_OBJECT_0,
+                "descendant survived {}",
+                if stop_explicitly { "stop" } else { "job close" }
+            );
+        }
+        Ok(())
+    }
+}

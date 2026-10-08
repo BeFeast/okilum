@@ -38,7 +38,18 @@ Existing directories are checked, never repaired or adopted by changing their AC
 Read-back uses an open handle to check owner, protected DACL, exact ACE and absence
 of a reparse point. The handle excludes FILE_SHARE_DELETE while held. Parent paths
 must already exist; no recursive permission changes are made. Native tests for
-shared-directory refusal and rename prevention compile but have not run on Windows.
+DACL and token SID validation ran on hosted Windows with Rust 1.99: three passed;
+the combined preparation test failed because rename succeeded while the handle
+was held. This is a handle-sharing guarantee, not a restriction of the owner's
+full-access DACL. The handle now requests FILE_LIST_DIRECTORY as well as metadata
+access, so it participates in sharing checks; metadata-only access did not enforce
+the intended exclusion. The regression requires a sharing violation while held
+and a successful rename after release. Native confirmation passed on hosted windows-2022 with Rust 1.99.0 MSVC:
+all four DACL/token SID/preparation tests passed, none ignored, including rename
+prevention while held, rename after release and shared-directory refusal.
+Evidence: https://github.com/BeFeast/tessera/actions/runs/37754095376 (the run's
+Rust source exactly matches the directory-guard candidate; only CI LF preparation
+was added). This does not establish Task Scheduler or Job Object acceptance.
 This is not yet the Windows locked journal, durable file replacement or full
 ancestor/file-identity validation. The Unix journal must not become permission
 no-ops on Windows.
@@ -165,3 +176,32 @@ callbacks and leave durable recovery intent on timeout. Test close Reader/login,
 sleep/offline, update without Reader, moved/duplicate/trashed app, child exit and
 unchanged device identity on real macOS 13+ and Windows. Only synthetic vaults and
 the isolated CT141 test hub are authorized. Production CT119 is not part of this work.
+
+### Windows native acceptance
+
+Hosted windows-2022 with Rust 1.99.0 (`x86_64-pc-windows-msvc`) verified:
+
+- Private-directory owner/DACL and token SID: four passed, none ignored.
+  https://github.com/BeFeast/tessera/actions/runs/37754095376
+  The held handle prevents rename; releasing it allows rename; an existing shared
+  directory is refused without changing its contents.
+- Process tree and Task Scheduler transport: two passed, none ignored.
+  https://github.com/BeFeast/tessera/actions/runs/37757252886
+  A live parent and descendant are confirmed in the Job Object before explicit
+  stop and kill-on-close. The disabled, uniquely named Scheduler task verifies
+  registration, collision refusal, owner/definition refusal and owned removal.
+
+Scheduler registration supplies the process user SID as security owner. The
+runner's default owner was Administrators. Task comparison resolves account names
+with LookupAccountNameW; compares owned fields without ordering; ignores only
+RegistrationInfo URI/SecurityDescriptor and named default values (LeastPrivilege,
+enabled logon trigger/task, unified scheduling, idle StopOnIdleEnd=true and
+RestartOnIdle=false). Unknown fields, non-default privileges, changed execution
+fields and extra actions remain mismatches. Recorded Windows XML and mutation
+cases exercise this comparison on Linux.
+
+These runs used the verified candidate Rust trees with only CI line-ending
+preparation above them. A combined `sidecar::` native run on the final PR source
+SHA is still required before merge. They do not establish authenticated
+interactive supervisor start/stop, a complete Windows locked journal, or shipped
+Sync lifecycle acceptance. No personal Syncthing state is used.

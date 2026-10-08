@@ -99,7 +99,10 @@ impl<G: TaskGuard> NativeTasks<G> {
             "task security owner changed"
         );
         ensure!(
-            canonical(&unsafe { task.Xml()? }.to_string())? == canonical(definition)?,
+            canonical(&super::resolve_task_accounts(
+                &unsafe { task.Xml()? }.to_string(),
+                super::security::resolve_account_sid
+            )?)? == canonical(definition)?,
             "task definition changed"
         );
         Ok(task)
@@ -123,7 +126,10 @@ impl<G: TaskGuard> TaskApi for NativeTasks<G> {
         let sddl = unsafe { task.GetSecurityDescriptor(1)? }.to_string();
         Ok(Some(Task {
             owner_sid: super::security::descriptor_owner_sid(&sddl)?,
-            definition: unsafe { task.Xml()? }.to_string(),
+            definition: super::resolve_task_accounts(
+                &unsafe { task.Xml()? }.to_string(),
+                super::security::resolve_account_sid,
+            )?,
             running: unsafe { task.State()? } == TASK_STATE_RUNNING && self.guard.running(name)?,
         }))
     }
@@ -135,6 +141,12 @@ impl<G: TaskGuard> TaskApi for NativeTasks<G> {
         // The typed adapter provides the restricted XML. TASK_CREATE preserves a
         // racing foreign task instead of overwriting it with UPDATE or FORCE.
         let empty = VARIANT::default();
+        // The scheduler's default security owner can be the token's primary
+        // owner (for example Administrators), not its user SID. Later ownership
+        // checks intentionally require the user SID, so bind it explicitly.
+        // O: alone leaves the scheduler's default access rules unchanged.
+        let owner = super::security::current_sid()?;
+        let security = VARIANT::from(BSTR::from(format!("O:{owner}")));
         unsafe {
             self.folder.RegisterTask(
                 &BSTR::from(name),
@@ -143,7 +155,7 @@ impl<G: TaskGuard> TaskApi for NativeTasks<G> {
                 &empty,
                 &empty,
                 TASK_LOGON_INTERACTIVE_TOKEN,
-                &empty,
+                &security,
             )?;
         }
         Ok(())
@@ -175,6 +187,168 @@ impl<G: TaskGuard> TaskApi for NativeTasks<G> {
         unsafe {
             self.folder.DeleteTask(&BSTR::from(name), 0)?;
         }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Registration-only transport test. Execution authentication is deliberately
+    // unavailable; this must not be mistaken for supervisor lifecycle acceptance.
+    struct NoExecution;
+    impl TaskGuard for NoExecution {
+        type ProcessHandles = ();
+        fn verify_payload(&mut self, _: &Binding) -> Result<()> {
+            anyhow::bail!("registration fixture cannot execute")
+        }
+        fn running(&mut self, _: &str) -> Result<bool> {
+            Ok(false)
+        }
+        fn capture_owned_processes(&mut self, _: &str) -> Result<()> {
+            anyhow::bail!("registration fixture cannot execute")
+        }
+        fn await_exit(&mut self, _: ()) -> Result<()> {
+            anyhow::bail!("registration fixture cannot execute")
+        }
+    }
+    struct FixtureTask {
+        api: NativeTasks<NoExecution>,
+        name: String,
+        created: bool,
+    }
+    impl Drop for FixtureTask {
+        fn drop(&mut self) {
+            if self.created {
+                // Only the random task successfully created by this test. Also
+                // runs during panic so a failing assertion leaves no logon task.
+                unsafe {
+                    let _ = self.api.folder.DeleteTask(&BSTR::from(&self.name), 0);
+                }
+            }
+        }
+    }
+
+    fn print_registration(fixture: &FixtureTask, expected: &str, label: &str) -> Result<()> {
+        let task = fixture
+            .api
+            .task(&fixture.name)?
+            .ok_or_else(|| anyhow::anyhow!("diagnostic task missing"))?;
+        unsafe {
+            let sddl = task.GetSecurityDescriptor(1)?.to_string();
+            let access = task.GetSecurityDescriptor(5)?.to_string();
+            let actual = super::super::security::descriptor_owner_sid(&sddl)?;
+            let mut principal = BSTR::new();
+            task.Definition()?.Principal()?.UserId(&mut principal)?;
+            let principal = principal.to_string();
+            let state = task.State()?.0;
+            eprintln!("{label}: process_sid={expected}; owner_sid={actual}; owner_sddl={sddl}; principal={principal}; scheduler_state={state}; owner_and_dacl={access}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_task_registration_collision_and_owned_removal() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let mut fixture = FixtureTask {
+            api: NativeTasks::connect(NoExecution)?,
+            name: format!("Tessera-Sync-{}", uuid::Uuid::new_v4()),
+            created: false,
+        };
+        let owner = fixture.api.current_sid()?;
+        let binding = Binding {
+            instance: uuid::Uuid::parse_str(fixture.name.strip_prefix("Tessera-Sync-").unwrap())?,
+            installation: uuid::Uuid::new_v4(),
+            owner: owner.clone(),
+            supervisor: root
+                .path()
+                .join("never-executed.exe")
+                .to_string_lossy()
+                .into_owned(),
+            state_directory: root.path().to_string_lossy().into_owned(),
+            device_identity: "native-registration-fixture".into(),
+        };
+        // Disable the disposable registration: no logon/retry process may start.
+        let xml = super::super::definition(&binding)?
+            .replace("<Settings>", "<Settings><Enabled>false</Enabled>");
+        ensure!(
+            fixture.api.read(&fixture.name)?.is_none(),
+            "fixture name collision"
+        );
+        // Observe the scheduler defaults in the same runner/token before the
+        // explicit-owner registration. This disabled fixture never executes.
+        let empty = VARIANT::default();
+        unsafe {
+            fixture.api.folder.RegisterTask(
+                &BSTR::from(&fixture.name),
+                &BSTR::from(&xml),
+                TASK_CREATE.0,
+                &empty,
+                &empty,
+                TASK_LOGON_INTERACTIVE_TOKEN,
+                &empty,
+            )?;
+        }
+        fixture.created = true;
+        print_registration(&fixture, &owner, "scheduler-default")?;
+        unsafe {
+            fixture
+                .api
+                .folder
+                .DeleteTask(&BSTR::from(&fixture.name), 0)?;
+        }
+        fixture.created = false;
+        fixture.api.create(&fixture.name, &xml)?;
+        fixture.created = true;
+        print_registration(&fixture, &owner, "explicit-owner")?;
+        let task = fixture
+            .api
+            .read(&fixture.name)?
+            .ok_or_else(|| anyhow::anyhow!("created task missing"))?;
+        if canonical(&task.definition)? != canonical(&xml)? {
+            eprintln!("scheduler XML differs after declaration normalization; expected={xml}; returned={}", task.definition);
+        }
+        ensure!(
+            task.owner_sid == owner,
+            "task owner mismatch: expected {owner}, got {}",
+            task.owner_sid
+        );
+        ensure!(!task.running, "disabled fixture unexpectedly running");
+        ensure!(
+            fixture.api.create(&fixture.name, &xml).is_err(),
+            "TASK_CREATE overwrote existing registration"
+        );
+        let reread = fixture.api.read(&fixture.name)?.unwrap();
+        ensure!(
+            reread.definition == task.definition,
+            "collision changed task"
+        );
+        ensure!(
+            fixture
+                .api
+                .delete_owned(&fixture.name, &xml, "S-1-5-18")
+                .is_err(),
+            "foreign-owner removal accepted"
+        );
+        let changed = xml.replace("native-registration-fixture", "changed-registration");
+        ensure!(
+            fixture
+                .api
+                .delete_owned(&fixture.name, &changed, &owner)
+                .is_err(),
+            "changed-definition removal accepted"
+        );
+        ensure!(
+            fixture.api.read(&fixture.name)?.is_some(),
+            "rejected removal deleted task"
+        );
+        fixture.api.delete_owned(&fixture.name, &xml, &owner)?;
+        fixture.created = false;
+        ensure!(
+            fixture.api.read(&fixture.name)?.is_none(),
+            "owned removal left task behind"
+        );
         Ok(())
     }
 }
