@@ -373,3 +373,38 @@ negative missing/busy/nil, shared-descriptor and wrong-captured-server controls
 validate this connection primitive. There was no extra source or CI commit.
 Wire I/O, a shared absolute deadline and cancellation remain part 3b; this result
 does not establish production transport or full Sync acceptance.
+
+
+### Windows wire I/O, part 3b (native acceptance pending)
+
+`windows_io::ClientIo` consumes an already connected `PrivateClient` and one
+absolute deadline (at most 30 seconds ahead). Read and Write share that deadline
+across all fragments; timeout/error poisons the connection. The public object
+exposes neither its pipe handle nor a deadline-reset/retry API. Each request
+copies at most MAX_FRAME bytes into worker-owned storage. Flush has no buffered
+userspace work and does not call potentially blocking FlushFileBuffers or claim
+delivery acknowledgement.
+
+A dedicated worker retains the connected pipe and captured process, rechecks
+identity/security before I/O, and owns the event, buffer and OVERLAPPED until
+terminal completion. The caller receives a deadline error without joining the
+worker. On timeout the worker requests CancelIoEx and drains GetOverlappedResult
+before releasing resources: a cancellation request alone is not permission to
+free the buffer. Kernel cancellation or a synchronous identity query can outlive
+the caller budget. At most eight workers are admitted process-wide, including
+ones still draining; saturation fails rather than spawning unbounded cleanup
+threads. Dropping an idle client disconnects its command channel; pending I/O
+retains resources through cancellation at the existing deadline.
+
+This is bounded caller waiting for established-client wire operations, not a
+complete Transport or end-to-end hook deadline. Connection/open, worker creation,
+authenticated discovery, signature verification, server accept/transport and
+supervisor integration remain separate. No Reader startup path invokes this API.
+The 30-second cap is an upper admission bound, not a new runtime-hook budget:
+callers must pass their existing smaller absolute deadline.
+
+Native fixtures cover actual request/reply and fragmented reads, a silent peer,
+a full pipe with positive write progress, and a shared deadline across successive
+fragments. The timeout probes require actual pending I/O, an aborted completion
+and worker release, plus a readable-peer positive control. Cross-compilation
+passed; Windows execution is still required before acceptance.
