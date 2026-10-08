@@ -200,8 +200,51 @@ RestartOnIdle=false). Unknown fields, non-default privileges, changed execution
 fields and extra actions remain mismatches. Recorded Windows XML and mutation
 cases exercise this comparison on Linux.
 
-These runs used the verified candidate Rust trees with only CI line-ending
-preparation above them. A combined `sidecar::` native run on the final PR source
-SHA is still required before merge. They do not establish authenticated
+The final combined `sidecar::` run passed 31 tests with none failed or ignored
+on exact PR #768 source `78022224a824baa11a10f0d6c42fdd7bec19bfe0`:
+https://github.com/BeFeast/tessera/actions/runs/37762178783 . Its run SHA
+`aa3df9ca9b8f2abe4ff6f13987c159cbf77cb2e1` adds only CI LF preparation;
+Rust/Cargo sources were verified identical. This predates the IPC protocol. They do not establish authenticated
 interactive supervisor start/stop, a complete Windows locked journal, or shipped
 Sync lifecycle acceptance. No personal Syncthing state is used.
+
+## Supervisor IPC protocol foundation
+
+The portable `supervisor::ipc` module defines one authenticated local exchange,
+not a listening endpoint or executable supervisor. It is not wired into Reader,
+Task Scheduler, SMAppService or updater hooks. Construction has no OS effects.
+The only commands are Status and Stop: there is no Start, executable path, shell
+command, REST credential or caller-supplied ownership token in the protocol.
+
+Frames use a four-byte big-endian length and at most 4096 JSON bytes. The reader
+checks the size before allocating the body; truncated frames, unknown fields,
+unknown commands and unsupported versions fail closed. Installation and instance
+UUIDs bind the exchange to durable state. A new random supervisor generation is
+created for every server lifetime; each response must echo that scope and the
+request UUID. Generation discovery must come from a verified native endpoint,
+not a public PID file or unauthenticated first reply.
+
+Both server and client authenticate the native peer before wire I/O. The client
+also checks the request's installation/instance against its prepared Binding;
+it accepts neither a mismatched reply nor Running as a Stop result. An I/O error
+or lost reply is an error, never evidence of process exit. There are no automatic
+client retries. The server rechecks durable stop intent before every Stop,
+including repeated requests, and uses captured owned process/job handles. It
+caches completed stop only for its lifetime; a lost response can be retried without
+stopping twice. Stopping is an incomplete timeout result and cannot authorize
+unregister/removal. Stopped must mean the entire owned tree was reaped.
+
+Native integration must provide private endpoint creation/discovery, authenticated
+peer identity (including the expected supervisor, not merely a claimed SID/UID),
+a shared absolute deadline for authentication and all fragmented I/O, captured
+process handles, and lock ordering for durable intent. The controller must not
+wait for IPC while holding a journal lock that the supervisor needs to validate
+intent. Runtime methods must remain bounded by the same hook budget. These are
+required transport/runtime contracts; the traits do not implement or prove them.
+
+Protocol tests exercise fragmented I/O, pre-effect authentication/scope/version
+refusal, durable intent refusal with a positive Stop control, incomplete stop,
+lost reply/idempotency, response correlation and malformed/oversized frames.
+A real UnixStream pair tests framing only with an injected peer gate; it is not
+native peer-authentication or macOS/Windows supervisor acceptance. Native IPC,
+full updater integration and complete Sync acceptance remain open under #588.
