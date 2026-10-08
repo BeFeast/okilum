@@ -24,8 +24,8 @@ use windows::{
         Storage::FileSystem::{
             CreateDirectoryW, CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
             FILE_ALL_ACCESS, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
-            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
-            FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, READ_CONTROL,
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_LIST_DIRECTORY,
+            FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, READ_CONTROL,
         },
     },
 };
@@ -134,7 +134,10 @@ impl PrivateDirectory {
         let raw = unsafe {
             CreateFileW(
                 PCWSTR(text.as_ptr()),
-                FILE_READ_ATTRIBUTES.0 | READ_CONTROL.0,
+                // Metadata-only access does not participate in Windows sharing checks.
+                // Request directory read access so omitting FILE_SHARE_DELETE
+                // actually prevents rename/replacement while this handle lives.
+                FILE_LIST_DIRECTORY.0 | FILE_READ_ATTRIBUTES.0 | READ_CONTROL.0,
                 FILE_SHARE_READ | FILE_SHARE_WRITE,
                 None,
                 OPEN_EXISTING,
@@ -202,7 +205,10 @@ mod tests {
         let path = parent.path().join("managed");
         let directory = PrivateDirectory::prepare(path.to_str().unwrap()).unwrap();
         directory.verify().unwrap();
-        assert!(std::fs::rename(&path, parent.path().join("moved")).is_err());
+        let error = std::fs::rename(&path, parent.path().join("moved")).unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(32), "expected sharing violation");
+        assert!(path.is_dir());
+        directory.verify().unwrap();
         drop(directory);
         std::fs::rename(&path, parent.path().join("moved")).unwrap();
         let shared = parent.path().join("shared");

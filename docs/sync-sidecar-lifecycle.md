@@ -38,7 +38,14 @@ Existing directories are checked, never repaired or adopted by changing their AC
 Read-back uses an open handle to check owner, protected DACL, exact ACE and absence
 of a reparse point. The handle excludes FILE_SHARE_DELETE while held. Parent paths
 must already exist; no recursive permission changes are made. Native tests for
-shared-directory refusal and rename prevention compile but have not run on Windows.
+DACL and token SID validation ran on hosted Windows with Rust 1.99: three passed;
+the combined preparation test failed because rename succeeded while the handle
+was held. This is a handle-sharing guarantee, not a restriction of the owner's
+full-access DACL. The handle now requests FILE_LIST_DIRECTORY as well as metadata
+access, so it participates in sharing checks; metadata-only access did not enforce
+the intended exclusion. The regression requires a sharing violation while held
+and a successful rename after release. Native confirmation of this fix remains
+pending; the failed run did not reach the shared-directory refusal assertions.
 This is not yet the Windows locked journal, durable file replacement or full
 ancestor/file-identity validation. The Unix journal must not become permission
 no-ops on Windows.
