@@ -993,8 +993,8 @@ fn mark_saved(generation: u64, cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui_component::WindowExt;
     use ::core::prelude::v1::test;
+    use gpui_component::WindowExt;
 
     #[gpui::test]
     fn global_preferences_and_vault_layout_survive_flush_and_new_vault_inherits_no_paths(
