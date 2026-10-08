@@ -521,18 +521,21 @@ impl Element for DrawingCanvas {
     ) -> (LayoutId, ()) {
         let ratio = self.document.tree.size().height() / self.document.tree.size().width();
         let max = px(self.max_width);
-        let layout =
-            window.request_measured_layout(Style::default(), move |known, available, _, _| {
-                let available = known
-                    .width
-                    .or(match available.width {
-                        AvailableSpace::Definite(w) => Some(w),
-                        _ => None,
-                    })
-                    .unwrap_or(max);
-                let w = available.min(max).max(px(0.));
-                size(w, w * ratio)
-            });
+        // Constrain cross-axis stretching as well as the measured size: otherwise
+        // a wide column can stretch paint width without increasing layout height.
+        let mut style = Style::default();
+        style.max_size.width = max.into();
+        let layout = window.request_measured_layout(style, move |known, available, _, _| {
+            let available = known
+                .width
+                .or(match available.width {
+                    AvailableSpace::Definite(w) => Some(w),
+                    _ => None,
+                })
+                .unwrap_or(max);
+            let w = available.min(max).max(px(0.));
+            size(w, w * ratio)
+        });
         (layout, ())
     }
     fn prepaint(
@@ -693,7 +696,12 @@ mod tests {
                             document: self.document.clone(),
                             max_width: 500.,
                         })
-                        .child(div().h(px(400.)).flex_shrink_0()),
+                        .child(
+                            div()
+                                .debug_selector(|| "drawing-following-content".into())
+                                .h(px(400.))
+                                .flex_shrink_0(),
+                        ),
                 )
         }
     }
@@ -725,6 +733,33 @@ mod tests {
         assert_eq!(second.size, size(px(180.), px(180.)));
         assert_eq!(second.origin.y, first.origin.y - px(50.));
     }
+    #[gpui::test]
+    fn wide_column_preserves_canvas_aspect_ratio(cx: &mut gpui::TestAppContext) {
+        let doc = Arc::new(painted_document("solid", false));
+        let (_, visual) = cx.add_window_view(|_, _| CanvasHarness {
+            document: doc,
+            width: 700.,
+            scroll: ScrollHandle::new(),
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let canvas = visual
+            .debug_bounds("drawing-canvas-content")
+            .expect("canvas painted");
+        assert_eq!(
+            canvas.size,
+            size(px(500.), px(500.)),
+            "natural/explicit width cap must constrain both layout and paint"
+        );
+        let following = visual
+            .debug_bounds("drawing-following-content")
+            .expect("following content laid out");
+        assert!(
+            following.origin.y >= canvas.origin.y + canvas.size.height,
+            "following content starts below the full painted canvas"
+        );
+    }
+
     #[test]
     fn embed_size_is_bounded_and_aliases_are_not_sizes() {
         assert_eq!(parse_size("tessera-drawing-size:300"), Some((300., None)));
