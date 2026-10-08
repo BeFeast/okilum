@@ -6,6 +6,7 @@ use std::cell::Cell;
 #[derive(Default)]
 pub(super) struct LivePreview {
     pub enabled: bool,
+    pub(super) restore_after_find: bool,
     in_flight: Rc<Cell<bool>>,
     queued: bool,
     accepted: Option<Arc<CachedProvider>>,
@@ -150,6 +151,9 @@ impl Reader {
                     .debug_selector(|| "reader-source".into())
                     .selected(!live)
                     .on_click(cx.listener(move |this, _, window, cx| {
+                        if let Some(editing) = &mut this.editing {
+                            editing.live_preview.restore_after_find = false;
+                        }
                         if live {
                             this.toggle_live_preview(window, cx);
                         }
@@ -163,6 +167,7 @@ impl Reader {
         let Some(editing) = &mut self.editing else {
             return;
         };
+        editing.live_preview.restore_after_find = false;
         editing.live_preview.colors.set(Some(colors));
         editing.live_preview.enabled = !editing.live_preview.enabled;
         let input = editing.input.clone();
@@ -586,6 +591,47 @@ mod tests {
             assert!(input.read(cx).search_session().open);
             assert_eq!(input.read(cx).source_stamp(), stamp);
             assert_eq!(input.read(cx).value().as_ref(), ORIGINAL);
+        });
+    }
+
+    #[gpui::test]
+    fn closing_find_restores_live_preview_but_preserves_source(cx: &mut TestAppContext) {
+        let (reader, visual, _) = fixture(cx, ORIGINAL);
+        reader.update_in(visual, |r, window, cx| r.toggle_live_preview(window, cx));
+        visual.run_until_parked();
+        let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+        let stamp = input.read_with(visual, |input, _| input.source_stamp());
+        // The menu action, including repeated activation, must remember Live Preview.
+        reader.update_in(visual, |r, window, cx| {
+            r.open_find(window, cx);
+            r.open_find(window, cx);
+            assert!(!r.editing.as_ref().unwrap().live_preview.enabled);
+            assert!(input.read(cx).search_session().open);
+        });
+        visual.run_until_parked();
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        reader.read_with(visual, |r, cx| {
+            assert!(!input.read(cx).search_session().open);
+            assert!(r.editing.as_ref().unwrap().live_preview.enabled);
+            assert_eq!(input.read(cx).source_stamp(), stamp);
+            assert_eq!(input.read(cx).value().as_ref(), ORIGINAL);
+        });
+        // The toolbar close uses this same EditorState close notification.
+        reader.update_in(visual, |r, window, cx| r.open_find(window, cx));
+        input.update(visual, |input, cx| input.close_search(cx));
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert!(r.editing.as_ref().unwrap().live_preview.enabled)
+        });
+        reader.update_in(visual, |r, window, cx| {
+            r.toggle_live_preview(window, cx);
+            r.open_find(window, cx);
+        });
+        input.update(visual, |input, cx| input.close_search(cx));
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert!(!r.editing.as_ref().unwrap().live_preview.enabled)
         });
     }
 
