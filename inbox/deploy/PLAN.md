@@ -64,8 +64,12 @@ container can keep the old namespace even if local Inbox health is green. Initia
 installation/enrollment remains the procedure above; this tool requires one running
 Inbox and ingress and does not bootstrap an owner.
 
-Run the reviewed tool on CT119 with Docker access. It waits on a deployment lock;
-coordinate the maintenance window with the pilot owner. Do not run another Compose
+CT119 hosts a live Inbox pilot and Oleg’s Syncthing: treat it as production.
+Do not copy files, change configuration, restart services, or run this procedure
+on CT119 without the manager’s explicit approval of the exact live procedure.
+First validate failures and rollback on fixtures and an isolated stand.
+Run the approved tool on CT119 with Docker access only in the approved window.
+It waits on a deployment lock; coordinate the maintenance window with the manager. Do not run another Compose
 mutation alongside it. Never use `down -v`, remove data volumes, restart Syncthing,
 or touch `/srv/vault`.
 
@@ -119,8 +123,10 @@ order. Never remove the active override merely to make a failing service start.
 If interrupted during deployment, retain the rollback directory; stop ingress,
 restore its saved nginx config and image selection, then run the ordered procedure.
 
-Deterministic tests run in Inbox CI. Live acceptance must additionally exercise a
-same-image restart and a config-only/image deployment on CT119, and deliberately
-break ingress to prove public readiness fails while Inbox health remains green.
+Deterministic tests run in Inbox CI. Isolated integration must additionally exercise
+a same-image restart and a config-only/image deployment, and deliberately break
+ingress to prove public readiness fails while Inbox health remains green.
+Live acceptance is a separately approved same-image restart; failure injection
+on CT119 is not authorized by isolated test results or by this document.
 Record receipts and public status only; do not put DB contents, challenge bodies,
 cookies or credentials into evidence.
