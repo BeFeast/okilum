@@ -115,12 +115,22 @@ const SKIP_DIRS: &[&str] = &[
     ".tessera-index",
     "node_modules",
 ];
+/// Exact Windows preimage spelling reserved for native safe-save recovery.
+/// Keep the parser portable: Syncthing can bring these files to Unix clients.
+pub fn windows_preimage_name(name: &std::ffi::OsStr) -> bool {
+    name.to_str()
+        .and_then(|s| s.strip_prefix(".tessera-save-"))
+        .and_then(|s| s.strip_suffix(".previous"))
+        .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok_and(|u| u.to_string() == id))
+}
+
 /// Service directories are excluded from every inventory consumer. Visibility
 /// of ordinary dot/underscore paths belongs only to the browsing tree.
 pub fn service_path(path: &Path) -> bool {
     path.components().any(|component| {
         let name = component.as_os_str();
-        name.as_encoded_bytes().starts_with(b"._")
+        windows_preimage_name(name)
+            || name.as_encoded_bytes().starts_with(b"._")
             || name.to_str().is_some_and(|name| SKIP_DIRS.contains(&name))
     })
 }
@@ -1600,5 +1610,65 @@ mod property_backlink_tests {
             .collect();
         assert_eq!(to_c, [Some("project".to_string())]);
         let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[cfg(test)]
+mod preimage_visibility_tests {
+    use super::*;
+    use std::fs;
+    #[test]
+    fn windows_history_preimages_are_service_files_on_every_platform() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir(root.join("nested")).unwrap();
+        let filename = format!(".tessera-save-{}.previous", uuid::Uuid::new_v4());
+        let hidden = root.join("nested").join(&filename);
+        fs::write(&hidden, "source preimage").unwrap();
+        fs::write(root.join("nested/Visible.md"), "# positive control").unwrap();
+        fs::write(
+            root.join("nested/.tessera-save-user.previous"),
+            "ordinary user file",
+        )
+        .unwrap();
+        assert!(service_path(Path::new(&format!("nested/{filename}"))));
+        assert!(!windows_preimage_name(std::ffi::OsStr::new(
+            ".tessera-save-user.previous"
+        )));
+        assert!(!service_path(Path::new(
+            "nested/.tessera-save-user.previous"
+        )));
+        assert!(!windows_preimage_name(std::ffi::OsStr::new(
+            &filename.replace('-', "")
+        )));
+        let vault = Vault::scan(root).unwrap();
+        assert!(vault.notes.iter().any(|n| n.path == "nested/Visible.md"));
+        assert!(vault
+            .entries
+            .iter()
+            .any(|e| e.path == "nested/.tessera-save-user.previous"));
+        assert!(!vault.entries.iter().any(|e| e.path.ends_with(&filename)));
+        assert!(
+            fs::read(&hidden).is_ok(),
+            "inventory never deletes recovery"
+        );
+        // Older cached inventories may still contain this attachment. Quick Open
+        // must suppress it before offering file-name matches as well.
+        let cached = [
+            VaultEntry {
+                path: format!("nested/{filename}"),
+                kind: EntryKind::Attachment,
+            },
+            VaultEntry {
+                path: "nested/.tessera-save-user.previous".into(),
+                kind: EntryKind::Attachment,
+            },
+        ];
+        let palette = crate::quick_open::inventory(vault.notes.clone(), &cached);
+        assert!(palette.iter().any(|n| n.path == "nested/Visible.md"));
+        assert!(palette
+            .iter()
+            .any(|n| n.path == "nested/.tessera-save-user.previous"));
+        assert!(!palette.iter().any(|n| n.path.ends_with(&filename)));
     }
 }

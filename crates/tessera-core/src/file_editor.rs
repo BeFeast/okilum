@@ -474,11 +474,12 @@ impl FileEditor {
             plan.prepared_path(),
         )?;
         before_exchange();
+        let preimage_identity = plan.preimage_identity();
         match plan.commit()? {
             crate::windows_files::Replacement::Conflict => return Ok(Save::Conflict),
             crate::windows_files::Replacement::Saved { .. } => {}
         }
-        crate::source_history::Preimage::finish_windows(&history, &directory)?;
+        crate::source_history::Preimage::finish_windows(&history, &directory, preimage_identity)?;
         self.draft.base = self.draft.text.clone();
         self.persist()?;
         let _ = crate::source_history::prune(self.journal.parent().unwrap());

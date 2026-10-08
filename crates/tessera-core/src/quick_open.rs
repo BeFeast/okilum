@@ -7,11 +7,17 @@ use crate::vault::{EntryKind, Note, VaultEntry};
 /// other files. A non-Markdown file is named by its file name with the
 /// extension, so `tg.log` and `tg.md` stay distinguishable and both match.
 pub fn inventory(notes: impl IntoIterator<Item = Note>, entries: &[VaultEntry]) -> Vec<Note> {
-    let mut inventory: Vec<Note> = notes.into_iter().collect();
+    let mut inventory: Vec<Note> = notes
+        .into_iter()
+        .filter(|note| !crate::vault::service_path(std::path::Path::new(&note.path)))
+        .collect();
     inventory.extend(
         entries
             .iter()
-            .filter(|entry| entry.kind == EntryKind::Attachment)
+            .filter(|entry| {
+                entry.kind == EntryKind::Attachment
+                    && !crate::vault::service_path(std::path::Path::new(&entry.path))
+            })
             .map(|entry| Note {
                 path: entry.path.clone(),
                 title: entry

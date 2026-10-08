@@ -93,7 +93,18 @@ opened file size before allocating and bounding the read itself. Oversized or
 non-UTF-8 prepared bytes remain on disk with a listing warning; this preview
 limit never deletes recovery or limits the source save.
 
-Preimages remain on their source NTFS volume with the source DACL. Folder
+Native preimages retain the source DACL until a successful save has persisted a
+complete acknowledged snapshot in application state. The history owner then
+removes only the checked original preimage through a DELETE handle, verifying
+identity and exact bytes and excluding writers. The snapshot remains subject to
+the existing 20-version/30-day/128-MiB retention. A crash during cleanup or a
+sharing error leaves an identified cleanup record; startup retries only these
+acknowledged records for the opened vault. Interrupted saves, changed/replaced
+preimages, reparse points, and unassigned synced leftovers remain protected.
+Strict UUID `.tessera-save-<uuid>.previous` names are excluded from inventory,
+search and the tree on every platform, even with Show hidden enabled. Unassigned
+legacy files can still be inspected through recovery; they require a separate
+dry-run inventory and owner approval before one-time deletion. Folder
 snapshots exclude generated `.tessera-save-*` recovery entries from canonical
 inventory; ordinary sources/assets and directory identities remain revision-bound.
 The link-move journal retains complete before/after bytes even when vault-side

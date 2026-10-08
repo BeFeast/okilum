@@ -6127,6 +6127,7 @@ fn quick_folder(
 
 fn quick_vault(root: &Path, mut entries: Vec<tessera_core::vault::VaultEntry>) -> Vault {
     use tessera_core::vault::EntryKind;
+    entries.retain(|entry| !tessera_core::vault::service_path(Path::new(&entry.path)));
     entries.sort_by(|a, b| a.path.cmp(&b.path));
     let mut vault = Vault::from_note_paths(
         entries

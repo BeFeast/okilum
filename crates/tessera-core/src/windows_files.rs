@@ -447,6 +447,10 @@ impl PreparedReplacement<'_> {
     pub fn preimage_path(&self) -> &Path {
         &self.backup
     }
+    pub(crate) fn preimage_identity(&self) -> (u64, u64) {
+        let (volume, high, low) = identity(&self.info);
+        (u64::from(volume), u64::from(high) << 32 | u64::from(low))
+    }
     /// The caller must have completed durable draft/history persistence first.
     pub fn commit(self) -> Result<Replacement> {
         self.commit_before(|| {})
