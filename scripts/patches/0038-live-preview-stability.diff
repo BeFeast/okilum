@@ -1,0 +1,247 @@
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -967,6 +967,19 @@
+     pub(super) fn refresh_projection(&mut self) {
+         let _trace = TraceSpan::new("refresh_projection", TraceIdentity::new(self.source_stamp(), self.presentation_epoch(), self.projection.current.is_some()));
+         self.sync_projection_active();
++        // A gesture uses the geometry it started against, including raw Source.
++        // Provider adoption and selection reveal wait until release. Never carry
++        // that hit map across a source edit: cancel instead of reinterpreting it.
++        if self.selecting && self.projection.enabled {
++            if let Some(last) = &self.last_layout {
++                if last.source_stamp == self.source_stamp() {
++                    self.projection.current = last.projection.as_ref().map(|p| p.projection.clone());
++                    return;
++                }
++            }
++            self.selecting = false;
++            self.auto_scroll.stop();
++        }
+         if self.projection.current.is_some() {
+             return;
+         }
+@@ -2043,6 +2056,8 @@
+             self.selection_reversed = false;
+         }
+         self.selecting = false;
++        self.projection.presentation_changed();
++        cx.notify();
+         self.selected_word_range = None;
+         self.auto_scroll.stop();
+     }
+@@ -2802,6 +2817,9 @@
+     }
+ 
+     fn on_blur(&mut self, window: &mut Window, cx: &mut Context<Self>) {
++        self.selecting = false;
++        self.auto_scroll.stop();
++        self.projection.presentation_changed();
+         self.exact_clipboard.invalidate();
+         if M::is_context_menu_open(self, cx) {
+             return;
+@@ -4036,6 +4054,40 @@
+             };
+             (display.0 <= self.text.len()).then_some(SourceByte(index))
+         }
++    }
++
++    #[gpui::test]
++    fn projection_gesture_pins_adoption_and_cancels_on_source_change(cx: &mut TestAppContext) {
++        cx.update(crate::init);
++        let view = InputView::build_editor(cx, |state| state.folding(false).searchable(false)
++            .wrapping_indent(super::super::WrappingIndent::None));
++        let mut v = VisualTestContext::from_window(view.window_handle.into(), cx);
++        v.update(|window, cx| view.input.update(cx, |state, cx| {
++            state.set_value("plain\n**bold\ntail", window, cx);
++            state.set_projection_provider(Some(Arc::new(PrefixRevealProvider)), cx);
++            window.activate_window();
++            state.focus(window, cx);
++        }));
++        v.run_until_parked();
++        v.update(|window, cx| view.input.update(cx, |state, cx| {
++            let painted = state.last_layout.as_ref().unwrap().projection.as_ref().unwrap().projection.text().to_owned();
++            assert_ne!(painted, state.value().as_str());
++            state.selecting = true;
++            state.move_to(9, None, cx);
++            state.set_projection_provider(Some(Arc::new(ExactSourceProvider)), cx);
++            assert_eq!(state.projection.current.as_ref().unwrap().text(), painted);
++            // Release is the positive control: deferred adoption now occurs.
++            state.selecting = false;
++            state.projection.presentation_changed();
++            state.refresh_projection();
++            assert!(state.projection.current.is_none());
++            state.selecting = true;
++            state.set_value("replacement source", window, cx);
++            state.refresh_projection();
++            assert!(!state.selecting);
++            assert!(state.projection.current.is_none());
++            assert_eq!(state.value().as_ref(), "replacement source");
++        }));
+     }
+ 
+     #[gpui::test]
+@@ -6639,6 +6691,10 @@
+                 *indent_guides = false;
+             }
+         }
++        if provider.is_none() {
++            self.selecting = false;
++            self.auto_scroll.stop();
++        }
+         self.record_layout_diagnostic(|d| d.provider_applies += 1);
+         self.projection.provider = provider;
+         self.projection.presentation_changed();
+diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -28,6 +28,21 @@
+     mode::LayoutMode,
+ };
+ 
++/// Map a current source anchor into the last displayed revision. Positions in
++/// the replacement map to its old start; unchanged suffixes retain exact bytes.
++fn previous_source_anchor(old: &str, new: &str, offset: usize) -> Option<usize> {
++    if !new.is_char_boundary(offset) { return None; }
++    if old == new { return Some(offset); }
++    let mut start = old.bytes().zip(new.bytes()).take_while(|(a, b)| a == b).count();
++    while !old.is_char_boundary(start) || !new.is_char_boundary(start) { start -= 1; }
++    let mut tail = old[start..].bytes().rev().zip(new[start..].bytes().rev())
++        .take_while(|(a, b)| a == b).count();
++    while !old.is_char_boundary(old.len() - tail) || !new.is_char_boundary(new.len() - tail) { tail -= 1; }
++    Some(if offset < start { offset }
++        else if offset >= new.len() - tail { old.len() - (new.len() - offset) }
++        else { start })
++}
++
+ fn diagnostic_highlight_style(
+     severity: crate::input::DiagnosticSeverity,
+     colors: crate::input::DiagnosticColors,
+@@ -429,9 +444,13 @@
+                 }
+ 
+                 // Stop auto-scroll when mouse up, and also stop selecting.
+-                state.update(cx, |state, _| {
++                state.update(cx, |state, cx| {
+                     state.auto_scroll.stop();
+-                    state.selecting = false;
++                    if state.selecting {
++                        state.selecting = false;
++                        state.projection.presentation_changed();
++                        cx.notify();
++                    }
+                 });
+             }
+         });
+@@ -1727,6 +1746,55 @@
+     ) -> Self::PrepaintState {
+         let initial = self.state.read(cx);
+         let mut trace = TraceSpan::new("editor_prepaint", TraceIdentity::new(initial.source_stamp(), initial.presentation_epoch(), initial.projection.current.is_some()));
++        // Read the old shaped geometry before installing a new projection. The
++        // anchor is canonical source, not a display-row index that rewrap moves.
++        let source_anchor = (|| {
++            if initial.selecting || initial.deferred_scroll_offset.is_some()
++                || initial.text.len() > 256 * 1024 { return None; }
++            let last = initial.last_layout.as_ref()?;
++            if last.source_stamp == initial.source_stamp()
++                && last.presentation_epoch == initial.presentation_epoch() {
++                return None;
++            }
++            let previous = last.projection.as_ref()?.projection.source();
++            if previous.stamp.document != initial.source_stamp().document { return None; }
++            let current_text = initial.text.to_string();
++            let current_offset = initial.cursor();
++            let old_offset = previous_source_anchor(&previous.text, &current_text, current_offset)?;
++            let offset = last.project(old_offset, ConcealBias::Right)?;
++            let mut y = last.visible_top;
++            for (line, start) in last.lines.iter().zip(&last.visible_line_byte_offsets) {
++                if offset >= *start {
++                    if let Some(pos) = line.position_for_index(offset - start, last, initial.cursor_line_end_affinity) {
++                        let content_y = y + pos.y;
++                        let screen_y = content_y + initial.scroll_handle.offset().y;
++                        if screen_y >= px(0.) && screen_y < bounds.size.height {
++                            return Some((current_offset, content_y, initial.cursor_line_end_affinity));
++                        }
++                        break;
++                    }
++                }
++                y += line.size(last.line_height).height;
++            }
++            // With the caret outside the viewport, retain the first visible
++            // shaped row's source anchor instead. This also works inside one
++            // very long wrapped source line.
++            let mut y = last.visible_top;
++            for (line, start) in last.lines.iter().zip(&last.visible_line_byte_offsets) {
++                let mut projected = *start;
++                for row in &line.wrapped_lines {
++                    let screen_y = y + initial.scroll_handle.offset().y;
++                    if screen_y >= px(0.) && screen_y < bounds.size.height {
++                        let old = last.source(projected, ConcealBias::Right)?;
++                        let current = previous_source_anchor(&current_text, &previous.text, old)?;
++                        return Some((current, y, false));
++                    }
++                    projected += row.len;
++                    y += last.line_height;
++                }
++            }
++            None
++        })();
+         let style = window.text_style();
+         let font = style.font();
+         let text_size = style.font_size.to_pixels(window.rem_size());
+@@ -1802,6 +1870,10 @@
+                     || last.content_width != bounds.size.width
+             });
+             if changed {
++                // Resizing cannot preserve the old pointer geometry. Cancel a
++                // held gesture instead of interpreting its next event in it.
++                state.selecting = false;
++                state.auto_scroll.stop();
+                 state.record_layout_diagnostic(|d| d.metric_changes += 1);
+                 state.projection.presentation_changed();
+             }
+@@ -1820,6 +1892,20 @@
+             state
+                 .display_map
+                 .install_projection(state.projection.pin(), &state.text, window, cx);
++            if let Some((offset, old_y, affinity)) = source_anchor.filter(|_| state.projection.current.is_some()) {
++                let row = state.display_map.offset_to_wrap_display_point_with_affinity(
++                    offset, affinity).row;
++                let new_y = window.line_height() * row;
++                let delta = old_y - new_y;
++                if delta != px(0.) {
++                    let mut scroll = state.scroll_handle.offset();
++                    let extra = empty_bottom_height(state.is_code_editor(), state.scroll_beyond_last_line,
++                        bounds.size.height, window.line_height());
++                    let height = window.line_height() * state.display_map.wrap_row_count() + extra;
++                    scroll.y = (scroll.y + delta).max((bounds.size.height - height).min(px(0.))).min(px(0.));
++                    state.scroll_handle.set_offset(scroll);
++                }
++            }
+         });
+         let state = self.state.read(cx);
+         let projected_rope = state
+@@ -2483,6 +2569,7 @@
+                 state.on_mouse_down(&event, window, cx);
+                 if released {
+                     state.selecting = false;
++                    state.projection.presentation_changed();
+                 }
+             }
+             state.refresh_native_candidate_geometry(window, cx);
+@@ -2754,6 +2841,15 @@
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++
++    #[test]
++    fn source_anchor_maps_unicode_insert_delete_and_replacement() {
++        assert_eq!(super::previous_source_anchor("abc", "abשc", 4), Some(2));
++        assert_eq!(super::previous_source_anchor("abשc", "abc", 2), Some(4));
++        assert_eq!(super::previous_source_anchor("abc", "aשלוםc", 3), Some(1));
++        assert_eq!(super::previous_source_anchor("abc", "aשלוםc", 2), None);
++        assert_eq!(super::previous_source_anchor("abc", "abc", 3), Some(3));
++    }
+ 
+     #[test]
+     fn test_plain_text_decorations_include_unstyled_gaps() {

@@ -1,3 +1,5 @@
+> Owner correction (2026-10-08): there is no idle jumping. Retain this investigation and counters as evidence; prioritize #754 interaction-triggered reveal, reflow, anchoring and observed save echo. The idle-cycle hypothesis is deprioritized.
+
 ## Native idle investigation (2026-10-08)
 
 P1 #755 remains open; continuous Mac beta8326 jumping is **not reproduced** in the two Linux scenarios below. This does not dispute the owner report or close the issue. No speculative product fix was applied.
