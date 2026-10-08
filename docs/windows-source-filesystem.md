@@ -15,7 +15,8 @@ reparse retagging. Real OneDrive save behavior still needs owner QA.
 `prepare_replace` reads the checked file while excluding in-place writers,
 compares exact bytes, and creates a complete same-folder prepared file. Its DACL
 comes from the checked source handle at creation, before any proposed bytes are
-written. The file uses write-through and is flushed. The returned plan exposes
+written. An encrypted source requires an encrypted prepared file, verified before
+writing any proposed bytes. The file uses write-through and is flushed. The returned plan exposes
 the note, prepared and preimage paths: the caller must persist its draft/history
 record before calling `commit`. Dropping a plan never deletes recovery bytes.
 

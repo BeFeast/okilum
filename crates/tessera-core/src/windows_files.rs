@@ -244,8 +244,12 @@ impl Directory {
             lpSecurityDescriptor: descriptor.0,
             bInheritHandle: 0,
         });
+        let encrypted = security_source
+            .map(information)
+            .transpose()?
+            .map_or(0, |info| info.dwFileAttributes & FILE_ATTRIBUTE_ENCRYPTED);
         let text = wide(&path)?;
-        // Apply the source DACL at creation, before exposing any draft bytes.
+        // Apply the source DACL and encryption at creation, before exposing any draft bytes.
         let raw = unsafe {
             CreateFileW(
                 text.as_ptr(),
@@ -253,7 +257,12 @@ impl Directory {
                 FILE_SHARE_READ,
                 attrs.as_ref().map_or(std::ptr::null(), |a| a as *const _),
                 CREATE_NEW,
-                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
+                FILE_FLAG_WRITE_THROUGH
+                    | if encrypted == 0 {
+                        FILE_ATTRIBUTE_NORMAL
+                    } else {
+                        encrypted
+                    },
                 std::ptr::null_mut(),
             )
         };
@@ -263,6 +272,10 @@ impl Directory {
             std::io::Error::last_os_error()
         );
         let mut file = unsafe { File::from_raw_handle(raw) };
+        ensure!(
+            encrypted == 0 || information(&file)?.dwFileAttributes & FILE_ATTRIBUTE_ENCRYPTED != 0,
+            "The encrypted source needs an encrypted recovery file; no proposed bytes were written"
+        );
         file.write_all(bytes)?;
         file.sync_all()?;
         // No path destructor: the complete proposed bytes remain recoverable
