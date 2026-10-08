@@ -39,3 +39,20 @@ This PR supplies date parsing only. It introduces no menu, Settings UI, note
 writes, scheduler, or notifications, and requires no new UI screenshots. Next
 slices add Tasks formatting and guarded insertion/UI, then notification delivery
 and the missed-reminders list with Linux light/dark evidence.
+
+## Tasks-line formatting slice
+
+The pure formatter receives visible sentence text, canonical vault-relative note
+path, a caller-validated unique heading (optional), and the chosen due date. It
+collapses sentence whitespace and escapes Markdown syntax so pasted visible text
+cannot add links or a second checkbox. It emits an exact-path wiki backlink,
+retaining the Markdown extension to avoid basename inference. Paths that cannot
+be represented without changing wiki semantics refuse; an unrepresentable
+heading falls back to the note link.
+
+Before returning, run the generated line through the existing Tasks parser. It
+must yield exactly one unchecked task, the selected due date, no scheduled/start/
+done metadata, and default priority. Multiple due markers refuse, including ones
+in the source path. The eventual editable preview can ask the user to adjust
+text containing reserved Tasks metadata. This slice still performs no file IO,
+notification scheduling, context-menu activation, or Undo.
