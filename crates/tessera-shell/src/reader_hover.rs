@@ -230,7 +230,7 @@ impl Reader {
         };
         let vault = self.vault.clone();
         let root = self.vault_root.clone();
-        let navigation = self.navigation_generation;
+        let navigation = self.navigation.generation;
         cx.spawn_in(window, async move |this, cx| {
             cx.background_executor().timer(delay).await;
             let proceed = this
@@ -287,7 +287,7 @@ impl Reader {
                 .await;
             let _ = this.update_in(cx, |this, _, cx| {
                 if this.hover_preview.generation != generation
-                    || this.navigation_generation != navigation
+                    || this.navigation.generation != navigation
                     || this.vault_root != root
                 {
                     return;
@@ -928,7 +928,9 @@ mod tests {
     #[gpui::test]
     fn delayed_preview_lands_without_navigating_and_closes(cx: &mut gpui::TestAppContext) {
         let (reader, visual, root) = fixture(cx);
-        let original = reader.read_with(visual, |v, _| (v.current_rel.clone(), v.history.len()));
+        let original = reader.read_with(visual, |v, _| {
+            (v.current_rel.clone(), v.navigation.history.len())
+        });
         reader.update_in(visual, |v, window, cx| {
             let url = v
                 .link_identities
@@ -969,7 +971,10 @@ mod tests {
                 text.list_state().logical_scroll_top().item_ix > 20,
                 "heading landing"
             );
-            assert_eq!((v.current_rel.clone(), v.history.len()), original);
+            assert_eq!(
+                (v.current_rel.clone(), v.navigation.history.len()),
+                original
+            );
         });
         assert!(visual.debug_bounds("note-hover-preview").is_some());
         reader.update_in(visual, |v, _, cx| {

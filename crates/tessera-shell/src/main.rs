@@ -66,6 +66,9 @@ mod reader_settings_sync;
 mod reader_shortcuts;
 mod reader_sidebar;
 use reader_sidebar::SectionAction;
+mod reader_link_navigation;
+mod reader_navigation;
+use reader_link_navigation::handle_link;
 mod reader_recent;
 #[cfg(any(unix, windows))]
 mod reader_source_history;
@@ -854,146 +857,6 @@ fn backlink_occurrence(b: &Backlink) -> (String, Option<std::ops::Range<usize>>,
     (context, link, jump)
 }
 
-/// Link handling shared by the reader's TextView and every nested one (a
-/// callout body): wikilinks open notes, ambiguous ones go to search,
-/// unresolved ones are inert, http(s) leaves the app.
-fn handle_link(entity: &WeakEntity<Reader>, url: &str, window: &mut Window, cx: &mut App) {
-    if let Some(entity) = entity.upgrade() {
-        let landed = entity.update(cx, |this, cx| {
-            let landing = reader_obsidian::footnote_landing(url, &this.note_source)?;
-            match landing {
-                Ok(ix) => this.scroll_to_block(ix, cx),
-                Err(reason) => this.link_notice = Some(reason.into()),
-            }
-            cx.notify();
-            Some(())
-        });
-        if landed.is_some() {
-            return;
-        }
-    }
-    let prepared = entity.upgrade().and_then(|entity| {
-        let reader = entity.read(cx);
-        reader.prepared_links.get(url).cloned().or_else(|| {
-            reader
-                .link_identities
-                .iter()
-                .any(|link| link.url == url)
-                .then(tessera_core::document_links::prepared::LinkState::unknown)
-        })
-    });
-    if let Some(path) = prepared
-        .as_ref()
-        .filter(|s| s.status == tessera_core::document_links::prepared::LinkStatus::MissingFile)
-        .and_then(|s| s.action_url.as_deref())
-        .and_then(|u| u.strip_prefix("tessera://missing-file/"))
-    {
-        reader_toast::missing_file(tessera_core::document_links::decode(path), window, cx);
-        return;
-    }
-    if prepared
-        .as_ref()
-        .is_some_and(|state| state.status.is_missing())
-    {
-        return;
-    }
-    if let Some(state) = prepared
-        .as_ref()
-        .filter(|state| state.status == tessera_core::document_links::prepared::LinkStatus::Unknown)
-    {
-        if let Some(entity) = entity.upgrade() {
-            entity.update(cx, |this, cx| {
-                this.link_notice = Some(state.reason.clone().into());
-                cx.notify();
-            });
-        }
-        return;
-    }
-    let url = prepared
-        .as_ref()
-        .and_then(|state| state.action_url.as_deref())
-        .unwrap_or(url);
-    if url.starts_with("tessera://outside-file/") {
-        let _ = entity.update(cx, |this, cx| this.outside_file_menu(url, window, cx));
-    } else if let Some(rest) = url.strip_prefix("tessera://attachment/") {
-        let _ = entity.update(cx, |this, cx| {
-            this.preview_file(&tessera_core::document_links::decode(rest), window, cx)
-        });
-    } else if let Some(rest) = url.strip_prefix(WIKI_SCHEME) {
-        // `[[note#Heading]]` carries the heading past the rewrite (#49). An
-        // empty path is `[[#Heading]]` in a file outside the vault: the note
-        // on screen.
-        let (rel, heading) = split_open_url(rest);
-        if let Some(entity) = entity.upgrade() {
-            entity.update(cx, |this, cx| {
-                let rel = if rel.is_empty() {
-                    this.current_rel.clone()
-                } else {
-                    rel
-                };
-                this.open_note_at(&rel, None, heading.as_deref(), window, cx);
-            });
-        }
-    } else if let Some((rest, wiki)) = url
-        .strip_prefix(AMBIGUOUS_SCHEME)
-        .map(|r| (r, true))
-        .or_else(|| {
-            url.strip_prefix("tessera://ambiguous-markdown/")
-                .map(|r| (r, false))
-        })
-    {
-        let target = tessera_core::document_links::decode(rest);
-        if let Some(entity) = entity.upgrade() {
-            entity.update(cx, |this, cx| {
-                let resolved = tessera_core::document_links::resolve(
-                    &target,
-                    wiki,
-                    &this.vault,
-                    &this.current_rel,
-                );
-                this.link_notice =
-                    Some("This document link is ambiguous. Choose its destination.".into());
-                this.link_choices = resolved
-                    .candidates
-                    .into_iter()
-                    .map(|path| (path, resolved.heading.clone()))
-                    .collect();
-                cx.notify();
-            });
-        }
-    } else if let Some(reason) = url.strip_prefix("tessera://unsupported/") {
-        if let Some(entity) = entity.upgrade() {
-            entity.update(cx, |this, cx| {
-                this.link_notice = Some(tessera_core::document_links::decode(reason).into());
-                this.link_choices.clear();
-                cx.notify();
-            });
-        }
-    } else if url.starts_with(UNRESOLVED_SCHEME) {
-        if let Some(entity) = entity.upgrade() {
-            entity.update(cx, |this, cx| {
-                this.link_notice = Some(
-                    format!(
-                        "No document matches this link: {}",
-                        tessera_core::document_links::decode(
-                            url.trim_start_matches(UNRESOLVED_SCHEME)
-                        )
-                    )
-                    .into(),
-                );
-                cx.notify();
-            });
-        }
-    } else if prepared_links::external_tooltip(url).is_some() {
-        cx.open_url(url);
-    } else if let Some(entity) = entity.upgrade() {
-        entity.update(cx, |this, cx| {
-            this.link_notice = Some("This link action is not supported.".into());
-            cx.notify();
-        });
-    }
-}
-
 /// Install the reader's Markdown plugins and link handler on a TextView.
 /// Recursive on purpose: a callout body is rendered by a nested TextView
 /// built through the same function, so images and callouts inside a callout
@@ -1301,6 +1164,7 @@ fn markdown_plugins(
 }
 
 struct Reader {
+    navigation: reader_navigation::State,
     ui_state: reader_ui_state::Session,
     single_file: bool,
     hover_preview: reader_hover::HoverPreview,
@@ -1380,19 +1244,13 @@ struct Reader {
     notice_generation: u64,
     toast_subscription: Option<Subscription>,
     link_choices: Vec<(String, Option<String>)>,
-    navigation_generation: u64,
-    pending_landing: Option<ListOffset>,
-    landing_generation: u64,
     prepared_links: prepared_links::States,
     /// Last verified appearance for this exact displayed source. Pending action
     /// evidence is cleared separately during same-document verification.
     link_presentations: prepared_links::States,
     link_preparation_generation: u64,
-    document_preparation_generation: u64,
-    document_reconciliation_generation: u64,
     link_original_source: Option<String>,
     link_identities: Vec<tessera_core::document_links::prepared::LinkIdentity>,
-    history_positions: Vec<ListOffset>,
     backlinks: Vec<Backlink>,
     use_html: bool,
     sel_format: SelectionFormat,
@@ -1455,11 +1313,6 @@ struct Reader {
     // the previous frame's dock/overlay width for the new viewport.
     body_viewport_width: Pixels,
     resizing_panel: Option<reader_layout::Panel>,
-    /// Notes opened, oldest first, and the position in it. Every `open_note`
-    /// that is not itself a history move pushes onto it (#48).
-    history: Vec<String>,
-    history_ix: usize,
-    history_nav: Option<usize>,
     _subs: Vec<Subscription>,
 }
 
@@ -1579,6 +1432,7 @@ impl Reader {
         let content_sub = cx.observe(&content, |_, _, cx| cx.notify());
 
         let mut this = Self {
+            navigation: Default::default(),
             ui_state: Default::default(),
             loading: None,
             pending_open_document: None,
@@ -1654,17 +1508,11 @@ impl Reader {
             notice_generation: 0,
             toast_subscription: None,
             link_choices: Vec::new(),
-            navigation_generation: 0,
-            pending_landing: None,
-            landing_generation: 0,
             prepared_links: Arc::default(),
             link_presentations: Arc::default(),
             link_preparation_generation: 0,
-            document_preparation_generation: 0,
-            document_reconciliation_generation: 0,
             link_original_source: None,
             link_identities: Vec::new(),
-            history_positions: Vec::new(),
             backlinks: Vec::new(),
             use_html,
             sel_format,
@@ -1717,9 +1565,6 @@ impl Reader {
             body_bounds: Bounds::default(),
             body_viewport_width: window.viewport_size().width,
             resizing_panel: None,
-            history: Vec::new(),
-            history_ix: 0,
-            history_nav: None,
             _subs: vec![find_sub],
             _content_sub: content_sub,
         };
@@ -1967,9 +1812,13 @@ impl Reader {
         self.link_notice = None;
         self.link_choices.clear();
         self.cancel_pending_landing();
-        self.navigation_generation = self.navigation_generation.wrapping_add(1);
+        self.navigation.generation = self.navigation.generation.wrapping_add(1);
         if request.history_index.is_none() {
-            if let Some(position) = self.history_positions.get_mut(self.history_ix) {
+            if let Some(position) = self
+                .navigation
+                .history_positions
+                .get_mut(self.navigation.history_ix)
+            {
                 *position = self.content.read(cx).list_state().logical_scroll_top();
             }
         }
@@ -2062,19 +1911,28 @@ impl Reader {
         window.set_window_title(&format!("Tessera — {}", self.current_title));
         if request.history_index.is_none()
             && (heading.is_some()
-                || self.history.get(self.history_ix).map(String::as_str) != Some(rel))
+                || self
+                    .navigation
+                    .history
+                    .get(self.navigation.history_ix)
+                    .map(String::as_str)
+                    != Some(rel))
         {
             // A new branch: forward entries are dropped, like a browser.
-            if !self.history.is_empty() {
-                self.history.truncate(self.history_ix + 1);
-                self.history_positions.truncate(self.history_ix + 1);
+            if !self.navigation.history.is_empty() {
+                self.navigation
+                    .history
+                    .truncate(self.navigation.history_ix + 1);
+                self.navigation
+                    .history_positions
+                    .truncate(self.navigation.history_ix + 1);
             }
-            self.history.push(rel.to_string());
-            self.history_positions.push(ListOffset {
+            self.navigation.history.push(rel.to_string());
+            self.navigation.history_positions.push(ListOffset {
                 item_ix: 0,
                 offset_in_item: px(0.),
             });
-            self.history_ix = self.history.len() - 1;
+            self.navigation.history_ix = self.navigation.history.len() - 1;
         }
         if self.find_open {
             self.run_find(window, cx);
@@ -2090,7 +1948,7 @@ impl Reader {
             self.scroll_to_block(ix, cx);
         }
         if let Some(index) = request.history_index {
-            self.history_ix = index;
+            self.navigation.history_ix = index;
         }
         if let Some(position) = request.restore_position {
             self.scroll_to_position(position, cx);
@@ -2174,42 +2032,42 @@ impl Reader {
         );
     }
     fn cancel_pending_landing(&mut self) {
-        self.pending_landing = None;
-        self.landing_generation = self.landing_generation.wrapping_add(1);
+        self.navigation.pending_landing = None;
+        self.navigation.landing_generation = self.navigation.landing_generation.wrapping_add(1);
     }
 
     fn scroll_to_position(&mut self, position: ListOffset, cx: &mut Context<Self>) {
         self.cancel_pending_landing();
-        self.pending_landing = Some(position);
-        let landing = self.landing_generation;
-        let generation = self.navigation_generation;
+        self.navigation.pending_landing = Some(position);
+        let landing = self.navigation.landing_generation;
+        let generation = self.navigation.generation;
         let content = self.content.entity_id();
         cx.spawn(async move |entity, cx| {
             for attempt in 0..100 {
                 cx.background_executor().timer(Duration::from_millis(50)).await;
                 let done = entity.update(cx, |this, cx| {
-                    if landing != this.landing_generation { return true; }
-                    if generation == this.navigation_generation && content == this.content.entity_id()
+                    if landing != this.navigation.landing_generation { return true; }
+                    if generation == this.navigation.generation && content == this.content.entity_id()
                         && this.typed_navigation.active.get() {
-                        this.pending_landing = None;
+                        this.navigation.pending_landing = None;
                         if let Err(reason) = reader_typed_view::land(this, position.item_ix) {
                             this.link_notice = Some(reason.into());
                         }
                         cx.notify();
                         return true;
                     }
-                    match reader_landing_state(generation == this.navigation_generation,
+                    match reader_landing_state(generation == this.navigation.generation,
                         content == this.content.entity_id(), this.content.read(cx).list_state().item_count(), position.item_ix, attempt)
                     {
-                        ReaderLanding::Cancelled => { this.pending_landing = None; true },
+                        ReaderLanding::Cancelled => { this.navigation.pending_landing = None; true },
                         ReaderLanding::Waiting => { cx.notify(); false },
                         ReaderLanding::Failed => {
-                            this.pending_landing = None;
+                            this.navigation.pending_landing = None;
                             this.link_notice = Some("The document did not finish rendering at the requested position. Heading/Back landing failed; try again.".into());
                             cx.notify(); true
                         },
                         ReaderLanding::Ready => {
-                            this.pending_landing = None;
+                            this.navigation.pending_landing = None;
                             this.content.update(cx, |s, cx| { s.list_state().scroll_to(position); cx.notify(); });
                             true
                         }
@@ -3117,16 +2975,16 @@ impl Reader {
     }
 
     fn history_move(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
-        let target = self.history_ix as isize + delta;
-        if target < 0 || target as usize >= self.history.len() {
+        let target = self.navigation.history_ix as isize + delta;
+        if target < 0 || target as usize >= self.navigation.history.len() {
             return;
         }
-        self.history_positions[self.history_ix] =
+        self.navigation.history_positions[self.navigation.history_ix] =
             self.content.read(cx).list_state().logical_scroll_top();
-        let rel = self.history[target as usize].clone();
-        self.history_nav = Some(target as usize);
+        let rel = self.navigation.history[target as usize].clone();
+        self.navigation.history_nav = Some(target as usize);
         self.open_note(&rel, None, window, cx);
-        self.history_nav = None;
+        self.navigation.history_nav = None;
     }
 
     /// Move through the visible folder tree and open the note under the cursor.
@@ -8792,7 +8650,7 @@ mod document_link_landing_tests {
                 v.content.entity_id(),
                 v.current_rel.clone(),
                 v.vault_root.clone(),
-                v.history.clone(),
+                v.navigation.history.clone(),
                 p.item_ix,
                 p.offset_in_item,
             )
@@ -8833,7 +8691,7 @@ mod document_link_landing_tests {
                 v.content.entity_id(),
                 v.current_rel.clone(),
                 v.vault_root.clone(),
-                v.history.clone(),
+                v.navigation.history.clone(),
                 p.item_ix,
                 p.offset_in_item,
             )
@@ -9323,7 +9181,7 @@ mod document_link_landing_tests {
         });
         // #321: toggling UI panels must not replace the parsed document or its
         // navigation/scroll state. Closing must not leave focus in a hidden control.
-        let history_before = view.read_with(visual, |v, _| v.history.clone());
+        let history_before = view.read_with(visual, |v, _| v.navigation.history.clone());
         view.update_in(visual, |v, window, cx| {
             v.toggle_panel(reader_layout::Panel::Notes, window, cx);
         });
@@ -9331,7 +9189,7 @@ mod document_link_landing_tests {
         view.update_in(visual, |v, window, _| {
             assert!(v.sidebar_search_focus.is_focused(window));
             assert_eq!(v.content.entity_id(), old);
-            assert_eq!(v.history, history_before);
+            assert_eq!(v.navigation.history, history_before);
         });
         for (width, height) in [(640., 720.), (1366., 768.), (640., 720.)] {
             visual.simulate_resize(size(px(width), px(height)));
@@ -9347,7 +9205,7 @@ mod document_link_landing_tests {
             }
             view.update_in(visual, |v, window, _| {
                 assert_eq!(v.content.entity_id(), old);
-                assert_eq!(v.history, history_before);
+                assert_eq!(v.navigation.history, history_before);
                 assert!(v.panels.visible(
                     reader_layout::Panel::Notes,
                     f32::from(v.body_bounds.size.width)
@@ -9400,7 +9258,7 @@ mod document_link_landing_tests {
                 v.panel_widths.notes
             );
             assert_eq!(v.content.entity_id(), old);
-            assert_eq!(v.history, history_before);
+            assert_eq!(v.navigation.history, history_before);
         });
         // Close during a real drag must not let ordinary motion resize a
         // reopened/different panel after its release was lost.
@@ -9454,7 +9312,7 @@ mod document_link_landing_tests {
         view.update_in(visual, |v, window, cx| {
             assert!(v.content.read(cx).focus_handle().is_focused(window));
             assert_eq!(v.content.entity_id(), old);
-            assert_eq!(v.history, history_before);
+            assert_eq!(v.navigation.history, history_before);
             v.open_note_at("target.md", None, Some("Landing"), window, cx);
             assert_eq!(
                 v.content.entity_id(),

@@ -94,3 +94,15 @@ Markdown block offsets.
    missing secondary note, scroll/history/modes round trip, sibling-window owner
    and Linux/macOS/Windows shortcut labels. Screenshots in both themes; published
    beta QA uses the dedicated muninn session.
+
+## Navigation extraction checkpoint
+
+Before mounting a second surface, group the existing per-document history,
+positions, pending landing and load/reconciliation generations in
+`reader_navigation::State`. Keep current Reader call sites and the persisted
+layout schema; this is an ownership refactor with no new navigation behavior.
+`reader_link_navigation` owns the existing prepared-link dispatch, including
+ambiguity, unresolved targets, attachments and fragments. The extraction is a
+small prerequisite PR, not delivery of adjacent links. Existing native regressions
+for nested links, heading/Back, session restore and independent windows must pass
+before destination routing is added.

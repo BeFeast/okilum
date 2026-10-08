@@ -191,7 +191,7 @@ impl Reader {
             return;
         };
         let path = self.vault_root.join(&self.current_rel);
-        let generation = self.document_preparation_generation;
+        let generation = self.navigation.preparation_generation;
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -200,7 +200,7 @@ impl Reader {
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                if this.document_preparation_generation != generation || this.editing.is_some() {
+                if this.navigation.preparation_generation != generation || this.editing.is_some() {
                     return;
                 }
                 match result {
@@ -290,7 +290,8 @@ impl Reader {
         };
         self.close_find(window, cx);
         // Cancel a pending navigation before exposing an editable snapshot.
-        self.document_preparation_generation = self.document_preparation_generation.wrapping_add(1);
+        self.navigation.preparation_generation =
+            self.navigation.preparation_generation.wrapping_add(1);
         let clipboard = cx
             .try_global::<platform::ManagedClipboard>()
             .map(|p| p.0.clone());
@@ -960,7 +961,7 @@ impl Reader {
                             &operation.to,
                             &operation.from,
                         );
-                        for p in &mut r.history {
+                        for p in &mut r.navigation.history {
                             *p = tessera_core::link_rewrite::moved_path(
                                 p,
                                 &operation.to,
@@ -984,7 +985,7 @@ impl Reader {
                     &operation.to,
                     &operation.from,
                 );
-                for p in &mut self.history {
+                for p in &mut self.navigation.history {
                     *p = tessera_core::link_rewrite::moved_path(p, &operation.to, &operation.from);
                 }
             }
@@ -1125,8 +1126,8 @@ impl Reader {
                         ) != r.selected_file())
                 {
                     r.move_applying = true;
-                    r.document_preparation_generation =
-                        r.document_preparation_generation.wrapping_add(1);
+                    r.navigation.preparation_generation =
+                        r.navigation.preparation_generation.wrapping_add(1);
                     cx.notify();
                     Some((r.current_rel.clone(), r.editing.take()))
                 } else {
@@ -1163,7 +1164,8 @@ impl Reader {
             })
             .collect();
         self.move_applying = true;
-        self.document_preparation_generation = self.document_preparation_generation.wrapping_add(1);
+        self.navigation.preparation_generation =
+            self.navigation.preparation_generation.wrapping_add(1);
         let worker_preview = preview.clone();
         let worker = cx.background_executor().spawn(async move {
             let result = (|| -> anyhow::Result<_> {
@@ -1217,7 +1219,7 @@ impl Reader {
                         if moved && next_path != path {
                             r.editing = None;
                             r.current_rel = next_path;
-                            for p in &mut r.history {
+                            for p in &mut r.navigation.history {
                                 *p = tessera_core::link_rewrite::moved_path(
                                     p,
                                     &preview.from,

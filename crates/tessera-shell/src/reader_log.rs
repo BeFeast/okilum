@@ -622,12 +622,12 @@ impl Reader {
         view.read(cx).focus_handle().clone().focus(window, cx);
         preview.log = Some(view);
         self.file_preview = Some(preview);
-        self.history = vec![rel.clone()];
-        self.history_positions = vec![ListOffset {
+        self.navigation.history = vec![rel.clone()];
+        self.navigation.history_positions = vec![ListOffset {
             item_ix: 0,
             offset_in_item: px(0.),
         }];
-        self.history_ix = 0;
+        self.navigation.history_ix = 0;
         self.find_open = false;
         self.link_notice = None;
         window.set_window_title(&format!("Tessera — {rel}"));
@@ -883,7 +883,7 @@ mod tests {
             assert!(reader.single_file && reader.searcher.is_none());
             assert_eq!(reader.selected_file(), "app.jsonl");
             assert!(reader.file_preview.as_ref().unwrap().text.is_none());
-            assert_eq!(reader.history, ["app.jsonl"]);
+            assert_eq!(reader.navigation.history, ["app.jsonl"]);
             assert!(reader.vault.entries.iter().any(|e| e.path == "older.log"));
         });
         let view = log_view(&reader, visual);

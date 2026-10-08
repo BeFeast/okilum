@@ -296,22 +296,32 @@ impl Reader {
         match FilePreview::load(&self.vault_root, rel) {
             Ok(preview) => {
                 self.cancel_pending_landing();
-                self.document_preparation_generation =
-                    self.document_preparation_generation.wrapping_add(1);
+                self.navigation.preparation_generation =
+                    self.navigation.preparation_generation.wrapping_add(1);
                 self.table_overlay = None;
-                if let Some(index) = self.history_nav {
-                    self.history_ix = index;
-                } else if self.history.get(self.history_ix).map(String::as_str) != Some(rel) {
-                    if !self.history.is_empty() {
-                        self.history.truncate(self.history_ix + 1);
-                        self.history_positions.truncate(self.history_ix + 1);
+                if let Some(index) = self.navigation.history_nav {
+                    self.navigation.history_ix = index;
+                } else if self
+                    .navigation
+                    .history
+                    .get(self.navigation.history_ix)
+                    .map(String::as_str)
+                    != Some(rel)
+                {
+                    if !self.navigation.history.is_empty() {
+                        self.navigation
+                            .history
+                            .truncate(self.navigation.history_ix + 1);
+                        self.navigation
+                            .history_positions
+                            .truncate(self.navigation.history_ix + 1);
                     }
-                    self.history.push(rel.into());
-                    self.history_positions.push(ListOffset {
+                    self.navigation.history.push(rel.into());
+                    self.navigation.history_positions.push(ListOffset {
                         item_ix: 0,
                         offset_in_item: px(0.),
                     });
-                    self.history_ix = self.history.len() - 1;
+                    self.navigation.history_ix = self.navigation.history.len() - 1;
                 }
                 let mut preview = preview;
                 if reader_pdf::is_pdf(rel) {
@@ -652,7 +662,7 @@ mod tests {
             reader.preview_file("report.pdf", window, cx);
             assert!(!reader.file_preview.as_ref().unwrap().image);
             assert!(reader.pdf_viewer().is_some(), "a PDF opens inline");
-            assert_eq!(reader.history.last().unwrap(), "report.pdf");
+            assert_eq!(reader.navigation.history.last().unwrap(), "report.pdf");
             reader.preview_file("plain.txt", window, cx);
             assert_eq!(reader.selected_file(), "plain.txt");
             assert!(reader.file_preview.as_ref().unwrap().text.is_some());
@@ -692,7 +702,7 @@ mod tests {
                 assert_eq!(reader.selected_title(), name);
                 assert_eq!(reader.note_label(path), name);
                 assert_eq!(reader.selected_file(), path);
-                assert_eq!(reader.history.last().unwrap(), path);
+                assert_eq!(reader.navigation.history.last().unwrap(), path);
                 reader.file_action(FileAction::Relative, window, cx);
                 assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), path);
                 assert_eq!(

@@ -117,7 +117,7 @@ impl Reader {
                     cx,
                 )
                 .debug_selector(|| "reader-history-back".into())
-                .disabled(self.history_ix == 0)
+                .disabled(self.navigation.history_ix == 0)
                 .on_click(cx.listener(|this, _, window, cx| this.history_move(-1, window, cx))),
             )
             .child(
@@ -128,7 +128,7 @@ impl Reader {
                     cx,
                 )
                 .debug_selector(|| "reader-history-forward".into())
-                .disabled(self.history_ix + 1 >= self.history.len())
+                .disabled(self.navigation.history_ix + 1 >= self.navigation.history.len())
                 .on_click(cx.listener(|this, _, window, cx| this.history_move(1, window, cx))),
             )
             .child(self.render_breadcrumbs(cx));
@@ -364,30 +364,40 @@ impl Reader {
         if !self.save_source(cx) {
             return;
         }
-        if let Some(position) = self.history_positions.get_mut(self.history_ix) {
+        if let Some(position) = self
+            .navigation
+            .history_positions
+            .get_mut(self.navigation.history_ix)
+        {
             *position = self.content.read(cx).list_state().logical_scroll_top();
         }
-        if let Some(index) = self.history_nav {
-            self.history_ix = index;
+        if let Some(index) = self.navigation.history_nav {
+            self.navigation.history_ix = index;
         } else if self
+            .navigation
             .history
-            .get(self.history_ix)
+            .get(self.navigation.history_ix)
             .is_none_or(|entry| !entry.is_empty())
         {
-            self.history.truncate(self.history_ix + 1);
-            self.history_positions.truncate(self.history_ix + 1);
-            self.history.push(String::new());
-            self.history_positions.push(ListOffset {
+            self.navigation
+                .history
+                .truncate(self.navigation.history_ix + 1);
+            self.navigation
+                .history_positions
+                .truncate(self.navigation.history_ix + 1);
+            self.navigation.history.push(String::new());
+            self.navigation.history_positions.push(ListOffset {
                 item_ix: 0,
                 offset_in_item: px(0.),
             });
-            self.history_ix = self.history.len() - 1;
+            self.navigation.history_ix = self.navigation.history.len() - 1;
         }
         self.close_quick_open(window, cx);
         self.clear_hover(cx);
         self.cancel_pending_landing();
-        self.document_preparation_generation = self.document_preparation_generation.wrapping_add(1);
-        self.navigation_generation = self.navigation_generation.wrapping_add(1);
+        self.navigation.preparation_generation =
+            self.navigation.preparation_generation.wrapping_add(1);
+        self.navigation.generation = self.navigation.generation.wrapping_add(1);
         self.pending_open_document = None;
         self.timeline = None;
         self.current_rel.clear();
@@ -533,7 +543,7 @@ mod tests {
         reader.read_with(visual, |this, _| {
             assert!(this.current_rel.is_empty());
             assert_eq!(this.vault_root, root);
-            assert_eq!(this.history, vec!["One.md", ""]);
+            assert_eq!(this.navigation.history, vec!["One.md", ""]);
         });
         visual.run_until_parked();
         assert!(visual.debug_bounds("reader-empty-vault").is_some());

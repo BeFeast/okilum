@@ -411,8 +411,8 @@ impl Reader {
                 self.tree
                     .entry_created(&rel, tessera_core::vault::EntryKind::Markdown);
                 self.editing = None;
-                self.document_preparation_generation =
-                    self.document_preparation_generation.wrapping_add(1);
+                self.navigation.preparation_generation =
+                    self.navigation.preparation_generation.wrapping_add(1);
                 let document =
                     tessera_core::render::reader_document_from_source(&self.vault, &rel, &source);
                 self.accept_prepared_document(
@@ -1001,10 +1001,14 @@ mod tests {
                     && entry.kind == tessera_core::vault::EntryKind::Directory));
             assert!(reader.editing.is_some());
             assert_eq!(
-                reader.history.last().map(String::as_str),
+                reader.navigation.history.last().map(String::as_str),
                 Some("Selected/Target/a/Новая 🧠.md")
             );
-            assert!(reader.history.iter().any(|path| path == "start.md"));
+            assert!(reader
+                .navigation
+                .history
+                .iter()
+                .any(|path| path == "start.md"));
         });
         let created = std::fs::read_to_string(root.join("Selected/Target/a/Новая 🧠.md")).unwrap();
         assert!(created.starts_with("---\ntype: Note\ncreated: "));
