@@ -1,0 +1,648 @@
+--- a/crates/base/src/input/projection.rs
++++ b/crates/base/src/input/projection.rs
+@@ -91,7 +91,18 @@
+     pub strikethrough: bool,
+ }
+ 
++/// Source-anchored, revision-bound paint metadata. Never changes text layout.
++#[derive(Clone, Debug)]
++pub enum MarkerKind { Bullet { depth: usize }, Quote { depth: usize }, Rule }
++#[derive(Clone, Debug)]
++pub struct ProjectionMarker {
++    pub range: Range<SourceByte>,
++    pub scope: Range<SourceByte>,
++    pub kind: MarkerKind,
++}
++
+ pub trait SourceProjection: Send + Sync {
++    fn markers(&self) -> &[ProjectionMarker] { &[] }
+     /// Immutable reveal decision used to compose this projection. Providers that
+     /// do not expose a policy retain raw marker foreground by default.
+     fn marker_scope_is_raw(&self, _scope: &Range<SourceByte>) -> bool {
+--- a/crates/base/src/input/mod.rs
++++ b/crates/base/src/input/mod.rs
+@@ -28,6 +28,8 @@
+ mod editor;
+ #[path = "base/element.rs"]
+ mod element;
++#[path = "base/marker_paint.rs"]
++mod marker_paint;
+ #[path = "editor/highlighting.rs"]
+ mod highlighting;
+ #[path = "editor/indent.rs"]
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -1635,6 +1635,8 @@
+ }
+ 
+ pub(super) struct PrepaintState {
++    marker_source: Option<std::sync::Arc<super::marker_paint::MarkerSource>>,
++    marker_rows: Vec<Vec<Option<super::marker_paint::RowPaint>>>,
+     /// The lines of entire lines.
+     last_layout: LastLayout,
+     /// The lines only contains the visible lines in the viewport, based on `visible_range`.
+@@ -2262,7 +2264,21 @@
+ 
+         trace.current(TraceIdentity::new(last_layout.source_stamp, last_layout.presentation_epoch, last_layout.projection.is_some()));
+         trace.counts([last_layout.visible_buffer_lines.len() as u64, last_layout.lines.len() as u64, 0, 0]);
++        let state = self.state.read(cx);
++        let marker_source = super::marker_paint::source_for_markers(
++            last_layout.projection.as_ref(),
++            super::projection::LayoutStamp { source: last_layout.source_stamp, presentation: last_layout.presentation_epoch },
++            state.source_stamp(),
++            last_layout.text_align == TextAlign::Left,
++            &state.marker_source_cache,
++            |text| state.text == text,
++        );
++        let marker_rows = marker_source.as_ref().map(|source|
++            super::marker_paint::prepare(&last_layout, source, &state.projection.active)
++        ).unwrap_or_default();
+         PrepaintState {
++            marker_source,
++            marker_rows,
+             bounds,
+             last_layout,
+             scroll_size,
+@@ -2296,6 +2312,12 @@
+         let layout = &prepaint.last_layout;
+         let mut trace = TraceSpan::new("editor_paint", TraceIdentity::new(layout.source_stamp, layout.presentation_epoch, layout.projection.is_some()));
+         let current = self.state.read(cx);
++        // Prepaint checked exact bytes against its immutable pin. Every canonical
++        // mutation (including silent IME) advances source_stamp; paint needs no
++        // second full-buffer copy or scan and never asks a fresh provider.
++        let marker_source_matches = prepaint.marker_source.as_ref()
++            .is_some_and(|source| current.source_stamp() == source.snapshot.stamp);
++
+         trace.current(TraceIdentity::new(current.source_stamp(), current.presentation_epoch(), current.projection.current.is_some()));
+         trace.counts([layout.visible_buffer_lines.len() as u64, layout.lines.len() as u64, 0, 0]);
+         let (focus_handle, show_cursor, disabled, selected_range, editor_style, editor_paddings) = {
+@@ -2447,11 +2469,11 @@
+         // Track the y-position of the cursor row for positioning the first line suffix
+         let mut cursor_row_y = None;
+ 
+-        for (line, &buffer_line) in prepaint
++        for (line_index, (line, &buffer_line)) in prepaint
+             .last_layout
+             .lines
+             .iter()
+-            .zip(prepaint.last_layout.visible_buffer_lines.iter())
++            .zip(prepaint.last_layout.visible_buffer_lines.iter()).enumerate()
+         {
+             let row = buffer_line;
+             let line_y = origin.y + offset_y;
+@@ -2460,15 +2482,21 @@
+                 line_y,
+             );
+ 
+-            // Paint the actual line
+-            _ = line.paint(
+-                p,
+-                line_height,
+-                text_align,
+-                Some(prepaint.last_layout.content_width),
+-                window,
+-                cx,
+-            );
++            let rows = prepaint.marker_rows.get(line_index).filter(|rows| marker_source_matches && rows.iter().any(Option::is_some));
++            if let Some(rows) = rows {
++                for (row_index, row) in line.wrapped_lines.iter().enumerate() {
++                    let indent = if row_index == 0 { px(0.) } else { line.wrap_indent };
++                    let row_origin = p + point(indent, row_index as f32 * line_height);
++                    if let Some(Some(paint)) = rows.get(row_index) {
++                        paint.paint(row_origin, line_height, prepaint.last_layout.content_width - indent,
++                            editor_style.foreground, window, cx);
++                    } else {
++                        let _ = row.paint(row_origin, line_height, text_align, Some(prepaint.last_layout.content_width), window, cx);
++                    }
++                }
++            } else {
++                line.paint(p, line_height, text_align, Some(prepaint.last_layout.content_width), window, cx);
++            }
+             offset_y += line.size(line_height).height;
+ 
+             if Some(row) == prepaint.current_row {
+--- /dev/null
++++ b/crates/base/src/input/base/marker_paint.rs
+@@ -0,0 +1,504 @@
++//! Paint-only consumer of one prepaint's immutable projection and visual rows.
++use super::layout::LastLayout;
++use crate::input::projection::{
++    ActiveSource, ConcealBias, LayoutStamp, MarkerKind, PinnedProjection, SourceSnapshot,
++    SourceStamp,
++};
++use gpui::{
++    App, BorderStyle, Bounds, Edges, Hsla, Pixels, Point, ShapedLine, TextAlign, Window, fill,
++    point, px, quad, size, transparent_black,
++};
++use std::{cell::RefCell, ops::Range, sync::Arc};
++use unicode_segmentation::UnicodeSegmentation;
++
++pub(super) struct RowPaint {
++    pieces: Vec<ForegroundPiece>,
++    shapes: Vec<Shape>,
++}
++struct Shape {
++    x: Pixels,
++    width: Pixels,
++    kind: MarkerKind,
++}
++
++pub(super) struct MarkerSource {
++    pub(super) snapshot: SourceSnapshot,
++    boundaries: Vec<usize>,
++}
++
++/// Check cheap inventory/identity guards before touching canonical bytes. Reuse
++/// the exact immutable source already owned by this prepaint's pin.
++pub(super) fn source_for_markers(
++    pin: Option<&PinnedProjection>,
++    layout: LayoutStamp,
++    current: SourceStamp,
++    aligned: bool,
++    cache: &RefCell<Option<Arc<MarkerSource>>>,
++    matches_source: impl FnOnce(&str) -> bool,
++) -> Option<Arc<MarkerSource>> {
++    let pin = pin?;
++    if !aligned
++        || pin.stamp != layout
++        || layout.source != current
++        || pin.projection.markers().is_empty()
++    {
++        return None;
++    }
++    let source = pin.projection.source();
++    if source.stamp != current {
++        return None;
++    }
++    if let Some(cached) = cache.borrow().as_ref() {
++        // The session verifies provider bytes on compose; retain a separate
++        // exact-byte check here before admitting a new immutable source Arc.
++        if cached.snapshot.stamp == current && Arc::ptr_eq(&cached.snapshot.text, &source.text) {
++            return Some(cached.clone());
++        }
++    }
++    if !matches_source(&source.text) {
++        return None;
++    }
++    let validated = Arc::new(MarkerSource {
++        snapshot: source.clone(),
++        boundaries: source
++            .text
++            .grapheme_indices(true)
++            .map(|(i, _)| i)
++            .chain(std::iter::once(source.text.len()))
++            .collect(),
++    });
++    *cache.borrow_mut() = Some(validated.clone());
++    Some(validated)
++}
++
++pub(super) fn prepare(
++    layout: &LastLayout,
++    validated: &MarkerSource,
++    safety: &ActiveSource,
++) -> Vec<Vec<Option<RowPaint>>> {
++    let Some(pin) = &layout.projection else {
++        return vec![];
++    };
++    if layout.text_align != TextAlign::Left || pin.projection.markers().is_empty() {
++        return vec![];
++    }
++    let stamp = LayoutStamp {
++        source: layout.source_stamp,
++        presentation: layout.presentation_epoch,
++    };
++    let current = &validated.snapshot;
++    let boundaries = &validated.boundaries;
++    let mut markers = Vec::new();
++    for marker in pin.projection.markers() {
++        if marker.range.start.0 >= marker.range.end.0
++            || marker.scope.start.0 > marker.range.start.0
++            || marker.range.end.0 > marker.scope.end.0
++            || [
++                marker.range.start.0,
++                marker.range.end.0,
++                marker.scope.start.0,
++                marker.scope.end.0,
++            ]
++            .iter()
++            .any(|i| boundaries.binary_search(i).is_err())
++        {
++            return vec![];
++        }
++        if pin.marker_scope_is_raw(stamp, current, &marker.scope, safety) {
++            continue;
++        }
++        let Some(start) = pin
++            .projection
++            .to_projected(marker.range.start, ConcealBias::Left)
++        else {
++            return vec![];
++        };
++        let Some(end) = pin
++            .projection
++            .to_projected(marker.range.end, ConcealBias::Right)
++        else {
++            return vec![];
++        };
++        if end.0.checked_sub(start.0) != Some(marker.range.end.0 - marker.range.start.0) {
++            return vec![];
++        }
++        let Some(scope_end) = pin
++            .projection
++            .to_projected(marker.scope.end, ConcealBias::Right)
++        else {
++            return vec![];
++        };
++        markers.push((start.0..end.0, marker.kind.clone(), scope_end.0));
++    }
++    layout
++        .lines
++        .iter()
++        .enumerate()
++        .map(|(li, line)| {
++            let mut offset = layout.visible_line_byte_offsets[li];
++            let mut quote_gutters: Vec<(Pixels, Pixels, MarkerKind, usize)> = Vec::new();
++            line.wrapped_lines
++                .iter()
++                .enumerate()
++                .map(|(row_index, row)| {
++                    let start = offset;
++                    offset += row.len();
++                    // Whitespace visualizers keep their established rendering unchanged.
++                    if line.whitespace_indicators.is_some() {
++                        return None;
++                    }
++                    let mut ranges = Vec::new();
++                    let mut shapes = Vec::new();
++                    for (range, kind, scope_end) in &markers {
++                        if range.end <= start || range.start >= offset {
++                            continue;
++                        }
++                        // A marker spanning visual rows cannot be replaced partially.
++                        if range.start < start || range.end > offset {
++                            return None;
++                        }
++                        let local = range.start - start..range.end - start;
++                        let x = row.x_for_index(local.start);
++                        let width = row.x_for_index(local.end) - x;
++                        if width <= px(0.) {
++                            return None;
++                        }
++                        ranges.push(local);
++                        shapes.push(Shape {
++                            x,
++                            width,
++                            kind: kind.clone(),
++                        });
++                        if row_index == 0 && matches!(kind, MarkerKind::Quote { .. }) {
++                            quote_gutters.push((x, width, kind.clone(), *scope_end));
++                        }
++                    }
++                    if row_index > 0 {
++                        for (x, width, kind, scope_end) in &quote_gutters {
++                            // Reuse only existing continuation indentation; never cover body glyphs.
++                            if start < *scope_end && line.wrap_indent >= *x + *width {
++                                shapes.push(Shape {
++                                    x: *x - line.wrap_indent,
++                                    width: *width,
++                                    kind: kind.clone(),
++                                });
++                            }
++                        }
++                    }
++                    if shapes.is_empty() {
++                        return None;
++                    }
++                    let pieces = foreground_pieces(row, &ranges)?;
++                    Some(RowPaint { pieces, shapes })
++                })
++                .collect()
++        })
++        .collect()
++}
++
++impl RowPaint {
++    pub(super) fn paint(
++        &self,
++        origin: Point<Pixels>,
++        height: Pixels,
++        content_width: Pixels,
++        color: Hsla,
++        window: &mut Window,
++        cx: &mut App,
++    ) {
++        for piece in &self.pieces {
++            let _ = piece.shaped.paint(
++                origin + point(piece.x, px(0.)),
++                height,
++                TextAlign::Left,
++                None,
++                window,
++                cx,
++            );
++        }
++        for shape in &self.shapes {
++            let bounds = Bounds::new(origin + point(shape.x, px(0.)), size(shape.width, height));
++            window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
++                match shape.kind {
++                    MarkerKind::Bullet { depth } => {
++                        let diameter = px(4.).min(shape.width);
++                        let b = Bounds::new(
++                            origin
++                                + point(
++                                    shape.x + (shape.width - diameter) / 2.,
++                                    (height - diameter) / 2.,
++                                ),
++                            size(diameter, diameter),
++                        );
++                        match depth.saturating_sub(1) % 3 {
++                            0 => window.paint_quad(quad(
++                                b,
++                                diameter / 2.,
++                                color,
++                                Edges::default(),
++                                transparent_black(),
++                                BorderStyle::default(),
++                            )),
++                            1 => window.paint_quad(quad(
++                                b,
++                                diameter / 2.,
++                                transparent_black(),
++                                Edges::all(px(1.)),
++                                color,
++                                BorderStyle::default(),
++                            )),
++                            _ => window.paint_quad(fill(b, color)),
++                        }
++                    }
++                    MarkerKind::Quote { .. } => window.paint_quad(fill(
++                        Bounds::new(
++                            origin + point(shape.x + shape.width / 2., px(0.)),
++                            size(px(2.).min(shape.width), height),
++                        ),
++                        color.opacity(0.45),
++                    )),
++                    MarkerKind::Rule => {}
++                }
++            });
++            if matches!(shape.kind, MarkerKind::Rule) {
++                let bounds = Bounds::new(
++                    origin + point(shape.x, px(0.)),
++                    size((content_width - shape.x).max(px(0.)), height),
++                );
++                window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
++                    window.paint_quad(fill(
++                        Bounds::new(
++                            origin + point(shape.x, height / 2.),
++                            size(bounds.size.width, px(1.)),
++                        ),
++                        color.opacity(0.45),
++                    ));
++                });
++            }
++        }
++    }
++}
++
++pub(super) struct ForegroundPiece {
++    pub x: Pixels,
++
++    pub shaped: ShapedLine,
++}
++
++/// Paint-only candidate: split existing glyph runs; never call shape_line.
++/// Call only AFTER exact snapshot, same-prepaint LayoutStamp, policy and mapping
++/// validation. None means retain original foreground. Background/selection paint
++/// is untouched. Replacement paint is a separate step, clipped to marker bounds.
++///
++/// Conservative initial seam: reject non-monotone glyph indices (e.g. bidi) and
++/// splits inside a glyph cluster. Do not infer cluster safety from UTF-8 alone.
++/// Renderer must paint pieces with TextAlign::Left at original_origin + piece.x;
++/// it must not align each piece independently or use piece widths for layout.
++fn foreground_pieces(line: &ShapedLine, hidden: &[Range<usize>]) -> Option<Vec<ForegroundPiece>> {
++    if unicode_bidi::BidiInfo::new(&line.text, None).has_rtl() {
++        return None;
++    }
++    let glyphs: Vec<_> = line.runs.iter().flat_map(|run| &run.glyphs).collect();
++    if glyphs.windows(2).any(|pair| pair[0].index > pair[1].index) {
++        return None;
++    }
++    let boundaries: Vec<_> = line
++        .text
++        .grapheme_indices(true)
++        .map(|(i, _)| i)
++        .chain(std::iter::once(line.text.len()))
++        .collect();
++    let boundary = |index: usize| {
++        boundaries.binary_search(&index).is_ok()
++            && (index == line.len() || glyphs.iter().any(|glyph| glyph.index == index))
++    };
++    let mut end = 0;
++    for range in hidden {
++        if range.start < end
++            || range.start >= range.end
++            || range.end > line.len()
++            || !boundary(range.start)
++            || !boundary(range.end)
++        {
++            return None;
++        }
++        end = range.end;
++    }
++    let mut pieces = Vec::new();
++    let mut cursor = 0;
++    for range in hidden {
++        if cursor < range.start {
++            let (_, suffix) = line.split_at(cursor);
++            let (part, _) = suffix.split_at(range.start - cursor);
++            pieces.push(ForegroundPiece {
++                x: line.x_for_index(cursor),
++
++                shaped: part,
++            });
++        }
++        cursor = range.end;
++    }
++    if cursor < line.len() {
++        let (_, part) = line.split_at(cursor);
++        pieces.push(ForegroundPiece {
++            x: line.x_for_index(cursor),
++
++            shaped: part,
++        });
++    }
++    Some(pieces)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::input::projection::*;
++    use std::{cell::Cell, sync::Arc};
++
++    struct Fixture {
++        source: SourceSnapshot,
++        markers: Vec<ProjectionMarker>,
++    }
++    impl SourceProjection for Fixture {
++        fn source(&self) -> &SourceSnapshot {
++            &self.source
++        }
++        fn text(&self) -> &str {
++            &self.source.text
++        }
++        fn styles(&self) -> &[ProjectionStyle] {
++            &[]
++        }
++        fn markers(&self) -> &[ProjectionMarker] {
++            &self.markers
++        }
++        fn to_projected(&self, b: SourceByte, _: ConcealBias) -> Option<ProjectedByte> {
++            Some(ProjectedByte(b.0))
++        }
++        fn to_source(&self, b: ProjectedByte, _: ConcealBias) -> Option<SourceByte> {
++            Some(SourceByte(b.0))
++        }
++    }
++
++    #[test]
++    fn marker_inventory_gates_source_access_and_reuses_exact_snapshot() {
++        let cache = RefCell::new(None);
++        let stamp = SourceStamp {
++            document: 1,
++            generation: 2,
++        };
++        let layout = LayoutStamp {
++            source: stamp,
++            presentation: 3,
++        };
++        let source = SourceSnapshot {
++            stamp,
++            text: Arc::from("- item\n"),
++        };
++        let pin = |markers| PinnedProjection {
++            stamp: layout,
++            projection: Arc::new(Fixture {
++                source: source.clone(),
++                markers,
++            }),
++        };
++        let absent = pin(vec![]);
++        let present = pin(vec![ProjectionMarker {
++            range: SourceByte(0)..SourceByte(1),
++            scope: SourceByte(0)..SourceByte(6),
++            kind: MarkerKind::Bullet { depth: 1 },
++        }]);
++        for candidate in [None, Some(&absent)] {
++            assert!(
++                source_for_markers(candidate, layout, stamp, true, &cache, |_| panic!(
++                    "empty inventory must not read source"
++                ))
++                .is_none()
++            );
++        }
++        let stale = SourceStamp {
++            generation: 4,
++            ..stamp
++        };
++        assert!(
++            source_for_markers(Some(&present), layout, stale, true, &cache, |_| panic!(
++                "stale pin must not read source"
++            ))
++            .is_none()
++        );
++        assert!(
++            source_for_markers(Some(&present), layout, stamp, false, &cache, |_| panic!(
++                "unsupported alignment must not read source"
++            ))
++            .is_none()
++        );
++        let calls = Cell::new(0);
++        let captured = source_for_markers(Some(&present), layout, stamp, true, &cache, |text| {
++            calls.set(calls.get() + 1);
++            text == "- item\n"
++        })
++        .unwrap();
++        let reused = source_for_markers(Some(&present), layout, stamp, true, &cache, |_| {
++            panic!("unchanged snapshot must not scan source")
++        })
++        .unwrap();
++        assert!(
++            Arc::ptr_eq(&captured, &reused),
++            "reuse grapheme boundaries too"
++        );
++        assert_eq!(calls.get(), 1, "positive control must check exact bytes");
++        let foreign = PinnedProjection {
++            stamp: layout,
++            projection: Arc::new(Fixture {
++                source: SourceSnapshot {
++                    stamp,
++                    text: Arc::from("- wrong bytes"),
++                },
++                markers: present.projection.markers().to_vec(),
++            }),
++        };
++        assert!(
++            source_for_markers(Some(&foreign), layout, stamp, true, &cache, |text| text
++                == "- item\n")
++            .is_none()
++        );
++        let revised_layout = LayoutStamp {
++            source: stale,
++            ..layout
++        };
++        let revised = PinnedProjection {
++            stamp: revised_layout,
++            projection: Arc::new(Fixture {
++                source: SourceSnapshot {
++                    stamp: stale,
++                    text: source.text.clone(),
++                },
++                markers: present.projection.markers().to_vec(),
++            }),
++        };
++        let new_revision =
++            source_for_markers(Some(&revised), revised_layout, stale, true, &cache, |_| {
++                calls.set(calls.get() + 1);
++                true
++            })
++            .unwrap();
++        assert_eq!(calls.get(), 2, "new source generation must revalidate");
++        assert!(!Arc::ptr_eq(&captured, &new_revision));
++        assert!(
++            Arc::ptr_eq(&captured.snapshot.text, &source.text),
++            "reuse allocation"
++        );
++        assert!(
++            source_for_markers(
++                Some(&present),
++                layout,
++                stamp,
++                true,
++                &RefCell::new(None),
++                |_| false
++            )
++            .is_none(),
++            "equal stamp cannot admit wrong bytes"
++        );
++    }
++}
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -315,6 +315,7 @@
+     pub(super) mode: LayoutMode,
+     pub(super) text: Rope,
+     pub(super) projection: ProjectionSession,
++    pub(super) marker_source_cache: std::cell::RefCell<Option<std::sync::Arc<super::marker_paint::MarkerSource>>>,
+     exact_clipboard: ClipboardSession,
+     pub(super) projection_pending_click: Option<(MouseDownEvent, bool)>,
+     pub(super) projection_pending_vertical: Option<super::movement::PendingVertical>,
+@@ -659,6 +660,7 @@
+             focus_handle: focus_handle.clone(),
+             text: "".into(),
+             projection: ProjectionSession::default(),
++            marker_source_cache: Default::default(),
+             exact_clipboard: ClipboardSession::default(),
+             projection_pending_click: None,
+             projection_pending_vertical: None,

@@ -7,8 +7,9 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::source_projection::{self, Active, MapError, Plan, Region, Snapshot};
 
+pub mod decorations;
 mod retained;
-pub use retained::RetainedPresentation;
+pub use retained::{RetainedPresentation, RevealSnapshot};
 
 pub const MAX_BYTES: usize = 64 * 1024;
 pub const MAX_NODES: usize = 4096;
@@ -63,12 +64,21 @@ pub struct Classification {
     plan: Plan,
     styles: Vec<StyleSpan>,
     marker_scopes: Vec<(Range<usize>, Range<usize>)>,
+    decorations: Vec<decorations::Marker>,
     links: Vec<NoteLink>,
     headings: Vec<Heading>,
     reasons: Vec<SourceReason>,
 }
 
 impl Classification {
+    /// Paint metadata is valid only for the exact classified source revision.
+    pub fn decorations_for(&self, current: &Snapshot) -> Result<&[decorations::Marker], MapError> {
+        if &self.snapshot != current {
+            return Err(MapError::StaleSnapshot);
+        }
+        Ok(&self.decorations)
+    }
+
     pub fn snapshot(&self) -> &Snapshot {
         &self.snapshot
     }
@@ -145,6 +155,7 @@ fn fallback(snapshot: &Snapshot, reason: SourceReason) -> Classification {
         plan: Plan::new(snapshot, vec![]),
         styles: vec![],
         marker_scopes: vec![],
+        decorations: vec![],
         links: vec![],
         headings: vec![],
         reasons: vec![reason],
@@ -280,6 +291,7 @@ pub fn classify(snapshot: &Snapshot) -> Classification {
         plan,
         styles,
         marker_scopes,
+        decorations: decorations::extract(root, &context).unwrap_or_default(),
         links,
         headings,
         reasons,

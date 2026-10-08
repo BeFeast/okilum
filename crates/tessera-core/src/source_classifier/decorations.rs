@@ -1,0 +1,411 @@
+//! Read-only paint metadata from the classifier's existing, guarded AST.
+//! No projection regions, formatting acceptance or reveal scopes are modified.
+use super::{Context, MAX_STYLES_AND_REASONS};
+use comrak::nodes::{AstNode, ListType, NodeValue};
+use std::ops::Range;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Unordered { depth: usize },
+    Quote { depth: usize },
+    ThematicBreak,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Marker {
+    pub range: Range<usize>,
+    /// AST container bounds; the shared policy adapter decides reveal visibility.
+    pub scope: Range<usize>,
+    pub kind: Kind,
+}
+
+pub(super) fn extract<'a>(root: &'a AstNode<'a>, context: &Context<'_>) -> Option<Vec<Marker>> {
+    let mut markers = Vec::new();
+    for node in root.descendants() {
+        let value = &node.data.borrow().value;
+        match value {
+            NodeValue::Item(list) if list.list_type == ListType::Bullet => {
+                let scope = context.range(node)?;
+                let raw = context.source.get(scope.clone())?;
+                if raw.as_bytes().first().copied() != Some(list.bullet_char)
+                    || !matches!(list.bullet_char, b'-' | b'+' | b'*')
+                    || raw
+                        .as_bytes()
+                        .get(1)
+                        .is_some_and(|b| !b.is_ascii_whitespace())
+                {
+                    return None;
+                }
+                // Keep checkbox paint unchanged even though tasklist parsing is
+                // intentionally not enabled in the formatting classifier.
+                let body = raw.get(1..)?.trim_start_matches([' ', '\t']);
+                if ["[ ]", "[x]", "[X]"]
+                    .iter()
+                    .any(|prefix| body.starts_with(prefix))
+                {
+                    continue;
+                }
+                let depth = node
+                    .ancestors()
+                    .filter(|ancestor| matches!(ancestor.data.borrow().value, NodeValue::List(_)))
+                    .count();
+                markers.push(Marker {
+                    range: scope.start..scope.start + 1,
+                    scope,
+                    kind: Kind::Unordered { depth },
+                });
+            }
+            NodeValue::BlockQuote => {
+                let scope = context.range(node)?;
+                if context.source.as_bytes().get(scope.start) != Some(&b'>') {
+                    return None;
+                }
+                let depth = node
+                    .ancestors()
+                    .filter(|ancestor| {
+                        matches!(ancestor.data.borrow().value, NodeValue::BlockQuote)
+                    })
+                    .count();
+                let pos = node.data.borrow().sourcepos;
+                for line in pos.start.line..=pos.end.line {
+                    let start = *context.lines.get(line - 1)?;
+                    let end = context
+                        .lines
+                        .get(line)
+                        .copied()
+                        .unwrap_or(context.source.len());
+                    let raw = context.source.get(start..end)?.as_bytes();
+                    let mut cursor = 0;
+                    let mut delimiter = None;
+                    for level in 0..depth {
+                        let spaces = raw[cursor..].iter().take_while(|&&b| b == b' ').count();
+                        // More indentation may be literal code in a lazy continuation.
+                        if spaces > 3 {
+                            break;
+                        }
+                        cursor += spaces;
+                        if raw.get(cursor) != Some(&b'>') {
+                            break;
+                        }
+                        if level + 1 == depth {
+                            delimiter = Some(start + cursor);
+                        }
+                        cursor += 1;
+                        if raw.get(cursor) == Some(&b' ') {
+                            cursor += 1;
+                        }
+                    }
+                    if let Some(offset) = delimiter {
+                        if offset < scope.start || offset >= scope.end {
+                            return None;
+                        }
+                        markers.push(Marker {
+                            range: offset..offset + 1,
+                            scope: scope.clone(),
+                            kind: Kind::Quote { depth },
+                        });
+                    } else if line == pos.start.line {
+                        // Unsupported prefix (e.g. quote nested after a list marker).
+                        return None;
+                    }
+                }
+            }
+            NodeValue::ThematicBreak => {
+                let scope = context.range(node)?;
+                let raw = context.source.get(scope.clone())?;
+                let mut delimiters = raw.bytes().filter(|b| !matches!(b, b' ' | b'\t'));
+                let delimiter = delimiters.next()?;
+                if !matches!(delimiter, b'-' | b'_' | b'*') {
+                    return None;
+                }
+                let mut count = 1;
+                for byte in delimiters {
+                    if byte != delimiter {
+                        return None;
+                    }
+                    count += 1;
+                }
+                if count < 3 {
+                    return None;
+                }
+                markers.push(Marker {
+                    range: scope.clone(),
+                    scope,
+                    kind: Kind::ThematicBreak,
+                });
+            }
+            _ => {}
+        }
+        if markers.len() > MAX_STYLES_AND_REASONS {
+            return None;
+        }
+    }
+    validate_ranges(&markers, context)?;
+    markers.sort_by_key(|marker| marker.range.start);
+    if markers
+        .windows(2)
+        .any(|pair| pair[0].range.end > pair[1].range.start)
+    {
+        return None;
+    }
+    Some(markers)
+}
+
+/// Marker/scopes must be grapheme-aligned and scopes must form a laminar family.
+/// Equal scopes are expected for multiple explicit delimiters in one quote.
+fn validate_ranges(markers: &[Marker], context: &Context<'_>) -> Option<()> {
+    for marker in markers {
+        if marker.range.start >= marker.range.end
+            || marker.scope.start >= marker.scope.end
+            || marker.range.start < marker.scope.start
+            || marker.range.end > marker.scope.end
+            || ![
+                marker.range.start,
+                marker.range.end,
+                marker.scope.start,
+                marker.scope.end,
+            ]
+            .into_iter()
+            .all(|offset| context.boundary(offset))
+        {
+            return None;
+        }
+    }
+    let mut scopes: Vec<_> = markers.iter().map(|m| m.scope.clone()).collect();
+    scopes.sort_by_key(|scope| (scope.start, std::cmp::Reverse(scope.end)));
+    scopes.dedup();
+    let mut parents: Vec<Range<usize>> = Vec::new();
+    for scope in scopes {
+        while parents
+            .last()
+            .is_some_and(|parent| parent.end <= scope.start)
+        {
+            parents.pop();
+        }
+        if parents.last().is_some_and(|parent| scope.end > parent.end) {
+            return None;
+        }
+        parents.push(scope);
+    }
+    Some(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        source_classifier::classify,
+        source_projection::{MapError, Snapshot},
+    };
+
+    fn snapshot(text: &str, revision: u64) -> Snapshot {
+        Snapshot::new("decorations", revision, text)
+    }
+
+    #[test]
+    fn ast_distinguishes_markers_from_frontmatter_setext_and_fences() {
+        let source = snapshot("---\ntitle: test\n---\n\nHeading\n---\n\n```md\n* raw\n> raw\n---\n```\n\n* actual\n\ntext\n\n***\n", 1);
+        let classified = classify(&source);
+        let markers = classified.decorations_for(&source).unwrap();
+        assert_eq!(markers.len(), 2, "{markers:?}");
+        assert!(matches!(markers[0].kind, Kind::Unordered { depth: 1 }));
+        assert_eq!(markers[1].kind, Kind::ThematicBreak);
+    }
+
+    #[test]
+    fn nested_lists_quotes_and_task_controls() {
+        let source = snapshot(
+            "- one\n  - two\n    - three\n\n> quote\n> continuation\n\n1. ordered\n\n- [ ] task\n",
+            1,
+        );
+        let classified = classify(&source);
+        let markers = classified.decorations_for(&source).unwrap();
+        assert_eq!(
+            markers.iter().map(|m| m.kind.clone()).collect::<Vec<_>>(),
+            vec![
+                Kind::Unordered { depth: 1 },
+                Kind::Unordered { depth: 2 },
+                Kind::Unordered { depth: 3 },
+                Kind::Quote { depth: 1 },
+                Kind::Quote { depth: 1 },
+            ]
+        );
+        for marker in markers {
+            assert!(source.source().get(marker.range.clone()).is_some());
+        }
+    }
+
+    #[test]
+    fn delayed_metadata_requires_exact_revision_and_bytes() {
+        let source = snapshot("- проверка\r\n", 1);
+        let classified = classify(&source);
+        assert_eq!(classified.decorations_for(&source).unwrap().len(), 1);
+        for stale in [snapshot("- проверка\r\n", 2), snapshot("- changed\r\n", 1)] {
+            assert!(matches!(
+                classified.decorations_for(&stale),
+                Err(MapError::StaleSnapshot)
+            ));
+        }
+    }
+    #[test]
+    fn metadata_on_off_preserves_projection_styles_reasons_and_source() {
+        use crate::source_classifier::RetainedPresentation;
+        use crate::source_projection::Active;
+        let source = snapshot(
+            "# Heading\n\n**bold** [[note|alias]]\n\n- list\n\n> quote\n\n***\n",
+            1,
+        );
+        let on = classify(&source);
+        assert!(!on.decorations_for(&source).unwrap().is_empty());
+        let mut off = on.clone();
+        off.decorations.clear();
+        assert_eq!(format!("{:?}", on.plan()), format!("{:?}", off.plan()));
+        assert_eq!(
+            on.styles_for(&source).unwrap(),
+            off.styles_for(&source).unwrap()
+        );
+        assert_eq!(on.reasons(), off.reasons());
+        let a = RetainedPresentation::new(&on);
+        let b = RetainedPresentation::new(&off);
+        for offset in 0..=source.source().len() {
+            let active = Active {
+                selection: Some(offset..offset),
+                composition: None,
+            };
+            let left = a.project(&active).unwrap();
+            let right = b.project(&active).unwrap();
+            assert_eq!(left.display(), right.display());
+            for byte in 0..=source.source().len() {
+                assert_eq!(
+                    left.source_to_display(&source, byte),
+                    right.source_to_display(&source, byte)
+                );
+            }
+        }
+        assert_eq!(
+            source.copy_source(0..source.source().len()).unwrap(),
+            source.source()
+        );
+    }
+
+    #[test]
+    fn ambiguity_and_existing_guards_return_empty_metadata() {
+        for text in ["- > quote\n", "- x\0\n", "---\nunterminated\n- x\n"] {
+            let source = snapshot(text, 1);
+            assert!(classify(&source)
+                .decorations_for(&source)
+                .unwrap()
+                .is_empty());
+        }
+        let text = "- x\n".repeat(super::super::MAX_BYTES / 4 + 1);
+        let source = snapshot(&text, 1);
+        assert!(classify(&source)
+            .decorations_for(&source)
+            .unwrap()
+            .is_empty());
+    }
+    #[test]
+    fn nested_quote_delimiters_use_ast_scopes_and_keep_lazy_content() {
+        let source = snapshot(
+            "> outer\r\n> > inner\r\n> >続き\r\n\r\n> lazy\ncontinuation\n",
+            1,
+        );
+        let classified = classify(&source);
+        let markers = classified.decorations_for(&source).unwrap();
+        assert!(!markers.is_empty());
+        assert_eq!(
+            markers
+                .iter()
+                .filter(|m| m.kind == Kind::Quote { depth: 2 })
+                .count(),
+            2
+        );
+        for marker in markers {
+            assert_eq!(&source.source()[marker.range.clone()], ">");
+            assert!(
+                marker.scope.start <= marker.range.start && marker.range.end <= marker.scope.end
+            );
+        }
+    }
+    #[test]
+    fn marker_and_scope_endpoints_require_graphemes_and_containment() {
+        let context = Context::new("a\u{301}bcdef");
+        let valid = Marker {
+            range: 3..4,
+            scope: 0..8,
+            kind: Kind::ThematicBreak,
+        };
+        assert!(validate_ranges(std::slice::from_ref(&valid), &context).is_some());
+        for (range, scope) in [
+            (1..3, 0..8),
+            (0..1, 0..8),
+            (3..4, 1..8),
+            (3..4, 0..1),
+            (3..4, 4..8),
+            (3..9, 0..9),
+            (4..4, 0..8),
+        ] {
+            let invalid = Marker {
+                range,
+                scope,
+                ..valid.clone()
+            };
+            assert!(validate_ranges(&[invalid], &context).is_none());
+        }
+    }
+
+    #[test]
+    fn scopes_allow_nesting_equality_and_siblings_but_not_crossing() {
+        let context = Context::new("0123456789");
+        let marker = |range, scope| Marker {
+            range,
+            scope,
+            kind: Kind::Quote { depth: 1 },
+        };
+        assert!(validate_ranges(
+            &[
+                marker(0..1, 0..10),
+                marker(2..3, 2..5),
+                marker(3..4, 2..5),
+                marker(7..8, 7..9)
+            ],
+            &context
+        )
+        .is_some());
+        assert!(validate_ranges(&[marker(0..1, 0..6), marker(4..5, 4..8)], &context).is_none());
+    }
+    #[test]
+    fn quote_marker_joined_to_combining_mark_stays_raw() {
+        let valid = snapshot("> quote\n", 1);
+        assert_eq!(classify(&valid).decorations_for(&valid).unwrap().len(), 1);
+        let joined = snapshot(">\u{301}quote\n", 1);
+        assert!(classify(&joined)
+            .decorations_for(&joined)
+            .unwrap()
+            .is_empty());
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn canonical_save_roundtrip_preserves_authored_markers_and_line_endings() {
+        use crate::file_editor::FileEditor;
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("markers.md");
+        let source = "- проверка\r\n  - nested\r\n\r\n> quote\r\n\r\n***\r\n";
+        std::fs::write(&path, source).unwrap();
+        let current = snapshot(source, 1);
+        assert!(!classify(&current)
+            .decorations_for(&current)
+            .unwrap()
+            .is_empty());
+        let mut editor = FileEditor::open(&path, &root.path().join("state")).unwrap();
+        let edited = format!("{source}positive control\r\n");
+        editor.set_text(edited.clone()).unwrap();
+        editor.save().unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), edited.as_bytes());
+        editor
+            .set_text(current.copy_source(0..source.len()).unwrap())
+            .unwrap();
+        editor.save().unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), source.as_bytes());
+    }
+}

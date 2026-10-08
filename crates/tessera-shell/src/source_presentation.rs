@@ -5,8 +5,8 @@ use std::{
 };
 
 use gpui_component::input::projection::{
-    ActiveSource, ConcealBias, ProjectedByte, ProjectionProvider, ProjectionStyle, SourceByte,
-    SourceProjection, SourceSnapshot,
+    ActiveSource, ConcealBias, MarkerKind, ProjectedByte, ProjectionMarker, ProjectionProvider,
+    ProjectionStyle, SourceByte, SourceProjection, SourceSnapshot,
 };
 use tessera_core::{
     source_classifier::{self, Classification, RetainedPresentation, Style},
@@ -165,34 +165,64 @@ impl CachedProvider {
                 None => replacement,
             });
         }
-        let projection = retained.project(&reveal).ok()?;
+        let reveal_snapshot = retained.prepare_reveal(&reveal).ok()?;
+        let projection = reveal_snapshot.projection().clone();
         let styles = projected_styles(&projection, retained.styles(), colors)?;
         Some(Arc::new(MappedProjection {
             source: source.clone(),
-            projection,
+            markers: self
+                .classified
+                .decorations_for(&current)
+                .unwrap_or_default()
+                .iter()
+                .map(|m| ProjectionMarker {
+                    range: SourceByte(m.range.start)..SourceByte(m.range.end),
+                    scope: SourceByte(m.scope.start)..SourceByte(m.scope.end),
+                    kind: match m.kind {
+                        source_classifier::decorations::Kind::Unordered { depth } => {
+                            MarkerKind::Bullet { depth }
+                        }
+                        source_classifier::decorations::Kind::Quote { depth } => {
+                            MarkerKind::Quote { depth }
+                        }
+                        source_classifier::decorations::Kind::ThematicBreak => MarkerKind::Rule,
+                    },
+                })
+                .collect(),
+            reveal: reveal_snapshot,
             styles,
         }))
     }
 }
 
 struct MappedProjection {
+    markers: Vec<ProjectionMarker>,
     source: SourceSnapshot,
-    projection: Arc<Projection>,
+    reveal: source_classifier::RevealSnapshot,
     styles: Vec<ProjectionStyle>,
 }
 impl SourceProjection for MappedProjection {
+    fn markers(&self) -> &[ProjectionMarker] {
+        &self.markers
+    }
+    fn marker_scope_is_raw(&self, scope: &Range<SourceByte>) -> bool {
+        self.reveal
+            .is_raw(self.reveal.projection().snapshot(), &raw_range(scope))
+    }
+
     fn source(&self) -> &SourceSnapshot {
         &self.source
     }
     fn text(&self) -> &str {
-        self.projection.display()
+        self.reveal.projection().display()
     }
     fn styles(&self) -> &[ProjectionStyle] {
         &self.styles
     }
     fn to_projected(&self, source: SourceByte, _bias: ConcealBias) -> Option<ProjectedByte> {
-        self.projection
-            .source_to_display(self.projection.snapshot(), source.0)
+        self.reveal
+            .projection()
+            .source_to_display(self.reveal.projection().snapshot(), source.0)
             .ok()
             .map(ProjectedByte)
     }
@@ -201,8 +231,9 @@ impl SourceProjection for MappedProjection {
             ConcealBias::Left => Bias::Left,
             ConcealBias::Right => Bias::Right,
         };
-        self.projection
-            .display_to_source(self.projection.snapshot(), projected.0, bias)
+        self.reveal
+            .projection()
+            .display_to_source(self.reveal.projection().snapshot(), projected.0, bias)
             .ok()
             .map(SourceByte)
     }
@@ -293,6 +324,105 @@ mod tests {
             ..ActiveSource::default()
         }
     }
+    #[test]
+    fn decoration_inventory_is_exact_revision_only_and_pinned() {
+        let source = source("- list\n\n> quote\n\n***\n\nend");
+        let provider = CachedProvider::classify(source.clone());
+        let idle = inactive(&source);
+        let projection = provider.compose(&source, &idle).unwrap();
+        assert_eq!(projection.markers().len(), 3);
+        assert_eq!(projection.text(), source.text.as_ref());
+        let old_ranges: Vec<_> = projection
+            .markers()
+            .iter()
+            .map(|m| m.range.clone())
+            .collect();
+        for change_bytes in [false, true] {
+            let mut current = source.clone();
+            current.stamp.generation += 1;
+            if change_bytes {
+                current.text = Arc::from("- list\n\n> quote\n\n***\n\nended");
+            }
+            if let Some(updated) = provider.compose(&current, &inactive(&current)) {
+                assert!(
+                    updated.markers().is_empty(),
+                    "retained projection must not remap decoration metadata"
+                );
+            }
+            assert_eq!(
+                projection
+                    .markers()
+                    .iter()
+                    .map(|m| m.range.clone())
+                    .collect::<Vec<_>>(),
+                old_ranges
+            );
+        }
+    }
+
+    #[test]
+    fn pinned_marker_policy_uses_its_projection_and_only_allows_raw_safety_override() {
+        use gpui_component::input::projection::{LayoutStamp, PinnedProjection};
+        let source = source("[label](destination) tail e\u{301}");
+        let provider = CachedProvider::classify(source.clone());
+        let idle = inactive(&source);
+        let stamp = LayoutStamp {
+            source: source.stamp,
+            presentation: 17,
+        };
+        let pin = PinnedProjection {
+            stamp,
+            projection: provider.compose(&source, &idle).unwrap(),
+        };
+        let scope = SourceByte(0)..SourceByte(20);
+        let text = pin.projection.text().to_owned();
+        assert!(!pin.marker_scope_is_raw(stamp, &source, &scope, &idle));
+        let active = ActiveSource {
+            anchor: SourceByte(2),
+            head: SourceByte(3),
+            ..idle.clone()
+        };
+        assert!(pin.marker_scope_is_raw(stamp, &source, &scope, &active));
+        for safety in [
+            ActiveSource {
+                composition: Some(SourceByte(2)..SourceByte(3)),
+                ..idle.clone()
+            },
+            ActiveSource {
+                replacement: Some(SourceByte(2)..SourceByte(3)),
+                ..idle.clone()
+            },
+            ActiveSource {
+                composition: Some(SourceByte(usize::MAX)..SourceByte(usize::MAX)),
+                ..idle.clone()
+            },
+        ] {
+            assert!(pin.marker_scope_is_raw(stamp, &source, &scope, &safety));
+        }
+        let next = provider.compose(&source, &active).unwrap();
+        assert_ne!(next.text(), text);
+        // Adoption elsewhere cannot replace this frame's policy or hit map.
+        assert_eq!(pin.projection.text(), text);
+        assert!(!pin.marker_scope_is_raw(stamp, &source, &scope, &idle));
+        assert!(pin.marker_scope_is_raw(
+            LayoutStamp {
+                presentation: 18,
+                ..stamp
+            },
+            &source,
+            &scope,
+            &idle
+        ));
+        let mut stale = source.clone();
+        stale.text = Arc::from("same stamp but wrong source");
+        assert!(pin.marker_scope_is_raw(stamp, &stale, &scope, &idle));
+        stale = source.clone();
+        stale.stamp.generation += 1;
+        assert!(pin.marker_scope_is_raw(stamp, &stale, &scope, &idle));
+        let inside_grapheme = SourceByte(source.text.len() - 2)..SourceByte(source.text.len());
+        assert!(pin.marker_scope_is_raw(stamp, &source, &inside_grapheme, &idle));
+    }
+
     #[test]
     fn cached_projection_maps_raw_source_and_nested_styles() {
         let source = source("***nested*** and `code`\n\nend");
