@@ -713,3 +713,39 @@ are open to review; none changes the recommendation above.
   JSON-lines file (531,440 records) in 0.18 s on 4 threads and 0.41 s on one,
   with a 16.2 MiB index. Its counts match both the generator and an independent
   byte search.
+
+## Implementation notes (slice 5, core)
+
+`tessera_core::log::tail::LogTail` follows one file. Decisions, open to review:
+
+- **Polling, no watcher yet.** The core type owns no thread and no notify
+  watcher. The shell drives it at `LogTail::interval()`: 250 ms locally, 2 s
+  on a network root (`poll_interval_for`, which uses `watch::is_network_root`).
+  A notify-based wake-up can be layered on in the shell slice without changing
+  the core API.
+- **Split poll.** `begin_poll` captures a `Send` request, `PollRequest::read`
+  does every file read (any thread), and `apply` indexes. Each state change
+  takes a new process-wide generation; a read taken at another generation
+  (an older poll, or another follower) is discarded as `Stale`, so a late
+  network read never appends lines twice or overwrites a newer state.
+- **Append.** Positional reads from the held offset; only complete lines are
+  indexed (`LogIndex::extend`, parallel for large bursts); an unfinished last
+  line is held until its newline arrives. While the file is shorter than the
+  detection sample (256 non-blank lines or 64 KiB), the format verdict is
+  re-checked and, if it changes, that short index is rebuilt (`reindexed`);
+  after that the verdict is final and old entries are never parsed again.
+- **Truncate.** Detected when the size drops below the held offset, or when
+  the 64 bytes before it changed (copy-truncate followed by a longer rewrite
+  between two polls). An identical rewrite of those bytes is not detectable.
+- **Rotate.** The path's identity (dev+ino on Unix, volume serial + file index
+  on Windows via `GetFileInformationByHandle`) differs from the open handle's:
+  the old file is read to its end, finished, and the new one followed from 0.
+  While the path names no file the open handle is still followed
+  (`is_missing`).
+- **Nothing is dropped.** On truncate or rotate, the held content, including
+  an unfinished last line, is finished as a `LogSegment` and handed to the
+  caller (the "previous content kept above" separator of §3.4). The follower
+  keeps only the current incarnation.
+- **Never mapped.** The followed file is read through a shared-mode handle
+  (read, write and delete sharing on Windows), per §3.6. The 2 GiB cap of the
+  single-file viewer applies; a larger file is an error, not a silent cut.

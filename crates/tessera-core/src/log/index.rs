@@ -96,18 +96,40 @@ impl LogIndex {
 
     /// The result is identical for every thread count.
     pub fn build_with_threads(data: &[u8], threads: usize) -> Self {
-        let format = detect::detect(data);
-        let threads = threads.clamp(1, (data.len() / MIN_CHUNK_BYTES).max(1));
-        let bounds = chunk_bounds(data, threads);
+        let mut index = LogIndex {
+            format: detect::detect(data),
+            entries: Vec::new(),
+            stats: LogStats::default(),
+            bytes: 0,
+        };
+        index.extend_with_threads(data, data.len(), threads);
+        index
+    }
+
+    /// Indexes `data[self.bytes()..end]` and appends it, keeping the format
+    /// verdict. `data` is the byte sequence this index was built over, grown;
+    /// entries already indexed are not parsed again. Follow mode (tail.rs)
+    /// passes an `end` just after a newline, or the end of a finished file.
+    pub(super) fn extend(&mut self, data: &[u8], end: usize) {
+        let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+        self.extend_with_threads(data, end, threads);
+    }
+
+    fn extend_with_threads(&mut self, data: &[u8], end: usize, threads: usize) {
+        let start = self.bytes as usize;
+        let format = self.format;
+        let span = &data[start..end];
+        let threads = threads.clamp(1, (span.len() / MIN_CHUNK_BYTES).max(1));
+        let bounds = chunk_bounds(span, threads);
         let chunks: Vec<Chunk> = if bounds.len() <= 2 {
-            vec![index_chunk(data, 0, data.len(), format)]
+            vec![index_chunk(data, start, end, format)]
         } else {
             std::thread::scope(|scope| {
                 let workers: Vec<_> = bounds
                     .windows(2)
                     .map(|w| {
-                        let (start, end) = (w[0], w[1]);
-                        scope.spawn(move || index_chunk(data, start, end, format))
+                        let (from, to) = (start + w[0], start + w[1]);
+                        scope.spawn(move || index_chunk(data, from, to, format))
                     })
                     .collect();
                 workers
@@ -116,22 +138,18 @@ impl LogIndex {
                     .collect()
             })
         };
-        let mut entries = Vec::with_capacity(chunks.iter().map(|c| c.entries.len()).sum());
-        let mut stats = LogStats::default();
+        self.entries
+            .reserve(chunks.iter().map(|c| c.entries.len()).sum());
         for chunk in chunks {
-            let base = stats.lines as u32;
-            entries.extend(chunk.entries.into_iter().map(|mut entry| {
-                entry.line += base;
-                entry
-            }));
-            stats.add(&chunk.stats);
+            let base = self.stats.lines as u32;
+            self.entries
+                .extend(chunk.entries.into_iter().map(|mut entry| {
+                    entry.line += base;
+                    entry
+                }));
+            self.stats.add(&chunk.stats);
         }
-        LogIndex {
-            format,
-            entries,
-            stats,
-            bytes: data.len() as u64,
-        }
+        self.bytes = end as u64;
     }
 
     pub fn format(&self) -> Format {
