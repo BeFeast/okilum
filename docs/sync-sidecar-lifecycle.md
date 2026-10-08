@@ -176,3 +176,18 @@ callbacks and leave durable recovery intent on timeout. Test close Reader/login,
 sleep/offline, update without Reader, moved/duplicate/trashed app, child exit and
 unchanged device identity on real macOS 13+ and Windows. Only synthetic vaults and
 the isolated CT141 test hub are authorized. Production CT119 is not part of this work.
+
+### Native process-tree and scheduler diagnostics
+
+The Windows Job Object test passed on hosted windows-2022 / Rust 1.99 MSVC:
+https://github.com/BeFeast/tessera/actions/runs/37754975122 . A live descendant
+was confirmed inside the job before testing explicit termination and kill on
+job close. This establishes that process-tree primitive only.
+
+The disabled Task Scheduler fixture failed its owner/state assertion in that
+same run. Its guard reports not-running unconditionally, so the assertion failure
+identifies an owner mismatch; it does not establish which SID Windows selected.
+The next diagnostic logs default and explicit registration owner SDDL/SID,
+principal and native state on the same runner. The candidate supplies an explicit
+owner SID at registration while retaining scheduler default access rules.
+Scheduler acceptance and interactive supervisor execution remain unconfirmed.

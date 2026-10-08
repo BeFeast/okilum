@@ -135,6 +135,12 @@ impl<G: TaskGuard> TaskApi for NativeTasks<G> {
         // The typed adapter provides the restricted XML. TASK_CREATE preserves a
         // racing foreign task instead of overwriting it with UPDATE or FORCE.
         let empty = VARIANT::default();
+        // The scheduler's default security owner can be the token's primary
+        // owner (for example Administrators), not its user SID. Later ownership
+        // checks intentionally require the user SID, so bind it explicitly.
+        // O: alone leaves the scheduler's default access rules unchanged.
+        let owner = super::security::current_sid()?;
+        let security = VARIANT::from(BSTR::from(format!("O:{owner}")));
         unsafe {
             self.folder.RegisterTask(
                 &BSTR::from(name),
@@ -143,7 +149,7 @@ impl<G: TaskGuard> TaskApi for NativeTasks<G> {
                 &empty,
                 &empty,
                 TASK_LOGON_INTERACTIVE_TOKEN,
-                &empty,
+                &security,
             )?;
         }
         Ok(())
@@ -218,6 +224,23 @@ mod tests {
         }
     }
 
+    fn print_registration(fixture: &FixtureTask, expected: &str, label: &str) -> Result<()> {
+        let task = fixture
+            .api
+            .task(&fixture.name)?
+            .ok_or_else(|| anyhow::anyhow!("diagnostic task missing"))?;
+        unsafe {
+            let sddl = task.GetSecurityDescriptor(1)?.to_string();
+            let actual = super::super::security::descriptor_owner_sid(&sddl)?;
+            let mut principal = BSTR::new();
+            task.Definition()?.Principal()?.UserId(&mut principal)?;
+            let principal = principal.to_string();
+            let state = task.State()?.0;
+            eprintln!("{label}: process_sid={expected}; owner_sid={actual}; owner_sddl={sddl}; principal={principal}; scheduler_state={state}");
+        }
+        Ok(())
+    }
+
     #[test]
     fn native_task_registration_collision_and_owned_removal() -> Result<()> {
         let root = tempfile::tempdir()?;
@@ -246,16 +269,42 @@ mod tests {
             fixture.api.read(&fixture.name)?.is_none(),
             "fixture name collision"
         );
+        // Observe the scheduler defaults in the same runner/token before the
+        // explicit-owner registration. This disabled fixture never executes.
+        let empty = VARIANT::default();
+        unsafe {
+            fixture.api.folder.RegisterTask(
+                &BSTR::from(&fixture.name),
+                &BSTR::from(&xml),
+                TASK_CREATE.0,
+                &empty,
+                &empty,
+                TASK_LOGON_INTERACTIVE_TOKEN,
+                &empty,
+            )?;
+        }
+        fixture.created = true;
+        print_registration(&fixture, &owner, "scheduler-default")?;
+        unsafe {
+            fixture
+                .api
+                .folder
+                .DeleteTask(&BSTR::from(&fixture.name), 0)?;
+        }
+        fixture.created = false;
         fixture.api.create(&fixture.name, &xml)?;
         fixture.created = true;
+        print_registration(&fixture, &owner, "explicit-owner")?;
         let task = fixture
             .api
             .read(&fixture.name)?
             .ok_or_else(|| anyhow::anyhow!("created task missing"))?;
         ensure!(
-            task.owner_sid == owner && !task.running,
-            "unexpected task owner/state"
+            task.owner_sid == owner,
+            "task owner mismatch: expected {owner}, got {}",
+            task.owner_sid
         );
+        ensure!(!task.running, "disabled fixture unexpectedly running");
         ensure!(
             fixture.api.create(&fixture.name, &xml).is_err(),
             "TASK_CREATE overwrote existing registration"
