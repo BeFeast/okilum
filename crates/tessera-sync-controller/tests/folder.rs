@@ -156,7 +156,7 @@ fn folder(peer: &Peer, other: &Peer, id: &str, kind: &str) -> serde_json::Value 
 #[ignore = "requires CT141 and both pinned isolated binaries"]
 fn owned_folder_and_external_replica_keep_their_boundaries() -> Result<()> {
     let root = tempfile::tempdir()?;
-    let hub = Peer::new(
+    let mut hub = Peer::new(
         root.path(),
         "hub",
         std::env::var_os("TESSERA_SYNC_HUB")
@@ -448,6 +448,66 @@ fn owned_folder_and_external_replica_keep_their_boundaries() -> Result<()> {
                 == Some("bidirectional positive control"),
         )
     })?;
+    // #589: actual transport outage, both process restarts and queued local
+    // changes. Browser approval is still a synthetic receipt in this fixture.
+    let hub_certificate = fs::read(hub.home.join("cert.pem"))?;
+    let client_certificate = fs::read(client.home.join("cert.pem"))?;
+    hub.stop()?;
+    wait("controller observes disconnected hub", || {
+        Ok(!reopened.status()?.hub_connected)
+    })?;
+    write(&client.vault, "offline.md", "queued while hub is down")?;
+    fs::remove_file(client.vault.join("published-after-promotion.md"))?;
+    client.api.scan("controller-fixture")?;
+    client.stop()?;
+    client.start()?;
+    client.api.verify_identity(&client.id)?;
+    assert_eq!(fs::read(client.home.join("cert.pem"))?, client_certificate);
+    assert!(!hub.vault.join("offline.md").exists());
+    assert!(hub.vault.join("published-after-promotion.md").exists());
+    hub.start()?;
+    hub.api.verify_identity(&hub.id)?;
+    assert_eq!(fs::read(hub.home.join("cert.pem"))?, hub_certificate);
+    client.api.scan("controller-fixture")?;
+    wait(
+        "offline edit and delete propagate after both restarts",
+        || {
+            Ok(fs::read_to_string(hub.vault.join("offline.md"))
+                .ok()
+                .as_deref()
+                == Some("queued while hub is down")
+                && !hub.vault.join("published-after-promotion.md").exists())
+        },
+    )?;
+    assert_eq!(client.api.folder("unrelated")?, unrelated);
+    assert!(!client.vault.join(".tessera-index/excluded").exists());
+    // A missing Syncthing safety marker must stop the folder. Moving it outside
+    // the vault prevents it being treated as user content or sent to the hub.
+    let marker = client.vault.join(".stfolder");
+    ensure!(marker.is_dir(), "positive control: managed marker exists");
+    let held_marker = client.home.join("held-marker");
+    fs::rename(&marker, &held_marker)?;
+    let _ = client.api.scan("controller-fixture");
+    wait("missing marker is an explicit folder error", || {
+        let status = client.api.status("controller-fixture")?;
+        Ok(status["state"] == "error" || status["error"].as_str().is_some_and(|s| !s.is_empty()))
+    })?;
+    write(
+        &hub.vault,
+        "after-marker.md",
+        "recover only after marker returns",
+    )?;
+    hub.api.scan("controller-fixture")?;
+    assert!(!client.vault.join("after-marker.md").exists());
+    fs::rename(&held_marker, &marker)?;
+    client.api.scan("controller-fixture")?;
+    wait("restored marker permits real transfer", || {
+        Ok(fs::read_to_string(client.vault.join("after-marker.md"))
+            .ok()
+            .as_deref()
+            == Some("recover only after marker returns"))
+    })?;
+    let observed = reopened.last_connected_at()?;
     // Offline Remove is journaled before REST, and restart cannot re-enroll.
     let external_units = root.path().join("external-units-must-not-exist");
     let runtime = tessera_sync_controller::runtime::Runtime::new(
