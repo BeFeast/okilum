@@ -98,7 +98,11 @@ impl Reader {
         });
     }
 
-    pub(crate) fn render_live_preview_control(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_live_preview_control(
+        &self,
+        labels: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let Some(editing) = &self.editing else {
             return div().into_any_element();
         };
@@ -112,13 +116,14 @@ impl Reader {
                 .is_some_and(|p| p.limited());
         use gpui_component::button::ButtonGroup;
         let live = editing.live_preview.enabled;
-        let labels = reader_ui_state::toolbar_labels(cx);
         ButtonGroup::new("edit-presentation")
             .children([
                 Button::new("reader-live-preview")
                     .ghost()
                     .small()
                     .icon(IconName::Eye)
+                    .h(px(28.))
+                    .when(!labels, |b| b.w(px(28.)))
                     .when(labels, |button| button.label("Live Preview"))
                     .accessibility_label("Live Preview")
                     .tooltip(if limited {
@@ -137,6 +142,8 @@ impl Reader {
                     .ghost()
                     .small()
                     .icon(Icon::default().path("icons/code-xml.svg"))
+                    .h(px(28.))
+                    .when(!labels, |b| b.w(px(28.)))
                     .when(labels, |button| button.label("Source"))
                     .accessibility_label("Source")
                     .tooltip("Markdown source")
@@ -265,7 +272,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         let fixture = tempfile::tempdir().unwrap();
-        let vault = fixture.path().join("vault");
+        let vault = fixture.path().join("Personal knowledge — 研究");
         std::fs::create_dir(&vault).unwrap();
         std::fs::write(vault.join("Note.md"), "# Note\n\nBody text\n").unwrap();
         cx.update(|cx| {
@@ -329,6 +336,51 @@ mod tests {
         visual.simulate_click(read.center(), Modifiers::default());
         visual.run_until_parked();
         reader.read_with(visual, |reader, _| assert!(reader.editing.is_none()));
+        visual.simulate_resize(size(px(480.), px(900.)));
+        reader.update_in(visual, |reader, window, cx| {
+            reader.toggle_source(window, cx)
+        });
+        visual.run_until_parked();
+        assert_eq!(
+            visual.debug_bounds("reader-edit").unwrap().size.width,
+            icon_width,
+            "optional labels yield to glyphs in a narrow editor"
+        );
+        let header = visual.debug_bounds("document-header").unwrap();
+        for control in [
+            "reader-history-back",
+            "reader-history-forward",
+            "reader-read",
+            "reader-edit",
+            "reader-live-preview",
+            "reader-source",
+            "document-more",
+        ] {
+            let bounds = visual.debug_bounds(control).unwrap();
+            assert!(
+                bounds.left() >= header.left() && bounds.right() <= header.right(),
+                "{control} stays inside narrow header"
+            );
+        }
+        visual.simulate_resize(size(px(1100.), px(900.)));
+        reader.update_in(visual, |reader, _, cx| {
+            reader.panel_widths.notes = 200.;
+            reader.panels.open(reader_layout::Panel::Notes);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let panel = visual.debug_bounds("reader-notes-panel").unwrap();
+        let menu = visual.debug_bounds("sidebar-actions").unwrap();
+        let folders = visual.debug_bounds("folders-actions").unwrap();
+        assert!(menu.right() < panel.right());
+        assert!(
+            folders.right() < panel.right(),
+            "Folders actions never clip at 200px"
+        );
+        assert!(
+            visual.debug_bounds("sidebar-new-note").is_none(),
+            "long vault name takes precedence over actions"
+        );
     }
 
     use super::*;

@@ -25,28 +25,26 @@ localisation.
 
 ## Layout
 
-```
-┌ sidebar 264 ┬──────────── document ────────────┬ right 256 ┐
-│ ● ● ●  vault ⌄ ⧉ │ ◧ ← →  Work › Projects › Note   ⌕ ◨ ⋯ │ On this page   │  header 46
-│ Vault  ⌕ ⌘K  │                                  │ Contents        │
-│ tree         │        column ≤ 740 (text 660)   │ Linked from · 3 │
-│ …            │                                  │                 │
-└──────────────┴──────────────────────────────────┴─────────────────┘
-```
+Oleg's toolbar organization decision of **2026-10-08 (#767)** supersedes the
+original combined titlebar and document controls:
 
-- **Window chrome.** Native traffic lights sit at the top-left of the sidebar.
-  When the sidebar is closed, they sit at the start of the document header. There is no
-  separate «Tessera» title row in the Reader; the document header *is* the title
-  bar (`TitleBar` hosts it, so window dragging and double-click still work).
-- **Document header (46 px).** From the left: sidebar toggle (shown selected while
-  the sidebar is open), Back, Forward, breadcrumbs, loading status, flexible space, Search in vault,
-  right-panel toggle, More (⋯). The breadcrumbs show the root-relative folders of the current
-  note, then its title in `text` weight 500. Folder crumbs are `text-muted`.
-  The last crumb's tooltip shows the full root path (replaces the old
-  «reader-document-root» button tooltip).
-- **More menu (⋯).** Open file…, Open folder…, Appearance (System / Light / Dark).
-  The standalone toolbar no longer has text «Open file…/Open folder…» buttons.
-  The onboarding screen keeps them as real buttons.
+- **App titlebar (46 px).** Sidebar toggle and one vault Search at the left;
+  loading feedback, app More and right-panel toggle at the right. Native window
+  controls and dragging remain unchanged. Appearance and Settings are in app
+  More rather than separate toolbar buttons.
+- **Document header (48 px, pinned).** Back/Forward precede folder breadcrumbs
+  and the note title. Clicking the title renames inline. Read/Edit use book/pencil;
+  Edit also has Live Preview/Source (eye/code). Find and note More follow. Save
+  appears only while dirty; save/conflict feedback keeps its existing behavior.
+- **Labels.** Glyphs are the default. Settings → Appearance → “Show labels on
+  toolbar buttons” persists globally; mode labels appear only when the measured
+  title and controls fit. Find yields to More before the title truncates, labels
+  yield to glyphs, and Back/Forward and Read/Edit remain available.
+- **Note More.** Reveal in sidebar, Find, mode, Rename, Move, history, platform
+  Reveal, Copy path, Open in new window, Move to Trash and Close. New window uses
+  the existing vault lifecycle; split view is outside this change.
+- **App More.** Settings, keyboard shortcuts, creation/open/recovery actions,
+  sidebar preferences, Appearance and application commands.
 - **Panels** are separated from the document by one 1 px `border-subtle` line. Panel
   headers are titles (vault name, «On this page»), never «Close panel». Closing
   uses the title-bar toggle or panel shortcut; overlay panels also close on
@@ -66,9 +64,9 @@ automatically so the document reflows without being covered (#677). Their wide
 visibility and preferred widths remain intact and return on expansion. A panel
 opened explicitly in compact mode still uses the overlay. Selecting a note from
 the sidebar dismisses that overlay and focuses the document, retaining the wide
-sidebar preference; expanding a folder keeps the overlay open. The header then shows: traffic lights, sidebar toggle, Back,
-Forward, breadcrumbs (they shrink first; leading folders collapse to «…»),
-Find, right-panel toggle, More.
+sidebar preference; expanding a folder keeps the overlay open. App and note
+controls retain the same grouping at compact widths, with note actions
+overflowing as described above.
 
 ## Find in note
 
@@ -150,7 +148,7 @@ the last line to scroll to a comfortable reading position.
 | Tree / list row height | 28, radius 6, indent 14 per level |
 | Icon button | 28 × 28, icon 16, radius 6 |
 | Sidebar / right panel default width | 264 / 256 (resizable, persisted, min 200) |
-| Sidebar header Search | 28 high, icon 16, radius 6; hint hidden below 260 px panel width |
+| Toolbar controls | 28 high, icon 16, radius 6; optional mode labels yield to glyphs |
 | Callout | padding 12×16, radius 8, 1 px border |
 | Popover / palette | radius 8 / 12 |
 
@@ -275,16 +273,13 @@ Every icon-only button has a tooltip naming the action and shortcut.
 
 ## Sidebar (R2)
 
-The panel header shows the vault directory name, with its full path in a tooltip.
-The title truncates when needed; the total note count sits in small `text-faint`
-text at the right, followed by a compact Search icon and quiet shortcut hint
-(⌘K on macOS, Ctrl+K elsewhere). The search control is 28 px high; below 260 px
-panel width its shortcut text hides while the icon stays visible. Its tooltip is
-«Search notes (⌘K)» with the platform shortcut. There is no separate Search row.
-
-The control opens the existing quick-open palette, as does the shortcut; Enter
-or Space activates it when focused. Opening the sidebar focuses the control
-without opening the palette. Neither panel header has a close (×) button (#442).
+The panel header gives the vault name width priority and a full-name tooltip.
+Clicking it opens vault actions. New note, New folder and Collapse all folders
+follow. Measured text determines overflow: Collapse all, then New folder, then
+New note move into one More menu before the name truncates. There is no total
+note count or second search button. The app search retains keyboard focus and
+Enter/Space activation; the quick-open shortcut remains unchanged.
+Neither panel header has a close (×) button (#442).
 Title-bar toggles and ⌘\ / ⌥⌘\ (Ctrl outside macOS) control panel visibility.
 Esc in preview or source leaves panel visibility unchanged (#483).
 In compact overlay mode, a click outside closes the panel; the outside
@@ -520,7 +515,7 @@ spell out Ctrl/Alt/Shift elsewhere; both come from `platform::labels` (#612).
 
 Document More contains Reveal in sidebar (the sidebar crosshair action),
 Edit/Preview, Rename/move, Note history, Reveal,
-Copy path and Close note. Delete joins this menu when its action is available.
+Copy path, Open in new window, Move to Trash and Close note.
 The app More menu contains New note, Open file/folder, recovery, appearance,
 hidden files, About and Quit. Editing actions are absent in Windows diagnostic.
 
@@ -680,19 +675,17 @@ tooltip and an explicit platform Reveal action. Hidden-file visibility is a
 switch. Templates has an inline current value and folder action. No setting
 action stretches into a full-width text button.
 
-### Direct toolbar actions (#680)
+### Toolbar actions (#680, revised by #767)
 
-The window toolbar adds Appearance (sun/moon; System → Light → Dark, current
-mode in the tooltip) and Settings (gear). The sidebar header adds New note
-(`SquarePen`) and New folder (`FolderPlus`); both begin inline creation in
-the selected tree folder, or beside the selected note/file. With no tree
-selection, they use the open note’s folder (vault root if no note is open).
-Explicit context-menu destinations take precedence; template folders remain
-protected (#719). The document header adds Reveal in sidebar (`Locate`),
-Find in note (`TextSearch`) and Rename (`Pencil`). Rename edits the title in
-place with the existing revision-aware rename flow, inline errors and Escape
-to cancel. All actions remain in their existing menus, and use the shared glyph
-control size and baseline. Contents preserves authored heading text verbatim.
+New note and New folder create in the selected tree folder, beside a selected
+note/file, or in the open note's folder when the tree has no selection. Explicit
+context-menu destinations take precedence; template folders remain protected
+(#719). These actions retain their menus when hidden by overflow. Rename uses
+the note title, note More or its existing shortcut, without a separate pencil
+button competing with Edit. Inline errors and Escape cancellation are unchanged.
+Folders section actions also overflow into More at narrow widths, so the hidden
+files eye and Collapse all never clip at the sidebar edge. Contents preserves
+authored heading text verbatim.
 
 ### Move destination popover (#684)
 

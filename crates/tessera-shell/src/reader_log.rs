@@ -638,6 +638,7 @@ impl Reader {
     pub(crate) fn render_log_preview(
         &self,
         view: &Entity<LogView>,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         v_flex()
@@ -646,7 +647,7 @@ impl Reader {
             .track_focus(&self.focus_handle)
             .size_full()
             .min_h_0()
-            .child(self.render_document_header(cx))
+            .child(self.render_document_header(window, cx))
             .child(view.clone())
             .into_any_element()
     }

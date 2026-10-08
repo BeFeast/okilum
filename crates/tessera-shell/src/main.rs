@@ -3111,18 +3111,28 @@ impl Reader {
                         })),
                     ))
                     .child(
-                        reader_icon_button(
-                            "reader-search",
-                            IconName::Search,
-                            reader_shortcuts::hint("Search in vault", &FullTextSearch, cx),
-                            cx,
-                        )
-                        .debug_selector(|| "reader-search".into())
-                        .on_click(
-                            cx.listener(|this, _, window, cx| {
-                                this.open_quick_open(true, window, cx)
-                            }),
-                        ),
+                        div()
+                            .id("sidebar-search")
+                            .debug_selector(|| "sidebar-search".into())
+                            .track_focus(&self.sidebar_search_focus)
+                            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                    this.open_quick_open(false, window, cx);
+                                    cx.stop_propagation();
+                                }
+                            }))
+                            .child(
+                                reader_icon_button(
+                                    "reader-search",
+                                    IconName::Search,
+                                    reader_shortcuts::hint("Search in vault", &FullTextSearch, cx),
+                                    cx,
+                                )
+                                .debug_selector(|| "reader-search".into())
+                                .on_click(cx.listener(
+                                    |this, _, window, cx| this.open_quick_open(true, window, cx),
+                                )),
+                            ),
                     ),
             )
             .child(div().flex_1().min_w_0())
@@ -3149,6 +3159,13 @@ impl Reader {
                         )
                     })
                     .child(self.render_loading(cx))
+                    .child(reader_more_menu(
+                        self.vault_root.clone(),
+                        self.selected_file().to_owned(),
+                        self.sidebar.show_hidden,
+                        cx.entity().downgrade(),
+                        cx,
+                    ))
                     .child(preserve_reader_selection(
                         "reader-backlinks-preserve",
                         reader_icon_button(
@@ -3161,13 +3178,6 @@ impl Reader {
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.toggle_panel(reader_layout::Panel::Backlinks, window, cx)
                         })),
-                    ))
-                    .child(reader_more_menu(
-                        self.vault_root.clone(),
-                        self.selected_file().to_owned(),
-                        self.sidebar.show_hidden,
-                        cx.entity().downgrade(),
-                        cx,
                     )),
             )
             .into_any_element()
@@ -3284,16 +3294,6 @@ impl Reader {
             .into_any_element()
     }
 
-    fn notes_count_label(&self) -> String {
-        if !self.vault.inventory_scanned {
-            "inventory pending".into()
-        } else if !self.vault.unreadable.is_empty() {
-            format!("{} · partial", self.vault.notes.len())
-        } else {
-            self.vault.notes.len().to_string()
-        }
-    }
-
     /// «Linked from» with counts only when something links here (#646).
     fn linked_from_title(&self) -> String {
         let (notes, places) = if self.file_preview.is_some() {
@@ -3309,150 +3309,150 @@ impl Reader {
         )
     }
 
-    /// Panel title row: name and count, with compact quick-open in Notes.
+    /// Vault identity keeps its width before actions spill into the menu.
     fn render_panel_header(
         &self,
         panel: reader_layout::Panel,
         width: f32,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        use gpui_component::menu::DropdownMenu as _;
         let left = panel == reader_layout::Panel::Notes;
-        let faint = brand::reader_palette(cx).text_faint;
-        let (title, count) = if left {
-            (
-                self.vault_root
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| self.vault_root.display().to_string()),
-                self.notes_count_label(),
-            )
+        let title = if left {
+            self.vault_root
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned()
+        } else if self.active_timeline().is_some() {
+            "Note history".into()
         } else {
-            (
-                if self.active_timeline().is_some() {
-                    "Note history"
-                } else {
-                    "On this page"
-                }
-                .to_owned(),
-                String::new(),
-            )
+            "On this page".into()
         };
+        let name_width = toolbar_text_width(&title, FontWeight::SEMIBOLD, window);
+        let actions = toolbar_visible_actions(width - 24., name_width + 16., 3);
+        let name_tip = title.clone();
+        let reader = cx.entity().downgrade();
         h_flex()
             .h(px(READER_HEADER_HEIGHT))
             .flex_none()
-            .gap_2()
-            .pl(px(16.))
-            .pr(px(8.))
+            .gap_1()
+            .px_3()
             .border_b_1()
             .border_color(brand::palette(cx).border_subtle)
             .text_size(px(brand::READER_CHROME_FONT_SIZE))
-            .child(
+            .child(if left {
+                Button::new("sidebar-vault-title")
+                    .ghost()
+                    .small()
+                    .label(title)
+                    .flex_1()
+                    .min_w_0()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .tooltip(name_tip)
+                    .debug_selector(|| "sidebar-vault-title".into())
+                    .dropdown_menu(move |menu, _, _| {
+                        menu.item(
+                            gpui_component::menu::PopupMenuItem::new(
+                                "Folders only / Restore sections",
+                            )
+                            .on_click({
+                                let reader = reader.clone();
+                                move |_, _, cx| {
+                                    let _ = reader.update(cx, |this, cx| {
+                                        this.set_sidebar_sections(
+                                            SectionAction::ToggleFoldersOnly,
+                                            cx,
+                                        )
+                                    });
+                                }
+                            }),
+                        )
+                        .separator()
+                        .menu("Open folder…", Box::new(reader_open::OpenFolder))
+                        .menu("Open file…", Box::new(reader_open::OpenFile))
+                        .menu("New window", Box::new(reader_open::NewWindow))
+                    })
+                    .into_any_element()
+            } else {
                 div()
-                    .id("sidebar-vault-title")
                     .flex_1()
                     .min_w_0()
                     .overflow_hidden()
                     .text_ellipsis()
-                    .whitespace_nowrap()
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(title)
-                    .when(left, |this| {
-                        let root = self.vault_root.display().to_string();
-                        this.tooltip(move |window, cx| {
-                            gpui_component::tooltip::Tooltip::new(root.clone()).build(window, cx)
-                        })
-                    }),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .text_size(px(11.))
-                    .text_color(faint)
-                    .child(count),
-            )
-            .when(left, |header| {
-                #[cfg(any(unix, windows))]
-                let header = header
-                    .child(
+                    .into_any_element()
+            })
+            .when(left, |mut header| {
+                #[cfg(unix)]
+                {
+                    if actions >= 1 {
+                        header = header.child(
+                            reader_icon_button(
+                                "sidebar-new-note",
+                                Icon::default().path("icons/square-pen.svg"),
+                                reader_shortcuts::hint("New note", &NewNote, cx),
+                                cx,
+                            )
+                            .debug_selector(|| "sidebar-new-note".into())
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.new_note(None, window, cx)),
+                            ),
+                        );
+                    }
+                    if actions >= 2 {
+                        header =
+                            header.child(
+                                reader_icon_button(
+                                    "sidebar-new-folder",
+                                    Icon::default().path("icons/folder-plus.svg"),
+                                    reader_shortcuts::hint("New folder", &NewFolder, cx),
+                                    cx,
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, window, cx| this.new_folder(None, window, cx),
+                                )),
+                            );
+                    }
+                }
+                if actions == 3 {
+                    header = header.child(
                         reader_icon_button(
-                            "sidebar-new-note",
-                            Icon::default().path("icons/square-pen.svg"),
-                            reader_shortcuts::hint("New note", &NewNote, cx),
+                            "sidebar-collapse-all",
+                            Icon::default().path(brand::READER_COLLAPSE_ICON),
+                            reader_shortcuts::hint("Collapse all folders", &CollapseFolders, cx),
                             cx,
                         )
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.new_note(None, window, cx)),
-                        ),
-                    )
-                    .child(
+                        .on_click(cx.listener(|this, _, _, cx| this.collapse_folders(cx))),
+                    );
+                } else {
+                    header = header.child(
                         reader_icon_button(
-                            "sidebar-new-folder",
-                            Icon::default().path("icons/folder-plus.svg"),
-                            "New folder",
+                            "sidebar-actions",
+                            IconName::Ellipsis,
+                            "Vault actions",
                             cx,
                         )
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.new_folder(None, window, cx)),
+                        .debug_selector(|| "sidebar-actions".into())
+                        .dropdown_menu_with_anchor(
+                            Anchor::TopRight,
+                            move |mut menu, _, _| {
+                                if cfg!(unix) {
+                                    if actions < 1 {
+                                        menu = menu.menu("New note", Box::new(NewNote));
+                                    }
+                                    if actions < 2 {
+                                        menu = menu.menu("New folder", Box::new(NewFolder));
+                                    }
+                                }
+                                menu.menu("Collapse all folders", Box::new(CollapseFolders))
+                            },
                         ),
                     );
+                }
                 header
-                    .child(
-                        reader_icon_button(
-                            "sidebar-folders-only",
-                            Icon::default().path(brand::READER_COLLAPSE_ICON),
-                            reader_shortcuts::hint(
-                                "Folders only / Restore sections",
-                                &CollapseSidebarSections,
-                                cx,
-                            ),
-                            cx,
-                        )
-                        .debug_selector(|| "sidebar-folders-only".into())
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.set_sidebar_sections(SectionAction::ToggleFoldersOnly, cx)
-                        })),
-                    )
-                    .child(
-                        h_flex()
-                            .id("sidebar-search")
-                            .debug_selector(|| "sidebar-search".into())
-                            .track_focus(&self.sidebar_search_focus)
-                            .flex_none()
-                            .h(px(28.))
-                            .px(px(6.))
-                            .gap_1()
-                            .rounded(px(6.))
-                            .text_color(faint)
-                            .cursor_pointer()
-                            .hover(|s| s.bg(brand::reader_palette(cx).hover))
-                            .focus(|s| s.bg(brand::reader_palette(cx).hover))
-                            .tooltip(|window, cx| {
-                                gpui_component::tooltip::Tooltip::new(reader_shortcuts::hint(
-                                    "Search notes",
-                                    &QuickOpen,
-                                    cx,
-                                ))
-                                .build(window, cx)
-                            })
-                            .child(Icon::new(IconName::Search).small())
-                            .when(width >= SEARCH_HINT_MIN_PANEL_WIDTH, |button| {
-                                button.child(
-                                    div()
-                                        .text_size(px(12.))
-                                        .children(reader_shortcuts::shortcut(&QuickOpen, cx))
-                                        .debug_selector(|| "sidebar-search-shortcut".into()),
-                                )
-                            })
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.open_quick_open(false, window, cx)
-                            }))
-                            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                    this.open_quick_open(false, window, cx);
-                                    cx.stop_propagation();
-                                }
-                            })),
-                    )
             })
             .into_any_element()
     }
@@ -3549,7 +3549,6 @@ impl Reader {
     /// docs/design/reader.md §Sidebar: Recent, Pinned, Inbox and the real
     /// folder hierarchy (#335, #369), with a quick-open entry point (#433).
     fn render_tree(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        #[cfg(any(unix, windows))]
         use gpui_component::menu::DropdownMenu as _;
         use gpui_component::menu::{ContextMenuExt as _, PopupMenuItem};
         use reader_sidebar::Section;
@@ -3577,6 +3576,8 @@ impl Reader {
                 .closed(*section, &self.sidebar.collapsed)
         })
         .collect();
+        let folder_actions_overflow = self.panel_widths.notes
+            < toolbar_text_width("Folders", FontWeight::SEMIBOLD, window) + 44. + 5. * 28.;
         let show_hidden = self.sidebar.show_hidden;
         let current = self.selected_file().to_owned();
         let cursor = self
@@ -3787,6 +3788,24 @@ impl Reader {
                     .child(icon.xsmall())
                     .child(div().flex_1().child(section.label()))
                     .when(section == Section::Folders, |row| {
+                        if folder_actions_overflow {
+                            return row.child(
+                                Button::new("folders-actions").ghost().icon(IconName::Ellipsis)
+                                    .tooltip("Folder actions").w(px(28.)).h(px(28.)).rounded(px(6.))
+                                    .debug_selector(|| "folders-actions".into())
+                                    .on_click(|_, _, cx| cx.stop_propagation())
+                                    .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
+                                        menu.when(cfg!(unix), |menu| {
+                                            menu.menu("New note", Box::new(NewNote))
+                                                .menu("New folder", Box::new(NewFolder))
+                                        })
+                                        .menu("Collapse all folders", Box::new(CollapseFolders))
+                                        .menu("Reveal current note", Box::new(FocusCurrentFolder))
+                                        .item(PopupMenuItem::new(HIDDEN_FILES_MENU)
+                                            .checked(show_hidden).action(Box::new(ToggleHiddenFiles)))
+                                    }),
+                            );
+                        }
                         let entity = entity.clone();
                         let act = act.clone();
                         // Collapse all / Focus current appear on
@@ -5693,7 +5712,36 @@ enum TreeKey {
     CollapseSubtree,
 }
 // Below this width the icon remains; only its shortcut hint is hidden.
-const SEARCH_HINT_MIN_PANEL_WIDTH: f32 = 260.;
+fn toolbar_text_width(text: &str, weight: FontWeight, window: &Window) -> f32 {
+    let mut font = window.text_style().font();
+    font.weight = weight;
+    let run = gpui::TextRun {
+        len: text.len(),
+        font,
+        color: gpui::black(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    window
+        .text_system()
+        .shape_line(
+            text.to_owned().into(),
+            px(brand::READER_CHROME_FONT_SIZE),
+            &[run],
+            None,
+        )
+        .width()
+        .as_f32()
+}
+
+/// Keep the full title before actions, reserving one control for overflow.
+fn toolbar_visible_actions(available: f32, title: f32, total: usize) -> usize {
+    (0..=total)
+        .rev()
+        .find(|&visible| title + (visible + usize::from(visible < total)) as f32 * 32. <= available)
+        .unwrap_or(0)
+}
 
 const HIDDEN_FILES_MENU: &str = "Show hidden files";
 const FOLDERS_HEADER_GROUP: &str = "folders-header";
@@ -5931,7 +5979,7 @@ impl Render for Reader {
                     })
                     .border_color(brand::palette(cx).border_subtle)
                     .when(overlay, |p| p.shadow_lg())
-                    .child(self.render_panel_header(panel, panel_widths.get(panel), cx))
+                    .child(self.render_panel_header(panel, panel_widths.get(panel), window, cx))
                     .child(div().flex_1().min_h_0().child(if left {
                         self.render_sidebar(window, cx)
                     } else {
@@ -7976,8 +8024,11 @@ mod document_link_landing_tests {
                 }
             })
         });
-        let toggle = visual.debug_bounds("sidebar-folders-only").unwrap();
-        visual.simulate_click(toggle.center(), Modifiers::default());
+        // The vault menu retains the Folders-only toggle; its old toolbar slot
+        // is now reserved for Collapse all folders (#767).
+        view.update(visual, |v, cx| {
+            v.set_sidebar_sections(SectionAction::ToggleFoldersOnly, cx)
+        });
         visual.run_until_parked();
         view.update(visual, |v, _| {
             v.scroll_sections.observe(-120.);
@@ -7990,7 +8041,9 @@ mod document_link_landing_tests {
                 [true, true, true, true, false]
             )
         });
-        visual.simulate_click(toggle.center(), Modifiers::default());
+        view.update(visual, |v, cx| {
+            v.set_sidebar_sections(SectionAction::ToggleFoldersOnly, cx)
+        });
         visual.run_until_parked();
         view.update(visual, |v, _| {
             v.scroll_sections.observe(-120.);
@@ -8373,11 +8426,11 @@ mod document_link_landing_tests {
         view.read_with(visual, |v, _| {
             assert_eq!(v.tree.cursor.as_deref(), Some("Work/Projects/Cafe/Plan.md"));
         });
-        // Compact search lives in the header and drops only its hint when narrow.
+        // A single glyph search lives in the app header, independent of sidebar width.
         let header_button = visual.debug_bounds("sidebar-search").unwrap();
         let panel = visual.debug_bounds("reader-notes-panel").unwrap();
         assert!(header_button.bottom() <= panel.top() + px(READER_HEADER_HEIGHT));
-        assert!(visual.debug_bounds("sidebar-search-shortcut").is_some());
+        assert!(visual.debug_bounds("sidebar-search-shortcut").is_none());
         assert!(visual.debug_bounds("reader-close-notes-preserve").is_none());
         view.update(visual, |v, cx| {
             v.panel_widths.notes = 200.;

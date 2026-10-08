@@ -350,7 +350,7 @@ impl Reader {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if let Some(log) = &preview.log {
-            return self.render_log_preview(log, cx);
+            return self.render_log_preview(log, window, cx);
         }
         if tessera_core::excalidraw::is_drawing(&preview.rel) {
             return div()
@@ -359,7 +359,7 @@ impl Reader {
                 .overflow_y_scroll()
                 .key_context("ReaderFile")
                 .track_focus(&self.focus_handle)
-                .child(self.render_document_header(cx))
+                .child(self.render_document_header(window, cx))
                 .child(reader_drawing::render(
                     &self.vault_root,
                     &preview.path,
@@ -386,7 +386,7 @@ impl Reader {
                     this.pdf_zoom(reader_pdf::Zoom::Fit, cx)
                 }))
                 .size_full()
-                .child(self.render_document_header(cx))
+                .child(self.render_document_header(window, cx))
                 .child(div().flex_1().min_h_0().w_full().child(pdf.clone()))
                 .into_any_element();
         }
@@ -399,7 +399,7 @@ impl Reader {
                 .size_full()
                 .overflow_y_scroll()
                 .gap_3()
-                .child(self.render_document_header(cx))
+                .child(self.render_document_header(window, cx))
                 .child(
                     v_flex()
                         .flex_none()
@@ -462,7 +462,7 @@ impl Reader {
             .size_full()
             .overflow_y_scroll()
             .gap_3()
-            .child(self.render_document_header(cx))
+            .child(self.render_document_header(window, cx))
             .child(view)
             .into_any_element()
     }

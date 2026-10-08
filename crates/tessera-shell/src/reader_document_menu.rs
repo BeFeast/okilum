@@ -41,19 +41,57 @@ impl Reader {
                     .flex_none()
                     .overflow_hidden()
                     .h(px(48.))
-                    .child(self.render_document_header(cx)),
+                    .child(self.render_document_header(window, cx)),
             )
             .child(div().flex_1().min_h_0().child(self.render_main(window, cx)))
             .into_any_element()
     }
 
-    pub(super) fn render_document_header(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+    pub(super) fn render_document_header(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
         use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
         let is_file = self.file_preview.is_some();
         #[cfg(any(unix, windows))]
         let editing = self.editing.is_some();
         #[cfg(any(unix, windows))]
         let reader = cx.entity().downgrade();
+        let available = if self.body_bounds.size.width > px(0.) {
+            self.body_bounds.size.width.as_f32()
+        } else {
+            window.viewport_size().width.as_f32()
+        };
+        let widths = self.panels.widths(&self.panel_widths, available);
+        let document_width = available
+            - if reader_layout::overlay(available) {
+                0.
+            } else {
+                widths.notes + widths.backlinks
+            };
+        let title_width = toolbar_text_width(&self.selected_title(), FontWeight::MEDIUM, window);
+        let mode_width = if self.editing.is_some() { 128. } else { 64. };
+        #[cfg(unix)]
+        let dirty = self.source_is_dirty(cx);
+        #[cfg(not(unix))]
+        let dirty = false;
+        let fixed_width = 32. + 64. + 32. + mode_width + if dirty { 100. } else { 0. };
+        let show_find = document_width >= fixed_width + title_width + 32.;
+        #[cfg(unix)]
+        let labels_width = ["Read", "Edit"]
+            .into_iter()
+            .chain(if self.editing.is_some() {
+                vec!["Live Preview", "Source"]
+            } else {
+                vec![]
+            })
+            .map(|label| toolbar_text_width(label, FontWeight::MEDIUM, window) + 12.)
+            .sum::<f32>();
+        #[cfg(unix)]
+        let labels = reader_ui_state::toolbar_labels(cx)
+            && document_width
+                >= fixed_width + title_width + labels_width + if show_find { 32. } else { 0. };
         let root = self.vault_root.clone();
         let rel = self.selected_file().to_owned();
         let mut row = h_flex()
@@ -94,13 +132,14 @@ impl Reader {
         #[cfg(any(unix, windows))]
         if !is_file {
             use gpui_component::button::ButtonGroup;
-            let labels = reader_ui_state::toolbar_labels(cx);
             row = row.child(
                 ButtonGroup::new("note-mode").children([
                     Button::new("reader-read")
                         .ghost()
                         .small()
                         .icon(IconName::BookOpen)
+                        .h(px(28.))
+                        .when(!labels, |b| b.w(px(28.)))
                         .when(labels, |button| button.label("Read"))
                         .selected(!editing)
                         .accessibility_label("Read")
@@ -115,6 +154,8 @@ impl Reader {
                         .ghost()
                         .small()
                         .icon(Icon::default().path("icons/pencil.svg"))
+                        .h(px(28.))
+                        .when(!labels, |b| b.w(px(28.)))
                         .when(labels, |button| button.label("Edit"))
                         .selected(editing)
                         .accessibility_label("Edit")
@@ -128,7 +169,7 @@ impl Reader {
                 ]),
             );
             if editing {
-                row = row.child(self.render_live_preview_control(cx));
+                row = row.child(self.render_live_preview_control(labels, cx));
                 if self.source_is_dirty(cx) {
                     row = row.child(self.render_save_status(cx)).child(
                         reader_icon_button(
@@ -143,7 +184,7 @@ impl Reader {
                 }
             }
         }
-        if !is_file {
+        if !is_file && show_find {
             row = row.child(
                 reader_icon_button(
                     "note-find",
@@ -236,7 +277,18 @@ impl Reader {
                                     if editing { "Preview" } else { "Edit source" },
                                     Box::new(ToggleSource),
                                 )
-                                .menu("Rename…", Box::new(RenameNote))
+                                .item(
+                                    PopupMenuItem::new("Rename")
+                                        .action(Box::new(RenameNote))
+                                        .on_click({
+                                            let reader = reader.clone();
+                                            move |_, window, cx| {
+                                                let _ = reader.update(cx, |this, cx| {
+                                                    this.rename_note_title(window, cx)
+                                                });
+                                            }
+                                        }),
+                                )
                                 .menu("Move to…", Box::new(reader_move_picker::MoveToFolder))
                                 .menu("Note history", Box::new(NoteSourceHistory))
                                 .separator();
