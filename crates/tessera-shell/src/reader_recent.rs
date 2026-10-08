@@ -87,6 +87,7 @@ impl Reader {
             .inset_0()
             .flex()
             .justify_center()
+            .items_start()
             .pt(px(72.))
             .child(
                 v_flex()
