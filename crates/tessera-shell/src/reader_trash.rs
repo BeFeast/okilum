@@ -97,6 +97,25 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.delete_path_guarded(relative, None, window, cx);
+    }
+
+    pub(super) fn delete_created_path(
+        &mut self,
+        item: Arc<reader_create::CreatedUndo>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.delete_path_guarded(item.relative.clone(), Some(item), window, cx);
+    }
+
+    fn delete_path_guarded(
+        &mut self,
+        relative: String,
+        creation: Option<Arc<reader_create::CreatedUndo>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if relative.is_empty()
             || self.trash_pending
             || self.note_move_pending
@@ -107,9 +126,18 @@ impl Reader {
         let Some(state) = self.session_directory.clone() else {
             return;
         };
+        if creation.is_some() && self.source_is_dirty(cx) {
+            reader_toast::transient(
+                "Finish editing before undoing creation; your note was kept",
+                window,
+                cx,
+            );
+            return;
+        }
         if !self.save_source(cx) {
             return;
         }
+        self.invalidate_creation_undo(window, cx);
         let root = self.vault_root.clone();
         let directory = root.join(&relative).is_dir();
         let targets: Vec<_> = self
@@ -152,9 +180,13 @@ impl Reader {
             let scan_relative = relative.clone();
             let scan_own = own_path.clone();
             let scan_state = state.clone();
+            let scan_creation = creation.clone();
             let prepared = cx
                 .background_executor()
                 .spawn(async move {
+                    if let Some(item) = &scan_creation {
+                        item.verify()?;
+                    }
                     let before = inventory(&scan_root.join(&scan_relative))?;
                     let mut pending = vec![scan_root.join(&scan_relative)];
                     let mut count = 0usize;
@@ -206,7 +238,7 @@ impl Reader {
                     return;
                 }
             };
-            if incoming > 0 {
+            if incoming > 0 && creation.is_none() {
                 let (send, receive) = async_channel::bounded(1);
                 let shown = this
                     .update_in(cx, |this, window, cx| {
@@ -319,9 +351,17 @@ impl Reader {
                 }
             }
             let held_editor = match this.update_in(cx, |this, window, cx| {
-                if this.vault_root != root || !this.save_source(cx) {
+                let dirty_creation = creation.is_some() && this.source_is_dirty(cx);
+                if this.vault_root != root || dirty_creation || !this.save_source(cx) {
                     window.remove_notification::<TrashToast>(cx);
                     this.trash_pending = false;
+                    if dirty_creation {
+                        reader_toast::transient(
+                            "Finish editing before undoing creation; your note was kept",
+                            window,
+                            cx,
+                        );
+                    }
                     cx.notify();
                     return None;
                 }
@@ -348,6 +388,7 @@ impl Reader {
             let has_editor = held_editor.is_some();
             let move_root = root.clone();
             let move_relative = relative.clone();
+            let move_creation = creation.clone();
             let result = cx
                 .background_executor()
                 .spawn(async move {
@@ -362,6 +403,9 @@ impl Reader {
                         inventory(&move_root.join(&move_relative))? == before,
                         "The item changed since confirmation. Nothing was moved; try again"
                     );
+                    if let Some(item) = &move_creation {
+                        item.verify()?;
+                    }
                     reader_trash_fs::move_to_trash(&move_root, Path::new(&move_relative))
                 })
                 .await;
