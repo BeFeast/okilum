@@ -203,3 +203,7 @@ closes it. The added GPUI regression verifies both transitions without changing
 source revision or bytes. Classifier acceptance alone did not detect this bug;
 the final native captures provide the rendered positive control. S1 must include
 this fix before its final acceptance. No gpui-core patch is involved.
+
+## Roadmap and stability follow-up
+
+The S3–S7 roadmap remains in [research/359-smart-editor.md §9](research/359-smart-editor.md#9-recommendation-and-slice-plan). Native Linux reproduction, acceptance criteria and the owner-reference comparison are in [research/754-live-preview-stability.md](research/754-live-preview-stability.md). The proposed stability work is prioritized before #753; it is not an implementation or acceptance claim.
