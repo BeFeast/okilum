@@ -197,6 +197,8 @@ pub(super) fn plugins(view: TextView, reader: WeakEntity<Reader>) -> TextView {
                 offset: block.offset,
                 reader: reader.clone(),
                 has_heading: block.has_heading,
+                layout: Default::default(),
+                title: None,
             })
             .into_any_element()
     })
@@ -314,6 +316,8 @@ fn count_badge(results: &Results, cx: &App) -> impl IntoElement {
 
 #[derive(IntoElement)]
 struct TasksList {
+    title: Option<String>,
+    layout: tessera_core::typed_view::layout::Defaults,
     has_heading: bool,
     query: String,
     offset: usize,
@@ -328,22 +332,44 @@ struct Results {
     unsupported: Vec<String>,
     groups: Vec<Group>,
     explicit_groups: bool,
+    grouping: tessera_core::typed_view::layout::Grouping,
     expanded: std::collections::BTreeSet<(String, usize)>,
     shown: usize,
 }
 impl Results {
     fn refresh(&mut self, index: Arc<Index>, now: time::Date, source: &str) {
-        if !Arc::ptr_eq(&self.index, &index) || self.today != now || self.query != source {
+        self.refresh_grouped(index, now, source, Default::default());
+    }
+    fn refresh_grouped(
+        &mut self,
+        index: Arc<Index>,
+        now: time::Date,
+        source: &str,
+        grouping: tessera_core::typed_view::layout::Grouping,
+    ) {
+        use tessera_core::typed_view::layout::Grouping;
+        if !Arc::ptr_eq(&self.index, &index)
+            || self.today != now
+            || self.query != source
+            || self.grouping != grouping
+        {
             let query = Query::parse(source, now);
             self.tasks = index.query(&query);
             self.tasks.retain(|task| !task_label(task).is_empty());
 
-            self.explicit_groups = !query.groups.is_empty();
+            self.explicit_groups = grouping == Grouping::Note
+                || (grouping == Grouping::Query && !query.groups.is_empty());
             self.groups = if query.groups.is_empty() {
                 vec![Group::Filename]
             } else {
                 query.groups
             };
+            match grouping {
+                Grouping::Note => self.groups = vec![Group::Filename],
+                Grouping::None => self.groups.clear(),
+                Grouping::Query => {}
+            }
+            self.grouping = grouping;
             // Stable grouping preserves the query ordering inside each group.
             self.tasks.sort_by_key(|task| group_key(task, &self.groups));
             self.rows = carried_rows(&self.tasks, &self.groups, self.explicit_groups);
@@ -495,7 +521,7 @@ fn priority_icon(priority: u8, color: Hsla) -> impl IntoElement {
             )
         })
 }
-fn today() -> time::Date {
+pub(super) fn today() -> time::Date {
     use chrono::Datelike;
     let now = chrono::Local::now();
     time::Date::from_calendar_date(
@@ -536,6 +562,7 @@ fn results_state(window: &mut Window, cx: &mut App) -> Entity<Results> {
             unsupported: Vec::new(),
             groups: vec![Group::Filename],
             explicit_groups: false,
+            grouping: Default::default(),
             expanded: Default::default(),
             shown: 20,
         }
@@ -573,7 +600,9 @@ impl RenderOnce for TasksList {
         let offset = self.offset;
         let now = today();
         let state = results_state(window, cx);
-        state.update(cx, |s, _| s.refresh(index, now, &self.query));
+        state.update(cx, |s, _| {
+            s.refresh_grouped(index, now, &self.query, self.layout.grouping)
+        });
         let results = state.read(cx);
         let muted = cx.theme().muted_foreground;
         let mut list = v_flex().gap_0().py_1().w_full();
@@ -598,7 +627,7 @@ impl RenderOnce for TasksList {
                     .gap_2()
                     .text_sm()
                     .text_color(muted)
-                    .child("Tasks")
+                    .child(self.title.clone().unwrap_or_else(|| "Tasks".into()))
                     .child(count_badge(results, cx)),
             );
         }
@@ -623,7 +652,7 @@ impl RenderOnce for TasksList {
                 .iter()
                 .any(|g| matches!(g, Group::Filename | Group::Path));
 
-            if !is_copy && previous_group.as_ref() != Some(&key) {
+            if !is_copy && !results.groups.is_empty() && previous_group.as_ref() != Some(&key) {
                 let label = results
                     .groups
                     .iter()
@@ -684,7 +713,15 @@ impl RenderOnce for TasksList {
             list = list.child(
                 h_flex()
                     .w_full()
-                    .min_h(px(28.))
+                    .min_h(px(
+                        if self.layout.density
+                            == tessera_core::typed_view::layout::Density::Comfortable
+                        {
+                            36.
+                        } else {
+                            28.
+                        },
+                    ))
                     .when(is_copy, |row| row.pl_6())
                     .gap_2()
                     .child(
@@ -921,6 +958,7 @@ mod tests {
             unsupported: Vec::new(),
             groups: vec![Group::Filename],
             explicit_groups: false,
+            grouping: Default::default(),
             expanded: Default::default(),
             shown: 150,
         };
@@ -1175,4 +1213,21 @@ mod tests {
             )
         });
     }
+}
+
+pub(super) fn dashboard_section(
+    title: Option<String>,
+    query: String,
+    offset: usize,
+    layout: tessera_core::typed_view::layout::Defaults,
+    reader: WeakEntity<Reader>,
+) -> impl IntoElement {
+    div().id(("native-tasks-section", offset)).child(TasksList {
+        query,
+        offset,
+        layout,
+        reader,
+        title,
+        has_heading: false,
+    })
 }

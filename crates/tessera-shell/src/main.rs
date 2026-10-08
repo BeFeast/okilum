@@ -83,6 +83,7 @@ mod reader_trash;
 #[cfg(unix)]
 mod reader_trash_fs;
 mod reader_tree;
+mod reader_typed_view;
 mod reader_ui_state;
 #[cfg(any(unix, windows))]
 mod source_presentation;
@@ -4579,6 +4580,9 @@ impl Reader {
         }
         if self.editing.is_some() {
             return self.render_source(window, cx);
+        }
+        if let Some(view) = reader_typed_view::render(self, window, cx) {
+            return view;
         }
         let entity = cx.entity().downgrade();
         let mut style = reader_text_style(cx.theme());
