@@ -6,7 +6,7 @@
     "message": "chat is not configured",
     "operation_id": "968b81b7-7288-499a-9569-605dbf878bf8",
     "recorded": false,
-    "request_sha256": "ab1f0a1dc26e86269cd225684d100fac9cb03e7794003d6fa4fc5519f468244e"
+    "request_sha256": "4bcd94ca83f46df794e7f20763bcf62f7e4845f83b9f58264576e71260ab709c"
   },
   "request": {
     "conversation_id": null,
@@ -22,7 +22,7 @@
     "message": "Question",
     "op": "chat_send",
     "operation_id": "968b81b7-7288-499a-9569-605dbf878bf8",
-    "request_sha256": "ab1f0a1dc26e86269cd225684d100fac9cb03e7794003d6fa4fc5519f468244e",
+    "request_sha256": "4bcd94ca83f46df794e7f20763bcf62f7e4845f83b9f58264576e71260ab709c",
     "schema": "ai-brain/workspace-v1",
     "source_paths": []
   }

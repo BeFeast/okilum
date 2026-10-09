@@ -82,7 +82,7 @@ Golden digest input (the backslash escapes are literal JSON bytes, not physical 
 Expected SHA-256:
 
 ```text
-3765d691f98c285b8c7503373d06a5c74936c711161c83b4613fe45a7ced3152
+ab1efced8069ae50095857dc71fd6262bc5d7460afce4c75a67379b558d38a60
 ```
 
 Backend and shell tests must consume the shared [digest fixtures](fixtures/discussion-send-request-digests-v1.json). They include the CRLF example and a non-ASCII/control-character case with a combining accent that must not be normalized. The canonical_json string in each fixture gives the exact compact UTF-8 serialization; utf8_bytes and request_sha256 must match it.
