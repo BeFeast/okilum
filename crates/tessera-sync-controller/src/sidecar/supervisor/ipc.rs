@@ -197,6 +197,10 @@ impl<R: OwnedRuntime> Server<R> {
             completed: None,
         }
     }
+    /// The native listener sets the per-exchange deadline on its runtime here.
+    pub fn runtime_mut(&mut self) -> &mut R {
+        &mut self.runtime
+    }
     /// Publish only through authenticated native endpoint discovery, bound to
     /// the captured supervisor process handle. Never trust a public PID file.
     pub fn scope(&self) -> &Scope {

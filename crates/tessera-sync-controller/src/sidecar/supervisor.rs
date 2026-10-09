@@ -3,6 +3,7 @@
 use anyhow::{ensure, Result};
 
 pub mod ipc;
+pub mod runtime;
 
 #[derive(Clone, Debug)]
 pub struct Launch {
