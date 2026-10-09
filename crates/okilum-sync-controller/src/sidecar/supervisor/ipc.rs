@@ -193,10 +193,15 @@ impl<R: OwnedRuntime> Server<R> {
     /// Only after explicit Enable and native verification/preparation. Creating
     /// this protocol object has no process, filesystem or registration effects.
     pub fn new(binding: Binding, runtime: R) -> Self {
+        Self::with_generation(binding, runtime, Uuid::new_v4())
+    }
+    /// For a supervisor that must name its endpoint (and publish its hint) before the
+    /// runtime exists. The generation must be fresh and random for each lifetime.
+    pub fn with_generation(binding: Binding, runtime: R, generation: Uuid) -> Self {
         let scope = Scope {
             installation: binding.installation,
             instance: binding.instance,
-            generation: Uuid::new_v4(),
+            generation,
         };
         Self {
             binding,
@@ -204,6 +209,11 @@ impl<R: OwnedRuntime> Server<R> {
             runtime,
             completed: None,
         }
+    }
+    /// True once an authorized Stop returned `Stopped` in this generation: the
+    /// supervisor then ends (start is the platform's).
+    pub fn has_stopped(&self) -> bool {
+        self.completed.is_some()
     }
     /// The native listener sets the per-exchange deadline on its runtime here.
     pub fn runtime_mut(&mut self) -> &mut R {

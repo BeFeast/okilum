@@ -21,6 +21,12 @@ use std::{
 
 mod scan;
 
+/// Start time of a live process in the platform's native unit, for the supervisor's
+/// own generation hint. Comparable only with values from the same platform.
+pub fn process_start_time(pid: u32) -> Result<u64> {
+    scan::started(pid)
+}
+
 impl Launch {
     /// The fixed Syncthing argv (without argv[0]): isolated config/data, no browser,
     /// no self-restart, no self-upgrade. Absolute plain paths only.

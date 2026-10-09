@@ -1,0 +1,116 @@
+//! `okilum-sync-supervisor`: see the crate documentation. Exit status: 0 after an
+//! authorized Stop or when the lifecycle intent is not Enabled (launchd's
+//! `SuccessfulExit=false` does not relaunch), 1 for a refusal or a runtime crash (the
+//! OS restart policy decides what happens).
+#[cfg(unix)]
+mod unix_main {
+    use anyhow::{Context, Result};
+    #[cfg(feature = "dev-same-user")]
+    use okilum_sync_controller::sidecar::supervisor::ipc::unix_transport::SameUser;
+    use okilum_sync_controller::sidecar::{
+        store::UnixStore, supervisor::ipc::unix_transport::PeerCheck,
+    };
+    use okilum_sync_supervisor::{
+        args, serve,
+        startup::{self, Startup},
+    };
+    use std::{
+        process::ExitCode,
+        time::{Duration, Instant},
+    };
+
+    /// No signature policy is configured in this build, so a release build refuses to
+    /// serve rather than accept an unauthenticated peer. The development feature
+    /// accepts any peer of the same user.
+    fn peer_check() -> Result<fn() -> Box<dyn PeerCheck>> {
+        #[cfg(feature = "dev-same-user")]
+        {
+            Ok(|| Box::new(SameUser))
+        }
+        #[cfg(not(feature = "dev-same-user"))]
+        {
+            anyhow::bail!("no signature policy is configured in this build; refusing to serve")
+        }
+    }
+
+    pub fn main() -> Result<ExitCode> {
+        let args = args::parse(std::env::args_os().skip(1))?;
+        let state = match args.state.clone() {
+            Some(state) => state,
+            None => default_state_directory()?,
+        };
+        let own = std::env::current_exe().context("cannot resolve this executable")?;
+        let store = UnixStore::open_existing(&state)?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        match startup::prepare(&store, &state, args.instance, &own, deadline)? {
+            Startup::Idle => Ok(ExitCode::SUCCESS),
+            Startup::Run(prepared) => {
+                // Only a real run needs a signature policy; checked before anything starts.
+                let peer_check = peer_check()?;
+                let exit = serve::run(
+                    &state,
+                    store,
+                    *prepared,
+                    &serve::Settings::default(),
+                    peer_check,
+                )?;
+                match exit {
+                    serve::Exit::Stopped => Ok(ExitCode::SUCCESS),
+                    other => {
+                        eprintln!("okilum-sync-supervisor: {}", serve::describe(&other));
+                        Ok(ExitCode::from(1))
+                    }
+                }
+            }
+        }
+    }
+
+    /// macOS: the owner's Application Support directory, found through the account
+    /// database rather than the environment.
+    #[cfg(target_os = "macos")]
+    fn default_state_directory() -> Result<std::path::PathBuf> {
+        use std::{ffi::CStr, ffi::OsStr, os::unix::ffi::OsStrExt};
+        let mut buffer = vec![0u8; 4096];
+        let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
+        let mut found: *mut libc::passwd = std::ptr::null_mut();
+        let status = unsafe {
+            libc::getpwuid_r(
+                libc::geteuid(),
+                &mut entry,
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+                &mut found,
+            )
+        };
+        anyhow::ensure!(
+            status == 0 && !found.is_null() && !entry.pw_dir.is_null(),
+            "cannot determine the home directory"
+        );
+        let home = unsafe { CStr::from_ptr(entry.pw_dir) };
+        Ok(std::path::PathBuf::from(OsStr::from_bytes(home.to_bytes()))
+            .join("Library/Application Support/Okilum/Sync"))
+    }
+    #[cfg(not(target_os = "macos"))]
+    fn default_state_directory() -> Result<std::path::PathBuf> {
+        anyhow::bail!("--state is required on this platform")
+    }
+}
+
+#[cfg(unix)]
+fn main() -> std::process::ExitCode {
+    match unix_main::main() {
+        Ok(code) => code,
+        Err(error) => {
+            eprintln!("okilum-sync-supervisor: {error:#}");
+            std::process::ExitCode::from(1)
+        }
+    }
+}
+
+/// The Windows serve loop (named pipe, Job Object) is the next slice; until it lands
+/// this binary refuses instead of pretending to supervise.
+#[cfg(not(unix))]
+fn main() -> std::process::ExitCode {
+    eprintln!("okilum-sync-supervisor: the Windows serve loop is not implemented yet");
+    std::process::ExitCode::from(2)
+}

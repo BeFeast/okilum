@@ -178,15 +178,23 @@ impl UnixEndpoint {
     }
     /// Wait for exactly one connection until the absolute deadline.
     pub fn accept(&self, deadline: Instant) -> Result<UnixStream> {
+        self.try_accept(deadline)?
+            .context("no client connected before the deadline")
+    }
+    /// Like `accept`, but a deadline without a client is `None`, so a supervisor can
+    /// look at its runtime between waits.
+    pub fn try_accept(&self, deadline: Instant) -> Result<Option<UnixStream>> {
         loop {
             match self.listener.accept() {
                 Ok((stream, _)) => {
                     stream.set_nonblocking(false)?;
-                    return Ok(stream);
+                    return Ok(Some(stream));
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                     let left = deadline.saturating_duration_since(Instant::now());
-                    ensure!(!left.is_zero(), "no client connected before the deadline");
+                    if left.is_zero() {
+                        return Ok(None);
+                    }
                     std::thread::sleep(left.min(Duration::from_millis(2)));
                 }
                 Err(e) => return Err(e.into()),

@@ -51,6 +51,9 @@ run_tests okilum-shell --bins reader_replay::
 # process-group owned tree (real process tree, signals, process scan via libproc) and
 # the private socket transport (LOCAL_PEERCRED); each needs the real macOS kernel.
 run_tests okilum-sync-controller --lib sidecar::
+# #1013: the supervisor's run loop against a real process tree and real sockets (the
+# shell does not depend on this crate, so nothing else would even build it here).
+run_tests okilum-sync-supervisor --tests ""
 
 # #477: real Quick Look providers, bounded Retina output and cancellation.
 export OKILUM_THUMBNAIL_EVIDENCE_DIR="${RUNNER_TEMP}/thumbnail-evidence"

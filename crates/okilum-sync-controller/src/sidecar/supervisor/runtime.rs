@@ -42,6 +42,12 @@ impl<D: StateDir, T: OwnedTree> StoreRuntime<D, T> {
     pub fn tree(&self) -> &T {
         &self.tree
     }
+    /// The supervisor's own cleanup after its runtime died. Not an authorized Stop: it
+    /// takes no lock, answers nobody and exists only so the owned tree is flushed
+    /// before the supervisor exits.
+    pub fn flush_tree(&mut self) -> Result<Status> {
+        self.tree.stop()
+    }
     #[cfg(all(test, unix))]
     pub(crate) fn tree_mut(&mut self) -> &mut T {
         &mut self.tree
