@@ -8,7 +8,7 @@ Do not inject ingress failures on CT119; test these only on the isolated stand.
 ## Scope and preflight
 
 1. Record the reviewed commit and script checksum. Stage only the approved
-   `restart.py` outside the source tree, at a manager-approved path. Do not
+   `restart.py` and its sibling `invocation.py` outside the source tree, at a manager-approved path. Do not
    update the application source, Compose topology, credentials or images.
 2. Confirm no concurrent deploy; verify current Inbox health, running ingress,
    current image IDs, and available disk space sufficient for saved images,
@@ -23,7 +23,7 @@ Do not inject ingress failures on CT119; test these only on the isolated stand.
 
 5. Run `sudo python3 /approved/path/restart.py` once, with no image or config
    arguments. This is a same-image restart only. Include the established external
-   `--env-file /opt/tessera-inbox/runtime.env`; resolved runtime preflight must pass. The tool acquires
+   `--activate-script /opt/tessera-inbox/604-activate.sh --rollback-script /opt/tessera-inbox/604-rollback.sh`; resolved runtime preflight must pass. The tool acquires
    `/opt/tessera-inbox/deployment-state/deploy.lock`, creates a private
    `rollback-<id>/` snapshot (online DB, source, images, nginx and image IDs),
    and writes `active-image.json` selecting existing exact images.
@@ -66,6 +66,7 @@ is (the backup path must be the receipt from this attempt, never “latest”):
 sudo python3 - /approved/path/restart.py /opt/tessera-inbox/deployment-state/rollback-EXACT-ID <<'PYRECOVER'
 import fcntl, importlib.util, json, os, pathlib, sys
 os.umask(0o077)
+sys.path.insert(0, str(pathlib.Path(sys.argv[1]).resolve().parent))
 spec = importlib.util.spec_from_file_location("restart", sys.argv[1])
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
@@ -74,7 +75,9 @@ backup = pathlib.Path(sys.argv[2]).resolve()
 assert backup.parent == state and backup.name.startswith("rollback-")
 d = m.Deployment(pathlib.Path("/opt/tessera-inbox/source/inbox/deploy"),
                  state, "https://inbox-qa.oklabs.uk",
-                 env_file=pathlib.Path("/opt/tessera-inbox/runtime.env"))
+                 invocation=m.Invocation.from_scripts(
+                     pathlib.Path("/opt/tessera-inbox/604-activate.sh"),
+                     pathlib.Path("/opt/tessera-inbox/604-rollback.sh")))
 with (state / "deploy.lock").open("a") as lock:
     fcntl.flock(lock, fcntl.LOCK_EX)
     images = json.loads((backup / "images.json").read_text())

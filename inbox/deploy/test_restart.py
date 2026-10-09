@@ -55,7 +55,9 @@ class FakeDeployment(restart.Deployment):
         directory.mkdir(parents=True)
         state = root / 'state'
         state.mkdir()
-        super().__init__(directory, state, 'https://example.test', timeout=0)
+        super().__init__(directory, state, 'https://example.test', timeout=0,
+            invocation=restart.Invocation(('docker', 'compose', '-f', str(directory/'compose.yml')),
+                directory, (directory/'compose.yml',), (), None))
         self.nginx.write_text('old nginx')
         self.events = []
         self.backup_fails = False
@@ -246,6 +248,119 @@ class DeploymentTests(unittest.TestCase):
         receipt = next(self.deploy.state.glob('rollback-*/receipt.json'))
         self.assertEqual(json.loads(receipt.read_text())['status'], 'rollback_failed')
 
+
+
+class TopologyTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.d = FakeDeployment(Path(self.temp.name))
+        self.resolved = {'services': {'inbox': {
+            'volumes': [{'type': 'bind', 'source': '/private/credential',
+                         'target': '/credential', 'read_only': True}],
+            'ports': [{'target': 8080, 'published': '8080', 'host_ip': '127.0.0.1'}],
+            'networks': {'default': {}}, 'tmpfs': ['/tmp'], 'read_only': True}},
+            'networks': {'default': {'name': 'fixture_default'}}}
+        self.actual = {'Mounts': [{'Type': 'bind', 'Source': '/private/credential',
+                                  'Destination': '/credential', 'RW': False}],
+            'HostConfig': {'ReadonlyRootfs': True, 'Tmpfs': {'/tmp': ''},
+                           'PortBindings': {'8080/tcp': [{'HostIp': '127.0.0.1', 'HostPort': '8080'}]}},
+            'NetworkSettings': {'Networks': {'fixture_default': {}}}}
+
+    def validate(self):
+        self.d.validate_topology('inbox', self.resolved, self.actual)
+
+    def test_matching_topology_positive_control(self):
+        self.validate()
+
+    def test_changed_credential_source_refused(self):
+        self.resolved['services']['inbox']['volumes'][0]['source'] = '/different/credential'
+        with self.assertRaisesRegex(RuntimeError, 'mounts differ') as error:
+            self.validate()
+        self.assertNotIn('/different', str(error.exception))
+
+    def test_mount_target_and_read_only_refused(self):
+        for key, value in [('target', '/other'), ('read_only', False)]:
+            with self.subTest(key=key):
+                mount = self.resolved['services']['inbox']['volumes'][0]
+                old = mount[key]
+                mount[key] = value
+                with self.assertRaisesRegex(RuntimeError, 'mounts differ'):
+                    self.validate()
+                mount[key] = old
+
+    def test_changed_bind_ip_refused(self):
+        self.resolved['services']['inbox']['ports'][0]['host_ip'] = '0.0.0.0'
+        with self.assertRaisesRegex(RuntimeError, 'port bindings differ'):
+            self.validate()
+
+    def test_changed_network_refused(self):
+        self.actual['NetworkSettings']['Networks'] = {'another_default': {}}
+        with self.assertRaisesRegex(RuntimeError, 'networks differ'):
+            self.validate()
+
+    def test_wrong_shared_namespace_refused(self):
+        self.resolved['services']['inbox']['network_mode'] = 'service:owner'
+        self.actual['HostConfig']['NetworkMode'] = 'container:owner-container'
+        self.validate()
+        self.actual['HostConfig']['NetworkMode'] = 'container:obsolete'
+        with self.assertRaisesRegex(RuntimeError, 'namespace differs'):
+            self.validate()
+
+    def test_named_volume_identity(self):
+        self.resolved['services']['inbox']['volumes'] = [
+            {'type': 'volume', 'source': 'data', 'target': '/data'}]
+        self.resolved['volumes'] = {'data': {'name': 'fixture_data'}}
+        self.actual['Mounts'] = [{'Type': 'volume', 'Name': 'fixture_data',
+                                 'Destination': '/data', 'RW': True}]
+        self.validate()
+        self.actual['Mounts'][0]['Name'] = 'other_data'
+        with self.assertRaisesRegex(RuntimeError, 'mounts differ'):
+            self.validate()
+
+
+class InvocationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.scripts = [self.root/name for name in ('activate.sh', 'rollback.sh')]
+        self.command = f'docker compose --env-file {self.root}/runtime.env -p fixture -f {self.root}/compose.yml'
+        for script in self.scripts:
+            script.write_text(f'#!/bin/sh\nset -eu\ncd {self.root}\n{self.command} up -d\n')
+
+    def test_scripts_drive_forward_and_rollback(self):
+        invocation = restart.Invocation.from_scripts(*self.scripts)
+        self.assertEqual(invocation.env_files, (self.root/'runtime.env',))
+        active = self.root/'active.json'
+        active.touch()
+        self.assertEqual(invocation.command(active, 'up', '-d'),
+                         self.command.split()+['-f', str(active), 'up', '-d'])
+
+    def test_different_script_invocations_refused(self):
+        self.scripts[1].write_text(self.scripts[1].read_text().replace('runtime.env', 'other.env'))
+        with self.assertRaisesRegex(ValueError, 'invocations differ'):
+            restart.Invocation.from_scripts(*self.scripts)
+
+    def test_dynamic_or_exported_environment_refused(self):
+        for command in ('export INBOX_BIND_IP=127.0.0.1\n'+self.command,
+                        'INBOX_BIND_IP=127.0.0.1 '+self.command,
+                        self.command.replace('runtime.env', '$ENV_FILE')):
+            with self.subTest(command=command):
+                self.scripts[0].write_text(f'cd {self.root}\n{command} up -d\n')
+                with self.assertRaises(ValueError):
+                    restart.Invocation.read(self.scripts[0])
+
+    def test_labels_positive_control_and_env_provenance(self):
+        invocation = restart.Invocation.from_scripts(*self.scripts)
+        labels = {'com.docker.compose.project.config_files': str(self.root/'compose.yml'),
+                  'com.docker.compose.project.working_dir': str(self.root),
+                  'com.docker.compose.project': 'fixture',
+                  'com.docker.compose.project.environment_file': str(self.root/'runtime.env')}
+        invocation.verify_labels(labels, self.root/'absent.json', 'fixture')
+        labels.pop('com.docker.compose.project.environment_file')
+        with self.assertRaisesRegex(RuntimeError, 'env-file provenance'):
+            invocation.verify_labels(labels, self.root/'absent.json', 'fixture')
 
 if __name__ == '__main__':
     unittest.main()

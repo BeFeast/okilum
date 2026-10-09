@@ -14,6 +14,7 @@ import tarfile
 import time
 import urllib.request
 import uuid
+from invocation import Invocation
 
 
 class OutageTimeout(Exception):
@@ -42,11 +43,14 @@ def public_ready(origin, opener=None):
 
 
 class Deployment:
-    def __init__(self, compose_dir, state, origin, timeout=120, outage_timeout=90, env_file=None):
+    def __init__(self, compose_dir, state, origin, timeout=120, outage_timeout=90, invocation=None):
         self.compose_dir = compose_dir.resolve()
         self.state = state.resolve()
         self.origin = origin
-        self.env_file = env_file.resolve() if env_file else None
+        if invocation is None:
+            raise ValueError("Existing activate and rollback script invocation is required")
+        self.invocation = invocation
+        self.working_dir = invocation.cwd
         self.timeout = timeout
         self.outage_timeout = outage_timeout
         self.active = self.state / "active-image.json"
@@ -54,23 +58,14 @@ class Deployment:
 
     def run(self, args):
         # Compose config and daemon errors may contain environment values: retain no output.
-        result = subprocess.run(args, cwd=self.compose_dir, capture_output=True,
+        result = subprocess.run(args, cwd=self.working_dir, capture_output=True,
                                 text=True, timeout=300)
         if result.returncode:
             raise RuntimeError("Docker operation failed (output suppressed to protect configuration)")
         return result.stdout.strip()
 
     def compose_command(self, *args):
-        command = ["docker", "compose", "--project-directory", str(self.compose_dir),
-                   "-f", str(self.compose_dir / "compose.yml")]
-        if self.env_file is not None:
-            command += ["--env-file", str(self.env_file)]
-        override = self.compose_dir / "compose.override.yml"
-        if override.exists():
-            command += ["-f", str(override)]
-        if self.active.exists():
-            command += ["-f", str(self.active)]
-        return command + list(args)
+        return self.invocation.command(self.active, *args)
 
     def compose(self, *args):
         return self.run(self.compose_command(*args))
@@ -81,7 +76,7 @@ class Deployment:
         with destination.open("xb") as output:
             result = subprocess.run(self.compose_command("exec", "-T", "inbox",
                 "cat", "/backups/inbox-latest.db"), stdout=output,
-                stderr=subprocess.DEVNULL, cwd=self.compose_dir, timeout=300)
+                stderr=subprocess.DEVNULL, cwd=self.working_dir, timeout=300)
         if result.returncode:
             raise RuntimeError("Backup export failed")
 
@@ -113,18 +108,66 @@ class Deployment:
         if expected_env != actual_env:
             raise RuntimeError(f"{service}: resolved environment differs from running container; stop")
 
+    def validate_topology(self, service, resolved, actual):
+        desired = resolved["services"][service]
+        expected_mounts = {}
+        for mount in desired.get("volumes", []):
+            kind, source = mount["type"], mount.get("source")
+            if kind == "bind":
+                source = str(Path(source).resolve())
+            elif kind == "volume" and source:
+                source = resolved["volumes"][source]["name"]
+            else:
+                raise RuntimeError("Unsupported mount identity; stop")
+            expected_mounts[mount["target"]] = (kind, source, not mount.get("read_only", False))
+        current_mounts = {}
+        for mount in actual.get("Mounts", []):
+            if mount["Type"] == "tmpfs":
+                continue
+            source = str(Path(mount["Source"]).resolve()) if mount["Type"] == "bind" else mount.get("Name")
+            current_mounts[mount["Destination"]] = (mount["Type"], source, mount["RW"])
+        if expected_mounts != current_mounts:
+            raise RuntimeError(f"{service}: resolved mounts differ from running container; stop")
+        host = actual["HostConfig"]
+        if bool(desired.get("read_only", False)) != host.get("ReadonlyRootfs", False):
+            raise RuntimeError(f"{service}: root filesystem mode differs; stop")
+        expected_tmpfs = dict(item.split(':', 1) if ':' in item else (item, '')
+                              for item in desired.get('tmpfs', []))
+        if expected_tmpfs != (host.get('Tmpfs') or {}):
+            raise RuntimeError(f"{service}: tmpfs configuration differs; stop")
+        expected_ports = sorted((str(p["target"])+"/"+p.get("protocol", "tcp"),
+            p.get("host_ip") or "0.0.0.0", str(p.get("published", ""))) for p in desired.get("ports", []))
+        current_ports = sorted((port, binding.get("HostIp") or "0.0.0.0", binding["HostPort"])
+            for port, bindings in (host.get("PortBindings") or {}).items() for binding in (bindings or []))
+        if expected_ports != current_ports:
+            raise RuntimeError(f"{service}: resolved port bindings differ; stop")
+        mode = desired.get("network_mode")
+        if mode and mode.startswith("service:"):
+            owner = self.compose("ps", "-q", mode.split(":", 1)[1])
+            if host.get("NetworkMode") != "container:"+owner:
+                raise RuntimeError(f"{service}: shared network namespace differs; stop")
+        elif mode:
+            if host.get("NetworkMode") != mode:
+                raise RuntimeError(f"{service}: network mode differs; stop")
+        else:
+            networks = {resolved["networks"][name]["name"] for name in desired.get("networks", {})}
+            if networks != set(actual.get("NetworkSettings", {}).get("Networks", {})):
+                raise RuntimeError(f"{service}: resolved networks differ; stop")
+
     def preflight(self):
-        if self.env_file is not None:
-            if not self.env_file.is_file() or self.env_file.stat().st_mode & 0o077:
-                raise RuntimeError("Explicit env file must exist and be private")
-            if self.env_file.is_relative_to(self.compose_dir.parent.parent):
-                raise RuntimeError("Keep runtime env file outside the archived source tree")
+        for env_file in self.invocation.env_files:
+            if not env_file.is_file() or env_file.stat().st_mode & 0o077:
+                raise RuntimeError("Script env file must exist and be private")
+            if env_file.is_relative_to(self.compose_dir.parent.parent):
+                raise RuntimeError("Keep runtime env files outside the archived source tree")
         resolved = json.loads(self.compose("config", "--format", "json"))
         for service in ("inbox", "ingress"):
             container = self.compose("ps", "-q", service)
             actual = json.loads(self.run(["docker", "inspect", container]))[0]
             image = json.loads(self.run(["docker", "image", "inspect", actual["Image"]]))[0]
+            self.invocation.verify_labels(actual["Config"].get("Labels", {}), self.active, resolved["name"])
             self.validate_runtime(service, resolved["services"][service], image["Config"], actual["Config"])
+            self.validate_topology(service, resolved, actual)
         public_ready(self.origin)
 
     def select_images(self, images):
@@ -210,7 +253,10 @@ class Deployment:
         (directory / "images.json").write_text(json.dumps(images))
         (directory / "configuration-references.json").write_text(json.dumps({
             "compose_directory": str(self.compose_dir),
-            "env_file": str(self.env_file) if self.env_file else str(self.compose_dir / ".env"),
+            "env_files": [str(p) for p in self.invocation.env_files],
+            "compose_argv": list(self.invocation.argv),
+            "working_dir": str(self.working_dir),
+            "invocation_scripts": [str(p) for p in self.invocation.scripts],
             "credentials": "External references remain in the existing Compose configuration"}))
 
     def deploy(self, image=None, nginx=None):
@@ -255,7 +301,8 @@ def main():
     parser.add_argument("--compose-dir", type=Path, default=Path("/opt/tessera-inbox/source/inbox/deploy"))
     parser.add_argument("--state-dir", type=Path, default=Path("/opt/tessera-inbox/deployment-state"))
     parser.add_argument("--origin", default="https://inbox-qa.oklabs.uk")
-    parser.add_argument("--env-file", type=Path, help="Existing private external Compose interpolation file; never inferred")
+    parser.add_argument("--activate-script", type=Path)
+    parser.add_argument("--rollback-script", type=Path)
     parser.add_argument("--image", help="Already-loaded Inbox image tag or digest; never pulled by this tool")
     parser.add_argument("--nginx-config", type=Path)
     parser.add_argument("--check", action="store_true", help="Public readiness only, without Docker or restarts")
@@ -269,6 +316,11 @@ def main():
         public_ready(args.origin)
         print("Public HTTPS and WebAuthn challenge ready")
         return
+    if not args.activate_script or not args.rollback_script:
+        parser.error("--activate-script and --rollback-script are required for deployment")
+    invocation = Invocation.from_scripts(args.activate_script, args.rollback_script)
+    if args.compose_dir.resolve() != invocation.files[0].parent:
+        parser.error("compose directory differs from script source files")
     state = args.state_dir.resolve()
     source = args.compose_dir.resolve().parent.parent
     if state.is_relative_to(source):
@@ -278,7 +330,7 @@ def main():
         parser.error("state directory must be private (mode 0700)")
     with (state / "deploy.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        deployment = Deployment(args.compose_dir, state, args.origin, env_file=args.env_file)
+        deployment = Deployment(args.compose_dir, state, args.origin, invocation=invocation)
         print(json.dumps(deployment.deploy(args.image, args.nginx_config)))
 
 

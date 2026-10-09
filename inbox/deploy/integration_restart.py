@@ -64,7 +64,7 @@ location / { proxy_pass http://127.0.0.1:8080; proxy_set_header Host $http_host;
     env_file = root/'runtime.env'
     env_file.write_text('FIXTURE_ORIGIN=https://localhost:8443\n')
     override = {'services': {
-        'inbox': {'environment': {'INBOX_ORIGIN': '${FIXTURE_ORIGIN:-https://invalid.example}'}},
+        'inbox': {'environment': {'INBOX_ORIGIN': '${FIXTURE_ORIGIN:-}'}},
         'edge': {'image': 'nginx:1.28-alpine', 'network_mode': 'host', 'volumes': [
             f'{root}/edge.conf:/etc/nginx/nginx.conf:ro', f'{root}/cert.pem:/cert.pem:ro',
             f'{root}/key.pem:/key.pem:ro']}}}
@@ -82,7 +82,14 @@ location / { proxy_pass http://127.0.0.1:8080; proxy_set_header Host $http_host;
             if self.outage_start is None:
                 self.outage_start = time.monotonic()
             return super().ordered_start()
-    d = MeasuredDeployment(compose, state, 'https://localhost:8443', timeout=20, outage_timeout=90, env_file=env_file)
+    scripts = []
+    for action in ('activate', 'rollback'):
+        script = root/(action+'.sh')
+        script.write_text(f'#!/bin/sh\ncd {compose}\ndocker compose --env-file {env_file} -f {compose}/compose.yml -f {compose}/compose.override.yml up -d\n')
+        scripts.append(script)
+    invocation = restart.Invocation.from_scripts(*scripts)
+    d = MeasuredDeployment(compose, state, 'https://localhost:8443', timeout=20,
+                           outage_timeout=90, invocation=invocation)
     builder_name = 'inbox-restart-fixture-builder'
     try:
         run('docker', 'build', '-f', 'inbox/deploy/Dockerfile', '--target', 'build', '-t', 'inbox-restart-builder', '.', cwd=repo)
@@ -91,6 +98,14 @@ location / { proxy_pass http://127.0.0.1:8080; proxy_set_header Host $http_host;
             '--release', '-p', 'tessera-inboxd', '--test', 'restart_fixture', '--', '--ignored', '--exact', 'create_restart_fixture')
         run('docker', 'cp', builder_name+':/tmp/restart-fixture.db', str(root/'fixture.db'))
         run('docker', 'build', '-f', 'inbox/deploy/Dockerfile', '-t', 'tessera-inbox-qa:local', '.', cwd=repo)
+        # Positive control for the missing-env probe: the same image really
+        # refuses an empty mandatory origin, with no shared state or network.
+        missing_origin = subprocess.run(['docker', 'run', '--rm', '--network', 'none',
+            '--tmpfs', '/data:uid=1000,gid=1000', '-e', 'INBOX_ORIGIN=',
+            'tessera-inbox-qa:local'], capture_output=True, text=True, timeout=30)
+        assert missing_origin.returncode != 0
+        assert 'url' in missing_origin.stderr.lower() or 'origin' in missing_origin.stderr.lower()
+        report['missing_origin_control'] = 'process-exited-nonzero'
         d.compose('pull', 'ingress', 'edge')
         d.compose('run', '--rm', 'init')
         d.compose('create', 'inbox')
@@ -103,17 +118,40 @@ location / { proxy_pass http://127.0.0.1:8080; proxy_set_header Host $http_host;
         original = d.nginx.read_bytes()
         before_ids = {name: d.compose('ps', '-q', name) for name in ('inbox', 'ingress')}
         receipts_before = set(state.glob('rollback-*'))
-        missing_env = restart.Deployment(compose, state, d.origin)
+        from dataclasses import replace
+        missing_argv = list(invocation.argv)
+        index = missing_argv.index('--env-file')
+        del missing_argv[index:index+2]
+        missing_env = restart.Deployment(compose, state, d.origin,
+            invocation=replace(invocation, argv=tuple(missing_argv), env_files=()))
         try:
             missing_env.deploy()
             raise AssertionError('Missing runtime env-file was accepted')
         except RuntimeError as error:
-            assert 'resolved environment differs' in str(error)
+            assert 'env-file provenance' in str(error) or 'resolved environment differs' in str(error)
         assert before_ids == {name: d.compose('ps', '-q', name) for name in before_ids}
         assert set(state.glob('rollback-*')) == receipts_before
         restart.public_ready(d.origin)
         report['cases'].append({'name': 'missing-env-file-refused', 'status': 'PASS',
                                 'service_mutations': 0, 'outage_upper_bound_seconds': 0})
+        for variable, changed, expected in (
+                ('CLIPROXY_CREDENTIAL_FILE', str(root/'different-credential'), 'mounts differ'),
+                ('INBOX_BIND_IP', '0.0.0.0', 'port bindings differ')):
+            previous = os.environ[variable]
+            try:
+                os.environ[variable] = changed
+                try:
+                    d.deploy()
+                    raise AssertionError('Topology drift accepted')
+                except RuntimeError as error:
+                    assert expected in str(error)
+            finally:
+                os.environ[variable] = previous
+            assert before_ids == {name: d.compose('ps', '-q', name) for name in before_ids}
+            assert set(state.glob('rollback-*')) == receipts_before
+            restart.public_ready(d.origin)
+            report['cases'].append({'name': variable.lower()+'-drift-refused',
+                'status': 'PASS', 'service_mutations': 0, 'outage_upper_bound_seconds': 0})
         for name in ('same-image', 'explicit-same-image', 'config-only', 'broken-ingress-rollback'):
             config = None
             image = report['images']['inbox'] if name == 'explicit-same-image' else None

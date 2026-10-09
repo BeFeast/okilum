@@ -77,11 +77,11 @@ or touch `/srv/vault`.
 # Read-only public readiness (creates only an anonymous, expiring login challenge).
 python3 inbox/deploy/restart.py --check
 # Same-image restart; ingress may already be running.
-python3 inbox/deploy/restart.py --env-file /opt/tessera-inbox/runtime.env
+python3 inbox/deploy/restart.py --activate-script /opt/tessera-inbox/604-activate.sh --rollback-script /opt/tessera-inbox/604-rollback.sh
 # Deploy a reviewed, already-loaded image; mutable tags are resolved to local IDs.
-python3 inbox/deploy/restart.py --env-file /opt/tessera-inbox/runtime.env --image tessera-inbox-qa:reviewed
+python3 inbox/deploy/restart.py --activate-script /opt/tessera-inbox/604-activate.sh --rollback-script /opt/tessera-inbox/604-rollback.sh --image tessera-inbox-qa:reviewed
 # Same-image nginx configuration change, from a separate staged file.
-python3 inbox/deploy/restart.py --env-file /opt/tessera-inbox/runtime.env --nginx-config /path/to/reviewed-nginx.conf
+python3 inbox/deploy/restart.py --activate-script /opt/tessera-inbox/604-activate.sh --rollback-script /opt/tessera-inbox/604-rollback.sh --nginx-config /path/to/reviewed-nginx.conf
 ```
 
 Build/import the reviewed image before this procedure; the tool never pulls or
@@ -142,11 +142,19 @@ The hosted `inbox-restart` acceptance asserts a conservative outage bound under
 sanitized `summary.json`; no DB, test passkey or TLS key is published. See
 `LIVE-ACCEPTANCE.md` for the separate, manager-approved live procedure.
 
-Runtime configuration is part of the rollback identity. Pass the existing
-private external interpolation file with `--env-file`; do not rely on an
-operator's shell environment. Before any snapshot or mutation, the helper
-compares resolved command, entrypoint and environment against both running
-containers, including image defaults. A mismatch stops without recreating a
-service and without logging either side's values. The same file is used for
-forward deployment and rollback. On CT119 the established file is
-`/opt/tessera-inbox/runtime.env`; invoke Docker through the existing sudo shim.
+Runtime configuration is part of the rollback identity. The helper reads (never
+executes) the existing activate and rollback scripts, requiring the same literal
+Compose invocation in both. It preserves cwd, ordered files/overrides, project,
+profiles and external env-files. Dynamic shell setup/exports are unsupported and
+stop the helper; do not rewrite production scripts merely to bypass this guard.
+Compose runtime labels must agree on project, file order, working directory and
+env-file provenance. Missing provenance is a stop, not permission to infer it.
+
+Before snapshot/service mutation, compare command/entrypoint/environment, bind
+source/target/read-only, named volumes, tmpfs, rootfs mode, published ports and
+networks (including the exact service namespace owner) against Docker inspect.
+Mismatch errors contain no values. This is a bounded fidelity check, not a proof
+of equality for every Docker option: additional topology/security options need
+an explicit reviewed extension before live use. Shell environment and referenced
+files must remain unchanged throughout an approved operation. CT119 requires a
+fresh explicit manager approval; the previous authorization was consumed.
