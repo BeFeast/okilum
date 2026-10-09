@@ -812,3 +812,8 @@ panel focus and multi-window behavior.
 ### Note header title priority (#767, Oleg 2026-10-08)
 
 The document title receives space before optional header controls. At narrow widths, Find, Save and Live Preview/Source remain available in the document menu; their toolbar controls and optional labels yield. Back/Forward, Read/Edit, the document menu and the unsaved indicator remain visible. Parent breadcrumbs collapse into a parent-folder menu before the title is truncated; its tooltip always exposes the full title. This applies to Reader and dirty Edit with labels enabled or disabled.
+
+
+### Edit pencil (#871, Oleg 2026-10-09)
+
+The note-header pencil toggles Edit/Read and is a primary action: optional controls overflow first; the pencil stays visible alongside Read. Its label and accessible name are Edit. Edit restores the last Live Preview/Source choice. Escape dismisses local transient UI first, then returns to Reader through the existing safe save/conflict path. Rename remains title click, F2 and the document menu.

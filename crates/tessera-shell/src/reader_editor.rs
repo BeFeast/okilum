@@ -505,6 +505,7 @@ impl Reader {
             current_input,
             _subscriptions: vec![changed, blur, clicked, highlighting],
         });
+        self.set_live_preview(self.ui_state.live_preview, window, cx);
         self.start_editor_layout_diagnostics(input.clone(), cx);
         input.focus_handle(cx).focus(window, cx);
         cx.notify();
@@ -694,6 +695,7 @@ impl Reader {
         if !self.save_source(cx) {
             return false;
         }
+        self.ui_state.live_preview = self.source_live_preview();
         self.editing = None;
         true
     }

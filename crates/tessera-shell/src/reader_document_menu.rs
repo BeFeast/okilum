@@ -187,9 +187,7 @@ impl Reader {
                         .tooltip(reader_shortcuts::hint("Edit", &ToggleSource, cx))
                         .debug_selector(|| "reader-edit".into())
                         .on_click(cx.listener(|this, _, window, cx| {
-                            if this.editing.is_none() {
-                                this.toggle_source(window, cx);
-                            }
+                            this.toggle_source(window, cx);
                         })),
                 ]),
             );
@@ -579,7 +577,7 @@ mod tests {
         });
         let reader = reader.unwrap();
         visual.run_until_parked();
-        visual.simulate_resize(size(px(560.), px(900.)));
+        visual.simulate_resize(size(px(480.), px(900.)));
         visual.run_until_parked();
         let reader_title_width = visual
             .debug_bounds("reader-document-root")

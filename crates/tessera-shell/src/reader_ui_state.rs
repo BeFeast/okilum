@@ -523,7 +523,7 @@ pub(crate) struct Session {
     active: bool,
     tree: Option<Layout>,
     source: Option<[f32; 2]>,
-    live_preview: bool,
+    pub(super) live_preview: bool,
     source_position_pending: bool,
     source_reader_position: Option<ListOffset>,
     pub(crate) source_highlight_pending: bool,
@@ -660,7 +660,7 @@ impl Reader {
             self.cancel_pending_landing();
             self.toggle_source(window, cx);
             if self.editing.is_some() && self.ui_state.live_preview {
-                self.toggle_live_preview(window, cx);
+                self.set_live_preview(true, window, cx);
             }
             if self.editing.is_none() {
                 if let Some(position) = self.ui_state.source_reader_position.take() {
@@ -777,7 +777,7 @@ impl Reader {
             live_preview: if self.editing.is_some() {
                 self.source_live_preview()
             } else {
-                self.ui_state.source.is_some() && self.ui_state.live_preview
+                self.ui_state.live_preview
             },
             source_scroll: offset,
         };

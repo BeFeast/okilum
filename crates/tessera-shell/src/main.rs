@@ -2195,6 +2195,11 @@ impl Reader {
         }
         if self.find_open {
             self.close_find(window, cx);
+            return;
+        }
+        #[cfg(any(unix, windows))]
+        if self.editing.is_some() {
+            self.toggle_source(window, cx);
         }
     }
 
@@ -6994,8 +6999,10 @@ mod document_link_landing_tests {
                                     .visible(reader_layout::Panel::Backlinks, width)
                             )
                         );
-                        assert!(focus.is_focused(window), "Escape preserves the note focus");
-                        assert_eq!(reader.editing.is_some(), source);
+                        if !source {
+                            assert!(focus.is_focused(window), "Escape preserves Reader focus");
+                        }
+                        assert!(reader.editing.is_none(), "Escape returns to Reader");
                     });
                 }
             }

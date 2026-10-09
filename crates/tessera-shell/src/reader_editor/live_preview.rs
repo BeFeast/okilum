@@ -351,10 +351,29 @@ mod tests {
         reader.read_with(visual, |reader, _| {
             assert!(!reader.editing.as_ref().unwrap().live_preview.enabled)
         });
+        // The pencil is Edit, never Rename, and toggles back to Reader (#871).
+        let pencil = visual.debug_bounds("reader-edit").unwrap();
+        visual.simulate_click(pencil.center(), Modifiers::default());
+        visual.run_until_parked();
+        reader.read_with(visual, |reader, _| {
+            assert!(reader.editing.is_none());
+            assert!(reader.renaming.is_none());
+        });
+        visual.simulate_click(pencil.center(), Modifiers::default());
+        visual.run_until_parked();
+        reader.read_with(visual, |reader, _| assert!(!reader.source_live_preview()));
+        reader.update_in(visual, |reader, window, cx| {
+            reader.set_live_preview(true, window, cx)
+        });
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        reader.read_with(visual, |reader, _| assert!(reader.editing.is_none()));
+        visual.simulate_click(pencil.center(), Modifiers::default());
+        visual.run_until_parked();
+        reader.read_with(visual, |reader, _| assert!(reader.source_live_preview()));
         let read = visual.debug_bounds("reader-read").unwrap();
         visual.simulate_click(read.center(), Modifiers::default());
         visual.run_until_parked();
-        reader.read_with(visual, |reader, _| assert!(reader.editing.is_none()));
         visual.simulate_resize(size(px(480.), px(900.)));
         reader.update_in(visual, |reader, window, cx| {
             reader.toggle_source(window, cx)
