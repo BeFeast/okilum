@@ -2,13 +2,25 @@
 use super::*;
 use gpui_component::scroll::ScrollableElement as _;
 use std::ops::Range;
-use tessera_core::delimited::Table;
+use tessera_core::delimited::{ReadLimits, Table};
 use unicode_segmentation::UnicodeSegmentation as _;
 
 const ROW_HEIGHT: f32 = 30.;
 const COLUMN_WIDTH: f32 = 200.;
 const GUTTER: f32 = 48.;
 const INITIAL_ROWS: usize = 1000;
+const PREVIEW_LIMITS: ReadLimits = ReadLimits {
+    bytes: 1024 * 1024,
+    rows: INITIAL_ROWS + 2,
+    cells: 64_000,
+    columns: 256,
+};
+const EXPANDED_LIMITS: ReadLimits = ReadLimits {
+    bytes: 32 * 1024 * 1024,
+    rows: 100_001,
+    cells: 500_000,
+    columns: 256,
+};
 actions!(reader_delimited, [CopyCells]);
 
 pub(crate) fn bind_keys(cx: &mut App) {
@@ -42,7 +54,8 @@ struct Cell {
 pub(crate) struct TablePreview {
     path: PathBuf,
     table: Option<Arc<Table>>,
-    failed: bool,
+    error: Option<&'static str>,
+    loading: bool,
     all: bool,
     anchor: Option<Cell>,
     end: Option<Cell>,
@@ -52,42 +65,66 @@ pub(crate) struct TablePreview {
 }
 impl TablePreview {
     pub(crate) fn new(path: PathBuf, cx: &mut Context<Self>) -> Self {
-        let load_path = path.clone();
-        let task = cx.background_executor().spawn(async move {
-            std::fs::read_to_string(&load_path).map(|source| {
-                Table::parse(
-                    &source,
-                    load_path
-                        .extension()
-                        .is_some_and(|e| e.eq_ignore_ascii_case("tsv")),
-                )
-            })
-        });
-        cx.spawn(async move |this, cx| {
-            let result = task.await;
-            let _ = this.update(cx, |this, cx| {
-                match result {
-                    Ok(table) => this.table = Some(Arc::new(table)),
-                    Err(error) => {
-                        eprintln!("Cannot read delimited file: {error:#}");
-                        this.failed = true;
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-        Self {
+        let mut preview = Self {
             path,
             table: None,
-            failed: false,
+            error: None,
+            loading: false,
             all: false,
             anchor: None,
             end: None,
             scroll: UniformListScrollHandle::new(),
             horizontal: ScrollHandle::new(),
             focus: cx.focus_handle(),
+        };
+        preview.load(false, cx);
+        preview
+    }
+    fn load(&mut self, all: bool, cx: &mut Context<Self>) {
+        if self.loading {
+            return;
         }
+        self.loading = true;
+        self.error = None;
+        let load_path = self.path.clone();
+        let task = cx.background_executor().spawn(async move {
+            std::fs::File::open(&load_path).and_then(|file| {
+                Table::read(
+                    file,
+                    load_path
+                        .extension()
+                        .is_some_and(|e| e.eq_ignore_ascii_case("tsv")),
+                    if all { EXPANDED_LIMITS } else { PREVIEW_LIMITS },
+                )
+            })
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                this.loading = false;
+                match result {
+                    Ok(table) => {
+                        this.table = Some(Arc::new(table));
+                        this.all = all;
+                        // The file may have changed between reads; never copy
+                        // a selection against a different source snapshot.
+                        this.anchor = None;
+                        this.end = None;
+                    }
+                    Err(error) => {
+                        eprintln!("Cannot read delimited file: {error:#}");
+                        this.error = Some(if error.kind() == std::io::ErrorKind::InvalidData {
+                            "This table couldn’t be read as UTF-8."
+                        } else {
+                            "This table couldn’t be read."
+                        });
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
     }
     fn selected(&self, cell: Cell) -> bool {
         self.selection()
@@ -218,14 +255,10 @@ impl Render for TablePreview {
             .on_action(cx.listener(|this, _: &CopyCells, _, cx| this.copy(cx)));
         let Some(table) = self.table.as_ref() else {
             return view
-                .child(div().px_4().child(if self.failed {
-                    "This table couldn’t be read as UTF-8."
-                } else {
-                    "Opening table…"
-                }))
+                .child(div().px_4().child(self.error.unwrap_or("Opening table…")))
                 .into_any_element();
         };
-        if table.rows.is_empty() {
+        if table.rows.is_empty() && !table.limited {
             return view
                 .child(div().px_4().child("Empty file"))
                 .into_any_element();
@@ -240,7 +273,7 @@ impl Render for TablePreview {
         };
         let width = px(GUTTER + COLUMN_WIDTH * table.columns as f32);
         let mut grid = v_flex().flex_none().h_full().min_h_0().w(width);
-        if header {
+        if header && !table.rows.is_empty() {
             grid = grid.child(self.row(0, true, cx));
         }
         grid = grid.child(
@@ -273,6 +306,17 @@ impl Render for TablePreview {
         if table.ambiguous {
             notices.push("More than one separator fits this file.");
         }
+        if self.all && table.limited {
+            notices.push(
+                "This file exceeds table preview limits. Open it externally to view the rest.",
+            );
+        }
+        if let Some(error) = self.error {
+            notices.push(error);
+        }
+        if table.rows.is_empty() && table.limited && !self.all {
+            notices.push("No complete records fit in the initial preview.");
+        }
         view = view.child(
             div()
                 .id("delimited-horizontal")
@@ -288,28 +332,34 @@ impl Render for TablePreview {
         if !notices.is_empty() {
             view = view.child(
                 div()
+                    .id("delimited-notice")
+                    .debug_selector(|| "delimited-notice".into())
                     .px_4()
                     .py_1()
                     .text_color(palette.text_muted)
                     .child(notices.join(" ")),
             );
         }
-        if count < available {
+        if !self.all && (count < available || table.limited) {
             view = view.child(
                 h_flex()
                     .px_4()
                     .gap_3()
                     .text_color(palette.text_muted)
-                    .child(format!("Showing the first {count} rows of {available}"))
+                    .child(format!("Showing the first {count} rows"))
                     .child(
                         Button::new("delimited-show-all")
                             .debug_selector(|| "delimited-show-all".into())
                             .ghost()
                             .small()
-                            .label("Show all")
+                            .label(if self.loading {
+                                "Opening…"
+                            } else {
+                                "Show all"
+                            })
+                            .disabled(self.loading)
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.all = true;
-                                cx.notify();
+                                this.load(true, cx);
                             })),
                     ),
             );
@@ -371,6 +421,14 @@ mod tests {
         let preview = preview.unwrap();
         visual.simulate_resize(size(px(650.), px(500.)));
         visual.run_until_parked();
+        preview.read_with(visual, |p, _| {
+            let table = p.table.as_ref().unwrap();
+            assert!(
+                table.limited,
+                "the initial worker does not retain the whole file"
+            );
+            assert_eq!(table.rows.len(), INITIAL_ROWS + 2);
+        });
         for mode in [ThemeMode::Light, ThemeMode::Dark] {
             visual.update(|_, cx| Theme::change(mode, None, cx));
             visual.run_until_parked();
@@ -429,6 +487,45 @@ mod tests {
     }
 
     #[gpui::test]
+    fn delimited_preview_limits_keep_header_and_offer_explicit_fallback(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().join("wide.csv");
+        let source = format!("a,b\n{}\n", ",".repeat(10_000));
+        std::fs::write(&path, &source).unwrap();
+        cx.update(gpui_component::init);
+        let mut preview = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let entity = cx.new(|cx| TablePreview::new(path.clone(), cx));
+            preview = Some(entity.clone());
+            let surface = cx.new(|_| TableSurface(entity));
+            Root::new(surface, window, cx)
+        });
+        let preview = preview.unwrap();
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds("delimited-row-0").is_some(),
+            "valid header positive control"
+        );
+        preview.read_with(visual, |p, _| {
+            let table = p.table.as_ref().unwrap();
+            assert!(table.limited);
+            assert_eq!(table.columns, 2);
+            assert_eq!(table.rows.len(), 1);
+        });
+        let show = visual.debug_bounds("delimited-show-all").unwrap();
+        visual.simulate_click(show.center(), Modifiers::default());
+        visual.run_until_parked();
+        preview.read_with(visual, |p, _| {
+            assert!(p.all && !p.loading);
+            assert!(p.table.as_ref().unwrap().limited);
+        });
+        assert!(visual.debug_bounds("delimited-row-0").is_some());
+        assert!(visual.debug_bounds("delimited-notice").is_some());
+        assert!(visual.debug_bounds("delimited-show-all").is_none());
+        assert_eq!(std::fs::read(path).unwrap(), source.as_bytes());
+    }
+
+    #[gpui::test]
     fn delimited_mouse_range_and_keyboard_copy_preserve_multiline_values(cx: &mut TestAppContext) {
         let fixture = tempfile::tempdir().unwrap();
         let path = fixture.path().join("quotes.csv");
@@ -449,6 +546,22 @@ mod tests {
         visual.simulate_mouse_down(first.center(), MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(last.center(), Some(MouseButton::Left), Modifiers::default());
         visual.simulate_mouse_up(last.center(), MouseButton::Left, Modifiers::default());
+        visual.simulate_keystrokes("secondary-c");
+        visual.run_until_parked();
+        visual.read(|cx| {
+            assert_eq!(
+                cx.read_from_clipboard().unwrap().text().unwrap(),
+                "שלום, world\t\"line\r\nnext\"\nother\t42"
+            )
+        });
+        visual.simulate_click(first.center(), Modifiers::default());
+        visual.simulate_click(
+            last.center(),
+            Modifiers {
+                shift: true,
+                ..Default::default()
+            },
+        );
         visual.simulate_keystrokes("secondary-c");
         visual.run_until_parked();
         visual.read(|cx| {
