@@ -53,7 +53,26 @@ pub fn apply(root: &Path, drafts: &Path, relative: &str, plan: &Plan) -> Result<
     })
 }
 
-fn bound_path(root: &Path, relative: &str) -> Result<PathBuf> {
+/// Create the missing destination with its first reminder. Creation is
+/// exclusive (NOREPLACE through descriptors in an existing real folder), so a
+/// note that appeared meanwhile is never overwritten: the caller re-plans and
+/// uses `apply`. The plan must describe an empty preimage.
+///
+/// Undo restores the empty note through FileEditor and keeps the file: a path
+/// based delete cannot be made race-free against a concurrent writer.
+pub fn create_and_apply(root: &Path, relative: &str, plan: &Plan) -> Result<Receipt> {
+    let root = root.canonicalize()?;
+    let rel = checked_relative(relative)?;
+    let after = plan.apply_source("").map_err(anyhow::Error::msg)?;
+    crate::note_files::create_with_source(&root, rel, after.as_bytes())?;
+    Ok(Receipt {
+        root,
+        relative: relative.into(),
+        plan: plan.clone(),
+    })
+}
+
+fn checked_relative(relative: &str) -> Result<&Path> {
     let rel = Path::new(relative);
     ensure!(
         !relative.is_empty()
@@ -64,6 +83,11 @@ fn bound_path(root: &Path, relative: &str) -> Result<PathBuf> {
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("md")),
         "Expected a vault-relative Markdown reminders path"
     );
+    Ok(rel)
+}
+
+fn bound_path(root: &Path, relative: &str) -> Result<PathBuf> {
+    let rel = checked_relative(relative)?;
     let mut path = root.to_owned();
     for component in rel.components() {
         path.push(component);
@@ -202,6 +226,70 @@ mod tests {
         assert_eq!(std::fs::read_to_string(root.join("data.txt")).unwrap(), "");
         // An existing empty Markdown file is distinct from a missing destination.
         apply(&root, &drafts, "Reminders.md", &plan).unwrap();
+    }
+
+    fn leftovers(dir: &Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(".tessera-"))
+            .collect()
+    }
+
+    #[test]
+    fn create_publishes_the_first_reminder_and_undo_keeps_an_empty_note() {
+        let (_temp, root, drafts, _) = fixture("");
+        // Positive control: the leftover probe must see a temporary name.
+        std::fs::write(root.join(".tessera-create-probe"), "").unwrap();
+        assert_eq!(leftovers(&root).len(), 1);
+        std::fs::remove_file(root.join(".tessera-create-probe")).unwrap();
+        std::fs::create_dir(root.join("Inbox")).unwrap();
+        let plan = Plan::new("", TASK).unwrap();
+        let receipt = create_and_apply(&root, "Inbox/Later.md", &plan).unwrap();
+        let path = root.join("Inbox/Later.md");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), TASK);
+        assert!(leftovers(&root.join("Inbox")).is_empty());
+        receipt.undo(&root, &drafts).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
+        assert!(receipt.undo(&root, &drafts).is_err());
+    }
+
+    #[test]
+    fn create_refuses_existing_destinations_and_unsuitable_plans() {
+        let (_temp, root, _drafts, _) = fixture("Original\n");
+        let plan = Plan::new("", TASK).unwrap();
+        assert!(create_and_apply(&root, "Reminders.md", &plan).is_err());
+        assert_eq!(
+            std::fs::read_to_string(root.join("Reminders.md")).unwrap(),
+            "Original\n"
+        );
+        // A plan with a non-empty preimage describes an existing note, not a new one.
+        let appended = Plan::new("Original\n", TASK).unwrap();
+        assert!(create_and_apply(&root, "Fresh.md", &appended).is_err());
+        assert!(!root.join("Fresh.md").exists());
+        for relative in ["Missing/Fresh.md", "../Fresh.md", "Fresh.txt", ""] {
+            assert!(
+                create_and_apply(&root, relative, &plan).is_err(),
+                "{relative}"
+            );
+        }
+        assert!(!root.join("Missing").exists() && !root.join("Fresh.txt").exists());
+        assert!(!root.parent().unwrap().join("Fresh.md").exists());
+        assert!(leftovers(&root).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_refuses_symlinked_folders_and_dangling_destinations() {
+        let (temp, root, _drafts, _) = fixture("");
+        let plan = Plan::new("", TASK).unwrap();
+        let outside = temp.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("alias")).unwrap();
+        assert!(create_and_apply(&root, "alias/Fresh.md", &plan).is_err());
+        std::os::unix::fs::symlink(outside.join("target.md"), root.join("Dangling.md")).unwrap();
+        assert!(create_and_apply(&root, "Dangling.md", &plan).is_err());
+        assert!(!outside.join("Fresh.md").exists() && !outside.join("target.md").exists());
     }
 
     #[cfg(unix)]
