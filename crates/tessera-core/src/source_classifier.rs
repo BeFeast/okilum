@@ -64,6 +64,9 @@ pub struct Classification {
     plan: Plan,
     styles: Vec<StyleSpan>,
     marker_scopes: Vec<(Range<usize>, Range<usize>)>,
+    /// Top-level list/quote containers, from their first line start. A local
+    /// reparse must include the whole container its edited lines belong to.
+    contexts: Vec<Range<usize>>,
     decorations: Vec<decorations::Marker>,
     links: Vec<NoteLink>,
     headings: Vec<Heading>,
@@ -155,6 +158,7 @@ fn fallback(snapshot: &Snapshot, reason: SourceReason) -> Classification {
         plan: Plan::new(snapshot, vec![]),
         styles: vec![],
         marker_scopes: vec![],
+        contexts: vec![],
         decorations: vec![],
         links: vec![],
         headings: vec![],
@@ -217,6 +221,18 @@ pub fn classify(snapshot: &Snapshot) -> Classification {
     let mut range_count = 0;
     let mut blocks = Vec::new();
     content_blocks(root, &mut blocks, &mut reasons);
+    let mut contexts = Vec::new();
+    for node in root.children() {
+        if matches!(
+            node.data.borrow().value,
+            NodeValue::List(_) | NodeValue::BlockQuote
+        ) {
+            let Some(range) = context.range(node) else {
+                return fallback(snapshot, SourceReason::ParserCoordinates);
+            };
+            contexts.push(context.lines[node.data.borrow().sourcepos.start.line - 1]..range.end);
+        }
+    }
     for node in blocks {
         let value = &node.data.borrow().value;
         let Some(mut block) = context.range(node) else {
@@ -287,6 +303,7 @@ pub fn classify(snapshot: &Snapshot) -> Classification {
         plan,
         styles,
         marker_scopes,
+        contexts,
         decorations: decorations::extract(root, &context).unwrap_or_default(),
         links,
         headings,
