@@ -197,6 +197,13 @@ impl Editing {
 }
 
 impl Reader {
+    /// The editor mode on screen now; Find from Live Preview shows Source.
+    pub(super) fn live_preview_shown(&self) -> bool {
+        self.editing
+            .as_ref()
+            .is_some_and(|editing| editing.live_preview.enabled)
+    }
+
     pub(super) fn source_live_preview(&self) -> bool {
         self.editing.as_ref().is_some_and(|editing| {
             editing.live_preview.enabled || editing.live_preview.restore_after_find
