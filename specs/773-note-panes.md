@@ -106,3 +106,86 @@ ambiguity, unresolved targets, attachments and fragments. The extraction is a
 small prerequisite PR, not delivery of adjacent links. Existing native regressions
 for nested links, heading/Back, session restore and independent windows must pass
 before destination routing is added.
+
+## Reader decomposition (before the pane host)
+
+`Reader` (`crates/tessera-shell/src/main.rs`) is one struct of about 150 fields.
+Only `reader_navigation::State` is per-document today. A second visible document
+needs the rest of the document state moved behind a pane-owned type first. Raw
+`.field` reference counts below are upper bounds (some names also match other
+structs), but they size the churn: `content` ~226 refs in 16 files, `current_rel`
+~213/25, `loading` ~207/21, `editing` ~197/19, `link_notice` ~117/20,
+`hover_preview` ~64/2, `backlinks` ~63/12, `file_preview` ~52/14, `note_source`
+~40/9, `prepared_links` ~35/6. Expect roughly a thousand call sites; this is why
+it is staged as mechanical moves, not one change.
+
+### Field ownership
+
+Per pane (`pane::Document`, keyed by a stable `PaneId`):
+
+- Rendered document: `content` (+ `_content_sub`), `note_source`,
+  `note_canonical_source`, `current_rel`, `current_title`, `outline`,
+  `properties`, `properties_open`, `show_hidden_properties`, `backlinks`,
+  `backlinks_expanded`, `use_html`, `table_overlay`, `timeline`, `file_preview`,
+  `typed_navigation`, `hover_preview`.
+- Find: `find_input`, `find_open`.
+- Link preparation: `prepared_links`, `link_presentations`, `link_identities`,
+  `link_choices`, `link_original_source`, `link_preparation_generation`.
+- Load pipeline: `loading`, `pending_open_document`, `queued_open_note`,
+  `usable_document`, `last_recorded_document`; every spawned task captures
+  `(PaneId, generation)`.
+- Editor and recovery for that document: `editing` (see ownership below),
+  `recovery_offer/checked/error/dismissed/startup`.
+- `navigation` (already extracted) and a pane `focus_handle`.
+
+Window level (stay on `Reader`, one instance): vault and index (`vault`,
+`searcher`, `vault_root`, `watcher*`, `incremental_*`, `tasks_index`,
+`deferred_vault_changes`, `cache_lease`, `index_dir`), session and persisted UI
+(`ui_state`, `shared_session`, `session_*`), sidebar and tree (`tree*`, `sidebar*`,
+`inbox`, `projects`, `section_scroll`), panels and layout (`panels`,
+`panel_*`, `body_*`, `resizing_panel`), file operations (`creation*`, `renaming`,
+`move_*`, `trash_*`, `note_move_pending`), `recent_switcher`, `quick_open`,
+`shortcut_sheet`, `backlink_titles`, `sel_format`, `reader_window`, toasts and
+their generation counters (`notice_generation`, `history_notice_generation`),
+`link_notice`/`displayed_*` presentation of notices.
+
+Needs a decision in its own stage, not assumed here:
+
+- `editing`: the per-pane value is a handle; ownership is a window-level
+  registry `canonical note -> owning PaneId`, so the second pane of the same note
+  is read-only (design above). Sibling windows keep using FileEditor's lock.
+- `link_notice`: a window toast naming the originating pane, not pane state.
+- Right-panel data (`outline`, `properties`, `backlinks`) is computed per
+  document but rendered for the active pane only.
+
+### Stages
+
+Every stage is behavior-preserving until stage 4, merges alone, and keeps one
+visible pane. Native regressions listed in the checkpoint above must pass at each.
+
+1. **Document container.** `pane::Document` holding the rendered-document, find
+   and link-preparation groups; `Reader` owns `panes: Vec<Document>` with one
+   entry and `active`. Mechanical `self.x` to `self.doc().x`, done group by group
+   in several small PRs so each diff is reviewable.
+2. **Load pipeline binding.** Move the load group, key every background task and
+   completion by `(PaneId, generation)`. Add the stale-result tests (late load
+   after replace/close) while there is still one pane; positive control: a
+   deliberately stale completion must be observed and dropped.
+3. **Editor ownership registry.** Window-level owner map, guarded
+   replace/close/unsplit hooks that run the existing save/protect/conflict
+   lifecycle. Still one pane; tests drive the hooks directly.
+4. **Second pane host + modified-link routing.** Render two documents, active
+   pane drives sidebar/right panel, single watcher fan-out to both, same-note
+   read-only second pane, Ctrl/Cmd+click opens beside, +Shift opens a window.
+   First user-visible stage: Linux light/dark screenshots, muninn QA.
+5. **Split controls and layout persistence** as specified above.
+
+### Risks to watch
+
+- The `Reader` render and `reader_loading` paths read many fields in one
+  function; extracting groups can silently change borrow order and notify timing.
+  Compare native heading/Back, session restore and window restore after each PR.
+- Measurements for open/scroll performance (#653 line of work) need a baseline
+  and comparison on one machine, in one session.
+- Other executors edit these files (tree/menus, history, windows). Rebase often
+  and land stage 1 groups quickly to keep the conflict window small.
