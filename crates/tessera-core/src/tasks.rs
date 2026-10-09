@@ -217,6 +217,12 @@ enum Filter {
         ordering: Ordering,
         value: Date,
     },
+    /// `path includes` / `path does not include` (#880): a literal,
+    /// case-insensitive substring of the vault-relative path with `.md`.
+    Path {
+        lowercase: String,
+        include: bool,
+    },
 }
 impl Filter {
     fn matches(&self, task: &Task) -> bool {
@@ -229,6 +235,9 @@ impl Filter {
                 value,
             } => (if *done { task.done } else { task.due })
                 .is_some_and(|d| d.cmp(value) == *ordering),
+            Self::Path { lowercase, include } => {
+                task.path.to_lowercase().contains(lowercase.as_str()) == *include
+            }
         }
     }
 }
@@ -290,6 +299,10 @@ impl Query {
                 "done" => query.filters.push(Filter::Status(true)),
                 "no due date" => query.filters.push(Filter::NoDue),
                 _ => {
+                    if let Some(filter) = path_filter(line) {
+                        query.filters.push(filter);
+                        continue;
+                    }
                     if let Some(group) = line.strip_prefix("group by ") {
                         let group = match group {
                             "filename" => Some(Group::Filename),
@@ -343,6 +356,25 @@ impl Query {
         query
     }
 }
+/// Only the literal form. Placeholders (`{{query.file.path}}`), regex and
+/// boolean combinations stay unsupported, so the query fails closed instead
+/// of matching text the author did not mean.
+fn path_filter(line: &str) -> Option<Filter> {
+    let (include, value) = if let Some(value) = line.strip_prefix("path includes ") {
+        (true, value)
+    } else {
+        (false, line.strip_prefix("path does not include ")?)
+    };
+    let value = value.trim();
+    if value.is_empty() || value.contains("{{") {
+        return None;
+    }
+    Some(Filter::Path {
+        lowercase: value.to_lowercase(),
+        include,
+    })
+}
+
 fn relative_date(value: &str, today: Date) -> Option<Date> {
     if value == "today" {
         return Some(today);
@@ -444,7 +476,11 @@ mod tests {
             "due on {{date:YYYY-MM-DD}}",
             "due before nonsense",
             "due on 2026-02-30",
-            "not done\npath includes private",
+            // Path filters are literal only (#880): these forms still fail.
+            "not done\npath includes {{query.file.path}}",
+            "path regex matches /private/",
+            "path includes ",
+            "(path includes a) OR (path includes b)",
             "sort by banana",
             "group by unknown",
         ] {
@@ -453,6 +489,48 @@ mod tests {
             assert!(index().query(&query).is_empty());
         }
     }
+    /// #880: literal path filters, case-insensitive on the vault-relative
+    /// path including `.md`, ANDed with the other lines.
+    #[test]
+    fn path_includes_and_does_not_include_filter_by_note_path() {
+        let mut i = Index::default();
+        i.replace("Projects/Launch Plan.md", "- [ ] Ship\n- [x] Draft\n");
+        i.replace("Projects/Archive/Old plan.md", "- [ ] Revisit\n");
+        i.replace("Home/Garden.md", "- [ ] Plant\n");
+        i.replace("Personal plans.md", "- [ ] Rest\n");
+        let texts = |q: &str| {
+            let mut t: Vec<_> = run(&i, q).into_iter().map(|t| t.text).collect();
+            t.sort();
+            t
+        };
+        assert_eq!(texts("path includes launch plan.md"), ["Draft", "Ship"]);
+        assert_eq!(
+            texts("not done\npath includes PROJECTS/"),
+            ["Revisit", "Ship"]
+        );
+        assert_eq!(texts("path includes archive/old plan"), ["Revisit"]);
+        assert_eq!(
+            texts("not done\npath does not include projects/"),
+            ["Plant", "Rest"]
+        );
+        assert_eq!(
+            texts("not done\npath includes plan\npath does not include archive"),
+            ["Rest", "Ship"],
+            "nested paths, spaces and AND semantics"
+        );
+        assert!(
+            texts("path includes .MD").len() == 5,
+            "extension is part of the path"
+        );
+        assert!(texts("path includes nowhere").is_empty());
+        // Positive control: the same lines are supported, not silently dropped.
+        assert!(
+            Query::parse("path includes x\npath does not include y", today())
+                .unsupported
+                .is_empty()
+        );
+    }
+
     #[test]
     fn replacement_removal_ordering_and_boundaries() {
         let mut i = index();
