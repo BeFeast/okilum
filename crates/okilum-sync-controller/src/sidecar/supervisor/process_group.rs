@@ -119,6 +119,16 @@ impl ProcessGroupTree {
         )?
         .is_some())
     }
+    /// Signal the whole group. Nothing signalable left is not an error: ESRCH when it
+    /// is already gone, and EPERM, which macOS returns when the only members left are
+    /// zombies (present but not signalable). What remains is decided by `group_empty`
+    /// and the deadline, so a member we truly cannot signal still ends as Stopping.
+    fn signal_group(&self, signal: Signal) -> Result<()> {
+        match kill_process_group(self.group, signal) {
+            Ok(()) | Err(Errno::SRCH) | Err(Errno::PERM) => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
     /// The group has no member, or only members we cannot see (EPERM counts as
     /// present). Never signals.
     fn group_empty(&self) -> Result<bool> {
@@ -165,12 +175,12 @@ impl OwnedTree for ProcessGroupTree {
             // SIGTERM to the whole group, a bounded wait for the leader, then
             // SIGKILL for stragglers; the leader stays unreaped throughout, so the
             // group id cannot have been recycled while signals are sent.
-            kill_process_group(self.group, Signal::TERM)?;
+            self.signal_group(Signal::TERM)?;
             let grace = now + self.budget / 2;
             while Instant::now() < grace && !self.root_exited()? {
                 std::thread::sleep(Duration::from_millis(5));
             }
-            kill_process_group(self.group, Signal::KILL)?;
+            self.signal_group(Signal::KILL)?;
             let mut child = self.root.take().context("root vanished")?;
             loop {
                 if child.try_wait()?.is_some() {

@@ -46,6 +46,12 @@ done
 run_tests okilum-shell --bins platform::exact_macos_clipboard::native_tests
 run_tests okilum-shell --bins reader_replay::
 
+# #588: the managed-sidecar library is compiled into the shell, but its tests only ran on
+# Linux and Windows. These cover the Unix state store (flock, atomic replace), the
+# process-group owned tree (real process tree, signals, process scan via libproc) and
+# the private socket transport (LOCAL_PEERCRED); each needs the real macOS kernel.
+run_tests okilum-sync-controller --lib sidecar::
+
 # #477: real Quick Look providers, bounded Retina output and cancellation.
 export OKILUM_THUMBNAIL_EVIDENCE_DIR="${RUNNER_TEMP}/thumbnail-evidence"
 run_tests okilum-shell --bins reader_thumbnail::native_tests
