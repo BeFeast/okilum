@@ -180,7 +180,7 @@ pub(crate) fn activate(cx: &mut App) {
 
 /// The status row's «Install Update…» for a found update: Sparkle's own window
 /// downloads, installs and relaunches.
-pub(crate) fn install() {
+pub(crate) fn install_update() {
     #[cfg(target_os = "macos")]
     macos::install();
 }
