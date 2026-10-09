@@ -2,7 +2,7 @@
 
 Selecting a PDF in the reader shows its pages inline instead of the file card.
 Engine choice and the slice plan are in
-[research/477-inline-pdf.md](research/477-inline-pdf.md); this note records the
+[the inline PDF research note](https://git.oklabs.uk/BeFeast/okilum/src/commit/43abc7c1040b76d3ab9608e2390bd0897c42f808/docs/research/477-inline-pdf.md); this note records the
 decisions slice 1 made.
 
 ## Shape

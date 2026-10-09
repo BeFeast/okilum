@@ -55,7 +55,7 @@ in each body are from those runs, not estimates.
 
 ## Pending 0008 — rendered-text find
 
-[0008](0008.md) adds search decorations and shared searchable Custom parts,
+[0008](https://git.oklabs.uk/BeFeast/okilum/src/commit/43abc7c1040b76d3ab9608e2390bd0897c42f808/docs/upstream/0008.md) adds search decorations and shared searchable Custom parts,
 building on 0006. Its diff lives in `scripts/patches/0008-text-view-search-highlights.diff`;
 gpui core remains unmodified.
 

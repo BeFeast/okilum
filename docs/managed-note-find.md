@@ -46,5 +46,5 @@ Selection ends edit coalescing but
 adds no source mutation or Undo entry. Highlighting every match is deferred.
 
 Historical reader issue #48 is separate from managed editing issue #277. See the
-[native projection contract](archive/managed-live-preview-native.md) for the explicit
+[native projection contract](https://git.oklabs.uk/BeFeast/okilum/src/commit/43abc7c1040b76d3ab9608e2390bd0897c42f808/docs/archive/managed-live-preview-native.md) for the explicit
 Source fallback requirement.

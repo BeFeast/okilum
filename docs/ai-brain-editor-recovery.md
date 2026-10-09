@@ -9,7 +9,7 @@ never save or replay a write. **Recover draft**, **Retry this Save** and **Disca
 are explicit UI actions. An uncertain Save must be recovered before discarding its
 record. Typing does not save canonical source. A fresh explicit Save may attempt
 one conservative independent-edit merge under the
-[automatic Save contract](archive/ai-brain-disjoint-save.md); Retry and restore never plan one.
+[automatic Save contract](https://git.oklabs.uk/BeFeast/okilum/src/commit/43abc7c1040b76d3ab9608e2390bd0897c42f808/docs/archive/ai-brain-disjoint-save.md); Retry and restore never plan one.
 
 ## Storage interface
 
