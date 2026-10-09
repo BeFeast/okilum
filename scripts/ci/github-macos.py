@@ -131,8 +131,9 @@ class Cancellation:
             temporary.replace(receipt)
 
     def observed(self, run):
-        self.run_id = run["id"]
-        self.persist()
+        if self.run_id != run["id"]:
+            self.run_id = run["id"]
+            self.persist()
 
     def cancel(self, *, sleep=time.sleep):
         # Runner termination has a short grace period. No normal read retries,

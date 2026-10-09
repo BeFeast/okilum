@@ -129,6 +129,11 @@ class CancellationTests(unittest.TestCase):
             subprocess.run(['node', str(action)], env=env, check=True, timeout=5)
             self.assertEqual(evidence.read_text().splitlines(), [str(root / 'scripts/ci/github-cancel.py'), receipt])
             self.assertFalse(Path(receipt).exists())
+            Path(receipt).write_text('malformed')
+            result = subprocess.run(['node', str(action)], env=env, check=True, timeout=5,
+                                    capture_output=True, text=True)
+            self.assertIn('receipt could not be processed', result.stdout)
+            self.assertFalse(Path(receipt).exists())
 
     @unittest.skipUnless(os.name == 'posix', 'Forgejo bridge runs on Linux')
     def test_real_sigint_and_sigterm_cancel_only_owned_run_and_exit_nonzero(self):

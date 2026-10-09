@@ -16,6 +16,8 @@ if (process.env.STATE_receipt) {
         console.log('::warning::Hosted cancellation cleanup was not confirmed');
       }
     }
+  } catch {
+    console.log("::warning::Hosted cancellation receipt could not be processed");
   } finally {
     fs.rmSync(receipt, { force: true });
   }
