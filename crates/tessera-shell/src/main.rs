@@ -70,6 +70,8 @@ use reader_sidebar::SectionAction;
 mod reader_link_navigation;
 mod reader_navigation;
 use reader_link_navigation::handle_link;
+#[cfg(test)]
+mod input_navigation_tests;
 mod reader_recent;
 #[cfg(any(unix, windows))]
 mod reader_source_history;
