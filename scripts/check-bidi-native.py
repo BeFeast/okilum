@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Native #737 regression: run under an exclusive X11 display with native_bidi737 built.
-Usage: DISPLAY=:134 python3 scripts/check-bidi-native.py OUTPUT_DIRECTORY
+Usage: DISPLAY=:134 [BIDI_STEP_DELAY=0.5] python3 scripts/check-bidi-native.py OUTPUT_DIRECTORY
 """
 import json
 import os
@@ -13,9 +13,12 @@ out = Path(sys.argv[1])
 out.mkdir(parents=True, exist_ok=True)
 env = dict(os.environ, WAYLAND_DISPLAY='', __EGL_VENDOR_LIBRARY_FILENAMES='/usr/share/glvnd/egl_vendor.d/50_mesa.json')
 
+# Settle time per xdotool step; raise it on a loaded host (BIDI_STEP_DELAY=0.5).
+STEP = float(os.environ.get('BIDI_STEP_DELAY', '.2'))
+
 def xd(*args):
     subprocess.run(['xdotool', *args], env=env, check=True)
-    time.sleep(.2)
+    time.sleep(STEP)
 
 for live in [False, True]:
     for kind, text in [('plain', 'abc שלום xyz'), ('bold', 'abc **שלום** xyz'), ('wiki', 'abc [[שלום]] xyz'), ('wrap', 'abc שלום xyz ' * 35)]:
@@ -26,14 +29,28 @@ for live in [False, True]:
         with log.open('w') as stream:
             proc = subprocess.Popen(['target/debug/examples/native_bidi737'], env=dict(env, TESSERA_BIDI_TEXT=text), stdout=stream, stderr=subprocess.STDOUT)
         try:
-            time.sleep(2)
-            win = subprocess.check_output(['xdotool', 'search', '--pid', str(proc.pid), '--name', 'Tessera'], env=env, text=True).splitlines()[-1]
-            xd('windowmove', win, '0', '0', 'windowfocus', win)
+            # Wait until the window is mapped; focusing an unmapped window is BadMatch.
+            for _ in range(40):
+                time.sleep(.5)
+                found = subprocess.run(['xdotool', 'search', '--onlyvisible', '--pid', str(proc.pid), '--name', 'Tessera'], env=env, text=True, capture_output=True).stdout.split()
+                if found:
+                    break
+            win = found[-1]
+            xd('windowmove', win, '0', '0')
+            xd('windowfocus', '--sync', win)
             if live:
                 xd('key', 'ctrl+alt+l')
+            def records():
+                return [json.loads(line) for line in log.read_text().splitlines() if line.startswith('{')]
             def record():
+                # The fixture writes asynchronously; wait for this request's line.
+                count = len(records())
                 xd('key', 'ctrl+alt+r')
-                return [json.loads(line) for line in log.read_text().splitlines() if line.startswith('{')][-1]
+                for _ in range(50):
+                    if len(records()) > count:
+                        break
+                    time.sleep(.05)
+                return records()[-1]
             def selected(state):
                 r = state['selection']
                 return text.encode()[r['start']:r['end']].decode()
