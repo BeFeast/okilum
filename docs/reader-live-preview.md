@@ -1,6 +1,6 @@
 # Ordinary-note Live Preview — S1 (#359)
 
-This implements the approved MIT S1 from `research/359-smart-editor.md` §9.
+This implements the approved MIT S1 from [the smart editor research](https://git.oklabs.uk/BeFeast/okilum/src/commit/43abc7c1040b76d3ab9608e2390bd0897c42f808/docs/research/359-smart-editor.md) §9.
 Source editing remains the initial mode. While editing, the book glyph beside
 Source switches between Source and Live Preview; Ctrl+E / ⌘E retains its existing
 Reader/edit behavior. The mode is not restored automatically on the next session.
@@ -23,7 +23,7 @@ There is no startup indexing, new dependency, new vendor patch or gpui-core chan
 
 ## Acceptance evidence to complete before merge
 
-The managed native matrix in `archive/managed-live-preview-native.md` remains the
+The managed native matrix in [the native projection contract](https://git.oklabs.uk/BeFeast/okilum/src/commit/43abc7c1040b76d3ab9608e2390bd0897c42f808/docs/archive/managed-live-preview-native.md) remains the
 acceptance gate, now exercised through the ordinary Reader editor:
 
 | Area | Evidence |
@@ -208,7 +208,7 @@ this fix before its final acceptance. No gpui-core patch is involved.
 
 ## Roadmap and stability follow-up
 
-The S3–S7 roadmap remains in [research/359-smart-editor.md §9](research/359-smart-editor.md#9-recommendation-and-slice-plan). Native Linux reproduction, acceptance criteria and the owner-reference comparison are in [research/754-live-preview-stability.md](research/754-live-preview-stability.md). The proposed stability work is prioritized before #753; it is not an implementation or acceptance claim.
+The S3–S7 roadmap remains in [the smart editor research §9](https://git.oklabs.uk/BeFeast/okilum/src/commit/43abc7c1040b76d3ab9608e2390bd0897c42f808/docs/research/359-smart-editor.md#9-recommendation-and-slice-plan). Native Linux reproduction, acceptance criteria and the owner-reference comparison are in [the live preview stability research](https://git.oklabs.uk/BeFeast/okilum/src/commit/43abc7c1040b76d3ab9608e2390bd0897c42f808/docs/research/754-live-preview-stability.md). The proposed stability work is prioritized before #753; it is not an implementation or acceptance claim.
 
 ### Presentation on relaunch (#806)
 

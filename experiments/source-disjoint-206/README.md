@@ -3,7 +3,7 @@
 > **Historical document.** Written before Tessera was renamed Okilum (2026-10-09). Names, paths and links are kept as they were then.
 
 The implementation reuses the existing bounded exact-line merge helper and source
-CAS/replay API. [The contract](../../docs/archive/ai-brain-disjoint-save.md) defines the
+CAS/replay API. [The contract](https://git.oklabs.uk/BeFeast/okilum/src/commit/43abc7c1040b76d3ab9608e2390bd0897c42f808/docs/archive/ai-brain-disjoint-save.md) defines the
 fresh Save boundary and late-input behavior.
 
 Focused automated coverage lives in `brain/editor_recovery/auto_resolution.rs`
