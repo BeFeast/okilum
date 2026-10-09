@@ -2611,7 +2611,7 @@ mod tests {
             panic!("Markdown positive control")
         };
         assert!(document.unwrap().1.source.contains("Not a CSV header"));
-        assert!(!root.join(".tessera-index").exists());
+        assert!(!root.join(".okilum-index").exists());
     }
 
     #[gpui::test]

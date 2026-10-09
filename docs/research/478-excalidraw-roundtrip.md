@@ -1,5 +1,7 @@
 # Research: Excalidraw round trip — edit the actual drawing (#478)
 
+> **Historical document.** Written before Tessera was renamed Okilum (2026-10-09). Names, paths and links are kept as they were then.
+
 Status: research only. No product code changes. This document informs a
 go/no-go decision and a slice plan for #478.
 

@@ -32,7 +32,7 @@ editors into an atomic snapshot boundary. All canonical writers must honor the
 managed boundary during export.
 
 Hidden Markdown and adjacent media remain canonical. The explicit reserved names
-`.git`, `.obsidian`, `.okilum`, `.tessera-index`, `.env`, `.env.local`,
+`.git`, `.obsidian`, `.okilum`, `.okilum-index`, `.env`, `.env.local`,
 `.env.production` and `credentials.json` are excluded at every directory level
 and listed in the manifest. Okilum connector credentials, configuration, drafts,
 indexes and execution journals belong outside the canonical root; these names do

@@ -277,7 +277,7 @@ impl Directory {
     fn prepared(&self, bytes: &[u8], security_source: Option<&File>) -> Result<PathBuf> {
         let path = self
             .path
-            .join(format!(".tessera-save-{}.prepared", uuid::Uuid::new_v4()));
+            .join(format!(".okilum-save-{}.prepared", uuid::Uuid::new_v4()));
         let descriptor = security_source.map(Descriptor::from_file).transpose()?;
         let mut attrs = descriptor.as_ref().map(|descriptor| SECURITY_ATTRIBUTES {
             nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
@@ -419,7 +419,7 @@ impl Directory {
         let prepared = self.prepared(proposed, Some(&guard))?;
         let backup = self
             .path
-            .join(format!(".tessera-save-{}.previous", uuid::Uuid::new_v4()));
+            .join(format!(".okilum-save-{}.previous", uuid::Uuid::new_v4()));
         // ReplaceFile preserves DACL, creation time and streams; never opt out
         // of merge errors. Carry the ordinary user-visible attribute bits too.
         let attributes = info.dwFileAttributes
@@ -527,7 +527,7 @@ impl PreparedReplacement<'_> {
             // Never delete either version, including a writer racing reversal.
             let recovery = directory
                 .path
-                .join(format!(".tessera-save-{}.raced", uuid::Uuid::new_v4()));
+                .join(format!(".okilum-save-{}.raced", uuid::Uuid::new_v4()));
             replace(&path, &backup, &recovery).context("Save raced with another replacement; all surviving recovery files have been retained")?;
             return Ok(Replacement::Conflict);
         }

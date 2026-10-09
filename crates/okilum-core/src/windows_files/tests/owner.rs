@@ -710,11 +710,7 @@ fn windows_editor_refused_move_retry_and_restart_keep_prepared_recovery_outside_
         walkdir::WalkDir::new(&fixture.root)
             .into_iter()
             .map(|e| e.unwrap())
-            .filter(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .starts_with(".tessera-save-")
-            })
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".okilum-save-"))
             .count()
     };
     assert_eq!(

@@ -1,5 +1,7 @@
 # Research: knowledge organisation model for navigation (#370)
 
+> **Historical document.** Written before Tessera was renamed Okilum (2026-10-09). Names, paths and links are kept as they were then.
+
 Status: option B approved by Oleg on 2026-10-07. The accepted Projects slice is
 recorded in `docs/design/reader.md`; later Views/service/connector phases below
 remain separate follow-ups.

@@ -1347,7 +1347,7 @@ impl SourceStore {
         self.save(&record)?; // intent + preimage durable before source mutation
         hook(CommitPoint::IntentSaved)?;
         if current.as_deref() != Some(proposed.as_slice()) {
-            let temporary = format!(".tessera-source-{}.tmp", Uuid::new_v4());
+            let temporary = format!(".okilum-source-{}.tmp", Uuid::new_v4());
             // EXCL establishes ownership. Never unlink an entry we did not create,
             // including a canonical source that resembles a staging filename.
             let mut file = File::from(openat(

@@ -173,14 +173,14 @@ const SKIP_DIRS: &[&str] = &[
     ".trash",
     ".stfolder",
     ".stversions",
-    ".tessera-index",
+    ".okilum-index",
     "node_modules",
 ];
 /// Exact Windows preimage spelling reserved for native safe-save recovery.
 /// Keep the parser portable: Syncthing can bring these files to Unix clients.
 pub fn windows_preimage_name(name: &std::ffi::OsStr) -> bool {
     name.to_str()
-        .and_then(|s| s.strip_prefix(".tessera-save-"))
+        .and_then(|s| s.strip_prefix(".okilum-save-"))
         .and_then(|s| s.strip_suffix(".previous"))
         .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok_and(|u| u.to_string() == id))
 }
@@ -190,7 +190,7 @@ pub fn windows_preimage_name(name: &std::ffi::OsStr) -> bool {
 pub fn service_path(path: &Path) -> bool {
     path.components().any(|component| {
         let name = component.as_os_str();
-        name.as_encoded_bytes().starts_with(b".tessera-save-")
+        name.as_encoded_bytes().starts_with(b".okilum-save-")
             || name.as_encoded_bytes().starts_with(b"._")
             || name.to_str().is_some_and(|name| SKIP_DIRS.contains(&name))
     })
@@ -1683,16 +1683,16 @@ mod preimage_visibility_tests {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
         fs::create_dir(root.join("nested")).unwrap();
-        let filename = format!(".tessera-save-{}.previous", uuid::Uuid::new_v4());
+        let filename = format!(".okilum-save-{}.previous", uuid::Uuid::new_v4());
         let hidden = root.join("nested").join(&filename);
         fs::write(&hidden, "source preimage").unwrap();
         fs::write(root.join("nested/Visible.md"), "# positive control").unwrap();
         let service_names = [
-            ".tessera-save-user.previous",
-            ".tessera-save-icf3uR",
-            ".tessera-save-legacy.md",
-            ".tessera-save-proposed.prepared",
-            ".tessera-save-conflict.raced",
+            ".okilum-save-user.previous",
+            ".okilum-save-icf3uR",
+            ".okilum-save-legacy.md",
+            ".okilum-save-proposed.prepared",
+            ".okilum-save-conflict.raced",
         ];
         for name in service_names {
             fs::write(root.join("nested").join(name), "protected recovery bytes").unwrap();
@@ -1705,7 +1705,7 @@ mod preimage_visibility_tests {
         .unwrap();
         assert!(service_path(Path::new(&format!("nested/{filename}"))));
         assert!(!windows_preimage_name(std::ffi::OsStr::new(
-            ".tessera-save-user.previous"
+            ".okilum-save-user.previous"
         )));
         assert!(!service_path(Path::new("nested/.ordinary.md")));
         assert!(!windows_preimage_name(std::ffi::OsStr::new(

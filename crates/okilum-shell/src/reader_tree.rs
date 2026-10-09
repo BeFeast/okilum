@@ -810,7 +810,7 @@ mod preimage_visibility_tests {
     #[test]
     fn windows_history_tree_hides_native_preimages_even_when_hidden_files_are_enabled() {
         let mut tree = Tree::default();
-        let preimage = "nested/.tessera-save-7d7d7698-4f47-4a9f-9a7b-2bb5e01f3718.previous";
+        let preimage = "nested/.okilum-save-7d7d7698-4f47-4a9f-9a7b-2bb5e01f3718.previous";
         let mut entries = vec![
             VaultEntry {
                 path: "nested".into(),
@@ -830,10 +830,10 @@ mod preimage_visibility_tests {
             },
         ];
         let service_names = [
-            ".tessera-save-icf3uR",
-            ".tessera-save-legacy.md",
-            ".tessera-save-proposed.prepared",
-            ".tessera-save-user.previous",
+            ".okilum-save-icf3uR",
+            ".okilum-save-legacy.md",
+            ".okilum-save-proposed.prepared",
+            ".okilum-save-user.previous",
         ];
         entries.extend(service_names.into_iter().map(|name| VaultEntry {
             path: format!("nested/{name}"),

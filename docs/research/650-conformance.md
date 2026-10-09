@@ -1,5 +1,7 @@
 # Markdown conformance: CommonMark and GFM spec tests (#650)
 
+> **Historical document.** Written before Tessera was renamed Okilum (2026-10-09). Names, paths and links are kept as they were then.
+
 Status: harness landed, one bug fixed, deviations documented. No UI changes.
 
 ## TL;DR

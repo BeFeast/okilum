@@ -1,5 +1,7 @@
 # Research: structured log viewer based on `hl` (#602)
 
+> **Historical document.** Written before Tessera was renamed Okilum (2026-10-09). Names, paths and links are kept as they were then.
+
 Status: research only. No product code changes. This document informs a go/no-go
 decision and a slice plan for the log viewer requested in #602.
 

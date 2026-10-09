@@ -103,14 +103,14 @@ the existing 20-version/30-day/128-MiB retention. A crash during cleanup or a
 sharing error leaves an identified cleanup record; startup retries only these
 acknowledged records for the opened vault. Interrupted saves, changed/replaced
 preimages, reparse points, and unassigned synced leftovers remain protected.
-All `.tessera-save-*` names are excluded from inventory, search and the tree on
+All `.okilum-save-*` names are excluded from inventory, search and the tree on
 every platform, even with Show hidden enabled. This includes old six-character
 tempfile names, native prepared/raced files and synced preimages. Visibility is
 separate from cleanup ownership: only acknowledged identity-bound preimages are
 automatically removed. Unassigned
 legacy files can still be inspected through recovery; they require a separate
 dry-run inventory and owner approval before one-time deletion. Folder
-snapshots exclude generated `.tessera-save-*` recovery entries from canonical
+snapshots exclude generated `.okilum-save-*` recovery entries from canonical
 inventory; ordinary sources/assets and directory identities remain revision-bound.
 The link-move journal retains complete before/after bytes even when vault-side
 history names move with a folder. No automatic rollback overwrites a concurrent
@@ -119,7 +119,7 @@ requiring inspection.
 
 `python scripts/okilum-save-dry-run.py /absolute/vault/root` prints a read-only
 JSON inventory grouped into canonical Windows UUID `.previous` names, legacy
-six-character tempfile names and other `.tessera-save-*` entries. It reads only
+six-character tempfile names and other `.okilum-save-*` entries. It reads only
 directory entries and metadata, never file contents, and does not follow symlinks
 or Windows reparse directories. Scan errors are reported explicitly. Send the
 exact report to the owner before considering any legacy cleanup; a matching name

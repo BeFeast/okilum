@@ -131,7 +131,7 @@ impl DirectorySnapshot {
                 let text = name.to_str().context("Move requires Unicode filenames")?;
                 // Save recovery remains on the source NTFS volume with its DACL.
                 // Rewrites generate these files; they are not canonical inventory.
-                if text.starts_with(".tessera-save-") {
+                if text.starts_with(".okilum-save-") {
                     continue;
                 }
                 let next = if path.is_empty() {

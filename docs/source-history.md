@@ -13,7 +13,7 @@ A save records its original bytes and displaced-file identity before exchanging
 the canonical file. After exchange, the displaced inode is moved into history
 where possible. An interrupted save or a displaced version that differs from the
 expected original remains protected; cleanup must not treat it as ordinary old
-history. Legacy unlabelled `.tessera-save-*` files cannot reliably be assigned to
+history. Legacy unlabelled `.okilum-save-*` files cannot reliably be assigned to
 a note and are never silently deleted. Recover notes also exposes these
 unassigned files for preview and recovery as a new copy. If vault and history
 are on different filesystems, the completed snapshot stays in durable JSON and the displaced inode remains

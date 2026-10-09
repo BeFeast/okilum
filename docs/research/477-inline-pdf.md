@@ -1,5 +1,7 @@
 # Research: inline PDF viewing (#477)
 
+> **Historical document.** Written before Tessera was renamed Okilum (2026-10-09). Names, paths and links are kept as they were then.
+
 Status: research only. No product code changes. This document informs a go/no-go
 decision and a slice plan for reading PDFs inside Tessera. Today a PDF opens as a
 file card (on macOS, a Quick Look first-page thumbnail), and reading it means

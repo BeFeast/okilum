@@ -42,13 +42,11 @@ BINARY_SUFFIXES = (".png", ".ico", ".icns", ".ttf", ".woff", ".woff2", ".zip", "
 PROTECTED = [
     r"tessera-[a-z0-9-]+/v[0-9]+",                 # persisted schema ids
     r"tessera/[a-z0-9-]+(?:/[a-z0-9-]+)*/v[0-9]+",  # deterministic namespaces
-    r"\.tessera-(?:save|source|unit|index)[A-Za-z0-9_.*-]*",  # file/recovery markers
-    r"tessera(?:-asset)?://",                      # URL forms, dual-read by #967
-    r"Tessera-Sync-[A-Za-z0-9_{}<>.-]*",           # Windows task / pipe names
-    r"tessera-syncthing-[A-Za-z0-9_{}<>.-]*",      # Linux sync units
-    r"uk\.oklabs\.tessera\.sync[A-Za-z0-9_.]*",    # launchd sync label
-    r"TesseraReceiveBetaBuilds",                   # Sparkle beta preference key
+    r"tessera(?:-asset)?://",                      # internal reader URL forms
 ]
+# Owner decision 2026-10-09: Okilum starts clean, so file/recovery markers,
+# `.tessera-index`, sync identities (task, pipe, unit, launchd) and the Sparkle
+# beta key are renamed like everything else (#980).
 PROTECTED_RE = re.compile("|".join(f"(?:{p})" for p in PROTECTED))
 
 # Ordered: specific identities first, generic case forms last.
@@ -68,8 +66,14 @@ def git(*args):
     return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout
 
 
+# Our own text inside excluded trees; third-party licence texts stay verbatim.
+INCLUDED_FILES = ("licenses/README.md",)
+
+
 def excluded(path):
     """Contents are left as they are (history, fixtures, vendored diffs)."""
+    if path in INCLUDED_FILES:
+        return False
     return path.startswith(EXCLUDED_PREFIXES) or any(p in f"/{path}" for p in EXCLUDED_PARTS)
 
 

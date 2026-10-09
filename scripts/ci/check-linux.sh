@@ -2,7 +2,7 @@
 # Full required Linux gate, shared by the local runner and hosted PR pilot.
 set -euo pipefail
 cargo fmt --check
-# Shipped icons must be the Okilum mark, never the Tessera one (#977).
+# Shipped icons must be the approved Okilum mark (#977).
 python3 scripts/rebrand/check_brand.py
 cargo clippy --workspace --all-targets -- -D warnings
 python3 -m unittest discover -s scripts/updater -p 'test_*.py'

@@ -54,7 +54,7 @@ impl Directory {
         Ok((text, metadata))
     }
     pub fn temporary(&self) -> Result<(File, String)> {
-        let name = format!(".tessera-save-{}", uuid::Uuid::new_v4());
+        let name = format!(".okilum-save-{}", uuid::Uuid::new_v4());
         let file = File::from(openat(
             &self.file,
             name.as_str(),

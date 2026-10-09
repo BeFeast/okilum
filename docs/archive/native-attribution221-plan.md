@@ -1,5 +1,7 @@
 # Native #221 attribution plan
 
+> **Historical document.** Written before Tessera was renamed Okilum (2026-10-09). Names, paths and links are kept as they were then.
+
 Base: `d2c181ca7a998effdee82e3c1486f8fca8de3d0a` (merged #217). This is a bounded follow-up to the accepted V3 native prerequisite, not #69 benchmarking or #211 acceptance. The V3 987-byte fixture produced Source/LP first coherent trailing-marker medians of 10.326/18.370 ms; top-level submission medians were 17.875/19.9065 ms. Neither difference identifies a function or physical presentation.
 
 ## Ownership and boundary

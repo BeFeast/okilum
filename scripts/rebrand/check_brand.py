@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-"""Fail when a shipped asset still carries the Tessera mark (#977).
+"""Fail when a shipped asset still carries the Tessera mark (#977, #980).
 
-Two checks over the tracked tree:
+Three checks over the tracked tree:
 1. The app and Inbox icons are byte-identical to the approved Okilum
    "O / Kontur" masters (hashes below). Every platform icon is derived from them:
    in-app symbol, Windows .ico, macOS .icns, Linux hicolor icon, Inbox web icon.
 2. No shipped text asset contains a signature of the old Tessera "Open join" mark.
    Design history and documentation screenshots are excluded on purpose.
+3. No tracked image or binary asset outside history and fixtures is a known
+   Tessera image (tessera-images.sha256) or carries the name in its bytes
+   (PNG text chunks, ICO/ICNS/PDF metadata). Pixels are not read, so a newly
+   drawn Tessera image must be added to the hash list by whoever finds it.
 
     python3 scripts/rebrand/check_brand.py
 """
@@ -26,6 +30,10 @@ OKILUM = {
 OLD_MARK = ("M9.5 10H54.5", "M25 45L39 31", "Open join")
 # Not shipped: design history, prototypes, documentation, research, this script.
 NOT_SHIPPED = ("design/", "docs/", "experiments/", "fixtures/", "scripts/rebrand/")
+# History and test input keep the old name on purpose.
+BINARY_HISTORY = ("docs/archive/", "docs/research/", "docs/upstream/", "experiments/", "fixtures/", "vendor/", "scripts/rebrand/")
+BINARY_SUFFIXES = (".png", ".ico", ".icns", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".pdf")
+OLD_IMAGES = "scripts/rebrand/tessera-images.sha256"
 TEXT_SUFFIXES = (".svg", ".html", ".css", ".js", ".json", ".webmanifest", ".rs", ".desktop", ".plist", ".xml", ".rc")
 
 
@@ -40,6 +48,22 @@ def main():
         if actual != expected:
             problems.append(f"{path}: not the approved Okilum asset ({actual[:12]})")
     files = subprocess.run(["git", "ls-files", "-z"], check=True, capture_output=True, text=True).stdout.split("\0")
+    old_images = {line.split()[0] for line in open(OLD_IMAGES) if line.strip() and not line.startswith("#")}
+    binaries = 0
+    for path in files:
+        if not path.lower().endswith(BINARY_SUFFIXES) or path.startswith(BINARY_HISTORY):
+            continue
+        if "/tests/fixtures/" in f"/{path}" or "/testdata/" in f"/{path}":
+            continue
+        try:
+            data = open(path, "rb").read()
+        except FileNotFoundError:
+            continue
+        binaries += 1
+        if hashlib.sha256(data).hexdigest() in old_images:
+            problems.append(f"{path}: a known Tessera image ({OLD_IMAGES})")
+        elif b"tessera" in data.lower():
+            problems.append(f"{path}: contains the Tessera name in its bytes")
     for path in files:
         if not path or path.startswith(NOT_SHIPPED) or not path.endswith(TEXT_SUFFIXES):
             continue
@@ -53,7 +77,10 @@ def main():
     if problems:
         print("Tessera brand assets remain:\n  " + "\n  ".join(problems))
         return 1
-    print(f"Okilum brand check: {len(OKILUM)} icons match the approved masters; no Tessera mark in shipped assets")
+    print(
+        f"Okilum brand check: {len(OKILUM)} icons match the approved masters; no Tessera mark in shipped assets; "
+        f"{binaries} images and binary assets clean"
+    )
     return 0
 
 

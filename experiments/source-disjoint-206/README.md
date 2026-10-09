@@ -1,5 +1,7 @@
 # Automatic disjoint Save evidence (#206)
 
+> **Historical document.** Written before Tessera was renamed Okilum (2026-10-09). Names, paths and links are kept as they were then.
+
 The implementation reuses the existing bounded exact-line merge helper and source
 CAS/replay API. [The contract](../../docs/archive/ai-brain-disjoint-save.md) defines the
 fresh Save boundary and late-input behavior.

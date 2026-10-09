@@ -32,7 +32,7 @@ A second Okilum editor for the same canonical path is refused while it is open.
 
 Saves write and sync a temporary file in the same directory, then atomically
 exchange it with the note (Linux/macOS). The displaced inode is retained as a
-hidden `.tessera-save-*` file. If it differs from the checked base, the exchange is
+hidden `.okilum-save-*` file. If it differs from the checked base, the exchange is
 reversed and reported as a conflict. Both displaced versions remain recoverable;
 there is no claim that advisory locks exclude Obsidian or sync. An unrelated
 writer racing that exchange can briefly observe the proposed file. A crash during

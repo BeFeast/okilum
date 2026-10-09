@@ -292,7 +292,7 @@ not the remaining production transport, private endpoint ACL or Sync acceptance.
 ### Windows private server endpoint
 
 `supervisor::ipc::windows_endpoint::PrivatePipe` explicitly creates one server
-instance in the fixed local `\\.\pipe\Tessera-Sync-<installation>-<instance>-<generation>`
+instance in the fixed local `\\.\pipe\Okilum-Sync-<installation>-<instance>-<generation>`
 namespace. All three identifiers are non-nil UUIDs, not caller paths or hosts.
 It requests FIRST_PIPE_INSTANCE, OVERLAPPED and PIPE_REJECT_REMOTE_CLIENTS with a
 single instance limit. Creation does not connect or read/write, register a task,

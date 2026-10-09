@@ -232,7 +232,7 @@ impl<S: UserServices> Lifecycle<S> {
             );
             if exists.is_none() {
                 let temporary = self.units.join(format!(
-                    ".tessera-unit-{}-{}.tmp",
+                    ".okilum-unit-{}-{}.tmp",
                     journal.id,
                     Uuid::new_v4()
                 ));
@@ -307,7 +307,7 @@ impl<S: UserServices> Lifecycle<S> {
         if self.units.exists() {
             if let Some(journal) = self.load()? {
                 self.check_binding(&journal)?;
-                sweep(&self.units, &format!(".tessera-unit-{}-", journal.id))?;
+                sweep(&self.units, &format!(".okilum-unit-{}-", journal.id))?;
             }
         }
         Ok(file)
@@ -369,7 +369,7 @@ fn certificate_hash(instance: &ManagedInstance) -> Result<String> {
     ))
 }
 fn unit_name(journal: &Journal) -> String {
-    format!("tessera-syncthing-{}.service", journal.id)
+    format!("okilum-syncthing-{}.service", journal.id)
 }
 fn canonical_instance(instance: ManagedInstance) -> Result<ManagedInstance> {
     ensure!(

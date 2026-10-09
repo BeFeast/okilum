@@ -30,21 +30,25 @@ Kept on purpose (legacy compatibility; listed in the generated report):
 - **Persisted schema ids and namespaces** (`tessera-…/vN`, `tessera/…/vN`).
   Renaming them changes readers and deterministic ids. New schema versions are
   separate, explicit migrations.
-- **Recovery and file markers** (`.tessera-save-…`, `.tessera-source-…`,
-  `.tessera-index`) and **internal URL forms** (`tessera://`, `tessera-asset://`).
-  Users do not see them (owner decision 5); renaming them needs a reader for both
-  forms, so it is a separate, later change.
-- **Sync identities** (launchd label, Windows scheduled task and pipe, systemd
-  units): moved by the sync owner with a stop/handover, never by text replace.
-- **Sparkle beta preference key** (`TesseraReceiveBetaBuilds`): Okilum has a new
-  bundle ID, so this key starts empty anyway; renamed with the channel work.
+- **Internal URL forms** (`tessera://`, `tessera-asset://`): never shown to
+  users; renaming them needs a reader for both forms.
 - **Brand assets** (`crates/okilum-shell/assets/brand/`): pinned by a hash
   manifest to the brand repository. The new Okilum symbol is imported with
   `scripts/brand-assets.py` as its own change, not by renaming text.
+  `scripts/rebrand/check_brand.py` keeps them, and every tracked image, free of
+  the old mark; known Tessera images are listed in
+  `scripts/rebrand/tessera-images.sha256`.
 - **History and fixtures**: `docs/archive`, `docs/research`, `docs/upstream`,
-  `experiments`, `fixtures`, test fixture trees, vendor patches. Fixtures inside
+  `experiments`, `fixtures`, test fixture trees, vendor patches. Documents
+  there that name Tessera carry a "Historical document" banner. Fixtures inside
   renamed crates move with the crate but keep their contents (legacy formats are
   test input).
+
+Recovery and file markers (`.okilum-save-…`, `.okilum-source-…`,
+`.okilum-index`), sync identities (launchd label, Windows scheduled task and
+pipe, systemd units) and the Sparkle beta key were first kept, then renamed in
+#980: the owner chose a clean start, so Okilum has no Tessera data or sync
+setup to stay compatible with.
 
 All `TESSERA_*` variables become `OKILUM_*` without a fallback: Okilum starts
 clean, and the old names are build-time or test-only except a few developer

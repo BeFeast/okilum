@@ -1,0 +1,26 @@
+# sha256 of image assets that showed the Tessera name or mark (#980).
+# scripts/rebrand/check_brand.py fails if any tracked image matches one of them.
+ceead7f4c7b1944b9bcf269a063779aa2662babf695b831492bb06c7fa3ab61d  docs/images/readme/hero-light@2x.png
+07d0b944de70e7bbdc6f0c766b3083468286cf1bc674118cf671e20a298b54c2  docs/images/readme/hero-dark@2x.png
+ee7826d6f5622ff9f35248166c5c840e154fde6e354aec016e99e951ba548d0d  design/gui/screens/01-attention-light.png
+8cfdc14f98a3508ee377ff4804f7d67e5279e2b4e22ae8eca5fd7861d0567d83  design/gui/screens/02-attention-dark.png
+58d62a62faf8097e6a349532e50ad220b5a5f9e9f4a302bca566a691942d66d7  design/gui/screens/03-discussion.png
+74f371b23c88fba7cd4b1ef730f04790c7f7f62da5b13d9cb949548ca0756afd  design/gui/screens/04-execution.png
+6ed2b2eeb10ce15ca9157fbf10b424e98178a0afc45811a252f934bd6faeff65  design/gui/screens/05-blocker.png
+723eca3578e534c95ea1bb3e645f1e42cbe39dab82476f8321a746aeeee644dc  design/gui/screens/06-outcome-review.png
+9bca225442bf646df6efadb68f4a094f37172b155019fabbe6cfbdf7537091c8  design/gui/screens/07-completed.png
+92729ea7983054eb7af410c456fd686d08a475475a7d2985385bc71fac6ec157  design/gui/screens/08-prior-stage.png
+c31b2f840dfce8390c421f3c2b3ecbedc8fc38c6d6f75b3e934f1cc21ab430a2  design/gui/screens/09-source-preview.png
+249d91d5a8ee8f677889d7ba6770411f770b938d7dce068edc0271d2c2a977d7  design/gui/screens/10-dirty-navigation.png
+de5565772c93eccc3244b59aa9a1ca7c3a38c27d93072da06888363f1a81c81b  design/gui/screens/11-newer-conflict.png
+70acdbb5cc99f2085a76ccc02188ad80103f92fe6bb7f54b2ca8e0785ce37ccb  design/gui/screens/12-conflict-reviewed.png
+232171af030625314b5979372b2c2a606fffbca035370ad9920f73c492f67f52  design/gui/screens/13-connections.png
+16d8933f3155e6da7c1f191e20f8d04b44a2fcffa8eb1445bb7a32d49560d9c0  design/gui/screens/14-export-success.png
+c8f22fd0f5f4d952781d73f1b9883bbddd1115a8ac3519bf759b69e417ad82df  design/gui/screens/15-export-failure.png
+a54c3b5d0e8c8bab7879a06c5e9438ae3bf820569336c5394a2912c8c016bbea  design/gui/screens/16-state-library.png
+bab2a9167499b92b7324781de41935f99c32cb8aaa69cad6cefb8f535658dee8  design/gui/screens/17-offline.png
+1749f0e7d6332d1999b7424b4d712abd25d7d42d7a83fc03540c8f55edf3ebec  design/gui/screens/18-laptop-compact.png
+7e17906366bdacd3f5a190477c980bd71a9824440dc5bb55019284275901fc4f  design/gui/screens/19-laptop-dark.png
+d4f6c5a6a1fd15696cbee2bc8aea377f0075bc63746cf883227637bf6b78c903  design/gui/screens/20-source-laptop.png
+813918ae2daafc7d1d1f757ed1a2dcccf7fc4df5ad634ed26236af8cc15112ee  design/gui/screens/21-zoom-equivalent.png
+46ce85e2754765bcd10a85e4d43e2f839645141966b0e08de77d9270870bc98b  design/gui/screens/22-mobile-future.png

@@ -1,5 +1,7 @@
 # #737 — shared editor bidi geometry
 
+> **Historical document.** Written before Tessera was renamed Okilum (2026-10-09). Names, paths and links are kept as they were then.
+
 ## Problem and native diagnosis
 
 The shared editor delegated caret and pointer positions to GPUI's line helpers.

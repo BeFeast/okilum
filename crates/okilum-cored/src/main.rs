@@ -30,7 +30,7 @@ USAGE:
 
 /// Index directory name, created inside the vault unless overridden. Derived
 /// data - deleting it must always be safe.
-const INDEX_DIR_NAME: &str = ".tessera-index";
+const INDEX_DIR_NAME: &str = ".okilum-index";
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();

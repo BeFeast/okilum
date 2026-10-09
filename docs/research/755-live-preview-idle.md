@@ -1,3 +1,5 @@
+> **Historical document.** Written before Tessera was renamed Okilum (2026-10-09). Names, paths and links are kept as they were then.
+
 > Owner correction (2026-10-08): there is no idle jumping. Retain this investigation and counters as evidence; prioritize #754 interaction-triggered reveal, reflow, anchoring and observed save echo. The idle-cycle hypothesis is deprioritized.
 
 ## Native idle investigation (2026-10-08)

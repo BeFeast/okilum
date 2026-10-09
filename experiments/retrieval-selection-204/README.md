@@ -1,5 +1,7 @@
 # Verified experience selection experiment (#204)
 
+> **Historical document.** Written before Tessera was renamed Okilum (2026-10-09). Names, paths and links are kept as they were then.
+
 Repository-only diagnostic experiment inspired by the pinned OpenExecutive research
 `3c379362809016ed117e597a74f083914e83fd3e`. No product/runtime feature is enabled.
 It asks whether an explicitly scoped historical incident can improve a next-step

@@ -5,7 +5,7 @@ use super::{
     authority::StopToken, safe_text, supervisor::ipc::Scope, xml, Binding, Platform, Registration,
 };
 use anyhow::{ensure, Result};
-pub const PLIST: &str = "uk.oklabs.tessera.sync.plist";
+pub const PLIST: &str = "com.befeast.okilum.sync.plist";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
     NotRegistered,
@@ -41,7 +41,7 @@ pub fn bundled_plist(relative_supervisor: &str) -> Result<String> {
         "helper must be in the bundle code directory"
     );
     Ok(format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>uk.oklabs.tessera.sync</string><key>BundleProgram</key><string>{}</string><key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict><key>ThrottleInterval</key><integer>30</integer><key>ProcessType</key><string>Background</string></dict></plist>"#,
+        r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>com.befeast.okilum.sync</string><key>BundleProgram</key><string>{}</string><key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict><key>ThrottleInterval</key><integer>30</integer><key>ProcessType</key><string>Background</string></dict></plist>"#,
         xml(relative_supervisor)
     ))
 }

@@ -27,7 +27,7 @@ vendor
 vendor/
 
 # Derived search index.
-.tessera-index/
+.okilum-index/
 __pycache__/
 
 # Optional Inbox backend has an independent workspace.
