@@ -244,8 +244,30 @@ impl Reader {
     /// The selected text and its date, when the whole selection is one. The
     /// action needs a vault note to link back to: not single-file mode, and not
     /// an attachment preview.
+    /// A link hovered in this document; one left over from a document that
+    /// navigation replaced does not count.
+    pub(super) fn pointer_on_link(&self) -> bool {
+        self.pointer_link
+            .as_ref()
+            .is_some_and(|(_, generation)| *generation == self.navigation.preparation_generation)
+    }
+
+    /// The hovered link when text is selected: the only case where the
+    /// TextView's own link click does not run (#943).
+    pub(super) fn hovered_link_with_selection(&self, cx: &App) -> Option<String> {
+        if !self.pointer_on_link() || self.content.read(cx).selected_text().is_empty() {
+            return None;
+        }
+        self.pointer_link.as_ref().map(|(url, _)| url.clone())
+    }
+
     pub(super) fn reminder_for_selection(&self, cx: &App) -> Option<(String, time::Date)> {
-        if self.single_file || self.file_preview.is_some() || self.current_rel.is_empty() {
+        // A right-click on a link belongs to the link's own menu (#943).
+        if self.single_file
+            || self.file_preview.is_some()
+            || self.current_rel.is_empty()
+            || self.pointer_on_link()
+        {
             return None;
         }
         let selection = self.content.read(cx).selected_text();
@@ -552,6 +574,77 @@ mod visual_tests {
         assert!(reader
             .read_with(visual, |v, cx| v.reminder_for_selection(cx))
             .is_none());
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    /// #943: with a date selected, a right-click on a link opens only the
+    /// link's menu; the reminder entry stays with the selection.
+    #[gpui::test]
+    fn right_click_on_a_link_opens_one_menu_while_a_date_is_selected(cx: &mut TestAppContext) {
+        let temp = std::env::temp_dir().join(format!("okilum-remind-{}", uuid::Uuid::new_v4()));
+        let (root, state) = (temp.join("vault"), temp.join("state"));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(root.join("other.md"), "# Other\n").unwrap();
+        std::fs::write(
+            root.join("start.md"),
+            "2026-11-01\n\n[Other note](other.md) and more words after the link.\n",
+        )
+        .unwrap();
+        let (reader, visual) = mount(cx, &root, &state);
+        let bounds = reader.read_with(visual, |v, cx| v.content.read(cx).bounds());
+        let start = bounds.origin + point(px(2.), px(10.));
+        let end = bounds.origin + point(px(400.), px(10.));
+        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let selected = reader.read_with(visual, |v, cx| v.content.read(cx).selected_text());
+        assert_eq!(selected.trim(), "2026-11-01", "drag precondition");
+        // Find the link by real hover events, not by guessed coordinates.
+        let link = (20..200).step_by(4).find_map(|y| {
+            let at = bounds.origin + point(px(20.), px(y as f32));
+            visual.simulate_mouse_move(at, None, Modifiers::default());
+            visual.run_until_parked();
+            reader
+                .read_with(visual, |v, _| v.pointer_on_link())
+                .then_some(at)
+        });
+        let link = link.expect("positive control: hovering the link is reported");
+        visual.simulate_mouse_down(link, MouseButton::Right, Modifiers::default());
+        visual.simulate_mouse_up(link, MouseButton::Right, Modifiers::default());
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds("remind-me-item").is_none(),
+            "no reminder menu for a right-click on a link"
+        );
+        assert!(
+            reader.read_with(visual, |v, _| v.file_menu.is_some()),
+            "the link's own menu opened"
+        );
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        // A link left under the pointer by navigation is stale (review).
+        reader.update(visual, |v, _| {
+            v.navigation.preparation_generation =
+                v.navigation.preparation_generation.wrapping_add(1)
+        });
+        assert!(!reader.read_with(visual, |v, _| v.pointer_on_link()));
+        reader.update(visual, |v, _| {
+            v.navigation.preparation_generation =
+                v.navigation.preparation_generation.wrapping_sub(1)
+        });
+        // Positive control: on the selection the reminder is still offered.
+        let inside = bounds.origin + point(px(20.), px(10.));
+        visual.simulate_mouse_move(inside, None, Modifiers::default());
+        visual.run_until_parked();
+        visual.simulate_mouse_down(inside, MouseButton::Right, Modifiers::default());
+        visual.simulate_mouse_up(inside, MouseButton::Right, Modifiers::default());
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds("remind-me-item").is_some(),
+            "the selection still offers the reminder"
+        );
         std::fs::remove_dir_all(temp).unwrap();
     }
 
