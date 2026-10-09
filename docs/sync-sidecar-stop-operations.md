@@ -33,10 +33,31 @@ a wire claim, a public discovery record or a replacement for native peer checks.
 
 Every authoritative mutation increments revision, including Enable, a new intent,
 update selection/phase changes and operation completion. It clears the old stop
-or explicitly arms a fresh operation at the new revision. A retry reads and
-reuses the existing operation without rewriting it; a new action is not a retry
-merely because its Intent value matches. Removed is terminal. Missing, corrupt,
-unknown-schema, replaced-directory or revision-overflow state fails closed.
+or explicitly arms a fresh operation at the new revision. Removed is terminal.
+Missing, corrupt, unknown-schema, replaced-directory or revision-overflow state
+fails closed.
+
+**Retry versus new action.** A request is a retry only if the stored `stop` is
+non-null and the request's whole token `(journal_epoch, authorized_revision,
+operation_id, scope, reason)` equals it byte for byte, with the envelope revision
+still equal to `authorized_revision`. A retry reads and reuses that operation
+without rewriting it or bumping the revision. Everything else is a new action: it
+commits a new revision and mints a new `operation_id`, even when Intent, Binding,
+scope and reason match an earlier operation. Callers never infer "retry" from
+Intent; they either hold the token they armed or read the stored one under the
+lock. A token that matches in every field but `operation_id`, or whose revision
+is no longer current, is refused as stale rather than adopted.
+
+**Revision exhaustion.** Reaching `u64::MAX` is not a realistic runtime event
+(one mutation per nanosecond takes centuries) and migration cannot cause it: it
+runs once per instance, writes revision 1, and the v2 envelope is the sole
+authority afterwards. If it happens anyway the instance fails closed: no stop is
+armed, no native effect runs, status reports `RevisionExhausted`. Nothing resets
+the counter automatically. Remediation is an explicit operator repair: with the
+supervisor verified stopped, the repair command writes a fresh envelope with a new
+random `journal_epoch` and revision 1 and the same Binding/intent. Every token
+from the old epoch is then refused, so reset cannot revive an old authorization.
+Tests cover the overflow refusal and the epoch-change repair.
 
 ## Lock / effect sequence
 
