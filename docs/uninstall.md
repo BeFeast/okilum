@@ -50,6 +50,7 @@ Velopack does not.
 | Config | `%APPDATA%\okilum\` (`reader-layout.json`, `appearance.json`, `reader-runs\`) | hook |
 | Search sessions | `%TEMP%\okilum-search-session-*` | hook; startup sweeps stale ones |
 | Crash dumps | `%LOCALAPPDATA%\CrashDumps\okilum.exe.*.dmp` | hook |
+| Velopack's per-app log | `%LOCALAPPDATA%\velopack\velopack_BeFeast.Okilum.log` (Velopack writes it after the hook); the `velopack` folder only if then empty | hook, by a detached cleanup that waits for `Update.exe` to exit |
 
 There is no Run key, URL protocol, scheduled task, named pipe, service or
 Credential Manager entry. The sync sidecar's task and pipe exist in code but are
@@ -61,7 +62,7 @@ before install, use the app, uninstall, snapshot again, then
 added entry and fails on anything named after Okilum outside the vault.
 
 Known residue owned by Windows or Velopack, not by Okilum: Velopack's shared log
-`%LOCALAPPDATA%\velopack\velopack.log`, Explorer's `MuiCache` and `Recent`
+`%LOCALAPPDATA%\velopack\velopack.log` (only written by `Setup.exe`), Explorer's `MuiCache` and `Recent`
 entries. The acceptance snapshot lists them separately.
 
 ## Linux (Arch package `okilum`) — next PR

@@ -234,6 +234,7 @@ pub(crate) fn uninstall() {
         &documents,
     );
     windows::remove_crash_dumps();
+    windows::remove_velopack_log_after_exit();
     eprintln!("Okilum uninstall: {report:?}");
 }
 
@@ -248,6 +249,43 @@ mod windows {
         let _ = Command::new("reg.exe")
             .args(["delete", AUMID_KEY, "/f"])
             .status();
+    }
+
+    /// Velopack appends to its per-app log after this hook returns, so the
+    /// log can only go once its Update.exe has exited. A detached, windowless
+    /// PowerShell waits for that, removes the log, and removes the shared
+    /// velopack folder only when nothing else is left in it.
+    pub(super) fn remove_velopack_log_after_exit() {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let Some(local) = dirs::data_local_dir() else {
+            return;
+        };
+        let quote = |path: &std::path::Path| path.display().to_string().replace('\'', "''");
+        let root = quote(&local.join("BeFeast.Okilum"));
+        let folder = local.join("velopack");
+        let log = quote(&folder.join("velopack_BeFeast.Okilum.log"));
+        let folder = quote(&folder);
+        // An interactive uninstall waits on its dialog; give it an hour.
+        let script = format!(
+            "for($i=0;$i -lt 3600;$i++){{ if(-not (Get-Process Update -EA SilentlyContinue | \
+             Where-Object {{ $_.Path -like '{root}\\*' }})){{ break }}; Start-Sleep 1 }}; \
+             Start-Sleep 2; Remove-Item -LiteralPath '{log}' -Force -EA SilentlyContinue; \
+             if(-not (Get-ChildItem -LiteralPath '{folder}' -Force -EA SilentlyContinue)){{ \
+             Remove-Item -LiteralPath '{folder}' -Force -EA SilentlyContinue }}"
+        );
+        let _ = Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                &script,
+            ])
+            .creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW)
+            .spawn();
     }
 
     /// Windows Error Reporting keeps local dumps named after the executable.
