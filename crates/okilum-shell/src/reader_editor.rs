@@ -1434,6 +1434,74 @@ impl Reader {
 #[cfg(test)]
 mod tests {
 
+    /// #873: «Open in ▸» never hands an editor a stale file — a dirty draft
+    /// is saved first — and passes the caret line; other notes are left alone.
+    #[gpui::test]
+    fn open_in_saves_the_dirty_draft_and_reports_the_caret_line(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("vault");
+        let state = dir.path().join("state");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        let original = "# Note\n\nFirst line.\nSecond line.";
+        std::fs::write(root.join("note.md"), original).unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+            reader_ui_state::install(&state, cx);
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        open_path: Some(root.join("note.md")),
+                        session_directory: Some(state.clone()),
+                        index_dir: Some(dir.path().join("index")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        let root_dir = reader.read_with(visual, |r, _| r.vault_root.clone());
+        // Reader mode: nothing to save, no line.
+        let line = reader.update(visual, |r, cx| r.prepare_open_in(&root_dir, "note.md", cx));
+        assert_eq!(line.unwrap(), None);
+        reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            let input = r.editing.as_ref().unwrap().input().clone();
+            input.update(cx, |input, cx| input.focus_handle(cx).focus(window, cx));
+        });
+        visual.simulate_keystrokes("ctrl-end");
+        visual.simulate_input(" Unsaved open-in sentinel");
+        visual.run_until_parked();
+        let path = root.join("note.md");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            original,
+            "positive control: the edit is still only in the draft"
+        );
+        let line = reader.update(visual, |r, cx| r.prepare_open_in(&root_dir, "note.md", cx));
+        assert_eq!(line.unwrap(), Some(4), "caret on the last line");
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .ends_with("Second line. Unsaved open-in sentinel"),
+            "saved before the editor gets the file"
+        );
+        // Another note: this Reader has nothing to say about it.
+        let other = reader.update(visual, |r, cx| r.prepare_open_in(&root_dir, "other.md", cx));
+        assert_eq!(other.unwrap(), None);
+    }
+
     /// #916: the shortcut goes straight to Live Preview from Reader (entering
     /// editing) and from Source; pressed again it stays in Live Preview.
     #[gpui::test]

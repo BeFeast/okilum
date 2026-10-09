@@ -322,7 +322,7 @@ fn prepare_open_note(root: &Path, rel: &str, cx: &mut App) -> anyhow::Result<Opt
 impl Reader {
     /// Save a dirty draft of `rel` and report its caret line; `Ok(None)` when
     /// this Reader is not editing that note.
-    fn prepare_open_in(
+    pub(super) fn prepare_open_in(
         &mut self,
         root: &Path,
         rel: &str,
