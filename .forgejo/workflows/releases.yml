@@ -17,7 +17,7 @@ on:
 
 # Explicit stable promotion shares the appcast lock with macos-release.
 # Scheduled Beta never edits the appcast or queues against the M4 release.
-# Platform beta publishers finish independently; only complete source sets qualify.
+# Platform beta publishers finish independently; Beta mirrors each current public platform head.
 concurrency:
   group: ${{ inputs.build != '' && 'tessera-macos-release' || 'tessera-github-beta' }}
   cancel-in-progress: false

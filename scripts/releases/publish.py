@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish a complete same-commit Beta, or explicitly promote it without rebuilding."""
+"""Mirror current platform Betas, or promote one accepted source without rebuilding."""
 import argparse
 import importlib.util
 import json
@@ -67,6 +67,53 @@ def choose(store, build=None):
         if build is not None:
             raise ValueError('Selected build lacks completed artifacts for all three platforms')
     return None
+
+
+def choose_beta(store):
+    """Resolve public channel heads, never unpublished or merely built artifacts."""
+    raw = store.call('GET', 'tessera/appcast.xml')
+    win = store.call('GET', 'tessera/windows/beta/releases.beta.json')
+    linux = store.call('GET', 'tessera/arch/beta/x86_64/latest.json')
+    if raw is None or win is None or linux is None:
+        return None
+    items = ET.fromstring(raw).findall('./channel/item')
+    if not items:
+        return None
+    mac = max(items, key=lambda i: int(i.findtext(appcast.s('version'))))
+    full = [a for a in json.loads(win)['Assets'] if a['Type'] == 'Full']
+    if not full:
+        raise ValueError('Windows beta has no full package')
+    win_build = max(windows.version_key(a['Version'])[2] for a in full)
+    win_raw = store.call('GET', f'tessera/windows/builds/{win_build}/release.json')
+    if win_raw is None:
+        return None
+    win_meta = json.loads(win_raw)
+    if win_meta['build'] != win_build:
+        raise ValueError('Windows channel/archive mismatch')
+    arch_meta = json.loads(linux)
+    heads = {'macos': (int(mac.findtext(appcast.s('version'))), mac.findtext(appcast.t('source'))),
+             'windows': (win_build, win_meta['source']),
+             'linux': (arch_meta['build'], arch_meta['source'])}
+    platforms = {}
+    for platform, (build, source) in heads.items():
+        raw = store.call('GET', f'{catalog.PREFIX}/{source}/{platform}.json')
+        if raw is None:
+            return None
+        descriptor = json.loads(raw)
+        if (descriptor['platform'], descriptor['build'], descriptor['source']) != (platform, build, source):
+            raise ValueError(f'{platform} channel/catalog mismatch')
+        platforms[platform] = descriptor
+    # The tag is an anchor; per-platform sources in the notes are authoritative.
+    return {'build': heads['macos'][0], 'source': heads['macos'][1], 'platforms': platforms}
+
+
+def beta_notes(release):
+    lines = ['Experimental Beta. Latest published build for each platform.',
+             'These builds may use different main commits; stable promotion requires one accepted source.', '']
+    for platform, item in release['platforms'].items():
+        lines.append(f'- {platform}: 0.1.{item["build"]}, source `{item["source"]}`')
+    lines += ['', 'The beta tag anchors the macOS source; use the platform SHA above for exact provenance.']
+    return '\n'.join(lines)
 
 
 def checked_git(*args):
@@ -218,22 +265,25 @@ def execute(store, github, forgejo, build=None, supersede_pending=False):
                 raise ValueError('Finish the interrupted promotion or explicitly supersede it with a newer build')
         release = candidate if candidate['build'] == build else choose(store, build)
     else:
-        release = choose(store, build)
+        release = choose(store, build) if stable else choose_beta(store)
     if release is None:
         if stable:
             raise ValueError('Unknown selected build')
-        print('No completed three-platform beta yet')
+        print('No complete catalogs for current platform beta heads yet')
         return
     if previous and previous['build'] > release['build']:
         raise ValueError('Refusing release rollback')
+    if previous and not stable:
+        for platform, item in release['platforms'].items():
+            if previous['platforms'][platform]['build'] > item['build']:
+                raise ValueError(f'Refusing {platform} beta rollback')
     if previous == release and (stable or github.call('GET', '/releases/tags/beta') is not None):
         print(f'{channel} already published')
         return
     files = catalog.download(store, release)
     prior_stable = store.call('GET', f'{catalog.PREFIX}/stable.json')
-    body = notes(forgejo, release, json.loads(prior_stable) if prior_stable else None)
-    if not stable:
-        body = 'Experimental Beta. Stable promotion awaits cross-platform QA.\n\n' + body
+    body = (notes(forgejo, release, json.loads(prior_stable) if prior_stable else None)
+            if stable else beta_notes(release))
     if stable:
         preflight_stable(store, release)
         # Validate Arch signature and metadata before touching Windows/macOS.
