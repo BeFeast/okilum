@@ -14,12 +14,14 @@ const PREVIEW_LIMITS: ReadLimits = ReadLimits {
     rows: INITIAL_ROWS + 2,
     cells: 64_000,
     columns: 256,
+    field_bytes: 64 * 1024,
 };
 const EXPANDED_LIMITS: ReadLimits = ReadLimits {
     bytes: 32 * 1024 * 1024,
     rows: 100_001,
     cells: 500_000,
     columns: 256,
+    field_bytes: 64 * 1024,
 };
 actions!(reader_delimited, [CopyCells]);
 

@@ -12,6 +12,7 @@ pub struct ReadLimits {
     pub rows: usize,
     pub cells: usize,
     pub columns: usize,
+    pub field_bytes: usize,
 }
 impl ReadLimits {
     const UNLIMITED: Self = Self {
@@ -19,6 +20,7 @@ impl ReadLimits {
         rows: usize::MAX,
         cells: usize::MAX,
         columns: usize::MAX,
+        field_bytes: usize::MAX,
     };
 }
 
@@ -161,13 +163,15 @@ fn records(
             if ch == '"' {
                 if chars.peek() == Some(&'"') {
                     chars.next();
-                    field.push('"');
+                    if !append(&mut field, '"', limits.field_bytes) {
+                        return (rows, malformed, true);
+                    }
                 } else {
                     quoted = false;
                     closed = true;
                 }
-            } else {
-                field.push(ch);
+            } else if !append(&mut field, ch, limits.field_bytes) {
+                return (rows, malformed, true);
             }
             active = true;
             continue;
@@ -198,7 +202,9 @@ fn records(
             active = true;
         } else {
             malformed |= closed || ch == '"';
-            field.push(ch);
+            if !append(&mut field, ch, limits.field_bytes) {
+                return (rows, malformed, true);
+            }
             active = true;
         }
     }
@@ -208,6 +214,14 @@ fn records(
         rows.push(row);
     }
     (rows, malformed, false)
+}
+
+fn append(field: &mut String, ch: char, limit: usize) -> bool {
+    if field.len().saturating_add(ch.len_utf8()) > limit {
+        return false;
+    }
+    field.push(ch);
+    true
 }
 
 #[cfg(test)]
@@ -236,6 +250,7 @@ mod tests {
             rows: 3,
             cells: 64,
             columns: 8,
+            field_bytes: 1024,
         };
         let table = Table::read(
             CountingReader {
@@ -269,6 +284,7 @@ mod tests {
                 rows: 10,
                 cells: 100_000,
                 columns: 8,
+                field_bytes: 1024,
             },
         )
         .unwrap();
@@ -286,11 +302,41 @@ mod tests {
                 rows: 10,
                 cells: 4,
                 columns: 8,
+                field_bytes: 1024,
             },
         )
         .unwrap();
         assert!(table.limited);
         assert_eq!(table.rows.len(), 2);
+        let limits = ReadLimits {
+            bytes: 1024,
+            rows: 10,
+            cells: 64,
+            columns: 8,
+            field_bytes: 6,
+        };
+        let within = Table::read(
+            Cursor::new("a,b\n1,\"שלום\"\n"),
+            false,
+            ReadLimits {
+                field_bytes: 8,
+                ..limits
+            },
+        )
+        .unwrap();
+        assert!(!within.limited);
+        assert_eq!(
+            within.cell(1, 1),
+            "שלום",
+            "exact field budget permits closing quote"
+        );
+        let beyond = Table::read(Cursor::new("a,b\n1,\"שלום\"\n"), false, limits).unwrap();
+        assert!(beyond.limited && !beyond.malformed);
+        assert_eq!(
+            beyond.rows.len(),
+            1,
+            "oversized fields cannot allocate or shape arbitrarily long tooltips"
+        );
     }
 
     #[test]
@@ -301,6 +347,7 @@ mod tests {
             rows: 10,
             cells: 64,
             columns: 8,
+            field_bytes: 1024,
         };
         let table = Table::read(Cursor::new(source), false, limits).unwrap();
         assert!(table.limited && !table.malformed);

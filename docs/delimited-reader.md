@@ -13,10 +13,10 @@ notice reports irregular rows or ambiguous separator detection. The source is
 never rewritten by parsing, selection, copying or the header preference.
 
 Rows are virtual. Initial reads are bounded to 1 MiB, 1,002 records (including
-header/lookahead), 64,000 cells and 256 columns. Files above 1,000 data rows
+header/lookahead), 64,000 cells, 256 columns and 64 KiB per decoded field. Files above 1,000 data rows
 initially show that prefix with **Show all**. That explicit action reloads on a
 worker with a 32 MiB / 100,001-record / 500,000-cell budget; the same column bound
-remains. Files beyond those bounds retain a usable preview with an external-open
+and field bounds remain, including for full-value tooltip shaping. Files beyond those bounds retain a usable preview with an external-open
 notice. Incomplete records at a byte boundary are omitted rather than presented
 as malformed source; actual malformed EOF records remain visible. These limits
 bound reading and allocation, not only rendering. Columns
