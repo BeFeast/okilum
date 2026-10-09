@@ -158,14 +158,16 @@ impl UnixEndpoint {
         check_private_directory(directory)?;
         let path = socket_path(directory, scope)?;
         let listener = UnixListener::bind(&path).context("creating the private socket")?;
-        // The 0700 directory is the real boundary; tighten the node as well.
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-        listener.set_nonblocking(true)?;
-        Ok(Self {
+        // Own the node from the moment it exists, so every failure below removes it.
+        let endpoint = Self {
             listener,
             path,
             scope: scope.clone(),
-        })
+        };
+        // The 0700 directory is the real boundary; tighten the node as well.
+        std::fs::set_permissions(&endpoint.path, std::fs::Permissions::from_mode(0o600))?;
+        endpoint.listener.set_nonblocking(true)?;
+        Ok(endpoint)
     }
     pub fn scope(&self) -> &Scope {
         &self.scope
