@@ -230,6 +230,28 @@ impl PrivateClient {
     /// Missing, busy, shared or foreign endpoints fail closed. This does not
     /// impose an absolute deadline on the synchronous open/identity calls.
     pub fn connect(scope: &Scope, peer: ProcessPeer) -> Result<Self> {
+        let client = Self {
+            handle: Self::open(scope)?,
+            peer,
+        };
+        client.verify()?;
+        Ok(client)
+    }
+    /// Connect, then identify the server from the connected pipe itself (design:
+    /// docs/sync-sidecar-discovery.md). `identify` receives the pipe and must return
+    /// the verified, retained server process (see `windows_discovery::identify_server`);
+    /// no wire byte is sent before it and the usual descriptor/direction checks pass.
+    pub fn connect_discovering(
+        scope: &Scope,
+        identify: impl FnOnce(&OwnedHandle) -> Result<ProcessPeer>,
+    ) -> Result<Self> {
+        let handle = Self::open(scope)?;
+        let peer = identify(&handle)?;
+        let client = Self { handle, peer };
+        client.verify()?;
+        Ok(client)
+    }
+    fn open(scope: &Scope) -> Result<OwnedHandle> {
         use windows::Win32::{
             Foundation::{GENERIC_READ, GENERIC_WRITE},
             Storage::FileSystem::{
@@ -253,12 +275,7 @@ impl PrivateClient {
             )
         }
         .context("CreateFileW(private pipe client)")?;
-        let client = Self {
-            handle: unsafe { OwnedHandle::from_raw_handle(raw.0) },
-            peer,
-        };
-        client.verify()?;
-        Ok(client)
+        Ok(unsafe { OwnedHandle::from_raw_handle(raw.0) })
     }
     pub fn verify(&self) -> Result<()> {
         let mut sd = PSECURITY_DESCRIPTOR::default();
