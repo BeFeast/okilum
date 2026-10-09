@@ -163,3 +163,12 @@ its lease; old/new generation refusal; crash before/after native effect and flus
 legacy absent/Enabled/Disabled/Removed and every update phase; partial migration,
 corruption, mismatched Binding, overflow and old-binary rejection. Real native
 journal durability and supervisor exit remain required, not inferred from fakes.
+
+## Implementation status
+
+Landed, not yet wired into `Controller`, IPC or any running service:
+`sidecar::authority` (envelope, tokens, transitions, migration; #888) and the Unix
+`sidecar::store` (per-transaction lock with an absolute deadline, exact-next-revision
+commits, explicit idempotent migration, operator epoch repair). Still open: IPC v2
+token verification, `Controller`/`update` moving onto transactions, a Windows store
+with DACL-checked file replacement, and real native crash/durability acceptance.
