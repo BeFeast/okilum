@@ -484,7 +484,7 @@ impl Reader {
                             div()
                                 .text_sm()
                                 .text_color(cx.theme().muted_foreground)
-                                .child("Press Space for Quick Look"),
+                                .child(Os::CURRENT.file_preview_hint()),
                         ),
                 )
                 .into_any_element();
@@ -547,6 +547,12 @@ impl Reader {
                 div()
                     .text_color(cx.theme().muted_foreground)
                     .child(preview.details.clone()),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(Os::CURRENT.file_preview_hint()),
             );
 
         v_flex()

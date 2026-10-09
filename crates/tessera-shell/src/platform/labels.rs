@@ -47,6 +47,14 @@ impl Os {
         }
     }
 
+    /// The one hint under a file Tessera cannot draw itself.
+    pub const fn file_preview_hint(self) -> &'static str {
+        match self {
+            Os::Mac => "Press Space to preview it with Quick Look.",
+            Os::Windows | Os::Linux => "Open it with the default app to view it.",
+        }
+    }
+
     /// Display form of a GPUI keystroke such as `secondary-shift-f`.
     ///
     /// `secondary` is ⌘ on macOS and Ctrl elsewhere, matching GPUI's key
@@ -170,6 +178,15 @@ mod tests {
         assert_eq!(text, "New File ⌘N");
         #[cfg(not(target_os = "macos"))]
         assert_eq!(text, "New File Ctrl+N");
+    }
+
+    #[test]
+    fn file_preview_hint_uses_platform_wording() {
+        assert!(Os::Mac.file_preview_hint().contains("Quick Look"));
+        for os in [Os::Windows, Os::Linux] {
+            assert!(!os.file_preview_hint().contains("Quick Look"));
+            assert!(os.file_preview_hint().starts_with("Open"));
+        }
     }
 
     #[test]

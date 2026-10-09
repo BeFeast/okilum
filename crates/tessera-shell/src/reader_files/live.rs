@@ -28,11 +28,22 @@ fn details(
     now: DateTime<FixedOffset>,
 ) -> String {
     let size = match bytes {
-        b if b >= 1_000_000_000 => format!("{:.1} GB", b as f64 / 1e9),
-        b if b >= 1_000_000 => format!("{:.1} MB", b as f64 / 1e6),
-        b if b >= 1_000 => format!("{:.1} KB", b as f64 / 1e3),
         1 => "1 byte".into(),
-        b => format!("{b} bytes"),
+        b if b < 1_000 => format!("{b} bytes"),
+        b => {
+            let mut value = b as f64;
+            let mut size = String::new();
+            for unit in ["KB", "MB", "GB", "TB"] {
+                value /= 1e3;
+                // Round before choosing the unit: 999,950 bytes is "1.0 MB", not "1000.0 KB".
+                let rounded = (value * 10.).round() / 10.;
+                if rounded < 1e3 || unit == "TB" {
+                    size = format!("{rounded:.1} {unit}");
+                    break;
+                }
+            }
+            size
+        }
     };
     let mut label = format!("{} · {size}", extension.to_uppercase());
     if let Some(modified) = modified {
@@ -222,6 +233,9 @@ mod tests {
             "SVG · 1.2 KB · yesterday 23:59"
         );
         assert_eq!(details("pdf", 12, None, now), "PDF · 12 bytes");
+        assert_eq!(details("jpg", 1_956_930, None, now), "JPG · 2.0 MB");
+        assert_eq!(details("jpg", 999_950, None, now), "JPG · 1.0 MB");
+        assert_eq!(details("bin", 1_000_000_000_000, None, now), "BIN · 1.0 TB");
     }
 }
 
