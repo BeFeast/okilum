@@ -73,6 +73,22 @@ fn main() {
                         "mixed logical range needs disjoint visual spans");
                     println!("REPAIR Hebrew internal edges / last-letter selection / disjoint spans PASS");
                 }
+                if text.starts_with("\"שלום") {
+                    // #879: in this RTL paragraph the end of `change-me` and the
+                    // trailing edge of the RTL space before `world` share one X.
+                    let end = map
+                        .position(geometry::Caret { index: 31, affinity: geometry::Affinity::After })
+                        .unwrap();
+                    let x = end + px(0.5);
+                    let mut offsets: Vec<_> =
+                        map.edge_carets(x).into_iter().map(|(caret, _)| caret.index).collect();
+                    offsets.sort();
+                    assert_eq!(offsets, [11, 31], "run boundary carries two offsets");
+                    assert_eq!(map.hit(x).unwrap().index, 11, "positive control: plain hit");
+                    assert_eq!(map.hit_extending(x, 22).unwrap().index, 31);
+                    assert_eq!(map.hit_extending(x, 11).unwrap().index, 11);
+                    println!("REPAIR #879 run-boundary drag end PASS");
+                }
                 if text == "abcd" {
                     for index in 0..=text.len() {
                         assert_eq!(
