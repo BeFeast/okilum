@@ -95,6 +95,16 @@ impl Directory {
         ensure!(data.len() as u64 <= LIMIT, "sidecar journal exceeds limit");
         Ok(Some(data))
     }
+    /// Delete a journal-class file. The file must be a private regular file (a
+    /// redirected or foreign one is refused, never deleted); absent is fine.
+    pub(super) fn remove_bytes(&self, name: &str) -> Result<()> {
+        if self.read_bytes(name)?.is_none() {
+            return Ok(());
+        }
+        unlinkat(&self.handle, name, AtFlags::empty())?;
+        self.handle.sync_all()?;
+        Ok(())
+    }
     /// Atomic replace: flush the temporary file, rename, flush the directory.
     /// An error after the rename means the new state may already be visible.
     pub(super) fn write_bytes(&self, name: &str, data: &[u8]) -> Result<()> {

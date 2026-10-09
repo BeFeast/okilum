@@ -22,6 +22,9 @@ mod windows_dir;
 #[cfg(target_os = "windows")]
 pub use windows_dir::{WindowsDir, WindowsStore};
 
+mod hint;
+pub use hint::Hint;
+
 pub(crate) const NAME: &str = "sidecar.json";
 /// Legacy `update.json`. Read only for migration; the v2 envelope owns update
 /// state afterwards and the leftover file is kept as recovery evidence.
@@ -40,6 +43,8 @@ pub trait StateDir: Sized + 'static {
     /// Atomic replace that is flushed before returning. An error after the
     /// replacement became visible is still an error.
     fn write(&self, name: &str, data: &[u8]) -> Result<()>;
+    /// Delete a private regular file; absent is success, a foreign one is refused.
+    fn remove(&self, name: &str) -> Result<()>;
 }
 
 pub struct Store<D: StateDir> {

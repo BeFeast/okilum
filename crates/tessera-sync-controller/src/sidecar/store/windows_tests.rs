@@ -268,3 +268,32 @@ fn restricted_token_can_neither_read_the_journal_nor_take_the_lock() {
     assert!(fs::read(&journal).is_ok());
     assert!(store.begin(soon()).is_ok());
 }
+
+#[test]
+fn a_hint_round_trips_without_a_journal_and_foreign_files_are_never_deleted() {
+    use crate::sidecar::store::Hint;
+    let (_parent, path, store) = prepared();
+    let hint = Hint::new(Uuid::from_u128(9), 42).unwrap();
+    assert_eq!(store.read_hint(soon()).unwrap(), None);
+    store.publish_hint(soon(), &hint).unwrap();
+    assert_eq!(names(&path), ["endpoint.json"], "no journal was created");
+    assert_eq!(store.read_hint(soon()).unwrap(), Some(hint.clone()));
+    assert_eq!(
+        store.begin(soon()).unwrap().state().unwrap(),
+        &Stored::Absent,
+        "the hint is not authority"
+    );
+    store.clear_hint(soon()).unwrap();
+    store.clear_hint(soon()).unwrap(); // idempotent
+    assert!(names(&path).is_empty());
+
+    // A file written by anyone else (inherited DACL, not the protected grant) is
+    // refused on read and publish, and clear leaves it alone.
+    fs::write(path.join("endpoint.json"), b"{}").unwrap();
+    assert!(store.read_hint(soon()).is_err());
+    assert!(store.publish_hint(soon(), &hint).is_err());
+    assert!(store.clear_hint(soon()).is_err());
+    assert_eq!(fs::read(path.join("endpoint.json")).unwrap(), b"{}");
+    fs::remove_file(path.join("endpoint.json")).unwrap();
+    store.publish_hint(soon(), &hint).unwrap(); // positive control after cleanup
+}

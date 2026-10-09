@@ -117,9 +117,22 @@ impl StateDir for WindowsDir {
         }
         result
     }
+    fn remove(&self, name: &str) -> Result<()> {
+        self.delete(name)
+    }
 }
 
 pub type WindowsStore = Store<WindowsDir>;
+impl WindowsDir {
+    fn delete(&self, name: &str) -> Result<()> {
+        let Some(file) = open_private_file(&self.file(name))? else {
+            return Ok(());
+        };
+        verify_private_file(&file)?;
+        drop(file);
+        std::fs::remove_file(self.file(name)).context("removing the file failed")
+    }
+}
 impl Store<WindowsDir> {
     /// Validates an already prepared directory (`PrivateDirectory::prepare`,
     /// after explicit Enable) and remembers its identity. Creates nothing and

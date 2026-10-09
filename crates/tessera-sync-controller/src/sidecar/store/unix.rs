@@ -55,6 +55,9 @@ impl StateDir for UnixDir {
     fn write(&self, name: &str, data: &[u8]) -> Result<()> {
         self.dir.write_bytes(name, data)
     }
+    fn remove(&self, name: &str) -> Result<()> {
+        self.dir.remove_bytes(name)
+    }
 }
 
 pub type UnixStore = Store<UnixDir>;
