@@ -1,0 +1,17 @@
+--- a/crates/base/src/input/base/movement.rs
++++ b/crates/base/src/input/base/movement.rs
+@@ -558,8 +558,12 @@
+                         next_vi.and_then(|i| last.lines[i].visual_edge(!right)
+                             .map(|(index, wrap, affinity)| (last.visible_line_byte_offsets[i] + index, wrap, affinity)))
+                     };
+-                    target = next.and_then(|(index, wrap, affinity)| last.source(index, ConcealBias::Right)
+-                        .map(|source| (source, wrap, affinity)));
++                    // Arriving at hidden markers stops on the side the caret came from,
++                    // so they reveal and step like they do when approached backwards.
++                    target = next.and_then(|(index, wrap, affinity)| {
++                        let bias = if index > displayed { ConcealBias::Left } else { ConcealBias::Right };
++                        last.source(index, bias).map(|source| (source, wrap, affinity))
++                    });
+                 }
+                 break;
+             }
