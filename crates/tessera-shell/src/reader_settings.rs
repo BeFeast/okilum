@@ -1074,6 +1074,15 @@ mod tests {
             at(20, 30),
             "stops before quiet hours begin"
         );
+
+        // An earlier complaint is cleared by the next accepted choice, even one
+        // that changes nothing.
+        reader.update(visual, |reader, cx| {
+            reader.reminder_prefs_error = Some("Choose a Markdown note inside this vault.".into());
+            let same = reader.reminder_prefs.clone();
+            reader.set_reminder_prefs(same, cx);
+            assert!(reader.reminder_prefs_error.is_none());
+        });
         std::fs::remove_dir_all(temp).unwrap();
     }
 

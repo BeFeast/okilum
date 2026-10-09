@@ -121,6 +121,10 @@ impl Reader {
     /// silently, so choosing a note full of old tasks never sounds like news.
     pub(super) fn set_reminder_prefs(&mut self, preferences: Preferences, cx: &mut Context<Self>) {
         if preferences == self.reminder_prefs {
+            // Choosing what is already set resolves an earlier complaint too.
+            if self.reminder_prefs_error.take().is_some() {
+                cx.notify();
+            }
             return;
         }
         let Some(state) = self.session_directory.clone() else {
