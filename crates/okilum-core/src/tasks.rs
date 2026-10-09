@@ -515,7 +515,11 @@ mod tests {
         i.replace("Sub/Reminders.md", "- [ ] Nested 📅 2026-01-01\n");
         i.replace("My Reminders.md", "- [ ] Other 📅 2026-01-01\n");
         let texts = |q: &str| {
-            let mut t: Vec<_> = run(&i, q).into_iter().map(|t| t.text).collect();
+            // The task text keeps its Tasks metadata; compare the words only.
+            let mut t: Vec<_> = run(&i, q)
+                .into_iter()
+                .map(|t| t.text.split(' ').next().unwrap_or_default().to_owned())
+                .collect();
             t.sort();
             t
         };

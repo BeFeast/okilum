@@ -650,6 +650,7 @@ mod tests {
         .unwrap();
         at(datetime!(2026-10-01 12:00));
         let (reader, visual) = mount(cx, &root, &state);
+        visual.simulate_resize(size(px(1400.), px(960.)));
         reader.update_in(visual, |r, window, cx| r.show_reminders_view(window, cx));
         visual.run_until_parked();
         assert!(
@@ -698,6 +699,7 @@ mod tests {
         std::fs::write(root.join("start.md"), "# Start\n").unwrap();
         at(datetime!(2026-10-01 12:00));
         let (reader, visual) = mount(cx, &root, &state);
+        visual.simulate_resize(size(px(1400.), px(960.)));
         tick(&reader, visual);
         let drafts = state.join("editor-drafts");
         write::add(
