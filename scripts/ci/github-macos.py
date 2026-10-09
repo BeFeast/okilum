@@ -50,7 +50,8 @@ class GitHub:
         except (urllib.error.URLError, TimeoutError,
                 http.client.RemoteDisconnected, ConnectionResetError) as error:
             # Avoid printing HTTP response bodies or credential-bearing commands.
-            raise Unavailable(f"GitHub {method} {path.split('?')[0]}: {type(error).__name__}") from None
+            status = f" HTTP {error.code}" if isinstance(error, urllib.error.HTTPError) else ""
+            raise Unavailable(f"GitHub {method} {path.split('?')[0]}: {type(error).__name__}{status}") from None
 
 
 def ref_name(number, sha, run_id, attempt, invocation=None):
