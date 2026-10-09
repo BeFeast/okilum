@@ -385,6 +385,10 @@ impl Reader {
                 } else {
                     self.focus_handle.focus(window, cx);
                 }
+                // A code view is read-only: Reader shortcuts keep working (#998).
+                if reader_code_file::eligible(rel) {
+                    self.focus_handle.focus(window, cx);
+                }
             }
             Err(error) => reader_toast::error(format!("Cannot preview file: {error}"), window, cx),
         }
@@ -446,6 +450,7 @@ impl Reader {
             return v_flex()
                 .id("reader-file-preview")
                 .key_context("ReaderFile")
+                .track_focus(&self.focus_handle)
                 .size_full()
                 .child(self.render_document_header(window, cx))
                 .child(code.clone())
