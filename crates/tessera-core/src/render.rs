@@ -621,6 +621,40 @@ mod reader_document_tests {
     }
 
     #[test]
+    fn pending_note_and_block_embeds_are_both_detected() {
+        let vault = Vault::from_note_paths(["note.md".into(), "Target.md".into()]);
+        for source in [
+            "![[Target]]\n",
+            "![[Target#^blk]]\n",
+            "Text\n\n![[Target#^blk]]\n",
+        ] {
+            let document = reader_document_from_source(&vault, "note.md", source);
+            assert!(has_pending_embeds(&document.rendered), "{source}");
+        }
+        // Positive controls: a resolved block embed, code and prose are not pending.
+        let ready = block_embed::Info {
+            path: Some("Target.md".into()),
+            title: "Target".into(),
+            id: "blk".into(),
+            status: block_embed::Status::Ready,
+        };
+        let pending = block_embed::Info {
+            status: block_embed::Status::Pending,
+            ..ready.clone()
+        };
+        let fence =
+            |info: &block_embed::Info| format!("~~~~{EMBED_LANG} {}\n~~~~\n", info.fence_meta());
+        assert!(!has_pending_embeds(&fence(&ready)));
+        assert!(has_pending_embeds(&fence(&pending)));
+        assert!(!has_pending_embeds(
+            "```rust\nlet pending = 1;\n```\nembed pending x\n"
+        ));
+        assert!(!has_pending_embeds(&format!(
+            "~~~~{EMBED_LANG} {EMBED_MISSING} Target\n~~~~\n"
+        )));
+    }
+
+    #[test]
     fn preserves_authored_body_across_reader_rewrites_and_path_forms() {
         let root = tempfile::Builder::new()
             .prefix("tessera-reader-source-")
@@ -771,6 +805,26 @@ pub const EMBED_LANG: &str = "embed";
 pub const EMBED_MISSING: &str = "missing";
 /// Inventory is still loading; absence has not been established.
 pub const EMBED_PENDING: &str = "pending";
+
+/// Whether rendered source still holds an embed waiting for the inventory:
+/// a note embed (`embed pending …`) or a block embed (`embed block {…}` with
+/// status `Pending`). Both resolve only when the document is rendered again.
+pub fn has_pending_embeds(rendered: &str) -> bool {
+    rendered.lines().any(|line| {
+        let Some(meta) = line
+            .trim_start_matches('~')
+            .strip_prefix(EMBED_LANG)
+            .and_then(|rest| rest.strip_prefix(' '))
+            .filter(|_| line.starts_with("~~~"))
+        else {
+            return false;
+        };
+        meta.strip_prefix(EMBED_PENDING)
+            .is_some_and(|rest| rest.starts_with(' '))
+            || block_embed::Info::parse(meta)
+                .is_some_and(|info| info.status == block_embed::Status::Pending)
+    })
+}
 
 /// Expand `![[note]]` and `![[note#Heading]]` embeds that stand alone on a
 /// line into the target note's body (or that heading's section), each already
