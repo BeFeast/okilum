@@ -54,6 +54,11 @@ There is no Run key, URL protocol, scheduled task, named pipe, service or
 Credential Manager entry. The sync sidecar's task and pipe exist in code but are
 not shipped on Windows.
 
+Acceptance on a clean profile: `scripts/uninstall/windows-snapshot.ps1 -Out before.txt`
+before install, use the app, uninstall, snapshot again, then
+`scripts/uninstall/diff.py before.txt after.txt --vault <vault>`. It lists every
+added entry and fails on anything named after Okilum outside the vault.
+
 Known residue owned by Windows or Velopack, not by Okilum: Velopack's shared log
 `%LOCALAPPDATA%\velopack\velopack.log`, Explorer's `MuiCache` and `Recent`
 entries. The acceptance snapshot lists them separately.
