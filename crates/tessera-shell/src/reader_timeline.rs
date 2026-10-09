@@ -24,17 +24,24 @@ pub(super) struct Timeline {
     _subscription: Option<Subscription>,
 }
 
-fn date(created: u64) -> String {
+pub(super) fn date(created: u64) -> String {
     time::OffsetDateTime::from_unix_timestamp((created / 1_000_000) as i64)
         .map(|d| format!("{} {:02}:{:02} UTC", d.date(), d.hour(), d.minute()))
         .unwrap_or_else(|_| "Unknown date".into())
 }
 
-fn age(created: u64) -> String {
-    let now = std::time::SystemTime::now()
+pub(super) fn now_secs() -> u64 {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs();
+        .as_secs()
+}
+
+fn age(created: u64) -> String {
+    age_at(created, now_secs())
+}
+
+pub(super) fn age_at(created: u64, now: u64) -> String {
     let seconds = now.saturating_sub(created / 1_000_000);
     match seconds {
         0..60 => "Just now".into(),
@@ -689,6 +696,18 @@ mod tests {
     use ::core::prelude::v1::test;
     #[cfg(unix)]
     use gpui_component::WindowExt;
+
+    #[test]
+    fn age_is_relative_to_the_supplied_clock() {
+        let created = 1_000_000_000 * 1_000_000;
+        let at = |seconds_later: u64| age_at(created, 1_000_000_000 + seconds_later);
+        assert_eq!(at(10), "Just now");
+        assert_eq!(at(120), "2 min ago");
+        assert_eq!(at(7_200), "2 h ago");
+        assert_eq!(at(3 * 86_400), "3 d ago");
+        // A clock behind the entry must not underflow.
+        assert_eq!(age_at(created, 1), "Just now");
+    }
 
     #[test]
     fn comparison_handles_insertions_deletions_and_empty_files() {

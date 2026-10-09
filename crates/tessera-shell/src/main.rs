@@ -77,6 +77,8 @@ mod input_navigation_tests;
 mod input_newline_tests;
 mod reader_recent;
 #[cfg(any(unix, windows))]
+mod reader_recovery_rows;
+#[cfg(any(unix, windows))]
 mod reader_source_history;
 mod reader_startup;
 #[cfg(test)]
