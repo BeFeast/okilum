@@ -711,7 +711,13 @@ fn prepare_rest_with_io_and_snapshot(
             }
             cancel.check()?;
             if last.elapsed() >= Duration::from_millis(80) {
-                progress(send, format!("{phase} · {count} notes"))?;
+                progress(
+                    send,
+                    format!(
+                        "{phase} · {}",
+                        crate::count_label::count_label(count, "note", "notes")
+                    ),
+                )?;
                 last = std::time::Instant::now();
             }
             Ok(())
@@ -1105,7 +1111,13 @@ fn prepare_search_generation_pinned(
         }
         cancel.check()?;
         if last.elapsed() >= Duration::from_millis(80) {
-            progress(send, format!("{phase} · {count} notes"))?;
+            progress(
+                send,
+                format!(
+                    "{phase} · {}",
+                    crate::count_label::count_label(count, "note", "notes")
+                ),
+            )?;
             last = std::time::Instant::now();
         }
         Ok(())

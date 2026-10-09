@@ -13,6 +13,7 @@ mod brain;
 mod brand;
 #[cfg(all(unix, feature = "brain"))]
 mod connectors;
+mod count_label;
 mod desktop_app_menu;
 #[cfg(all(unix, feature = "brain"))]
 mod export;
