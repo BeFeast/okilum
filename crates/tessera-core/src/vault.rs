@@ -105,7 +105,8 @@ mod root_tests {
     #[cfg(windows)]
     #[test]
     fn windows_share_roots_gain_a_root_directory_so_vault_paths_are_relative() {
-        for bare in [r"\\?\UNC\10.10.0.35\qa516w", r"\\10.10.0.35\qa516w"] {
+        // canonicalize() returns the verbatim form, which has no root directory.
+        for bare in [r"\\?\UNC\10.10.0.35\qa516w"] {
             let root = with_root_directory(PathBuf::from(bare));
             assert_eq!(root.as_os_str(), &*format!("{bare}\\"));
             let note = root.join("notes").join("a.md");
@@ -114,7 +115,12 @@ mod root_tests {
             let bare = PathBuf::from(bare);
             assert_eq!(note_path(note.strip_prefix(&bare).unwrap()), "/notes/a.md");
         }
-        for rooted in [r"\\?\C:\vault", r"\\?\UNC\server\share\vault", r"C:\"] {
+        for rooted in [
+            r"\\10.10.0.35\qa516w",
+            r"\\?\C:\vault",
+            r"\\?\UNC\server\share\vault",
+            r"C:\",
+        ] {
             assert_eq!(
                 with_root_directory(PathBuf::from(rooted)),
                 PathBuf::from(rooted)
