@@ -194,6 +194,7 @@ pub struct Notice {
 impl Notice {
     pub fn title(&self) -> String {
         match (self.overdue.len(), self.today.len()) {
+            (0, 0) => String::new(),
             (0, 1) => self.today[0].text.clone(),
             (0, n) => format!("{n} reminders today"),
             (1, 0) => "1 task overdue".into(),
@@ -208,9 +209,10 @@ impl Notice {
             (o, t) if o > 0 && t > 0 => format!("{o} overdue, {t} today"),
             _ => {
                 let all: Vec<_> = self.today.iter().chain(&self.overdue).collect();
-                match all.len() {
-                    1 => all[0].text.clone(),
-                    n => format!("{} and {} more", all[0].text, n - 1),
+                match all.as_slice() {
+                    [] => String::new(),
+                    [only] => only.text.clone(),
+                    [first, rest @ ..] => format!("{} and {} more", first.text, rest.len()),
                 }
             }
         }
@@ -519,6 +521,18 @@ mod tests {
             Some(datetime!(2026-10-20 09:00))
         );
         assert_eq!(next_wake(&[], &ledger, now, &policy), None);
+    }
+
+    #[test]
+    fn an_empty_notice_has_no_text_instead_of_panicking() {
+        let empty = Notice {
+            today: vec![],
+            overdue: vec![],
+        };
+        assert_eq!(
+            (empty.title(), empty.body()),
+            (String::new(), String::new())
+        );
     }
 
     #[test]
