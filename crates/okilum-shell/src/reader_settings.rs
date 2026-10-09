@@ -270,6 +270,25 @@ impl Settings {
         #[cfg(not(all(target_os = "linux", feature = "settings-ui-harness")))]
         None
     }
+    /// Harness only: report a fixed outcome instead of contacting a feed.
+    fn preview_check(&mut self, cx: &mut Context<Self>) {
+        #[cfg(all(target_os = "linux", feature = "settings-ui-harness"))]
+        {
+            use updater::status::{self, CheckStatus};
+            status::set(
+                match std::env::var("OKILUM_DEBUG_UPDATE_RESULT").as_deref() {
+                    Ok("checking") => CheckStatus::Checking,
+                    Ok("available") => CheckStatus::Available("0.1.9999".into()),
+                    Ok("error") => {
+                        CheckStatus::Failed("the update feed could not be reached".into())
+                    }
+                    _ => CheckStatus::UpToDate(std::time::SystemTime::now()),
+                },
+            );
+            cx.refresh_windows();
+        }
+        let _ = cx;
+    }
     fn select_update_channel(&mut self, beta: bool, cx: &mut Context<Self>) {
         #[cfg(all(target_os = "linux", feature = "settings-ui-harness"))]
         if let Some(value) = self.preview_beta.as_mut() {
@@ -724,10 +743,13 @@ impl Settings {
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             if this.preview_channel().is_none() {
                                                 updater::activate(cx);
+                                            } else {
+                                                this.preview_check(cx);
                                             }
                                         })),
                                 ),
                         )
+                        .children(update_status_row("settings", cx))
                         .child(div().text_sm().text_color(p.text_muted).child(if beta {
                             "Beta selected — preview new features and fixes."
                         } else {
@@ -820,10 +842,11 @@ impl Render for Settings {
                             Section::Appearance,
                             Section::Files,
                             Section::Updates,
-                            Section::About,
                             Section::Inbox,
                             #[cfg(target_os = "linux")]
                             Section::Sync,
+                            // Platform convention: About comes last (#995).
+                            Section::About,
                         ]
                         .map(|section| {
                             div()
@@ -871,6 +894,40 @@ impl Render for Settings {
             )
             .children(Root::render_notification_layer(window, cx))
     }
+}
+
+/// The last check's outcome, inline next to the check button (#995). A found
+/// update offers its install action here instead of a modal.
+pub(crate) fn update_status_row(id: &'static str, cx: &App) -> Option<AnyElement> {
+    let line = updater::status_line()?;
+    let p = brand::palette(cx);
+    let available = matches!(
+        updater::status::get(),
+        updater::status::CheckStatus::Available(_)
+    );
+    Some(
+        h_flex()
+            .gap_2()
+            .items_center()
+            .flex_wrap()
+            .child(
+                div()
+                    .debug_selector(move || format!("{id}-update-status"))
+                    .text_sm()
+                    .text_color(p.text_muted)
+                    .child(line),
+            )
+            .when(available, |row| {
+                row.child(
+                    Button::new(SharedString::from(format!("{id}-install-update")))
+                        .ghost()
+                        .small()
+                        .label("Install Update…")
+                        .on_click(|_, _, _| updater::install_update()),
+                )
+            })
+            .into_any_element(),
+    )
 }
 
 #[cfg(test)]

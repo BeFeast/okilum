@@ -20,11 +20,13 @@ pub(crate) fn show_about(_window: &mut Window, cx: &mut App) {
     reader_settings::show_about(cx);
 }
 
-fn about_channel() -> &'static str {
-    if cfg!(target_os = "linux") {
-        ""
-    } else {
-        updater::channel()
+/// The update channel, named as one; never a bare «Beta» that could read as
+/// the product stage (#995).
+fn about_channel() -> String {
+    match updater::channel() {
+        _ if cfg!(target_os = "linux") => String::new(),
+        channel @ ("Beta" | "Stable") => format!("{channel} channel"),
+        other => other.into(),
     }
 }
 
@@ -110,6 +112,7 @@ pub(crate) fn content(cx: &mut App) -> impl IntoElement {
                     )
                 }),
         )
+        .children(reader_settings::update_status_row("about", cx))
         .child(links)
         .when(cfg!(target_os = "linux"), |view| {
             view.child(

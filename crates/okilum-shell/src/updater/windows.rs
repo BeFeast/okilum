@@ -152,25 +152,39 @@ pub(super) fn check(manual: bool) {
     if !available() {
         return;
     }
+    use super::status::{self, CheckStatus};
     if BUSY.swap(true, Ordering::AcqRel) {
         if manual {
-            message("An update check or download is already in progress.");
+            status::set(CheckStatus::Note(IN_PROGRESS.into()));
         }
         return;
     }
+    if manual {
+        status::set(CheckStatus::Checking);
+    }
     // HTTP and package IO never block the GPUI/UI thread or vault preparation.
+    // A manual check reports inline, never in a message box (#995).
     std::thread::spawn(move || {
         let result = check_and_download();
         BUSY.store(false, Ordering::Release);
-        if manual {
-            match result {
-                Ok(status) if !ready() => message(status),
-                Ok(_) => {},
-                Err(error) => message(&format!("Could not check or download updates. Your current version is unchanged.\n\n{error}")),
-            }
+        // A manual click during a background check is answered by its result.
+        let waiting = matches!(status::get(), CheckStatus::Note(ref note) if note == IN_PROGRESS);
+        if manual || waiting {
+            status::set(match result {
+                Ok(_) if ready() => CheckStatus::Ready,
+                Ok(UP_TO_DATE) => CheckStatus::UpToDate(std::time::SystemTime::now()),
+                Ok(note) => CheckStatus::Note(note.into()),
+                Err(error) => CheckStatus::Failed(format!(
+                    "{}. Your current version is unchanged.",
+                    error.to_string().trim_end_matches('.')
+                )),
+            });
         }
     });
 }
+
+const UP_TO_DATE: &str = "You are up to date on the selected channel.";
+const IN_PROGRESS: &str = "An update check or download is already in progress.";
 
 fn check_and_download() -> anyhow::Result<&'static str> {
     let manager = manager()?;
@@ -196,7 +210,7 @@ fn check_and_download() -> anyhow::Result<&'static str> {
             );
             Ok("Update ready. Choose Restart to update.")
         }
-        UpdateCheck::NoUpdateAvailable => Ok("You are up to date on the selected channel."),
+        UpdateCheck::NoUpdateAvailable => Ok(UP_TO_DATE),
         UpdateCheck::RemoteIsEmpty => {
             Ok("No release has been published on the selected channel yet.")
         }
