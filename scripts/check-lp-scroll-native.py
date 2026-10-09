@@ -55,11 +55,9 @@ def run(mode, steps):
         win = found[-1]
         xd(env, 'windowmove', win, '0', '0', 'windowsize', win, '1366', '768', 'windowfocus', win)
         time.sleep(3)  # an earlier click lands before the toolbar exists
-        xd(env, 'mousemove', '996', '70', 'click', '1')  # Edit
+        # Shortcuts, not toolbar coordinates: the note toolbar is contextual (#992).
+        xd(env, 'key', 'ctrl+shift+e' if mode == 'live' else 'ctrl+e')
         time.sleep(1.5)
-        if mode == 'live':
-            xd(env, 'mousemove', '968', '70', 'click', '1')  # Live Preview
-            time.sleep(1.5)
         # Caret after concealed markers, near the top: the #914 trigger.
         xd(env, 'mousemove', '600', '200', 'click', '1')
         results = {}
