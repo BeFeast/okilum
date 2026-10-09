@@ -96,7 +96,7 @@ impl Reader {
                             .tooltip(reader_recovery_rows::row_details(rel, &version.label, &saved, version.protected))
                             .on_click(move |_, window, cx| {
                                 window.close_dialog(cx);
-                                let _ = reader.update(cx, |r, cx| r.preview_source_version(version.clone(), root.clone(), drafts_only, window, cx));
+                                let _ = reader.update(cx, |r, cx| r.preview_source_version(version.clone(), root.clone(), window, cx));
                             })
                     })))
         });
@@ -106,11 +106,9 @@ impl Reader {
         &mut self,
         version: Version,
         root: PathBuf,
-        copy_only: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let reviewed = std::fs::read_to_string(&version.note).ok();
         let input = cx.new(|cx| {
             let mut input = EditorState::new(window, cx)
                 .language("markdown")
@@ -121,14 +119,9 @@ impl Reader {
         });
         let reader = cx.weak_entity();
         window.open_dialog(cx, move |dialog, _, _| {
-            let move_reader = reader.clone();
             let save_reader = reader.clone();
-            let restore_reader = reader.clone();
             let save_version = version.clone();
-            let restore_version = version.clone();
             let save_root = root.clone();
-            let restore_root = root.clone();
-            let reviewed = reviewed.clone();
             dialog
                 .title("Preview recovered note")
                 .width(px(760.))
@@ -140,99 +133,24 @@ impl Reader {
                         .h(px(320.)),
                 )
                 .footer(
-                    h_flex()
-                        .gap_2()
-                        .when(
-                            !copy_only && !version.link_move && reviewed.is_some(),
-                            |row| {
-                                row.child(
-                                    Button::new("restore-source-version")
-                                        .label("Restore this version…")
-                                        .on_click(move |_, window, cx| {
-                                            window.close_dialog(cx);
-                                            let _ = restore_reader.update(cx, |r, cx| {
-                                                r.confirm_source_restore(
-                                                    restore_version.clone(),
-                                                    restore_root.clone(),
-                                                    reviewed.clone().unwrap(),
-                                                    window,
-                                                    cx,
-                                                )
-                                            });
-                                        }),
-                                )
-                            },
-                        )
-                        .when(version.link_move && !copy_only, |row| {
-                            row.child(
-                                Button::new("recover-history-move")
-                                    .label("Recover whole link move…")
-                                    .on_click(move |_, window, cx| {
-                                        window.close_dialog(cx);
-                                        let _ = move_reader
-                                            .update(cx, |r, cx| r.recover_link_moves(window, cx));
-                                    }),
-                            )
-                        })
-                        .child(
-                            Button::new("recover-source-copy")
-                                .primary()
-                                .label("Save as recovered note…")
-                                .on_click(move |_, window, cx| {
-                                    window.close_dialog(cx);
-                                    let _ = save_reader.update(cx, |r, cx| {
-                                        r.save_source_copy(
-                                            save_version.clone(),
-                                            save_root.clone(),
-                                            window,
-                                            cx,
-                                        )
-                                    });
-                                }),
-                        ),
+                    h_flex().gap_2().child(
+                        Button::new("recover-source-copy")
+                            .primary()
+                            .label("Save as recovered note…")
+                            .on_click(move |_, window, cx| {
+                                window.close_dialog(cx);
+                                let _ = save_reader.update(cx, |r, cx| {
+                                    r.save_source_copy(
+                                        save_version.clone(),
+                                        save_root.clone(),
+                                        window,
+                                        cx,
+                                    )
+                                });
+                            }),
+                    ),
                 )
         });
-    }
-
-    fn confirm_source_restore(
-        &mut self,
-        version: Version,
-        root: PathBuf,
-        reviewed: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let answer = window.prompt(PromptLevel::Warning, "Restore this version?",
-            Some("The current source will become a history version. Unsaved edits or a file changed since preview prevent restoration."), &["Cancel", "Restore"], cx);
-        cx.spawn_in(window, async move |this, cx| {
-            if answer.await != Ok(1) {
-                return;
-            }
-            let _ = this.update_in(cx, |r, window, cx| {
-                let result = if r.vault_root == root
-                    && r.vault_root
-                        .join(&r.current_rel)
-                        .canonicalize()
-                        .ok()
-                        .as_ref()
-                        == Some(&version.note)
-                {
-                    r.restore_source_version(&reviewed, &version.text, window, cx)
-                } else {
-                    Err(anyhow::anyhow!("The open note changed; open history again"))
-                };
-                match result {
-                    Ok(()) => reader_toast::transient(
-                        "Previous version restored. The replaced source is in Note history.",
-                        window,
-                        cx,
-                    ),
-                    Err(error) => r.link_notice = Some(format!("Cannot restore: {error:#}").into()),
-                }
-                cx.notify();
-            });
-        })
-        .detach();
     }
 
     pub(super) fn save_source_copy(
