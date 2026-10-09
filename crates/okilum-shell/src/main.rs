@@ -19,6 +19,7 @@ mod desktop_app_menu;
 mod export;
 #[cfg(windows)]
 mod markdown_handler;
+mod open_in;
 mod pdf_engine;
 mod platform;
 mod prepared_links;
@@ -3393,8 +3394,14 @@ impl Reader {
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.reveal_in_tree(&path, window, cx)
                             }))
-                            .context_menu(move |menu, _, _| {
-                                reader_files::menu(menu, menu_root.clone(), menu_path.clone())
+                            .context_menu(move |menu, window, cx| {
+                                reader_files::menu(
+                                    menu,
+                                    menu_root.clone(),
+                                    menu_path.clone(),
+                                    window,
+                                    cx,
+                                )
                             })
                             .child(folder)
                             .into_any_element(),
@@ -3430,8 +3437,14 @@ impl Reader {
                     .tooltip(move |window, cx| {
                         gpui_component::tooltip::Tooltip::new(root.clone()).build(window, cx)
                     })
-                    .context_menu(move |menu, _, _| {
-                        reader_files::menu(menu, file_root.clone(), current_menu.clone())
+                    .context_menu(move |menu, window, cx| {
+                        reader_files::menu(
+                            menu,
+                            file_root.clone(),
+                            current_menu.clone(),
+                            window,
+                            cx,
+                        )
                     }),
             )
             .into_any_element()
@@ -4569,9 +4582,15 @@ impl Reader {
                                 let file_entity = entity.clone();
                                 let file_rel = row.path.clone();
                                 return d
-                                    .context_menu(move |menu, _, cx| {
+                                    .context_menu(move |menu, window, cx| {
                                         if let Some(view) = file_entity.upgrade() {
-                                            reader_item_menu(menu, &view, file_rel.clone(), cx)
+                                            reader_item_menu(
+                                                menu,
+                                                &view,
+                                                file_rel.clone(),
+                                                window,
+                                                cx,
+                                            )
                                         } else {
                                             menu
                                         }
@@ -4579,9 +4598,10 @@ impl Reader {
                                     .into_any_element();
                             }
                             let folder = row.path.clone();
-                            d.context_menu(move |menu, _, cx| {
+                            d.context_menu(move |menu, window, cx| {
                                 let menu = if let Some(view) = entity.upgrade() {
-                                    reader_item_menu(menu, &view, folder.clone(), cx).separator()
+                                    reader_item_menu(menu, &view, folder.clone(), window, cx)
+                                        .separator()
                                 } else {
                                     menu
                                 };
@@ -9913,9 +9933,11 @@ fn reader_item_menu(
     menu: gpui_component::menu::PopupMenu,
     reader: &Entity<Reader>,
     relative: String,
-    cx: &App,
+    window: &mut Window,
+    cx: &mut Context<gpui_component::menu::PopupMenu>,
 ) -> gpui_component::menu::PopupMenu {
-    let menu = reader_files::menu(menu, reader.read(cx).vault_root.clone(), relative.clone());
+    let root = reader.read(cx).vault_root.clone();
+    let menu = reader_files::menu(menu, root, relative.clone(), window, cx);
     #[cfg(any(unix, windows))]
     let menu =
         {

@@ -289,7 +289,7 @@ impl Reader {
         row.child(
             reader_icon_button("document-more", IconName::Ellipsis, "Document actions", cx)
                 .debug_selector(|| "document-more".into())
-                .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, _| {
+                .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, window, cx| {
                     if let Some(path) = table_path.clone() {
                         menu = menu
                             .item(
@@ -383,6 +383,8 @@ impl Reader {
                             ));
                         }
                     }
+                    // Installed editors for this note or file (#873).
+                    menu = super::open_in::submenu(menu, root.clone(), rel.clone(), window, cx);
                     if !is_file {
                         menu = menu.menu("Open in new window", Box::new(reader_open::NewWindow));
                     }

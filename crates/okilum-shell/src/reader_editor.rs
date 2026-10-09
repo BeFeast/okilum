@@ -209,6 +209,13 @@ impl Reader {
         self.editing.as_ref().map(|editing| editing.input.clone())
     }
 
+    /// The editor's caret line, 1-based, for «Open in ▸» (#873).
+    pub(super) fn editing_caret_line(&self, cx: &App) -> Option<usize> {
+        self.editing
+            .as_ref()
+            .map(|editing| editing.input().read(cx).cursor_position().line as usize + 1)
+    }
+
     pub(super) fn source_live_preview(&self) -> bool {
         self.editing.as_ref().is_some_and(|editing| {
             editing.live_preview.enabled || editing.live_preview.restore_after_find
