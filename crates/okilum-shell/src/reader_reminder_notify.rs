@@ -674,17 +674,23 @@ mod tests {
             "no future, done or other-folder task is listed"
         );
 
-        // Navigating to another note ends the view; coming back shows the note.
-        reader.update_in(visual, |r, window, cx| {
-            r.open_note("start.md", None, window, cx)
-        });
+        // Any way of leaving the note ends the view, history included; coming
+        // back shows the plain note, not the view.
+        reader.update_in(visual, |r, window, cx| r.history_move(-1, window, cx));
         visual.run_until_parked();
+        assert_eq!(
+            reader.read_with(visual, |r, _| r.current_rel.clone()),
+            "start.md"
+        );
         assert!(visual.debug_bounds("native-tasks-dashboard").is_none());
         assert!(!reader.read_with(visual, |r, _| r.reminders_view));
-        reader.update_in(visual, |r, window, cx| {
-            r.open_note(reader_reminder::NOTE, None, window, cx)
-        });
+        reader.update_in(visual, |r, window, cx| r.history_move(1, window, cx));
         visual.run_until_parked();
+        assert_eq!(
+            reader.read_with(visual, |r, _| r.current_rel.clone()),
+            reader_reminder::NOTE,
+            "positive control: the reminders note is open again"
+        );
         assert!(visual.debug_bounds("native-tasks-dashboard").is_none());
         TEST_NOW.with(|cell| cell.set(None));
         std::fs::remove_dir_all(temp).unwrap();

@@ -1894,11 +1894,6 @@ impl Reader {
         cx: &mut Context<Self>,
     ) {
         self.tree_preview.close();
-        // The Tasks view of the reminders note ends when another note is opened.
-        #[cfg(any(unix, windows))]
-        if rel != self.reminder_prefs.note {
-            self.reminders_view = false;
-        }
         if rel.is_empty() {
             self.show_empty_vault(window, cx);
             return;
@@ -2058,6 +2053,12 @@ impl Reader {
         }
         if self.current_rel != rel {
             self.timeline = None;
+        }
+        // Every way of reaching another note (history, links, tree) ends up here:
+        // the Tasks view of the reminders note ends when another note is shown.
+        #[cfg(any(unix, windows))]
+        if rel != self.reminder_prefs.note {
+            self.reminders_view = false;
         }
         self.current_rel = rel.to_string();
         self.file_preview = if okilum_core::excalidraw::is_drawing(rel) {
