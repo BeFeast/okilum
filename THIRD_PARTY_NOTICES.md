@@ -23,8 +23,9 @@ components; this is a conservative superset of any individual release.
 - Liberation Sans: bundled TTF is byte-identical to Excalidraw's
   scripts/woff2/assets/LiberationSans-Regular.ttf; no Okilum font modification.
   Copyright and OFL declaration are in its name table, reproduced with full OFL.
-- Noto Sans and Cascadia Code: SIL OFL 1.1; notices and conversion provenance are
-  in crates/okilum-shell/assets/brand/fonts and its manifest. The supplied
+- Noto Sans (upright and italic) and Cascadia Code: SIL OFL 1.1; notices and
+  conversion provenance are in crates/okilum-shell/assets/brand/fonts and its
+  manifest. The italic shares the upright face's notice (same Noto project). The supplied
   Excalifont/Virgil/Nunito/Noto/Cascadia copyright declarations do not designate
   Reserved Font Names; format conversion/merging is documented, not relicensed.
   Font family names and trademarks are not an endorsement by their authors.

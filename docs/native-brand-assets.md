@@ -28,8 +28,20 @@ manifest records the conversion and glyph coverage; original font notices remain
 beside the assets. There is no OS font install or runtime download.
 
 English and Russian are covered by the embedded fonts. Other scripts use platform
-fallback. The approved sources are upright; italic can be synthesized. Register
-fonts before constructing windows so an earlier font lookup cannot cache fallback.
+fallback. Register fonts before constructing windows so an earlier font lookup
+cannot cache fallback.
+
+Noto Sans also ships its italic (#1009). The approved brand sources are upright,
+and no platform synthesizes an oblique for a family the app registers itself, so
+`*emphasis*` rendered upright. The italic Latin and Cyrillic WOFF2 come from the
+same Google Fonts release as the brand's upright files (`notosans/v42`); the
+importer pins their URLs and SHA256 and records them in the manifest inputs.
+They are instantiated at the same four weights with italic style names and flags.
+Cascadia Code stays upright: code is not emphasised.
+
+The importer writes each source font's `head` created/modified timestamps instead
+of the build time, so a re-import is byte-identical. The first deterministic
+import changed only those two fields in the existing faces.
 
 Reproduce assets from the pinned design checkouts:
 

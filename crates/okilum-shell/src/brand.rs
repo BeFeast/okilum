@@ -160,13 +160,26 @@ impl AssetSource for Assets {
 
 /// Register complete Latin+Cyrillic faces at native weights, without subset
 /// family collisions. Errors propagate to startup rather than silently changing
-/// the approved typography. Other scripts still use platform fallback.
+/// the approved typography. Other scripts still use platform fallback. Noto
+/// Sans ships its italic: no platform synthesizes one for an app font (#1009).
 pub fn load_fonts(cx: &App) -> anyhow::Result<()> {
     cx.text_system().add_fonts(vec![
         Cow::Borrowed(include_bytes!("../assets/brand/fonts/noto-sans-400.ttf")),
         Cow::Borrowed(include_bytes!("../assets/brand/fonts/noto-sans-500.ttf")),
         Cow::Borrowed(include_bytes!("../assets/brand/fonts/noto-sans-600.ttf")),
         Cow::Borrowed(include_bytes!("../assets/brand/fonts/noto-sans-700.ttf")),
+        Cow::Borrowed(include_bytes!(
+            "../assets/brand/fonts/noto-sans-italic-400.ttf"
+        )),
+        Cow::Borrowed(include_bytes!(
+            "../assets/brand/fonts/noto-sans-italic-500.ttf"
+        )),
+        Cow::Borrowed(include_bytes!(
+            "../assets/brand/fonts/noto-sans-italic-600.ttf"
+        )),
+        Cow::Borrowed(include_bytes!(
+            "../assets/brand/fonts/noto-sans-italic-700.ttf"
+        )),
         Cow::Borrowed(include_bytes!(
             "../assets/brand/fonts/cascadia-code-400.ttf"
         )),
@@ -738,6 +751,40 @@ mod tests {
     use ::core::prelude::v1::test;
     use gpui_component::IconNamed;
     use gpui_component::ThemeMode;
+
+    /// OS/2 fsSelection from a TrueType file's table directory.
+    fn fs_selection(font: &[u8]) -> u16 {
+        let be16 = |at: usize| u16::from_be_bytes([font[at], font[at + 1]]);
+        let be32 = |at: usize| {
+            u32::from_be_bytes([font[at], font[at + 1], font[at + 2], font[at + 3]]) as usize
+        };
+        let tables = be16(4) as usize;
+        let os2 = (0..tables)
+            .map(|i| 12 + 16 * i)
+            .find(|&record| &font[record..record + 4] == b"OS/2")
+            .expect("OS/2 table");
+        be16(be32(os2 + 8) + 62)
+    }
+
+    #[test]
+    fn noto_sans_embeds_italic_faces_beside_upright_ones() {
+        // #1009: *emphasis* needs a real italic face; nothing synthesizes one.
+        let fonts = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/brand/fonts");
+        for weight in [400, 500, 600, 700] {
+            let italic =
+                std::fs::read(fonts.join(format!("noto-sans-italic-{weight}.ttf"))).unwrap();
+            let upright = std::fs::read(fonts.join(format!("noto-sans-{weight}.ttf"))).unwrap();
+            assert_eq!(fs_selection(&italic) & 1, 1, "{weight} italic bit");
+            assert_eq!(fs_selection(&upright) & 1, 0, "{weight} upright control");
+        }
+        let source = include_str!("brand.rs");
+        for weight in [400, 500, 600, 700] {
+            assert!(
+                source.contains(&format!("fonts/noto-sans-italic-{weight}.ttf\"")),
+                "{weight} italic is registered"
+            );
+        }
+    }
 
     #[test]
     fn every_local_functional_icon_is_embedded() {

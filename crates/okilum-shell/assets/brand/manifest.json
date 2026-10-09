@@ -6,7 +6,7 @@
   "brand_commit": "32f1427e3c766541b3ad8de042f21f3cd0dccd73",
   "gui_commit": "3ba23948adbabb4288bb3bc6fa0d3e4e074861e2",
   "transform": "fontTools4.64.0: instantiate wght400/500/600/700, merge Latin+Cyrillic, emit native TTF; SVG bytes unchanged; token schema ids renamed to the okilum- prefix",
-  "font_scope": "Embedded upright Latin and Cyrillic. Other scripts use platform fallback; italic may be synthesized.",
+  "font_scope": "Embedded Latin and Cyrillic: Noto Sans upright and italic, Cascadia Code upright. Other scripts use platform fallback.",
   "inputs": [
     {
       "commit": "32f1427e3c766541b3ad8de042f21f3cd0dccd73",
@@ -54,6 +54,14 @@
       "sha256": "6ab64433de6077ca5ad31b05420450ce986a616a4ea47b6ad16f3217055dafc3"
     },
     {
+      "url": "https://fonts.gstatic.com/s/notosans/v42/o-0ZIpQlx3QUlC5A4PNr4C5OaxRsfNNlKbCePevtuXOm.woff2",
+      "sha256": "b21ff49befe2af5b88a3b622b3446e83199229f15ea7571a9313b15ed706298b"
+    },
+    {
+      "url": "https://fonts.gstatic.com/s/notosans/v42/o-0ZIpQlx3QUlC5A4PNr4C5OaxRsfNNlKbCePevtvXOmDyw.woff2",
+      "sha256": "d8a605c2fbcf22a5145f1b1bc05ff7f0f697f37feabf1da6848d4e4adb1a09c4"
+    },
+    {
       "commit": "32f1427e3c766541b3ad8de042f21f3cd0dccd73",
       "path": "design/brand/fonts/cascadiacode-OFL.txt",
       "sha256": "82c05d6c53dfa0c9025985c19e371810020b74ed2c61d51d370f2a8ab2506d52"
@@ -97,6 +105,38 @@
       "weight": 700,
       "format": "TrueType",
       "codepoints": 333
+    },
+    {
+      "path": "fonts/noto-sans-italic-400.ttf",
+      "family": "Noto Sans",
+      "weight": 400,
+      "format": "TrueType",
+      "codepoints": 333,
+      "style": "italic"
+    },
+    {
+      "path": "fonts/noto-sans-italic-500.ttf",
+      "family": "Noto Sans",
+      "weight": 500,
+      "format": "TrueType",
+      "codepoints": 333,
+      "style": "italic"
+    },
+    {
+      "path": "fonts/noto-sans-italic-600.ttf",
+      "family": "Noto Sans",
+      "weight": 600,
+      "format": "TrueType",
+      "codepoints": 333,
+      "style": "italic"
+    },
+    {
+      "path": "fonts/noto-sans-italic-700.ttf",
+      "family": "Noto Sans",
+      "weight": 700,
+      "format": "TrueType",
+      "codepoints": 333,
+      "style": "italic"
     },
     {
       "path": "fonts/cascadia-code-400.ttf",
@@ -146,22 +186,22 @@
     {
       "path": "fonts/cascadia-code-400.ttf",
       "bytes": 90820,
-      "sha256": "569c8d0ca66228c14365a76150d0227daf8971a0d7c8879e8d5af92bc5073df5"
+      "sha256": "f78c901a201700c93db56577428276909701f99d0a3b7f629c8c50e7f1b0d9a1"
     },
     {
       "path": "fonts/cascadia-code-500.ttf",
       "bytes": 90900,
-      "sha256": "65ac89ee29d29e8bf256c5d11451c5bd8a204a7502416a6ad15ad0e4cd1fe01b"
+      "sha256": "a6cac7bc7862e897c4463862d93c1834136db8b8aadb2e0c7de013a78a877933"
     },
     {
       "path": "fonts/cascadia-code-600.ttf",
       "bytes": 90964,
-      "sha256": "4aecd0a8410185b97b62de8675c49bf0042a2133345bfdcbd727bbb39c04d3f1"
+      "sha256": "3a4a18a865d840dfdd625b55430cb104ad9e1e35b1695bfde0576d0be54f42a0"
     },
     {
       "path": "fonts/cascadia-code-700.ttf",
       "bytes": 91288,
-      "sha256": "da5001e7338a9a9934ffb48da3c598b75aafdf7fe9794a732e168144c6204314"
+      "sha256": "76ff953c4bf21eeba5148f24fce0b9a214190d8270b246fc3266c278996260ea"
     },
     {
       "path": "fonts/cascadiacode-OFL.txt",
@@ -171,22 +211,42 @@
     {
       "path": "fonts/noto-sans-400.ttf",
       "bytes": 42344,
-      "sha256": "301e77577c26344702888f8484caefcebe4061e1094bd93f8f22bd2c14f0a4bd"
+      "sha256": "98797002d5d3fb1d7b7422b6819f657fb8f5c409c4117afee1b8043ceca3911e"
     },
     {
       "path": "fonts/noto-sans-500.ttf",
       "bytes": 42512,
-      "sha256": "5953d7c187148b3bed543f1db4aa29cd5545f3513375c7ffb172dfe2aa9ac299"
+      "sha256": "9e5cf10937bde861b713774c2b1644c5de1bc78238d25ac0f0321189d907e704"
     },
     {
       "path": "fonts/noto-sans-600.ttf",
       "bytes": 42500,
-      "sha256": "c61086e699c1d63393c6fb3f92af31a1d230af8999fe0e57071070ae8319c79e"
+      "sha256": "83ed9bd53631145466f560993dc262defb4b4c7f532e3d571948429130c50e99"
     },
     {
       "path": "fonts/noto-sans-700.ttf",
       "bytes": 42432,
-      "sha256": "46e934ac63477c9c4660887ee14c9b871f5dd24b6069b951cb09390750a8ca4f"
+      "sha256": "173cf299de5c5f3835be5441c24796bb626ce20156d758e52716d0784a8a9358"
+    },
+    {
+      "path": "fonts/noto-sans-italic-400.ttf",
+      "bytes": 46324,
+      "sha256": "747adfad56b5a9b4aabfea6cdefce9ad7c61c1a258f99af11ff2155797d5c83f"
+    },
+    {
+      "path": "fonts/noto-sans-italic-500.ttf",
+      "bytes": 46452,
+      "sha256": "f5ad6da4ee61b675626ed54184baf3ce7b2df1fd66198bb726ab012147cd2608"
+    },
+    {
+      "path": "fonts/noto-sans-italic-600.ttf",
+      "bytes": 46520,
+      "sha256": "3eae420abafcb328726890e0efe3cf0855a9640ee4037b051a725a370bf827dc"
+    },
+    {
+      "path": "fonts/noto-sans-italic-700.ttf",
+      "bytes": 46388,
+      "sha256": "c7719738c64abafb7c93a88b71babf8fd95dc26cf98f9edf92630f8a48c82ae6"
     },
     {
       "path": "fonts/notosans-OFL.txt",
