@@ -91,7 +91,7 @@ location / { proxy_pass http://127.0.0.1:8080; proxy_set_header Host $http_host;
         run('docker', 'build', '-f', 'inbox/deploy/Dockerfile', '-t', 'tessera-inbox-qa:local', '.', cwd=repo)
         d.compose('pull', 'ingress', 'edge')
         d.compose('run', '--rm', 'init')
-        d.compose('create', '--no-deps', 'inbox')
+        d.compose('create', 'inbox')
         d.compose('cp', str(root/'fixture.db'), 'inbox:/data/inbox.db')
         d.compose('run', '--rm', '--entrypoint', 'chown', 'init', '1000:1000', '/data/inbox.db')
         d.compose('up', '-d', '--no-deps', 'edge')
@@ -115,9 +115,7 @@ location / { proxy_pass http://127.0.0.1:8080; proxy_set_header Host $http_host;
                     try:
                         urllib.request.urlopen(d.origin, timeout=1).close()
                     except urllib.error.HTTPError as error:
-                        if error.code != 503:
-                            continue
-                        container = d.compose('ps', '-q', 'inbox')
+                        container = d.compose('ps', '-q', 'inbox') if error.code == 503 else ''
                         if container and d.run(['docker', 'inspect', '--format',
                             '{{if .State.Health}}{{.State.Health.Status}}{{end}}', container]) == 'healthy':
                             failures.append(time.monotonic())
