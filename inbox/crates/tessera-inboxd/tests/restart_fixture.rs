@@ -78,9 +78,10 @@ fn create_restart_fixture() {
         .do_registration(Url::parse(origin).unwrap(), options)
         .unwrap();
     auth.register_finish(&flow, &response, 1000).unwrap();
+    let owner = auth.owner;
     drop(auth);
     let mut store = Store::open(&path).unwrap();
-    let (who, _, reply) = fixture(&mut store, OwnerId(Uuid::new_v4()));
+    let (who, _, reply) = fixture(&mut store, owner);
     store.prepare_execution_reply(who, &reply).unwrap();
     store
         .advance_execution_reply(
