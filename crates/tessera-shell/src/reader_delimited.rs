@@ -449,6 +449,9 @@ mod tests {
         visual.run_until_parked();
         for viewport in [size(px(1366.), px(768.)), size(px(360.), px(260.))] {
             visual.simulate_resize(viewport);
+            // In a narrow window the popup clamps to (0, 0), so that
+            // coordinate is still inside its hoverable area. Leave it fully.
+            let outside = point(viewport.width - px(1.), viewport.height - px(1.));
             for mode in [ThemeMode::Light, ThemeMode::Dark] {
                 visual.update(|_, cx| Theme::change(mode, None, cx));
                 visual.run_until_parked();
@@ -458,9 +461,14 @@ mod tests {
                 visual.read(|cx| {
                     assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), value);
                 });
-                visual.simulate_mouse_move(point(px(0.), px(0.)), None, Modifiers::default());
+                visual.simulate_mouse_move(outside, None, Modifiers::default());
                 visual.executor().advance_clock(Duration::from_secs(1));
                 visual.run_until_parked();
+                visual.update(|window, cx| window.draw(cx).clear(cx));
+                assert!(
+                    visual.debug_bounds("delimited-cell-tooltip").is_none(),
+                    "positive control: leave the old popup before opening a fresh value"
+                );
                 visual.simulate_mouse_move(cell.center(), None, Modifiers::default());
                 visual.executor().advance_clock(Duration::from_secs(1));
                 visual.run_until_parked();
@@ -469,6 +477,10 @@ mod tests {
                 assert!(tooltip.top() >= px(0.) && tooltip.bottom() <= viewport.height);
                 let content = visual.debug_bounds("delimited-cell-tooltip-value").unwrap();
                 assert!(content.size.width <= tooltip.size.width);
+                assert!(
+                    content.top() >= tooltip.top(),
+                    "positive control: a fresh tooltip starts at the beginning of the value"
+                );
                 assert!(
                     content.size.height > tooltip.size.height,
                     "positive control: full value needs scrolling"
@@ -497,7 +509,7 @@ mod tests {
                     end.bottom() <= tooltip.bottom() + px(1.),
                     "the end of the full value is reachable"
                 );
-                visual.simulate_mouse_move(point(px(0.), px(0.)), None, Modifiers::default());
+                visual.simulate_mouse_move(outside, None, Modifiers::default());
                 visual.executor().advance_clock(Duration::from_secs(1));
                 visual.run_until_parked();
             }
