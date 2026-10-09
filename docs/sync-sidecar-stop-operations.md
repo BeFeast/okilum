@@ -166,9 +166,14 @@ journal durability and supervisor exit remain required, not inferred from fakes.
 
 ## Implementation status
 
-Landed, not yet wired into `Controller`, IPC or any running service:
-`sidecar::authority` (envelope, tokens, transitions, migration; #888) and the Unix
+Landed as library code, not yet wired into Reader, installers or a native supervisor:
+`sidecar::authority` (envelope, tokens, transitions, migration; #888), the Unix
 `sidecar::store` (per-transaction lock with an absolute deadline, exact-next-revision
-commits, explicit idempotent migration, operator epoch repair). Still open: IPC v2
-token verification, `Controller`/`update` moving onto transactions, a Windows store
-with DACL-checked file replacement, and real native crash/durability acceptance.
+commits, explicit idempotent migration, operator epoch repair; #894), IPC v2 with
+the token in Stop and an exact echo (#897), `Controller` on transactions (#901) and
+`update` Stop/Rollback/phases on the same envelope (this slice; `update.json` is now
+read only by migration). Platforms without an authenticated IPC channel (both native
+adapters today) stop natively and unregister under the same lock instead of sending
+a token. Still open: a native `OwnedRuntime` that takes the lock in `authorize_stop`,
+authenticated generation discovery, a Windows store with DACL-checked file
+replacement, and real native crash/durability and supervisor-exit acceptance.

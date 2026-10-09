@@ -236,6 +236,51 @@ impl Envelope {
         );
         Ok(update.update_id)
     }
+    /// Start an update. None when the same update is already pending (a retry
+    /// writes nothing); a pending one with a different payload is refused.
+    pub fn begin_update(&self, previous: Runtime, candidate: Runtime) -> Result<Option<Self>> {
+        if let Some(saved) = &self.update {
+            if saved.phase != Phase::Complete {
+                ensure!(
+                    saved.previous == previous && saved.candidate == candidate,
+                    "another update is pending"
+                );
+                return Ok(None);
+            }
+            let selected = if saved.rolled_back {
+                &saved.previous
+            } else {
+                &saved.candidate
+            };
+            ensure!(
+                *selected == previous,
+                "previous runtime differs from committed selection"
+            );
+        }
+        ensure!(previous != candidate, "runtime is unchanged");
+        ensure!(
+            self.intent != Intent::Removed,
+            "removed instance cannot update"
+        );
+        let mut next = self.next()?;
+        next.update = Some(UpdateState {
+            update_id: Uuid::new_v4(),
+            previous,
+            candidate,
+            phase: Phase::Stop,
+            rolled_back: false,
+        });
+        Ok(Some(next))
+    }
+    /// Record update progress in a new revision. Any outstanding stop dies with
+    /// the old revision, so a stale updater cannot commit its old phase.
+    pub fn set_update_phase(&self, phase: Phase, rolled_back: bool) -> Result<Self> {
+        let mut next = self.next()?;
+        let update = next.update.as_mut().context("no update in progress")?;
+        update.phase = phase;
+        update.rolled_back = rolled_back;
+        Ok(next)
+    }
     /// Recovery after a crash, a fresh supervisor generation or migration: the
     /// caller has verified native ownership of `scope`. The reason is derived
     /// from authoritative state, so terminal intent is preserved.

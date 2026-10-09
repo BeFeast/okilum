@@ -304,3 +304,43 @@ fn rollback_stop_survives_disable_while_update_stop_does_not() {
     let (disabled, _) = with_update(Phase::Stop).disable(g.clone()).unwrap();
     assert!(disabled.arm_update_stop(g).is_err());
 }
+
+#[test]
+fn begin_update_and_phase_changes_are_new_revisions_that_kill_stale_stops() {
+    let g = scope(9);
+    let first = Envelope::first(binding());
+    let started = first
+        .begin_update(runtime("old"), runtime("new"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(started.revision(), 2);
+    assert_eq!(started.update().unwrap().phase, Phase::Stop);
+    // The same update again is a retry that writes nothing; another one is refused.
+    assert!(started
+        .begin_update(runtime("old"), runtime("new"))
+        .unwrap()
+        .is_none());
+    assert!(started
+        .begin_update(runtime("old"), runtime("other"))
+        .is_err());
+    let (armed, token) = started.arm_update_stop(g.clone()).unwrap();
+    let moved = armed.set_update_phase(Phase::Select, false).unwrap();
+    assert!(moved.stop().is_none() && moved.revision() == armed.revision() + 1);
+    assert!(moved.authorize(&token, &g).is_err());
+    assert!(first.set_update_phase(Phase::Select, false).is_err());
+    // A completed update must name the committed selection; each update is new.
+    let done = moved.set_update_phase(Phase::Complete, false).unwrap();
+    assert!(done.begin_update(runtime("old"), runtime("x")).is_err());
+    let again = done
+        .begin_update(runtime("new"), runtime("x"))
+        .unwrap()
+        .unwrap();
+    assert_ne!(
+        again.update().unwrap().update_id,
+        started.update().unwrap().update_id
+    );
+    let (removed, _) = first.remove(g).unwrap();
+    assert!(removed
+        .begin_update(runtime("old"), runtime("new"))
+        .is_err());
+}
