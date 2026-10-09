@@ -180,7 +180,7 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(raw) = url.strip_prefix("tessera://outside-file/") else {
+        let Some(raw) = url.strip_prefix("okilum://outside-file/") else {
             return;
         };
         let path = PathBuf::from(okilum_core::document_links::decode(raw));
@@ -242,7 +242,7 @@ impl Reader {
             .and_then(|s| s.action_url.as_deref())
             .unwrap_or(url);
         let rel = action_url
-            .strip_prefix("tessera://attachment/")
+            .strip_prefix("okilum://attachment/")
             .map(okilum_core::document_links::decode)
             .or_else(|| {
                 action_url

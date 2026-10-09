@@ -106,7 +106,7 @@ pub fn observation_history(
         .and_then(|s| s.strip_suffix(".md"))
         .ok_or(error)?;
     if uuid::Uuid::parse_str(id).is_err()
-        || view["schema"] != "tessera-maestro-observation/v1"
+        || view["schema"] != "okilum-maestro-observation/v1"
         || view["goal_id"] != goal
         || view["recovery_required"] != false
         || view["source_paths"]["observations"][id] != path
@@ -488,7 +488,7 @@ pub(super) mod tests {
             serde_yaml::to_string(&m).unwrap()
         );
         let source = json!({"schema":"ai-brain/v1","brain_id":workspace["brain_id"],"path":path,"revision":format!("sha256:{}",sha(raw.as_bytes())),"content_base64":STANDARD.encode(raw),"media_type":"text/markdown"});
-        let view = json!({"schema":"tessera-maestro-observation/v1","goal_id":goal,"recovery_required":false,"link":null,
+        let view = json!({"schema":"okilum-maestro-observation/v1","goal_id":goal,"recovery_required":false,"link":null,
             "history":[{"id":link,"goal_id":goal,"active":false,"observation_ids":[id],"issue_number":42,
             "instance":{"base_url":"https://example.test/","instance_id":"fixture"},"project_id":"project","project_name":"Historical project","repo":"fixture/test"}],
             "source_paths":{"observations":{id:path}}});

@@ -20,7 +20,7 @@ use std::{
 };
 
 const MAX_ARTIFACT: u64 = 64 * 1024 * 1024;
-const PROOF_SCHEMA: &str = "tessera-t3-envelope-compat/v1";
+const PROOF_SCHEMA: &str = "okilum-t3-envelope-compat/v1";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -1,11 +1,11 @@
 {
-  "schema": "tessera-native-brand/v1",
+  "schema": "okilum-native-brand/v1",
   "brand_delivery": "B1.2.0",
   "brand_tokens": "1.1.0",
   "interface_tokens": "2.0.0",
   "brand_commit": "32f1427e3c766541b3ad8de042f21f3cd0dccd73",
   "gui_commit": "3ba23948adbabb4288bb3bc6fa0d3e4e074861e2",
-  "transform": "fontTools4.64.0: instantiate wght400/500/600/700, merge Latin+Cyrillic, emit native TTF; SVG bytes unchanged",
+  "transform": "fontTools4.64.0: instantiate wght400/500/600/700, merge Latin+Cyrillic, emit native TTF; SVG bytes unchanged; token schema ids renamed to the okilum- prefix",
   "font_scope": "Embedded upright Latin and Cyrillic. Other scripts use platform fallback; italic may be synthesized.",
   "inputs": [
     {
@@ -140,8 +140,8 @@
     },
     {
       "path": "brand-tokens.json",
-      "bytes": 1488,
-      "sha256": "30695163008319c101007248dc8501c768dbabdeac0480110ee17744c066b27b"
+      "bytes": 1487,
+      "sha256": "e38ae033ed34ad960ce5352a55263d9fab05237765651b32904d9a04c2f6a017"
     },
     {
       "path": "fonts/cascadia-code-400.ttf",
@@ -195,8 +195,8 @@
     },
     {
       "path": "interface-tokens.json",
-      "bytes": 1456,
-      "sha256": "132abd63ef60579cc79540352f41c752328d470dfc379511150421dcbe6abbad"
+      "bytes": 1455,
+      "sha256": "95bd6d7415d423ccc875c45e54edb0d4b6cc652d3f566bbd04ba5ba270da896f"
     },
     {
       "path": "symbol-primary.svg",

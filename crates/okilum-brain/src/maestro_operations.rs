@@ -3,7 +3,7 @@ use crate::maestro_links::{LinkRequest, UnlinkRequest};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const SCHEMA: &str = "tessera-maestro-operation/v1";
+pub const SCHEMA: &str = "okilum-maestro-operation/v1";
 pub const ENROLLMENT_FIELD: &str = "maestro_operation_dispositions";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

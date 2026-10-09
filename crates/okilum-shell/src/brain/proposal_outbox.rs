@@ -67,7 +67,7 @@ pub(super) fn valid_terminal_receipt(p: &Pending, receipt: &Value) -> bool {
     let Disposition::Snoozed { until } = &p.request.disposition else {
         return false;
     };
-    receipt["schema"] == "tessera-proposal-terminal/v1"
+    receipt["schema"] == "okilum-proposal-terminal/v1"
         && receipt["outcome"] == "not_applied"
         && receipt["workspace"] == p.workspace
         && receipt["request"] == serde_json::to_value(&p.request).unwrap()
@@ -121,7 +121,7 @@ impl ProposalJournal {
         }
         let seed = self.inner.request("Proposal disposition", actor)?;
         let pending = Pending {
-            schema: "tessera-proposal-disposition-outbox/v1".into(),
+            schema: "okilum-proposal-disposition-outbox/v1".into(),
             workspace: self.inner.workspace.clone(),
             path: text(&source["path"]),
             request: Request {
@@ -138,7 +138,7 @@ impl ProposalJournal {
     }
     fn validate(&self, p: &Pending) -> Result<(), String> {
         let r = &p.request;
-        if p.schema != "tessera-proposal-disposition-outbox/v1"
+        if p.schema != "okilum-proposal-disposition-outbox/v1"
             || p.workspace != self.inner.workspace
             || r.source["instance_id"] != self.inner.instance
             || Uuid::parse_str(&r.operation_id).is_err()
@@ -248,7 +248,7 @@ pub(super) mod tests {
     pub fn detail() -> Value {
         let id = "a".repeat(64);
         let revision = format!("sha256:{}", "b".repeat(64));
-        json!({"record":{"schema":"tessera-proposal/v1","record_type":"proposal","id":id,"brain_id":workspace()["brain_id"],"goal_id":null,"disposition":{"kind":"unreviewed"},"attempt":{"state":"draft"}},"source":{"brain_id":workspace()["brain_id"],"path":format!("records/proposal-{id}.md"),"revision":revision},"current_revision":revision,"projection_pending":false,"stale_reasons":[]})
+        json!({"record":{"schema":"okilum-proposal/v1","record_type":"proposal","id":id,"brain_id":workspace()["brain_id"],"goal_id":null,"disposition":{"kind":"unreviewed"},"attempt":{"state":"draft"}},"source":{"brain_id":workspace()["brain_id"],"path":format!("records/proposal-{id}.md"),"revision":revision},"current_revision":revision,"projection_pending":false,"stale_reasons":[]})
     }
     pub fn journal(dir: &std::path::Path) -> ProposalJournal {
         ProposalJournal::from_inner(InboxJournal::at(dir.to_path_buf(), &workspace()).unwrap())
@@ -348,7 +348,7 @@ mod terminal_tests {
             )
             .unwrap();
         j.retain(&p).unwrap();
-        let good = json!({"schema":"tessera-proposal-terminal/v1","outcome":"not_applied","workspace":p.workspace,"request":p.request,"path":p.path,"reason":"deadline_elapsed","at":"2026-09-07T12:00:00Z","replayed":false});
+        let good = json!({"schema":"okilum-proposal-terminal/v1","outcome":"not_applied","workspace":p.workspace,"request":p.request,"path":p.path,"reason":"deadline_elapsed","at":"2026-09-07T12:00:00Z","replayed":false});
         for field in [
             "schema",
             "outcome",

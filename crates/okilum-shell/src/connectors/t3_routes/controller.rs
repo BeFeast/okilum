@@ -80,7 +80,7 @@ impl Selection {
                 "Candidate changed while reviewing. Review the new target explicitly.".into(),
             );
         }
-        if review["schema"] != "tessera-t3-target/v1"
+        if review["schema"] != "okilum-t3-target/v1"
             || review["candidate"] != requested
             || !review["guard"].is_object()
             || review["guard"]["revision"]
@@ -158,7 +158,7 @@ mod tests {
         json!({"base_url":"http://localhost:21001","environment_id":"distinct-env","project_id":"project"})
     }
     fn review() -> Value {
-        json!({"schema":"tessera-t3-target/v1","candidate":candidate(),"previous":{"environment_id":"old-env"},"guard":{"revision":"r1","inventory_digest":"inventory","candidate_digest":"candidate"},"ready":true,"blockers":[],"associations":[]})
+        json!({"schema":"okilum-t3-target/v1","candidate":candidate(),"previous":{"environment_id":"old-env"},"guard":{"revision":"r1","inventory_digest":"inventory","candidate_digest":"candidate"},"ready":true,"blockers":[],"associations":[]})
     }
     #[test]
     fn check_preserves_candidate_and_unrelated_save_keeps_baseline_after_adoption() {

@@ -64,7 +64,7 @@ def main():
         for variant_index, variant in enumerate(('applicable', 'inapplicable', 'obsolete')):
             number = theme_index * 3 + variant_index + 1
             cid = f'c{number:02d}'
-            gid = str(uuid.uuid5(uuid.NAMESPACE_URL, 'tessera/experiment204/' + cid))
+            gid = str(uuid.uuid5(uuid.NAMESPACE_URL, 'okilum/experiment204/' + cid))
             facts = dict(matching)
             if variant == 'inapplicable':
                 facts.update(nonmatching)
@@ -94,8 +94,8 @@ def main():
                                baseline_positive_control=pinned,
                                prevention='Correct executable next action and exactly the justified constraint, supported by current evidence; no unknown actions or evidence.',
                                false_constraint='Any constraint or exceptional action in a control; an unexecutable/ambiguous answer is separately unsuccessful.')
-    (ROOT / 'corpus.json').write_text(json.dumps({'schema':'tessera-experiment204-corpus/v1','synthetic':True,'cases':cases}, indent=2)+'\n')
-    (ROOT / 'labels.json').write_text(json.dumps({'schema':'tessera-experiment204-labels/v1','cases':labels}, indent=2)+'\n')
+    (ROOT / 'corpus.json').write_text(json.dumps({'schema':'okilum-experiment204-corpus/v1','synthetic':True,'cases':cases}, indent=2)+'\n')
+    (ROOT / 'labels.json').write_text(json.dumps({'schema':'okilum-experiment204-labels/v1','cases':labels}, indent=2)+'\n')
 
 if __name__ == '__main__':
     main()

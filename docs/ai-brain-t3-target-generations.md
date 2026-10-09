@@ -74,7 +74,7 @@ requirement or proof that the environments are equivalent.
 All three operations require `ai-brain/workspace-v1`, a nonempty request `id` and
 an exact `expected_workspace`. Unknown request fields are refused.
 
-- `t3_target_get` returns `tessera-t3-target/v1`, the effective `active` T3 settings,
+- `t3_target_get` returns `okilum-t3-target/v1`, the effective `active` T3 settings,
   `active_generation`, immutable `generations`, durable
   `historical_terminal_unroutable_count` and `future_only: true`. The count keeps
   local-only history visible after refresh and restart.
@@ -88,8 +88,8 @@ an exact `expected_workspace`. Unknown request fields are refused.
   the owner lock. No thread, turn or provider job is created. A stale/blocked
   selection is refused before journal persistence.
 
-Adoption returns a request-bound `tessera-t3-target-outcome/v1` with exact workspace,
-request and status. `committed` carries a `tessera-t3-target-receipt/v1` receipt
+Adoption returns a request-bound `okilum-t3-target-outcome/v1` with exact workspace,
+request and status. `committed` carries a `okilum-t3-target-receipt/v1` receipt
 (operation ID, generation ID, prior generation, request digest, future-only flag).
 `not_applied` is a certified refusal for that request. Transport failure remains
 unknown; the client retains and resends the **identical** request. A committed

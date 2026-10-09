@@ -82,7 +82,7 @@ impl Session {
     }
     fn view(&self) -> Value {
         let items: Vec<Value> = self.order.iter().map(|id| item(&self.rows[id])).collect();
-        json!({"schema":"tessera-todoist-inbox/v1","session_id":self.id,"goal_id":self.target.goal,"account_id":self.target.account,"inbox_project_id":self.inbox,"items":items,"complete":self.complete,"can_load_more":!self.complete&&!self.limited,"limit_reached":self.limited})
+        json!({"schema":"okilum-todoist-inbox/v1","session_id":self.id,"goal_id":self.target.goal,"account_id":self.target.account,"inbox_project_id":self.inbox,"items":items,"complete":self.complete,"can_load_more":!self.complete&&!self.limited,"limit_reached":self.limited})
     }
     fn merge(&mut self, page: crate::todoist::InboxPage) -> Result<()> {
         if page

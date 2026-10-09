@@ -227,7 +227,7 @@ too. Status colors may fall back to the brand tokens; no other role inherits.
 | Nord | `nord` | cool arctic blues after the Nord palette |
 
 Token files live in `crates/okilum-shell/assets/themes/<key>.json`
-(`tessera-theme/v1`). A unit test checks every theme in both variants: `text`
+(`okilum-theme/v1`). A unit test checks every theme in both variants: `text`
 and `text-muted` on `surface`, `canvas` and `sidebar`; `link` and `missing-link`
 on `surface` and `canvas`; `text` on `code-bg`, `surface-raised`, `selected` and
 `hover`; status colors on `surface` and `on-status` on them — WCAG AA (4.5:1),

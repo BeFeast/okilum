@@ -12,7 +12,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const SCHEMA: &str = "tessera-proposal-intents/v1";
+const SCHEMA: &str = "okilum-proposal-intents/v1";
 const QUEUE_LIMIT: usize = 32;
 const MAX_STATE_BYTES: u64 = 16 * 1024 * 1024;
 

@@ -2,7 +2,7 @@
 use super::*;
 use std::path::{Path, PathBuf};
 
-const OUTBOX_SCHEMA: &str = "tessera-inbox-outbox/v1";
+const OUTBOX_SCHEMA: &str = "okilum-inbox-outbox/v1";
 
 pub(super) fn write_once(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let root = path.parent().ok_or("Invalid inbox recovery path")?;
@@ -58,11 +58,11 @@ pub(super) struct InboxJournal {
 impl InboxJournal {
     fn schema(&self) -> &str {
         if self.maestro {
-            "tessera-maestro-outbox/v1"
+            "okilum-maestro-outbox/v1"
         } else if self.planning {
-            "tessera-inbox-plan-outbox/v1"
+            "okilum-inbox-plan-outbox/v1"
         } else if self.attention {
-            "tessera-attention-outbox/v1"
+            "okilum-attention-outbox/v1"
         } else {
             OUTBOX_SCHEMA
         }
@@ -192,7 +192,7 @@ impl InboxJournal {
     }
     fn bytes(&self, request: &Value) -> Result<Vec<u8>, String> {
         serde_json::to_vec(
-            &json!({"schema":if self.maestro && request["op"]=="maestro_approval_decision" {"tessera-maestro-outbox/v2"} else {self.schema()},"workspace":self.workspace,"request":request}),
+            &json!({"schema":if self.maestro && request["op"]=="maestro_approval_decision" {"okilum-maestro-outbox/v2"} else {self.schema()},"workspace":self.workspace,"request":request}),
         )
         .map_err(|e| e.to_string())
     }
@@ -285,7 +285,7 @@ impl InboxJournal {
             let entry: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
             let request = &entry["request"];
             let schema = if self.maestro && request["op"] == "maestro_approval_decision" {
-                "tessera-maestro-outbox/v2"
+                "okilum-maestro-outbox/v2"
             } else {
                 self.schema()
             };

@@ -799,7 +799,7 @@ impl Backend {
                     },
                 };
                 return Ok(serde_json::to_value(crate::suggestions::Outcome {
-                    schema: "tessera-suggestions-outcome/v1".into(),
+                    schema: "okilum-suggestions-outcome/v1".into(),
                     status: if receipt.is_some() {
                         "committed"
                     } else {
@@ -1576,7 +1576,7 @@ fn target_outcome(
     receipt: Option<crate::t3_routes::Receipt>,
     reason: Option<&str>,
 ) -> Value {
-    json!({"schema":"tessera-t3-target-outcome/v1","workspace":workspace,"request":request,
+    json!({"schema":"okilum-t3-target-outcome/v1","workspace":workspace,"request":request,
         "status":if receipt.is_some(){"committed"}else{"not_applied"},"receipt":receipt,"reason":reason})
 }
 fn dispatch_t3_target(backend: &Arc<Mutex<Backend>>, command: &Command) -> Result<Value> {

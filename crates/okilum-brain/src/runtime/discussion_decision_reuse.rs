@@ -686,7 +686,7 @@ mod fixture_export {
         ] {
             inventories.insert(name, inventory(&target.join(name)).unwrap());
         }
-        let metadata = json!({"schema":"tessera-reuse-fixture/v1","logical_root":config.root,"logical_state":config.operational_dir,"workspace":r.workspace_identity(),"goal_a":a,"goal_b":b,"origin_key":key,"decision_id":id,"decision_path":path,"create_view":create,"base":base,"policy_request":request,"policy_receipt":receipt,"positive_control":control_create,"inventories":inventories,"provider_calls":0,"archive_exports":"actual Runner::export_exact followed by independent tar extraction"});
+        let metadata = json!({"schema":"okilum-reuse-fixture/v1","logical_root":config.root,"logical_state":config.operational_dir,"workspace":r.workspace_identity(),"goal_a":a,"goal_b":b,"origin_key":key,"decision_id":id,"decision_path":path,"create_view":create,"base":base,"policy_request":request,"policy_receipt":receipt,"positive_control":control_create,"inventories":inventories,"provider_calls":0,"archive_exports":"actual Runner::export_exact followed by independent tar extraction"});
         fs::write(
             target.join("fixture.json"),
             serde_json::to_vec_pretty(&metadata).unwrap(),

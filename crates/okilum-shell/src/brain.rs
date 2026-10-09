@@ -244,7 +244,7 @@ fn preview_images(data: &Value) -> Result<BTreeMap<String, Arc<Image>>, String> 
     let mut images = BTreeMap::new();
     for asset in array(&data["assets"]) {
         let url = text(&asset["url"]);
-        if !url.starts_with("tessera-asset://") || images.contains_key(&url) {
+        if !url.starts_with("okilum-asset://") || images.contains_key(&url) {
             return Err("Invalid preview attachment identity.".into());
         }
         let format = ImageFormat::from_mime_type(&text(&asset["media_type"]))
@@ -434,7 +434,7 @@ impl PreparedJournal {
         Ok(self.root.join(format!("{id}.{suffix}")))
     }
     fn record(&self, request: &Value) -> Result<Vec<u8>, String> {
-        serde_json::to_vec(&json!({"schema":"tessera-prepared-operation/v1","workspace":self.workspace,"request":request})).map_err(|e|e.to_string())
+        serde_json::to_vec(&json!({"schema":"okilum-prepared-operation/v1","workspace":self.workspace,"request":request})).map_err(|e|e.to_string())
     }
     fn write_once(&self, request: &Value, suffix: &str) -> Result<(), String> {
         let path = self.path(request, suffix)?;
@@ -509,7 +509,7 @@ impl PreparedJournal {
             let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
             let entry: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
             if entry["workspace"] != self.workspace
-                || entry["schema"] != "tessera-prepared-operation/v1"
+                || entry["schema"] != "okilum-prepared-operation/v1"
             {
                 return Err(
                     "Prepared-stage recovery belongs to a different workspace identity.".into(),
@@ -2057,7 +2057,7 @@ impl BrainView {
         if self.preview["attachment_links_version"] != 1
             || revision
                 .strip_prefix("sha256:")
-                .is_none_or(|hash| asset_url != format!("tessera-asset://{hash}"))
+                .is_none_or(|hash| asset_url != format!("okilum-asset://{hash}"))
         {
             self.error =
                 Some("This image preview is unavailable. Refresh the note to try again.".into());
@@ -5117,10 +5117,10 @@ mod tests {
             // candidate may claim to have started a source read behind it.
             view.busy = true;
             view.preview = json!({"links":[{
-                "url":"tessera://open/notes/target.md", "status":"resolved",
+                "url":"okilum://open/notes/target.md", "status":"resolved",
                 "candidates":[{"path":"notes/target.md"}]
             }]});
-            view.preview_link("tessera://open/notes/target.md", window, cx);
+            view.preview_link("okilum://open/notes/target.md", window, cx);
             assert!(!view.source_loading);
             assert!(matches!(view.surface, Surface::Conversation));
             view.open_source("notes/target.md".into(), window, cx);
@@ -5212,22 +5212,22 @@ mod tests {
     #[test]
     fn remote_preview_images_use_supplied_bytes_and_reject_desktop_paths() {
         let images = preview_images(&json!({"assets":[{
-            "url":"tessera-asset://fixture", "media_type":"image/png", "content_base64":PIXEL
+            "url":"okilum-asset://fixture", "media_type":"image/png", "content_base64":PIXEL
         }]}))
         .unwrap();
         assert_eq!(
-            images["tessera-asset://fixture"].bytes,
+            images["okilum-asset://fixture"].bytes,
             STANDARD.decode(PIXEL).unwrap()
         );
         assert!(matches!(
-            preview_image(&images, "tessera-asset://fixture"),
+            preview_image(&images, "okilum-asset://fixture"),
             Some(super::super::MarkdownImage::Source(ImageSource::Image(_)))
         ));
         for url in [
             "file:///tmp/private.png",
             "/home/server/brain/pixel.png",
             "../pixel.png",
-            "tessera-asset://unavailable",
+            "okilum-asset://unavailable",
         ] {
             assert!(matches!(
                 preview_image(&images, url),
@@ -5249,7 +5249,7 @@ mod tests {
             let links = self.links.clone();
             div().size_full().child(super::super::markdown_plugins(
                 TextView::markdown("remote-preview-fixture",
-                    "[Open target](tessera://open/notes/target.md)\n\n> [!note] Remote reference\n> [Nested target](tessera://open/notes/nested.md)\n>\n> ![Remote image](tessera-asset://fixture)\n> [Image neighbor](tessera://open/notes/image-neighbor.md)\n"),
+                    "[Open target](okilum://open/notes/target.md)\n\n> [!note] Remote reference\n> [Nested target](okilum://open/notes/nested.md)\n>\n> ![Remote image](okilum-asset://fixture)\n> [Image neighbor](okilum://open/notes/image-neighbor.md)\n"),
                 Arc::new(move |url,_,_,_| links.lock().unwrap().push(url.to_string())),
                 Arc::new(move |url| {
                     image_requests.lock().unwrap().push(url.to_string());
@@ -5265,10 +5265,10 @@ mod tests {
         let image_requests = Arc::new(Mutex::new(Vec::new()));
         let links = Arc::new(Mutex::new(Vec::new()));
         let images = preview_images(&json!({"assets":[{
-            "url":"tessera-asset://fixture", "media_type":"image/png", "content_base64":PIXEL
+            "url":"okilum-asset://fixture", "media_type":"image/png", "content_base64":PIXEL
         }]}))
         .unwrap();
-        let pixel = images["tessera-asset://fixture"].clone();
+        let pixel = images["okilum-asset://fixture"].clone();
         let (_, cx) = cx.add_window_view(|_, _| RemotePreviewFixture {
             images,
             image_requests: image_requests.clone(),
@@ -5282,7 +5282,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .iter()
-                .any(|url| url == "tessera-asset://fixture"),
+                .any(|url| url == "okilum-asset://fixture"),
             "nested callout must invoke the supplied byte image resolver"
         );
         cx.update(|window, cx| {
@@ -5302,7 +5302,7 @@ mod tests {
             .lock()
             .unwrap()
             .iter()
-            .any(|url| url == "tessera://open/notes/target.md"));
+            .any(|url| url == "okilum://open/notes/target.md"));
         for y in (44..132).step_by(4) {
             cx.simulate_click(point(px(40.), px(y as f32)), Modifiers::default());
         }
@@ -5312,7 +5312,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .iter()
-                .any(|url| url == "tessera://open/notes/nested.md"),
+                .any(|url| url == "okilum://open/notes/nested.md"),
             "the link inside the callout must use the shared navigation callback"
         );
         for y in (90..240).step_by(4) {
@@ -5324,7 +5324,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .iter()
-                .any(|url| url == "tessera://open/notes/image-neighbor.md"),
+                .any(|url| url == "okilum://open/notes/image-neighbor.md"),
             "a link sharing the image paragraph must remain interactive"
         );
     }

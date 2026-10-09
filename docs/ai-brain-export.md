@@ -6,7 +6,7 @@ contains `brain/<original relative path>` for every included saved file and
 manager, then open `brain/` as Markdown and media. No Okilum database, provider
 connection or session is needed to inspect the files.
 
-The manifest records `tessera-knowledge-export/v1`, the original relative paths,
+The manifest records `okilum-knowledge-export/v1`, the original relative paths,
 byte lengths and SHA-256 revisions, exclusions, and unresolved/ambiguous/external
 local dependencies. Canonical goal, conversation, context and result Markdown
 retain their original bytes, including historical provider identities. Their

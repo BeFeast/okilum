@@ -23,7 +23,7 @@ use uuid::Uuid;
 // v5 adds complete, bounded incoming references from original source snapshots.
 // v6 includes ordinary Markdown note links using the shared document resolver.
 // Reject previous generations rather than reusing their derived chunks or vectors.
-const INDEX_SCHEMA: &str = "tessera-brain-index/v6";
+const INDEX_SCHEMA: &str = "okilum-brain-index/v6";
 const MAX_SOURCE_BYTES: u64 = 1024 * 1024;
 const MAX_TOTAL_BYTES: usize = 64 * 1024 * 1024;
 const MAX_CHUNKS: usize = 32_000;
@@ -1681,7 +1681,7 @@ mod fusion_tests {
             .find(|s| s.path == "records/context.md")
             .unwrap();
         let cache = CachedIndex {
-            schema: "tessera-brain-index/v1".into(),
+            schema: "okilum-brain-index/v1".into(),
             brain_id: brain,
             root: root.to_string_lossy().into_owned(),
             records_dir: "records".into(),
@@ -2121,7 +2121,7 @@ mod source_context_oracle {
     ],
     "link": null,
     "recovery_required": false,
-    "schema": "tessera-maestro-observation/v1",
+    "schema": "okilum-maestro-observation/v1",
     "source_paths": {
       "link": null,
       "observations": {

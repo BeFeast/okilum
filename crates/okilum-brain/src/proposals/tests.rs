@@ -127,7 +127,7 @@ fn retained_proposal_reopens_with_canonical_json_object_order() {
     let mut frozen = input();
     frozen.input_sha256 = format!("{:x}", Sha256::digest(request_body.as_bytes()));
     frozen.generation = Some(crate::proposal::GenerationInput {
-        schema: "tessera-proposal-prompt/v1".into(),
+        schema: "okilum-proposal-prompt/v1".into(),
         settings: None,
         goal_brief: Some(brief),
         goal_source: Some(goal_source),
@@ -632,7 +632,7 @@ fn bound_headers_refuse_legacy_epoch_activation_and_policy_changes_before_recove
     old.mark_running(BRAIN, None, &id, input()).unwrap();
     drop(old);
     let binding = okilum_core::source::RequiredProposalFeed {
-        capability: "tessera-proposal-feed/v1".into(),
+        capability: "okilum-proposal-feed/v1".into(),
         epoch: Uuid::new_v4().to_string(),
         activation_id: Uuid::new_v4().to_string(),
         policy_version: 1,
@@ -699,7 +699,7 @@ fn generation_reserves_result_publication_before_marking_running() {
     let mut frozen = input();
     frozen.input_sha256 = format!("{:x}", Sha256::digest(request_body.as_bytes()));
     frozen.generation = Some(crate::proposal::GenerationInput {
-        schema: "tessera-proposal-prompt/v1".into(),
+        schema: "okilum-proposal-prompt/v1".into(),
         settings: None,
         goal_brief: None,
         goal_source: None,

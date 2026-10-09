@@ -8,12 +8,12 @@ use regex::Regex;
 
 pub mod block_embed;
 
-pub const WIKI_SCHEME: &str = "tessera://open/";
-pub const UNRESOLVED_SCHEME: &str = "tessera://unresolved/";
+pub const WIKI_SCHEME: &str = "okilum://open/";
+pub const UNRESOLVED_SCHEME: &str = "okilum://unresolved/";
 /// A link that names several notes. The target is carried verbatim so a client
 /// can ask the vault for the candidates and let the reader choose; encoding one
 /// of them into the URL here would be the guess this scheme exists to avoid.
-pub const AMBIGUOUS_SCHEME: &str = "tessera://ambiguous/";
+pub const AMBIGUOUS_SCHEME: &str = "okilum://ambiguous/";
 
 pub fn comrak_options() -> Options<'static> {
     let mut o = Options::default();
@@ -97,7 +97,7 @@ pub fn rewrite_links<'a>(root: &'a AstNode<'a>, vault: &Vault, note_rel: &str, s
             NodeValue::Image(img) => {
                 if !img.url.contains("://") {
                     img.url = image_file_url(&img.url, vault, note_rel)
-                        .unwrap_or_else(|| "tessera-asset://unavailable".into());
+                        .unwrap_or_else(|| "okilum-asset://unavailable".into());
                 }
             }
             NodeValue::Link(link) => {
@@ -129,7 +129,7 @@ pub fn split_fragment(target: &str) -> (&str, &str) {
     }
 }
 
-/// `#heading` for a `tessera://open/` URL, or nothing for an empty fragment.
+/// `#heading` for a `okilum://open/` URL, or nothing for an empty fragment.
 fn fragment_suffix(fragment: &str) -> String {
     if fragment.is_empty() {
         String::new()
@@ -148,7 +148,7 @@ pub fn heading_block_index(source: &str, target: &str) -> Option<usize> {
         .map(|h| h.block)
 }
 
-/// Split a `tessera://open/` payload (scheme already stripped) into
+/// Split a `okilum://open/` payload (scheme already stripped) into
 /// `(rel, heading)`, percent decoded once. The inverse of the emitted URL.
 pub fn split_open_url(rest: &str) -> (String, Option<String>) {
     match rest.split_once('#') {
@@ -217,7 +217,7 @@ pub fn render_html_from_source(
 }
 
 /// Rewrite `[[wikilinks]]` and relative `[text](note.md)` links in Markdown
-/// *source* into `tessera://` links, for a renderer that consumes Markdown
+/// *source* into `okilum://` links, for a renderer that consumes Markdown
 /// rather than an AST (the GPUI shell does). `from_note` is the vault-relative
 /// path of the note being rendered, or `""` for a file outside the vault: bare
 /// and qualified links still resolve against the vault, and a `../` link —
@@ -342,7 +342,7 @@ pub fn rewrite_source_images(text: &str, vault: &Vault, note_rel: &str) -> Strin
         }
         Some(
             image_file_url(url, vault, note_rel)
-                .unwrap_or_else(|| "tessera-asset://unavailable".into()),
+                .unwrap_or_else(|| "okilum-asset://unavailable".into()),
         )
     })
 }
@@ -528,7 +528,7 @@ mod frontmatter_tests {
 }
 
 /// Produce the Markdown source a reader should render for `rel`, with links and
-/// images already rewritten to `tessera://` and `file://`, and `==highlights==`
+/// images already rewritten to `okilum://` and `file://`, and `==highlights==`
 /// rewritten to `<mark>` (#47).
 ///
 /// `rel` may be **vault-relative** or an **absolute path to a file outside the
@@ -829,7 +829,7 @@ pub fn has_pending_embeds(rendered: &str) -> bool {
 /// Expand `![[note]]` and `![[note#Heading]]` embeds that stand alone on a
 /// line into the target note's body (or that heading's section), each already
 /// rewritten against *its own* note and wrapped in a tilde fence tagged
-/// [`EMBED_LANG`] with the `tessera://open/` payload (`path#heading`) as the
+/// [`EMBED_LANG`] with the `okilum://open/` payload (`path#heading`) as the
 /// info string (#49).
 ///
 /// - Only targets that resolve to a note are expanded; an image embed, an
@@ -1290,7 +1290,7 @@ mod callout_passthrough_tests {
         assert!(
             out.contains(
                 "> [!warning] Careful
-> Body with `code` and a [missing](tessera://unresolved/missing) link.
+> Body with `code` and a [missing](okilum://unresolved/missing) link.
 >
 > - one
 > - two
@@ -1427,10 +1427,10 @@ mod highlight_tests {
 
     #[test]
     fn block_html_keeps_marks_links_and_code() {
-        let html = block_html("a <mark>b</mark> [t](tessera://open/x.md) `c`\nwrapped **d**");
+        let html = block_html("a <mark>b</mark> [t](okilum://open/x.md) `c`\nwrapped **d**");
         assert_eq!(
             html,
-            "<p>a <mark>b</mark> <a href=\"tessera://open/x.md\">t</a> <code>c</code> wrapped <strong>d</strong></p>"
+            "<p>a <mark>b</mark> <a href=\"okilum://open/x.md\">t</a> <code>c</code> wrapped <strong>d</strong></p>"
         );
     }
 }

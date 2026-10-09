@@ -19,7 +19,7 @@ pub(super) fn validate_fence(root: &Path, journal: &Journal) -> Result<()> {
             .join("source/binding.json"),
     )?)?;
     ensure!(
-        binding["required_proposal_retry"] == "tessera-proposal-retry/v1",
+        binding["required_proposal_retry"] == "okilum-proposal-retry/v1",
         "retry state lacks required source fence"
     );
     for op in journal.retries.values() {
@@ -83,7 +83,7 @@ impl Journal {
                 .and_then(|i| i.draft.as_ref())
                 .context("retry proposal missing")?;
             ensure!(
-                r.schema == "tessera-proposal-retry/v1"
+                r.schema == "okilum-proposal-retry/v1"
                     && !r.replayed
                     && r.request.operation_id == *id
                     && r.workspace["brain_id"] == self.brain_id
@@ -315,7 +315,7 @@ impl Store {
             }
         };
         let receipt = api::RetryReceipt {
-            schema: "tessera-proposal-retry/v1".into(),
+            schema: "okilum-proposal-retry/v1".into(),
             workspace,
             request: request.clone(),
             path,

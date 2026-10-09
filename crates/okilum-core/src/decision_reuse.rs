@@ -9,7 +9,7 @@ use uuid::Uuid;
 pub const MAX_BYTES: usize = 8192;
 pub const AUTOMATIC: &str = "discussion-decision";
 pub const MANUAL: &str = "discussion-decision-manual";
-const SCHEMA: &str = "tessera-discussion-decision-reuse/v1";
+const SCHEMA: &str = "okilum-discussion-decision-reuse/v1";
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Disposition {

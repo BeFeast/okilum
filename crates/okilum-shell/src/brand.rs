@@ -932,7 +932,7 @@ mod tests {
             assert_eq!(ThemeId::from_key(theme.key()), Some(theme));
             if let Some(json) = theme.tokens() {
                 let file: serde_json::Value = serde_json::from_str(json).unwrap();
-                assert_eq!(file["schema"], "tessera-theme/v1");
+                assert_eq!(file["schema"], "okilum-theme/v1");
                 assert_eq!(file["id"], theme.key());
             }
         }

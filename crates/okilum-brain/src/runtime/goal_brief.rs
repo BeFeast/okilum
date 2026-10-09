@@ -387,7 +387,7 @@ impl Runner {
                 accepted.push(input);
             }
         }
-        let mut value = serde_json::json!({"schema":"tessera-goal-brief/v1", "goal_id":goal_id,
+        let mut value = serde_json::json!({"schema":"okilum-goal-brief/v1", "goal_id":goal_id,
             "goal_revision":goal_source.revision, "inputs":accepted, "remaining_criteria":remaining,
             "omissions":omissions, "complete":omissions.is_empty()});
         // Keep pre-policy JSON and its generation byte-exact when absent.

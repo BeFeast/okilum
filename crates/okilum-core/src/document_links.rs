@@ -441,7 +441,7 @@ fn attachment(target: &str, wiki: bool, vault: &Vault, from: &str) -> Option<Res
     let (status, url) = match candidates.as_slice() {
         [path] => (
             "attachment",
-            format!("tessera://attachment/{}", encode(path)),
+            format!("okilum://attachment/{}", encode(path)),
         ),
         [] => (
             "unresolved",
@@ -470,7 +470,7 @@ pub fn resolve(target: &str, wiki: bool, vault: &Vault, from: &str) -> ResolvedL
             && std::path::Path::new(&path).is_file()
         {
             return ResolvedLink {
-                url: format!("tessera://outside-file/{}", encode(&path)),
+                url: format!("okilum://outside-file/{}", encode(&path)),
                 status: "outside_file",
                 candidates: vec![],
                 heading: None,
@@ -494,7 +494,7 @@ pub fn resolve(target: &str, wiki: bool, vault: &Vault, from: &str) -> ResolvedL
         Destination::Unsupported(reason) => {
             return ResolvedLink {
                 url: format!(
-                    "tessera://unsupported/{}",
+                    "okilum://unsupported/{}",
                     encode(&format!("{reason} Target: {target}"))
                 ),
                 status: "unsupported",
@@ -531,7 +531,7 @@ pub fn resolve(target: &str, wiki: bool, vault: &Vault, from: &str) -> ResolvedL
                 if wiki {
                     render::AMBIGUOUS_SCHEME
                 } else {
-                    "tessera://ambiguous-markdown/"
+                    "okilum://ambiguous-markdown/"
                 },
                 encode(target)
             ),

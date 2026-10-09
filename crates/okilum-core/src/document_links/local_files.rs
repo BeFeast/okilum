@@ -119,7 +119,7 @@ pub(super) fn prepare(
     match std::fs::symlink_metadata(&direct) {
         Ok(_) => match direct.canonicalize() {
             Ok(real) if real.is_file() && !real.starts_with(&root) => {
-                let url = format!("tessera://outside-file/{}", encode(&real.to_string_lossy()));
+                let url = format!("okilum://outside-file/{}", encode(&real.to_string_lossy()));
                 Some(result(
                     "outside_file",
                     LinkStatus::Resolved,
@@ -133,7 +133,7 @@ pub(super) fn prepare(
                     .ok()?
                     .to_string_lossy()
                     .replace(std::path::MAIN_SEPARATOR, "/");
-                let url = format!("tessera://attachment/{}", encode(&rel));
+                let url = format!("okilum://attachment/{}", encode(&rel));
                 let mut found = result("attachment", LinkStatus::Resolved, "Preview file", url);
                 found.0.candidates.push(rel);
                 Some(found)
@@ -156,7 +156,7 @@ pub(super) fn prepare(
                 return Some(unavailable(target, "File unavailable."));
             }
             let url = format!(
-                "tessera://missing-file/{}",
+                "okilum://missing-file/{}",
                 encode(&direct.to_string_lossy())
             );
             Some(result(

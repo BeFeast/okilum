@@ -138,10 +138,10 @@ are readable without interpreting their typed YAML metadata.
 UTF-8 draft bytes as base64. `revision` identifies the unchanged canonical source;
 `preview_revision` identifies the rendered draft. Preprocessing and note resolution
 reuse the existing core reader, preserving callout syntax and code literal boundaries.
-Resolved links use `tessera://open/`, ambiguous links `tessera://ambiguous/`;
+Resolved links use `okilum://open/`, ambiguous links `okilum://ambiguous/`;
 metadata also identifies unresolved targets without guessing a candidate.
 
-Local images are delivered as bytes under opaque `tessera-asset://<sha256>` URLs.
+Local images are delivered as bytes under opaque `okilum-asset://<sha256>` URLs.
 A remote GUI never receives a backend `file://` path to read. Relative image paths
 are normalized within the brain before SourceStore traversal; escapes and symlink
 traversal return an unavailable image reference. HTTP(S) references remain references;

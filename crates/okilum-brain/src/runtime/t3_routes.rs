@@ -589,7 +589,7 @@ pub(crate) fn inspect_bytes(
     let state = decode_state(bytes)?;
     let checked = inventory(&state, config, operational, brain, manifest);
     Ok(
-        json!({"schema":"tessera-t3-inventory/v1","read_only":true,"eligible":checked.blockers.is_empty(),
+        json!({"schema":"okilum-t3-inventory/v1","read_only":true,"eligible":checked.blockers.is_empty(),
         "blockers":checked.blockers,"associations":checked.associations,"compatibility_proofs":checked.compatibility_proofs.values().map(api::ProofSummary::from).collect::<Vec<_>>(),"inventory_digest":checked.digest()}),
     )
 }
@@ -791,7 +791,7 @@ impl Runner {
         let selected =
             api::generation(&request.review.candidate, "explicit_future_target_adoption");
         let receipt = api::Receipt {
-            schema: "tessera-t3-target-receipt/v1".into(),
+            schema: "okilum-t3-target-receipt/v1".into(),
             operation_id: request.operation_id.clone(),
             generation_id: selected.id.clone(),
             previous_generation: request.review.guard.active_generation.clone(),

@@ -40,7 +40,7 @@ page. It returns:
 
 ```json
 {
-  "schema": "tessera-todoist-inbox/v1",
+  "schema": "okilum-todoist-inbox/v1",
   "session_id": "opaque session UUID",
   "goal_id": "explicit goal UUID",
   "account_id": "verified saved Todoist account",

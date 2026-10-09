@@ -110,7 +110,7 @@ impl Runner {
         Ok(())
     }
     fn plan_enrollment(&self) -> Value {
-        serde_json::json!({"schema":"tessera-inbox-plan-enrollment/v1","brain_id":self.state.brain_id,"root":self.root,"records_dir":self.state.records_dir})
+        serde_json::json!({"schema":"okilum-inbox-plan-enrollment/v1","brain_id":self.state.brain_id,"root":self.root,"records_dir":self.state.records_dir})
     }
     pub(super) fn ensure_plan_enrollment(&self) -> Result<()> {
         let path = self.state_dir.join("inbox-plan-enrollment.json");

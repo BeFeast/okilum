@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, path::Path};
-pub const SCHEMA: &str = "tessera-t3-target/v1";
+pub const SCHEMA: &str = "okilum-t3-target/v1";
 
 pub(crate) fn digest<T: Serialize>(value: &T) -> String {
     format!(

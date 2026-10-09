@@ -17,7 +17,7 @@ const MAX_AUTO: usize = 48 * 1024;
 const MAX_ENVELOPE: usize = 8 * 1024 * 1024;
 pub(crate) const MAX_CONVERSATION: u64 = 128 * 1024 * 1024;
 pub(crate) const MAX_CANDIDATE: usize = 64 * 1024 * 1024;
-const ENVELOPE_SCHEMA: &str = "tessera-discussion-context/v1";
+const ENVELOPE_SCHEMA: &str = "okilum-discussion-context/v1";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -248,7 +248,7 @@ impl Envelope {
         let mut indexes = BTreeSet::new();
         for t in &self.turns {
             ensure!(
-                t.schema == "tessera-discussion-turn/v1"
+                t.schema == "okilum-discussion-turn/v1"
                     && t.request_format == "discussion-context/v1",
                 "context_version_unsupported"
             );
@@ -387,7 +387,7 @@ pub(crate) fn decision_origin(
     );
     Ok((
         crate::runtime::discussion_decision::Origin {
-            schema: "tessera-discussion-decision-origin/v1".into(),
+            schema: "okilum-discussion-decision-origin/v1".into(),
             conversation_id: c.id,
             conversation_path: path,
             source_revision: source.revision,
@@ -573,7 +573,7 @@ pub(crate) fn prepare(
         .checked_sub(1)
         .context("message is required")?;
     let mut t = Turn {
-        schema: "tessera-discussion-turn/v1".into(),
+        schema: "okilum-discussion-turn/v1".into(),
         brain_id: goal_source.brain_id.clone(),
         conversation_id: c.id.clone(),
         turn_id: uuid::Uuid::new_v4().to_string(),
@@ -840,7 +840,7 @@ mod tests {
         };
         let mandatory_input = input("manual.md", "Complete manual reference".into(), "manual");
         let mut base = Turn {
-            schema: "tessera-discussion-turn/v1".into(),
+            schema: "okilum-discussion-turn/v1".into(),
             brain_id: "brain".into(),
             conversation_id: "conversation".into(),
             turn_id: "turn".into(),

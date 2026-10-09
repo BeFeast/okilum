@@ -120,7 +120,7 @@ impl Runner {
             Err(error) => return Err(error),
         };
         Ok(api::AdoptReceipt {
-            schema: "tessera-proposal-adopt/v1".into(),
+            schema: "okilum-proposal-adopt/v1".into(),
             workspace,
             request,
             at,

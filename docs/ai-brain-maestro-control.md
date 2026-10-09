@@ -54,7 +54,7 @@ Link/unlink enrollment must preserve the newer marker on later operations.
 An explicit retained request may enroll a never-sent refusal when capability
 disappeared after review. Missing-capability browse/review alone never enrolls.
 
-Native decision outbox entries use `tessera-maestro-outbox/v2` within the existing
+Native decision outbox entries use `okilum-maestro-outbox/v2` within the existing
 Maestro directory; current readers accept v1 link/unlink and v2 decisions.
 Previous readers refuse v2 entries. Request, done and rejection markers retain
 exact immutable bytes. A sent uncertain decision is never locally abandoned.

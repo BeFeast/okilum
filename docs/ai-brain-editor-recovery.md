@@ -42,8 +42,8 @@ complete existing `{op:"source_write",request:{...},base:{...}}` envelope, witho
 UI bookkeeping or transport fields. Callers must strip local reply-routing data
 before RPC and match late responses to their retained draft and request.
 
-New ordinary records use `tessera-editor-recovery/v1`. Automatic children switch
-the containing local record to `tessera-editor-recovery/v2` until retirement; the
+New ordinary records use `okilum-editor-recovery/v1`. Automatic children switch
+the containing local record to `okilum-editor-recovery/v2` until retirement; the
 format discriminator participates in generation comparison. The new reader accepts
 both without rewriting v1 on list. The exact predecessor rejects v2 as a recovery
 identity problem and preserves the bytes; it cannot run its unsafe generic ACK on

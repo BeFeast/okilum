@@ -212,7 +212,7 @@ def verify(enabled, maintenance):
                 assert digest(goal_path) == goal_sha
             assert Fixture.methods and all(method == "GET" and path == "/api/v1/fleet" for method, path in Fixture.methods)
             return {
-                "schema": "tessera-maestro-maintenance-verification/v1", "passed": True,
+                "schema": "okilum-maestro-maintenance-verification/v1", "passed": True,
                 "enabled_sha256": digest(enabled), "maintenance_sha256": digest(maintenance),
                 "fixture_requests": len(Fixture.methods), "remote_mutations": 0,
                 "verified": ["non_get_detection_positive_control", "saved_settings", "restart_link_identity", "source_paths", "offline_link_replay", "new_link_refused", "new_generation_observed", "goal_unchanged", "no_stage", "unlink_replay_after_restart"],
@@ -411,7 +411,7 @@ def verify_guarded(enabled, maintenance, predecessor, wire_fixture, root):
         maintenance_methods = GuardedFixture.methods[trace_boundary:]
         assert maintenance_methods and all(method == "GET" and path == "/api/v1/fleet" for method, path in maintenance_methods)
         assert binary_hashes == {"enabled": digest(enabled), "maintenance": digest(maintenance), "predecessor": digest(predecessor)}, "binary changed during verification"
-        result = {"schema": "tessera-maestro-guarded-maintenance/v1", "passed": True,
+        result = {"schema": "okilum-maestro-guarded-maintenance/v1", "passed": True,
             "enabled_sha256": binary_hashes["enabled"], "maintenance_sha256": binary_hashes["maintenance"],
             "predecessor_sha256": binary_hashes["predecessor"], "wire_fixture_provenance_sha256": digest(wire_fixture / "provenance.json"),
             "enabled_post_count": 1, "maintenance_post_count": 0, "methods": GuardedFixture.methods,

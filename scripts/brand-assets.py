@@ -8,6 +8,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -22,6 +23,11 @@ WEIGHTS = {400: 'Regular', 500: 'Medium', 600: 'SemiBold', 700: 'Bold'}
 
 def digest(data):
     return hashlib.sha256(data).hexdigest()
+
+
+def okilum_schema(data):
+    """Token files predate the rename; their schema ids get the Okilum prefix (#987)."""
+    return re.sub(rb'"schema": "[a-z]+-', b'"schema": "okilum-', data, count=1)
 
 
 def import_assets(brand, gui):
@@ -41,8 +47,8 @@ def import_assets(brand, gui):
     ASSETS.mkdir(parents=True, exist_ok=True)
     for name in LOGOS:
         (ASSETS / name).write_bytes(source(brand, BRAND_REV, 'design/brand/recommended/' + name))
-    (ASSETS / 'brand-tokens.json').write_bytes(source(brand, BRAND_REV, 'design/brand/versions/tokens-1.1.0.json'))
-    (ASSETS / 'interface-tokens.json').write_bytes(source(gui, GUI_REV, 'design/gui/interface-tokens.json'))
+    (ASSETS / 'brand-tokens.json').write_bytes(okilum_schema(source(brand, BRAND_REV, 'design/brand/versions/tokens-1.1.0.json')))
+    (ASSETS / 'interface-tokens.json').write_bytes(okilum_schema(source(gui, GUI_REV, 'design/gui/interface-tokens.json')))
     fonts = ASSETS / 'fonts'
     fonts.mkdir(exist_ok=True)
     font_receipts = []
@@ -89,9 +95,9 @@ def import_assets(brand, gui):
                                       'weight': weight, 'format': 'TrueType', 'codepoints': len(expected_cmap)})
     files = [{'path': str(p.relative_to(ASSETS)), 'bytes': p.stat().st_size, 'sha256': digest(p.read_bytes())}
              for p in sorted(ASSETS.rglob('*')) if p.is_file() and p.name != 'manifest.json']
-    manifest = {'schema': 'tessera-native-brand/v1', 'brand_delivery': 'B1.2.0', 'brand_tokens': '1.1.0',
+    manifest = {'schema': 'okilum-native-brand/v1', 'brand_delivery': 'B1.2.0', 'brand_tokens': '1.1.0',
                 'interface_tokens': '2.0.0', 'brand_commit': BRAND_REV, 'gui_commit': GUI_REV,
-                'transform': 'fontTools4.64.0: instantiate wght400/500/600/700, merge Latin+Cyrillic, emit native TTF; SVG bytes unchanged',
+                'transform': 'fontTools4.64.0: instantiate wght400/500/600/700, merge Latin+Cyrillic, emit native TTF; SVG bytes unchanged; token schema ids renamed to the okilum- prefix',
                 'font_scope': 'Embedded upright Latin and Cyrillic. Other scripts use platform fallback; italic may be synthesized.',
                 'inputs': inputs, 'fonts': font_receipts, 'files': files}
     (ASSETS / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
@@ -100,7 +106,7 @@ def import_assets(brand, gui):
 
 def verify():
     manifest = json.loads((ASSETS / 'manifest.json').read_text())
-    assert manifest['schema'] == 'tessera-native-brand/v1'
+    assert manifest['schema'] == 'okilum-native-brand/v1'
     expected = {f['path'] for f in manifest['files']}
     actual = {str(p.relative_to(ASSETS)) for p in ASSETS.rglob('*') if p.is_file() and p.name != 'manifest.json'}
     assert expected == actual and len(expected) == len(manifest['files']), 'asset inventory differs'

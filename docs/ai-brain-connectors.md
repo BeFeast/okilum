@@ -11,7 +11,7 @@ Returning to Project brain refreshes capabilities in the retained BrainView;
 source and conversation editor entities are preserved.
 
 Configuration is non-secret JSON under the backend operational directory,
-`connector-settings.json`, schema `tessera-connectors/v1`. It stores the existing
+`connector-settings.json`, schema `okilum-connectors/v1`. It stores the existing
 `ApplicationConfig` plus Todoist's provider-reported account identity. Markdown,
 exports and derived indexes do not contain these operational settings.
 
@@ -116,7 +116,7 @@ intended recovery fields changed. Synthetic shape (credential **reference** only
   --candidate /private/recovery/candidate.json
 ```
 
-Stdout is a redacted `tessera-t3-recovery/v1` report: fixed reason codes and
+Stdout is a redacted `okilum-t3-recovery/v1` report: fixed reason codes and
 booleans, never credentials, paths, project titles, conversation content or raw
 provider errors. Exit 0 means an observation found a supported candidate; exit 2
 means refusal or invalid/unreadable inputs. Neither authorizes live apply.

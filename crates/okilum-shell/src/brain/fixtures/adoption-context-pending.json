@@ -1,5 +1,5 @@
 {
-  "schema": "tessera-proposal-adoption-outbox/v1",
+  "schema": "okilum-proposal-adoption-outbox/v1",
   "workspace": {
     "brain_id": "1c682895-34c3-4491-a7eb-f58d7efa5d94",
     "managed": true,
@@ -11,7 +11,7 @@
     "current_revision": "sha256:b03e604762cb93767b5dcef21b8704c8b013fdfe92db018c441ffc021b5637cd",
     "projection_pending": false,
     "record": {
-      "schema": "tessera-proposal/v1",
+      "schema": "okilum-proposal/v1",
       "record_type": "proposal",
       "id": "7c484446fc5d73ae3a463ff3666d1cc899e9ce2f0eff61784870181655269b57",
       "brain_id": "1c682895-34c3-4491-a7eb-f58d7efa5d94",

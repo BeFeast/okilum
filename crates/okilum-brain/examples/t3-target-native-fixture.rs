@@ -186,7 +186,7 @@ fn main() -> Result<()> {
     fs::write(&state_path, serde_json::to_vec_pretty(&state)?)?;
     let runner = Runner::open(config())?;
     let listener = TcpListener::bind("127.0.0.1:0")?;
-    let profile = json!({"schema":"tessera-workspace/v1","label":"#319 isolated production acceptance","endpoint":listener.local_addr()?.to_string(),"identity":runner.workspace_identity()});
+    let profile = json!({"schema":"okilum-workspace/v1","label":"#319 isolated production acceptance","endpoint":listener.local_addr()?.to_string(),"identity":runner.workspace_identity()});
     fs::write(
         root.join("config/okilum/workspace.json"),
         serde_json::to_vec_pretty(&profile)?,
@@ -194,7 +194,7 @@ fn main() -> Result<()> {
     fs::write(
         root.join("fixture.json"),
         serde_json::to_vec_pretty(
-            &json!({"schema":"tessera-native-fixture/v1","workspace":profile,"candidate":{"base_url":endpoint,"token_env":settings.token_env,"environment_id":"synthetic-new-environment","project_id":"synthetic-project","model_instance_id":"synthetic-provider","model":"synthetic-model","runtime_mode":"approval-required","interaction_mode":"default"},"production_runner":true,"production_service":true,"synthetic_provider":true,"seed_operation":envelope.operation_id}),
+            &json!({"schema":"okilum-native-fixture/v1","workspace":profile,"candidate":{"base_url":endpoint,"token_env":settings.token_env,"environment_id":"synthetic-new-environment","project_id":"synthetic-project","model_instance_id":"synthetic-provider","model":"synthetic-model","runtime_mode":"approval-required","interaction_mode":"default"},"production_runner":true,"production_service":true,"synthetic_provider":true,"seed_operation":envelope.operation_id}),
         )?,
     )?;
     println!("{}", root.join("fixture.json").display());

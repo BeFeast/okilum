@@ -7,7 +7,7 @@ related_to: "[[supplies]]"
 
 # Sample workshop brief
 
-This note describes a fictional workshop for an isolated Tessera acceptance run.
+This note describes a fictional workshop for an isolated Okilum acceptance run.
 
 The workshop starts on **2026-09-12 at 09:30 local time**. The agreed departure
 time is **09:10 local time**; do not invent a timezone conversion or travel estimate.

@@ -104,7 +104,7 @@ impl ConnectorsView {
                 this.busy = false;
                 match reply {
                     Ok(value)
-                        if value["schema"] == "tessera-t3-target/v1"
+                        if value["schema"] == "okilum-t3-target/v1"
                             && value["generations"].is_array() =>
                     {
                         // Authoritative current view, never inferred from a replayed receipt.

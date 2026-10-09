@@ -82,7 +82,7 @@ def artifact(entry, root):
 
 def load_manifest(path):
     manifest = json.loads(path.read_text())
-    if manifest.get("schema") != "tessera-maintenance-matrix-input/v1":
+    if manifest.get("schema") != "okilum-maintenance-matrix-input/v1":
         raise ValueError("Unsupported matrix manifest")
     artifacts = {name: artifact(manifest[name], path.parent) for name in ["enabled", "maintenance", "old5b"]}
     if any(manifest[x]["feature_graph"] != "gui+cored" for x in ["enabled", "maintenance"]):
@@ -102,7 +102,7 @@ def matrix(manifest, artifacts):
     recovery = module("matrix_recovery", "verify-maintenance-source-recovery.py")
     results["source_recovery"] = recovery.verify(enabled, fallback)
     results["packets"] = [packets.verify(enabled, fallback), packets.verify(fallback, enabled, citation_provider=enabled), packets.verify(enabled, old5b, negative=True)]
-    return {"schema": "tessera-maintenance-matrix-result/v1", "passed": True, "artifact_inputs": manifest, "checks": results, "historical_ci312": "failed, unchanged"}
+    return {"schema": "okilum-maintenance-matrix-result/v1", "passed": True, "artifact_inputs": manifest, "checks": results, "historical_ci312": "failed, unchanged"}
 
 
 def main():

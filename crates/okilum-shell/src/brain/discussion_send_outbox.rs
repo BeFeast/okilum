@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
-const SCHEMA: &str = "tessera-discussion-outbox/v1";
+const SCHEMA: &str = "okilum-discussion-outbox/v1";
 const MAX_ENTRY: u64 = 4 * 1024 * 1024;
 const MAX_TERMINAL: u64 = MAX_ENTRY + 64 * 1024 + 1024;
 fn nullable<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
@@ -42,7 +42,7 @@ pub(super) struct Request {
 impl Request {
     pub fn canonical_bytes(&self, brain: &str) -> Vec<u8> {
         serde_json::to_vec(&(
-            "tessera-discussion-send-request/v1",
+            "okilum-discussion-send-request/v1",
             brain,
             &self.goal_id,
             &self.expected_actor_id,
@@ -207,7 +207,7 @@ pub(super) fn classify(p: &Pending, data: &Value, direct: bool) -> Result<&'stat
         return Err(fail());
     }
     let r: OperationResult = serde_json::from_value(data.clone()).map_err(|_| fail())?;
-    if r.schema != "tessera-discussion-send-result/v1"
+    if r.schema != "okilum-discussion-send-result/v1"
         || r.operation_id != p.request.operation_id
         || r.brain_id != p.workspace["brain_id"]
         || r.goal_id != p.request.goal_id
@@ -459,7 +459,7 @@ pub(super) mod tests {
         let conversation = p.request.conversation_id.clone().unwrap_or_else(uuid);
         let revision = format!("sha256:{}", "a".repeat(64));
         let path = format!("records/conversation-{conversation}.md");
-        json!({"schema":"tessera-discussion-send-result/v1","operation_id":p.request.operation_id,"brain_id":p.workspace["brain_id"],
+        json!({"schema":"okilum-discussion-send-result/v1","operation_id":p.request.operation_id,"brain_id":p.workspace["brain_id"],
             "goal_id":p.request.goal_id,"actor_id":p.request.expected_actor_id,"request_sha256":p.request.request_sha256,"status":"projected",
             "record":{"original_conversation_id":p.request.conversation_id,"conversation_id":conversation,"turn_id":uuid(),"provider_request_sha256":"b".repeat(64),"context_receipt_sha256":"c".repeat(64),"source_path":path,"projection_revision":revision},
             "source_receipt":{"operation_id":p.request.operation_id,"path":path,"previous_revision":null,"revision":revision,"outcome":"written"}})

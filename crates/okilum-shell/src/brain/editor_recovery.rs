@@ -11,8 +11,8 @@ use std::{
 use uuid::Uuid;
 
 mod auto_resolution;
-const SCHEMA: &str = "tessera-editor-recovery/v1";
-const AUTO_SCHEMA: &str = "tessera-editor-recovery/v2";
+const SCHEMA: &str = "okilum-editor-recovery/v1";
+const AUTO_SCHEMA: &str = "okilum-editor-recovery/v2";
 
 #[derive(Debug)]
 pub(super) enum AutoResolution {

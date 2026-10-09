@@ -11,7 +11,7 @@ pub(super) fn validate_fence(root: &Path, journal: &Journal) -> Result<()> {
             .join("source/binding.json"),
     )?)?;
     ensure!(
-        binding["required_public_proposal_adoption"] == "tessera-proposal-adopt/v1",
+        binding["required_public_proposal_adoption"] == "okilum-proposal-adopt/v1",
         "public adoption receipts lack source fence"
     );
     for receipt in journal.terminal_adoptions.values() {
@@ -39,7 +39,7 @@ impl Journal {
                 .context("terminal adoption proposal absent")?;
             ensure!(
                 self.drafts_enabled
-                    && r.schema == "tessera-proposal-adopt/v1"
+                    && r.schema == "okilum-proposal-adopt/v1"
                     && !r.replayed
                     && matches!(r.result, api::AdoptOutcome::NotApplied { .. })
                     && r.request.operation_id() == id
@@ -103,7 +103,7 @@ impl Store {
             "adoption operation identity already reserved"
         );
         let receipt = api::AdoptReceipt {
-            schema: "tessera-proposal-adopt/v1".into(),
+            schema: "okilum-proposal-adopt/v1".into(),
             workspace,
             request,
             at,

@@ -39,7 +39,7 @@ fn local_file_links_resolve_relative_absolute_and_file_urls_once() {
         assert_eq!(resolved.candidates, ["notes/percent%23.json"]);
         assert_eq!(
             state.action_url.as_deref(),
-            Some("tessera://attachment/notes/percent%2523.json")
+            Some("okilum://attachment/notes/percent%2523.json")
         );
     }
 }
@@ -51,7 +51,7 @@ fn local_file_links_missing_and_refresh_preserve_original_rendered_identity() {
         from: "notes/start.md".into(),
         target: "missing.json".into(),
         wiki: false,
-        url: "tessera://unresolved/missing.json".into(),
+        url: "okilum://unresolved/missing.json".into(),
     }];
     let mut prep = LinkPreparation::new(
         &vault,
@@ -67,7 +67,7 @@ fn local_file_links_missing_and_refresh_preserve_original_rendered_identity() {
         .action_url
         .as_ref()
         .unwrap()
-        .strip_prefix("tessera://missing-file/")
+        .strip_prefix("okilum://missing-file/")
         .unwrap();
     assert_eq!(
         std::path::PathBuf::from(document_links::decode(copy)),
@@ -92,7 +92,7 @@ fn local_file_links_missing_and_refresh_preserve_original_rendered_identity() {
     assert_eq!(next[&identities[0].url].status, LinkStatus::Resolved);
     assert_eq!(
         next[&identities[0].url].action_url.as_deref(),
-        Some("tessera://attachment/notes/missing.json")
+        Some("okilum://attachment/notes/missing.json")
     );
 }
 

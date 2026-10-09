@@ -18,7 +18,7 @@ pub(crate) struct Pending {
 impl Pending {
     pub fn prepare(workspace: Value, review: Value) -> Self {
         Self {
-            schema: "tessera-t3-target-outbox/v1".into(),
+            schema: "okilum-t3-target-outbox/v1".into(),
             workspace,
             request: json!({"operation_id":Uuid::new_v4().to_string(),"review":review}),
         }
@@ -67,7 +67,7 @@ impl RouteJournal {
         let uuid = Uuid::parse_str(id).map_err(|_| "Invalid adoption identity")?;
         if uuid.to_string() != id
             || pending.workspace != self.workspace
-            || pending.schema != "tessera-t3-target-outbox/v1"
+            || pending.schema != "okilum-t3-target-outbox/v1"
         {
             return Err("Target adoption belongs to another workspace or schema.".into());
         }
@@ -80,7 +80,7 @@ impl RouteJournal {
         )
     }
     fn valid_outcome(&self, pending: &Pending, outcome: &Value) -> bool {
-        outcome["schema"] == "tessera-t3-target-outcome/v1"
+        outcome["schema"] == "okilum-t3-target-outcome/v1"
             && outcome["workspace"] == pending.workspace
             && outcome["request"] == pending.request
             && match outcome["status"].as_str() {
@@ -90,7 +90,7 @@ impl RouteJournal {
                 }
                 Some("committed") => {
                     let r = &outcome["receipt"];
-                    r["schema"] == "tessera-t3-target-receipt/v1"
+                    r["schema"] == "okilum-t3-target-receipt/v1"
                         && r["operation_id"] == pending.request["operation_id"]
                         && r["generation_id"].as_str().is_some_and(|s| !s.is_empty())
                         && r["future_only"] == true
@@ -236,7 +236,7 @@ mod tests {
         }
     }
     fn outcome(p: &Pending) -> Value {
-        json!({"schema":"tessera-t3-target-outcome/v1","workspace":p.workspace,"request":p.request,"status":"committed","reason":null,"receipt":{"schema":"tessera-t3-target-receipt/v1","operation_id":p.request["operation_id"],"generation_id":"generation-new","future_only":true,"replayed":false}})
+        json!({"schema":"okilum-t3-target-outcome/v1","workspace":p.workspace,"request":p.request,"status":"committed","reason":null,"receipt":{"schema":"okilum-t3-target-receipt/v1","operation_id":p.request["operation_id"],"generation_id":"generation-new","future_only":true,"replayed":false}})
     }
     #[test]
     fn opening_and_loading_empty_outbox_does_not_persist_anything() {

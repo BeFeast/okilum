@@ -84,7 +84,7 @@ pub enum Inline {
         strike: bool,
         code: bool,
     },
-    /// href carries the tessera:// scheme for wikilinks or a real URL.
+    /// href carries the okilum:// scheme for wikilinks or a real URL.
     Link {
         text: String,
         href: String,
@@ -297,7 +297,7 @@ fn collect_inline<'a>(node: &'a AstNode<'a>, style: Style, out: &mut Vec<Inline>
             out.push(Inline::Link {
                 text,
                 href: link.url.clone(),
-                external: link.url.contains("://") && !link.url.starts_with("tessera://"),
+                external: link.url.contains("://") && !link.url.starts_with("okilum://"),
                 unresolved: false,
             });
         }

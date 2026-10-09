@@ -85,7 +85,7 @@ fn typed_request(request: &Value) -> Value {
     value
 }
 pub(super) fn matching_disposition(request: &Value, disposition: &Value) -> bool {
-    disposition["schema"] == "tessera-maestro-operation/v1"
+    disposition["schema"] == "okilum-maestro-operation/v1"
         && disposition["operation_id"] == request["operation_id"]
         && disposition["goal_id"] == request["goal_id"]
         && disposition["kind"]
@@ -293,7 +293,7 @@ impl BrainView {
                     | "maestro_operation_abandon"
                     | "maestro_approval_reconcile"
             ) && data["_maestro_error"].is_null()
-                && data["schema"] == "tessera-maestro-operation/v1"
+                && data["schema"] == "okilum-maestro-operation/v1"
             {
                 &data
             } else {
@@ -421,7 +421,7 @@ impl BrainView {
         {
             if data["_maestro_error"].is_object() {
                 self.maestro_ui.error = Some(text(&data["_maestro_error"]["message"]));
-            } else if data["schema"] == "tessera-maestro-observation/v1"
+            } else if data["schema"] == "okilum-maestro-observation/v1"
                 && data["controls_enabled"] == false
             {
                 self.maestro_ui.discovery = data;
@@ -1017,7 +1017,7 @@ mod tests {
         let j = journal(&dir);
         let r = decision_request(&j);
         j.retain(&r).unwrap();
-        let mut d = json!({"schema":"tessera-maestro-operation/v1","operation_id":r["operation_id"],"goal_id":r["goal_id"],"kind":"approval_decision","request":typed_request(&r),"status":"rejected","rejection":{"code":"approval_not_sent","never_sent":false}});
+        let mut d = json!({"schema":"okilum-maestro-operation/v1","operation_id":r["operation_id"],"goal_id":r["goal_id"],"kind":"approval_decision","request":typed_request(&r),"status":"rejected","rejection":{"code":"approval_not_sent","never_sent":false}});
         assert!(j.archive_never_sent(&r, &d).is_err());
         d["rejection"]["never_sent"] = json!(true);
         d["request"]["reason"] = json!("Different");
@@ -1126,7 +1126,7 @@ mod tests {
             v.snapshot=json!({"goal":{"id":"other-goal","status":"running"}});let snapshot=v.snapshot.clone();v.selected_goal_id=Some("other-goal".into());
             v.source.reset("editor draft", window, cx);v.compose.update(cx,|i,cx|i.set_value("conversation draft",window,cx));
             v.maestro_ui.sequence=2;
-            let discovery=json!({"schema":"tessera-maestro-observation/v1","controls_enabled":false,"projects":[project()],"_client_maestro_request":{"op":"maestro_discover","_maestro_goal":GOAL,"_maestro_sequence":2,"_maestro_workspace":workspace()}});
+            let discovery=json!({"schema":"okilum-maestro-observation/v1","controls_enabled":false,"projects":[project()],"_client_maestro_request":{"op":"maestro_discover","_maestro_goal":GOAL,"_maestro_sequence":2,"_maestro_workspace":workspace()}});
             v.finish_maestro("maestro_discover",discovery,window,cx);assert!(v.maestro_ui.discovery.is_null());
             let j=journal(&dir);let request=link_request(&j,GOAL,&project(),&choice()).unwrap();j.retain(&request).unwrap();v.maestro_ui.journal=Some(j);v.maestro_ui.pending=vec![request.clone()];
             v.finish_maestro("maestro_link",receipt(&request),window,cx);assert!(v.maestro_ui.pending.is_empty());
@@ -1241,7 +1241,7 @@ mod tests {
             let mut v=BrainView::new("127.0.0.1:1".parse().unwrap(),window,cx);v.busy=true;v.expected_workspace=Some(workspace());
             let j=journal(&dir);let r=link_request(&j,GOAL,&project(),&choice()).unwrap();j.retain(&r).unwrap();v.maestro_ui.journal=Some(j);v.maestro_ui.pending=vec![r.clone()];
             let command=json!({"op":"maestro_operation_get","operation_id":r["operation_id"],"goal_id":GOAL,"_maestro_original":r});
-            let mut d=json!({"schema":"tessera-maestro-operation/v1","operation_id":r["operation_id"],"goal_id":GOAL,"kind":"link","request":typed_request(&r),"status":"unknown","receipt":null,"rejection":null,"_client_maestro_request":command});
+            let mut d=json!({"schema":"okilum-maestro-operation/v1","operation_id":r["operation_id"],"goal_id":GOAL,"kind":"link","request":typed_request(&r),"status":"unknown","receipt":null,"rejection":null,"_client_maestro_request":command});
             v.finish_maestro("maestro_operation_get",d.clone(),window,cx);assert_eq!(v.maestro_ui.pending,vec![r.clone()]);
             d["status"]=json!("rejected");d["rejection"]=json!({"code":"abandoned","message":"Local request abandoned"});
             d["request"]["issue_number"]=json!(43);v.finish_maestro("maestro_operation_get",d.clone(),window,cx);assert_eq!(v.maestro_ui.pending,vec![r.clone()]);

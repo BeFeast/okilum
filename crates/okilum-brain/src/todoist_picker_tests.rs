@@ -838,7 +838,7 @@ fn export_todoist_picker_native_fixture() {
     let mut owner = backend.lock().unwrap();
     let other = add_named_goal(&mut owner.runner, "Other fixture goal");
     let workspace = owner.runner.workspace_identity();
-    let data = json!({"schema":"tessera-todoist-picker-native-fixture/v1","workspace":workspace,"goal_id":goal,"other_goal_id":other,"provider_base":base,"account_id":"account-A","instance_id":"fixture-instance","fixture_only":true});
+    let data = json!({"schema":"okilum-todoist-picker-native-fixture/v1","workspace":workspace,"goal_id":goal,"other_goal_id":other,"provider_base":base,"account_id":"account-A","instance_id":"fixture-instance","fixture_only":true});
     fs::write(
         root.join("fixture.json"),
         serde_json::to_vec_pretty(&data).unwrap(),

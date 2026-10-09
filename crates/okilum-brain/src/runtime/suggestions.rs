@@ -35,7 +35,7 @@ impl Control {
 impl Default for Control {
     fn default() -> Self {
         Self {
-            schema: "tessera-suggestions-control/v1".into(),
+            schema: "okilum-suggestions-control/v1".into(),
             revision: 0,
             enabled: false,
             initial_enabled: false,
@@ -88,7 +88,7 @@ impl Runner {
             }
         }
         Ok(api::Status {
-            schema: "tessera-suggestions/v1".into(),
+            schema: "okilum-suggestions/v1".into(),
             mode: if !enrolled {
                 "disabled"
             } else if self.proposal_generation_enabled() {
@@ -204,7 +204,7 @@ impl Runner {
         self.source.require_suggestions_control()?;
         self.suggestions_cut(0)?;
         let receipt = api::Receipt {
-            schema: "tessera-suggestions-receipt/v1".into(),
+            schema: "okilum-suggestions-receipt/v1".into(),
             workspace,
             request: request.clone(),
             actor: actor.into(),
@@ -244,7 +244,7 @@ impl Runner {
             "suggestions state lacks required source fence"
         );
         ensure!(
-            control.schema == "tessera-suggestions-control/v1",
+            control.schema == "okilum-suggestions-control/v1",
             "unsupported suggestions control"
         );
         let workspace = self.workspace_identity();
@@ -271,7 +271,7 @@ impl Runner {
             ensure!(
                 id == &receipt.request.operation_id
                     && receipt.workspace == workspace
-                    && receipt.schema == "tessera-suggestions-receipt/v1"
+                    && receipt.schema == "okilum-suggestions-receipt/v1"
                     && !receipt.replayed
                     && receipt.enabled == receipt.request.enabled
                     && receipt.revision > 0
@@ -311,7 +311,7 @@ impl Runner {
         pending.request.validate(&pending.actor)?;
         ensure!(
             pending.workspace == workspace
-                && pending.schema == "tessera-suggestions-receipt/v1"
+                && pending.schema == "okilum-suggestions-receipt/v1"
                 && !pending.replayed
                 && pending.enabled == pending.request.enabled
                 && pending.request.expected_revision == control.revision

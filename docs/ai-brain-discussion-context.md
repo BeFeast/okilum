@@ -95,7 +95,7 @@ rewriting them. `Conversation.request` remains the compatible latest-request fie
 and is not a historical receipt source.
 
 Store an additive **top-level canonical conversation YAML key** `discussion_context`
-with schema `tessera-discussion-context/v1`, brain/goal/conversation IDs and a list
+with schema `okilum-discussion-context/v1`, brain/goal/conversation IDs and a list
 of immutable turn receipts. `Runner::queue_with_operation` merges existing
 top-level YAML metadata before replacing fields supplied by the old typed record;
 an older writer therefore preserves this unknown key. No second chat store,
@@ -211,7 +211,7 @@ The expanded response uses this exact shape (IDs/hashes below are placeholders):
     "availability": "available",
     "reason": null,
     "snapshot": {
-      "schema": "tessera-discussion-turn/v1",
+      "schema": "okilum-discussion-turn/v1",
       "brain_id": "brain-uuid",
       "conversation_id": "conversation-uuid",
       "turn_id": "turn-uuid",

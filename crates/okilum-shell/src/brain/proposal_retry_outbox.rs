@@ -63,7 +63,7 @@ pub(super) fn eligible(detail: &Value) -> bool {
             .is_some_and(|v| !v.is_empty())
 }
 pub(super) fn valid_receipt(p: &Pending, receipt: &Value) -> bool {
-    if receipt["schema"] != "tessera-proposal-retry/v1"
+    if receipt["schema"] != "okilum-proposal-retry/v1"
         || receipt["workspace"] != p.workspace
         || receipt["request"] != serde_json::to_value(&p.request).unwrap()
         || receipt["path"] != p.path
@@ -119,7 +119,7 @@ impl RetryJournal {
         }
         let seed = self.inner.request("Retry suggestion", actor)?;
         let p = Pending {
-            schema: "tessera-proposal-retry-outbox/v1".into(),
+            schema: "okilum-proposal-retry-outbox/v1".into(),
             workspace: self.inner.workspace.clone(),
             path: text(&detail["source"]["path"]),
             previous_attempt_id: text(&detail["record"]["attempt"]["id"]),
@@ -136,7 +136,7 @@ impl RetryJournal {
     }
     fn validate(&self, p: &Pending) -> Result<(), String> {
         let r = &p.request;
-        if p.schema != "tessera-proposal-retry-outbox/v1"
+        if p.schema != "okilum-proposal-retry-outbox/v1"
             || p.workspace != self.inner.workspace
             || !canonical_uuid(&p.previous_attempt_id)
             || !canonical_uuid(&r.operation_id)
@@ -248,7 +248,7 @@ pub(super) mod tests {
         )
     }
     pub fn receipt(p: &Pending) -> Value {
-        json!({"schema":"tessera-proposal-retry/v1","workspace":p.workspace,"request":p.request,"path":p.path,"at":"2026-09-07T14:00:00Z","replayed":false,"result":{"outcome":"committed","previous_attempt_id":p.previous_attempt_id,"attempt_id":"bb000000-0000-4000-8000-000000000193","previous_revision":p.request.expected_revision,"revision":format!("sha256:{}","c".repeat(64))}})
+        json!({"schema":"okilum-proposal-retry/v1","workspace":p.workspace,"request":p.request,"path":p.path,"at":"2026-09-07T14:00:00Z","replayed":false,"result":{"outcome":"committed","previous_attempt_id":p.previous_attempt_id,"attempt_id":"bb000000-0000-4000-8000-000000000193","previous_revision":p.request.expected_revision,"revision":format!("sha256:{}","c".repeat(64))}})
     }
     #[test]
     fn retry_outbox_binds_full_receipt_and_recovers_after_ack_write_failure() {

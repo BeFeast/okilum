@@ -3,7 +3,7 @@
 use super::*;
 use okilum_core::source::SourceWrite;
 
-const SCHEMA: &str = "tessera-frozen-context-target/v1";
+const SCHEMA: &str = "okilum-frozen-context-target/v1";
 const MAX_FROZEN_BYTES: usize = 1024 * 1024;
 // Must fit the existing context::read source budget, including all metadata.
 const MAX_CANONICAL_BYTES: usize = 256 * 1024;

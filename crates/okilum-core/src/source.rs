@@ -179,7 +179,7 @@ pub struct RequiredProposalFeed {
 }
 impl RequiredProposalFeed {
     pub fn validate(&self) -> Result<()> {
-        if self.capability != "tessera-proposal-feed/v1"
+        if self.capability != "okilum-proposal-feed/v1"
             || self.policy_version == 0
             || Uuid::parse_str(&self.epoch)
                 .map(|v| v.to_string())
@@ -498,7 +498,7 @@ impl SourceStore {
                 .and_then(|v| v.remove("required_proposal_drafts"))
             {
                 if support < ProposalSupport::Drafts
-                    || required != "tessera-proposal-drafts/v1"
+                    || required != "okilum-proposal-drafts/v1"
                     || store.required_feed.is_none()
                 {
                     return Err(error(
@@ -513,7 +513,7 @@ impl SourceStore {
                 .and_then(|v| v.remove("required_proposal_adoption"))
             {
                 if support < ProposalSupport::Adoption
-                    || required != "tessera-proposal-adoption/v1"
+                    || required != "okilum-proposal-adoption/v1"
                     || !store.required_drafts
                 {
                     return Err(error(
@@ -528,7 +528,7 @@ impl SourceStore {
                 .and_then(|v| v.remove("required_proposal_inbox_adoption"))
             {
                 if support < ProposalSupport::InboxAdoption
-                    || required != "tessera-proposal-inbox-adoption/v1"
+                    || required != "okilum-proposal-inbox-adoption/v1"
                     || !store.required_adoption
                 {
                     return Err(error(
@@ -544,7 +544,7 @@ impl SourceStore {
             {
                 if support < ProposalSupport::Drafts
                     || !store.required_drafts
-                    || required != "tessera-proposal-terminal/v1"
+                    || required != "okilum-proposal-terminal/v1"
                 {
                     return Err(error(
                         ErrorCode::InvalidRequest,
@@ -559,7 +559,7 @@ impl SourceStore {
             {
                 if support < ProposalSupport::Generation
                     || !store.required_drafts
-                    || required != "tessera-proposal-generation/v1"
+                    || required != "okilum-proposal-generation/v1"
                 {
                     return Err(error(
                         ErrorCode::InvalidRequest,
@@ -574,7 +574,7 @@ impl SourceStore {
             {
                 if support < ProposalSupport::Retry
                     || !store.required_generation
-                    || required != "tessera-proposal-retry/v1"
+                    || required != "okilum-proposal-retry/v1"
                 {
                     return Err(error(
                         ErrorCode::InvalidRequest,
@@ -589,7 +589,7 @@ impl SourceStore {
             {
                 if support < ProposalSupport::PublicAdoption
                     || !store.required_drafts
-                    || required != "tessera-proposal-adopt/v1"
+                    || required != "okilum-proposal-adopt/v1"
                 {
                     return Err(error(
                         ErrorCode::InvalidRequest,
@@ -603,7 +603,7 @@ impl SourceStore {
                 .and_then(|v| v.remove("required_suggestions_control"))
             {
                 if support < ProposalSupport::SuggestionsControl
-                    || required != "tessera-suggestions-control/v1"
+                    || required != "okilum-suggestions-control/v1"
                 {
                     return Err(error(
                         ErrorCode::InvalidRequest,
@@ -645,7 +645,7 @@ impl SourceStore {
             return Ok(());
         }
         let mut binding = self.binding.clone();
-        binding["required_suggestions_control"] = "tessera-suggestions-control/v1".into();
+        binding["required_suggestions_control"] = "okilum-suggestions-control/v1".into();
         self.persist("binding.json", &binding)?;
         self.binding = binding;
         self.required_suggestions = true;
@@ -718,7 +718,7 @@ impl SourceStore {
             return Ok(());
         }
         let mut binding = self.binding.clone();
-        binding["required_proposal_drafts"] = "tessera-proposal-drafts/v1".into();
+        binding["required_proposal_drafts"] = "okilum-proposal-drafts/v1".into();
         self.persist("binding.json", &binding)?;
         self.binding = binding;
         self.required_drafts = true;
@@ -745,7 +745,7 @@ impl SourceStore {
             return Ok(());
         }
         let mut binding = self.binding.clone();
-        binding["required_proposal_adoption"] = "tessera-proposal-adoption/v1".into();
+        binding["required_proposal_adoption"] = "okilum-proposal-adoption/v1".into();
         self.persist("binding.json", &binding)?;
         self.binding = binding;
         self.required_adoption = true;
@@ -772,7 +772,7 @@ impl SourceStore {
             return Ok(());
         }
         let mut binding = self.binding.clone();
-        binding["required_proposal_inbox_adoption"] = "tessera-proposal-inbox-adoption/v1".into();
+        binding["required_proposal_inbox_adoption"] = "okilum-proposal-inbox-adoption/v1".into();
         self.persist("binding.json", &binding)?;
         self.binding = binding;
         self.required_inbox_adoption = true;
@@ -797,7 +797,7 @@ impl SourceStore {
             return Ok(());
         }
         let mut binding = self.binding.clone();
-        binding["required_proposal_terminal"] = "tessera-proposal-terminal/v1".into();
+        binding["required_proposal_terminal"] = "okilum-proposal-terminal/v1".into();
         self.persist("binding.json", &binding)?;
         self.binding = binding;
         self.required_terminal = true;
@@ -825,7 +825,7 @@ impl SourceStore {
             return Ok(());
         }
         let mut binding = self.binding.clone();
-        binding["required_proposal_generation"] = "tessera-proposal-generation/v1".into();
+        binding["required_proposal_generation"] = "okilum-proposal-generation/v1".into();
         self.persist("binding.json", &binding)?;
         self.binding = binding;
         self.required_generation = true;
@@ -852,7 +852,7 @@ impl SourceStore {
             return Ok(());
         }
         let mut binding = self.binding.clone();
-        binding["required_proposal_retry"] = "tessera-proposal-retry/v1".into();
+        binding["required_proposal_retry"] = "okilum-proposal-retry/v1".into();
         self.persist("binding.json", &binding)?;
         self.binding = binding;
         self.required_retry = true;
@@ -876,7 +876,7 @@ impl SourceStore {
             return Ok(());
         }
         let mut binding = self.binding.clone();
-        binding["required_public_proposal_adoption"] = "tessera-proposal-adopt/v1".into();
+        binding["required_public_proposal_adoption"] = "okilum-proposal-adopt/v1".into();
         self.persist("binding.json", &binding)?;
         self.binding = binding;
         self.required_public_adoption = true;
@@ -1575,7 +1575,7 @@ mod tests {
         )
         .unwrap();
         let mut binding = RequiredProposalFeed {
-            capability: "tessera-proposal-feed/v1".into(),
+            capability: "okilum-proposal-feed/v1".into(),
             epoch: Uuid::new_v4().to_string(),
             activation_id: Uuid::new_v4().to_string(),
             policy_version: 1,

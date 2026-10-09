@@ -6,7 +6,7 @@ This adopts the synthetic candidate; use a separate fresh fixture for GUI review
 """
 import hashlib,json,pathlib,socket,sys,uuid
 root=pathlib.Path(sys.argv[1]); f=json.loads((root/'fixture.json').read_text())
-assert f.get('schema') == 'tessera-native-fixture/v1' and f.get('synthetic_provider') is True
+assert f.get('schema') == 'okilum-native-fixture/v1' and f.get('synthetic_provider') is True
 assert f.get('production_runner') is True and f.get('production_service') is True
 host,port=f['workspace']['endpoint'].split(':')
 assert host == '127.0.0.1'
@@ -27,4 +27,4 @@ replay=call('t3_target_adopt',request=request); assert replay==outcome,'exact ad
 current=call('t3_target_get'); assert current['historical_terminal_unroutable_count']==1 and current['active']['environment_id']=='synthetic-new-environment'
 new=json.loads((root/'runtime/state.json').read_text())['state']; assert old['dispatch']==new['dispatch'],'historical dispatch changed'; assert old['events']==new['events'],'historical events changed'
 after=manifest(); added=sorted(set(after)-set(before)); changed=[k for k in before if before[k]!=after.get(k)]; assert changed==['runtime/state.json'],changed
-report={'schema':'tessera-319-production-probe/v1','production_runner':True,'production_service':True,'prepare_read_only':True,'unknown_origin_review':True,'adopt_committed':True,'exact_replay':True,'current_local_only_count':1,'historical_dispatch_events_unchanged':True,'changed_existing_files':changed,'added_files':added,'outcome':outcome,'current':current}; (root/'probe.json').write_text(json.dumps(report,indent=2)); print(json.dumps({k:v for k,v in report.items() if k not in ['outcome','current']}))
+report={'schema':'okilum-319-production-probe/v1','production_runner':True,'production_service':True,'prepare_read_only':True,'unknown_origin_review':True,'adopt_committed':True,'exact_replay':True,'current_local_only_count':1,'historical_dispatch_events_unchanged':True,'changed_existing_files':changed,'added_files':added,'outcome':outcome,'current':current}; (root/'probe.json').write_text(json.dumps(report,indent=2)); print(json.dumps({k:v for k,v in report.items() if k not in ['outcome','current']}))

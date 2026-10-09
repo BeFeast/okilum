@@ -20,7 +20,7 @@ struct Profile {
 }
 impl Profile {
     fn from_value(value: &Value) -> Result<Self, String> {
-        if value["schema"] != "tessera-workspace/v1" {
+        if value["schema"] != "okilum-workspace/v1" {
             return Err("Unsupported saved workspace. Select a brain again.".into());
         }
         let label = value["label"]
@@ -41,7 +41,7 @@ impl Profile {
         })
     }
     fn value(&self) -> Value {
-        json!({"schema":"tessera-workspace/v1", "label":self.label,
+        json!({"schema":"okilum-workspace/v1", "label":self.label,
             "endpoint":self.endpoint.to_string(), "identity":self.identity})
     }
     fn verify(&self, capabilities: &Value) -> Result<(), String> {

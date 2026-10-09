@@ -51,7 +51,7 @@ cryptographic attestation that a claimed build command ran. The matrix validates
 both frozen files, their receipt hash, source commit and compiler-artifact entries.
 No GUI is opened by the artifact gate.
 
-The input manifest has schema `tessera-maintenance-matrix-input/v1` and exactly
+The input manifest has schema `okilum-maintenance-matrix-input/v1` and exactly
 three required artifact entries, `enabled`, `maintenance` and `old5b`. Each uses:
 
 ```json

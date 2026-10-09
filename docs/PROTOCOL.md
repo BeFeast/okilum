@@ -29,8 +29,8 @@ the sandbox.
 
 ## Link conventions
 
-- Wikilinks render as `<a href="tessera://open/<rel-path>">` (IR: `Link.href`).
-- Unresolved wikilinks: `tessera://unresolved/<name>` — style dimmed/red, no-op or message on click.
+- Wikilinks render as `<a href="okilum://open/<rel-path>">` (IR: `Link.href`).
+- Unresolved wikilinks: `okilum://unresolved/<name>` — style dimmed/red, no-op or message on click.
 - Local images become absolute `file://` URLs (IR `Image.path`: absolute filesystem path).
 - Snippet highlight in search hits: `<b>term</b>`.
 

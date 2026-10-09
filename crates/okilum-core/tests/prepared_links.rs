@@ -108,8 +108,8 @@ fn typed_preparation_uses_exact_destinations_headings_and_one_read_per_target() 
     let source = "`[[example]]`\n\n```md\n[x](code.md)\n```\n\n[[missing|Keep label]] [**Readable**](missing.md)";
     assert_eq!(prep.source(source).len(), 2);
     let rendered = okilum_core::render::rewrite_source_links(source, &vault, "notes/start.md");
-    assert!(rendered.contains("[Keep label](tessera://unresolved/missing)"));
-    assert!(rendered.contains("[**Readable**](tessera://unresolved/missing.md)"));
+    assert!(rendered.contains("[Keep label](okilum://unresolved/missing)"));
+    assert!(rendered.contains("[**Readable**](okilum://unresolved/missing.md)"));
 }
 
 #[test]
@@ -148,7 +148,7 @@ fn lifecycle_reuses_rendered_identity_but_refreshes_state_and_action() {
         if expected == LinkStatus::Resolved {
             assert_eq!(
                 states[&key].action_url.as_deref(),
-                Some("tessera://open/target.md#Landing")
+                Some("okilum://open/target.md#Landing")
             );
         }
     }
@@ -221,11 +221,11 @@ fn many_links_large_target_reuse_and_inventory_locators() {
     assert_eq!(reads.get(), 1);
     assert_eq!(states.len(), 2);
     assert_eq!(
-        states["tessera://open/target.md#Landing"].status,
+        states["okilum://open/target.md#Landing"].status,
         LinkStatus::Resolved
     );
     assert_eq!(
-        states["tessera://open/target.md#Missing"].status,
+        states["okilum://open/target.md#Missing"].status,
         LinkStatus::MissingHeading
     );
     let inventory =
@@ -258,11 +258,11 @@ fn refreshed_sibling_candidate_uses_original_rendered_url_and_embeds_keep_own_so
     }
     let vault = Vault::scan_metadata(dir.path()).unwrap();
     let document = okilum_core::render::reader_document(&vault, "notes/start.md").unwrap();
-    assert!(document.rendered.contains("tessera://open/other/target.md"));
+    assert!(document.rendered.contains("okilum://open/other/target.md"));
     assert!(document
         .links
         .iter()
-        .any(|l| l.from == "embedded/child.md" && l.url == "tessera://open/embedded/own.md"));
+        .any(|l| l.from == "embedded/child.md" && l.url == "okilum://open/embedded/own.md"));
     std::fs::write(dir.path().join("notes/target.md"), "# New sibling").unwrap();
     let refreshed = Vault::scan_metadata(dir.path()).unwrap();
     let mut prep = LinkPreparation::new(&refreshed, "notes/start.md", |p| {
@@ -272,13 +272,13 @@ fn refreshed_sibling_candidate_uses_original_rendered_url_and_embeds_keep_own_so
     });
     let states = prep.identities(&document.links);
     assert_eq!(
-        states["tessera://open/other/target.md"]
+        states["okilum://open/other/target.md"]
             .action_url
             .as_deref(),
-        Some("tessera://open/notes/target.md")
+        Some("okilum://open/notes/target.md")
     );
     assert_eq!(
-        states["tessera://open/embedded/own.md"].status,
+        states["okilum://open/embedded/own.md"].status,
         LinkStatus::Resolved
     );
 }

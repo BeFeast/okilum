@@ -3,7 +3,7 @@ use super::*;
 use anyhow::Context;
 use okilum_core::source::SourceWrite;
 use std::collections::BTreeMap;
-const SCHEMA: &str = "tessera-frozen-inbox-goal/v1";
+const SCHEMA: &str = "okilum-frozen-inbox-goal/v1";
 const MAX_BYTES: usize = 1024 * 1024;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
