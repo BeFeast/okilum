@@ -323,6 +323,7 @@ impl Reader {
             .map(|p| p.0.clone());
         let input = cx.new(|cx| {
             let mut input = EditorState::new(window, cx)
+                .document_newlines(true)
                 .language("markdown")
                 .line_number(false)
                 .folding(false)

@@ -1,6 +1,8 @@
 # Document newline insertion (#848)
 
-Enter and clipboard paste in the shared editor use the first LF-terminated
+Reader opts into `document_newlines(true)` for its shared Source/Live Preview
+editor. Other consumers, including Brain, retain exact clipboard bytes by default.
+Enter and clipboard paste in the opted-in editor use the first LF-terminated
 line's delimiter: CRLF when preceded by CR, otherwise LF. Documents without an
 LF default to LF. Mixed files retain their existing bytes; new input follows
 the first delimiter. A standalone CR is preserved as data.

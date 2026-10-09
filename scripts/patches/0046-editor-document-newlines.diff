@@ -1,32 +1,74 @@
 --- a/crates/base/src/input/base/state.rs
 +++ b/crates/base/src/input/base/state.rs
-@@ -1913,7 +1913,8 @@
+@@ -317,6 +317,7 @@
+     pub(super) projection: ProjectionSession,
+     pub(super) marker_source_cache: std::cell::RefCell<Option<std::sync::Arc<super::marker_paint::MarkerSource>>>,
+     exact_clipboard: ClipboardSession,
++    document_newlines: bool,
+     projection_mouse_hold: bool,
+     pub(super) projection_pending_click: Option<(MouseDownEvent, bool)>,
+     pub(super) projection_pending_vertical: Option<super::movement::PendingVertical>,
+@@ -667,6 +668,7 @@
+             projection: ProjectionSession::default(),
+             marker_source_cache: Default::default(),
+             exact_clipboard: ClipboardSession::default(),
++            document_newlines: false,
+             projection_mouse_hold: false,
+             projection_pending_click: None,
+             projection_pending_vertical: None,
+@@ -1277,6 +1279,29 @@
+         self.clean_on_escape = clean;
+     }
+ 
++    /// Opt into document-style newlines for Enter and clipboard insertion only.
++    /// The default preserves exact clipboard bytes for existing consumers.
++    pub fn document_newlines(mut self, enabled: bool) -> Self {
++        self.document_newlines = enabled;
++        self
++    }
++
++    fn insertion_newline(&self) -> &'static str {
++        if self.document_newlines {
++            super::document_newlines::delimiter(self.text.bytes())
++        } else {
++            "\n"
++        }
++    }
++
++    fn clipboard_newlines<'a>(&self, text: &'a str) -> Cow<'a, str> {
++        if self.document_newlines {
++            super::document_newlines::normalize(text, self.insertion_newline())
++        } else {
++            Cow::Borrowed(text)
++        }
++    }
++
+     /// Set true to treat `Enter` as a submit action in multi-line mode,
+     /// while `Shift+Enter` inserts a newline.
+     ///
+@@ -1913,7 +1938,8 @@
              };
  
              // Add newline and indent
 -            let new_line_text = format!("\n{}", indent);
-+            let newline = super::document_newlines::delimiter(self.text.bytes());
++            let newline = self.insertion_newline();
 +            let new_line_text = format!("{}{}", newline, indent);
              self.replace_text_in_range_silent(None, &new_line_text, window, cx);
              self.pause_blink_cursor(cx);
          } else {
-@@ -2339,6 +2340,9 @@
+@@ -2339,6 +2365,7 @@
          }
          if let Some(clipboard) = cx.read_from_clipboard() {
              let new_text = clipboard.text().unwrap_or_default();
-+            let new_text = super::document_newlines::normalize(
-+                &new_text, super::document_newlines::delimiter(self.text.bytes()),
-+            );
++            let new_text = self.clipboard_newlines(&new_text);
              self.undo_manager.pending_intent = Some(EditIntent::Atomic);
              self.replace_text_in_range_silent(None, &new_text, window, cx);
              self.scroll_to(self.cursor(), None, cx);
-@@ -2383,6 +2387,9 @@
+@@ -2383,6 +2410,7 @@
                  }
                  match result {
                      Ok(Some(text)) => {
-+                        let text = super::document_newlines::normalize(
-+                            &text, super::document_newlines::delimiter(state.text.bytes()),
-+                        );
++                        let text = state.clipboard_newlines(&text);
                          state.undo_manager.pending_intent = Some(EditIntent::Atomic);
                          state.replace_text_in_range_silent(None, &text, window, cx);
                          state.scroll_to(state.cursor(), None, cx);
