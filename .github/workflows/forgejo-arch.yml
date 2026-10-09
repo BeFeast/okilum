@@ -19,7 +19,7 @@ jobs:
       run: |
         pacman -Syu --noconfirm --needed nodejs git python curl cmake clang mold \
           wayland libxkbcommon libxkbcommon-x11 fontconfig freetype2 libxcb \
-          vulkan-icd-loader desktop-file-utils xorg-server-xvfb xorg-xauth xdotool vulkan-swrast dbus
+          vulkan-icd-loader librsvg desktop-file-utils xorg-server-xvfb xorg-xauth xdotool vulkan-swrast dbus
     - uses: actions/checkout@v4
       with:
         persist-credentials: false
