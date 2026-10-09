@@ -3016,6 +3016,26 @@ impl Reader {
         cx.notify();
     }
 
+    /// Every top-level sidebar section is closed, including automatic folding
+    /// while scrolling; the header toggle then offers «Expand all sections».
+    fn sidebar_sections_closed(&self) -> bool {
+        use reader_sidebar::Section;
+        // A single file shows only Folders; hidden sections must not keep the
+        // button on «Collapse» after the visible one is closed.
+        if self.single_file {
+            return self
+                .scroll_sections
+                .closed(Section::Folders, &self.sidebar.collapsed);
+        }
+        reader_sidebar::LEFT_SECTIONS.into_iter().all(|s| {
+            if s == reader_sidebar::Section::Projects {
+                self.sidebar.projects_collapsed
+            } else {
+                self.scroll_sections.closed(s, &self.sidebar.collapsed)
+            }
+        })
+    }
+
     /// Folders header «Collapse all» (#410).
     fn collapse_folders(&mut self, cx: &mut Context<Self>) {
         self.tree.collapse_all();
@@ -3418,6 +3438,22 @@ impl Reader {
         let actions = toolbar_visible_actions(width - 24., name_width + 16., total_actions);
         let name_tip = title.clone();
         let reader = cx.entity().downgrade();
+        let sections_reader = reader.clone();
+        // One click gives a compact sidebar; the folder tree keeps its own
+        // «Collapse all folders» on the Folders header (#983).
+        let all_closed = self.sidebar_sections_closed();
+        let (sections_label, sections_icon) = if all_closed {
+            ("Expand all sections", brand::READER_EXPAND_ICON)
+        } else {
+            ("Collapse all sections", brand::READER_COLLAPSE_ICON)
+        };
+        let sections_action = move || {
+            if all_closed {
+                SectionAction::ExpandAll
+            } else {
+                SectionAction::CollapseAll
+            }
+        };
         let accent = left
             .then(|| reader_ui_state::vault_color(&self.vault_root, cx))
             .flatten();
@@ -3534,14 +3570,22 @@ impl Reader {
                 if actions == total_actions {
                     header = header.child(
                         reader_icon_button(
-                            "sidebar-collapse-all",
-                            Icon::default().path(brand::READER_COLLAPSE_ICON),
-                            reader_shortcuts::hint("Collapse all folders", &CollapseFolders, cx),
+                            "sidebar-sections-toggle",
+                            Icon::default().path(sections_icon),
+                            if all_closed {
+                                reader_shortcuts::hint(sections_label, &ExpandSidebarSections, cx)
+                            } else {
+                                sections_label.into()
+                            },
                             cx,
                         )
-                        .on_click(cx.listener(|this, _, _, cx| this.collapse_folders(cx))),
+                        .debug_selector(|| "sidebar-sections-toggle".into())
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.set_sidebar_sections(sections_action(), cx)
+                        })),
                     );
                 } else {
+                    let reader = sections_reader.clone();
                     header = header.child(
                         reader_icon_button(
                             "sidebar-actions",
@@ -3561,7 +3605,17 @@ impl Reader {
                                         menu = menu.menu("New folder", Box::new(NewFolder));
                                     }
                                 }
-                                menu.menu("Collapse all folders", Box::new(CollapseFolders))
+                                menu.item(
+                                    gpui_component::menu::PopupMenuItem::new(sections_label)
+                                        .on_click({
+                                            let reader = reader.clone();
+                                            move |_, _, cx| {
+                                                let _ = reader.update(cx, |this, cx| {
+                                                    this.set_sidebar_sections(sections_action(), cx)
+                                                });
+                                            }
+                                        }),
+                                )
                             },
                         ),
                     );
@@ -4032,7 +4086,13 @@ impl Reader {
                             .child(action(
                                 "folders-collapse-all",
                                 brand::READER_COLLAPSE_ICON,
-                                |_| COLLAPSE_FOLDERS_TOOLTIP.into(),
+                                |cx| {
+                                    reader_shortcuts::hint(
+                                        "Collapse all folders",
+                                        &CollapseFolders,
+                                        cx,
+                                    )
+                                },
                                 |this, _, cx| this.collapse_folders(cx),
                             ))
                             .child(action(
@@ -5898,7 +5958,6 @@ fn vault_color_menu(
 
 const HIDDEN_FILES_MENU: &str = "Show hidden files";
 const FOLDERS_HEADER_GROUP: &str = "folders-header";
-const COLLAPSE_FOLDERS_TOOLTIP: &str = "Collapse all";
 
 /// Reader window title bar: the native traffic lights are vertically centred
 /// on the 46px Reader header (#365). The toolkit default centres them on its
@@ -5996,7 +6055,7 @@ fn reader_more_menu(
             )
             .separator()
             .menu("Folders only", Box::new(CollapseSidebarSections))
-            .menu("Expand sidebar sections", Box::new(ExpandSidebarSections))
+            .menu("Expand all sections", Box::new(ExpandSidebarSections))
             .menu("Collapse all folders", Box::new(CollapseFolders))
             .separator()
             .label("Appearance")
@@ -8439,6 +8498,32 @@ mod document_link_landing_tests {
             v.scroll_sections.observe(-120.);
             assert!(!v.sidebar.is_collapsed(Section::Folders));
             assert!(!v.tree.rows.iter().any(|row| row.path == "Folder/Note.md"));
+            // Collapse all folders leaves the vault-root folders visible.
+            assert!(v.tree.rows.iter().any(|row| row.path == "Folder"));
+        });
+        // The vault header toggles every top-level section, Folders included (#983).
+        let closed = |v: &Reader| {
+            LEFT_SECTIONS.map(|s| {
+                if s == Section::Projects {
+                    v.sidebar.projects_collapsed
+                } else {
+                    v.scroll_sections.closed(s, &v.sidebar.collapsed)
+                }
+            })
+        };
+        let header = visual.debug_bounds("sidebar-sections-toggle").unwrap();
+        visual.simulate_click(header.center(), Modifiers::default());
+        visual.run_until_parked();
+        view.update(visual, |v, _| {
+            v.scroll_sections.observe(-120.);
+            assert_eq!(closed(v), [true; 5]);
+        });
+        let header = visual.debug_bounds("sidebar-sections-toggle").unwrap();
+        visual.simulate_click(header.center(), Modifiers::default());
+        visual.run_until_parked();
+        view.update(visual, |v, _| {
+            v.scroll_sections.observe(-120.);
+            assert_eq!(closed(v), [false; 5]);
         });
         assert_eq!(
             std::fs::read_to_string(root.join("Folder/Note.md")).unwrap(),
