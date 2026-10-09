@@ -1247,6 +1247,21 @@ mod tests {
         // A caret in the link reveals the heading markers and that link only.
         let link = text.find("l]").unwrap();
         assert_eq!(shown(link), "## Title b [l](d) ##\n\nplain e");
+        // A caret in one heading leaves another heading's markers hidden.
+        let two = "# A\r\n\r\n> # B";
+        let retained = RetainedPresentation::new(&classify(&snapshot(1, two)));
+        let shown = |caret: usize| {
+            retained
+                .project(&Active {
+                    selection: Some(caret..caret),
+                    composition: None,
+                })
+                .unwrap()
+                .display()
+                .to_owned()
+        };
+        assert_eq!(shown(2), "# A\r\n\r\n> B");
+        assert_eq!(shown(two.len()), "A\r\n\r\n> # B");
     }
 
     #[test]
