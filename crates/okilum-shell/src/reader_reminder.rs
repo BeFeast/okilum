@@ -581,7 +581,7 @@ mod visual_tests {
     /// link's menu; the reminder entry stays with the selection.
     #[gpui::test]
     fn right_click_on_a_link_opens_one_menu_while_a_date_is_selected(cx: &mut TestAppContext) {
-        let temp = std::env::temp_dir().join(format!("tessera-remind-{}", uuid::Uuid::new_v4()));
+        let temp = std::env::temp_dir().join(format!("okilum-remind-{}", uuid::Uuid::new_v4()));
         let (root, state) = (temp.join("vault"), temp.join("state"));
         std::fs::create_dir_all(&root).unwrap();
         std::fs::create_dir_all(&state).unwrap();
