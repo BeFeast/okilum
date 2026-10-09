@@ -39,3 +39,15 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: python scripts/releases/publication.py publish "$PLATFORM" --run "$SOURCE_RUN"
+      - name: Refresh GitHub rolling Beta after platform publication
+        env:
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORGEJO_URL: ${{ github.server_url }}
+        run: |
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, 'scripts/updater')
+          from release import Forgejo
+          Forgejo().call('POST', '/actions/workflows/releases.yml/dispatches',
+                         {'ref': 'main', 'inputs': {}})
+          PY

@@ -38,6 +38,10 @@ def fixture(store):
         catalog.record(store, platform, 700 + offset, SOURCE, assets)
     store.data['tessera/appcast.xml'] = f'''<rss xmlns:s="{p.appcast.SPARKLE}" xmlns:t="{p.appcast.TESSERA}">
       <channel><item><s:version>700</s:version><s:channel>beta</s:channel><t:source>{SOURCE}</t:source></item></channel></rss>'''.encode()
+    store.data['tessera/windows/beta/releases.beta.json'] = catalog.encode(
+        {'Assets': [{'Type': 'Full', 'Version': '0.1.701'}]})
+    store.data['tessera/windows/builds/701/release.json'] = catalog.encode({'build': 701, 'source': SOURCE})
+    store.data['tessera/arch/beta/x86_64/latest.json'] = catalog.encode({'build': 702, 'source': SOURCE})
     store.writes.clear()
     return catalog.bundle(store, SOURCE, 700)
 
@@ -299,3 +303,36 @@ class GitHubTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class RollingBetaTests(unittest.TestCase):
+    def test_latest_platform_sources_can_differ_but_stable_cannot(self):
+        store = Store()
+        fixture(store)
+        source = 'b' * 40
+        old = json.loads(store.data[f'{catalog.PREFIX}/{SOURCE}/windows.json'])
+        old.update(source=source, build=703)
+        store.data[f'{catalog.PREFIX}/{source}/windows.json'] = catalog.encode(old)
+        store.data['tessera/windows/beta/releases.beta.json'] = catalog.encode(
+            {'Assets': [{'Type': 'Full', 'Version': '0.1.703'}]})
+        store.data['tessera/windows/builds/703/release.json'] = catalog.encode({'build': 703, 'source': source})
+        release = p.choose_beta(store)
+        self.assertEqual(release['platforms']['windows']['source'], source)
+        self.assertEqual(release['platforms']['windows']['build'], 703)
+        self.assertEqual(p.choose(store, 700)['platforms']['windows']['build'], 701)
+        self.assertIn(source, p.beta_notes(release))
+        # A completed rerun is not a published channel head.
+        old['build'] = 704
+        store.data[f'{catalog.PREFIX}/{source}/windows.json'] = catalog.encode(old)
+        with self.assertRaisesRegex(ValueError, 'channel/catalog mismatch'):
+            p.choose_beta(store)
+
+    def test_each_platform_has_rollback_guard_before_any_write(self):
+        store = Store()
+        release = fixture(store)
+        release['platforms']['windows']['build'] = 999
+        store.data[f'{catalog.PREFIX}/beta.json'] = catalog.encode(release)
+        with patch.object(p, 'mirror_tag') as mirror:
+            with self.assertRaisesRegex(ValueError, 'windows beta rollback'):
+                p.execute(store, None, None)
+            mirror.assert_not_called()
+        self.assertEqual(store.writes, [])

@@ -22,7 +22,7 @@ credentials are available, otherwise the ordinary compiler. Arch/Windows cache
 Cargo downloads and the verified pinned vendor checkout, never per-commit target
 archives. Native macOS tests and signing/notarization remain enabled.
 
-## One accepted source, three builds
+## Stable: one accepted source, three builds
 
 CI run numbers differ between platforms. Select the **macOS build number** as the
 public release number (`v0.1.<build>`); the release notes list the Windows and Arch
@@ -36,10 +36,17 @@ publication. Missing artifacts or mismatched source commits fail closed.
 
 ## Rolling Beta
 
-The Forgejo **releases** workflow checks every 15 minutes for a complete set, using
-a light runner and no compilation or macOS slot. An empty manual dispatch also
-refreshes Beta. Incomplete source sets wait for the remaining platform; individual
-platform update feeds keep working independently.
+Every successful protected platform publication dispatches **releases** with empty
+inputs. A 15-minute reconciliation schedule remains as recovery. The workflow uses
+a light runner and no compilation or macOS slot. It reads the current public
+Sparkle, Velopack and Arch beta heads and verifies their exact catalog build/source
+and asset hashes. Missing catalogs wait; mismatches fail closed. Each platform has
+its own rollback guard.
+
+Rolling Beta deliberately contains the latest published build **per platform**;
+they need not share a source. Notes list each build and exact SHA. The moving tag
+anchors the macOS source, not a claim that Windows/Arch used that commit. Stable
+promotion still requires all three platforms to share one accepted source.
 
 The GitHub prerelease named **Beta** is updated in place, with one moving `beta`
 tag. It contains the macOS ZIP, Windows installer and portable ZIP, Arch package
