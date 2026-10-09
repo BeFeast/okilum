@@ -388,7 +388,8 @@ mod tests {
         let read = visual.debug_bounds("reader-read").unwrap();
         visual.simulate_click(read.center(), Modifiers::default());
         visual.run_until_parked();
-        visual.simulate_resize(size(px(480.), px(900.)));
+        // One mode button and one mode toggle leave room for labels at 480px (#992).
+        visual.simulate_resize(size(px(360.), px(900.)));
         reader.update_in(visual, |reader, window, cx| {
             reader.toggle_source(window, cx)
         });
