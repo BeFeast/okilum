@@ -24,7 +24,7 @@ index 28086be5..efafae78 100644
              }
              state.refresh_native_candidate_geometry(window, cx);
 diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
-index 1abf94a3..e58c55fa 100644
+index 1abf94a3..054636dd 100644
 --- a/crates/base/src/input/base/state.rs
 +++ b/crates/base/src/input/base/state.rs
 @@ -28,7 +28,7 @@ use gpui::{
@@ -120,7 +120,7 @@ index 1abf94a3..e58c55fa 100644
      pub(super) fn on_mouse_move(
          &mut self,
          event: &MouseMoveEvent,
-@@ -4329,6 +4364,105 @@ mod tests {
+@@ -4329,6 +4364,148 @@ mod tests {
          }));
      }
  
@@ -223,6 +223,72 @@ index 1abf94a3..e58c55fa 100644
 +        }));
 +    }
 +
++    #[gpui::test]
++    fn projection_provider_adopted_during_mouse_lease_applies_on_release(cx: &mut TestAppContext) {
++        // #979: a theme change installs a recolored provider while a click's
++        // lease pins the painted projection; release must compose with it.
++        cx.update(crate::init);
++        let executor = cx.executor();
++        let view = InputView::build_editor(cx, |state| state.folding(false).searchable(false)
++            .wrapping_indent(super::super::WrappingIndent::None));
++        let mut v = VisualTestContext::from_window(view.window_handle.into(), cx);
++        v.update(|window, cx| view.input.update(cx, |state, cx| {
++            state.set_value("plain\n**bold\ntail", window, cx);
++            state.set_projection_provider(Some(Arc::new(PrefixRevealProvider)), cx);
++            window.activate_window();
++            state.focus(window, cx);
++        }));
++        v.run_until_parked();
++        v.update(|window, cx| view.input.update(cx, |state, cx| {
++            let painted = state.projection.current.as_ref().unwrap().text().to_owned();
++            assert_ne!(painted, state.value().as_str());
++            state.selecting = true;
++            state.projection_mouse_hold = true;
++            state.move_to(1, None, cx);
++            let up = MouseUpEvent {
++                button: MouseButton::Left,
++                position: Point::default(),
++                modifiers: Default::default(),
++                click_count: 1,
++            };
++            state.on_mouse_up(&up, window, cx);
++            state.set_projection_provider(Some(Arc::new(RevealAllProvider)), cx);
++            assert_eq!(state.projection.current.as_ref().unwrap().text(), painted,
++                "the lease still pins the painted projection");
++        }));
++        v.run_until_parked();
++        executor.advance_clock(PROJECTION_MOUSE_LEASE);
++        v.run_until_parked();
++        v.update(|_, cx| view.input.update(cx, |state, _| {
++            assert!(!state.projection_mouse_hold);
++            assert_eq!(state.projection.current.as_ref().unwrap().text(), state.value().as_str(),
++                "release composes with the new provider");
++        }));
++    }
++
      #[gpui::test]
      fn projection_first_vertical_key_derives_preferred_x_after_initial_paint(
          cx: &mut TestAppContext,
+@@ -4499,6 +4676,22 @@ mod tests {
+         }
+     }
+ 
++    /// Composes a real projection that never conceals, unlike PrefixRevealProvider.
++    struct RevealAllProvider;
++    impl ProjectionProvider for RevealAllProvider {
++        fn compose(
++            &self,
++            source: &super::super::projection::SourceSnapshot,
++            _: &ActiveSource,
++        ) -> Option<Arc<dyn super::super::projection::SourceProjection>> {
++            Some(Arc::new(PrefixRevealProjection {
++                source: source.clone(),
++                text: source.text.to_string(),
++                hidden: None,
++            }))
++        }
++    }
++
+     struct ExactSourceProvider;
+     impl ProjectionProvider for ExactSourceProvider {
+         fn compose(
