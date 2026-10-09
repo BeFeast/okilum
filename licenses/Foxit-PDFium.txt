@@ -1,5 +1,5 @@
 Standard PDF fonts embedded by hayro-interpret (Foxit Sans, Serif, Fixed,
-Symbol and Dingbats). hayro extracted them from PDFium; Tessera ships them
+Symbol and Dingbats). hayro extracted them from PDFium; Okilum ships them
 unmodified inside the hayro-interpret crate to draw PDFs whose standard fonts
 are not embedded.
 Source: https://github.com/LaurenzV/hayro/tree/main/hayro-interpret/assets
