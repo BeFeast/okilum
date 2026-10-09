@@ -1006,6 +1006,8 @@ impl Reader {
         );
         cx.spawn_in(window, async move |this, cx| {
             if answer.recv().await != Ok(true) {
+                // Back to the list the review came from; it only reads.
+                let _ = this.update_in(cx, |this, window, cx| this.recover_link_moves(window, cx));
                 return;
             }
             let _ = this.update_in(cx, |this, window, cx| {
