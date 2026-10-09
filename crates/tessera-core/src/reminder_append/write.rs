@@ -53,6 +53,34 @@ pub fn apply(root: &Path, drafts: &Path, relative: &str, plan: &Plan) -> Result<
     })
 }
 
+/// Add one formatted reminder (`reminder_task::format`) to the configured note:
+/// append when it exists, create it when it does not. A note that appears
+/// between the check and the creation is appended to, never overwritten.
+pub fn add(root: &Path, drafts: &Path, relative: &str, reminder: &str) -> Result<Receipt> {
+    let canonical = root.canonicalize()?;
+    checked_relative(relative)?;
+    let plan = |source: &str| Plan::new(source, reminder).map_err(anyhow::Error::msg);
+    for _ in 0..2 {
+        match std::fs::symlink_metadata(canonical.join(relative)) {
+            Ok(_) => {
+                let source = std::fs::read_to_string(bound_path(&canonical, relative)?)
+                    .context("The reminders note must be readable UTF-8 text")?;
+                return apply(&canonical, drafts, relative, &plan(&source)?);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                match create_and_apply(&canonical, relative, &plan("")?) {
+                    Ok(receipt) => return Ok(receipt),
+                    // Lost the creation race: loop once and append instead.
+                    Err(_) if canonical.join(relative).symlink_metadata().is_ok() => {}
+                    Err(e) => return Err(e),
+                }
+            }
+            Err(e) => return Err(e).context("The reminders note is unavailable"),
+        }
+    }
+    bail!("The reminders note keeps changing. Try again.")
+}
+
 /// Create the missing destination with its first reminder. Creation is
 /// exclusive (NOREPLACE through descriptors in an existing real folder), so a
 /// note that appeared meanwhile is never overwritten: the caller re-plans and
@@ -275,6 +303,42 @@ mod tests {
         }
         assert!(!root.join("Missing").exists() && !root.join("Fresh.txt").exists());
         assert!(!root.parent().unwrap().join("Fresh.md").exists());
+        assert!(leftovers(&root).is_empty());
+    }
+
+    #[test]
+    fn add_creates_then_appends_and_each_receipt_undoes_its_own_line() {
+        let (_temp, root, drafts, _) = fixture("");
+        std::fs::remove_file(root.join("Reminders.md")).unwrap();
+        let first = add(&root, &drafts, "Reminders.md", TASK).unwrap();
+        let second_line = "- [ ] Pay [[Bills.md]] 📅 2026-11-02\n";
+        let second = add(&root, &drafts, "Reminders.md", second_line).unwrap();
+        let path = root.join("Reminders.md");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            format!("{TASK}\n{second_line}")
+        );
+        // Undo is receipt-scoped: the older receipt must not erase newer content.
+        assert!(first.undo(&root, &drafts).is_err());
+        second.undo(&root, &drafts).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), TASK);
+        first.undo(&root, &drafts).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
+        // An emptied note is still an existing note and is appended to.
+        add(&root, &drafts, "Reminders.md", TASK).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), TASK);
+    }
+
+    #[test]
+    fn add_refuses_invalid_lines_unreadable_notes_and_unsafe_paths() {
+        let (_temp, root, drafts, _) = fixture("Original\n");
+        let path = root.join("Reminders.md");
+        assert!(add(&root, &drafts, "Reminders.md", "- [ ] No date\n").is_err());
+        assert!(add(&root, &drafts, "../Reminders.md", TASK).is_err());
+        assert!(add(&root, &drafts, "Reminders.txt", TASK).is_err());
+        std::fs::write(&path, [0xff, 0xfe, 0x00]).unwrap();
+        assert!(add(&root, &drafts, "Reminders.md", TASK).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), [0xff, 0xfe, 0x00]);
         assert!(leftovers(&root).is_empty());
     }
 
