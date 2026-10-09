@@ -8023,6 +8023,7 @@ name = "tessera-sync-controller"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "core-foundation-sys",
  "getrandom 0.3.4",
  "libc",
  "objc2 0.6.4",

@@ -8,6 +8,10 @@ use std::io::{Read, Write};
 use uuid::Uuid;
 
 #[cfg(unix)]
+pub mod code_requirement;
+#[cfg(target_os = "macos")]
+pub mod macos_peer;
+#[cfg(unix)]
 pub mod unix_transport;
 #[cfg(target_os = "windows")]
 pub mod windows_discovery;
