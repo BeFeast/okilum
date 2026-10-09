@@ -976,6 +976,11 @@ fn reader_plugins(
     )
     .on_link_hover(move |url, active, position, window, cx| {
         let _ = hover_entity.update(cx, |this, cx| {
+            if active {
+                this.pointer_link = Some(url.to_owned());
+            } else if this.pointer_link.as_deref() == Some(url) {
+                this.pointer_link = None;
+            }
             this.hover_link(url, active, position, window, cx)
         });
     })
@@ -1305,6 +1310,9 @@ struct Reader {
     displayed_notice: Option<reader_toast::Notice>,
     displayed_choices: Vec<(String, Option<String>)>,
     displayed_recovery: Option<(String, u64)>,
+    /// The link under the pointer, from every link hover event: a right-click
+    /// there opens only the link's menu (#943).
+    pointer_link: Option<String>,
     displayed_history_notice: Option<(uuid::Uuid, uuid::Uuid, String)>,
     history_notice_generation: u64,
     notice_generation: u64,
@@ -1577,6 +1585,7 @@ impl Reader {
             displayed_notice: None,
             displayed_choices: Vec::new(),
             displayed_recovery: None,
+            pointer_link: None,
             displayed_history_notice: None,
             history_notice_generation: 0,
             notice_generation: 0,
