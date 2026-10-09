@@ -1233,7 +1233,8 @@ mod tests {
         // Mid-heading caret: `##` markers show; inline syntax elsewhere stays.
         assert_eq!(shown(title), "## Title b l ##\n\nplain e");
         assert_eq!(
-            shown(text.find(" ##").unwrap()),
+            // Inside the closing hashes; their start touches the link's `](d)`.
+            shown(text.find(" ##").unwrap() + 2),
             "## Title b l ##\n\nplain e"
         );
         // A caret in the link reveals the heading markers and that link only.
