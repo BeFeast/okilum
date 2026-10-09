@@ -193,6 +193,13 @@ administrator) could still swap the file in that window; neither permission mode
 boundary against the owner, and peer identity and signature checks are the ownership
 gate. A second validation would narrow the window without closing it.
 
-Still open: authenticated generation discovery and the native `OwnedTree` (Job Object
-on Windows, a process group on macOS), and real native crash/durability and
-supervisor-exit acceptance.
+The macOS/Unix `OwnedTree` is `supervisor::process_group::ProcessGroupTree` (a new
+process group; signals only while the leader is unreaped; `Stopped` only when the group
+is empty and no live same-user copy of the pinned runtime started since the root, as
+specified in [discovery](sync-sidecar-discovery.md)). Its macOS process scan is
+compile-checked off-host and runs in macOS CI; it has not run on a real signed
+supervisor.
+
+Still open: authenticated generation discovery (the hint and connect-then-verify
+described in [discovery](sync-sidecar-discovery.md)), the Windows `OwnedTree` over the
+captured Job Object, and real native crash/durability and supervisor-exit acceptance.
