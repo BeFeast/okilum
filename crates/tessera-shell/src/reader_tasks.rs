@@ -314,7 +314,11 @@ fn count_badge(results: &Results, cx: &App) -> impl IntoElement {
         .rounded_md()
         .bg(cx.theme().muted_foreground.opacity(0.08))
         .debug_selector(move || format!("tasks-count-{count}"))
-        .child(format!("{count} tasks · {} in notes", results.tasks.len()))
+        .child(format!(
+            "{} · {} in notes",
+            crate::count_label::count_label(count, "task", "tasks"),
+            results.tasks.len()
+        ))
         .into_any_element()
 }
 
