@@ -30,10 +30,15 @@ the transports, the owned trees). Linux has no supervisor.
    `<state>/runtime.json` (`{schema, version, digest, location}`, strict like the hint,
    written by the payload layer under the instance lock as the durable result of
    `update::Host::select`). `location` must be an absolute plain path under
-   `<state>/runtime/`; the file's SHA-256 must equal `digest`, checked immediately before
-   spawn while holding the file open without write or delete sharing where the OS allows
-   it (Windows), and as close to the spawn as the OS allows elsewhere. A missing or
-   mismatched selection refuses to start; it never falls back to another binary.
+   `<state>/runtime/`. `runtime/<version>/` is created owner-only and made read-only
+   after staging. The file's SHA-256 must equal `digest`: checked immediately before
+   spawn (on Windows while holding the file open without write or delete sharing), and
+   checked again on the same path right after spawn, killing the tree and exiting
+   non-zero on a mismatch. macOS cannot exec through a descriptor, so a window between
+   the check and the exec remains; closing it would take a same-user or administrator
+   process, which the owner-only permissions do not defend against (the same residual as
+   the journal replace in the stop-operations design). A missing or mismatched selection
+   refuses to start; it never falls back to another binary.
 5. Config and data directories are `<state>/config` and `<state>/data`, separate and
    private (the existing `Launch` rules); the fixed Syncthing argv is the existing one.
 
