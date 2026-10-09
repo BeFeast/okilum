@@ -3179,7 +3179,7 @@ impl Reader {
             .into_any_element()
     }
 
-    fn render_breadcrumbs(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_breadcrumbs(&self, collapse_parents: bool, cx: &mut Context<Self>) -> AnyElement {
         #[cfg(any(unix, windows))]
         if let Some(rename) = self.renaming.as_ref().filter(|r| r.in_header) {
             return v_flex()
@@ -3221,7 +3221,8 @@ impl Reader {
         let current = self.selected_file().to_owned();
         let current_menu = current.clone();
         let file_root = self.vault_root.clone();
-        let root = format!("Root: {}", self.vault_root.display());
+        let root = self.selected_title();
+        let parent_menu = folders.clone();
         h_flex()
             .id("reader-breadcrumbs")
             .flex_1()
@@ -3230,40 +3231,69 @@ impl Reader {
             .px_2()
             .overflow_hidden()
             .whitespace_nowrap()
-            .children(folders.into_iter().flat_map(|(folder, path)| {
-                let menu_path = path.clone();
-                let menu_root = self.vault_root.clone();
-                [
-                    div()
-                        .id(SharedString::from(format!("reader-crumb-{path}")))
-                        .flex_shrink(1.)
-                        .min_w(px(24.))
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .text_color(p.text_muted)
-                        .cursor_pointer()
-                        .hover(move |d| d.text_color(p.text))
-                        // Keep the crumb press local to this control.
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.reveal_in_tree(&path, window, cx)
-                        }))
-                        .context_menu(move |menu, _, _| {
-                            reader_files::menu(menu, menu_root.clone(), menu_path.clone())
-                        })
-                        .child(folder)
-                        .into_any_element(),
-                    Icon::new(IconName::ChevronRight)
-                        .xsmall()
-                        .text_color(faint)
-                        .into_any_element(),
-                ]
-            }))
+            .when(collapse_parents, |row| {
+                use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
+                let reader = cx.entity().downgrade();
+                row.child(
+                    reader_icon_button(
+                        "note-parent-folders",
+                        IconName::FolderOpen,
+                        "Parent folders",
+                        cx,
+                    )
+                    .dropdown_menu(move |mut menu, _, _| {
+                        for (name, path) in &parent_menu {
+                            let reader = reader.clone();
+                            let path = path.clone();
+                            menu = menu.item(PopupMenuItem::new(name.clone()).on_click(
+                                move |_, window, cx| {
+                                    let _ = reader.update(cx, |this, cx| {
+                                        this.reveal_in_tree(&path, window, cx)
+                                    });
+                                },
+                            ));
+                        }
+                        menu
+                    }),
+                )
+            })
+            .children(folders.into_iter().filter(|_| !collapse_parents).flat_map(
+                |(folder, path)| {
+                    let menu_path = path.clone();
+                    let menu_root = self.vault_root.clone();
+                    [
+                        div()
+                            .id(SharedString::from(format!("reader-crumb-{path}")))
+                            .flex_shrink(1.)
+                            .min_w(px(24.))
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .text_color(p.text_muted)
+                            .cursor_pointer()
+                            .hover(move |d| d.text_color(p.text))
+                            // Keep the crumb press local to this control.
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.reveal_in_tree(&path, window, cx)
+                            }))
+                            .context_menu(move |menu, _, _| {
+                                reader_files::menu(menu, menu_root.clone(), menu_path.clone())
+                            })
+                            .child(folder)
+                            .into_any_element(),
+                        Icon::new(IconName::ChevronRight)
+                            .xsmall()
+                            .text_color(faint)
+                            .into_any_element(),
+                    ]
+                },
+            ))
             .child(
                 div()
                     .id("reader-document-root")
                     .debug_selector(|| "reader-document-root".into())
-                    .flex_shrink_0()
+                    .min_w_0()
+                    .flex_shrink(1.)
                     .max_w_full()
                     .overflow_hidden()
                     .text_ellipsis()

@@ -71,23 +71,39 @@ impl Reader {
                 widths.notes + widths.backlinks
             };
         let title_width = toolbar_text_width(&self.selected_title(), FontWeight::MEDIUM, window);
-        let mode_width = if !cfg!(any(unix, windows)) {
-            0.
-        } else if self.editing.is_some() {
-            128.
-        } else {
-            64.
-        };
         #[cfg(any(unix, windows))]
         let dirty = self.source_is_dirty(cx);
         #[cfg(not(any(unix, windows)))]
         let dirty = false;
-        let fixed_width = 32. + 64. + 32. + mode_width + if dirty { 100. } else { 0. };
-        let show_find = document_width >= fixed_width + title_width + 32.;
+        // Reserve padding, gaps, navigation, Read/Edit, menu and the dirty dot.
+        // Optional controls yield before either the parent path or note title.
+        let parent_width = self
+            .selected_file()
+            .rsplit_once('/')
+            .map_or(0., |(dir, _)| {
+                dir.split('/')
+                    .map(|part| toolbar_text_width(part, FontWeight::NORMAL, window) + 24.)
+                    .sum::<f32>()
+            });
+        let compact_parent = if parent_width > 0. { 32. } else { 0. };
+        let fixed_width = 208. + if dirty { 32. } else { 0. };
+        let mut spare = document_width - fixed_width - title_width - compact_parent;
+        let show_presentation = self.editing.is_some() && spare >= 64.;
+        if show_presentation {
+            spare -= 64.;
+        }
+        let show_save = dirty && spare >= 32.;
+        if show_save {
+            spare -= 32.;
+        }
+        let show_find = spare >= 32.;
+        if show_find {
+            spare -= 32.;
+        }
         #[cfg(any(unix, windows))]
         let labels_width = ["Read", "Edit"]
             .into_iter()
-            .chain(if self.editing.is_some() {
+            .chain(if show_presentation {
                 vec!["Live Preview", "Source"]
             } else {
                 vec![]
@@ -95,9 +111,12 @@ impl Reader {
             .map(|label| toolbar_text_width(label, FontWeight::MEDIUM, window) + 12.)
             .sum::<f32>();
         #[cfg(any(unix, windows))]
-        let labels = reader_ui_state::toolbar_labels(cx)
-            && document_width
-                >= fixed_width + title_width + labels_width + if show_find { 32. } else { 0. };
+        let labels = reader_ui_state::toolbar_labels(cx) && spare >= labels_width;
+        #[cfg(any(unix, windows))]
+        if labels {
+            spare -= labels_width;
+        }
+        let collapse_parents = parent_width > compact_parent + spare.max(0.);
         let root = self.vault_root.clone();
         let rel = self.selected_file().to_owned();
         let mut row = h_flex()
@@ -131,7 +150,7 @@ impl Reader {
                 .disabled(self.navigation.history_ix + 1 >= self.navigation.history.len())
                 .on_click(cx.listener(|this, _, window, cx| this.history_move(1, window, cx))),
             )
-            .child(self.render_breadcrumbs(cx));
+            .child(self.render_breadcrumbs(collapse_parents, cx));
         if rel.is_empty() {
             return row;
         }
@@ -175,18 +194,23 @@ impl Reader {
                 ]),
             );
             if editing {
-                row = row.child(self.render_live_preview_control(labels, cx));
+                if show_presentation {
+                    row = row.child(self.render_live_preview_control(labels, cx));
+                }
                 if self.source_is_dirty(cx) {
-                    row = row.child(self.render_save_status(cx)).child(
-                        reader_icon_button(
-                            "source-save",
-                            Icon::default().path("icons/save.svg"),
-                            reader_shortcuts::hint("Save", &SaveSource, cx),
-                            cx,
-                        )
-                        .debug_selector(|| "source-save".into())
-                        .on_click(cx.listener(|this, _, _, cx| this.request_source_save(cx))),
-                    );
+                    row = row.child(self.render_save_status(cx));
+                    if show_save {
+                        row = row.child(
+                            reader_icon_button(
+                                "source-save",
+                                Icon::default().path("icons/save.svg"),
+                                reader_shortcuts::hint("Save", &SaveSource, cx),
+                                cx,
+                            )
+                            .debug_selector(|| "source-save".into())
+                            .on_click(cx.listener(|this, _, _, cx| this.request_source_save(cx))),
+                        );
+                    }
                 }
             }
         }
@@ -278,6 +302,27 @@ impl Reader {
                         );
                         #[cfg(any(unix, windows))]
                         {
+                            if editing {
+                                if dirty {
+                                    menu = menu.menu("Save", Box::new(SaveSource));
+                                }
+                                for (label, enabled) in [("Live Preview", true), ("Source", false)]
+                                {
+                                    let reader = reader.clone();
+                                    menu = menu.item(PopupMenuItem::new(label).on_click(
+                                        move |_, window, cx| {
+                                            let _ = reader.update(cx, |this, cx| {
+                                                if let Some(editing) = &mut this.editing {
+                                                    editing.live_preview.restore_after_find = false;
+                                                    if editing.live_preview.enabled != enabled {
+                                                        this.toggle_live_preview(window, cx);
+                                                    }
+                                                }
+                                            });
+                                        },
+                                    ));
+                                }
+                            }
                             menu = menu
                                 .menu(
                                     if editing { "Preview" } else { "Edit source" },
@@ -499,6 +544,99 @@ impl Reader {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    #[gpui::test]
+    fn nested_note_title_keeps_space_before_optional_editor_controls(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        let relative = "Projects/Research/Archive/A reasonably long note title.md";
+        std::fs::create_dir_all(root.join("Projects/Research/Archive")).unwrap();
+        std::fs::write(
+            root.join(relative),
+            "# A reasonably long note title\n\nBody\n",
+        )
+        .unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+            reader_ui_state::install(&fixture.path().join("state"), cx);
+            cx.set_global(reader_history::TestSessionDirectory(
+                fixture.path().join("history"),
+            ));
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let entity = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some(relative.into()),
+                        index_dir: Some(fixture.path().join("index")),
+                        panel_settings_override: Some(fixture.path().join("panels.json")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(entity.clone());
+            Root::new(entity, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        visual.simulate_resize(size(px(560.), px(900.)));
+        visual.run_until_parked();
+        let reader_title_width = visual
+            .debug_bounds("reader-document-root")
+            .unwrap()
+            .size
+            .width;
+        reader.update_in(visual, |this, window, cx| {
+            this.toggle_source(window, cx);
+            this.editing
+                .as_ref()
+                .unwrap()
+                .input
+                .update(cx, |input, cx| {
+                    input.set_value(
+                        "# A reasonably long note title\n\nUnsaved edits\n",
+                        window,
+                        cx,
+                    );
+                });
+        });
+        for labels in [false, true] {
+            visual.update(|_, cx| reader_ui_state::set_toolbar_labels(labels, cx));
+            visual.run_until_parked();
+            let title = visual.debug_bounds("reader-document-root").unwrap();
+            let header = visual.debug_bounds("document-header").unwrap();
+            assert!(
+                title.size.width >= reader_title_width - px(40.),
+                "dirty editor retains title space: {title:?}"
+            );
+            assert!(title.size.width > px(180.), "positive title-space control");
+            for id in [
+                "reader-history-back",
+                "reader-history-forward",
+                "reader-read",
+                "reader-edit",
+                "document-more",
+            ] {
+                let bounds = visual.debug_bounds(id).unwrap();
+                assert!(
+                    bounds.left() >= header.left() && bounds.right() <= header.right(),
+                    "{id} clipped: {bounds:?}"
+                );
+                assert!(
+                    bounds.right() <= title.left() || bounds.left() >= title.right(),
+                    "{id} overlaps title"
+                );
+            }
+            assert!(visual.debug_bounds("reader-live-preview").is_none());
+            assert!(visual.debug_bounds("source-save").is_none());
+            reader.read_with(visual, |this, cx| assert!(this.source_is_dirty(cx)));
+        }
+    }
 
     #[gpui::test]
     fn close_keeps_vault_back_restores_note_and_empty_selection_is_saved(cx: &mut TestAppContext) {
