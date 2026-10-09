@@ -57,7 +57,13 @@ bool okilum_updater_available(void) { return TSController != nil; }
 
 void okilum_updater_set_report(TSReport report) { TSReporter = report; }
 
-void okilum_updater_check(void) { [TSController.updater checkForUpdateInformation]; }
+// False while a check or download session is already running: Sparkle would
+// ignore the probe and never call the delegate.
+bool okilum_updater_check(void) {
+    if (TSController.updater.sessionInProgress) return false;
+    [TSController.updater checkForUpdateInformation];
+    return true;
+}
 
 // Sparkle's standard UI downloads, installs and relaunches.
 void okilum_updater_install(void) { [TSController checkForUpdates:nil]; }

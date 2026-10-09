@@ -5,7 +5,7 @@ extern "C" {
     fn okilum_updater_start();
     fn okilum_updater_set_report(report: extern "C" fn(c_int, *const c_char));
     fn okilum_updater_available() -> bool;
-    fn okilum_updater_check();
+    fn okilum_updater_check() -> bool;
     fn okilum_updater_install();
     fn okilum_updater_beta() -> bool;
     fn okilum_updater_set_beta(enabled: bool);
@@ -38,7 +38,11 @@ pub(super) fn available() -> bool {
 }
 pub(super) fn check() {
     status::set(CheckStatus::Checking);
-    unsafe { okilum_updater_check() }
+    if !unsafe { okilum_updater_check() } {
+        status::set(CheckStatus::Note(
+            "An update check or download is already in progress.".into(),
+        ));
+    }
 }
 pub(super) fn install() {
     unsafe { okilum_updater_install() }

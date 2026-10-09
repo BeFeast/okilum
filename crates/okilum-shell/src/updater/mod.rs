@@ -87,7 +87,11 @@ pub(crate) fn install(_cx: &mut App) {
     {
         macos::start();
         _cx.on_action(|_: &AboutOkilum, cx| crate::about::show_from_menu(cx));
-        _cx.on_action(|_: &CheckForUpdates, _| macos::check());
+        // The result is inline, so the menu opens About to show it (#995).
+        _cx.on_action(|_: &CheckForUpdates, cx| {
+            crate::about::show_from_menu(cx);
+            macos::check();
+        });
         _cx.on_action(|_: &ToggleBetaBuilds, cx| {
             set_beta(!macos::beta(), cx);
         });
@@ -162,10 +166,6 @@ pub(crate) fn action_label() -> &'static str {
     if windows::ready() {
         return "Restart to update";
     }
-    #[cfg(target_os = "macos")]
-    if matches!(status::get(), status::CheckStatus::Available(_)) {
-        return "Install Update…";
-    }
     "Check for Updates…"
 }
 pub(crate) fn activate(cx: &mut App) {
@@ -174,14 +174,15 @@ pub(crate) fn activate(cx: &mut App) {
         windows::restart(None, cx);
         return;
     }
-    // A found update installs through Sparkle's own window.
-    #[cfg(target_os = "macos")]
-    if matches!(status::get(), status::CheckStatus::Available(_)) {
-        macos::install();
-        return;
-    }
     let _ = cx;
     check();
+}
+
+/// The status row's «Install Update…» for a found update: Sparkle's own window
+/// downloads, installs and relaunches.
+pub(crate) fn install() {
+    #[cfg(target_os = "macos")]
+    macos::install();
 }
 
 /// The inline result line for About and Settings, if a check has run.

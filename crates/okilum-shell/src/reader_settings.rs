@@ -923,7 +923,7 @@ pub(crate) fn update_status_row(id: &'static str, cx: &App) -> Option<AnyElement
                         .ghost()
                         .small()
                         .label("Install Update…")
-                        .on_click(|_, _, cx| updater::activate(cx)),
+                        .on_click(|_, _, _| updater::install()),
                 )
             })
             .into_any_element(),

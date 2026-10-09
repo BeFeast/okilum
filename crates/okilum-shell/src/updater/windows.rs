@@ -155,9 +155,7 @@ pub(super) fn check(manual: bool) {
     use super::status::{self, CheckStatus};
     if BUSY.swap(true, Ordering::AcqRel) {
         if manual {
-            status::set(CheckStatus::Note(
-                "An update check or download is already in progress.".into(),
-            ));
+            status::set(CheckStatus::Note(IN_PROGRESS.into()));
         }
         return;
     }
@@ -169,20 +167,24 @@ pub(super) fn check(manual: bool) {
     std::thread::spawn(move || {
         let result = check_and_download();
         BUSY.store(false, Ordering::Release);
-        if manual {
+        // A manual click during a background check is answered by its result.
+        let waiting = matches!(status::get(), CheckStatus::Note(ref note) if note == IN_PROGRESS);
+        if manual || waiting {
             status::set(match result {
                 Ok(_) if ready() => CheckStatus::Ready,
                 Ok(UP_TO_DATE) => CheckStatus::UpToDate(std::time::SystemTime::now()),
                 Ok(note) => CheckStatus::Note(note.into()),
-                Err(error) => {
-                    CheckStatus::Failed(format!("{error}. Your current version is unchanged."))
-                }
+                Err(error) => CheckStatus::Failed(format!(
+                    "{}. Your current version is unchanged.",
+                    error.to_string().trim_end_matches('.')
+                )),
             });
         }
     });
 }
 
 const UP_TO_DATE: &str = "You are up to date on the selected channel.";
+const IN_PROGRESS: &str = "An update check or download is already in progress.";
 
 fn check_and_download() -> anyhow::Result<&'static str> {
     let manager = manager()?;
