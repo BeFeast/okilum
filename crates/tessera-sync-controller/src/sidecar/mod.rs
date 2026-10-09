@@ -13,7 +13,6 @@ pub mod authority;
 #[cfg(unix)]
 pub mod journal;
 pub mod macos;
-#[cfg(unix)]
 pub mod store;
 pub mod supervisor;
 pub mod update;
