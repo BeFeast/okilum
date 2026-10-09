@@ -135,8 +135,17 @@ fn editor_entries(
     entries
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many times the real builder ran: a right-click test must prove the
+    /// callback was reached, or "no panic" would prove nothing.
+    pub(super) static MENU_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub(super) fn editor_menu(menu: NativeMenu, state: &Entity<EditorState>, cx: &App) -> NativeMenu {
     use gpui_base::input::{Copy, Cut, GoToDefinition, Paste, SelectAll, ToggleCodeActions};
+    #[cfg(test)]
+    MENU_BUILDS.with(|builds| builds.set(builds.get() + 1));
     #[cfg(any(unix, windows))]
     let date = selected_date(state, cx).map(|(_, date)| date);
     #[cfg(not(any(unix, windows)))]
@@ -523,6 +532,46 @@ mod visual_tests {
             "{line}"
         );
         assert!(!root.join(NOTE).exists(), "the default note is not created");
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    /// #955: Editor::context_menu runs its builder while the editor's own state
+    /// is being updated (the vendor defers it with `defer_in`), so the builder
+    /// must not read that state. Right-click it for real.
+    #[gpui::test]
+    fn right_click_in_the_source_editor_reaches_the_menu_builder_without_panicking(
+        cx: &mut TestAppContext,
+    ) {
+        let temp = std::env::temp_dir().join(format!("tessera-remind-{}", uuid::Uuid::new_v4()));
+        let (root, state) = (temp.join("vault"), temp.join("state"));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(root.join("start.md"), "Winter 2026-11-01 time\n").unwrap();
+        let (reader, visual) = mount(cx, &root, &state);
+        visual.simulate_resize(size(px(1400.), px(960.)));
+        reader.update_in(visual, |v, window, cx| v.toggle_source(window, cx));
+        visual.run_until_parked();
+        let input = reader.read_with(visual, |v, _| v.editing.as_ref().unwrap().input().clone());
+        let bounds = input.read_with(visual, |i, _| i.input_bounds());
+        assert!(
+            bounds.size.width > px(100.),
+            "the editor is laid out: {bounds:?}"
+        );
+        let before = MENU_BUILDS.with(|builds| builds.get());
+        // Right-click twice: once with a selection (a date), once without.
+        for range in [7..17, 0..0] {
+            input.update(visual, |i, cx| i.set_selected_range(range, cx));
+            visual.run_until_parked();
+            let at = bounds.origin + point(px(40.), px(12.));
+            visual.simulate_mouse_down(at, MouseButton::Right, Modifiers::default());
+            visual.simulate_mouse_up(at, MouseButton::Right, Modifiers::default());
+            visual.run_until_parked();
+        }
+        assert_eq!(
+            MENU_BUILDS.with(|builds| builds.get()) - before,
+            2,
+            "positive control: the real builder ran for each right-click"
+        );
         std::fs::remove_dir_all(temp).unwrap();
     }
 
