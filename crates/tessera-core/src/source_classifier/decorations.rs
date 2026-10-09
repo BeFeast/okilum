@@ -36,8 +36,8 @@ pub(super) fn extract<'a>(root: &'a AstNode<'a>, context: &Context<'_>) -> Optio
                 {
                     return None;
                 }
-                // Keep checkbox paint unchanged even though tasklist parsing is
-                // intentionally not enabled in the formatting classifier.
+                // Task items parse as `TaskItem` and never reach this arm; keep
+                // the raw guard so checkbox paint cannot change if that differs.
                 let body = raw.get(1..)?.trim_start_matches([' ', '\t']);
                 if ["[ ]", "[x]", "[X]"]
                     .iter()

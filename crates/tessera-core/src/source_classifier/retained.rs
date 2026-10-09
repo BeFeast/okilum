@@ -1,5 +1,5 @@
 //! Presentation-only edit mapping. Never reuse stale navigation or parser metadata.
-use super::{Classification, StyleSpan, MAX_BYTES};
+use super::{Classification, Reference, StyleSpan, MAX_BYTES};
 use crate::source_projection::{Active, Plan, Region, Snapshot};
 use std::{ops::Range, sync::Arc};
 
@@ -55,6 +55,9 @@ pub struct RetainedPresentation {
     plan: Plan,
     styles: Vec<StyleSpan>,
     marker_scopes: Vec<(Range<usize>, Range<usize>)>,
+    contexts: Vec<Range<usize>>,
+    /// Definitions change only through a full parse; local reparses reuse these.
+    references: Arc<[Reference]>,
 }
 
 impl RetainedPresentation {
@@ -70,6 +73,8 @@ impl RetainedPresentation {
             plan: classified.plan.clone(),
             styles: classified.styles.clone(),
             marker_scopes: classified.marker_scopes.clone(),
+            contexts: classified.contexts.clone(),
+            references: classified.references.clone().into(),
         }
     }
     pub fn snapshot(&self) -> &Snapshot {
@@ -202,30 +207,92 @@ impl RetainedPresentation {
         if last < first {
             return None;
         }
+        // A top-level list/quote is the parse context of every line in it, and
+        // can absorb an indented or lazy line across whitespace. Reparse whole
+        // containers that the dirty run touches or borders (#868).
+        let mut dirty = source_regions[first].block().start..source_regions[last].block().end;
+        let mut included = vec![false; self.contexts.len()];
+        while let Some(index) = self.contexts.iter().enumerate().position(|(i, c)| {
+            !included[i]
+                && (c.start <= dirty.end && dirty.start <= c.end
+                    || old
+                        .get(c.end..dirty.start)
+                        .is_some_and(|gap| gap.trim().is_empty())
+                    || old
+                        .get(dirty.end..c.start)
+                        .is_some_and(|gap| gap.trim().is_empty()))
+        }) {
+            included[index] = true;
+            let c = &self.contexts[index];
+            dirty = dirty.start.min(c.start)..dirty.end.max(c.end);
+        }
+        let first = source_regions
+            .iter()
+            .position(|r| r.block().end > dirty.start)?;
+        let last = source_regions
+            .iter()
+            .rposition(|r| r.block().start < dirty.end)?;
+        if last < first {
+            return None;
+        }
         let affected = &source_regions[first..=last];
+        // Between accepted blocks only whitespace and quote prefixes may remain;
+        // anything else is an unsupported block that this parse cannot prove.
+        let container_gap = |gap: Option<&str>| {
+            gap.is_some_and(|gap| gap.chars().all(|c| c.is_whitespace() || c == '>'))
+        };
         if affected
             .iter()
             .any(|r| !matches!(r, Region::Conceal { .. }))
-            || affected.windows(2).any(|pair| {
-                old.get(pair[0].block().end..pair[1].block().start)
-                    .is_none_or(|gap| !gap.trim().is_empty())
-            })
+            || !container_gap(old.get(dirty.start..affected[0].block().start))
+            || !container_gap(old.get(affected[affected.len() - 1].block().end..dirty.end))
+            || affected
+                .windows(2)
+                .any(|pair| !container_gap(old.get(pair[0].block().end..pair[1].block().start)))
         {
             return None;
         }
-        let dirty = affected.first()?.block().start..affected.last()?.block().end;
         let shift = |offset: usize| offset.checked_add(new_end)?.checked_sub(end);
         let updated = dirty.start..shift(dirty.end)?;
         let fragment = new.get(updated.clone())?;
+        let spans: Vec<_> = self
+            .contexts
+            .iter()
+            .zip(&included)
+            .filter(|(_, &included)| included)
+            .filter_map(|(c, _)| {
+                let span_start = if c.start <= start {
+                    c.start
+                } else {
+                    shift(c.start)?
+                };
+                let span_end = if c.end >= end { shift(c.end)? } else { c.end };
+                Some(span_start..span_end)
+            })
+            .collect();
         // Bound parser input before entering Comrak, not after a long parse.
-        // Fences/HTML/definitions can change nonlocal parsing. Indented blocks
-        // can attach to surrounding containers; do not infer their context.
+        // Fences/HTML/definitions can change nonlocal parsing. Inside a whole
+        // container fences and HTML end with it; definitions stay global.
+        let lines: Vec<_> = fragment
+            .split_inclusive('\n')
+            .scan(0, |offset, line| {
+                let at = *offset;
+                *offset += line.len();
+                Some((at, line))
+            })
+            .collect();
+        let in_spans = |at: usize| {
+            spans
+                .iter()
+                .any(|span| span.start <= updated.start + at && updated.start + at < span.end)
+        };
         if fragment.contains('\0')
-            || fragment.lines().any(|line| {
-                let plain = line.trim_start();
-                line.len() - plain.len() >= 4
-                    || line.starts_with('\t')
-                    || plain.starts_with(['`', '~', '<', '[', '>'])
+            || lines.iter().any(|&(at, line)| {
+                if in_spans(at) {
+                    container_content(line).starts_with('[')
+                } else {
+                    line.trim_start().starts_with(['`', '~', '<', '['])
+                }
             })
         {
             return None;
@@ -249,11 +316,59 @@ impl RetainedPresentation {
         {
             return None;
         }
+        // Only the document start may begin with a BOM; elsewhere it is text.
+        if updated.start != 0 && fragment.starts_with('\u{feff}') {
+            return None;
+        }
+        // The line above the run is outside the fragment. A paragraph there
+        // can take a setext underline or block a list that cannot interrupt
+        // it; only a blank line or an ATX heading is a proven boundary.
+        let above = new[..updated.start]
+            .strip_suffix('\n')
+            .map(|before| before.strip_suffix('\r').unwrap_or(before))
+            .map(|before| &before[before.rfind('\n').map_or(0, |i| i + 1)..]);
+        if above.is_some_and(|line| !line.trim().is_empty() && !atx_heading(line)) {
+            return None;
+        }
         let local = Snapshot::new(current.document(), current.generation(), fragment);
         // Oversized but context-local edits keep only their dirty run raw until
         // async adoption. Do not discard the already validated outer blocks.
         let classified = (dirty.len() <= LOCAL_BYTES && fragment.len() <= LOCAL_BYTES)
-            .then(|| super::classify(&local));
+            .then(|| super::classify_with(&local, &self.references));
+        // Indented, tabbed and quote lines can attach to a container, and a
+        // fence or HTML opener ends only with its container. Accept them only
+        // inside a container of this parse, which includes every container the
+        // run borders; old-coordinate spans may no longer hold after the edit.
+        // A container reaching the run's end must not continue lazily into an
+        // adjacent line outside it.
+        let in_local = |at: usize| {
+            classified
+                .as_ref()
+                .is_some_and(|c| c.contexts.iter().any(|ctx| ctx.start <= at && at < ctx.end))
+        };
+        let attaching = lines.iter().any(|&(at, line)| {
+            let plain = line.trim_start();
+            (line.len() - plain.len() >= 4
+                || line.starts_with('\t')
+                || plain.starts_with(['>', '`', '~', '<']))
+                && !in_local(at)
+        });
+        let after = &new[updated.end..];
+        let after = after
+            .strip_prefix("\r\n")
+            .or_else(|| after.strip_prefix('\n'))
+            .unwrap_or(after);
+        let next_blank = after
+            .split('\n')
+            .next()
+            .is_none_or(|line| line.trim().is_empty());
+        let lazy = !next_blank
+            && classified
+                .as_ref()
+                .is_some_and(|c| c.contexts.iter().any(|ctx| ctx.end == fragment.len()));
+        if attaching || lazy {
+            return None;
+        }
         let offset = |r: &Range<usize>| updated.start + r.start..updated.start + r.end;
         let map = |r: &Range<usize>| -> Option<Range<usize>> {
             if r.end <= dirty.start {
@@ -326,6 +441,11 @@ impl RetainedPresentation {
                 .map(|(m, s)| (offset(m), offset(s))),
         );
         marker_scopes.sort_by_key(|(m, _)| m.start);
+        // An unclassified raw run has no proven containers: later edits in it
+        // keep the strict outside-container line rules until adoption.
+        let mut contexts: Vec<_> = self.contexts.iter().filter_map(map).collect();
+        contexts.extend(classified.iter().flat_map(|c| &c.contexts).map(offset));
+        contexts.sort_by_key(|c| c.start);
         let plan = Plan::new(current, regions);
         let base = crate::source_projection::project(current, &plan, &Active::default()).ok()?;
         Some(Self {
@@ -334,6 +454,8 @@ impl RetainedPresentation {
             plan,
             styles,
             marker_scopes,
+            contexts,
+            references: self.references.clone(),
         })
     }
 
@@ -358,6 +480,8 @@ impl RetainedPresentation {
                 plan: Plan::new(current, self.plan.regions().to_vec()),
                 styles: self.styles.clone(),
                 marker_scopes: self.marker_scopes.clone(),
+                contexts: self.contexts.clone(),
+                references: self.references.clone(),
             });
         }
         if current.generation() == self.snapshot.generation() {
@@ -472,10 +596,28 @@ impl RetainedPresentation {
                 },
             });
         }
+        // An edit inside a container extends it, including typing at its end.
+        let contexts = self
+            .contexts
+            .iter()
+            .map(|c| {
+                if c.start <= start && end <= c.end {
+                    Some(c.start..shift(c.end)?)
+                } else if c.end <= start {
+                    Some(c.clone())
+                } else if c.start >= end {
+                    Some(shift(c.start)?..shift(c.end)?)
+                } else {
+                    None
+                }
+            })
+            .collect::<Option<Vec<_>>>()?;
         let plan = Plan::new(current, regions);
         // Build and validate once per revision, then reuse during reveal/IME.
         let base = crate::source_projection::project(current, &plan, &Active::default()).ok()?;
         let result = Self {
+            contexts,
+            references: self.references.clone(),
             snapshot: current.clone(),
             base: Ok(Arc::new(base)),
             plan,
@@ -515,6 +657,49 @@ fn opens_list_item(line: &str) -> bool {
         _ => return false,
     };
     rest.is_empty() || rest.starts_with([' ', '\t'])
+}
+
+/// An ATX heading line: up to three spaces, one to six `#`, then space or end.
+fn atx_heading(line: &str) -> bool {
+    let rest = line.trim_start_matches(' ');
+    let hashes = rest.bytes().take_while(|&b| b == b'#').count();
+    line.len() - rest.len() <= 3
+        && (1..=6).contains(&hashes)
+        && rest[hashes..]
+            .chars()
+            .next()
+            .is_none_or(|c| c == ' ' || c == '\t')
+}
+
+/// Line content after container prefixes: indentation, quote markers and
+/// list/task markers.
+fn container_content(line: &str) -> &str {
+    let mut rest = line;
+    loop {
+        rest = rest.trim_start_matches([' ', '\t']);
+        if let Some(after) = rest.strip_prefix('>') {
+            rest = after;
+            continue;
+        }
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        // `[x]:` stays: that is a reference definition, not a task marker.
+        let marker = if rest.starts_with(['-', '+', '*']) {
+            1
+        } else if ["[ ]", "[x]", "[X]"]
+            .iter()
+            .any(|task| rest.starts_with(task))
+        {
+            3
+        } else if (1..=9).contains(&digits) && rest[digits..].starts_with(['.', ')']) {
+            digits + 1
+        } else {
+            return rest;
+        };
+        match rest[marker..].chars().next() {
+            Some(' ' | '\t') => rest = &rest[marker..],
+            _ => return rest,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -732,6 +917,164 @@ mod tests {
                     new.source()
                 );
             }
+        }
+    }
+
+    #[test]
+    fn structural_edits_in_containers_reparse_the_whole_container() {
+        for (before, after) in [
+            // Nested list, three depths, quote inside a list item.
+            (
+                "- a **b**\n  - c *d*\n- e",
+                "- a **b**\n  - c *d*\n  - new **x**\n- e",
+            ),
+            (
+                "1. a\n   - b\n     > c **d**",
+                "1. a\n   - b\n     > c **d**\n     > e *f*",
+            ),
+            ("> a **b**\n> c", "> a **b**\n> new *x*\n> c"),
+            ("> a **b**\n>\n> c", "> a **b**\n>\n> c\nlazy *x*"),
+            ("- [ ] a **b**", "- [ ] a **b**\n- [x] c ~~d~~"),
+            // A paragraph after a list is reparsed with the list it borders.
+            ("- a\n\nplain *p*", "- a\n\nplain *p*\nmore **m**"),
+            ("- a\n\nplain *p*", "- a\n\n  plain *p*\n  more"),
+            // A new quote is parsed whole; a blank line ends it.
+            ("plain *p*", "plain *p*\n> q **r**"),
+        ] {
+            let old = snapshot(1, &format!("**BEFORE**\n\n{before}\n\n**AFTER** [l](d)"));
+            let current = snapshot(2, &format!("**BEFORE**\n\n{after}\n\n**AFTER** [l](d)"));
+            let retained = RetainedPresentation::new(&classify(&old))
+                .remap(&current)
+                .unwrap_or_else(|| panic!("local container reparse: {after:?}"));
+            let fresh = RetainedPresentation::new(&classify(&current));
+            assert_eq!(
+                retained.project(&Active::default()).unwrap().display(),
+                fresh.project(&Active::default()).unwrap().display(),
+                "{after:?}"
+            );
+            assert_eq!(retained.styles(), fresh.styles(), "{after:?}");
+            assert_eq!(retained.contexts, fresh.contexts, "{after:?}");
+        }
+    }
+
+    #[test]
+    fn container_reparse_refuses_definitions_and_unsupported_content() {
+        for (before, after) in [
+            ("> a **b**\n> c", "> a **b**\n> [id]: /u\n> c"),
+            ("- a **b**\n- c", "- a **b**\n- [id]: /u\n- c"),
+            // An unsupported block inside the container cannot be proven.
+            (
+                "- a **b**\n\n      code\n- c",
+                "- a **b**\n  more\n\n      code\n- c",
+            ),
+            // Indented blocks outside containers keep the conservative refusal.
+            ("plain *p*", "plain *p*\n\n    code"),
+            // A new quote would continue lazily into the adjacent paragraph.
+            ("# H **b**\ntext *t*", "> H **b**\ntext *t*"),
+        ] {
+            let old = snapshot(1, &format!("{before}\n\n**AFTER**"));
+            let current = snapshot(2, &format!("{after}\n\n**AFTER**"));
+            assert!(
+                RetainedPresentation::new(&classify(&old))
+                    .remap(&current)
+                    .is_none(),
+                "{after:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn local_reparse_resolves_only_references_the_full_parse_resolved() {
+        let tail = "\n\nplain\n\n[Id]: /x\n[Other]: /o\n";
+        let old = snapshot(1, &format!("- a [l][Id]{tail}"));
+        let retained = RetainedPresentation::new(&classify(&old));
+        let known = snapshot(2, &format!("- a [l][Id]\n- b [m][Id]{tail}"));
+        let local = retained.remap(&known).expect("local container reparse");
+        let fresh = RetainedPresentation::new(&classify(&known));
+        let shown = local
+            .project(&Active::default())
+            .unwrap()
+            .display()
+            .to_owned();
+        assert_eq!(shown, fresh.project(&Active::default()).unwrap().display());
+        assert!(shown.starts_with("- a l\n- b m\n"), "{shown:?}");
+        // `Other` is defined but no use resolved it in the full parse. The
+        // local reparse must not guess; the fresh parse does resolve it.
+        let unknown = snapshot(3, &format!("- a [l][Id]\n- b [m][Other]{tail}"));
+        let local = retained.remap(&unknown).expect("local container reparse");
+        assert!(local
+            .project(&Active::default())
+            .unwrap()
+            .display()
+            .starts_with("- a l\n- b [m][Other]"));
+        assert!(RetainedPresentation::new(&classify(&unknown))
+            .project(&Active::default())
+            .unwrap()
+            .display()
+            .starts_with("- a l\n- b m\n"));
+        // Definitions change every use: only a full parse may adopt them.
+        let redefined = snapshot(4, &format!("- a [l][Id]{}", tail.replace("/x", "/y")));
+        assert!(retained.remap(&redefined).is_none());
+    }
+
+    #[test]
+    fn local_reparse_is_refused_or_equal_to_a_fresh_parse() {
+        // Review of #900: escaping fences/HTML and the paragraph above a run.
+        for (before, after, refused) in [
+            (
+                "> a **b**\n> c *d*\n\n**AFTER**",
+                "> a **b**\n```\n> c *d*\n\n**AFTER**",
+                true,
+            ),
+            ("- a\n- b *c*\n\nz *w*", "- a\n~~~\n- b *c*\n\nz *w*", true),
+            (
+                "> a **b**\n> c\n\nz *w*",
+                "> a **b**\n<script>\n> c\n\nz *w*",
+                true,
+            ),
+            (
+                "- a **b**\n- c\n\nz *w*",
+                "- a **b**\n<pre>\n- c\n\nz *w*",
+                true,
+            ),
+            ("Intro *t*:\n- a\n\nz", "Intro *t*:\n- \n\nz", true),
+            ("Intro *t*:\n1. a **b**", "Intro *t*:\n0. a **b**", true),
+            ("# H\n- a **b**", "# H\n- a **b**\n- c *d*", false),
+            ("> a **b**\n> c", "> a **b**\n> ```\n> x\n> ```\n> c", false),
+            // #832: a new list item next to an indented neighbor refuses.
+            ("a **b**\n\n  c *d*", "- a **b**\n\n  c *d*", true),
+            (
+                "\u{feff}> a **b**\r\n> c",
+                "\u{feff}> a **b**\r\n> ש *x*\r\n> c",
+                false,
+            ),
+        ] {
+            let old = snapshot(1, before);
+            let current = snapshot(2, after);
+            let local = RetainedPresentation::new(&classify(&old)).remap(&current);
+            assert_eq!(local.is_none(), refused, "{after:?}");
+            if let Some(local) = local {
+                let fresh = RetainedPresentation::new(&classify(&current));
+                assert_eq!(
+                    local.project(&Active::default()).unwrap().display(),
+                    fresh.project(&Active::default()).unwrap().display(),
+                    "{after:?}"
+                );
+                assert_eq!(local.styles(), fresh.styles(), "{after:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn container_prefixes_are_stripped_before_the_definition_check() {
+        for (line, content) in [
+            ("> > - [ ] [x]: y", "[x]: y"),
+            ("  10) text", "text"),
+            ("-\t[X] task", "task"),
+            ("-no space", "-no space"),
+            ("[x]: def", "[x]: def"),
+        ] {
+            assert_eq!(container_content(line), content, "{line:?}");
         }
     }
 
