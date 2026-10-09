@@ -122,6 +122,8 @@ struct Saved {
     find_case_sensitive: bool,
     typed_views: okilum_core::typed_view::Preferences,
     toolbar_labels: bool,
+    /// Soft wrap in code files (#998); off means horizontal scroll.
+    code_soft_wrap: bool,
     delimited_no_header: BTreeSet<PathBuf>,
     vaults: BTreeMap<PathBuf, Layout>,
     /// Per-vault accent preset key (#774), keyed like `vaults` by the
@@ -142,6 +144,7 @@ impl Default for Saved {
             find_case_sensitive: false,
             typed_views: Default::default(),
             toolbar_labels: false,
+            code_soft_wrap: false,
             delimited_no_header: Default::default(),
             vaults: Default::default(),
             vault_colors: Default::default(),
@@ -162,6 +165,7 @@ struct Store {
     find_changed: bool,
     typed_views_changed: bool,
     toolbar_labels_changed: bool,
+    code_soft_wrap_changed: bool,
     colors_changed: BTreeSet<PathBuf>,
     delimited_changed: BTreeSet<PathBuf>,
     frames_changed: BTreeSet<String>,
@@ -233,6 +237,7 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         // different process's newly saved mappings with our startup defaults.
         typed_views_changed: false,
         toolbar_labels_changed: false,
+        code_soft_wrap_changed: false,
         colors_changed: Default::default(),
         delimited_changed: Default::default(),
         frames_changed: Default::default(),
@@ -395,6 +400,7 @@ struct WriteJob {
     find_changed: bool,
     typed_views_changed: bool,
     toolbar_labels_changed: bool,
+    code_soft_wrap_changed: bool,
     colors_changed: BTreeSet<PathBuf>,
     delimited_changed: BTreeSet<PathBuf>,
     serial: Arc<AtomicU64>,
@@ -461,6 +467,9 @@ impl WriteJob {
         if self.toolbar_labels_changed {
             latest.toolbar_labels = self.saved.toolbar_labels;
         }
+        if self.code_soft_wrap_changed {
+            latest.code_soft_wrap = self.saved.code_soft_wrap;
+        }
         // Per root, like layouts: a colour removed here is removed there.
         for root in &self.colors_changed {
             match self.saved.vault_colors.get(root) {
@@ -509,6 +518,7 @@ fn job(cx: &App) -> Option<WriteJob> {
             && !state.find_changed
             && !state.typed_views_changed
             && !state.toolbar_labels_changed
+            && !state.code_soft_wrap_changed
             && state.colors_changed.is_empty()
             && state.delimited_changed.is_empty()
             && !state.last_changed
@@ -530,6 +540,7 @@ fn job(cx: &App) -> Option<WriteJob> {
         find_changed: state.find_changed,
         typed_views_changed: state.typed_views_changed,
         toolbar_labels_changed: state.toolbar_labels_changed,
+        code_soft_wrap_changed: state.code_soft_wrap_changed,
         colors_changed: state.colors_changed.clone(),
         delimited_changed: state.delimited_changed.clone(),
         serial: state.serial.clone(),
@@ -1019,6 +1030,22 @@ pub(crate) fn set_toolbar_labels(value: bool, cx: &mut App) {
     cx.refresh_windows();
 }
 
+pub(crate) fn code_soft_wrap(cx: &App) -> bool {
+    cx.try_global::<Store>()
+        .is_some_and(|state| state.saved.code_soft_wrap)
+}
+
+pub(crate) fn set_code_soft_wrap(value: bool, cx: &mut App) {
+    if !installed(cx) || code_soft_wrap(cx) == value {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.code_soft_wrap = value;
+    state.code_soft_wrap_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
 pub(crate) fn delimited_header(path: &Path, cx: &App) -> bool {
     !cx.try_global::<Store>()
         .is_some_and(|state| state.saved.delimited_no_header.contains(path))
@@ -1081,6 +1108,7 @@ fn mark_saved(generation: u64, cx: &mut App) {
         state.find_changed = false;
         state.typed_views_changed = false;
         state.toolbar_labels_changed = false;
+        state.code_soft_wrap_changed = false;
         state.colors_changed.clear();
         state.delimited_changed.clear();
         state.last_changed = false;
@@ -1321,6 +1349,7 @@ mod tests {
                 find_changed: false,
                 typed_views_changed: true,
                 toolbar_labels_changed: false,
+                code_soft_wrap_changed: false,
                 colors_changed: Default::default(),
                 delimited_changed: Default::default(),
                 frames_changed: Default::default(),

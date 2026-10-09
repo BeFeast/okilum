@@ -85,6 +85,8 @@ impl PlainTextPreview {
 impl Render for PlainTextPreview {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let font_size = px(reader_ui_state::font_size(cx));
+        // Monospace text uses the code size, not the reading size (#998).
+        let code_size = reader_code_file::text_size(cx);
         let view = v_flex().w_full().flex_1().min_h_0().px_6().pb_6().gap_3();
         match &self.state {
             State::Loading => view.child(
@@ -120,7 +122,7 @@ impl Render for PlainTextPreview {
                                     .border_0()
                                     .rounded(px(0.))
                                     .p_0()
-                                    .text_size(font_size),
+                                    .text_size(code_size),
                             ),
                         ),
                 )

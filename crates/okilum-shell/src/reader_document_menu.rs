@@ -57,7 +57,8 @@ impl Reader {
         let file_editable = self
             .file_preview
             .as_ref()
-            .is_some_and(|p| reader_delimited::editable(&p.rel));
+            .is_some_and(|p| reader_delimited::editable(&p.rel))
+            && self.code_file_editable(cx);
         let table_path = self
             .file_preview
             .as_ref()

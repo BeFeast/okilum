@@ -135,6 +135,8 @@ pub(crate) struct FilePreview {
     /// The inline reader for a PDF (#477); replaces the file card.
     pub pdf: Option<Entity<reader_pdf::PdfViewer>>,
     pub text: Option<Entity<reader_plain_text::PlainTextPreview>>,
+    /// Source code with syntax highlighting (#998).
+    pub code: Option<Entity<reader_code_file::CodePreview>>,
     pub table: Option<Entity<reader_delimited::TablePreview>>,
     #[cfg(any(target_os = "macos", all(test, unix)))]
     pub thumbnail: Option<Entity<reader_thumbnail::Thumbnail>>,
@@ -162,6 +164,7 @@ impl FilePreview {
             live_identity: Arc::new(()),
             _live: None,
             table: None,
+            code: None,
             rel: rel.into(),
             path,
             details: live::metadata_label(&ext, &meta),
@@ -341,6 +344,11 @@ impl Reader {
                         Some(cx.new(|cx| {
                             reader_delimited::TablePreview::new(preview.path.clone(), cx)
                         }));
+                } else if reader_code_file::eligible(rel) {
+                    let (root, path) = (self.vault_root.clone(), preview.path.clone());
+                    preview.code = Some(cx.new(|cx| {
+                        reader_code_file::CodePreview::new(root, rel.into(), path, window, cx)
+                    }));
                 } else if reader_plain_text::eligible(rel) {
                     preview.text = Some(cx.new(|cx| {
                         reader_plain_text::PlainTextPreview::new(
@@ -355,6 +363,7 @@ impl Reader {
                 if preview.pdf.is_none()
                     && preview.log.is_none()
                     && preview.text.is_none()
+                    && preview.code.is_none()
                     && preview.table.is_none()
                     && reader_thumbnail::eligible(rel)
                 {
@@ -376,6 +385,10 @@ impl Reader {
                 } else {
                     self.focus_handle.focus(window, cx);
                 }
+                // A code view is read-only: Reader shortcuts keep working (#998).
+                if reader_code_file::eligible(rel) {
+                    self.focus_handle.focus(window, cx);
+                }
             }
             Err(error) => reader_toast::error(format!("Cannot preview file: {error}"), window, cx),
         }
@@ -391,6 +404,9 @@ impl Reader {
             return v_flex()
                 .size_full()
                 .min_h_0()
+                .when(preview.code.is_some(), |view| {
+                    view.key_context(reader_code_file::KEY_CONTEXT)
+                })
                 .child(self.render_document_header(window, cx))
                 .child(self.render_source(window, cx))
                 .into_any_element();
@@ -431,6 +447,16 @@ impl Reader {
                 .size_full()
                 .child(self.render_document_header(window, cx))
                 .child(text.clone())
+                .into_any_element();
+        }
+        if let Some(code) = &preview.code {
+            return v_flex()
+                .id("reader-file-preview")
+                .key_context("ReaderFile")
+                .track_focus(&self.focus_handle)
+                .size_full()
+                .child(self.render_document_header(window, cx))
+                .child(code.clone())
                 .into_any_element();
         }
         if okilum_core::excalidraw::is_drawing(&preview.rel) {
@@ -605,6 +631,78 @@ impl Asset for HeicImage {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    #[gpui::test]
+    fn code_file_view_is_read_only_finds_and_edits_within_the_cap(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("note.md"), "# Note\n").unwrap();
+        let code = "import os\n\ndef main() -> None:\n    print(os.getcwd())\n";
+        std::fs::write(root.join("tool.py"), code).unwrap();
+        let big = vec![b' '; reader_code_file::MAX_BYTES as usize + 1];
+        std::fs::write(root.join("big.json"), big).unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let entity = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("note.md".into()),
+                        index_dir: Some(fixture.path().join("index")),
+                        session_directory: Some(fixture.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(entity.clone());
+            Root::new(entity, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            r.preview_file("tool.py", window, cx)
+        });
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            let input = r.code_view_input(cx).expect("code view loaded");
+            assert_eq!(input.read(cx).value().as_ref(), code);
+            assert!(!input.read(cx).is_editable(), "the code view is read-only");
+            assert!(!input.read(cx).search_session().open);
+            // Find reaches the code view's own editor (#998 review).
+            r.open_find(window, cx);
+            assert!(input.read(cx).search_session().open);
+            assert!(r.code_file_editable(cx));
+            r.toggle_source(window, cx);
+            let editor = r
+                .editing
+                .as_ref()
+                .expect("Edit opens the file")
+                .test_input();
+            assert_eq!(editor.read(cx).value().as_ref(), code);
+            assert!(editor.read(cx).is_editable());
+        });
+        reader.update_in(visual, |r, window, cx| {
+            r.toggle_source(window, cx);
+            r.preview_file("big.json", window, cx);
+        });
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            assert!(
+                r.code_view_input(cx).is_none(),
+                "over the cap: a note, no editor"
+            );
+            assert!(!r.code_file_editable(cx));
+            r.toggle_source(window, cx);
+            assert!(r.editing.is_none(), "Edit stays off over the cap");
+        });
+    }
 
     #[gpui::test]
     fn delimited_attachment_edit_saves_only_changed_bytes_and_conflicts_keep_drafts(

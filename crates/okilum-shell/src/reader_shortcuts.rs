@@ -103,6 +103,7 @@ fn catalog() -> Vec<Entry> {
         entry::<ToggleNotes>("Notes panel", View),
         entry::<ToggleBacklinks>("On this page panel", View),
         entry::<ToggleHiddenFiles>("Show hidden files", View),
+        entry::<ToggleSoftWrap>("Soft wrap in code files", View),
         entry::<ToggleShortcutSheet>("Keyboard shortcuts", View),
         entry::<reader_open::NewWindow>("New window", View),
         entry::<reader_settings::OpenSettings>("Settings", View),

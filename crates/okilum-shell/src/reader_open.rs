@@ -71,7 +71,7 @@ impl OpenIntent {
                     .extension()
                     .is_some_and(|ext| ext.eq_ignore_ascii_case("md")))
         {
-            bail!("Choose a local Markdown, CSV, TSV, text or log file, or a folder");
+            bail!("Choose a local Markdown, CSV, TSV, text, code or log file, or a folder");
         }
         // Fail before constructing a Reader rather than falling back to its first note.
         // A log is bytes, not UTF-8 text: only readability is required.
@@ -200,11 +200,18 @@ mod tests {
         }
         std::fs::write(f.0.join("binary.md"), b"\xff\xfe").unwrap();
         assert!(OpenIntent::validate(&f.0.join("binary.md"), None, None).is_err());
+        // Code files open directly since #998; other kinds stay rejected.
         std::fs::write(f.0.join("data.json"), b"{}").unwrap();
-        assert!(OpenIntent::validate(&f.0.join("data.json"), None, None)
+        assert!(
+            OpenIntent::validate(&f.0.join("data.json"), None, None)
+                .unwrap()
+                .single_file
+        );
+        std::fs::write(f.0.join("archive.zip"), b"PK").unwrap();
+        assert!(OpenIntent::validate(&f.0.join("archive.zip"), None, None)
             .unwrap_err()
             .to_string()
-            .contains("log file"));
+            .contains("code or log file"));
         assert!(OpenIntent::validate(&f.0.join("absent.log"), None, None).is_err());
     }
 }

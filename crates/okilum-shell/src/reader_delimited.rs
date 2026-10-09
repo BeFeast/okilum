@@ -40,8 +40,11 @@ pub(crate) fn eligible(rel: &str) -> bool {
         .and_then(|e| e.to_str())
         .is_some_and(|e| e.eq_ignore_ascii_case("csv") || e.eq_ignore_ascii_case("tsv"))
 }
+/// Text files the Reader can open in its editor: tables, plain text and,
+/// since #998, source code.
 pub(crate) fn editable(rel: &str) -> bool {
     eligible(rel)
+        || crate::reader_code_file::eligible(rel)
         || Path::new(rel)
             .extension()
             .and_then(|e| e.to_str())

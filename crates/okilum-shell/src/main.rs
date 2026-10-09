@@ -27,6 +27,7 @@ mod quick_open;
 mod reader_app_menu;
 mod reader_cache;
 mod reader_code;
+mod reader_code_file;
 mod reader_code_language;
 #[cfg(any(unix, windows))]
 mod reader_confirm;
@@ -221,6 +222,7 @@ actions!(
         ToggleNotes,
         ToggleBacklinks,
         ToggleHiddenFiles,
+        ToggleSoftWrap,
         NewFromTemplate,
         TreeDown,
         TreeUp,
@@ -425,6 +427,9 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new(HIDDEN_FILES_KEY_MAC, ToggleHiddenFiles, ctx),
         KeyBinding::new("ctrl-home", ScrollTop, ctx),
         KeyBinding::new("ctrl-end", ScrollBottom, ctx),
+        // #998: VS Code's ⌥Z / Alt+Z, only in code views and code editors:
+        // elsewhere ⌥Z types a character (Ω, ż).
+        KeyBinding::new("alt-z", ToggleSoftWrap, Some(reader_code_file::KEY_CONTEXT)),
     ]);
 }
 
@@ -2068,6 +2073,16 @@ impl Reader {
 
     fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.file_preview.is_some() && self.editing.is_none() {
+            // The read-only code view searches in its own editor (#998).
+            if let Some(input) = self.code_view_input(cx) {
+                let sensitive = reader_ui_state::find_case_sensitive(cx);
+                input.update(cx, |input, cx| {
+                    let query = input.search_session().query.clone();
+                    input.set_search_query(query, !sensitive, cx);
+                    input.open_search(false, cx);
+                    input.focus(window, cx);
+                });
+            }
             return;
         }
         self.quick_open.open = false;
@@ -6040,7 +6055,7 @@ fn reader_more_menu(
     let current = cx.try_global::<AppearancePreference>().and_then(|p| p.0);
     reader_icon_button("reader-more", IconName::Ellipsis, "More", cx)
         .debug_selector(|| "reader-more".into())
-        .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
+        .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, cx| {
             let appearance = |label: &'static str, mode: Option<ThemeMode>| {
                 let vault = vault.clone();
                 PopupMenuItem::new(label)
@@ -6048,6 +6063,7 @@ fn reader_more_menu(
                     .on_click(move |_, window, cx| set_appearance(mode, Some(&vault), window, cx))
             };
             let settings_reader = reader.clone();
+            let wrap_reader = reader.clone();
             let reader = reader.clone();
             // `.action` only shows the bound key; the click handler still runs.
             menu.item(
@@ -6077,6 +6093,15 @@ fn reader_more_menu(
                     .action(Box::new(ToggleHiddenFiles))
                     .on_click(move |_, _, cx| {
                         let _ = reader.update(cx, |this, cx| this.toggle_hidden_files(cx));
+                    }),
+            )
+            .item(
+                PopupMenuItem::new("Soft wrap in code files")
+                    .checked(reader_ui_state::code_soft_wrap(cx))
+                    .action(Box::new(ToggleSoftWrap))
+                    .on_click(move |_, window, cx| {
+                        let _ = wrap_reader
+                            .update(cx, |this, cx| this.toggle_code_soft_wrap(window, cx));
                     }),
             )
             .separator()
@@ -6361,6 +6386,9 @@ impl Render for Reader {
             .on_action(
                 cx.listener(|this, _: &ToggleSource, window, cx| this.toggle_source(window, cx)),
             )
+            .on_action(cx.listener(|this, _: &ToggleSoftWrap, window, cx| {
+                this.toggle_code_soft_wrap(window, cx)
+            }))
             .on_action(cx.listener(|this, _: &OpenLivePreview, window, cx| {
                 this.open_live_preview(window, cx)
             }))
