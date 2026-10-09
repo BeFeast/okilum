@@ -198,9 +198,7 @@ impl TablePreview {
                     .overflow_hidden()
                     .when(self.selected(cell), |v| v.bg(palette.selected))
                     .child(div().truncate().child(text))
-                    .tooltip(move |window, cx| {
-                        gpui_component::tooltip::Tooltip::new(value.clone()).build(window, cx)
-                    })
+                    .hoverable_tooltip(move |window, cx| cell_tooltip(value.clone(), window, cx))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, event: &MouseDownEvent, window, cx| {
@@ -220,6 +218,35 @@ impl TablePreview {
             }))
             .into_any_element()
     }
+}
+
+fn cell_tooltip(value: String, window: &mut Window, cx: &mut App) -> AnyView {
+    let scroll = ScrollHandle::new();
+    gpui_component::tooltip::Tooltip::element(move |window, _| {
+        // Leave room for the tooltip's padding/margin and the window edges.
+        // A retained field can be 64 KiB, so wrapping alone is insufficient:
+        // keep the tooltip hoverable and let the reader scroll to its end.
+        let viewport = window.viewport_size();
+        let width = (f32::from(viewport.width) - 64.).clamp(1., 480.);
+        let height = (f32::from(viewport.height) - 64.).clamp(1., 360.);
+        div()
+            .id("delimited-cell-tooltip")
+            .debug_selector(|| "delimited-cell-tooltip".into())
+            .w(px(width))
+            .max_h(px(height))
+            .overflow_y_scroll()
+            .track_scroll(&scroll)
+            .child(
+                div()
+                    .id("delimited-cell-tooltip-value")
+                    .debug_selector(|| "delimited-cell-tooltip-value".into())
+                    .w_full()
+                    .whitespace_normal()
+                    .child(value.clone()),
+            )
+            .vertical_scrollbar(&scroll)
+    })
+    .build(window, cx)
 }
 
 fn visible(value: &str) -> String {
@@ -396,6 +423,82 @@ mod tests {
         assert_eq!(value.graphemes(true).count(), 200);
         assert!(eligible("sheet.TSV"));
         assert!(!eligible("note.md"));
+    }
+
+    #[gpui::test]
+    fn delimited_full_value_tooltip_wraps_and_scrolls_inside_viewport(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().join("long.csv");
+        // Exercise word wrapping, an unbroken field and embedded newlines.
+        let value = format!(
+            "{}\n{}\nEND-OF-FULL-VALUE",
+            "שלום world ".repeat(200),
+            "q".repeat(1200)
+        );
+        let source = format!("value\n\"{value}\"\n");
+        std::fs::write(&path, &source).unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let preview = cx.new(|cx| TablePreview::new(path.clone(), cx));
+            let surface = cx.new(|_| TableSurface(preview));
+            Root::new(surface, window, cx)
+        });
+        visual.run_until_parked();
+        for viewport in [size(px(1366.), px(768.)), size(px(360.), px(260.))] {
+            visual.simulate_resize(viewport);
+            for mode in [ThemeMode::Light, ThemeMode::Dark] {
+                visual.update(|_, cx| Theme::change(mode, None, cx));
+                visual.run_until_parked();
+                let cell = visual.debug_bounds("delimited-cell-1-0").unwrap();
+                visual.simulate_click(cell.center(), Modifiers::default());
+                visual.simulate_keystrokes("secondary-c");
+                visual.read(|cx| {
+                    assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), value);
+                });
+                visual.simulate_mouse_move(point(px(0.), px(0.)), None, Modifiers::default());
+                visual.executor().advance_clock(Duration::from_secs(1));
+                visual.run_until_parked();
+                visual.simulate_mouse_move(cell.center(), None, Modifiers::default());
+                visual.executor().advance_clock(Duration::from_secs(1));
+                visual.run_until_parked();
+                let tooltip = visual.debug_bounds("delimited-cell-tooltip").unwrap();
+                assert!(tooltip.left() >= px(0.) && tooltip.right() <= viewport.width);
+                assert!(tooltip.top() >= px(0.) && tooltip.bottom() <= viewport.height);
+                let content = visual.debug_bounds("delimited-cell-tooltip-value").unwrap();
+                assert!(content.size.width <= tooltip.size.width);
+                assert!(
+                    content.size.height > tooltip.size.height,
+                    "positive control: full value needs scrolling"
+                );
+                // Moving into the tooltip must keep it open long enough to read/scroll.
+                visual.simulate_mouse_move(tooltip.center(), None, Modifiers::default());
+                visual.executor().advance_clock(Duration::from_secs(1));
+                visual.run_until_parked();
+                assert!(visual.debug_bounds("delimited-cell-tooltip").is_some());
+                visual.simulate_event(ScrollWheelEvent {
+                    position: tooltip.center(),
+                    delta: ScrollDelta::Pixels(point(px(0.), px(-100_000.))),
+                    ..Default::default()
+                });
+                visual.run_until_parked();
+                let end = visual.debug_bounds("delimited-cell-tooltip-value").unwrap();
+                assert!(
+                    end.top() < content.top(),
+                    "positive control: wheel moved the full value"
+                );
+                assert!(
+                    end.bottom() <= tooltip.bottom() + px(1.),
+                    "the end of the full value is reachable"
+                );
+                visual.simulate_mouse_move(point(px(0.), px(0.)), None, Modifiers::default());
+                visual.executor().advance_clock(Duration::from_secs(1));
+                visual.run_until_parked();
+            }
+        }
+        assert_eq!(std::fs::read(path).unwrap(), source.as_bytes());
     }
 
     #[gpui::test]
