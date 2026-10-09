@@ -448,3 +448,135 @@ fn clones_share_one_exclusive_lock_and_a_transaction_owns_it() {
     drop(tx);
     assert!(other.begin(soon()).is_ok());
 }
+
+mod hint_tests {
+    use super::*;
+    use crate::sidecar::store::Hint;
+    use std::os::unix::fs::symlink;
+
+    fn names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<_> = fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
+    }
+    fn hint(generation: u128, started: u64) -> Hint {
+        Hint::new(Uuid::from_u128(generation), started).unwrap()
+    }
+
+    #[test]
+    fn a_hint_round_trips_without_creating_or_touching_the_journal() {
+        let dir = directory();
+        let store = Store::open_existing(dir.path()).unwrap();
+        assert_eq!(store.read_hint(soon()).unwrap(), None);
+        store.publish_hint(soon(), &hint(9, 42)).unwrap();
+        assert_eq!(
+            names(dir.path()),
+            ["endpoint.json"],
+            "no journal was created"
+        );
+        assert_eq!(
+            fs::metadata(dir.path().join("endpoint.json"))
+                .unwrap()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert_eq!(store.read_hint(soon()).unwrap(), Some(hint(9, 42)));
+        assert_eq!(load(&store), Stored::Absent, "the hint is not authority");
+        // A newer supervisor replaces it.
+        store.publish_hint(soon(), &hint(10, 43)).unwrap();
+        assert_eq!(
+            store.read_hint(soon()).unwrap().unwrap().generation(),
+            Uuid::from_u128(10)
+        );
+        store.clear_hint(soon()).unwrap();
+        store.clear_hint(soon()).unwrap(); // idempotent
+        assert_eq!(store.read_hint(soon()).unwrap(), None);
+        assert!(names(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn publishing_leaves_a_committed_journal_and_its_revision_alone() {
+        let (dir, store) = started();
+        let before = fs::read(dir.path().join(NAME)).unwrap();
+        store.publish_hint(soon(), &hint(9, 42)).unwrap();
+        assert_eq!(fs::read(dir.path().join(NAME)).unwrap(), before);
+        let stored = load(&store);
+        let Stored::Current(envelope) = stored else {
+            panic!()
+        };
+        assert_eq!(envelope.revision(), 1);
+        let (second, _) = envelope.disable(scope()).unwrap();
+        store.begin(soon()).unwrap().commit(second).unwrap(); // still commits
+    }
+
+    #[test]
+    fn malformed_or_unsafe_hints_are_errors_and_never_deleted_by_clear() {
+        let dir = directory();
+        let store = Store::open_existing(dir.path()).unwrap();
+        assert!(Hint::new(Uuid::nil(), 1).is_err());
+        assert!(Hint::new(Uuid::from_u128(9), 0).is_err());
+        store.publish_hint(soon(), &hint(9, 42)).unwrap();
+        let good = fs::read(dir.path().join("endpoint.json")).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&good).unwrap();
+        let mutate = |f: &dyn Fn(&mut serde_json::Value)| {
+            let mut v = value.clone();
+            f(&mut v);
+            put(
+                dir.path(),
+                "endpoint.json",
+                &serde_json::to_vec(&v).unwrap(),
+            );
+            store.read_hint(soon())
+        };
+        assert!(mutate(&|_| {}).is_ok()); // control
+        assert!(mutate(&|v| v["schema"] = 2.into()).is_err());
+        assert!(mutate(&|v| v["generation"] = Uuid::nil().to_string().into()).is_err());
+        assert!(mutate(&|v| v["started"] = 0.into()).is_err());
+        assert!(
+            mutate(&|v| v["pid"] = 4242.into()).is_err(),
+            "no PID field is accepted"
+        );
+        put(dir.path(), "endpoint.json", b"{");
+        assert!(store.read_hint(soon()).is_err());
+        // Shared permissions and a redirected name are refused, and clear leaves them.
+        put(dir.path(), "endpoint.json", &good);
+        fs::set_permissions(
+            dir.path().join("endpoint.json"),
+            fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        assert!(store.read_hint(soon()).is_err());
+        assert!(store.clear_hint(soon()).is_err());
+        assert!(dir.path().join("endpoint.json").exists());
+        fs::remove_file(dir.path().join("endpoint.json")).unwrap();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        fs::write(outside.path(), b"preserve").unwrap();
+        symlink(outside.path(), dir.path().join("endpoint.json")).unwrap();
+        assert!(store.read_hint(soon()).is_err());
+        assert!(store.publish_hint(soon(), &hint(9, 42)).is_err());
+        assert!(store.clear_hint(soon()).is_err());
+        assert_eq!(fs::read(outside.path()).unwrap(), b"preserve");
+    }
+
+    #[test]
+    fn hint_operations_wait_for_the_lock_only_until_the_deadline() {
+        let (dir, store) = started();
+        let other = Store::open_existing(dir.path()).unwrap();
+        let held = store.begin(soon()).unwrap();
+        for result in [
+            other.publish_hint(Instant::now() + Duration::from_millis(30), &hint(9, 42)),
+            other.clear_hint(Instant::now() + Duration::from_millis(30)),
+            other
+                .read_hint(Instant::now() + Duration::from_millis(30))
+                .map(|_| ()),
+        ] {
+            assert!(result.unwrap_err().to_string().contains("busy"));
+        }
+        drop(held);
+        other.publish_hint(soon(), &hint(9, 42)).unwrap(); // positive control
+    }
+}
