@@ -304,6 +304,9 @@ pub(super) struct Palette {
     generation: u64,
     running: bool,
     pending: bool,
+    /// Enter typed ahead of the current query's results (#1005): accept the
+    /// top row in this window once they arrive.
+    accept_when_ready: Option<gpui::AnyWindowHandle>,
     message: String,
     pub recent: Vec<String>,
     scroll: ScrollHandle,
@@ -332,6 +335,7 @@ impl Palette {
             generation: 0,
             running: false,
             pending: false,
+            accept_when_ready: None,
             message: String::new(),
             recent: Vec::new(),
             scroll: ScrollHandle::new(),
@@ -389,6 +393,7 @@ impl Reader {
     pub(super) fn close_quick_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.clear_hover(cx);
         self.quick_open.open = false;
+        self.quick_open.accept_when_ready = None;
         self.quick_open.invalidate();
         self.restore_document_focus(window, cx);
         cx.notify();
@@ -505,13 +510,19 @@ impl Reader {
         });
         cx.spawn(async move |this, cx| {
             let result = task.await;
-            let _ = this.update(cx, |this, cx| {
+            let accept = this.update(cx, |this, cx| {
                 this.quick_open.running = false;
+                let mut accept = None;
                 if this.quick_open.open
                     && this.quick_open.generation == generation
                     && this.vault_root == root
                     && this.watcher_generation == inventory
                 {
+                    // These rows answer the text typed so far, unless a newer
+                    // query is queued: only then does an early Enter apply.
+                    if !this.quick_open.pending {
+                        accept = this.quick_open.accept_when_ready.take();
+                    }
                     match result {
                         Ok((rows, snippets, message)) => {
                             this.quick_open.message = if rows.is_empty() && message.is_empty() {
@@ -528,7 +539,13 @@ impl Reader {
                     cx.notify();
                 }
                 this.start_quick_open_query(cx);
+                accept
             });
+            if let Ok(Some(window)) = accept {
+                let _ = cx.update_window(window, |_, window, cx| {
+                    let _ = this.update(cx, |this, cx| this.accept_quick_open(window, cx));
+                });
+            }
         })
         .detach();
     }
@@ -548,6 +565,13 @@ impl Reader {
         if !self.quick_open.open {
             return;
         }
+        // Rows still belong to an earlier text: wait for this query (#1005).
+        if self.quick_open.running || self.quick_open.pending {
+            self.quick_open.selected = 0;
+            self.quick_open.accept_when_ready = Some(window.window_handle());
+            return;
+        }
+        self.quick_open.accept_when_ready = None;
         let Some(hit) = self.quick_open.rows.get(self.quick_open.selected).cloned() else {
             return;
         };
@@ -1063,6 +1087,64 @@ mod tests {
         assert_eq!(result_folder("note.md"), "");
         assert_eq!(result_folder("Memory/_index.md"), "Memory");
         assert_eq!(result_folder("Areas/okilum/Plan.md"), "Areas › okilum");
+    }
+
+    #[gpui::test]
+    fn enter_typed_ahead_of_results_opens_the_top_result(cx: &mut TestAppContext) {
+        // #1005: on slow hardware Enter can arrive before the final query's rows.
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        for name in ["Home.md", "Reading list.md", "Other.md"] {
+            std::fs::write(root.join(name), format!("# {name}\n")).unwrap();
+        }
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("Home.md".into()),
+                        index_dir: Some(fixture.path().join("index")),
+                        session_directory: Some(fixture.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        reader.update_in(visual, |v, window, cx| v.open_quick_open(false, window, cx));
+        visual.run_until_parked();
+        let (release, hold) = async_channel::bounded(1);
+        reader.update_in(visual, |v, window, cx| {
+            v.quick_open.hold_query = Some(hold);
+            v.quick_open
+                .input
+                .update(cx, |input, cx| input.set_value("reading", window, cx));
+            v.refresh_quick_open(cx);
+            assert!(v.quick_open.running, "the final query is still in flight");
+            assert!(v.quick_open.rows.is_empty());
+        });
+        visual.simulate_keystrokes("enter");
+        reader.update(visual, |v, _| {
+            assert!(v.quick_open.open, "Enter waits for this query's rows");
+            assert!(v.quick_open.accept_when_ready.is_some());
+        });
+        release.try_send(()).unwrap();
+        visual.run_until_parked();
+        reader.update(visual, |v, _| {
+            assert!(!v.quick_open.open, "the held Enter was applied");
+            assert_eq!(v.current_rel, "Reading list.md");
+        });
     }
 
     #[gpui::test]
