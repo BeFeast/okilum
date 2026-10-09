@@ -1,0 +1,143 @@
+diff --git a/crates/base/src/input/editor/display_map/text_wrapper.rs b/crates/base/src/input/editor/display_map/text_wrapper.rs
+index 16fc690..6007078 100644
+--- a/crates/base/src/input/editor/display_map/text_wrapper.rs
++++ b/crates/base/src/input/editor/display_map/text_wrapper.rs
+@@ -439,14 +439,25 @@ impl TextWrapper {
+                 )
+                 .expect("valid projected text");
+             trace.shape_finished(shape_start);
+-            let ranges = crate::input::projection_layout::projected_wrap_ranges(
+-                &line,
+-                shaped.first().into_iter().flat_map(|shaped| {
+-                    shaped.wrap_boundaries.iter().map(move |boundary| {
+-                        shaped.unwrapped_layout.runs[boundary.run_ix].glyphs[boundary.glyph_ix].index
+-                    })
+-                }),
+-            );
++            // Shaped wrap boundaries are visual: inside a right-to-left run they
++            // come out in reverse byte order. Rows are logical ranges, so a line
++            // with right-to-left text is wrapped again in logical order (#931).
++            let ranges = match (shaped.first(), self.wrap_width) {
++                (Some(shaped), Some(width)) if !shaped.wrap_boundaries.is_empty() && has_rtl(&line) => {
++                    crate::input::projection_layout::projected_wrap_ranges(
++                        &line,
++                        logical_wrap_boundaries(&line, &shaped.unwrapped_layout, width),
++                    )
++                }
++                (shaped, _) => crate::input::projection_layout::projected_wrap_ranges(
++                    &line,
++                    shaped.into_iter().flat_map(|shaped| {
++                        shaped.wrap_boundaries.iter().map(move |boundary| {
++                            shaped.unwrapped_layout.runs[boundary.run_ix].glyphs[boundary.glyph_ix].index
++                        })
++                    }),
++                ),
++            };
+             items.push(LineItem {
+                 len: line.len(),
+                 indent: 0,
+@@ -995,8 +1006,104 @@ impl LineLayout {
+     }
+ }
+ 
++/// Whether `line` holds right-to-left script (Hebrew, Arabic, Syriac, Thaana,
++/// N'Ko, Samaritan, Mandaic and their presentation forms).
++fn has_rtl(line: &str) -> bool {
++    line.chars().any(|c| {
++        matches!(c as u32, 0x0590..=0x08FF | 0xFB1D..=0xFDFF | 0xFE70..=0xFEFF | 0x10800..=0x10FFF | 0x1E800..=0x1EFFF)
++    })
++}
++
++/// Greedy wrap boundaries in logical (byte) order from the advances of an
++/// unwrapped styled layout: break after the last whitespace that fits, else
++/// before the cluster that overflows. Trailing whitespace may hang, as in
++/// gpui's LineWrapper. Returned byte offsets ascend and start clusters.
++fn logical_wrap_boundaries(line: &str, layout: &gpui::LineLayout, width: Pixels) -> Vec<usize> {
++    let mut glyphs: Vec<(Pixels, usize)> = layout
++        .runs
++        .iter()
++        .flat_map(|run| run.glyphs.iter().map(|glyph| (glyph.position.x, glyph.index)))
++        .collect();
++    glyphs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
++    // Advance of each glyph in visual order, summed per logical cluster start.
++    let mut clusters: std::collections::BTreeMap<usize, Pixels> = std::collections::BTreeMap::new();
++    for (i, &(x, index)) in glyphs.iter().enumerate() {
++        let next = glyphs.get(i + 1).map_or(layout.width, |g| g.0);
++        *clusters.entry(index.min(line.len())).or_insert(Pixels::ZERO) += (next - x).max(Pixels::ZERO);
++    }
++    let clusters: Vec<(usize, Pixels)> = clusters.into_iter().collect();
++    let mut boundaries = Vec::new();
++    let mut row_start = 0usize; // index into `clusters`
++    let mut row_width = Pixels::ZERO;
++    let mut after_space: Option<usize> = None; // cluster index that follows a whitespace
++    let mut i = 0;
++    while i < clusters.len() {
++        let (offset, advance) = clusters[i];
++        let space = line[offset..].chars().next().is_some_and(char::is_whitespace);
++        if !space && i > row_start && row_width + advance > width {
++            let at = after_space.filter(|&at| at > row_start && at <= i).unwrap_or(i);
++            boundaries.push(clusters[at].0);
++            row_start = at;
++            row_width = clusters[at..i].iter().map(|c| c.1).fold(Pixels::ZERO, |a, b| a + b);
++            after_space = None;
++            continue;
++        }
++        row_width += advance;
++        if space {
++            after_space = Some(i + 1);
++        }
++        i += 1;
++    }
++    boundaries.retain(|&b| b > 0 && b < line.len());
++    boundaries
++}
++
+ #[cfg(test)]
+ mod tests {
++    /// #931: right-to-left glyphs arrive in visual order; rows must still be
++    /// logical ranges that break after whitespace and fit the width.
++    #[test]
++    fn rtl_lines_wrap_in_logical_order() {
++        use gpui::{FontId, GlyphId, LineLayout, ShapedGlyph, ShapedRun};
++        let layout = |line: &str, visual: &[usize]| LineLayout {
++            font_size: px(10.),
++            width: px(10. * visual.len() as f32),
++            ascent: px(8.),
++            descent: px(2.),
++            runs: vec![ShapedRun {
++                font_id: FontId(0),
++                glyphs: visual
++                    .iter()
++                    .enumerate()
++                    .map(|(i, &index)| ShapedGlyph {
++                        id: GlyphId(0),
++                        position: point(px(10. * i as f32), px(0.)),
++                        index,
++                        is_emoji: false,
++                    })
++                    .collect(),
++            }],
++            len: line.len(),
++        };
++        // "אב גד הו": eight 10px clusters drawn right to left.
++        let line = "אב גד הו";
++        let visual = [12, 10, 9, 7, 5, 4, 2, 0];
++        assert!(has_rtl(line) && !has_rtl("abc 123"));
++        assert_eq!(logical_wrap_boundaries(line, &layout(line, &visual), px(35.)), vec![5, 10]);
++        // Everything fits: no boundary.
++        assert!(logical_wrap_boundaries(line, &layout(line, &visual), px(80.)).is_empty());
++        // A word longer than the row breaks before the overflowing cluster.
++        let word = "אבגדהו";
++        let visual = [10, 8, 6, 4, 2, 0];
++        assert_eq!(logical_wrap_boundaries(word, &layout(word, &visual), px(25.)), vec![4, 8]);
++        // Mixed: LTR prefix, RTL run, LTR suffix ("ab אב cd").
++        let mixed = "ab אב cd";
++        let visual = [0, 1, 2, 5, 3, 7, 8, 9];
++        let bounds = logical_wrap_boundaries(mixed, &layout(mixed, &visual), px(35.));
++        assert_eq!(bounds, vec![3, 8]);
++        assert!(bounds.windows(2).all(|w| w[0] < w[1]));
++    }
++
+     use super::*;
+     use std::rc::Rc;
+ 
