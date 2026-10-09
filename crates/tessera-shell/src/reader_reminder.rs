@@ -11,8 +11,9 @@ use tessera_core::{reminder_context, reminder_dates, reminder_task};
 
 gpui::actions!(reader_reminder, [RemindOnSelection]);
 
-/// Vault-relative reminders note. Settings will make this configurable.
-pub(super) const NOTE: &str = "Reminders.md";
+/// The default reminders note; Settings can choose another per vault.
+#[cfg(test)]
+pub(super) const NOTE: &str = reader_reminder_settings::DEFAULT_NOTE;
 
 struct ReminderToast;
 
@@ -255,9 +256,10 @@ impl Reader {
             }
         };
         let root = self.vault_root.clone();
+        let note = self.reminder_prefs.note.clone();
         let task = cx.background_executor().spawn({
             let (root, drafts) = (root.clone(), drafts.clone());
-            async move { write::add(&root, &drafts, NOTE, &line) }
+            async move { write::add(&root, &drafts, &note, &line) }
         });
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
@@ -489,6 +491,38 @@ mod visual_tests {
         assert!(reader
             .read_with(visual, |v, cx| v.reminder_for_selection(cx))
             .is_none());
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[gpui::test]
+    fn add_reminder_writes_to_the_configured_note_not_the_default(cx: &mut TestAppContext) {
+        let temp = std::env::temp_dir().join(format!("tessera-remind-{}", uuid::Uuid::new_v4()));
+        let (root, state) = (temp.join("vault"), temp.join("state"));
+        std::fs::create_dir_all(root.join("Inbox")).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(root.join("start.md"), "2026-11-01\n").unwrap();
+        let (reader, visual) = mount(cx, &root, &state);
+        reader.update(visual, |v, cx| {
+            let mut prefs = v.reminder_prefs.clone();
+            prefs.note = "Inbox/Remind.md".into();
+            v.set_reminder_prefs(prefs, cx);
+        });
+        reader.update_in(visual, |v, window, cx| {
+            v.add_reminder(
+                "2026-11-01".into(),
+                time::macros::date!(2026 - 11 - 01),
+                None,
+                window,
+                cx,
+            )
+        });
+        visual.run_until_parked();
+        let line = std::fs::read_to_string(root.join("Inbox/Remind.md")).unwrap();
+        assert!(
+            line.starts_with("- [ ] 2026-11-01 [[start.md]] 📅 2026-11-01"),
+            "{line}"
+        );
+        assert!(!root.join(NOTE).exists(), "the default note is not created");
         std::fs::remove_dir_all(temp).unwrap();
     }
 

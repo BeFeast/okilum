@@ -82,6 +82,7 @@ mod reader_recent;
 mod reader_recovery_rows;
 mod reader_reminder;
 mod reader_reminder_notify;
+mod reader_reminder_settings;
 #[cfg(any(unix, windows))]
 mod reader_source_history;
 mod reader_startup;
@@ -1229,6 +1230,10 @@ struct Reader {
     #[cfg(any(unix, windows))]
     reminder_notifier: reader_reminder_notify::Notifier,
     #[cfg(any(unix, windows))]
+    reminder_prefs: reader_reminder_settings::Preferences,
+    #[cfg(any(unix, windows))]
+    reminder_prefs_error: Option<String>,
+    #[cfg(any(unix, windows))]
     renaming: Option<reader_move::Renaming>,
     #[cfg(any(unix, windows))]
     move_picker: reader_move_picker::PickerState,
@@ -1532,6 +1537,10 @@ impl Reader {
             #[cfg(any(unix, windows))]
             reminder_notifier: Default::default(),
             #[cfg(any(unix, windows))]
+            reminder_prefs: Default::default(),
+            #[cfg(any(unix, windows))]
+            reminder_prefs_error: None,
+            #[cfg(any(unix, windows))]
             renaming: None,
             #[cfg(any(unix, windows))]
             move_picker: Default::default(),
@@ -1666,6 +1675,10 @@ impl Reader {
         .detach();
         this.install_source_lifecycle(window, cx);
         this.start_session_records(cx);
+        #[cfg(any(unix, windows))]
+        if let Some(state) = &this.session_directory {
+            this.reminder_prefs = reader_reminder_settings::load(state, &this.vault_root);
+        }
         if !opts.defer_loading {
             this.start_loading(opts, window, cx);
         }

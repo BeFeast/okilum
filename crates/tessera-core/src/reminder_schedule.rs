@@ -170,6 +170,13 @@ impl Default for Ledger {
 }
 
 impl Ledger {
+    /// Treat the next evaluation as a first import: reminders not seen so far
+    /// (a different note, for instance) are recorded without notifying. Entries
+    /// already recorded keep their state.
+    pub fn rebaseline(&mut self) {
+        self.baselined = false;
+    }
+
     pub fn to_json(&self) -> String {
         serde_json::to_string(self).expect("ledger is plain data")
     }
@@ -486,6 +493,34 @@ mod tests {
         // Long-absent entries are eventually forgotten.
         assert!(evaluate(&[], &mut ledger, datetime!(2027-02-01 12:00), &policy).is_none());
         assert!(ledger.entries.is_empty());
+    }
+
+    #[test]
+    fn rebaseline_silences_only_reminders_not_seen_before() {
+        let policy = Policy::default();
+        let mut ledger = started(&policy);
+        let old = [r("old note task", date!(2026 - 10 - 20))];
+        assert!(evaluate(&old, &mut ledger, datetime!(2026-10-10 12:00), &policy).is_none());
+        // Another note is chosen: its tasks (one long overdue) must not sound
+        // like news, while the already known pending reminder still fires.
+        ledger.rebaseline();
+        let both = [
+            r("old note task", date!(2026 - 10 - 20)),
+            r("other note overdue", date!(2026 - 09 - 01)),
+            r("other note soon", date!(2026 - 10 - 21)),
+        ];
+        assert!(evaluate(&both, &mut ledger, datetime!(2026-10-11 12:00), &policy).is_none());
+        let notice = evaluate(&both, &mut ledger, datetime!(2026-10-20 09:00), &policy).unwrap();
+        assert_eq!(notice.title(), "old note task");
+        // After the re-import, new reminders behave normally again.
+        let later = [r("added", date!(2026 - 10 - 22))];
+        assert!(evaluate(&later, &mut ledger, datetime!(2026-10-21 12:00), &policy).is_none());
+        assert_eq!(
+            evaluate(&later, &mut ledger, datetime!(2026-10-22 09:00), &policy)
+                .unwrap()
+                .title(),
+            "added"
+        );
     }
 
     #[test]

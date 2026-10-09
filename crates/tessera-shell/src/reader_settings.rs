@@ -630,6 +630,17 @@ impl Settings {
                             cx,
                         ))
                         .child(self.template_controls(cx))
+                        .children(self.vault(cx).map(|reader| {
+                            #[cfg(any(unix, windows))]
+                            {
+                                reader_reminder_settings::controls(&reader, cx)
+                            }
+                            #[cfg(not(any(unix, windows)))]
+                            {
+                                let _ = reader;
+                                div().into_any_element()
+                            }
+                        }))
                         .into_any_element()
                 } else {
                     content
@@ -981,6 +992,98 @@ mod tests {
                 assert_eq!(reader_ui_state::reading_width(cx), width);
             });
         }
+    }
+
+    #[cfg(any(unix, windows))]
+    #[gpui::test]
+    fn reminder_rows_step_the_time_inside_waking_hours_and_persist(cx: &mut TestAppContext) {
+        use time::Time;
+        let temp = std::env::temp_dir().join(format!("tessera-settings-{}", uuid::Uuid::new_v4()));
+        let (root, state) = (temp.join("vault"), temp.join("state"));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(root.join("start.md"), "# Start\n").unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            reader_ui_state::install(&state, cx);
+        });
+        let mut reader = None;
+        cx.add_window(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("start.md".into()),
+                        session_directory: Some(state.clone()),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        cx.run_until_parked();
+        let weak = reader.downgrade();
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let settings = cx.new(|cx| {
+                let mut settings = Settings::new(Some(weak), cx);
+                settings.section = Section::Files;
+                settings
+            });
+            Root::new(settings, window, cx)
+        });
+        visual.run_until_parked();
+        let at = |h, m| Time::from_hms(h, m, 0).unwrap();
+        let current = |visual: &mut VisualTestContext| {
+            reader.read_with(visual, |reader, _| reader.reminder_prefs.notify_at)
+        };
+        let click = |visual: &mut VisualTestContext, selector: &'static str| {
+            let bounds = visual
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} visible"));
+            visual.simulate_click(bounds.center(), Modifiers::default());
+            visual.run_until_parked();
+        };
+        assert!(visual.debug_bounds("reminder-time").is_some());
+        assert!(visual.debug_bounds("reminder-note").is_some());
+        assert_eq!(current(visual), at(9, 0));
+
+        // Positive control: "later" moves and is saved per vault.
+        click(visual, "reminder-later");
+        assert_eq!(current(visual), at(9, 30));
+        let saved = reader_reminder_settings::load(&state, &root);
+        assert_eq!(saved.notify_at, at(9, 30));
+        // "Earlier" returns, and at the end of quiet hours it stops: 08:30 would
+        // only be held back until 09:00, so it is not offered.
+        click(visual, "reminder-earlier");
+        assert_eq!(current(visual), at(9, 0));
+        click(visual, "reminder-earlier");
+        assert_eq!(current(visual), at(9, 0));
+        assert_eq!(
+            reader_reminder_settings::load(&state, &root).notify_at,
+            at(9, 0)
+        );
+        for _ in 0..30 {
+            click(visual, "reminder-later");
+        }
+        assert_eq!(
+            current(visual),
+            at(20, 30),
+            "stops before quiet hours begin"
+        );
+
+        // An earlier complaint is cleared by the next accepted choice, even one
+        // that changes nothing.
+        reader.update(visual, |reader, cx| {
+            reader.reminder_prefs_error = Some("Choose a Markdown note inside this vault.".into());
+            let same = reader.reminder_prefs.clone();
+            reader.set_reminder_prefs(same, cx);
+            assert!(reader.reminder_prefs_error.is_none());
+        });
+        std::fs::remove_dir_all(temp).unwrap();
     }
 
     #[gpui::test]
