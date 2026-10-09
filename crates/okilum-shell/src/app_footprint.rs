@@ -2,6 +2,9 @@
 //! removal on uninstall (#974). The inventory is docs/uninstall.md; the source
 //! gate test below fails when code computes a new base directory that the
 //! inventory and `roots()` do not know about.
+// Only the Windows uninstall hook calls the purge today; the Linux
+// `--uninstall-data` command and the macOS Settings action follow in #974.
+#![cfg_attr(not(windows), allow(dead_code))]
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
