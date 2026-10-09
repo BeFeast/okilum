@@ -625,7 +625,7 @@ impl Settings {
                         ))
                         .child(setting_row(
                             "Vault colour",
-                            "A dot by the vault name and a line along the window top.",
+                            "A dot by the name and a line along the top.",
                             vault_color_swatches(&color_root, cx),
                             cx,
                         ))
