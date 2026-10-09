@@ -391,6 +391,17 @@ mod tests {
         });
         visual.simulate_keystrokes("escape");
         visual.run_until_parked();
+        let title = visual.debug_bounds("reader-document-root").unwrap();
+        visual.simulate_click(title.center(), Modifiers::default());
+        visual.run_until_parked();
+        reader.read_with(visual, |reader, _| {
+            assert!(
+                reader.renaming.as_ref().unwrap().in_header,
+                "title click renames"
+            );
+        });
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
         let header = visual.debug_bounds("document-header").unwrap();
         for control in [
             "reader-history-back",
