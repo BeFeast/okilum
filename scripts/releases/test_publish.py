@@ -25,8 +25,9 @@ class Store:
         self.writes.append(key)
 
 
-def fixture(store):
-    names = {'macos': ['Okilum-macos.zip'], 'windows': ['Setup.exe', 'Okilum-windows-portable.zip'],
+def fixture(store, dmg=True):
+    mac = ['Okilum-macos.zip'] + (['Okilum-0.1.700.dmg'] if dmg else [])
+    names = {'macos': mac, 'windows': ['Setup.exe', 'Okilum-windows-portable.zip'],
              'linux': ['okilum-0.1.702-1-x86_64.pkg.tar.zst', 'okilum-0.1.702-1-x86_64.pkg.tar.zst.sig']}
     for offset, (platform, filenames) in enumerate(names.items()):
         assets = []
@@ -52,7 +53,7 @@ class CatalogTests(unittest.TestCase):
         release = fixture(store)
         self.assertEqual([v['build'] for v in release['platforms'].values()], [700, 701, 702])
         files = catalog.download(store, release)
-        self.assertEqual(len(files), 6)
+        self.assertEqual(len(files), 7)
         for line in files['SHA256SUMS'].decode().splitlines():
             digest, name = line.split('  ')
             self.assertEqual(digest, hashlib.sha256(files[name]).hexdigest())
@@ -188,6 +189,24 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(store.writes[0], f'{catalog.PREFIX}/promoting.json')
             self.assertEqual(store.writes[-1], f'{catalog.PREFIX}/stable.json')
             self.assertEqual(store.data['okilum/macos/latest.zip'], b'Okilum-macos.zip')
+            self.assertEqual(store.data['okilum/macos/stable/Okilum.dmg'], b'Okilum-0.1.700.dmg')
+
+    def test_stable_without_dmg_keeps_the_previous_stable_dmg(self):
+        store = Store()
+        fixture(store, dmg=False)
+        store.data['okilum/macos/stable/Okilum.dmg'] = b'previous'
+        with patch.object(p, 'notes', return_value='Notes'), \
+             patch.object(p, 'preflight_stable'), \
+             patch.object(p, 'mirror_tag', return_value='v0.1.700'), \
+             patch.object(p.arch, 'SigningKey'), \
+             patch.object(p.arch, 'validate_package'), \
+             patch.object(p.arch, 'execute'), \
+             patch.object(p.windows, 'promote'), \
+             patch.object(p, 'promote_macos'), \
+             patch.object(p, 'github_release'):
+            p.execute(store, None, None, 700)
+        self.assertEqual(store.data['okilum/macos/stable/Okilum.dmg'], b'previous')
+        self.assertNotIn('okilum/macos/stable/Okilum.dmg', store.writes)
 
     def test_catalog_rejects_reused_build_and_path_injection(self):
         store = Store()

@@ -303,6 +303,11 @@ def execute(store, github, forgejo, build=None, supersede_pending=False):
             windows.promote(release['platforms']['windows']['build'], store)
             promote_macos(SimpleNamespace(app='okilum', build=release['build']))
         store.put('okilum/macos/latest.zip', files['Okilum-macos.zip'], 'application/zip', 'no-cache')
+        # Builds before #993 have no DMG; the stable DMG then keeps its previous build.
+        for item in release['platforms']['macos']['assets'][1:]:
+            if item['name'].endswith('.dmg'):
+                store.put('okilum/macos/stable/Okilum.dmg', files[item['name']],
+                          'application/x-apple-diskimage', 'no-cache')
     else:
         tag = mirror_tag(release, False)
     github_release(github, tag, release, files, body, stable)

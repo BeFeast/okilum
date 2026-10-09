@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Transfer a notarized, Sparkle-signed archive between build and publication jobs."""
+"""Transfer a notarized, Sparkle-signed archive and DMG between build and publication jobs."""
 import argparse
 import json
 import os
@@ -21,18 +21,23 @@ def main():
     if args.command == 'stage':
         root.mkdir(parents=True, exist_ok=True)
         archive = Path(os.environ['ARCHIVE'])
+        dmg = Path(os.environ['DMG'])
         shutil.copyfile(archive, root / archive.name)
+        shutil.copyfile(dmg, root / dmg.name)
         metadata = {key: os.environ[key] for key in
                     ['BUILD', 'DISPLAY_VERSION', 'SOURCE_SHA', 'SOURCE_TREE', 'SIGNATURE']}
         metadata['archive'] = archive.name
+        metadata['dmg'] = dmg.name
         (root / 'release.json').write_text(json.dumps(metadata))
     else:
         metadata = json.loads((root / 'release.json').read_text())
         if (metadata['SOURCE_SHA'] != os.environ['GITHUB_SHA']
                 or int(metadata['BUILD']) != 5000 + int(os.environ['GITHUB_RUN_NUMBER'])
-                or Path(metadata['archive']).name != metadata['archive']):
+                or Path(metadata['archive']).name != metadata['archive']
+                or Path(metadata['dmg']).name != metadata['dmg']):
             raise ValueError('Release artifact does not belong to this run')
         publish(SimpleNamespace(app='okilum', archive=str(root / metadata['archive']),
+                dmg=str(root / metadata['dmg']),
                 build=int(metadata['BUILD']), short_version=metadata['DISPLAY_VERSION'],
                 source=metadata['SOURCE_SHA'], tree=metadata['SOURCE_TREE'],
                 signature=metadata['SIGNATURE'], channel='beta'))

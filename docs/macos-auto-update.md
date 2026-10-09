@@ -15,9 +15,18 @@ on the existing M4 runner (label `macos`):
    `CFBundleShortVersionString = 0.1.<build>` (shown in About);
 2. sign with the Developer ID, notarize, staple, ZIP, check Gatekeeper on a
    quarantined copy (`scripts/build-macos-ci.sh`, `scripts/updater/sign-bundle.sh`);
-3. sign the ZIP with the EdDSA key (`sign_update`);
-4. upload the ZIP to the public feed, add the build to its `beta` channel, and keep
+3. pack the same stapled app into `Okilum-<version>.dmg` for first installs (app,
+   Applications link, branded window from `scripts/macos-dmg/`), sign it with the
+   Developer ID, notarize and staple it, and check a quarantined copy with
+   `spctl --assess --type open` (`scripts/updater/make-dmg.sh`, #993);
+4. sign the ZIP with the EdDSA key (`sign_update`);
+5. upload the ZIP to the public feed, add the build to its `beta` channel, and keep
    a copy as Forgejo release `macos-stable-<build>` (`scripts/updater/release.py`).
+   The DMG goes to the same release, to `okilum/<build>/`, and to the fixed
+   `okilum/macos/beta/Okilum.dmg`; promotion copies it to `okilum/macos/stable/Okilum.dmg`.
+
+The ZIP is what Sparkle installs; the DMG is only for the first install. To change
+the DMG window, edit `scripts/macos-dmg/background.py` and re-render the PNGs.
 
 To release without a new commit, run the workflow by hand on `main`
 (Actions → macos-release → Run workflow). It produces the next build number.

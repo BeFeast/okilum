@@ -170,9 +170,19 @@ def publish(a):
                              '--length', str(archive.stat().st_size), '--signature', a.signature,
                              '--source', a.source, '--tree', a.tree])
     if a.app == 'okilum':
-        catalog.record(r2, 'macos', a.build, a.source,
-                       [catalog.asset(key, 'Okilum-macos.zip', data)])
+        # The zip stays first: it is the appcast enclosure that stable promotion checks.
+        assets = [catalog.asset(key, 'Okilum-macos.zip', data)]
+        dmg = pathlib.Path(a.dmg) if getattr(a, 'dmg', None) else None
+        if dmg is not None:
+            image = dmg.read_bytes()
+            forgejo.upload(release, dmg.name, image)
+            dmg_key = f'{a.app}/{a.build}/{dmg.name}'
+            r2.put(dmg_key, image, 'application/x-apple-diskimage')
+            assets.append(catalog.asset(dmg_key, dmg.name, image))
+        catalog.record(r2, 'macos', a.build, a.source, assets)
         r2.put('okilum/macos/beta/latest.zip', data, 'application/zip', 'no-cache')
+        if dmg is not None:
+            r2.put('okilum/macos/beta/Okilum.dmg', image, 'application/x-apple-diskimage', 'no-cache')
 
 
 def promote(a):
@@ -189,6 +199,7 @@ def main():
     sub = p.add_subparsers(dest='command', required=True)
     a = sub.add_parser('publish')
     a.add_argument('archive')
+    a.add_argument('--dmg', help='first-install DMG built from the same app (#993)')
     for name in ('--short-version', '--source', '--tree', '--signature'):
         a.add_argument(name, required=True)
     a.add_argument('--build', type=int, required=True)
