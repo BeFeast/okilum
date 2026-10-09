@@ -238,6 +238,31 @@ pub(crate) fn uninstall() {
     eprintln!("Okilum uninstall: {report:?}");
 }
 
+/// PowerShell `-EncodedCommand`: base64 of the UTF-16LE script.
+fn encoded_command(script: &str) -> String {
+    let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    base64_encode(&bytes)
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, b)| n | u32::from(*b) << (16 - 8 * i));
+        for i in 0..4 {
+            out.push(if i <= chunk.len() {
+                TABLE[(n >> (18 - 6 * i) & 63) as usize] as char
+            } else {
+                '='
+            });
+        }
+    }
+    out
+}
+
 #[cfg(windows)]
 mod windows {
     use std::process::Command;
@@ -252,12 +277,13 @@ mod windows {
     }
 
     /// Velopack appends to its per-app log after this hook returns, so the
-    /// log can only go once its Update.exe has exited. A detached, windowless
-    /// PowerShell waits for that, removes the log, and removes the shared
-    /// velopack folder only when nothing else is left in it.
+    /// log can only go once its Update.exe has exited. Velopack runs the hook
+    /// in a job that ends with it, which kills ordinary child processes, so
+    /// the waiting cleanup is created through WMI (`Win32_Process.Create`),
+    /// outside that job. It removes the log, then the shared velopack folder
+    /// only when nothing else is left in it.
     pub(super) fn remove_velopack_log_after_exit() {
         use std::os::windows::process::CommandExt;
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         let Some(local) = dirs::data_local_dir() else {
             return;
@@ -268,12 +294,18 @@ mod windows {
         let log = quote(&folder.join("velopack_BeFeast.Okilum.log"));
         let folder = quote(&folder);
         // An interactive uninstall waits on its dialog; give it an hour.
-        let script = format!(
+        let cleanup = format!(
             "for($i=0;$i -lt 3600;$i++){{ if(-not (Get-Process Update -EA SilentlyContinue | \
              Where-Object {{ $_.Path -like '{root}\\*' }})){{ break }}; Start-Sleep 1 }}; \
              Start-Sleep 2; Remove-Item -LiteralPath '{log}' -Force -EA SilentlyContinue; \
              if(-not (Get-ChildItem -LiteralPath '{folder}' -Force -EA SilentlyContinue)){{ \
              Remove-Item -LiteralPath '{folder}' -Force -EA SilentlyContinue }}"
+        );
+        let launch = format!(
+            "Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments \
+             @{{CommandLine='powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden \
+             -EncodedCommand {}'}} | Out-Null",
+            super::encoded_command(&cleanup)
         );
         let _ = Command::new("powershell.exe")
             .args([
@@ -282,10 +314,10 @@ mod windows {
                 "-WindowStyle",
                 "Hidden",
                 "-Command",
-                &script,
+                &launch,
             ])
-            .creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW)
-            .spawn();
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
     }
 
     /// Windows Error Reporting keeps local dumps named after the executable.
@@ -314,6 +346,17 @@ mod tests {
     fn write(path: &Path, text: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, text).unwrap();
+    }
+
+    #[test]
+    fn encoded_command_is_powershell_utf16le_base64() {
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+        // `Remove-Item 'C:\x'` as PowerShell -EncodedCommand expects it.
+        assert_eq!(encoded_command("ls 'a'"), "bABzACAAJwBhACcA");
     }
 
     #[test]
