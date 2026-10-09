@@ -16,6 +16,10 @@ import urllib.request
 import uuid
 
 
+class OutageTimeout(Exception):
+    """Whole-start deadline; deliberately not a retryable HTTP/OSError."""
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -124,7 +128,7 @@ class Deployment:
     def bounded_start(self):
         # One deadline covers Docker, health and public checks, not each phase.
         def expired(signum, frame):
-            raise TimeoutError("Outage budget expired; rollback required")
+            raise OutageTimeout("Outage budget expired; rollback required")
         previous = signal.signal(signal.SIGALRM, expired)
         signal.setitimer(signal.ITIMER_REAL, self.outage_timeout)
         try:

@@ -187,10 +187,18 @@ class DeploymentTests(unittest.TestCase):
         self.deploy.outage_timeout = .01
         previous = signal.getsignal(signal.SIGALRM)
         with patch.object(self.deploy, 'ordered_start', side_effect=lambda: time.sleep(.2)):
-            with self.assertRaisesRegex(TimeoutError, 'Outage budget'):
+            with self.assertRaisesRegex(restart.OutageTimeout, 'Outage budget'):
                 self.deploy.bounded_start()
         self.assertEqual(signal.getsignal(signal.SIGALRM), previous)
         self.assertEqual(signal.getitimer(signal.ITIMER_REAL), (0.0, 0.0))
+
+    def test_public_retry_loop_does_not_swallow_global_deadline(self):
+        import time
+        self.deploy.timeout = 120
+        self.deploy.outage_timeout = .01
+        with patch.object(restart, 'public_ready', side_effect=lambda origin: time.sleep(.2)):
+            with self.assertRaises(restart.OutageTimeout):
+                self.deploy.bounded_start()
 
     def test_total_outage_timeout_triggers_rollback(self):
         with patch.object(self.deploy, 'ordered_start', side_effect=[TimeoutError('deadline'), None]):
