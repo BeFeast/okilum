@@ -428,6 +428,100 @@ fn windows_editor_failed_link_save_restores_original_draft_and_allows_retry() {
 }
 
 #[test]
+fn windows_editor_refused_move_retry_and_restart_keep_prepared_recovery_outside_vault() {
+    use crate::{file_editor::FileEditor, link_rewrite::Preview, source_history};
+    let fixture = Fixture::new();
+    fs::create_dir_all(fixture.root.join("notes/sub")).unwrap();
+    let source = fixture.source(
+        "notes/sub/linkfail-src.md",
+        "[t](../linkfail-target.md)\r\n",
+    );
+    fixture.source("notes/linkfail-target.md", "Target\r\n");
+    let _limited = fixture.impersonate();
+    let before = fs::read_to_string(&source).unwrap();
+    let locked = OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .open(&source)
+        .unwrap();
+    let apply = || {
+        Preview::prepare(
+            &fixture.root,
+            "notes/sub/linkfail-src.md",
+            "linkfail-src.md",
+        )
+        .unwrap()
+        .apply(
+            &fixture.root,
+            &fixture.state,
+            &mut std::collections::BTreeMap::new(),
+        )
+        .unwrap()
+    };
+    assert!(
+        !apply().moved,
+        "no DELETE sharing must refuse the real save"
+    );
+    assert_eq!(fs::read_to_string(&source).unwrap(), before);
+    let drafts = fixture.state.join("editor-drafts");
+    let editor = FileEditor::open(&source, &drafts).unwrap();
+    assert_eq!(editor.text(), before);
+    assert!(!editor.dirty());
+    drop(editor);
+    let staging = || {
+        walkdir::WalkDir::new(&fixture.root)
+            .into_iter()
+            .map(|e| e.unwrap())
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with(".tessera-save-")
+            })
+            .count()
+    };
+    assert_eq!(
+        staging(),
+        0,
+        "failed save keeps proposed recovery in app state immediately"
+    );
+    let history = source_history::list(&drafts, &fixture.root).unwrap();
+    assert!(history
+        .versions
+        .iter()
+        .any(|v| v.label == "Prepared save — protected"
+            && v.text.contains("./notes/linkfail-target.md")
+            && v.protected));
+    drop(locked);
+    assert!(apply().moved, "successful retry positive control");
+    assert!(!source.exists());
+    let target = fixture.root.join("linkfail-src.md");
+    assert_eq!(
+        fs::read_to_string(&target).unwrap(),
+        "[t](./notes/linkfail-target.md)\r\n"
+    );
+    assert!(source_history::cleanup_windows(&drafts, &fixture.root)
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        staging(),
+        0,
+        "restart never leaves staging in the synced vault"
+    );
+    assert!(source_history::legacy_preimages(&drafts, &fixture.root)
+        .unwrap()
+        .versions
+        .is_empty());
+    let reopened = FileEditor::open(&target, &drafts).unwrap();
+    assert!(!reopened.dirty());
+    assert_eq!(reopened.text(), "[t](./notes/linkfail-target.md)\r\n");
+    assert!(source_history::list(&drafts, &fixture.root)
+        .unwrap()
+        .versions
+        .iter()
+        .any(|v| v.label == "Prepared save — protected" && v.protected));
+}
+
+#[test]
 fn windows_save_owner_fallback_refuses_effective_access_loss_before_publication() {
     let fixture = Fixture::new();
     let path = fixture.source("note.md", "base");

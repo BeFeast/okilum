@@ -475,7 +475,18 @@ impl FileEditor {
         )?;
         before_exchange();
         let preimage_identity = plan.preimage_identity();
-        match plan.commit()? {
+        let committed = plan.commit();
+        // Recovery bytes were flushed to app state before publication. Keep
+        // that pending record, and remove only its checked staging inode.
+        // Cleanup failure must never mask the original save/conflict outcome;
+        // startup retries without guessing ownership from a service filename.
+        if !matches!(
+            committed.as_ref(),
+            Ok(crate::windows_files::Replacement::Saved { .. })
+        ) {
+            let _ = crate::source_history::Preimage::archive_prepared_windows(&history);
+        }
+        match committed? {
             crate::windows_files::Replacement::Conflict => return Ok(Save::Conflict),
             crate::windows_files::Replacement::Saved { .. } => {}
         }

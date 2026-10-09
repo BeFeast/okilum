@@ -32,7 +32,7 @@ impl Reader {
                     .versions
                     .extend(history.versions.into_iter().filter(|v| !v.note.exists()));
                 listing.warnings.extend(history.warnings);
-                let legacy = source_history::legacy_preimages(&root)?;
+                let legacy = source_history::legacy_preimages(&drafts, &root)?;
                 listing.versions.extend(legacy.versions);
                 listing.warnings.extend(legacy.warnings);
                 listing
