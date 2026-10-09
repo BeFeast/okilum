@@ -125,7 +125,14 @@ pub(super) fn render(
     window: &mut Window,
     cx: &mut Context<Reader>,
 ) -> Option<AnyElement> {
-    let source = reader.note_canonical_source.clone()?;
+    // The reminders note can be shown through this same view (#919): its
+    // generated Tasks source replaces the note text, opened on Overdue.
+    let lens = reader.reminders_lens();
+    let on_overdue = lens.is_some();
+    let source = match lens {
+        Some(source) => source,
+        None => reader.note_canonical_source.clone()?,
+    };
     let preferences = reader_ui_state::typed_views(cx);
     let today = reader_tasks::today();
     let cache = window.use_keyed_state(
@@ -140,6 +147,9 @@ pub(super) fn render(
         let changed = cached.refresh(source, preferences, today);
         (cached.view.clone(), changed)
     });
+    if changed && on_overdue {
+        cache.update(cx, |cached, _| cached.filter = 2);
+    }
     let dashboard = match view {
         View::Markdown => return None,
         View::Fallback(reason) => {

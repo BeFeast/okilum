@@ -231,6 +231,10 @@ enum Filter {
         lowercase: String,
         include: bool,
     },
+    /// `path is <vault-relative path>`: Tessera's own exact-note filter, used by
+    /// the missed-reminders view (#919). Obsidian Tasks has no such line, so
+    /// notes meant to also work there should keep using `path includes`.
+    PathIs(String),
 }
 impl Filter {
     fn matches(&self, task: &Task) -> bool {
@@ -246,6 +250,7 @@ impl Filter {
             Self::Path { lowercase, include } => {
                 task.path.to_lowercase().contains(lowercase.as_str()) == *include
             }
+            Self::PathIs(path) => task.path == *path,
         }
     }
 }
@@ -368,6 +373,10 @@ impl Query {
 /// boolean combinations stay unsupported, so the query fails closed instead
 /// of matching text the author did not mean.
 fn path_filter(line: &str) -> Option<Filter> {
+    if let Some(value) = line.strip_prefix("path is ") {
+        let value = value.trim();
+        return (!value.is_empty() && !value.contains("{{")).then(|| Filter::PathIs(value.into()));
+    }
     let (include, value) = if let Some(value) = line.strip_prefix("path includes ") {
         (true, value)
     } else {
@@ -497,6 +506,36 @@ mod tests {
             assert!(index().query(&query).is_empty());
         }
     }
+    /// #919: `path is` names exactly one note, where `path includes` would also
+    /// match `Sub/Reminders.md` and `My Reminders.md`.
+    #[test]
+    fn path_is_matches_exactly_one_note() {
+        let mut i = Index::default();
+        i.replace("Reminders.md", "- [ ] Root 📅 2026-01-01\n");
+        i.replace("Sub/Reminders.md", "- [ ] Nested 📅 2026-01-01\n");
+        i.replace("My Reminders.md", "- [ ] Other 📅 2026-01-01\n");
+        let texts = |q: &str| {
+            let mut t: Vec<_> = run(&i, q).into_iter().map(|t| t.text).collect();
+            t.sort();
+            t
+        };
+        // Positive control: the substring filter really does over-match here.
+        assert_eq!(
+            texts("path includes Reminders.md"),
+            ["Nested", "Other", "Root"]
+        );
+        assert_eq!(texts("path is Reminders.md"), ["Root"]);
+        assert_eq!(texts("path is Sub/Reminders.md"), ["Nested"]);
+        assert_eq!(
+            texts("not done\ndue before 2026-02-01\npath is Reminders.md"),
+            ["Root"]
+        );
+        assert!(texts("path is reminders.md").is_empty(), "paths are exact");
+        for bad in ["path is ", "path is   ", "path is {{query.file.path}}"] {
+            assert!(!Query::parse(bad, today()).unsupported.is_empty(), "{bad}");
+        }
+    }
+
     /// #880: literal path filters, case-insensitive on the vault-relative
     /// path including `.md`, ANDed with the other lines.
     #[test]
