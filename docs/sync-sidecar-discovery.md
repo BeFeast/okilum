@@ -34,8 +34,11 @@ stale or unconnectable hint as "no live supervisor".
 1. Open the private pipe by name (owner-only DACL, local-only, one instance; these
    server-side properties are already checked on creation and read-back).
 2. `GetNamedPipeServerProcessId`, then `OpenProcess(QUERY_LIMITED_INFORMATION |
-   SYNCHRONIZE)` at once. The pipe is connected, so the server is alive and the PID
-   cannot yet have been reused; liveness is rechecked after the checks below.
+   SYNCHRONIZE)` at once. The kernel reports the PID of the pipe's server end, but the
+   server could exit and its PID be reused between that report and `OpenProcess`, so the
+   PID alone is never trusted. What closes this is step 3's start-time comparison with
+   the hint (a reused PID belongs to a process that started later) together with the
+   liveness and PID recheck in step 4 on the still-connected pipe.
 3. On that handle: token user SID equals `Binding.owner`; the image path from
    `QueryFullProcessImageNameW` equals `Binding.supervisor` (canonical, case-insensitive);
    the process start time from `GetProcessTimes` equals the hint's `started`; the image
@@ -73,8 +76,15 @@ group. `Stopped` means the root was reaped and the group has no member, checked 
 (`setsid`, double fork) is not owned and cannot be certified. The runtime is launched
 with the fixed argv (`--no-restart --no-upgrade`) and does not do that; the contract is
 stated here so nothing treats it as a kill-on-close guarantee. As defence in depth, not
-as authority, a live process of the same user whose image lies under the staged runtime
-directory after a "stopped" group downgrades the answer to `Stopping`.
+as authority, a live process of the same user whose image is exactly the pinned runtime
+executable (`Runtime.location`, not merely something under its directory) and whose start
+time is not earlier than the owned root's downgrades the answer to `Stopping`. A process
+that predates the root, or runs any other image, never counts, so a reused directory or
+an unrelated install cannot block removal. The downgrade fails closed and is reported
+with that process's identity so it can be resolved; the controller never kills or adopts
+it. A user who starts a second copy of the same executable by hand after the supervisor
+started will see exactly this blocked state until it exits, which is the intended
+conservative answer.
 
 ## Signature policy
 
