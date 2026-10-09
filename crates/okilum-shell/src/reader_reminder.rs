@@ -102,17 +102,19 @@ fn editor_entries(
     let enabled = !capabilities.is_disabled();
     let editable = enabled && !capabilities.is_readonly();
     let mut entries = Vec::new();
-    if capabilities.is_code_editor() {
-        entries.push(item(
-            "Go to Definition",
-            !(enabled && capabilities.has_definition()),
-            Command::GoToDefinition,
-        ));
+    // Language-server items appear only where a server provides them; notes
+    // never have one, so the menu shows text actions only (#1010).
+    if capabilities.is_code_editor() && capabilities.has_definition() {
+        entries.push(item("Go to Definition", !enabled, Command::GoToDefinition));
+    }
+    if capabilities.is_code_editor() && capabilities.has_code_actions() {
         entries.push(item(
             "Show Code Actions",
-            !(editable && capabilities.has_code_actions()),
+            !editable,
             Command::ShowCodeActions,
         ));
+    }
+    if !entries.is_empty() {
         entries.push(Entry::Separator);
     }
     entries.push(item(
@@ -808,9 +810,20 @@ mod menu_tests {
 
     #[test]
     fn builtin_items_follow_the_editor_capabilities() {
+        // A note editor is a code editor without a language server (#1010).
         let editor = Capabilities::new().code_editor(true).selection(true);
         let plain = labels(&editor_entries(&editor, true, None));
         let names: Vec<_> = plain.iter().map(|(label, _)| label.as_str()).collect();
+        assert_eq!(names, ["Cut", "Copy", "Paste", "Select All"]);
+        assert_ne!(
+            editor_entries(&editor, true, None).first(),
+            Some(&Entry::Separator),
+            "no leading separator without server items"
+        );
+        // Positive control: a server's capabilities bring the items back.
+        let served = editor.go_to_definition(true).code_actions(true);
+        let served = labels(&editor_entries(&served, true, None));
+        let names: Vec<_> = served.iter().map(|(label, _)| label.as_str()).collect();
         assert_eq!(
             names,
             [
@@ -822,6 +835,7 @@ mod menu_tests {
                 "Select All"
             ]
         );
+        assert!(served.contains(&("Go to Definition".into(), false)));
         assert!(plain.contains(&("Copy".into(), false)));
         assert!(plain.contains(&("Cut".into(), false)));
         assert!(plain.contains(&("Paste".into(), false)));

@@ -243,6 +243,17 @@ impl Render for CodePreview {
                 // The element applies its own flag to the state on every render.
                 Editor::new(input)
                     .readonly(true)
+                    .context_menu({
+                        // Read-only text: no language-server or editing items (#1010).
+                        let input = input.clone();
+                        move |menu, _, cx| {
+                            use gpui_component::input::{Copy, SelectAll};
+                            let copyable = input.read(cx).is_copyable();
+                            menu.menu_with_disabled("Copy", !copyable, Box::new(Copy))
+                                .separator()
+                                .menu("Select All", Box::new(SelectAll))
+                        }
+                    })
                     .appearance(false)
                     .font_family(crate::source_presentation::CODE_FONT)
                     .text_size(text_size(cx))
