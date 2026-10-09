@@ -1,7 +1,9 @@
 //! Confirmation for a risk-bearing action. `window.prompt` falls back to a GPUI
 //! view that neither wraps its detail text nor closes on Escape, so the answer
 //! comes from an app dialog instead. Escape, the close button and Cancel all
-//! answer `false`; only the confirm button answers `true`.
+//! answer `false`; only a click on the confirm button answers `true`. Enter is
+//! deliberately inert: the old prompt never confirmed on Enter, and a stray key
+//! must not perform a risk-bearing action.
 use super::*;
 use gpui_component::WindowExt;
 
@@ -22,7 +24,6 @@ pub(super) fn confirm(
 ) -> async_channel::Receiver<bool> {
     let (send, receive) = async_channel::bounded(1);
     window.open_dialog(cx, move |dialog, _, _| {
-        let yes = send.clone();
         let no = send.clone();
         let close = send.clone();
         let footer_yes = send.clone();
@@ -57,10 +58,8 @@ pub(super) fn confirm(
                             .map(|text| div().text_sm().child(text.clone())),
                     ),
             )
-            .on_ok(move |_, _, _| {
-                let _ = yes.try_send(true);
-                true
-            })
+            // Enter reaches this handler; answer nothing and keep the dialog open.
+            .on_ok(|_, _, _| false)
             .on_cancel(move |_, _, _| {
                 let _ = no.try_send(false);
                 true
@@ -151,10 +150,19 @@ mod tests {
             answer
         };
 
-        // Escape cancels, closes the dialog and answers false.
+        // Enter must not confirm: no answer, and the dialog stays open.
         let answer = ask(visual);
         assert!(visual.update(|window, cx| window.has_active_dialog(cx)));
         assert!(visual.debug_bounds("confirm-action").is_some());
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        assert_ne!(answer.try_recv(), Ok(true), "Enter must not answer yes");
+        assert!(
+            visual.update(|window, cx| window.has_active_dialog(cx)),
+            "Enter must leave the confirmation open"
+        );
+
+        // Escape cancels, closes the dialog and answers false.
         visual.simulate_keystrokes("escape");
         visual.run_until_parked();
         assert!(!visual.update(|window, cx| window.has_active_dialog(cx)));
