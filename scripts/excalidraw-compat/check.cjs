@@ -42,6 +42,10 @@ const plugin = withStub({
 const sorted = (entries) => JSON.stringify(Object.fromEntries([...entries].sort(([a], [b]) => (a < b ? -1 : 1))));
 
 (async () => {
+  if (!fs.existsSync(dir)) {
+    console.log(`FAIL dump directory ${dir} does not exist: did the writer tests run with TESSERA_EXCALIDRAW_DUMP set?`);
+    process.exit(1);
+  }
   const files = fs.readdirSync(dir).filter((f) => f.endsWith(".excalidraw.md")).sort();
   let checked = 0;
   let normalised = 0;
