@@ -494,10 +494,14 @@ mod tests {
         );
         // Only the fixture owns the descendant handle. Production cannot use
         // an empty job to manufacture a terminal witness for an uncaptured exit.
-        ensure!(
-            job.accounting()?.ActiveProcesses == 0,
-            "fixture job not empty"
-        );
+        // Handle signaling and job accounting updates are not ordered. Wait
+        // for the negative probe's empty-accounting precondition separately;
+        // the production stop tests still require signaled handles on return.
+        let ready = Instant::now() + Duration::from_secs(10);
+        while job.accounting()?.ActiveProcesses != 0 {
+            ensure!(Instant::now() < ready, "fixture job did not become empty");
+            std::thread::sleep(Duration::from_millis(10));
+        }
         let error = job.running().unwrap_err();
         ensure!(error.to_string().contains("uncaptured"), "{error:#}");
         ensure!(
