@@ -164,10 +164,11 @@ fn failed_replacement_leaves_the_old_journal_and_no_temporary_file() {
         store.begin(soon()).unwrap().state().unwrap(),
         &Stored::Current(first.clone())
     );
-    // A reader holding the journal open blocks the replacement for real.
+    // A reader that shares reads but not deletes blocks the replacement for real
+    // (the commit itself still reads the journal first, so it must be allowed to).
     let reader = fs::OpenOptions::new()
         .read(true)
-        .share_mode(0)
+        .share_mode(1) // FILE_SHARE_READ
         .open(path.join("sidecar.json"))
         .unwrap();
     assert!(store.begin(soon()).unwrap().commit(second.clone()).is_err());
