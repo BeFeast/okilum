@@ -355,7 +355,7 @@ mod tests {
         assert_eq!(base64_encode(b"fo"), "Zm8=");
         assert_eq!(base64_encode(b"foo"), "Zm9v");
         assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
-        // `Remove-Item 'C:\x'` as PowerShell -EncodedCommand expects it.
+        // Checked against Python: base64("ls 'a'".encode("utf-16-le")).
         assert_eq!(encoded_command("ls 'a'"), "bABzACAAJwBhACcA");
     }
 
