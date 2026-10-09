@@ -56,3 +56,19 @@ done metadata, and default priority. Multiple due markers refuse, including ones
 in the source path. The eventual editable preview can ask the user to adjust
 text containing reserved Tasks metadata. This slice still performs no file IO,
 notification scheduling, context-menu activation, or Undo.
+
+## Lossless append-plan slice
+
+An insertion plan keeps the complete before/after source. The existing prefix is
+byte-identical, including BOM, CRLF and absence of a final newline; an appended
+separator and task use the existing newline convention. Parsing the full result
+must preserve all previously indexed tasks and expose exactly the new standalone
+unchecked reminder at its expected line. An unclosed Markdown block that consumes
+the insertion is refused rather than silently repaired.
+
+Apply compares the whole current source with the captured preimage; Undo compares
+with the saved postimage. Identical task text is never used to locate a deletion.
+The plan itself does not write or constitute an Undo receipt. A later writer must
+open FileEditor, recheck the source while holding its lock, save through its
+existing conflict/recovery path, and only then expose Undo. Safe create uses the
+separate exclusive destination path, not an assumed empty existing file.
