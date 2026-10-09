@@ -6,6 +6,8 @@
 //! needs a private API.
 
 pub mod analyzer;
+/// Tessera → Okilum first-launch state import (#967).
+pub mod app_migration;
 pub mod callout;
 #[cfg(all(unix, feature = "brain"))]
 pub mod decision_reuse;
