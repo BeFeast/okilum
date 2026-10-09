@@ -23,7 +23,9 @@ mod windows_dir;
 pub use windows_dir::{WindowsDir, WindowsStore};
 
 mod hint;
+mod selection;
 pub use hint::Hint;
+pub use selection::Selection;
 
 pub(crate) const NAME: &str = "sidecar.json";
 /// Legacy `update.json`. Read only for migration; the v2 envelope owns update

@@ -580,3 +580,57 @@ mod hint_tests {
         other.publish_hint(soon(), &hint(9, 42)).unwrap(); // positive control
     }
 }
+
+mod selection_tests {
+    use super::*;
+    use crate::sidecar::store::Selection;
+
+    fn selection(dir: &Path) -> Selection {
+        let location = dir.join("runtime").join("v1").join("syncthing");
+        Selection::new(
+            "v1",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            &location,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_selection_round_trips_privately_without_touching_the_journal() {
+        let (dir, store) = started();
+        let before = fs::read(dir.path().join(NAME)).unwrap();
+        assert_eq!(store.read_selection(soon()).unwrap(), None);
+        let chosen = selection(dir.path());
+        store.publish_selection(soon(), &chosen).unwrap();
+        assert_eq!(store.read_selection(soon()).unwrap(), Some(chosen));
+        let path = dir.path().join("runtime.json");
+        assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
+        assert_eq!(fs::read(dir.path().join(NAME)).unwrap(), before);
+        // A malformed or foreign record is an error, never a default binary.
+        put(dir.path(), "runtime.json", b"{\"schema\":1}");
+        assert!(store.read_selection(soon()).is_err());
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(store.read_selection(soon()).is_err());
+    }
+
+    #[test]
+    fn selection_operations_wait_for_the_lock_only_until_the_deadline() {
+        let (dir, store) = started();
+        let other = Store::open_existing(dir.path()).unwrap();
+        let held = store.begin(soon()).unwrap();
+        let chosen = selection(dir.path());
+        let short = Instant::now() + Duration::from_millis(30);
+        assert!(other
+            .publish_selection(short, &chosen)
+            .unwrap_err()
+            .to_string()
+            .contains("busy"));
+        assert!(other
+            .read_selection(short)
+            .unwrap_err()
+            .to_string()
+            .contains("busy"));
+        drop(held);
+        other.publish_selection(soon(), &chosen).unwrap(); // positive control
+    }
+}
