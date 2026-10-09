@@ -300,21 +300,20 @@ impl Reader {
                         );
                         #[cfg(any(unix, windows))]
                         {
+                            if editing && dirty {
+                                menu = menu.menu("Save", Box::new(SaveSource));
+                            }
+                            // Shows ⌘⇧E / Ctrl+Shift+E and works from Reader too (#916).
+                            menu = menu.menu("Live Preview", Box::new(OpenLivePreview));
                             if editing {
-                                if dirty {
-                                    menu = menu.menu("Save", Box::new(SaveSource));
-                                }
-                                for (label, enabled) in [("Live Preview", true), ("Source", false)]
-                                {
-                                    let reader = reader.clone();
-                                    menu = menu.item(PopupMenuItem::new(label).on_click(
-                                        move |_, window, cx| {
-                                            let _ = reader.update(cx, |this, cx| {
-                                                this.set_live_preview(enabled, window, cx);
-                                            });
-                                        },
-                                    ));
-                                }
+                                let reader = reader.clone();
+                                menu = menu.item(PopupMenuItem::new("Source").on_click(
+                                    move |_, window, cx| {
+                                        let _ = reader.update(cx, |this, cx| {
+                                            this.set_live_preview(false, window, cx);
+                                        });
+                                    },
+                                ));
                             }
                             menu = menu
                                 .menu(

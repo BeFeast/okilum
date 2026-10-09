@@ -191,6 +191,7 @@ actions!(
         HistoryVersionPrevious,
         RecoverUnsavedNotes,
         ToggleSource,
+        OpenLivePreview,
         SaveSource,
         RevealFile,
         CopyVaultPath,
@@ -248,6 +249,10 @@ const TREE_COLLAPSE_SUBTREE_KEY: &str = "alt-left";
 const COLLAPSE_SECTIONS_KEY: &str = "cmd-shift-left";
 #[cfg(not(target_os = "macos"))]
 const COLLAPSE_SECTIONS_KEY: &str = "ctrl-shift-left";
+
+/// ⌘⇧E / Ctrl+Shift+E (#916). Letters keep shift on macOS (only shifted
+/// punctuation is rewritten, see HIDDEN_FILES_KEY_MAC), so one string fits.
+const LIVE_PREVIEW_KEY: &str = "secondary-shift-e";
 
 /// X11/Wayland may report the press either way: `.` with shift, or `>`.
 const HIDDEN_FILES_KEYS: [&str; 2] = ["ctrl-shift-.", "ctrl->"];
@@ -351,6 +356,9 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-e", ToggleSource, ctx),
         KeyBinding::new("secondary-s", SaveSource, ctx),
         KeyBinding::new("secondary-e", ToggleSource, Some("Reader > Input")),
+        // #916: straight to Live Preview from Reader, Edit or Source.
+        KeyBinding::new(LIVE_PREVIEW_KEY, OpenLivePreview, ctx),
+        KeyBinding::new(LIVE_PREVIEW_KEY, OpenLivePreview, Some("Reader > Input")),
         KeyBinding::new("secondary-s", SaveSource, Some("Reader > Input")),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-f", FindInNote, ctx),
@@ -6258,6 +6266,9 @@ impl Render for Reader {
             .on_action(
                 cx.listener(|this, _: &ToggleSource, window, cx| this.toggle_source(window, cx)),
             )
+            .on_action(cx.listener(|this, _: &OpenLivePreview, window, cx| {
+                this.open_live_preview(window, cx)
+            }))
             .on_action(cx.listener(|this, _: &SaveSource, _, cx| {
                 this.request_source_save(cx);
             }))
@@ -6819,13 +6830,37 @@ fn main() {
 #[cfg(test)]
 mod hidden_files_shortcut_tests {
     use super::{
-        COLLAPSE_SECTIONS_KEY, HIDDEN_FILES_KEYS, HIDDEN_FILES_KEY_MAC, TREE_COLLAPSE_SUBTREE_KEY,
-        TREE_EXPAND_SUBTREE_KEY,
+        COLLAPSE_SECTIONS_KEY, HIDDEN_FILES_KEYS, HIDDEN_FILES_KEY_MAC, LIVE_PREVIEW_KEY,
+        TREE_COLLAPSE_SUBTREE_KEY, TREE_EXPAND_SUBTREE_KEY,
     };
     use gpui::{KeybindingKeystroke, Keystroke, Modifiers};
 
     fn binding(keys: &str) -> KeybindingKeystroke {
         KeybindingKeystroke::from_keystroke(Keystroke::parse(keys).unwrap())
+    }
+
+    /// #916: macOS keeps shift for letters, so ⌘⇧E arrives as cmd-shift-e
+    /// and matches `secondary-shift-e` resolved for the Mac.
+    #[test]
+    fn live_preview_shortcut_matches_macos_report() {
+        let mac = Keystroke {
+            modifiers: Modifiers {
+                platform: true,
+                shift: true,
+                ..Default::default()
+            },
+            key: "e".into(),
+            key_char: None,
+        };
+        let resolved = LIVE_PREVIEW_KEY.replace("secondary", "cmd");
+        assert!(mac.should_match(&binding(&resolved)));
+        // Positive control: plain ⌘E stays Edit/Read.
+        let plain = Keystroke {
+            modifiers: Modifiers::command(),
+            key: "e".into(),
+            key_char: None,
+        };
+        assert!(!plain.should_match(&binding(&resolved)));
     }
 
     #[test]
