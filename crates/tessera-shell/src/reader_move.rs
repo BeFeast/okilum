@@ -945,16 +945,11 @@ impl Reader {
             match Operation::load(&path) {
                 Ok(op) => entries.push((
                     path,
-                    format!(
-                        "{} → {} · {} files · {}",
-                        op.from,
-                        op.to,
+                    reader_recovery_rows::move_row_label(
+                        &op.from,
+                        &op.to,
                         op.files.len(),
-                        if op.complete {
-                            "completed"
-                        } else {
-                            "interrupted"
-                        }
+                        op.complete,
                     ),
                 )),
                 Err(error) => {
@@ -1009,7 +1004,7 @@ impl Reader {
             }
             let _ = this.update_in(cx, |this, window, cx| {
                 match this.revert_link_move(&path, &state, window, cx) {
-                    Ok(()) => reader_toast::transient("Link move reverted. Original bytes restored.", window, cx),
+                    Ok(()) => reader_toast::transient("Link move reverted.", window, cx),
                     Err(error) => this.link_notice = Some(format!(
                         "Recovery stopped: {error:#}. Original bytes are retained; resolve the reported file and try again."
                     ).into()),

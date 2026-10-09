@@ -55,12 +55,50 @@ pub(super) fn row_details(rel: &Path, label: &str, saved: &str, protected: bool)
     details
 }
 
+/// A link-move endpoint as the user knows it. Only a `.md` suffix is dropped:
+/// a folder named `Plan.v2` keeps its whole name.
+fn move_name(path: &str) -> &str {
+    path.strip_suffix(".md").unwrap_or(path)
+}
+
+/// `Old → New · 3 files · Interrupted` for the Recover link moves list. The
+/// folder part of each endpoint stays, so a move between folders is readable.
+pub(super) fn move_row_label(from: &str, to: &str, files: usize, complete: bool) -> String {
+    let files = if files == 1 {
+        "1 file".to_owned()
+    } else {
+        format!("{files} files")
+    };
+    let state = if complete { "Completed" } else { "Interrupted" };
+    format!(
+        "{} → {} · {files} · {state}",
+        move_name(from),
+        move_name(to)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn p(path: &str) -> &Path {
         Path::new(path)
+    }
+
+    #[test]
+    fn move_row_uses_note_names_singular_counts_and_capitalised_state() {
+        assert_eq!(
+            move_row_label("Work/Plan.md", "Home/Plan.md", 1, false),
+            "Work/Plan → Home/Plan · 1 file · Interrupted"
+        );
+        assert_eq!(
+            move_row_label("Plan.v2", "Archive/Plan.v2", 0, true),
+            "Plan.v2 → Archive/Plan.v2 · 0 files · Completed"
+        );
+        assert_eq!(
+            move_row_label("A.md", "B.md", 12, true),
+            "A → B · 12 files · Completed"
+        );
     }
 
     #[test]
