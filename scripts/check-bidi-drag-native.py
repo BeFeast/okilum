@@ -42,9 +42,21 @@ for theme in ['light', 'dark']:
         win = found.stdout.split()[-1]
         xd('windowmove', win, '0', '0', 'windowfocus', win)
 
+        def states():
+            return [json.loads(line) for line in log.read_text().splitlines() if line.startswith('{')]
+
         def record():
+            # Wait for the state this keypress requests; the last line may still
+            # be the previous one (a stale read looked like a buffer/selection
+            # mismatch).
+            before = len(states())
             xd('key', 'ctrl+alt+r')
-            return [json.loads(line) for line in log.read_text().splitlines() if line.startswith('{')][-1]
+            for _ in range(50):
+                current = states()
+                if len(current) > before:
+                    return current[-1]
+                time.sleep(.1)
+            raise AssertionError((theme, 'no state recorded'))
 
         def click(x):
             time.sleep(.6)  # never a double click
