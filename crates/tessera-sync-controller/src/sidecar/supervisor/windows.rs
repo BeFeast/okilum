@@ -126,8 +126,21 @@ impl JobChild {
     /// Complete exit also requires signaled captured descendants. If a process
     /// disappeared before capture, status fails instead of certifying exit.
     pub fn running(&self) -> Result<bool> {
+        if self.root_running()? {
+            return Ok(true);
+        }
+        for process in &self.descendants {
+            match unsafe { WaitForSingleObject(raw(process), 0) } {
+                WAIT_OBJECT_0 => (),
+                WAIT_TIMEOUT => return Ok(true),
+                _ => return Err(windows::core::Error::from_win32().into()),
+            }
+        }
+        // Read accounting AFTER all captured objects are signaled: no captured
+        // process can spawn a late child after this completeness observation.
+        // Checking the count before the waits would leave a creation/exit race.
         let account = self.accounting()?;
-        if account.ActiveProcesses != 0 || self.root_running()? {
+        if account.ActiveProcesses != 0 {
             return Ok(true);
         }
         // Accounting can reach zero before process handles become signaled.
@@ -136,13 +149,6 @@ impl JobChild {
             account.TotalProcesses as usize == self.descendants.len() + 1,
             "owned job completion has uncaptured processes"
         );
-        for process in &self.descendants {
-            match unsafe { WaitForSingleObject(raw(process), 0) } {
-                WAIT_OBJECT_0 => (),
-                WAIT_TIMEOUT => return Ok(true),
-                _ => return Err(windows::core::Error::from_win32().into()),
-            }
-        }
         Ok(false)
     }
     fn root_running(&self) -> Result<bool> {
