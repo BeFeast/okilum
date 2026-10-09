@@ -194,13 +194,28 @@ administrator) could still swap the file in that window; neither permission mode
 boundary against the owner, and peer identity and signature checks are the ownership
 gate. A second validation would narrow the window without closing it.
 
-The macOS/Unix `OwnedTree` is `supervisor::process_group::ProcessGroupTree` (a new
-process group; signals only while the leader is unreaped; `Stopped` only when the group
-is empty and no live same-user copy of the pinned runtime started since the root, as
-specified in [discovery](sync-sidecar-discovery.md)). Its macOS process scan is
-compile-checked off-host and runs in macOS CI; it has not run on a real signed
-supervisor.
+The `OwnedTree`s: on Windows `supervisor::windows::JobTree` over the captured Job Object
+(#937); on macOS `supervisor::process_group::ProcessGroupTree` (#934: a new process
+group; signals only while the leader is unreaped; `Stopped` only when the group is empty
+and no live same-user copy of the pinned runtime started since the root, as specified in
+[discovery](sync-sidecar-discovery.md); a zombie-only group makes macOS `killpg` answer
+EPERM, which is treated as "nothing signalable left").
 
-Still open: authenticated generation discovery (the hint and connect-then-verify
-described in [discovery](sync-sidecar-discovery.md)), the Windows `OwnedTree` over the
-captured Job Object, and real native crash/durability and supervisor-exit acceptance.
+Discovery, as specified in [discovery](sync-sidecar-discovery.md): the generation hint
+(`endpoint.json`, #939) and, on Windows, connect-then-verify (#948: server process from
+the connected pipe, owner, executable, start time against the hint, injected signature
+policy). On macOS the private socket transport (#949; deadlines via `poll`, because macOS
+answers `setsockopt(SO_RCVTIMEO)` with EINVAL once the peer has closed) and the audit-token
+peer check with a code requirement built from policy input (#963).
+
+Where each piece has actually run: Linux and the Windows `native-sync` lane run the
+whole library. Since #951 the macOS gate runs `sidecar::` on a real Mac, which found and
+fixed two macOS-only bugs (the EPERM above and the `setsockopt` EINVAL); before that it
+only compiled the library. The Windows signature check is a stub policy and the macOS
+one has only met an ad-hoc signed test binary; neither has seen a real release signature.
+
+Still open: the discovery glue (read the hint, connect, `Status`, compare the generation)
+and the platform adapters' `supervisor_scope`/`stop_supervisor`, which need the
+supervisor executable that does not exist yet; the signature policies with real values
+(macOS from the release build configuration, Windows after the code-signing certificate
+exists); and real native crash/durability and supervisor-exit acceptance.
