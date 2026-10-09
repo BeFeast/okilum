@@ -9,10 +9,24 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+/// An absolute `TESSERA_STATE_DIR` gives a QA instance its own state, instance
+/// lock, drafts, diagnostics and presentation config, so it neither forwards to
+/// nor shares files with the user's running Reader. Windows has no XDG override.
+pub(crate) fn isolated_state_directory() -> Option<PathBuf> {
+    isolated_from(std::env::var_os("TESSERA_STATE_DIR"))
+}
+
+fn isolated_from(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    value.map(PathBuf::from).filter(|path| path.is_absolute())
+}
+
 /// App-owned Reader state location, outside any vault or index directory.
 /// Tests use `TestSessionDirectory` instead.
 #[cfg_attr(test, allow(dead_code))]
 pub(crate) fn state_directory() -> Result<PathBuf> {
+    if let Some(directory) = isolated_state_directory() {
+        return Ok(directory);
+    }
     #[cfg(target_os = "macos")]
     let directory = std::env::var_os("HOME")
         .map(|home| PathBuf::from(home).join("Library/Application Support/uk.oklabs.tessera"));
@@ -294,6 +308,18 @@ mod tests {
             let _ = fs::remove_dir_all(&self.0);
         }
     }
+    #[test]
+    fn isolated_state_directory_requires_an_absolute_path() {
+        let absolute = std::env::temp_dir().join("tessera-qa-state");
+        assert_eq!(
+            isolated_from(Some(absolute.clone().into_os_string())),
+            Some(absolute)
+        );
+        assert_eq!(isolated_from(Some("relative/state".into())), None);
+        assert_eq!(isolated_from(Some("".into())), None);
+        assert_eq!(isolated_from(None), None);
+    }
+
     #[test]
     fn history_roundtrip_refuses_notes_and_reads_older_files() {
         let f =
