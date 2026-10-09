@@ -1,7 +1,7 @@
 //! Bounded-frame supervisor control protocol, independent of the OS transport.
 //! Native peer authentication, private endpoints and I/O deadlines are mandatory
 //! transport duties. This module neither starts a process nor installs a service.
-use crate::sidecar::Binding;
+use crate::sidecar::{authority::StopToken, Binding};
 use anyhow::{ensure, Result};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::io::{Read, Write};
@@ -16,7 +16,7 @@ pub mod windows_peer;
 #[cfg(target_os = "windows")]
 pub mod windows_transport;
 
-pub const VERSION: u16 = 1;
+pub const VERSION: u16 = 2;
 pub const MAX_FRAME: usize = 4096;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -27,10 +27,12 @@ pub struct Scope {
     /// Fresh for each supervisor lifetime; never a PID or a persisted identity.
     pub generation: Uuid,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Command-specific fields are structural: Stop must carry exactly one token and
+/// Status none, so a v1 `"Stop"` frame or a token-less Stop cannot deserialize.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Command {
     Status,
-    Stop,
+    Stop(StopToken),
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -49,6 +51,27 @@ impl Request {
             command,
         }
     }
+    /// Effect-free checks shared by client and server. The token must name this
+    /// request's own scope; nil identities never pass. A revision does not
+    /// authenticate the caller, and the durable state decides authorization.
+    pub fn validate(&self) -> Result<()> {
+        ensure!(self.version == VERSION, "unsupported supervisor protocol");
+        ensure!(
+            !self.id.is_nil() && !self.scope.generation.is_nil(),
+            "nil supervisor identity"
+        );
+        if let Command::Stop(token) = &self.command {
+            let operation = &token.operation;
+            ensure!(
+                !token.journal_epoch.is_nil()
+                    && !operation.operation_id.is_nil()
+                    && operation.authorized_revision >= 1,
+                "invalid stop token"
+            );
+            ensure!(operation.scope == self.scope, "stop token scope mismatch");
+        }
+        Ok(())
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Status {
@@ -63,6 +86,8 @@ pub struct Response {
     pub scope: Scope,
     pub id: Uuid,
     pub status: Status,
+    /// Echo of the full Stop token; absent for Status. Checked in `validate_for`.
+    pub token: Option<StopToken>,
 }
 impl Response {
     /// Authenticate the remote endpoint separately before trusting this reply.
@@ -75,10 +100,17 @@ impl Response {
             self.scope == request.scope && self.id == request.id,
             "supervisor reply mismatch"
         );
-        ensure!(
-            request.command != Command::Stop || self.status != Status::Running,
-            "stop reply did not transition runtime"
-        );
+        match (&request.command, &self.token) {
+            (Command::Stop(sent), Some(echoed)) => {
+                ensure!(sent == echoed, "stop reply token mismatch");
+                ensure!(
+                    self.status != Status::Running,
+                    "stop reply did not transition runtime"
+                );
+            }
+            (Command::Status, None) => {}
+            _ => anyhow::bail!("unexpected stop token in supervisor reply"),
+        }
         Ok(self.status)
     }
 }
@@ -102,10 +134,7 @@ pub fn exchange(
     binding: &Binding,
     request: &Request,
 ) -> Result<Status> {
-    ensure!(
-        request.version == VERSION,
-        "unsupported supervisor protocol"
-    );
+    request.validate()?;
     ensure!(
         request.scope.installation == binding.installation
             && request.scope.instance == binding.instance,
@@ -118,24 +147,39 @@ pub fn exchange(
 }
 
 /// Owns captured process/job handles, never PID lookup. This is not a default
-/// native implementation: signature/state ownership and durable intent must be
-/// checked by the platform integration before stopping its owned tree.
+/// native implementation: signature/state ownership must be checked by the
+/// platform integration before stopping its owned tree.
 pub trait OwnedRuntime {
+    /// Authority for one Stop: the exclusive instance lock taken in
+    /// `authorize_stop`. The server drops it, releasing the lock, before it
+    /// writes any reply, and never calls back into a controller while it is held.
+    type Lease;
     fn status(&mut self) -> Result<Status>;
-    /// Re-read the durable Disable/Remove/update-stop intent for this exact
-    /// binding under the controller's ordering/locking protocol. Failure denies
-    /// the effect. Do not acquire a lock that the waiting controller still holds.
-    fn verify_stop_intent(&mut self, binding: &Binding) -> Result<()>;
-    /// Bounded stop AND reap. Stopped means all owned descendants exited;
-    /// Stopping means a timeout and must not permit unregister/removal success.
-    fn stop_owned(&mut self) -> Result<Status>;
+    /// Under the instance lock, load authoritative state and require the exact
+    /// Binding, epoch, current revision, stored token, reason/phase and this
+    /// supervisor generation (`Envelope::authorize`). Failure or contention
+    /// denies the effect, including for repeated requests. Implementations are
+    /// built with the same absolute deadline as the accepted transport, so lock
+    /// waiting cannot extend the exchange budget.
+    fn authorize_stop(
+        &mut self,
+        binding: &Binding,
+        scope: &Scope,
+        token: &StopToken,
+    ) -> Result<Self::Lease>;
+    /// Bounded stop AND reap while `lease` is held. Stopped means all owned
+    /// descendants exited; Stopping means a timeout and must not permit
+    /// unregister/removal success.
+    fn stop_owned(&mut self, lease: &Self::Lease) -> Result<Status>;
 }
 
 pub struct Server<R> {
     binding: Binding,
     scope: Scope,
     runtime: R,
-    stopped: bool,
+    /// Completion is cached only for the exact token that produced it, in this
+    /// generation. It is not durable and never stands in for authorization.
+    completed: Option<StopToken>,
 }
 impl<R: OwnedRuntime> Server<R> {
     /// Only after explicit Enable and native verification/preparation. Creating
@@ -150,7 +194,7 @@ impl<R: OwnedRuntime> Server<R> {
             binding,
             scope,
             runtime,
-            stopped: false,
+            completed: None,
         }
     }
     /// Publish only through authenticated native endpoint discovery, bound to
@@ -164,24 +208,30 @@ impl<R: OwnedRuntime> Server<R> {
     pub fn serve_one(&mut self, transport: &mut impl Transport) -> Result<()> {
         transport.verify_peer(&self.binding, &self.scope)?;
         let request: Request = read_frame(transport)?;
-        ensure!(
-            request.version == VERSION,
-            "unsupported supervisor protocol"
-        );
+        request.validate()?;
         ensure!(request.scope == self.scope, "supervisor scope changed");
-        let status = match request.command {
-            Command::Status if self.stopped => Status::Stopped,
-            Command::Status => self.runtime.status()?,
-            Command::Stop => {
-                self.runtime.verify_stop_intent(&self.binding)?;
-                if self.stopped {
-                    Status::Stopped
-                } else {
-                    let status = self.runtime.stop_owned()?;
-                    ensure!(status != Status::Running, "stop did not transition runtime");
-                    self.stopped = status == Status::Stopped;
-                    status
-                }
+        let (status, token) = match &request.command {
+            Command::Status if self.completed.is_some() => (Status::Stopped, None),
+            Command::Status => (self.runtime.status()?, None),
+            Command::Stop(token) => {
+                // The lease ends with this block: the lock is released before
+                // the reply is written, and a repeat is authorized again first.
+                let status = {
+                    let lease = self
+                        .runtime
+                        .authorize_stop(&self.binding, &self.scope, token)?;
+                    if self.completed.as_ref() == Some(token) {
+                        Status::Stopped
+                    } else {
+                        let status = self.runtime.stop_owned(&lease)?;
+                        ensure!(status != Status::Running, "stop did not transition runtime");
+                        if status == Status::Stopped {
+                            self.completed = Some(token.clone());
+                        }
+                        status
+                    }
+                };
+                (status, Some(token.clone()))
             }
         };
         write_frame(
@@ -191,6 +241,7 @@ impl<R: OwnedRuntime> Server<R> {
                 scope: self.scope.clone(),
                 id: request.id,
                 status,
+                token,
             },
         )
     }

@@ -1,5 +1,6 @@
 use super::*;
 use crate::sidecar::{
+    authority::{Reason, StopOperation, StopToken},
     supervisor::ipc::{exchange, Command, OwnedRuntime, Request, Server, Status},
     windows::security::current_sid,
 };
@@ -181,11 +182,12 @@ impl OwnedRuntime for Runtime {
         self.probes.fetch_add(1, Ordering::SeqCst);
         Ok(Status::Running)
     }
-    fn verify_stop_intent(&mut self, _: &Binding) -> Result<()> {
+    type Lease = ();
+    fn authorize_stop(&mut self, _: &Binding, _: &Scope, _: &StopToken) -> Result<()> {
         self.intents.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
-    fn stop_owned(&mut self) -> Result<Status> {
+    fn stop_owned(&mut self, _: &()) -> Result<Status> {
         self.stops.fetch_add(1, Ordering::SeqCst);
         Ok(Status::Stopped)
     }
@@ -228,10 +230,22 @@ fn native_transport_protocol_status_stop_and_idempotent_reply() -> Result<()> {
         )? == Status::Running,
         "status mismatch"
     );
+    // One request, sent twice: the same token is a retry, cached after one stop.
+    let stop = Request::new(
+        s.clone(),
+        Command::Stop(StopToken {
+            journal_epoch: Uuid::new_v4(),
+            operation: StopOperation {
+                operation_id: Uuid::new_v4(),
+                authorized_revision: 2,
+                scope: s.clone(),
+                reason: Reason::Disable,
+            },
+        }),
+    );
     for _ in 0..2 {
         ensure!(
-            exchange(&mut transport, &b, &Request::new(s.clone(), Command::Stop))?
-                == Status::Stopped,
+            exchange(&mut transport, &b, &stop)? == Status::Stopped,
             "stop mismatch"
         );
     }
