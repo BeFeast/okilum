@@ -42,6 +42,7 @@ pub mod quick_open;
 pub mod reminder_append;
 pub mod reminder_context;
 pub mod reminder_dates;
+pub mod reminder_schedule;
 pub mod reminder_task;
 pub mod render;
 pub mod search;
