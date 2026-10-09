@@ -1,0 +1,10 @@
+{
+  "name": "tessera-excalidraw-compat",
+  "private": true,
+  "description": "Test-only oracle for #478: runs the Obsidian Excalidraw plugin's own loader on Tessera writer output. The AGPL plugin source is fetched at test time and not distributed.",
+  "license": "MIT",
+  "devDependencies": {
+    "esbuild": "0.25.10",
+    "lz-string": "1.5.0"
+  }
+}

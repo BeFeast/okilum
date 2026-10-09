@@ -134,6 +134,38 @@ fn plugin_element_links(file: &str) -> BTreeMap<String, String> {
         .collect()
 }
 
+/// With `TESSERA_EXCALIDRAW_DUMP=<dir>`, keep every checked file and its scene
+/// facts for the plugin's own loader (scripts/excalidraw-compat, CI job
+/// excalidraw-compat): block-ref text entries, every element link, all ids.
+fn dump_for_plugin_oracle(file: &str, text: &BTreeMap<String, String>, scene: &Value) {
+    use std::hash::{Hash, Hasher};
+    let Some(dir) = std::env::var_os("TESSERA_EXCALIDRAW_DUMP") else {
+        return;
+    };
+    let elements = scene["elements"].as_array().unwrap();
+    let links: BTreeMap<&str, &str> = elements
+        .iter()
+        .filter(|element| element["isDeleted"] != true)
+        .filter_map(|element| Some((element["id"].as_str()?, element["link"].as_str()?)))
+        .collect();
+    let ids: Vec<&str> = elements
+        .iter()
+        .filter_map(|element| element["id"].as_str())
+        .collect();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    file.hash(&mut hasher);
+    let name = format!("{:016x}", hasher.finish());
+    let dir = std::path::Path::new(&dir);
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(dir.join(format!("{name}.excalidraw.md")), file).unwrap();
+    let expected = json!({ "text": text, "links": links, "ids": ids });
+    std::fs::write(
+        dir.join(format!("{name}.expected.json")),
+        expected.to_string(),
+    )
+    .unwrap();
+}
+
 /// What a plugin load of `file` must see: one Markdown entry per live text
 /// element with a block-ref id, equal to its `rawText`, and wiki links listed.
 fn assert_plugin_consistent(file: &str) {
@@ -164,6 +196,7 @@ fn assert_plugin_consistent(file: &str) {
                 .then(|| (element["id"].as_str().unwrap().to_owned(), link.to_owned()))
         })
         .collect();
+    dump_for_plugin_oracle(file, &expected_text, &scene);
     assert_eq!(plugin_element_links(&lf), expected_links, "{lf}");
 }
 
