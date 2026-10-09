@@ -34,8 +34,8 @@ have no automatic updates; use an installed release for update acceptance.
 
 Installation lives under `%LOCALAPPDATA%\BeFeast.Tessera`, separate from existing
 Reader state `%LOCALAPPDATA%\tessera`. No uninstall hook deletes user state or
-vaults. Windows Reader remains read-only. Shaders and third-party notices ship
-with the app. The installer and app are currently unsigned: Windows SmartScreen
+vaults. The Windows Reader reads, searches and edits notes with native safe
+saves. Shaders and third-party notices ship with the app. The installer and app are currently unsigned: Windows SmartScreen
 may show “Windows protected your PC”; verify the official URL, then use
 **More info → Run anyway** for this owner-approved testing phase.
 
