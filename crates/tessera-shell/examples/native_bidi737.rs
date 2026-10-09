@@ -14,6 +14,16 @@ use std::sync::Arc;
 
 const TEXT: &str = "abc שלום xyz\nשלום abc עולם\n**שלום** and русский текст\n";
 actions!(bidi_fixture, [Record, Toggle]);
+struct ExactSource;
+impl ProjectionProvider for ExactSource {
+    fn compose(
+        &self,
+        _: &SourceSnapshot,
+        _: &gpui_component::input::projection::ActiveSource,
+    ) -> Option<Arc<dyn gpui_component::input::projection::SourceProjection>> {
+        None
+    }
+}
 struct Fixture {
     editor: Entity<EditorState>,
     live: bool,
@@ -58,8 +68,13 @@ impl Render for Fixture {
             }))
             .child(
                 Editor::new(&self.editor)
-                    .font_family("Noto Sans")
-                    .text_size(px(24.))
+                    .font_family(
+                        std::env::var("TESSERA_BIDI_FONT").unwrap_or_else(|_| "Noto Sans".into()),
+                    )
+                    .text_size(px(std::env::var("TESSERA_BIDI_SIZE")
+                        .ok()
+                        .and_then(|size| size.parse().ok())
+                        .unwrap_or(24.)))
                     .h(relative(1.0)),
             )
     }
@@ -69,6 +84,11 @@ fn main() {
         .with_assets(gpui_kit_assets::Assets)
         .run(|cx| {
             gpui_component::init(cx);
+            cx.text_system()
+                .add_fonts(vec![std::borrow::Cow::Borrowed(include_bytes!(
+                    "../assets/brand/fonts/cascadia-code-400.ttf"
+                ))])
+                .unwrap();
             let mode = if std::env::var_os("TESSERA_BIDI_DARK").is_some() {
                 gpui_component::ThemeMode::Dark
             } else {
@@ -96,11 +116,22 @@ fn main() {
                             .searchable(false)
                             .soft_wrap(true)
                             .wrapping_indent(WrappingIndent::None);
+                        // Mirror the app's Source editor (reader_editor.rs) for #879.
+                        if std::env::var_os("TESSERA_BIDI_APP").is_some() {
+                            editor = editor.document_newlines(true).language("markdown");
+                            editor.set_projection_provider(Some(Arc::new(ExactSource)), cx);
+                        }
                         editor.set_value(
                             std::env::var("TESSERA_BIDI_TEXT").unwrap_or_else(|_| TEXT.into()),
                             window,
                             cx,
                         );
+                        if std::env::var_os("TESSERA_BIDI_APP").is_some() {
+                            editor.ensure_highlighter_factory(
+                                gpui_component::highlighter::input_highlighter_factory(),
+                            );
+                            editor.prepare_highlighting(window, cx);
+                        }
                         if std::env::var_os("TESSERA_BIDI_SELECT").is_some() {
                             editor.set_selected_range(10..12, cx);
                         }
