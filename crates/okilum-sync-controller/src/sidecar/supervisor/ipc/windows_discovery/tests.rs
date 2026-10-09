@@ -78,7 +78,7 @@ fn the_genuine_server_is_identified_and_each_wrong_claim_is_refused() {
     refused(
         "binding owned by another account",
         &|c| c.owner = "S-1-5-18".into(),
-        "another user",
+        "not the running user",
     );
     refused("unsigned image", &|c| c.policy = false, "signature policy");
 }

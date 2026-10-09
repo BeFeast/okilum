@@ -95,7 +95,11 @@ pub fn identify_client(
     let process = unsafe { OwnedHandle::from_raw_handle(raw.0) };
     let handle = HANDLE(process.as_raw_handle());
     ensure!(
-        owner == current_sid()? && process_sid(handle)? == owner,
+        owner == current_sid()?,
+        "the binding's owner is not the running user"
+    );
+    ensure!(
+        process_sid(handle)? == owner,
         "client process belongs to another user"
     );
     let image = image_path(handle)?;
@@ -128,7 +132,11 @@ pub fn identify_server(
     let process = unsafe { OwnedHandle::from_raw_handle(raw.0) };
     let handle = HANDLE(process.as_raw_handle());
     ensure!(
-        binding.owner == current_sid()? && process_sid(handle)? == binding.owner,
+        binding.owner == current_sid()?,
+        "the binding's owner is not the running user"
+    );
+    ensure!(
+        process_sid(handle)? == binding.owner,
         "server process belongs to another user"
     );
     let image = image_path(handle)?;
