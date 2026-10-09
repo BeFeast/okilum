@@ -1284,7 +1284,10 @@ mod tests {
                 bounds.size.height
             );
         }
-        assert_eq!(measured, 2, "positive control: title and note heading rendered");
+        assert_eq!(
+            measured, 2,
+            "positive control: title and note heading rendered"
+        );
     }
 
     #[gpui::test]
