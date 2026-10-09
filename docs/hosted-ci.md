@@ -13,7 +13,9 @@ cache credentials go to GitHub.
 3. For Windows tests or unsigned packaging, manually run Forgejo **commit-ci**
    on the same branch, selecting `native-core` (core `windows_` tests),
    `native-sync` (sync-controller `sidecar::` tests), `windows-release`, `arch`,
-   `brain`, or `inbox`. `linux` is the default. Native tests use default features,
+   `brain`, `inbox`, or `inbox-restart` (Inbox + nginx restart/failure/rollback
+   integration on Ubuntu 24.04 with Docker/Compose; no secrets or CT119 access).
+   `linux` is the default. Native tests use default features,
    `--nocapture --test-threads=1` on Windows 2022. For a different package/filter,
    owners use exact-source `windows-native.yml` dispatch; CI owner handles lane failures.
 

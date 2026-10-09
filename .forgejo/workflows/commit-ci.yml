@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       lane:
-        description: 'linux, linux-binary, native-core, native-sync, windows-release, arch, brain, or inbox'
+        description: 'linux, linux-binary, native-core, native-sync, windows-release, arch, brain, inbox, or inbox-restart'
         required: true
         default: linux
       baseline:
