@@ -25,6 +25,8 @@ pub enum Style {
     Code,
     Link,
     WikiLink,
+    /// A reference definition row: kept at source height and rendered quietly.
+    Definition,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -40,6 +42,32 @@ pub struct NoteLink {
     pub label: Range<usize>,
     pub target: String,
     pub wiki: bool,
+}
+
+/// A reference link the full parse resolved from a document definition. A local
+/// reparse cannot see definitions; it may reuse only these exact labels.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Reference {
+    label: String,
+    url: String,
+    title: String,
+}
+
+struct References(Vec<Reference>);
+
+impl comrak::options::BrokenLinkCallback for References {
+    fn resolve(
+        &self,
+        reference: comrak::options::BrokenLinkReference,
+    ) -> Option<comrak::ResolvedReference> {
+        self.0
+            .iter()
+            .find(|known| known.label == reference.original)
+            .map(|known| comrak::ResolvedReference {
+                url: known.url.clone(),
+                title: known.title.clone(),
+            })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,6 +95,7 @@ pub struct Classification {
     /// Top-level list/quote containers, from their first line start. A local
     /// reparse must include the whole container its edited lines belong to.
     contexts: Vec<Range<usize>>,
+    references: Vec<Reference>,
     decorations: Vec<decorations::Marker>,
     links: Vec<NoteLink>,
     headings: Vec<Heading>,
@@ -159,6 +188,7 @@ fn fallback(snapshot: &Snapshot, reason: SourceReason) -> Classification {
         styles: vec![],
         marker_scopes: vec![],
         contexts: vec![],
+        references: vec![],
         decorations: vec![],
         links: vec![],
         headings: vec![],
@@ -170,6 +200,11 @@ fn fallback(snapshot: &Snapshot, reason: SourceReason) -> Classification {
 /// AST node/depth caps are post-parse validation, not a parser time bound.
 /// A future native caller must schedule this away from the input/paint path.
 pub fn classify(snapshot: &Snapshot) -> Classification {
+    classify_with(snapshot, &[])
+}
+
+/// `references` resolve uses whose definitions lie outside a local fragment.
+pub(crate) fn classify_with(snapshot: &Snapshot, references: &[Reference]) -> Classification {
     let source = snapshot.source();
     if source.len() > MAX_BYTES {
         return fallback(snapshot, SourceReason::InputLimit);
@@ -191,6 +226,10 @@ pub fn classify(snapshot: &Snapshot) -> Classification {
     // Task markers are authored container syntax, not paragraph text.
     options.extension.tasklist = true;
     options.extension.wikilinks_title_after_pipe = true;
+    if !references.is_empty() {
+        options.parse.broken_link_callback =
+            Some(std::sync::Arc::new(References(references.to_vec())));
+    }
     let first_line = source.trim_start_matches('\u{feff}').lines().next();
     let delimiter = if first_line == Some("+++") {
         "+++"
@@ -216,6 +255,7 @@ pub fn classify(snapshot: &Snapshot) -> Classification {
     let mut styles = Vec::new();
     let mut marker_scopes = Vec::new();
     let mut links = Vec::new();
+    let mut resolved = Vec::new();
     let mut headings = Vec::new();
     let mut reasons = Vec::new();
     let mut range_count = 0;
@@ -278,6 +318,7 @@ pub fn classify(snapshot: &Snapshot) -> Classification {
                 (marker.clone(), scope)
             }));
             links.extend(candidate.links);
+            resolved.extend(candidate.references);
             styles.extend(candidate.styles);
             regions.push(Region::Conceal {
                 block,
@@ -294,6 +335,36 @@ pub fn classify(snapshot: &Snapshot) -> Classification {
             return fallback(snapshot, SourceReason::StructureLimit);
         }
     }
+    // The parser consumes reference definitions; their rows remain raw Source
+    // at their own height. Only top-level rows no block covers are styled.
+    let mut covered = vec![false; context.lines.len()];
+    for node in root.children() {
+        let pos = node.data.borrow().sourcepos;
+        for line in pos.start.line..=pos.end.line {
+            if let Some(slot) = covered.get_mut(line.wrapping_sub(1)) {
+                *slot = true;
+            }
+        }
+    }
+    for (index, &start) in context.lines.iter().enumerate() {
+        let end = context
+            .lines
+            .get(index + 1)
+            .copied()
+            .unwrap_or(source.len());
+        let row = source[start..end].trim_end_matches(['\r', '\n']);
+        if !covered[index] && definition_row(row) {
+            styles.push(StyleSpan {
+                range: start..start + row.len(),
+                style: Style::Definition,
+            });
+        }
+    }
+    styles.sort_by_key(|style| style.range.start);
+    resolved.dedup_by(|a: &mut Reference, b: &mut Reference| a.label == b.label);
+    if styles.len() + reasons.len() > MAX_STYLES_AND_REASONS {
+        return fallback(snapshot, SourceReason::StructureLimit);
+    }
     let plan = Plan::new(snapshot, regions);
     if source_projection::project(snapshot, &plan, &Active::default()).is_err() {
         return fallback(snapshot, SourceReason::ProjectionBoundary);
@@ -304,6 +375,7 @@ pub fn classify(snapshot: &Snapshot) -> Classification {
         styles,
         marker_scopes,
         contexts,
+        references: resolved,
         decorations: decorations::extract(root, &context).unwrap_or_default(),
         links,
         headings,
@@ -333,12 +405,28 @@ fn content_blocks<'a>(
     }
 }
 
+/// `[label]: destination` after at most three spaces of indentation.
+fn definition_row(row: &str) -> bool {
+    let indent = row.len() - row.trim_start_matches(' ').len();
+    let Some((label, tail)) = row[indent..]
+        .strip_prefix('[')
+        .and_then(|rest| rest.split_once("]:"))
+    else {
+        return false;
+    };
+    indent <= 3
+        && !label.trim().is_empty()
+        && !label.contains(['[', ']'])
+        && !tail.trim().is_empty()
+}
+
 #[derive(Default)]
 struct Candidate {
     markers: Vec<Range<usize>>,
     fragments: Vec<Range<usize>>,
     styles: Vec<StyleSpan>,
     links: Vec<NoteLink>,
+    references: Vec<Reference>,
 }
 
 struct Context<'s> {
@@ -508,14 +596,14 @@ impl<'s> Context<'s> {
     fn link<'a>(&self, node: &'a AstNode<'a>, candidate: &mut Candidate, wiki: bool) -> Option<()> {
         let range = self.range(node)?;
         let raw = self.source.get(range.clone())?;
-        if raw.contains(['\r', '\n']) {
-            return None;
-        }
         let children: Vec<_> = node.children().collect();
-        if children.len() != 1 || !matches!(children[0].data.borrow().value, NodeValue::Text(_)) {
-            return None;
-        }
         let (label, target) = if wiki {
+            if raw.contains(['\r', '\n'])
+                || children.len() != 1
+                || !matches!(children[0].data.borrow().value, NodeValue::Text(_))
+            {
+                return None;
+            }
             // Comrak trims label text before assigning its child coordinates.
             // Whitespace around the label is syntax to conceal, not evidence
             // of an unsupported link. Keep the target and source bytes intact.
@@ -538,29 +626,78 @@ impl<'s> Context<'s> {
             {
                 return None;
             }
-            (label, target)
+            (label, target.to_owned())
         } else {
-            let label = self.range(children[0])?;
-            let prefix = self.source.get(range.start..label.start)?;
-            let suffix = self.source.get(label.end..range.end)?;
-            if prefix != "[" {
-                return None;
-            }
-            let destination = suffix.strip_prefix("](")?.strip_suffix(')')?;
-            if destination.is_empty()
-                || destination
-                    .chars()
-                    .any(|c| c.is_whitespace() || "()[]\\\"'<>`".contains(c))
+            // A label may wrap (#766): plain text and soft breaks only, with
+            // text at both ends. The concealed delimiters stay on one line.
+            let text = |n: &AstNode<'_>| matches!(n.data.borrow().value, NodeValue::Text(_));
+            if !children.first().is_some_and(|n| text(n))
+                || !children.last().is_some_and(|n| text(n))
+                || !children
+                    .iter()
+                    .all(|n| text(n) || matches!(n.data.borrow().value, NodeValue::SoftBreak))
             {
                 return None;
             }
-            (label, destination)
+            let label =
+                self.range(children[0])?.start..self.range(children[children.len() - 1])?.end;
+            let prefix = self.source.get(range.start..label.start)?;
+            let suffix = self.source.get(label.end..range.end)?;
+            // A wrapped label inside a quote would also cover the next quote
+            // prefix; keep such labels raw rather than styling container syntax.
+            if prefix != "["
+                || suffix.contains(['\r', '\n'])
+                || self
+                    .source
+                    .get(label.clone())?
+                    .split('\n')
+                    .skip(1)
+                    .any(|line| line.trim_start().starts_with('>'))
+            {
+                return None;
+            }
+            if let Some(destination) = suffix.strip_prefix("](").and_then(|s| s.strip_suffix(')')) {
+                if destination.is_empty()
+                    || destination
+                        .chars()
+                        .any(|c| c.is_whitespace() || "()[]\\\"'<>`".contains(c))
+                {
+                    return None;
+                }
+                (label, destination.to_owned())
+            } else {
+                // Resolved reference forms: [label][ref], [label][] and [label].
+                // Unresolved references are not links and stay raw text.
+                let NodeValue::Link(link) = &node.data.borrow().value else {
+                    return None;
+                };
+                let reference = match suffix {
+                    "]" | "][]" => self.source.get(label.clone())?,
+                    _ => suffix.strip_prefix("][")?.strip_suffix(']')?,
+                };
+                if reference.trim().is_empty()
+                    || reference.contains(['[', ']', '\\', '\r', '\n'])
+                    || link.url.is_empty()
+                    || link
+                        .url
+                        .chars()
+                        .any(|c| c.is_whitespace() || c.is_control())
+                {
+                    return None;
+                }
+                candidate.references.push(Reference {
+                    label: reference.to_owned(),
+                    url: link.url.clone(),
+                    title: link.title.clone(),
+                });
+                (label, link.url.clone())
+            }
         };
         plain(self.source.get(label.clone())?)?;
         candidate.links.push(NoteLink {
             range: range.clone(),
             label: label.clone(),
-            target: target.to_owned(),
+            target,
             wiki,
         });
         candidate

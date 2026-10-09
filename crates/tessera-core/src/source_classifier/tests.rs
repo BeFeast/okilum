@@ -95,7 +95,6 @@ fn unsupported_and_malformed_blocks_have_positive_neighbor() {
         "**bold** [[Target|]]",
         "**bold** [[A|B|C]]",
         "**bold** `one\ntwo`",
-        "**bold** [multi\nline](dest)",
         "**bold** [[a\\|b]]",
         "**bold** *unfinished",
         "**bold** ==highlight==",
@@ -167,6 +166,45 @@ fn containers_project_inline_and_keep_container_syntax_visible() {
         .map(|link| link.target.clone())
         .collect();
     assert_eq!(targets, ["yes", "also"]);
+}
+
+#[test]
+fn resolved_references_and_wrapped_labels_project_and_definitions_stay_quiet() {
+    let source = "[full][Id] [Id][] [Id] [raw][nope]\n[wrapped\nlabel](dest)\n\n[Id]: /x \"t\"\n   [two]: y\n";
+    let current = snapshot(source);
+    let result = classify(&current);
+    // The unresolved reference keeps its whole paragraph raw.
+    assert_eq!(
+        project(&current, result.plan(), &Active::default())
+            .unwrap()
+            .display(),
+        source
+    );
+    let source =
+        "[full][Id] [Id][] [Id]\n[wrapped\r\nlabel](dest)\r\n\r\n[Id]: /x \"t\"\r\n   [two]: y\r\n";
+    let current = snapshot(source);
+    let result = classify(&current);
+    assert_eq!(
+        project(&current, result.plan(), &Active::default())
+            .unwrap()
+            .display(),
+        "full Id Id\nwrapped\r\nlabel\r\n\r\n[Id]: /x \"t\"\r\n   [two]: y\r\n"
+    );
+    let links = result.links_for(&current).unwrap();
+    let targets: Vec<_> = links.iter().map(|l| l.target.as_str()).collect();
+    assert_eq!(targets, ["/x", "/x", "/x", "dest"]);
+    assert_eq!(&source[links[3].label.clone()], "wrapped\r\nlabel");
+    let quiet: Vec<_> = result
+        .styles_for(&current)
+        .unwrap()
+        .iter()
+        .filter(|s| s.style == Style::Definition)
+        .map(|s| &source[s.range.clone()])
+        .collect();
+    assert_eq!(quiet, ["[Id]: /x \"t\"", "   [two]: y"]);
+    // A wrapped label must not style the next quote prefix.
+    assert_eq!(display("> [a\n> b](d)"), "> [a\n> b](d)");
+    assert_eq!(display("- [a\n  b](d)"), "- a\n  b");
 }
 
 #[test]
@@ -368,7 +406,7 @@ fn open_link_descriptors_never_escape_rejected_blocks_or_global_caps() {
         "```\n[[no]]\n```",
         "[[no]] ![image](x)",
         "[**nested**](x.md)",
-        "[ref][id]\n\n[id]: x.md",
+        "[ref][missing]\n\n[id]: x.md",
     ] {
         let raw = format!("{rejected}\n\n[[yes]]\n");
         let snap = snapshot(&raw);

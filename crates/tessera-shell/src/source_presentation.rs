@@ -21,6 +21,8 @@ pub const CODE_FONT: &str = "Cascadia Code";
 pub struct ProjectionColors {
     pub heading: gpui::Hsla,
     pub link: gpui::Hsla,
+    /// Quiet rows such as reference definitions.
+    pub muted: gpui::Hsla,
 }
 
 // The standalone projection fixture imports this module without app theme colors.
@@ -254,6 +256,7 @@ fn projected_styles(
             Style::Strike => 2,
             Style::Code => 3,
             Style::Link | Style::WikiLink => 5,
+            Style::Definition => 6,
         };
         let start = projection
             .source_to_display(projection.snapshot(), style.range.start)
@@ -266,7 +269,7 @@ fn projected_styles(
         }
     }
     events.sort_unstable();
-    let mut counts = [0i32; 6];
+    let mut counts = [0i32; 7];
     let mut runs = Vec::new();
     let mut index = 0;
     while index < events.len() {
@@ -291,6 +294,8 @@ fn projected_styles(
                         Some(colors.link)
                     } else if counts[4] > 0 {
                         Some(colors.heading)
+                    } else if counts[6] > 0 {
+                        Some(colors.muted)
                     } else {
                         None
                     }
@@ -457,10 +462,12 @@ mod tests {
             ProjectionColors {
                 heading: gpui::rgb(0x18202a).into(),
                 link: gpui::rgb(0x005ca8).into(),
+                muted: gpui::rgb(0x6b7280).into(),
             },
             ProjectionColors {
                 heading: gpui::rgb(0xf2f4f8).into(),
                 link: gpui::rgb(0x8dc8ff).into(),
+                muted: gpui::rgb(0x6b7280).into(),
             },
         ] {
             let projection = provider
@@ -495,6 +502,7 @@ mod tests {
         let colors = ProjectionColors {
             heading: gpui::rgb(0x18202a).into(),
             link: gpui::rgb(0x005ca8).into(),
+            muted: gpui::rgb(0x6b7280).into(),
         };
         let projection = Arc::new(CachedProvider::classify(source.clone()))
             .with_colors(colors)
@@ -504,6 +512,34 @@ mod tests {
             .styles()
             .iter()
             .any(|style| style.bold && style.color == Some(colors.heading)));
+    }
+
+    #[test]
+    fn reference_definitions_keep_their_rows_and_render_muted() {
+        let source = source("- see [docs][Id]\n\n[Id]: https://example.com\n");
+        let colors = ProjectionColors {
+            heading: gpui::rgb(0x18202a).into(),
+            link: gpui::rgb(0x005ca8).into(),
+            muted: gpui::rgb(0x6b7280).into(),
+        };
+        let projection = Arc::new(CachedProvider::classify(source.clone()))
+            .with_colors(colors)
+            .compose(&source, &inactive(&source))
+            .unwrap();
+        assert_eq!(
+            projection.text(),
+            "- see docs\n\n[Id]: https://example.com\n"
+        );
+        let color_at = |label: &str| {
+            let offset = projection.text().find(label).unwrap();
+            projection
+                .styles()
+                .iter()
+                .find(|style| style.range.start.0 <= offset && offset < style.range.end.0)
+                .and_then(|style| style.color)
+        };
+        assert_eq!(color_at("docs"), Some(colors.link));
+        assert_eq!(color_at("[Id]:"), Some(colors.muted));
     }
 
     #[test]
@@ -534,6 +570,7 @@ This paragraph remains ordinary Markdown.
             .with_colors(ProjectionColors {
                 heading: gpui::black(),
                 link: gpui::rgb(0x005ca8).into(),
+                muted: gpui::rgb(0x6b7280).into(),
             })
             .compose(&source, &inactive(&source))
             .expect("native fixture must project");

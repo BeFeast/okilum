@@ -18,6 +18,7 @@ fn projection_colors(cx: &App) -> ProjectionColors {
     ProjectionColors {
         heading: palette.text,
         link: palette.link,
+        muted: palette.text_muted,
     }
 }
 

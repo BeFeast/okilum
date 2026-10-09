@@ -1,5 +1,5 @@
 //! Presentation-only edit mapping. Never reuse stale navigation or parser metadata.
-use super::{Classification, StyleSpan, MAX_BYTES};
+use super::{Classification, Reference, StyleSpan, MAX_BYTES};
 use crate::source_projection::{Active, Plan, Region, Snapshot};
 use std::{ops::Range, sync::Arc};
 
@@ -56,6 +56,8 @@ pub struct RetainedPresentation {
     styles: Vec<StyleSpan>,
     marker_scopes: Vec<(Range<usize>, Range<usize>)>,
     contexts: Vec<Range<usize>>,
+    /// Definitions change only through a full parse; local reparses reuse these.
+    references: Arc<[Reference]>,
 }
 
 impl RetainedPresentation {
@@ -72,6 +74,7 @@ impl RetainedPresentation {
             styles: classified.styles.clone(),
             marker_scopes: classified.marker_scopes.clone(),
             contexts: classified.contexts.clone(),
+            references: classified.references.clone().into(),
         }
     }
     pub fn snapshot(&self) -> &Snapshot {
@@ -317,7 +320,7 @@ impl RetainedPresentation {
         // Oversized but context-local edits keep only their dirty run raw until
         // async adoption. Do not discard the already validated outer blocks.
         let classified = (dirty.len() <= LOCAL_BYTES && fragment.len() <= LOCAL_BYTES)
-            .then(|| super::classify(&local));
+            .then(|| super::classify_with(&local, &self.references));
         // Indented, tabbed and quote lines can attach to a container. Accept
         // them only inside a container of this parse, which includes every
         // container the run borders. A container reaching the run's end must
@@ -435,6 +438,7 @@ impl RetainedPresentation {
             styles,
             marker_scopes,
             contexts,
+            references: self.references.clone(),
         })
     }
 
@@ -460,6 +464,7 @@ impl RetainedPresentation {
                 styles: self.styles.clone(),
                 marker_scopes: self.marker_scopes.clone(),
                 contexts: self.contexts.clone(),
+                references: self.references.clone(),
             });
         }
         if current.generation() == self.snapshot.generation() {
@@ -595,6 +600,7 @@ impl RetainedPresentation {
         let base = crate::source_projection::project(current, &plan, &Active::default()).ok()?;
         let result = Self {
             contexts,
+            references: self.references.clone(),
             snapshot: current.clone(),
             base: Ok(Arc::new(base)),
             plan,
@@ -950,6 +956,40 @@ mod tests {
                 "{after:?}"
             );
         }
+    }
+
+    #[test]
+    fn local_reparse_resolves_only_references_the_full_parse_resolved() {
+        let tail = "\n\nplain\n\n[Id]: /x\n[Other]: /o\n";
+        let old = snapshot(1, &format!("- a [l][Id]{tail}"));
+        let retained = RetainedPresentation::new(&classify(&old));
+        let known = snapshot(2, &format!("- a [l][Id]\n- b [m][Id]{tail}"));
+        let local = retained.remap(&known).expect("local container reparse");
+        let fresh = RetainedPresentation::new(&classify(&known));
+        let shown = local
+            .project(&Active::default())
+            .unwrap()
+            .display()
+            .to_owned();
+        assert_eq!(shown, fresh.project(&Active::default()).unwrap().display());
+        assert!(shown.starts_with("- a l\n- b m\n"), "{shown:?}");
+        // `Other` is defined but no use resolved it in the full parse. The
+        // local reparse must not guess; the fresh parse does resolve it.
+        let unknown = snapshot(3, &format!("- a [l][Id]\n- b [m][Other]{tail}"));
+        let local = retained.remap(&unknown).expect("local container reparse");
+        assert!(local
+            .project(&Active::default())
+            .unwrap()
+            .display()
+            .starts_with("- a l\n- b [m][Other]"));
+        assert!(RetainedPresentation::new(&classify(&unknown))
+            .project(&Active::default())
+            .unwrap()
+            .display()
+            .starts_with("- a l\n- b m\n"));
+        // Definitions change every use: only a full parse may adopt them.
+        let redefined = snapshot(4, &format!("- a [l][Id]{}", tail.replace("/x", "/y")));
+        assert!(retained.remap(&redefined).is_none());
     }
 
     #[test]
