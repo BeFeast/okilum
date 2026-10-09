@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    testing::{envelope, writes, Store},
+    *,
+};
 use crate::sidecar::authority::Reason;
 use std::{cell::RefCell, rc::Rc};
 fn binding() -> Binding {
@@ -19,80 +22,6 @@ fn mac_binding() -> Binding {
         ..binding()
     }
 }
-struct Memory {
-    stored: Stored,
-    writes: usize,
-    fail: bool,
-    locked: bool,
-}
-impl Default for Memory {
-    fn default() -> Self {
-        Self {
-            stored: Stored::Absent,
-            writes: 0,
-            fail: false,
-            locked: false,
-        }
-    }
-}
-#[derive(Clone, Default)]
-struct Store(Rc<RefCell<Memory>>);
-struct FakeTx {
-    memory: Rc<RefCell<Memory>>,
-    stored: Stored,
-}
-impl Authority for Store {
-    type Tx<'a> = FakeTx;
-    fn begin(&mut self, _: Instant) -> Result<FakeTx> {
-        let mut memory = self.0.borrow_mut();
-        ensure!(!memory.locked, "sidecar state is busy");
-        memory.locked = true;
-        Ok(FakeTx {
-            memory: self.0.clone(),
-            stored: memory.stored.clone(),
-        })
-    }
-}
-impl Drop for FakeTx {
-    fn drop(&mut self) {
-        self.memory.borrow_mut().locked = false;
-    }
-}
-impl Tx for FakeTx {
-    fn stored(&self) -> Result<&Stored> {
-        Ok(&self.stored)
-    }
-    fn commit(&mut self, next: Envelope) -> Result<()> {
-        let mut memory = self.memory.borrow_mut();
-        ensure!(!memory.fail, "simulated flush failure");
-        Envelope::check_successor(&self.stored, &next)?;
-        memory.stored = Stored::Current(next.clone());
-        memory.writes += 1;
-        self.stored = Stored::Current(next);
-        Ok(())
-    }
-    fn migrate(&mut self) -> Result<Envelope> {
-        match self.stored.clone() {
-            Stored::Legacy { journal, update } => {
-                let envelope = Envelope::migrate(journal, update)?;
-                self.commit(envelope.clone())?;
-                Ok(envelope)
-            }
-            Stored::Current(envelope) => Ok(envelope),
-            Stored::Absent => anyhow::bail!("no journal to migrate"),
-        }
-    }
-}
-fn envelope(store: &Store) -> Envelope {
-    match &store.0.borrow().stored {
-        Stored::Current(envelope) => envelope.clone(),
-        other => panic!("expected a current journal, found {other:?}"),
-    }
-}
-fn writes(store: &Store) -> usize {
-    store.0.borrow().writes
-}
-
 type Hook = Box<dyn FnMut(&StopToken)>;
 struct Os {
     registration: Registration,

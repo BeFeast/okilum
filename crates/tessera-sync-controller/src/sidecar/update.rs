@@ -1,8 +1,15 @@
 //! Bounded, replayable runtime selection. Native updater hooks supply an already
 //! staged runtime; no download, identity generation or vault writes happen here.
-use super::{Binding, Intent};
-use anyhow::{ensure, Result};
+//! Progress lives in the revision-bound envelope (see `authority`): Stop and
+//! Rollback use the same prepare / unlock / IPC / relock sequence as lifecycle
+//! stops, and every phase commit is the exact next revision.
+use super::{
+    authority::StopToken, current_envelope, supervisor::ipc::Scope, Authority, Binding, Intent, Tx,
+};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::time::{Duration, Instant};
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Runtime {
@@ -19,6 +26,8 @@ pub enum Phase {
     Rollback,
     Complete,
 }
+/// Pre-v2 `update.json` payload, read only by migration; the envelope owns update
+/// state afterwards.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Update {
@@ -29,17 +38,18 @@ pub struct Update {
     pub phase: Phase,
     pub rolled_back: bool,
 }
-/// Shares the lifecycle's exclusive lock. Disable/Remove must update this intent
-/// under that same lock before any updater step; Remove is terminal.
-pub trait Store {
-    fn load(&self) -> Result<Option<Update>>;
-    fn save(&mut self, update: &Update) -> Result<()>;
-}
 pub trait Host {
     /// Signature/hash/version and original device identity; no effects.
     fn verify(&mut self, binding: &Binding, runtime: &Runtime) -> Result<()>;
-    /// Stop and reap the instance regardless of which runtime was last selected.
+    /// Verified generation of the live supervisor, or None when nothing is running
+    /// or the platform has no authenticated IPC channel.
+    fn supervisor_scope(&mut self, binding: &Binding) -> Result<Option<Scope>>;
+    /// Native stop and reap, regardless of which runtime was last selected. Called
+    /// under the instance lock, only when there is no authenticated IPC channel.
     fn stop(&mut self, binding: &Binding) -> Result<()>;
+    /// Protocol-v2 Stop carrying `token`; the caller holds no lock. Confirm the
+    /// supervisor AND its owned child exited before returning Ok.
+    fn stop_supervisor(&mut self, binding: &Binding, token: &StopToken) -> Result<()>;
     /// Atomic durable selection. May be replayed after a lost successful reply.
     fn select(&mut self, binding: &Binding, runtime: &Runtime) -> Result<()>;
     /// Idempotent start, using the verified selection and existing identity.
@@ -47,288 +57,137 @@ pub trait Host {
     /// Confirm actual REST version AND device identity, not merely process exit.
     fn healthy(&mut self, binding: &Binding, runtime: &Runtime) -> Result<()>;
 }
-pub fn begin<S: Store, H: Host>(store: &mut S, host: &mut H, mut update: Update) -> Result<()> {
-    if let Some(saved) = store.load()? {
-        if saved.phase != Phase::Complete {
-            ensure!(
-                saved.binding == update.binding
-                    && saved.previous == update.previous
-                    && saved.candidate == update.candidate,
-                "another update is pending"
-            );
-            return Ok(());
-        }
-        ensure!(saved.binding == update.binding, "update binding changed");
-        let selected = if saved.rolled_back {
-            &saved.previous
-        } else {
-            &saved.candidate
-        };
-        ensure!(
-            *selected == update.previous,
-            "previous runtime differs from committed selection"
-        );
-        update.intent = saved.intent;
-    }
-    ensure!(update.previous != update.candidate, "runtime is unchanged");
-    ensure!(
-        update.intent != Intent::Removed,
-        "removed instance cannot update"
-    );
-    update.phase = Phase::Stop;
-    update.rolled_back = false;
-    host.verify(&update.binding, &update.previous)?;
-    host.verify(&update.binding, &update.candidate)?;
-    store.save(&update)
+
+/// Persist an update after verifying both runtimes. Needs an enrolled instance;
+/// a retry of the pending update writes nothing and a different one is refused.
+pub fn begin<A: Authority, H: Host>(
+    authority: &mut A,
+    host: &mut H,
+    budget: Duration,
+    previous: Runtime,
+    candidate: Runtime,
+) -> Result<()> {
+    let mut tx = authority.begin(Instant::now() + budget)?;
+    let saved =
+        current_envelope(&mut tx)?.context("update requires explicit managed enrollment")?;
+    let Some(next) = saved.begin_update(previous.clone(), candidate.clone())? else {
+        return Ok(());
+    };
+    host.verify(saved.binding(), &previous)?;
+    host.verify(saved.binding(), &candidate)?;
+    tx.commit(next)
 }
+
 /// Perform one bounded phase. Host calls enforce hook deadlines; failure leaves
 /// a durable phase to retry at next startup. Never loop or retry within a hook.
-pub fn advance<S: Store, H: Host>(store: &mut S, host: &mut H) -> Result<Phase> {
-    let Some(mut update) = store.load()? else {
+pub fn advance<A: Authority, H: Host>(
+    authority: &mut A,
+    host: &mut H,
+    budget: Duration,
+) -> Result<Phase> {
+    let deadline = Instant::now() + budget;
+    let mut tx = authority.begin(deadline)?;
+    let Some(mut env) = current_envelope(&mut tx)? else {
+        return Ok(Phase::Complete);
+    };
+    let Some(update) = env.update().cloned() else {
         return Ok(Phase::Complete);
     };
     if update.phase == Phase::Complete {
         return Ok(Phase::Complete);
     }
-    if update.intent != Intent::Enabled && update.phase != Phase::Rollback {
-        update.phase = Phase::Rollback;
-        store.save(&update)?;
+    let binding = env.binding().clone();
+    // Disable/Remove supersedes the update: roll back, never restart.
+    if env.intent() != Intent::Enabled && update.phase != Phase::Rollback {
+        tx.commit(env.set_update_phase(Phase::Rollback, false)?)?;
         return Ok(Phase::Rollback);
     }
-    let binding = &update.binding;
-    match update.phase {
-        Phase::Stop => {
-            host.stop(binding)?;
-            update.phase = Phase::Select;
+    let rollback = update.phase == Phase::Rollback;
+    let mut phase = update.phase;
+    if matches!(phase, Phase::Stop | Phase::Rollback) {
+        match host.supervisor_scope(&binding)? {
+            None => host.stop(&binding)?,
+            Some(scope) => {
+                // A stored operation for this generation is a retry; otherwise arm.
+                let token = match env.stop() {
+                    Some(op) if op.scope == scope => {
+                        let token = StopToken {
+                            journal_epoch: env.journal_epoch(),
+                            operation: op.clone(),
+                        };
+                        env.authorize(&token, &scope)?;
+                        token
+                    }
+                    _ => {
+                        let (next, token) = if rollback {
+                            env.arm_update_rollback(scope.clone())?
+                        } else {
+                            env.arm_update_stop(scope.clone())?
+                        };
+                        tx.commit(next)?;
+                        token
+                    }
+                };
+                drop(tx);
+                host.stop_supervisor(&binding, &token)?;
+                tx = authority.begin(deadline)?;
+                let current =
+                    current_envelope(&mut tx)?.context("journal disappeared during stop")?;
+                // A stale updater (Enable, Disable, a newer operation) has no
+                // authority to select, start or commit its old phase.
+                current.authorize(&token, &scope)?;
+                env = current.complete_stop(&token, &scope)?;
+                tx.commit(env.clone())?;
+                // UpdateStop already advanced to Select; rollback stays in Rollback.
+                phase = env.update().context("update vanished")?.phase;
+                if phase == Phase::Select {
+                    return Ok(Phase::Select);
+                }
+            }
         }
+    }
+    let (next, rolled_back) = match phase {
+        Phase::Stop => (Phase::Select, false),
         Phase::Select => {
-            if host.verify(binding, &update.candidate).is_err() {
-                update.phase = Phase::Rollback;
+            if host.verify(&binding, &update.candidate).is_err() {
+                (Phase::Rollback, false)
             } else {
-                host.select(binding, &update.candidate)?;
-                update.phase = Phase::Start;
+                host.select(&binding, &update.candidate)?;
+                (Phase::Start, false)
             }
         }
         Phase::Start => {
             if host
-                .verify(binding, &update.candidate)
-                .and_then(|()| host.start(binding, &update.candidate))
+                .verify(&binding, &update.candidate)
+                .and_then(|()| host.start(&binding, &update.candidate))
                 .is_err()
             {
-                update.phase = Phase::Rollback;
+                (Phase::Rollback, false)
             } else {
-                update.phase = Phase::Check;
+                (Phase::Check, false)
             }
         }
         Phase::Check => {
-            update.phase = if host.healthy(binding, &update.candidate).is_ok() {
-                Phase::Complete
+            if host.healthy(&binding, &update.candidate).is_ok() {
+                (Phase::Complete, false)
             } else {
-                Phase::Rollback
-            };
+                (Phase::Rollback, false)
+            }
         }
         Phase::Rollback => {
-            host.stop(binding)?;
-            host.verify(binding, &update.previous)?;
-            host.select(binding, &update.previous)?;
-            if update.intent == Intent::Enabled {
-                host.start(binding, &update.previous)?;
-                host.healthy(binding, &update.previous)?;
+            host.verify(&binding, &update.previous)?;
+            host.select(&binding, &update.previous)?;
+            if env.intent() == Intent::Enabled {
+                host.start(&binding, &update.previous)?;
+                host.healthy(&binding, &update.previous)?;
             }
-            update.rolled_back = true;
-            update.phase = Phase::Complete;
+            (Phase::Complete, true)
         }
         Phase::Complete => unreachable!(),
-    }
-    store.save(&update)?;
-    Ok(update.phase)
+    };
+    tx.commit(env.set_update_phase(next, rolled_back)?)?;
+    Ok(next)
 }
+
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use uuid::Uuid;
-    struct Memory {
-        value: Update,
-        fail: bool,
-        absent: bool,
-    }
-    impl Store for Memory {
-        fn load(&self) -> Result<Option<Update>> {
-            Ok((!self.absent).then(|| self.value.clone()))
-        }
-        fn save(&mut self, value: &Update) -> Result<()> {
-            ensure!(!self.fail, "disk failure");
-            self.value = value.clone();
-            self.absent = false;
-            Ok(())
-        }
-    }
-    #[derive(Default)]
-    struct Fake {
-        selected: String,
-        running: bool,
-        bad_health: bool,
-        lost_select: bool,
-        starts: usize,
-    }
-    impl Host for Fake {
-        fn verify(&mut self, binding: &Binding, _: &Runtime) -> Result<()> {
-            ensure!(binding.device_identity == "same-device", "identity changed");
-            Ok(())
-        }
-        fn stop(&mut self, _: &Binding) -> Result<()> {
-            self.running = false;
-            Ok(())
-        }
-        fn select(&mut self, _: &Binding, rt: &Runtime) -> Result<()> {
-            self.selected = rt.version.clone();
-            if std::mem::take(&mut self.lost_select) {
-                anyhow::bail!("lost reply");
-            }
-            Ok(())
-        }
-        fn start(&mut self, _: &Binding, rt: &Runtime) -> Result<()> {
-            ensure!(self.selected == rt.version, "wrong selection");
-            self.running = true;
-            self.starts += 1;
-            Ok(())
-        }
-        fn healthy(&mut self, _: &Binding, rt: &Runtime) -> Result<()> {
-            ensure!(
-                !(self.bad_health && rt.version == "new"),
-                "wrong REST identity/version"
-            );
-            Ok(())
-        }
-    }
-    fn fixture() -> (Memory, Fake) {
-        let rt = |version: &str| Runtime {
-            version: version.into(),
-            digest: format!("digest-{version}"),
-            location: format!("/private/runtime/{version}"),
-        };
-        (
-            Memory {
-                fail: false,
-                absent: false,
-                value: Update {
-                    binding: Binding {
-                        instance: Uuid::new_v4(),
-                        installation: Uuid::new_v4(),
-                        owner: "user".into(),
-                        supervisor: "/private/supervisor".into(),
-                        state_directory: "/private/state".into(),
-                        device_identity: "same-device".into(),
-                    },
-                    previous: rt("old"),
-                    candidate: rt("new"),
-                    intent: Intent::Enabled,
-                    phase: Phase::Stop,
-                    rolled_back: false,
-                },
-            },
-            Fake {
-                selected: "old".into(),
-                running: true,
-                ..Default::default()
-            },
-        )
-    }
-    fn finish(store: &mut Memory, host: &mut Fake) {
-        for _ in 0..8 {
-            if advance(store, host).unwrap() == Phase::Complete {
-                return;
-            }
-        }
-        panic!("update did not settle");
-    }
-    #[test]
-    fn failed_prepare_write_has_no_runtime_effects() {
-        let (mut store, mut host) = fixture();
-        store.fail = true;
-        store.absent = true;
-        let update = store.value.clone();
-        assert!(begin(&mut store, &mut host, update).is_err());
-        assert!(host.running);
-        assert_eq!(host.selected, "old");
-        assert_eq!(host.starts, 0);
-    }
-    #[test]
-    fn lost_selection_reply_replays_without_changing_identity() {
-        let (mut store, mut host) = fixture();
-        advance(&mut store, &mut host).unwrap();
-        host.lost_select = true;
-        assert!(advance(&mut store, &mut host).is_err());
-        assert_eq!(store.value.phase, Phase::Select);
-        finish(&mut store, &mut host);
-        assert_eq!(host.selected, "new");
-        assert!(host.running);
-        assert_eq!(store.value.binding.device_identity, "same-device");
-    }
-    #[test]
-    fn failed_health_rolls_back_to_previous_runtime() {
-        let (mut store, mut host) = fixture();
-        host.bad_health = true;
-        finish(&mut store, &mut host);
-        assert_eq!(host.selected, "old");
-        assert!(host.running);
-        assert!(store.value.rolled_back);
-    }
-    #[test]
-    fn disable_or_remove_at_any_phase_cannot_restart() {
-        for intent in [Intent::Disabled, Intent::Removed] {
-            for phase in [
-                Phase::Stop,
-                Phase::Select,
-                Phase::Start,
-                Phase::Check,
-                Phase::Rollback,
-            ] {
-                let (mut store, mut host) = fixture();
-                store.value.intent = intent;
-                store.value.phase = phase;
-                finish(&mut store, &mut host);
-                assert!(!host.running);
-                assert_eq!(host.starts, 0);
-            }
-        }
-    }
-    #[test]
-    fn lost_final_write_can_replay_rollback() {
-        let (mut store, mut host) = fixture();
-        store.value.phase = Phase::Rollback;
-        store.fail = true;
-        assert!(advance(&mut store, &mut host).is_err());
-        assert_eq!(store.value.phase, Phase::Rollback);
-        store.fail = false;
-        finish(&mut store, &mut host);
-        assert_eq!(host.selected, "old");
-    }
-    #[test]
-    fn empty_store_is_inert_but_explicit_begin_is_persisted() {
-        let (mut store, mut host) = fixture();
-        store.absent = true;
-        assert_eq!(advance(&mut store, &mut host).unwrap(), Phase::Complete);
-        assert!(store.absent);
-        assert_eq!(host.starts, 0);
-        let update = store.value.clone();
-        begin(&mut store, &mut host, update).unwrap();
-        assert!(!store.absent);
-        finish(&mut store, &mut host);
-        assert_eq!(host.selected, "new");
-    }
-    #[test]
-    fn pending_update_cannot_be_overwritten_or_reenabled_by_retry() {
-        let (mut store, mut host) = fixture();
-        store.value.phase = Phase::Rollback;
-        store.value.intent = Intent::Removed;
-        let mut retry = store.value.clone();
-        retry.intent = Intent::Enabled;
-        begin(&mut store, &mut host, retry.clone()).unwrap();
-        assert_eq!(store.value.intent, Intent::Removed);
-        assert_eq!(store.value.phase, Phase::Rollback);
-        retry.candidate.version = "another-version".into();
-        assert!(begin(&mut store, &mut host, retry).is_err());
-        assert_eq!(store.value.candidate.version, "new");
-    }
-}
+mod tests;

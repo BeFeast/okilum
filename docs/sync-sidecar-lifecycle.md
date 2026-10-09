@@ -22,7 +22,9 @@ and its owned child exited before unregistering. Removal here is local: service/
 revocation is a separate durable operation, never a blocking uninstall-hook call.
 Local notes, certificate/config and state are not deleted by this controller.
 
-The LockedJournal port requires an exclusive instance lock, atomic durable writes
+Lifecycle control now runs on the revision-bound transactional store described in
+[the stop-operation design](sync-sidecar-stop-operations.md); `UnixJournal` below is
+the legacy-format reader. The LockedJournal port requires an exclusive instance lock, atomic durable writes
 and private user-owned storage outside installation/vault/index. The Unix implementation opens an already prepared private directory without
 creating state and holds an exclusive lock on its directory descriptor. It reads
 and replaces the journal relative to that descriptor, rejects symlinks/hardlinks,

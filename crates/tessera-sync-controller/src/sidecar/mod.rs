@@ -135,11 +135,7 @@ impl<A: Authority, P: Platform> Controller<A, P> {
     /// The envelope for mutation. A legacy journal is migrated first (one flushed
     /// replacement, no effect); an absent one yields None.
     fn current(tx: &mut impl Tx) -> Result<Option<Envelope>> {
-        Ok(match tx.stored()?.clone() {
-            Stored::Absent => None,
-            Stored::Legacy { .. } => Some(tx.migrate()?),
-            Stored::Current(envelope) => Some(envelope),
-        })
+        current_envelope(tx)
     }
     /// Called only after explicit Enable; preparation/signature verification is
     /// a separate opt-in stage. This cannot adopt an external runtime.
@@ -305,6 +301,16 @@ impl<A: Authority, P: Platform> Controller<A, P> {
     }
 }
 
+/// The envelope for mutation. A legacy journal is migrated first (one flushed
+/// replacement, no effect); an absent one yields None.
+pub(crate) fn current_envelope(tx: &mut impl Tx) -> Result<Option<Envelope>> {
+    Ok(match tx.stored()?.clone() {
+        Stored::Absent => None,
+        Stored::Legacy { .. } => Some(tx.migrate()?),
+        Stored::Current(envelope) => Some(envelope),
+    })
+}
+
 pub(crate) fn safe_text(value: &str) -> Result<()> {
     ensure!(
         !value.is_empty() && !value.chars().any(char::is_control),
@@ -321,5 +327,7 @@ pub(crate) fn xml(value: &str) -> String {
         .replace('\'', "&apos;")
 }
 
+#[cfg(test)]
+mod testing;
 #[cfg(test)]
 mod tests;
