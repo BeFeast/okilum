@@ -113,8 +113,13 @@ impl Reader {
         if show_find {
             spare -= 32.;
         }
+        // What the page shows now; Find from Live Preview shows Source until it
+        // closes, and the mode toggle offers Live Preview meanwhile.
         #[cfg(any(unix, windows))]
-        let live = self.source_live_preview();
+        let live = self
+            .editing
+            .as_ref()
+            .is_some_and(|editing| editing.live_preview.enabled);
         #[cfg(any(unix, windows))]
         let labels_width = [if editing { "Read" } else { "Edit" }]
             .into_iter()

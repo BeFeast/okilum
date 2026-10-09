@@ -124,7 +124,11 @@ impl Reader {
                 .icon(Icon::default().path("icons/code-xml.svg"))
                 .when(labels, |button| button.label("Source"))
                 .accessibility_label("Source")
-                .tooltip("Markdown source")
+                .tooltip(if limited {
+                    "Live Preview uses Source for this note. Switch to Source"
+                } else {
+                    "Switch to Source"
+                })
                 .debug_selector(|| "reader-source".into())
                 .on_click(
                     cx.listener(|this, _, window, cx| this.set_live_preview(false, window, cx)),
@@ -134,11 +138,15 @@ impl Reader {
                 .icon(IconName::Eye)
                 .when(labels, |button| button.label("Live Preview"))
                 .accessibility_label("Live Preview")
-                .tooltip(if limited {
-                    SharedString::from("Live Preview uses Source for this note")
-                } else {
-                    reader_shortcuts::hint("Live Preview", &OpenLivePreview, cx)
-                })
+                .tooltip(reader_shortcuts::hint(
+                    if limited {
+                        "Live Preview uses Source for this note"
+                    } else {
+                        "Live Preview"
+                    },
+                    &OpenLivePreview,
+                    cx,
+                ))
                 .debug_selector(|| "reader-live-preview".into())
                 .on_click(
                     cx.listener(|this, _, window, cx| this.set_live_preview(true, window, cx)),
