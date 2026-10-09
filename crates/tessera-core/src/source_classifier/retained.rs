@@ -230,7 +230,23 @@ impl RetainedPresentation {
         {
             return None;
         }
-        if updated.start == 0 && fragment.trim_start_matches('\u{feff}').starts_with("---") {
+        // YAML and TOML frontmatter openers make the rest of the document raw.
+        let opener = fragment.trim_start_matches('\u{feff}');
+        if updated.start == 0 && (opener.starts_with("---") || opener.starts_with("+++")) {
+            return None;
+        }
+        // Containers extend past the dirty run: an indented first line can join
+        // a preceding list, and a new list item can absorb an indented neighbor.
+        let indented = |text: &str, at: usize| {
+            let line = text[..at].rfind('\n').map_or(0, |i| i + 1);
+            text[line..].starts_with([' ', '\t'])
+        };
+        let next_indented = source_regions
+            .get(last + 1)
+            .is_some_and(|next| indented(old, next.block().start));
+        if (indented(new, updated.start) && !new[..updated.start].trim().is_empty())
+            || (next_indented && fragment.lines().any(opens_list_item))
+        {
             return None;
         }
         let local = Snapshot::new(current.document(), current.generation(), fragment);
@@ -397,6 +413,14 @@ impl RetainedPresentation {
         if !fixed_prefix && !((ordinary_start(old) || empty_line) && ordinary_start(new)) {
             return None;
         }
+        // Indentation decides container membership (list continuation, code).
+        let indent = |text: &str| {
+            let line = &text[line_start..];
+            line.len() - line.trim_start_matches([' ', '\t']).len()
+        };
+        if indent(old) != indent(new) {
+            return None;
+        }
         let dirty = self
             .plan
             .regions()
@@ -475,6 +499,22 @@ impl RetainedPresentation {
         // of an IME range or stale byte offset is ever accepted.
         Some(result)
     }
+}
+
+/// CommonMark list item opener: up to three spaces, then a bullet or an
+/// ordinal of at most nine digits, followed by whitespace or end of line.
+fn opens_list_item(line: &str) -> bool {
+    let plain = line.trim_start_matches(' ');
+    if line.len() - plain.len() > 3 {
+        return false;
+    }
+    let digits = plain.bytes().take_while(u8::is_ascii_digit).count();
+    let rest = match plain.as_bytes().get(digits) {
+        Some(b'-' | b'*' | b'+') if digits == 0 => &plain[1..],
+        Some(b'.' | b')') if (1..=9).contains(&digits) => &plain[digits + 1..],
+        _ => return false,
+    };
+    rest.is_empty() || rest.starts_with([' ', '\t'])
 }
 
 #[cfg(test)]
@@ -642,6 +682,56 @@ mod tests {
             assert!(RetainedPresentation::new(&classify(&old))
                 .remap(&snapshot(2, new))
                 .is_none());
+        }
+    }
+
+    /// Retained output may fall back to raw, but must never keep presentation
+    /// that full classification no longer grants (#832), in either direction.
+    #[test]
+    fn local_edits_that_extend_document_or_container_context_match_full_parse() {
+        for (before, after) in [
+            ("plain\n\n**AFTER**", "+++\nplain\n\n**AFTER**"),
+            (
+                "\u{feff}plain\n\n**AFTER**",
+                "\u{feff}+++\nplain\n\n**AFTER**",
+            ),
+            ("plain\n\n  **AFTER**", "- plain\n\n  **AFTER**"),
+            ("plain\n\n  **AFTER**", "1. plain\n\n  **AFTER**"),
+            ("plain\n\n   **AFTER**", "10) plain\n\n   **AFTER**"),
+            ("- item\n\nplain *x*", "- item\n\n  plain *x*"),
+        ] {
+            for (from, to) in [(before, after), (after, before)] {
+                let old = snapshot(1, from);
+                let new = snapshot(2, to);
+                let fresh = RetainedPresentation::new(&classify(&new))
+                    .project(&Active::default())
+                    .unwrap();
+                let retained = RetainedPresentation::new(&classify(&old));
+                if let Some(remapped) = retained.remap(&new) {
+                    let actual = remapped.project(&Active::default()).unwrap();
+                    assert_eq!(actual.display(), fresh.display(), "{from:?} -> {to:?}");
+                    // Reversing before adoption maps from the retained revision.
+                    if let Some(back) = remapped.remap(&snapshot(3, from)) {
+                        let expected = RetainedPresentation::new(&classify(&old))
+                            .project(&Active::default())
+                            .unwrap();
+                        let actual = back.project(&Active::default()).unwrap();
+                        assert_eq!(actual.display(), expected.display(), "{to:?} -> {from:?}");
+                    }
+                } else {
+                    // Fallback keeps the last accepted revision; undoing the
+                    // edit before adoption must restore exactly its output.
+                    let back = retained.remap(&snapshot(3, from)).unwrap();
+                    assert_eq!(
+                        back.project(&Active::default()).unwrap().display(),
+                        retained.project(&Active::default()).unwrap().display()
+                    );
+                }
+                assert_eq!(
+                    new.copy_source(0..new.source().len()).unwrap(),
+                    new.source()
+                );
+            }
         }
     }
 
