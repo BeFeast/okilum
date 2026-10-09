@@ -4,6 +4,7 @@ use crate::sidecar::{
     windows::private::PrivateDirectory,
     Binding, Intent,
 };
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::{
     fs,
     os::windows::fs::OpenOptionsExt,
@@ -11,6 +12,14 @@ use std::{
     time::{Duration, Instant},
 };
 use uuid::Uuid;
+use windows::Win32::{
+    Foundation::{ERROR_ACCESS_DENIED, HANDLE},
+    Security::{
+        CreateRestrictedToken, CreateWellKnownSid, ImpersonateLoggedOnUser, RevertToSelf,
+        WinWorldSid, DISABLE_MAX_PRIVILEGE, PSID, SID_AND_ATTRIBUTES, TOKEN_DUPLICATE, TOKEN_QUERY,
+    },
+    System::Threading::{GetCurrentProcess, OpenProcessToken},
+};
 
 fn binding() -> Binding {
     Binding {
@@ -181,4 +190,80 @@ fn only_the_exact_next_revision_commits() {
     tx.commit(first.clone()).unwrap();
     assert!(tx.commit(third).is_err()); // skipped a revision
     tx.commit(second).unwrap();
+}
+
+/// Same construction as the private-pipe fixture: Everyone as the only restricting
+/// SID and all privileges removed, so access needs a grant to Everyone.
+fn restricted_token() -> OwnedHandle {
+    let mut raw = HANDLE::default();
+    unsafe {
+        OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_QUERY, &mut raw).unwrap();
+    }
+    let token = unsafe { OwnedHandle::from_raw_handle(raw.0) };
+    let mut world = [0usize; 16];
+    let mut size = std::mem::size_of_val(&world) as u32;
+    let world_sid = PSID(world.as_mut_ptr().cast());
+    unsafe {
+        CreateWellKnownSid(WinWorldSid, None, Some(world_sid), &mut size).unwrap();
+    }
+    let restricting = [SID_AND_ATTRIBUTES {
+        Sid: world_sid,
+        Attributes: 0,
+    }];
+    let mut output = HANDLE::default();
+    unsafe {
+        CreateRestrictedToken(
+            HANDLE(token.as_raw_handle()),
+            DISABLE_MAX_PRIVILEGE,
+            None,
+            None,
+            Some(&restricting),
+            &mut output,
+        )
+        .unwrap();
+        OwnedHandle::from_raw_handle(output.0)
+    }
+}
+struct Impersonation;
+impl Drop for Impersonation {
+    fn drop(&mut self) {
+        // Never leak an impersonated token into another test.
+        if unsafe { RevertToSelf() }.is_err() {
+            std::process::abort();
+        }
+    }
+}
+
+#[test]
+fn restricted_token_can_neither_read_the_journal_nor_take_the_lock() {
+    let (_parent, path, store) = prepared();
+    store
+        .begin(soon())
+        .unwrap()
+        .commit(Envelope::first(binding()))
+        .unwrap();
+    let journal = path.join("sidecar.json");
+    let token = restricted_token();
+    let (read, lock) = {
+        unsafe { ImpersonateLoggedOnUser(HANDLE(token.as_raw_handle())).unwrap() };
+        let _restore = Impersonation;
+        (
+            fs::read(&journal),
+            PrivateDirectory::lock_exclusive(path.to_str().unwrap()).err(),
+        )
+    };
+    assert_eq!(
+        read.unwrap_err().raw_os_error(),
+        Some(ERROR_ACCESS_DENIED.0 as i32)
+    );
+    let lock = lock.expect("restricted token took the directory lock");
+    let denied = windows::core::HRESULT::from_win32(ERROR_ACCESS_DENIED.0);
+    assert!(
+        lock.downcast_ref::<windows::core::Error>()
+            .is_some_and(|e| e.code() == denied),
+        "{lock:#}"
+    );
+    // Positive control: the same objects are open to the ordinary owner token.
+    assert!(fs::read(&journal).is_ok());
+    assert!(store.begin(soon()).is_ok());
 }

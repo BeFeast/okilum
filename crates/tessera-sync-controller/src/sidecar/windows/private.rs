@@ -145,14 +145,17 @@ impl PrivateDirectory {
             FILE_SHARE_READ | FILE_SHARE_WRITE,
         )
     }
-    /// Exclusive: any other open that asks for directory access, including
-    /// `open_existing`, fails with a sharing violation while this handle lives, in
-    /// this process or another. The instance lock of the state store.
+    /// The instance lock of the state store. Shares only write access: any other
+    /// open that reads or lists the directory, including `open_existing` and
+    /// another lock, fails with a sharing violation while this handle lives, in
+    /// this process or another, and the directory cannot be renamed or deleted.
+    /// Write sharing stays on because renaming a file into the directory opens it
+    /// for write; with share mode none that rename fails with a sharing violation.
     pub fn lock_exclusive(path: &str) -> Result<Self> {
         Self::open_with(
             path,
             FILE_LIST_DIRECTORY.0 | FILE_READ_ATTRIBUTES.0 | READ_CONTROL.0,
-            FILE_SHARE_MODE(0),
+            FILE_SHARE_WRITE,
         )
     }
     /// Validation and identity only. Neither blocks nor is blocked by a holder of
