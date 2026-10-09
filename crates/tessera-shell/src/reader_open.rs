@@ -36,13 +36,11 @@ impl OpenIntent {
         reusable_root: Option<&Path>,
         read_primary: bool,
     ) -> Result<Self> {
-        let path = path
-            .canonicalize()
+        let path = tessera_core::vault::canonical_root(path)
             .context("The requested path is missing or inaccessible")?;
         let explicit_root = explicit_root
             .map(|root| {
-                let root = root
-                    .canonicalize()
+                let root = tessera_core::vault::canonical_root(root)
                     .context("The selected root is inaccessible")?;
                 if !root.is_dir() {
                     bail!("The selected root must be a directory");
@@ -84,7 +82,7 @@ impl OpenIntent {
             .parent()
             .context("The document has no containing directory")?;
         let reusable = reusable_root
-            .and_then(|root| root.canonicalize().ok())
+            .and_then(|root| tessera_core::vault::canonical_root(root).ok())
             .filter(|root| root.is_dir() && path.starts_with(root));
         let single_file = explicit_root.is_none() && reusable.is_none();
         let root = explicit_root
@@ -597,7 +595,8 @@ pub(crate) fn open_window(mut opts: super::Opts, cx: &mut App) -> Result<()> {
                         })
                     })
                     .context("No file or vault was requested")?;
-                let path = path.canonicalize().context("Resolve requested path")?;
+                let path =
+                    tessera_core::vault::canonical_root(&path).context("Resolve requested path")?;
                 let intent = OpenIntent::validate_cached(
                     &path,
                     opts.vault.as_deref(),

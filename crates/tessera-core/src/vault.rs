@@ -16,6 +16,29 @@ pub fn note_path(path: &std::path::Path) -> String {
         .replace(std::path::MAIN_SEPARATOR, "/")
 }
 
+/// Canonical vault root. On Windows a share root (`\\server\share`, or a mapped
+/// drive resolving to one) canonicalizes to a bare UNC prefix without a root
+/// directory, so `strip_prefix` of every descendant kept a leading separator and
+/// all vault paths started with `/` (#922). Other roots are unchanged.
+pub fn canonical_root(path: &Path) -> std::io::Result<PathBuf> {
+    Ok(with_root_directory(path.canonicalize()?))
+}
+
+/// Give a bare Windows path prefix its root directory; identity elsewhere.
+pub fn with_root_directory(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        use std::path::Component;
+        let mut components = path.components();
+        if matches!(components.next(), Some(Component::Prefix(_))) && components.next().is_none() {
+            let mut rooted = path.into_os_string();
+            rooted.push("\\");
+            return PathBuf::from(rooted);
+        }
+    }
+    path
+}
+
 /// Human-readable paths and error chains; keep verbatim prefixes for filesystem I/O.
 pub fn display_path(path: &Path) -> String {
     display_error(&path.to_string_lossy())
@@ -73,6 +96,38 @@ fn long_windows_name(path: &Path) -> Option<PathBuf> {
     }
     let long = PathBuf::from(std::ffi::OsString::from_wide(&output[..written as usize]));
     (long.file_name() != path.file_name()).then_some(long)
+}
+
+#[cfg(test)]
+mod root_tests {
+    use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn share_roots_gain_a_root_directory_so_vault_paths_are_relative() {
+        for bare in [r"\\?\UNC\10.10.0.35\qa516w", r"\\10.10.0.35\qa516w"] {
+            let root = with_root_directory(PathBuf::from(bare));
+            assert_eq!(root.as_os_str(), &*format!("{bare}\\"));
+            let note = root.join("notes").join("a.md");
+            assert_eq!(note_path(note.strip_prefix(&root).unwrap()), "notes/a.md");
+            // Positive control: the bare prefix is what produced "/notes/a.md".
+            let bare = PathBuf::from(bare);
+            assert_eq!(note_path(note.strip_prefix(&bare).unwrap()), "/notes/a.md");
+        }
+        for rooted in [r"\\?\C:\vault", r"\\?\UNC\server\share\vault", r"C:\"] {
+            assert_eq!(
+                with_root_directory(PathBuf::from(rooted)),
+                PathBuf::from(rooted)
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_roots_are_unchanged() {
+        let root = std::env::temp_dir();
+        assert_eq!(with_root_directory(root.clone()), root);
+        assert_eq!(canonical_root(&root).unwrap(), root.canonicalize().unwrap());
+    }
 }
 
 #[cfg(test)]
@@ -1111,7 +1166,7 @@ impl Vault {
         // Resolve graph identities against one metadata inventory and canonical
         // root. Full UI/file actions retain their explicit filesystem checks.
         let mut resolver = self.clone();
-        resolver.graph_root = Some(self.root.canonicalize()?);
+        resolver.graph_root = Some(canonical_root(&self.root)?);
         resolver.graph_os_paths = Default::default();
         let link_re = wikilink_re();
         let mut map: HashMap<String, Vec<Backlink>> = HashMap::new();

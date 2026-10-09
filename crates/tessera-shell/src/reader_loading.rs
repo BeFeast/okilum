@@ -188,7 +188,7 @@ fn prepare_first_with_last_document(
         .diagnostics
         .as_ref()
         .map(|trace| trace.phase("requested_path_resolve"));
-    let canonical_path = path.canonicalize().with_context(|| {
+    let canonical_path = tessera_core::vault::canonical_root(&path).with_context(|| {
         format!(
             "Resolve requested path {}",
             tessera_core::vault::display_path(&path)
@@ -250,7 +250,7 @@ fn prepare_first_with_last_document(
         Some(canonical_path.clone())
     } else {
         root.or(reusable.map(PathBuf::as_path))
-            .and_then(|root| root.canonicalize().ok())
+            .and_then(|root| tessera_core::vault::canonical_root(root).ok())
     };
     let mut scoped_opts = opts.clone();
     if let (Some(trace), Some(root)) = (&opts.diagnostics, &candidate_root) {
@@ -1271,7 +1271,8 @@ pub(super) fn validate_external_cache(base: &Path, root: &Path) -> Result<()> {
             )
         })?
         .join(absolute.strip_prefix(existing)?);
-    let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let canonical_root =
+        tessera_core::vault::canonical_root(root).unwrap_or_else(|_| root.to_path_buf());
     if absolute.starts_with(root) || resolved.starts_with(canonical_root) {
         bail!("Search data must be stored outside the document folder");
     }
