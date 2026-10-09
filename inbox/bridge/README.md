@@ -176,3 +176,10 @@ an explicit global target. The adapter represents it as `{"scope":"global"}` in
 Inbox and applies the same normalization when validating source receipts. Native
 revision/hash and the outbound decision body remain unchanged. Null/missing
 scoped targets, scalar/list targets, and mismatching receipt targets fail closed.
+
+The native-worker follow-up is design-first in
+[the #728 pilot contract and runbook](../../docs/maestro-native-inbox-pilot.md).
+The accepted #601 dedicated consumer is distinct from an actual contained
+harness worker. Endpoint admission, per-attempt credentials, durable native
+consumption and scoped revocation require Maestro-owner implementation and a
+separately approved maintenance window; this adapter does not provision them.
