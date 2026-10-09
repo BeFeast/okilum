@@ -244,7 +244,7 @@ fn native_server_accept_timeout_drains_and_releases_namespace() -> Result<()> {
     let mut pending = ClientIo::start(
         Endpoint::Server {
             pipe,
-            peer: self_peer()?,
+            peer: std::cell::RefCell::new(ClientSlot::Known(self_peer()?)),
         },
         deadline,
     )?;

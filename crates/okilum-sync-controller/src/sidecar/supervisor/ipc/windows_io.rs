@@ -79,11 +79,21 @@ struct Request {
     reply: mpsc::SyncSender<io::Result<Reply>>,
 }
 
+/// Opens and verifies the client process from the connected pipe (the supervisor does
+/// not know the app's process in advance; docs/sync-sidecar-discovery.md).
+type IdentifyClient = Box<dyn FnOnce(&PrivatePipe) -> anyhow::Result<ProcessPeer> + Send>;
+enum ClientSlot {
+    Known(ProcessPeer),
+    Identify(IdentifyClient),
+    /// The identification ran and failed, so the connection is unusable.
+    Failed,
+}
 enum Endpoint {
     Client(PrivateClient),
     Server {
         pipe: PrivatePipe,
-        peer: ProcessPeer,
+        // Touched only on the worker thread that owns this endpoint.
+        peer: std::cell::RefCell<ClientSlot>,
     },
 }
 impl Endpoint {
@@ -98,9 +108,20 @@ impl Endpoint {
             Self::Client(p) => p.verify(),
             Self::Server { pipe, peer } => pipe.verify().and_then(|()| {
                 if before_accept {
-                    Ok(())
-                } else {
-                    peer.verify_pipe(pipe, PeerEnd::Client)
+                    return Ok(());
+                }
+                let mut slot = peer.borrow_mut();
+                if matches!(*slot, ClientSlot::Identify(_)) {
+                    let ClientSlot::Identify(identify) =
+                        std::mem::replace(&mut *slot, ClientSlot::Failed)
+                    else {
+                        unreachable!()
+                    };
+                    *slot = ClientSlot::Known(identify(pipe)?);
+                }
+                match &*slot {
+                    ClientSlot::Known(peer) => peer.verify_pipe(pipe, PeerEnd::Client),
+                    _ => anyhow::bail!("the connected client could not be identified"),
                 }
             }),
         }
@@ -116,7 +137,23 @@ impl ServerIo {
         self.0.verify_peer()
     }
     pub fn accept(pipe: PrivatePipe, peer: ProcessPeer, deadline: Instant) -> io::Result<Self> {
-        let mut io = ClientIo::start(Endpoint::Server { pipe, peer }, deadline)?;
+        Self::start(pipe, ClientSlot::Known(peer), deadline)
+    }
+    /// Like `accept`, but the client is identified after it connects, by `identify`,
+    /// on the admitted worker and inside the same absolute deadline.
+    pub fn accept_discovering(
+        pipe: PrivatePipe,
+        identify: impl FnOnce(&PrivatePipe) -> anyhow::Result<ProcessPeer> + Send + 'static,
+        deadline: Instant,
+    ) -> io::Result<Self> {
+        Self::start(pipe, ClientSlot::Identify(Box::new(identify)), deadline)
+    }
+    fn start(pipe: PrivatePipe, slot: ClientSlot, deadline: Instant) -> io::Result<Self> {
+        let endpoint = Endpoint::Server {
+            pipe,
+            peer: std::cell::RefCell::new(slot),
+        };
+        let mut io = ClientIo::start(endpoint, deadline)?;
         io.request(Operation::Accept)?;
         Ok(Self(io))
     }

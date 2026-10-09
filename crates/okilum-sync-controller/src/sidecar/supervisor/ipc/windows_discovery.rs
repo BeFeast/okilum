@@ -22,7 +22,7 @@ use windows::{
     Win32::{
         Foundation::{FILETIME, HANDLE},
         System::{
-            Pipes::GetNamedPipeServerProcessId,
+            Pipes::{GetNamedPipeClientProcessId, GetNamedPipeServerProcessId},
             Threading::{
                 GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
                 PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
@@ -69,6 +69,40 @@ pub fn start_time(process: HANDLE) -> Result<u64> {
 fn same_path(a: &str, b: &str) -> bool {
     let normal = |p: &str| p.replace('/', "\\").trim_end_matches('\\').to_lowercase();
     normal(a) == normal(b)
+}
+
+/// The supervisor's side: identify the client (the app) from the connected pipe. The
+/// client's executable is not known in advance and is not path-pinned; the injected
+/// policy decides which signed program is accepted. Same user, then the policy.
+pub fn identify_client(
+    pipe: &impl AsRawHandle,
+    owner: &str,
+    policy: &dyn ImagePolicy,
+) -> Result<ProcessPeer> {
+    let mut pid = 0;
+    unsafe {
+        GetNamedPipeClientProcessId(HANDLE(pipe.as_raw_handle()), &mut pid)?;
+    }
+    ensure!(pid != 0, "pipe reports no client process");
+    let raw = unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+            false,
+            pid,
+        )
+    }
+    .context("cannot open the pipe's client process")?;
+    let process = unsafe { OwnedHandle::from_raw_handle(raw.0) };
+    let handle = HANDLE(process.as_raw_handle());
+    ensure!(
+        owner == current_sid()? && process_sid(handle)? == owner,
+        "client process belongs to another user"
+    );
+    let image = image_path(handle)?;
+    policy
+        .verify_image(Path::new(&image))
+        .context("client executable failed the signature policy")?;
+    ProcessPeer::from_verified_process(process, owner)
 }
 
 pub fn identify_server(
