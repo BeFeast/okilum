@@ -433,6 +433,84 @@ pub fn palette(cx: &App) -> Palette {
     tokens(theme_id(cx), Theme::global(cx).is_dark()).0
 }
 
+/// Per-vault accent (#774), like Chrome profile colours: a dot at the vault
+/// name and a 2 px line along the window top. The theme stays app-wide.
+/// Each preset has a light and a dark value, both at least 3:1 against
+/// every theme's surfaces (WCAG 1.4.11, checked in tests).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VaultColor {
+    Red,
+    Orange,
+    Amber,
+    Green,
+    Teal,
+    Blue,
+    Purple,
+    Pink,
+}
+
+impl VaultColor {
+    pub const ALL: [Self; 8] = [
+        Self::Red,
+        Self::Orange,
+        Self::Amber,
+        Self::Green,
+        Self::Teal,
+        Self::Blue,
+        Self::Purple,
+        Self::Pink,
+    ];
+
+    /// Stable key for app preferences.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Red => "red",
+            Self::Orange => "orange",
+            Self::Amber => "amber",
+            Self::Green => "green",
+            Self::Teal => "teal",
+            Self::Blue => "blue",
+            Self::Purple => "purple",
+            Self::Pink => "pink",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|color| color.key() == key)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Red => "Red",
+            Self::Orange => "Orange",
+            Self::Amber => "Amber",
+            Self::Green => "Green",
+            Self::Teal => "Teal",
+            Self::Blue => "Blue",
+            Self::Purple => "Purple",
+            Self::Pink => "Pink",
+        }
+    }
+
+    fn value(self, dark: bool) -> Hsla {
+        let (light, dark_value) = match self {
+            Self::Red => (0xdc2626, 0xf87171),
+            Self::Orange => (0xc2410c, 0xfb923c),
+            Self::Amber => (0xa16207, 0xfbbf24),
+            Self::Green => (0x15803d, 0x4ade80),
+            Self::Teal => (0x0f766e, 0x2dd4bf),
+            Self::Blue => (0x2563eb, 0x60a5fa),
+            Self::Purple => (0x9333ea, 0xc084fc),
+            Self::Pink => (0xdb2777, 0xf472b6),
+        };
+        rgb(if dark { dark_value } else { light }).into()
+    }
+
+    pub fn color(self, cx: &App) -> Hsla {
+        self.value(Theme::global(cx).is_dark())
+    }
+}
+
 /// Reapply after `Theme::sync_system_appearance` or `Theme::change`, which resets
 /// component colors. Preserve the toolkit's matching syntax highlight theme.
 pub fn apply_theme(cx: &mut App) {
@@ -741,6 +819,41 @@ mod tests {
         // #767676 on white is the canonical 4.54:1 AA boundary grey.
         let grey: Hsla = rgb(0x767676).into();
         assert!((contrast(grey, white) - 4.54).abs() < 0.01);
+    }
+
+    /// #774: every vault colour stays a visible UI mark (3:1) on every
+    /// surface it can be drawn against, in every theme and both modes.
+    #[test]
+    fn vault_colors_are_visible_in_every_theme() {
+        let mut failures = Vec::new();
+        for theme in ThemeId::ALL {
+            for dark in [false, true] {
+                let (p, _) = tokens(theme, dark);
+                for color in VaultColor::ALL {
+                    for (name, bg) in [
+                        ("canvas", p.canvas),
+                        ("surface", p.surface),
+                        ("sidebar", p.sidebar),
+                    ] {
+                        let ratio = contrast(color.value(dark), bg);
+                        if ratio < 3.0 {
+                            failures.push(format!(
+                                "{} {} {} on {name}: {ratio:.2}",
+                                theme.key(),
+                                if dark { "dark" } else { "light" },
+                                color.key()
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+        // Keys round-trip; unknown keys from a newer build show nothing.
+        for color in VaultColor::ALL {
+            assert_eq!(VaultColor::from_key(color.key()), Some(color));
+        }
+        assert_eq!(VaultColor::from_key("future-colour"), None);
     }
 
     /// #349: every theme, in both variants, keeps reading text at WCAG AA

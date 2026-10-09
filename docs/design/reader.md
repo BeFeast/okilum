@@ -249,6 +249,18 @@ is resolved when a block is parsed, so an open note picks up a new theme's
 highlight on its next re-parse. The syntax-highlight theme for code blocks stays
 the toolkit's light/dark pair.
 
+**Vault colour** (#774, Oleg 2026-10-08): vaults are told apart like Chrome
+profiles while the theme stays app-wide. A vault may have one of eight presets
+(Red, Orange, Amber, Green, Teal, Blue, Purple, Pink); the default is none, so
+a single-vault user sees no change. The colour shows only as an 8 px dot before
+the vault name in the sidebar header and a 2 px line along the window's top
+edge, drawn over the title bar so nothing moves. Each preset has a light and a
+dark value, tested at 3:1 against `canvas`, `surface` and `sidebar` of every
+theme. Set from the vault name menu (Vault colour) or Settings → Files; stored
+in `reader-ui.json` (`vault_colors`) by canonical vault root, never in the
+vault. Every window of the vault repaints at once. No per-vault theme and no
+tinted rows.
+
 ## Icons
 
 Lucide outline icons at 16 px, stroke 1.75, `text-muted` at rest and `text` on

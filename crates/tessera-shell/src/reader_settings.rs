@@ -113,6 +113,51 @@ pub(super) fn setting_row(
         .child(div().flex_none().child(control))
 }
 
+/// #774: «None» and the presets as swatches; the current one is ringed.
+fn vault_color_swatches(root: &Path, cx: &App) -> impl IntoElement {
+    let p = brand::palette(cx);
+    let current = reader_ui_state::vault_color(root, cx);
+    let swatch = |color: Option<brand::VaultColor>| {
+        let root = root.to_owned();
+        let label = color.map_or("None", brand::VaultColor::label);
+        let selected = current == color;
+        div()
+            .id(SharedString::from(format!(
+                "settings-vault-color-{}",
+                color.map_or("none", brand::VaultColor::key)
+            )))
+            .debug_selector(move || {
+                format!(
+                    "settings-vault-color-{}",
+                    color.map_or("none", brand::VaultColor::key)
+                )
+            })
+            .flex_none()
+            .size(px(22.))
+            .p(px(2.))
+            .rounded_full()
+            .border_2()
+            .border_color(if selected {
+                p.focus
+            } else {
+                gpui::transparent_black()
+            })
+            .cursor_pointer()
+            .tooltip(move |window, cx| {
+                gpui_component::tooltip::Tooltip::new(label).build(window, cx)
+            })
+            .child(div().size_full().rounded_full().map(|dot| match color {
+                Some(color) => dot.bg(color.color(cx)),
+                None => dot.border_1().border_color(p.text_muted),
+            }))
+            .on_click(move |_, _, cx| reader_ui_state::set_vault_color(&root, color, cx))
+    };
+    h_flex()
+        .gap_1()
+        .child(swatch(None))
+        .children(brand::VaultColor::ALL.map(|color| swatch(Some(color))))
+}
+
 fn compact_vault_path(root: &Path) -> String {
     let home =
         std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from);
@@ -504,6 +549,7 @@ impl Settings {
                         .into_owned();
                     let full_path = root.to_string_lossy().into_owned();
                     let short_path = compact_vault_path(&root);
+                    let color_root = root.clone();
                     let weak = reader.downgrade();
                     content
                         .child(
@@ -575,6 +621,12 @@ impl Settings {
                                             });
                                         }),
                                 ),
+                            cx,
+                        ))
+                        .child(setting_row(
+                            "Vault colour",
+                            "A dot by the vault name and a line along the window top.",
+                            vault_color_swatches(&color_root, cx),
                             cx,
                         ))
                         .child(self.template_controls(cx))
