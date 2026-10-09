@@ -68,3 +68,20 @@ and lazy absorption. Each guard was disabled once to confirm its test fails.
 
 Native Reader acceptance for integrated L1 (Wayland, fcitx5, latency budget)
 is tracked on #868 and is not claimed by this PR.
+
+# PR 2: quote markers conceal per element
+
+The paint seam already replaces a quote delimiter's glyph with a bar in the same
+advance, so source bytes, wrap breaks, rows and hit-testing do not change.
+
+- Each `>` marker's reveal scope is its own `> ` prefix. A caret inside quote
+  text reveals no delimiter; a caret at or next to one reveals only that one.
+  Reveal follows the shared immutable reveal snapshot, as for inline syntax.
+- The delimiter column comes from the quote's first line in the AST, so quotes
+  after list markers and inside nested items are covered. A later line has a
+  marker only when `>` sits at that column after spaces and parent delimiters;
+  otherwise it is a lazy continuation with no marker.
+- A quote whose delimiter is joined to a combining mark stays raw alone. Other
+  quotes, bullets and rules keep their decorations.
+
+Bars on wrapped continuation rows need reserved indentation and are PR 3.
