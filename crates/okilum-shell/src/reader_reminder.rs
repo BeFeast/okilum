@@ -245,7 +245,12 @@ impl Reader {
     /// action needs a vault note to link back to: not single-file mode, and not
     /// an attachment preview.
     pub(super) fn reminder_for_selection(&self, cx: &App) -> Option<(String, time::Date)> {
-        if self.single_file || self.file_preview.is_some() || self.current_rel.is_empty() {
+        // A right-click on a link belongs to the link's own menu (#943).
+        if self.single_file
+            || self.file_preview.is_some()
+            || self.current_rel.is_empty()
+            || self.pointer_link.is_some()
+        {
             return None;
         }
         let selection = self.content.read(cx).selected_text();
@@ -552,6 +557,67 @@ mod visual_tests {
         assert!(reader
             .read_with(visual, |v, cx| v.reminder_for_selection(cx))
             .is_none());
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    /// #943: with a date selected, a right-click on a link opens only the
+    /// link's menu; the reminder entry stays with the selection.
+    #[gpui::test]
+    fn right_click_on_a_link_opens_one_menu_while_a_date_is_selected(cx: &mut TestAppContext) {
+        let temp = std::env::temp_dir().join(format!("tessera-remind-{}", uuid::Uuid::new_v4()));
+        let (root, state) = (temp.join("vault"), temp.join("state"));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(root.join("other.md"), "# Other\n").unwrap();
+        std::fs::write(
+            root.join("start.md"),
+            "2026-11-01\n\n[Other note](other.md) and more words after the link.\n",
+        )
+        .unwrap();
+        let (reader, visual) = mount(cx, &root, &state);
+        let bounds = reader.read_with(visual, |v, cx| v.content.read(cx).bounds());
+        let start = bounds.origin + point(px(2.), px(10.));
+        let end = bounds.origin + point(px(400.), px(10.));
+        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let selected = reader.read_with(visual, |v, cx| v.content.read(cx).selected_text());
+        assert_eq!(selected.trim(), "2026-11-01", "drag precondition");
+        // Find the link by real hover events, not by guessed coordinates.
+        let link = (20..200).step_by(4).find_map(|y| {
+            let at = bounds.origin + point(px(20.), px(y as f32));
+            visual.simulate_mouse_move(at, None, Modifiers::default());
+            visual.run_until_parked();
+            reader
+                .read_with(visual, |v, _| v.pointer_link.is_some())
+                .then_some(at)
+        });
+        let link = link.expect("positive control: hovering the link is reported");
+        visual.simulate_mouse_down(link, MouseButton::Right, Modifiers::default());
+        visual.simulate_mouse_up(link, MouseButton::Right, Modifiers::default());
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds("remind-me-item").is_none(),
+            "no reminder menu for a right-click on a link"
+        );
+        assert!(
+            reader.read_with(visual, |v, _| v.file_menu.is_some()),
+            "the link's own menu opened"
+        );
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        // Positive control: on the selection the reminder is still offered.
+        let inside = bounds.origin + point(px(20.), px(10.));
+        visual.simulate_mouse_move(inside, None, Modifiers::default());
+        visual.run_until_parked();
+        visual.simulate_mouse_down(inside, MouseButton::Right, Modifiers::default());
+        visual.simulate_mouse_up(inside, MouseButton::Right, Modifiers::default());
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds("remind-me-item").is_some(),
+            "the selection still offers the reminder"
+        );
         std::fs::remove_dir_all(temp).unwrap();
     }
 
