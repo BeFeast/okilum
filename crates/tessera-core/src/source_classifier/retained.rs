@@ -1109,17 +1109,42 @@ mod tests {
     #[ignore = "manual same-host timing probe; run with --ignored --nocapture"]
     fn structural_edit_timing_probe() {
         use std::time::Instant;
-        for (count, padding) in [(1, 0), (100, 0), (600, 0), (600, 40_000)] {
+        // Top-level blocks, then the L1 nested corpus (#868): separate lists
+        // with quotes, the edit inside the first container, so the local
+        // reparse widens to that container. Padding keeps it near 58 KiB.
+        // A paragraph after each unit keeps every list a separate small container.
+        let nested =
+            "- item **bold** [label](destination)\n  > quote *q* [[Target|alias]]\n\npara **p**\n\n";
+        for (kind, count, padding) in [
+            ("top", 1, 0),
+            ("top", 100, 0),
+            ("top", 600, 0),
+            ("top", 600, 40_000),
+            // ~21 AST nodes per unit: 180 units stay under MAX_NODES (4096); a
+            // larger nested note falls back to raw Source as a whole (S4 caps).
+            ("nested", 180, 40_000),
+        ] {
+            let (block, edit) = if kind == "top" {
+                (
+                    "**bold** [label](destination)\n\n",
+                    ("plain text", "plain\ntext"),
+                )
+            } else {
+                (nested, ("- plain text", "- plain text\n- more *x*"))
+            };
+            // The top corpus stays byte-identical to the established probe.
+            let separator = if kind == "top" { "" } else { "separator\n\n" };
             let original = format!(
-                "plain text\n\n{}{}",
-                "**bold** [label](destination)\n\n".repeat(count),
+                "{}\n\n{separator}{}{}",
+                edit.0,
+                block.repeat(count),
                 "x".repeat(padding)
             );
             let base = RetainedPresentation::new(&classify(&snapshot(1, &original)));
             let mut local_times = Vec::new();
             let mut full_times = Vec::new();
             for iteration in 0..100 {
-                let current = snapshot(2, &original.replacen("plain text", "plain\ntext", 1));
+                let current = snapshot(2, &original.replacen(edit.0, edit.1, 1));
                 let started = Instant::now();
                 let mapped = base.remap(&current).unwrap();
                 std::hint::black_box(mapped.project(&Active::default()).unwrap());
@@ -1136,7 +1161,7 @@ mod tests {
             }
             local_times.sort_unstable();
             full_times.sort_unstable();
-            eprintln!("blocks={count} bytes={} local_us p50={} p95={} max={} full_us p50={} p95={} max={}",
+            eprintln!("corpus={kind} blocks={count} bytes={} local_us p50={} p95={} max={} full_us p50={} p95={} max={}",
                 original.len(), local_times[50], local_times[95], local_times[99],
                 full_times[50], full_times[95], full_times[99]);
         }
