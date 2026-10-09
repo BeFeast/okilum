@@ -162,6 +162,20 @@ impl Reader {
             .into_any_element()
     }
 
+    pub(crate) fn set_live_preview(
+        &mut self,
+        enabled: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(editing) = &mut self.editing {
+            editing.live_preview.restore_after_find = false;
+            if editing.live_preview.enabled != enabled {
+                self.toggle_live_preview(window, cx);
+            }
+        }
+    }
+
     pub(crate) fn toggle_live_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let colors = projection_colors(cx);
         let Some(editing) = &mut self.editing else {

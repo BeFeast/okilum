@@ -312,12 +312,7 @@ impl Reader {
                                     menu = menu.item(PopupMenuItem::new(label).on_click(
                                         move |_, window, cx| {
                                             let _ = reader.update(cx, |this, cx| {
-                                                if let Some(editing) = &mut this.editing {
-                                                    editing.live_preview.restore_after_find = false;
-                                                    if editing.live_preview.enabled != enabled {
-                                                        this.toggle_live_preview(window, cx);
-                                                    }
-                                                }
+                                                this.set_live_preview(enabled, window, cx);
                                             });
                                         },
                                     ));
@@ -593,18 +588,10 @@ mod tests {
             .width;
         reader.update_in(visual, |this, window, cx| {
             this.toggle_source(window, cx);
-            this.editing
-                .as_ref()
-                .unwrap()
-                .input
-                .update(cx, |input, cx| {
-                    input.set_value(
-                        "# A reasonably long note title\n\nUnsaved edits\n",
-                        window,
-                        cx,
-                    );
-                });
+            this.set_live_preview(false, window, cx);
         });
+        visual.run_until_parked();
+        visual.simulate_input("Unsaved edits");
         for labels in [false, true] {
             visual.update(|_, cx| reader_ui_state::set_toolbar_labels(labels, cx));
             visual.run_until_parked();
