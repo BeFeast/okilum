@@ -118,6 +118,10 @@ pub(crate) fn save_window(window: AnyWindowHandle, cx: &mut App) -> bool {
 }
 
 impl Editing {
+    pub(super) fn input(&self) -> &Entity<EditorState> {
+        &self.input
+    }
+
     #[cfg(test)]
     pub(super) fn test_input(&self) -> Entity<EditorState> {
         self.input.clone()
@@ -929,6 +933,10 @@ impl Reader {
             .child(
                 Editor::new(&editing.input)
                     .appearance(false)
+                    .context_menu({
+                        let input = editing.input.clone();
+                        move |menu, _, cx| reader_reminder::editor_menu(menu, &input, cx)
+                    })
                     .font_family(if editing.live_preview.enabled {
                         crate::source_presentation::BODY_FONT
                     } else {

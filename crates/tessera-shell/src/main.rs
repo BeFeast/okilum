@@ -6173,6 +6173,14 @@ impl Render for Reader {
                 },
             )
             .track_focus(&self.focus_handle)
+            .on_action(
+                cx.listener(|this, _: &reader_reminder::RemindOnSelection, window, cx| {
+                    #[cfg(any(unix, windows))]
+                    this.remind_on_editor_selection(window, cx);
+                    #[cfg(not(any(unix, windows)))]
+                    let _ = (this, window, cx);
+                }),
+            )
             .on_action(cx.listener(|this, _: &QuickOpen, window, cx| {
                 this.open_quick_open(false, window, cx)
             }))
