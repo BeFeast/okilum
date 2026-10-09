@@ -164,6 +164,34 @@ class DeploymentTests(unittest.TestCase):
         self.assertFalse(any('must-not-copy' in name or name.endswith('/.env') for name in names))
         self.assertTrue(any(e[0] == 'compose' and e[1][:3] == ('exec', '-T', 'inbox') for e in self.deploy.events))
 
+    def test_backup_export_is_owned_by_operator_and_private(self):
+        import os
+        destination = Path(self.temp.name) / 'export.db'
+        def export(command, **kwargs):
+            self.assertEqual(command[-5:], ['exec', '-T', 'inbox', 'cat', '/backups/inbox-latest.db'])
+            kwargs['stdout'].write(b'snapshot-bytes')
+            return type('Result', (), {'returncode': 0})()
+        before = os.umask(0o077)
+        try:
+            with patch.object(restart.subprocess, 'run', side_effect=export):
+                self.deploy.copy_backup(destination)
+        finally:
+            os.umask(before)
+        self.assertEqual(destination.read_bytes(), b'snapshot-bytes')
+        self.assertEqual(destination.stat().st_uid, os.getuid())
+        self.assertEqual(destination.stat().st_mode & 0o777, 0o600)
+
+    def test_deadline_interrupts_whole_ordered_start(self):
+        import signal
+        import time
+        self.deploy.outage_timeout = .01
+        previous = signal.getsignal(signal.SIGALRM)
+        with patch.object(self.deploy, 'ordered_start', side_effect=lambda: time.sleep(.2)):
+            with self.assertRaisesRegex(TimeoutError, 'Outage budget'):
+                self.deploy.bounded_start()
+        self.assertEqual(signal.getsignal(signal.SIGALRM), previous)
+        self.assertEqual(signal.getitimer(signal.ITIMER_REAL), (0.0, 0.0))
+
     def test_total_outage_timeout_triggers_rollback(self):
         with patch.object(self.deploy, 'ordered_start', side_effect=[TimeoutError('deadline'), None]):
             with self.assertRaisesRegex(RuntimeError, 'previous services publicly ready'):
