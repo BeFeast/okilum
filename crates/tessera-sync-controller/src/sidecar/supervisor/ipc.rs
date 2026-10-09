@@ -7,6 +7,8 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::io::{Read, Write};
 use uuid::Uuid;
 
+#[cfg(unix)]
+pub mod unix_transport;
 #[cfg(target_os = "windows")]
 pub mod windows_endpoint;
 #[cfg(target_os = "windows")]
