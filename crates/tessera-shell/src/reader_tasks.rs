@@ -4,6 +4,10 @@ use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_component::{checkbox::Checkbox, Disableable};
 use tessera_core::tasks::{Group, Index, Query, Task};
 
+/// Truncated labels clip to their line box; inside buttons it collapses to
+/// 1.0 em, which cuts descenders (#912). `text_sm` with its Tailwind line.
+const TASK_LABEL_LINE: Rems = Rems(1.25);
+
 pub(super) fn from_snapshot(snapshot: &tessera_core::vault::warm::Snapshot) -> Arc<Index> {
     let mut index = Index::default();
     for path in snapshot.source_paths() {
@@ -739,6 +743,7 @@ impl RenderOnce for TasksList {
                                 .flex_1()
                                 .min_w_0()
                                 .text_sm()
+                                .line_height(TASK_LABEL_LINE)
                                 .truncate()
                                 .debug_selector(move || format!("task-group-label-{offset}-{ix}"))
                                 .child(label),
@@ -850,7 +855,16 @@ impl RenderOnce for TasksList {
                             })
                             .debug_selector(move || format!("task-title-{offset}-{ix}"))
                             .accessibility_label(text.clone())
-                            .child(div().flex_1().min_w_0().text_sm().truncate().child(text)),
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_sm()
+                                    .line_height(TASK_LABEL_LINE)
+                                    .truncate()
+                                    .debug_selector(move || format!("task-text-{offset}-{ix}"))
+                                    .child(text),
+                            ),
                     )
                     .when(self.native, |row| {
                         row.child(
@@ -972,7 +986,13 @@ impl RenderOnce for TasksList {
                                 .max_w(px(240.))
                                 .flex_shrink_0()
                                 .accessibility_label(source_label(task))
-                                .child(div().text_sm().truncate().child(source_label(task)))
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .line_height(TASK_LABEL_LINE)
+                                        .truncate()
+                                        .child(source_label(task)),
+                                )
                                 .text_color(muted)
                                 .tooltip(format!("Open {} at line {}", task.path, task.line))
                                 .debug_selector(move || format!("task-source-{offset}-{ix}"))
@@ -1210,6 +1230,61 @@ mod tests {
         results.refresh(results.index.clone(), today(), "done");
         assert_eq!(results.shown, 20);
         assert!(results.expanded.is_empty());
+    }
+
+    /// #912: task titles and note headings keep descenders (g p q y j) and
+    /// Hebrew inside their own line box; a truncated label clips to it.
+    #[gpui::test]
+    fn task_labels_fit_descenders(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(
+            root.join("Dashboard.md"),
+            "# Tasks\n\n```tasks\nnot done\n```\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("Weekly yoga plan.md"),
+            "- [ ] Jumpy query: buy grapes שלום\n",
+        )
+        .unwrap();
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("Dashboard.md".into()),
+                        index_dir: Some(temp.path().join("cache")),
+                        session_directory: Some(temp.path().join("state")),
+                        panel_settings_override: Some(temp.path().join("panels.json")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            Root::new(reader, window, cx)
+        });
+        visual.run_until_parked();
+        let font = visual.update(|window, _| window.rem_size()) * 0.875;
+        let mut measured = 0;
+        for id in ["task-text-9-0", "task-group-label-9-0"] {
+            let Some(bounds) = visual.debug_bounds(id) else {
+                continue;
+            };
+            measured += 1;
+            assert!(
+                bounds.size.height >= font * 1.3,
+                "{id}: line box {:?} clips glyphs of a {font:?} font",
+                bounds.size.height
+            );
+        }
+        assert_eq!(measured, 2, "positive control: title and note heading rendered");
     }
 
     #[gpui::test]
