@@ -112,6 +112,9 @@ impl Endpoint {
 /// peer discovery: the expected client comes from trusted captured-process setup.
 pub struct ServerIo(ClientIo);
 impl ServerIo {
+    pub(super) fn verify_peer(&mut self) -> io::Result<()> {
+        self.0.verify_peer()
+    }
     pub fn accept(pipe: PrivatePipe, peer: ProcessPeer, deadline: Instant) -> io::Result<Self> {
         let mut io = ClientIo::start(Endpoint::Server { pipe, peer }, deadline)?;
         io.request(Operation::Accept)?;
@@ -145,6 +148,9 @@ pub struct ClientIo {
     evidence: std::sync::Arc<Evidence>,
 }
 impl ClientIo {
+    pub(super) fn verify_peer(&mut self) -> io::Result<()> {
+        self.request(Operation::Verify).map(|_| ())
+    }
     pub fn new(client: PrivateClient, deadline: Instant) -> io::Result<Self> {
         Self::start(Endpoint::Client(client), deadline)
     }

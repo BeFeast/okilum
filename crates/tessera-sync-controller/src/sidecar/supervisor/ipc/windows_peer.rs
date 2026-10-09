@@ -31,6 +31,9 @@ pub struct ProcessPeer {
     owner_sid: String,
 }
 impl ProcessPeer {
+    pub(super) fn owner_sid(&self) -> &str {
+        &self.owner_sid
+    }
     /// Requires QUERY_LIMITED_INFORMATION and SYNCHRONIZE on an already verified
     /// process. This does NOT verify its signature, installation or runtime path.
     pub fn from_verified_process(process: OwnedHandle, owner_sid: &str) -> Result<Self> {

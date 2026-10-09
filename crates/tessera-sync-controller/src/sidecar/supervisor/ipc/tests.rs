@@ -85,7 +85,7 @@ impl Write for Connection {
     }
 }
 impl Transport for Connection {
-    fn verify_peer(&mut self, _: &Binding) -> Result<()> {
+    fn verify_peer(&mut self, _: &Binding, _: &Scope) -> Result<()> {
         ensure!(self.authenticated, "foreign peer");
         Ok(())
     }
@@ -244,7 +244,7 @@ fn framing_roundtrips_over_a_real_local_stream_with_deadlines() {
         }
     }
     impl Transport for Stream {
-        fn verify_peer(&mut self, _: &Binding) -> Result<()> {
+        fn verify_peer(&mut self, _: &Binding, _: &Scope) -> Result<()> {
             Ok(())
         }
     }
