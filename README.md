@@ -55,11 +55,18 @@ no server, no import. Indexes and previews are rebuildable caches.
 | Platform | Download Beta | Stable (after first promotion) |
 |---|---|---|
 | macOS (Apple Silicon) | [Download ZIP](https://updates.befeast.com/tessera/macos/beta/latest.zip) · signed and notarized | [Download ZIP](https://updates.befeast.com/tessera/macos/latest.zip) |
-| Windows (x64) | [Download Setup.exe](https://updates.befeast.com/tessera/windows/beta/Setup.exe) · unsigned, read-only | [Download Setup.exe](https://updates.befeast.com/tessera/windows/stable/Setup.exe) |
-| Arch Linux (x86_64) | [Install beta repository](docs/linux-releases.md) | [Install stable repository](docs/linux-releases.md#stable-channel) |
+| Windows (x64) | [Download Setup.exe](https://updates.befeast.com/tessera/windows/beta/Setup.exe) · reading, search and editing; build not yet signed | [Download Setup.exe](https://updates.befeast.com/tessera/windows/stable/Setup.exe) |
+| Arch Linux (x86_64) | [Install signed beta pacman repository](docs/linux-releases.md) · [package on GitHub Beta](https://github.com/BeFeast/tessera/releases/tag/beta) | [Install stable repository](docs/linux-releases.md#stable-channel) |
 
-[GitHub Releases and checksums](https://github.com/BeFeast/tessera/releases) ·
-[macOS help](docs/macos-auto-update.md) · [Windows help](docs/windows-delivery.md)
+[GitHub Beta release and checksums](https://github.com/BeFeast/tessera/releases/tag/beta) ·
+[all releases](https://github.com/BeFeast/tessera/releases) ·
+[macOS help](docs/macos-auto-update.md) · [Windows help](docs/windows-delivery.md) ·
+[Linux help](docs/linux-releases.md)
+
+Windows is unsigned for now, so SmartScreen may warn on first launch: check
+that the download came from the official link above, then choose
+**More info → Run anyway**. On Arch, the pacman repository and its packages are
+signed; the GitHub Beta release also carries the `.pkg.tar.zst` with its `.sig`.
 
 Beta is available now. Stable downloads become available after the first
 cross-platform performance approval; until then, use Beta.
