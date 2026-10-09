@@ -24,7 +24,7 @@ pub trait TaskApi {
 }
 pub struct TaskScheduler<A>(pub A);
 pub fn task_name(binding: &Binding) -> String {
-    format!("Tessera-Sync-{}", binding.instance)
+    format!("Okilum-Sync-{}", binding.instance)
 }
 pub(super) fn path(value: &str) -> Result<()> {
     safe_text(value)?;

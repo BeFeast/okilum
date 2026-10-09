@@ -65,7 +65,7 @@ impl Scan {
             let bytes = entry.file_name().to_bytes();
             if matches!(
                 bytes,
-                b"." | b".." | b".stversions" | b".stfolder" | b".tessera-index"
+                b"." | b".." | b".stversions" | b".stfolder" | b".okilum-index"
             ) {
                 continue;
             }

@@ -581,11 +581,7 @@ mod tests {
                 let backup = fs::read_dir(&folder)
                     .unwrap()
                     .flatten()
-                    .find(|e| {
-                        e.file_name()
-                            .to_string_lossy()
-                            .starts_with(".tessera-save-")
-                    })
+                    .find(|e| e.file_name().to_string_lossy().starts_with(".okilum-save-"))
                     .unwrap()
                     .file_name();
                 fs::rename(&folder, &moved).unwrap();
@@ -613,10 +609,10 @@ mod tests {
                 .path();
             assert_eq!(fs::metadata(&archived).unwrap().ino(), original_inode);
             assert_eq!(fs::read_to_string(archived).unwrap(), "base");
-            assert!(fs::read_dir(&folder).unwrap().flatten().any(|e| e
-                .file_name()
-                .to_string_lossy()
-                .starts_with(".tessera-save-")));
+            assert!(fs::read_dir(&folder)
+                .unwrap()
+                .flatten()
+                .any(|e| e.file_name().to_string_lossy().starts_with(".okilum-save-")));
             let draft: Draft = serde_json::from_slice(&fs::read(&editor.journal).unwrap()).unwrap();
             assert_eq!(draft.text, "mine");
             assert_eq!(draft.base, "base");
@@ -743,7 +739,7 @@ mod tests {
         assert!(fs::read_dir(dir.path()).unwrap().flatten().any(|e| e
             .file_name()
             .to_string_lossy()
-            .starts_with(".tessera-save-")
+            .starts_with(".okilum-save-")
             && fs::read(e.path()).unwrap() == b"last"));
     }
     #[test]

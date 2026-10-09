@@ -28,7 +28,7 @@ indexes remain disposable, identity/grants/operation journals do not.
   include dependencies, then receive initially as `receiveonly`. `.stignore` is
   local policy, not transported by Syncthing. Different existing policy stays
   stopped for review; never overwrite it automatically. `.claude/skills` is
-  permitted; worktrees and `.tessera-index` are excluded. The small policy in the
+  permitted; worktrees and `.okilum-index` are excluded. The small policy in the
   fixture demonstrates those shapes and is **not** the live canonical policy.
 - Promote to `sendreceive` only after verified complete receipt and no local
   changes under serialized controller ownership. No automatic Revert/Override.

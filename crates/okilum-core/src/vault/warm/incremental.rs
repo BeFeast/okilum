@@ -205,7 +205,7 @@ impl State {
                     || entry
                         .file_name()
                         .as_encoded_bytes()
-                        .starts_with(b".tessera-save-")
+                        .starts_with(b".okilum-save-")
                 {
                     continue;
                 }

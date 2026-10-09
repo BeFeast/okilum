@@ -67,7 +67,7 @@ The Inbox operator explicitly enables `--sync-config <private JSON file>`:
 {"owner_id":"<existing Inbox owner UUID>","vaults":[{
  "id":"<vault UUID>","name":"Test vault","folder_id":"test-folder",
  "hub_device_id":"<hub Syncthing ID>","hub_address":"tcp://127.0.0.1:22440",
- "ignores":["/.tessera-index","/worktrees"],
+ "ignores":["/.okilum-index","/worktrees"],
  "adapter_socket":"/private/adapter/hub.sock"
 }]}
 ```

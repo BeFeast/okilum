@@ -110,7 +110,7 @@ impl<G: TaskGuard> NativeTasks<G> {
 }
 fn validate_name(name: &str) -> Result<()> {
     let suffix = name
-        .strip_prefix("Tessera-Sync-")
+        .strip_prefix("Okilum-Sync-")
         .ok_or_else(|| anyhow::anyhow!("unexpected task name"))?;
     uuid::Uuid::parse_str(suffix)?;
     Ok(())
@@ -253,12 +253,12 @@ mod tests {
         let root = tempfile::tempdir()?;
         let mut fixture = FixtureTask {
             api: NativeTasks::connect(NoExecution)?,
-            name: format!("Tessera-Sync-{}", uuid::Uuid::new_v4()),
+            name: format!("Okilum-Sync-{}", uuid::Uuid::new_v4()),
             created: false,
         };
         let owner = fixture.api.current_sid()?;
         let binding = Binding {
-            instance: uuid::Uuid::parse_str(fixture.name.strip_prefix("Tessera-Sync-").unwrap())?,
+            instance: uuid::Uuid::parse_str(fixture.name.strip_prefix("Okilum-Sync-").unwrap())?,
             installation: uuid::Uuid::new_v4(),
             owner: owner.clone(),
             supervisor: root

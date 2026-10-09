@@ -10,7 +10,7 @@ fn fresh(name: &str) -> PathBuf {
     let root = std::env::temp_dir().join(format!("okilum-watch-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("notes")).unwrap();
-    fs::create_dir_all(root.join(".tessera-index")).unwrap();
+    fs::create_dir_all(root.join(".okilum-index")).unwrap();
     root
 }
 
@@ -64,8 +64,8 @@ fn the_legacy_index_and_service_directories_are_never_reported() {
     let root = fresh("dotdirs");
     let mut w = VaultWatcher::new(&root).unwrap();
 
-    fs::write(root.join(".tessera-index/meta.json"), "{}").unwrap();
-    fs::write(root.join(".tessera-index/segment.md"), "not a note").unwrap();
+    fs::write(root.join(".okilum-index/meta.json"), "{}").unwrap();
+    fs::write(root.join(".okilum-index/segment.md"), "not a note").unwrap();
     fs::create_dir_all(root.join(".obsidian")).unwrap();
     fs::write(root.join(".obsidian/workspace.md"), "not a note").unwrap();
     fs::write(root.join("notes/image.png"), "not a note either").unwrap();
@@ -98,7 +98,7 @@ fn end_to_end_a_save_updates_search_without_a_rebuild() {
     let root = fresh("e2e");
     fs::write(root.join("notes/a.md"), "# A\n\nplain\n").unwrap();
     let vault = Vault::scan(&root).unwrap();
-    let index = root.join(".tessera-index");
+    let index = root.join(".okilum-index");
     let searcher = Searcher::build(&vault, &index).unwrap();
     assert!(searcher
         .search("hippopotomonstrosesquippedaliophobia", 5)
@@ -193,7 +193,7 @@ fn note_rename_atomic_save_and_directory_move_report_incremental_hints() {
     assert!(!changes.rescan, "known note rename: {changes:?}");
     assert!(changes.changed.contains("notes/b.md"));
     assert!(changes.removed.contains("notes/a.md"));
-    let staging = root.join("notes/.tessera-save-test");
+    let staging = root.join("notes/.okilum-save-test");
     fs::write(&staging, "replacement").unwrap();
     fs::rename(&staging, root.join("notes/b.md")).unwrap();
     let changes = watcher.wait(WAIT).unwrap();

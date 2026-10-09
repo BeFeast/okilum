@@ -26,7 +26,7 @@ fn config(owner: Uuid) -> Config {
             folder_id: "fixture".into(),
             hub_device_id: device('B'),
             hub_address: "tcp://127.0.0.1:22440".into(),
-            ignores: vec!["/.tessera-index".into()],
+            ignores: vec!["/.okilum-index".into()],
             adapter_socket: "/unavailable/okilum-fixture.sock".into(),
         }],
     }

@@ -1,13 +1,13 @@
 # Third-party license sources
 
-Tessera's own code is MIT, not dual-licensed. Third-party code and assets retain
+Okilum's own code is MIT, not dual-licensed. Third-party code and assets retain
 their licenses. `THIRD_PARTY_NOTICES.md` is the distributable combined notice.
 Regenerate it with cargo-about 0.9.2 and `python3 scripts/third-party-notices.py`.
 The generator uses all workspace features and platforms, including build-time
 components; this is a conservative superset of any individual release.
 
 - GPUI and gpui-kit: Apache-2.0; pinned by Cargo.lock and scripts/vendor-setup.sh.
-  Tessera's changes are recorded in scripts/patches; retain those modification
+  Okilum's changes are recorded in scripts/patches; retain those modification
   records with redistributed sources. No separate NOTICE exists in the pinned
   gpui-kit tree. Apache-2.0.txt is its complete license.
 - Excalifont: SIL OFL 1.1. The pinned upstream index.ts contains the original font
@@ -17,10 +17,10 @@ components; this is a conservative superset of any individual release.
 - Virgil and Nunito: SIL OFL 1.1, from Excalidraw font subsets. Nunito's complete
   license and copyright: https://github.com/google/fonts/blob/main/ofl/nunito/OFL.txt
 - Liberation Sans: bundled TTF is byte-identical to Excalidraw's
-  scripts/woff2/assets/LiberationSans-Regular.ttf; no Tessera font modification.
+  scripts/woff2/assets/LiberationSans-Regular.ttf; no Okilum font modification.
   Copyright and OFL declaration are in its name table, reproduced with full OFL.
 - Noto Sans and Cascadia Code: SIL OFL 1.1; notices and conversion provenance are
-  in crates/tessera-shell/assets/brand/fonts and its manifest. The supplied
+  in crates/okilum-shell/assets/brand/fonts and its manifest. The supplied
   Excalifont/Virgil/Nunito/Noto/Cascadia copyright declarations do not designate
   Reserved Font Names; format conversion/merging is documented, not relicensed.
   Font family names and trademarks are not an endorsement by their authors.

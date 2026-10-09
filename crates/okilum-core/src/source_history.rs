@@ -360,7 +360,7 @@ fn owned_prepared_name(note: &Path, prepared: &Path) -> bool {
         && prepared
             .file_name()
             .and_then(|n| n.to_str())
-            .and_then(|n| n.strip_prefix(".tessera-save-")?.strip_suffix(".prepared"))
+            .and_then(|n| n.strip_prefix(".okilum-save-")?.strip_suffix(".prepared"))
             .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() == id))
 }
 
@@ -401,7 +401,7 @@ fn owned_displaced(record: &Path, entry: &Preimage) -> bool {
             && entry
                 .displaced
                 .file_name()
-                .is_some_and(|n| n.to_string_lossy().starts_with(".tessera-save-"))
+                .is_some_and(|n| n.to_string_lossy().starts_with(".okilum-save-"))
     } else {
         entry.displaced == record.with_extension("source")
     }
@@ -500,9 +500,9 @@ pub fn list(drafts: &Path, root: &Path) -> Result<Listing> {
                 #[cfg(windows)]
                 if let Some(prepared) = entry.prepared.as_ref().filter(|path| {
                     path.parent() == entry.note.parent()
-                        && path.file_name().is_some_and(|name| {
-                            name.to_string_lossy().starts_with(".tessera-save-")
-                        })
+                        && path
+                            .file_name()
+                            .is_some_and(|name| name.to_string_lossy().starts_with(".okilum-save-"))
                 }) {
                     let recovered = (|| -> Result<String> {
                         let directory =
@@ -601,8 +601,8 @@ mod recovery_preview_tests {
         let root = fixture.path().canonicalize().unwrap();
         let legacy = serde_json::json!({
             "note": root.join("note.md"), "created": 1, "text": "base\r\n",
-            "pending": true, "displaced": root.join(".tessera-save-old.previous"),
-            "prepared": root.join(".tessera-save-old.prepared")
+            "pending": true, "displaced": root.join(".okilum-save-old.previous"),
+            "prepared": root.join(".okilum-save-old.prepared")
         });
         let mut entry: Preimage = serde_json::from_value(legacy).unwrap();
         assert!(entry.prepared_snapshot.is_none() && entry.prepared_identity.is_none());
@@ -622,7 +622,7 @@ mod recovery_preview_tests {
     fn windows_editor_prepared_recovery_size_guard_preserves_file() {
         let fixture = tempfile::tempdir().unwrap();
         let folder = fixture.path().canonicalize().unwrap();
-        let path = folder.join(".tessera-save-preview");
+        let path = folder.join(".okilum-save-preview");
         let read = || {
             #[cfg(unix)]
             let file = fs::File::open(&path).unwrap();
@@ -1001,7 +1001,7 @@ pub fn legacy_preimages(drafts: &Path, root: &Path) -> Result<Listing> {
             || !item
                 .file_name()
                 .to_string_lossy()
-                .starts_with(".tessera-save-")
+                .starts_with(".okilum-save-")
         {
             continue;
         }
@@ -1072,9 +1072,9 @@ mod tests {
         let other = root.path().join("other");
         fs::create_dir(&original).unwrap();
         fs::create_dir(&other).unwrap();
-        let backup = original.join(".tessera-save-exdev");
+        let backup = original.join(".okilum-save-exdev");
         fs::write(&backup, "base").unwrap();
-        fs::write(other.join(".tessera-save-exdev"), "base").unwrap();
+        fs::write(other.join(".okilum-save-exdev"), "base").unwrap();
         let metadata = fs::metadata(&backup).unwrap();
         let pinned = File::open(&original).unwrap();
         let record = Preimage::begin(
@@ -1099,13 +1099,13 @@ mod tests {
             "redirected path must pin retention, even with matching bytes"
         );
         assert_eq!(
-            fs::metadata(root.path().join("moved/.tessera-save-exdev"))
+            fs::metadata(root.path().join("moved/.okilum-save-exdev"))
                 .unwrap()
                 .ino(),
             metadata.ino()
         );
         assert_eq!(
-            fs::read_to_string(other.join(".tessera-save-exdev")).unwrap(),
+            fs::read_to_string(other.join(".okilum-save-exdev")).unwrap(),
             "base"
         );
     }
@@ -1117,7 +1117,7 @@ mod tests {
         let state = root.join("drafts");
         fs::create_dir_all(&state).unwrap();
         let note = root.join("note.md");
-        let backup = root.join(".tessera-save-xdev");
+        let backup = root.join(".okilum-save-xdev");
         fs::write(&backup, "before").unwrap();
         let record = Preimage::begin(&state, &note, "before", &backup).unwrap();
         Preimage::finish_with(&record, |_, _| {
@@ -1146,7 +1146,7 @@ mod tests {
         fs::create_dir_all(&state).unwrap();
         let mut records = vec![];
         for name in ["missing", "normal"] {
-            let backup = root.join(format!(".tessera-save-{name}"));
+            let backup = root.join(format!(".okilum-save-{name}"));
             fs::write(&backup, name).unwrap();
             let record = Preimage::begin(&state, &root.join("note.md"), name, &backup).unwrap();
             Preimage::finish(&record).unwrap();
@@ -1264,10 +1264,10 @@ mod tests {
         assert_eq!(listing.versions.len(), 1);
         assert_eq!(listing.versions[0].text.as_bytes(), original.as_bytes());
         assert!(!listing.versions[0].protected);
-        assert!(!fs::read_dir(&root).unwrap().flatten().any(|e| e
-            .file_name()
-            .to_string_lossy()
-            .starts_with(".tessera-save-")));
+        assert!(!fs::read_dir(&root)
+            .unwrap()
+            .flatten()
+            .any(|e| e.file_name().to_string_lossy().starts_with(".okilum-save-")));
         fs::write(&note, "external").unwrap();
         assert!(restore(&mut editor, "new version", original).is_err());
         assert_eq!(fs::read_to_string(&note).unwrap(), "external");
@@ -1327,13 +1327,13 @@ mod tests {
         fs::write(&note, "note").unwrap();
         let mut records = vec![];
         for n in 0..25 {
-            let backup = root.join(format!(".tessera-save-{n}"));
+            let backup = root.join(format!(".okilum-save-{n}"));
             fs::write(&backup, format!("version {n}")).unwrap();
             let record = Preimage::begin(&state, &note, &format!("version {n}"), &backup).unwrap();
             Preimage::finish(&record).unwrap();
             records.push(record);
         }
-        let pending_backup = root.join(".tessera-save-pending");
+        let pending_backup = root.join(".okilum-save-pending");
         fs::write(&pending_backup, "possible proposed bytes").unwrap();
         let pending = Preimage::begin(&state, &note, "protected base", &pending_backup).unwrap();
         let racing = Preimage::load(&records[0]).unwrap();
@@ -1368,7 +1368,7 @@ mod tests {
         let drafts = root.join("drafts");
         fs::create_dir_all(&drafts).unwrap();
         let note = root.join("note.md");
-        let backup = root.join(".tessera-save-interrupted");
+        let backup = root.join(".okilum-save-interrupted");
         fs::write(&backup, "unexpected").unwrap();
         let record = Preimage::begin(&drafts, &note, "base", &backup).unwrap();
         fs::rename(&backup, record.with_extension("source")).unwrap();
@@ -1610,7 +1610,7 @@ mod windows_cleanup_tests {
         entry.prepared_identity = None;
         entry.prepared_snapshot = None;
         persist(&record, &entry).unwrap();
-        let unknown = root.join(format!(".tessera-save-{}.prepared", uuid::Uuid::new_v4()));
+        let unknown = root.join(format!(".okilum-save-{}.prepared", uuid::Uuid::new_v4()));
         fs::write(&unknown, "unassigned synced bytes").unwrap();
         let (_, owned) = prepared(&root, &drafts, "Other.md");
         let other = root.parent().unwrap().join("other-vault");
@@ -1702,7 +1702,7 @@ mod windows_cleanup_tests {
             Some(entry.text.as_bytes()),
         )
         .unwrap();
-        let unknown = root.join(format!(".tessera-save-{}.previous", uuid::Uuid::new_v4()));
+        let unknown = root.join(format!(".okilum-save-{}.previous", uuid::Uuid::new_v4()));
         fs::write(&unknown, "unassigned sync copy").unwrap();
         assert!(cleanup_windows(&drafts, &root).unwrap().is_empty());
         assert!(!legacy.exists());
@@ -1845,7 +1845,7 @@ mod displaced_listing_tests {
         let drafts = fixture.path().join("drafts");
         let note = root.join("Changed.md");
         fs::write(&note, "saved").unwrap();
-        let displaced = root.join(format!(".tessera-save-{}.previous", uuid::Uuid::new_v4()));
+        let displaced = root.join(format!(".okilum-save-{}.previous", uuid::Uuid::new_v4()));
         fs::write(&displaced, "original snapshot").unwrap();
         Preimage::begin(&drafts, &note, "original snapshot", &displaced).unwrap();
         fs::write(&displaced, "unexpected displaced version").unwrap();

@@ -125,7 +125,7 @@ pub fn endpoint_name(scope: &Scope) -> Result<String> {
         "nil supervisor scope"
     );
     Ok(format!(
-        r"\\.\pipe\Tessera-Sync-{}-{}-{}",
+        r"\\.\pipe\Okilum-Sync-{}-{}-{}",
         scope.installation, scope.instance, scope.generation
     ))
 }

@@ -217,7 +217,7 @@ fn hub_1295_client_216() -> Result<()> {
     eprintln!("stage: ignores seeded");
     let allowed = ["canary.md", ".claude/skills/example/SKILL.md"];
     let blocked = [
-        ".tessera-index/private",
+        ".okilum-index/private",
         ".claude/worktrees/private.md",
         "worktrees/private.md",
     ];

@@ -199,7 +199,7 @@ fn excluded(name: &str) -> bool {
         ".git"
             | ".obsidian"
             | ".okilum"
-            | ".tessera-index"
+            | ".okilum-index"
             | ".env"
             | ".env.local"
             | ".env.production"
@@ -444,7 +444,7 @@ mod tests {
         }
         write(&root, ".env", b"must not export");
         write(&root, ".git/config", b"must not export");
-        write(&root, ".tessera-index/search.data", b"derived");
+        write(&root, ".okilum-index/search.data", b"derived");
         write(&root, "credentials.json", b"private");
         write(&temp.path().join("state"), "journal.json", b"operational");
         let out = temp.path().join("brain.tar");
@@ -475,7 +475,7 @@ mod tests {
         }
         assert!(!extracted.join("brain/.env").exists());
         assert!(!extracted.join("brain/credentials.json").exists());
-        assert!(!extracted.join("brain/.tessera-index").exists());
+        assert!(!extracted.join("brain/.okilum-index").exists());
         assert!(crate::Vault::scan(&extracted.join("brain")).is_ok());
     }
     #[test]

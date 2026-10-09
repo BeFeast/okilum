@@ -237,7 +237,7 @@ fn invalid_requests_and_journal_binding_do_not_modify_source() {
         WriteBoundary::Managed
     )
     .is_err());
-    let index = f.root.join(".tessera-index");
+    let index = f.root.join(".okilum-index");
     fs::create_dir(&index).unwrap();
     assert!(SourceStore::open(
         "01000000-0000-4000-8000-000000000001",
@@ -335,7 +335,7 @@ fn completed_retry_survives_deleted_or_symlinked_parent_and_preserves_mode() {
 fn source_matching_old_staging_name_is_never_unlinked() {
     let f = Fixture::new();
     let s = f.store(WriteBoundary::Managed);
-    let path = ".tessera-source-06000000-0000-4000-8000-000000000001.tmp";
+    let path = ".okilum-source-06000000-0000-4000-8000-000000000001.tmp";
     fs::write(f.root.join(path), b"original").unwrap();
     s.write(request(
         1,
@@ -356,7 +356,7 @@ fn committed_source_updates_watcher_and_index_without_read_feedback() {
     let first = s
         .write(request(1, "note.md", None, b"# Initial\n"))
         .unwrap();
-    let index = f.root.join(".tessera-index");
+    let index = f.root.join(".okilum-index");
     let vault = Vault::scan(&f.root).unwrap();
     Searcher::build(&vault, &index).unwrap();
     let mut watcher = VaultWatcher::new(&f.root).unwrap();

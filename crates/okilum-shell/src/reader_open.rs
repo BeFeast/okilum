@@ -156,7 +156,7 @@ mod tests {
             explicit
         );
         assert_eq!(std::fs::read(file).unwrap(), before);
-        assert!(!f.0.join(".tessera-index").exists());
+        assert!(!f.0.join(".okilum-index").exists());
         assert!(!hinted
             .cache_path(&std::env::temp_dir().join("cache"))
             .starts_with(&f.0));

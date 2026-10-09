@@ -1401,7 +1401,7 @@ mod tests {
             std::fs::read_to_string(root.join("app.jsonl")).unwrap(),
             text
         );
-        assert!(!root.join(".tessera-index").exists());
+        assert!(!root.join(".okilum-index").exists());
     }
 
     #[gpui::test]

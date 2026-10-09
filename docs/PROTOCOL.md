@@ -5,7 +5,7 @@ the daemon prints `{"ready":true,"notes":N}` once, then answers requests in
 order. Every response echoes `id` and carries `ok`.
 
 The vault comes from `--vault` or `OKILUM_VAULT`, the index from `--index-dir`
-or `OKILUM_INDEX_DIR` (default `<vault>/.tessera-index`). There is no default
+or `OKILUM_INDEX_DIR` (default `<vault>/.okilum-index`). There is no default
 vault: guessing one is a good way to index the wrong directory.
 
 `okilum-cored index --vault <path>` rebuilds the persistent tantivy index and

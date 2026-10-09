@@ -3,7 +3,7 @@
 #import <Sparkle/Sparkle.h>
 #include <stdbool.h>
 
-static NSString *const TSBetaKey = @"TesseraReceiveBetaBuilds";
+static NSString *const TSBetaKey = @"OkilumReceiveBetaBuilds";
 
 @interface TSUpdaterDelegate : NSObject <SPUUpdaterDelegate>
 @end

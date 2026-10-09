@@ -14,7 +14,7 @@ use std::{
 
 /// This policy is a compatibility fixture, not the live vault's canonical policy.
 /// Production enrollment must receive and compare a versioned approved policy.
-pub const FIXTURE_IGNORES: &[&str] = &["/.tessera-index", "/.claude/worktrees", "/worktrees"];
+pub const FIXTURE_IGNORES: &[&str] = &["/.okilum-index", "/.claude/worktrees", "/worktrees"];
 
 pub struct Syncthing {
     client: Client,

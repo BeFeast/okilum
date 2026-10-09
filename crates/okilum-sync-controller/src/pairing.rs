@@ -350,7 +350,7 @@ mod tests {
             folder_id: "fixture".into(),
             hub_device_id: id(),
             hub_address: "tcp://127.0.0.1:22440".into(),
-            ignores: vec!["/.tessera-index".into()],
+            ignores: vec!["/.okilum-index".into()],
         };
         assert!(d.validate().is_ok());
         d.ignores.push("#include ../private".into());

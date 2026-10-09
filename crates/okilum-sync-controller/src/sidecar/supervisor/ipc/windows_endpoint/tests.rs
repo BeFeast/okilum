@@ -60,7 +60,7 @@ fn native_private_pipe_owner_acl_collision_and_lifetime() -> Result<()> {
     let scope = scope();
     let name = endpoint_name(&scope)?;
     ensure!(
-        name.starts_with(r"\\.\pipe\Tessera-Sync-"),
+        name.starts_with(r"\\.\pipe\Okilum-Sync-"),
         "not a fixed local name"
     );
     let pipe = PrivatePipe::create(&scope)?;

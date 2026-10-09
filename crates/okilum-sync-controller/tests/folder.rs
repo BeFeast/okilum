@@ -203,7 +203,7 @@ fn owned_folder_and_external_replica_keep_their_boundaries() -> Result<()> {
         .collect::<Vec<_>>();
     hub.api.set_ignores("controller-fixture", FIXTURE_IGNORES)?;
     write(&hub.vault, "canary.md", "initial content")?;
-    write(&hub.vault, ".tessera-index/excluded", "must remain at hub")?;
+    write(&hub.vault, ".okilum-index/excluded", "must remain at hub")?;
     hub.api
         .patch_folder("controller-fixture", &json!({"paused":false}))?;
     hub.api.scan("controller-fixture")?;
@@ -292,7 +292,7 @@ fn owned_folder_and_external_replica_keep_their_boundaries() -> Result<()> {
             .as_deref()
             == Some("initial content"))
     })?;
-    assert!(!client.vault.join(".tessera-index/excluded").exists());
+    assert!(!client.vault.join(".okilum-index/excluded").exists());
     assert_eq!(client.api.device(&hub.id)?["introducer"], true);
     let reopened = FolderController::new(controller_state.clone());
     assert!(
@@ -520,7 +520,7 @@ fn owned_folder_and_external_replica_keep_their_boundaries() -> Result<()> {
         },
     )?;
     assert_eq!(client.api.folder("unrelated")?, unrelated);
-    assert!(!client.vault.join(".tessera-index/excluded").exists());
+    assert!(!client.vault.join(".okilum-index/excluded").exists());
     let preserved_versions = |root: &Path| -> Result<bool> {
         let mut contents = Vec::new();
         let mut has_conflict_copy = false;

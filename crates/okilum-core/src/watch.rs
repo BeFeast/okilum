@@ -181,7 +181,7 @@ impl VaultWatcher {
                 };
                 if crate::vault::service_path(relative)
                     || p.file_name()
-                        .is_some_and(|name| name.to_string_lossy().starts_with(".tessera-save-"))
+                        .is_some_and(|name| name.to_string_lossy().starts_with(".okilum-save-"))
                 {
                     continue;
                 }

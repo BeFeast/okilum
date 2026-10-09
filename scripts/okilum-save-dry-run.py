@@ -10,7 +10,7 @@ import stat
 import sys
 import uuid
 
-PREFIX = ".tessera-save-"
+PREFIX = ".okilum-save-"
 
 
 def group(name):
