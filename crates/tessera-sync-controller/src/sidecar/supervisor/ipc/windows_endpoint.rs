@@ -131,10 +131,14 @@ pub fn endpoint_name(scope: &Scope) -> Result<String> {
 }
 
 pub struct PrivatePipe {
+    scope: Scope,
     handle: OwnedHandle,
     owner_sid: String,
 }
 impl PrivatePipe {
+    pub(super) fn scope(&self) -> &Scope {
+        &self.scope
+    }
     /// Only after explicit Enable and verified supervisor preparation. Fails on
     /// any existing instance; never adopts, repairs, disconnects or replaces it.
     /// The returned overlapped handle is ready for a future bounded transport.
@@ -167,6 +171,7 @@ impl PrivatePipe {
                 .context("CreateNamedPipeW(private endpoint)");
         }
         let pipe = Self {
+            scope: scope.clone(),
             handle: unsafe { OwnedHandle::from_raw_handle(handle.0) },
             owner_sid: sid,
         };

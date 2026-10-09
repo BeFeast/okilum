@@ -13,6 +13,8 @@ pub mod windows_endpoint;
 pub mod windows_io;
 #[cfg(target_os = "windows")]
 pub mod windows_peer;
+#[cfg(target_os = "windows")]
+pub mod windows_transport;
 
 pub const VERSION: u16 = 1;
 pub const MAX_FRAME: usize = 4096;
@@ -85,9 +87,10 @@ impl Response {
 /// peer and endpoint against the prepared binding, never against wire claims.
 /// A single finite exchange deadline must cover authentication and all I/O,
 /// including fragmented reads; resetting a timeout per byte is insufficient.
-/// No permissive default or production native transport is provided here.
+/// Implementations must compare the prepared binding and endpoint generation;
+/// neither may be replaced by claims received from the wire.
 pub trait Transport: Read + Write {
-    fn verify_peer(&mut self, binding: &Binding) -> Result<()>;
+    fn verify_peer(&mut self, binding: &Binding, scope: &Scope) -> Result<()>;
 }
 
 /// One authenticated request/reply exchange. The caller discovers the generation
@@ -108,7 +111,7 @@ pub fn exchange(
             && request.scope.instance == binding.instance,
         "supervisor request binding mismatch"
     );
-    transport.verify_peer(binding)?;
+    transport.verify_peer(binding, &request.scope)?;
     write_frame(transport, request)?;
     let response: Response = read_frame(transport)?;
     response.validate_for(request)
@@ -159,7 +162,7 @@ impl<R: OwnedRuntime> Server<R> {
     /// Exactly one exchange; the native listener closes the connection on any
     /// error. No unbounded request loop, remote paths, Start, or shell command.
     pub fn serve_one(&mut self, transport: &mut impl Transport) -> Result<()> {
-        transport.verify_peer(&self.binding)?;
+        transport.verify_peer(&self.binding, &self.scope)?;
         let request: Request = read_frame(transport)?;
         ensure!(
             request.version == VERSION,

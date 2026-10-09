@@ -466,3 +466,35 @@ https://github.com/BeFeast/tessera/actions/runs/37856660511
 Native tests used rustc 1.99.0, x86_64-pc-windows-msvc, default features,
 `sidecar::`, one test thread. The injected setup stall validates caller waiting
 and retained cleanup ownership, not cancellation of a real blocked CreateFileW.
+
+
+### Prepared Windows Transport adapter
+
+`WindowsTransport` implements the protocol Transport over ClientIo/ServerIo.
+Construction takes a complete prepared Binding, the exact installation/instance/
+generation Scope and a captured expected process. It compares the binding owner
+to the captured process owner and installation/instance to Scope before endpoint
+open/accept. PrivatePipe now retains its creation Scope; accepting a pipe from a
+different generation is rejected before accept. Client endpoint construction is
+internal to the adapter and uses the retained Scope.
+
+Transport verification now receives both Binding and Scope. The adapter requires
+exact equality of all prepared fields, then revalidates the native peer on the
+same deadline-bound worker. Read/Write/flush are denied until this succeeds;
+identity mismatch or any I/O error permanently poisons that adapter. Neither
+prepared identity nor native ownership is derived from incoming wire claims.
+The protocol passes its expected Scope before writing a request or reading one,
+while retaining its existing request/reply correlation and server-side checks.
+
+Native fixtures cover every changed binding field/generation with zero-byte
+kernel probes and a positive byte-count control, unverified I/O refusal,
+constructor owner/endpoint mismatch, and framed Status/Stop/repeated Stop over
+real Windows pipes. The runtime in that exchange is explicitly a fixture: its
+counters test dispatch/idempotency, not real process termination or durable
+journal enforcement. Hosted/native acceptance is required for this slice.
+
+Trusted generation discovery, executable signature/installation verification,
+real runtime/journal binding and executable supervisor integration are still
+required before production use. Worker creation is still synchronous, and an
+unreturned OS setup/cancellation call can retain an admission slot. No Reader
+startup, registration or background-service behavior is enabled by this adapter.
