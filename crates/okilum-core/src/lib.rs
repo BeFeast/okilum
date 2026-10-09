@@ -6,6 +6,7 @@
 //! needs a private API.
 
 pub mod analyzer;
+pub mod archive;
 pub mod callout;
 #[cfg(all(unix, feature = "brain"))]
 pub mod decision_reuse;
