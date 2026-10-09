@@ -40,6 +40,7 @@ pub mod properties;
 pub mod prose;
 pub mod quick_open;
 pub mod reminder_append;
+pub mod reminder_context;
 pub mod reminder_dates;
 pub mod reminder_task;
 pub mod render;
