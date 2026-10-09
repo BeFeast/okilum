@@ -359,18 +359,26 @@ mod tests {
             assert!(reader.editing.is_none());
             assert!(reader.renaming.is_none());
         });
+        let pencil = visual.debug_bounds("reader-edit").unwrap();
         visual.simulate_click(pencil.center(), Modifiers::default());
         visual.run_until_parked();
-        reader.read_with(visual, |reader, _| assert!(!reader.source_live_preview()));
+        reader.read_with(visual, |reader, _| {
+            assert!(reader.editing.is_some(), "pencil enters the editor");
+            assert!(!reader.source_live_preview());
+        });
         reader.update_in(visual, |reader, window, cx| {
             reader.set_live_preview(true, window, cx)
         });
         visual.simulate_keystrokes("escape");
         visual.run_until_parked();
         reader.read_with(visual, |reader, _| assert!(reader.editing.is_none()));
+        let pencil = visual.debug_bounds("reader-edit").unwrap();
         visual.simulate_click(pencil.center(), Modifiers::default());
         visual.run_until_parked();
-        reader.read_with(visual, |reader, _| assert!(reader.source_live_preview()));
+        reader.read_with(visual, |reader, _| {
+            assert!(reader.editing.is_some(), "pencil re-enters the editor");
+            assert!(reader.source_live_preview());
+        });
         let read = visual.debug_bounds("reader-read").unwrap();
         visual.simulate_click(read.center(), Modifiers::default());
         visual.run_until_parked();
