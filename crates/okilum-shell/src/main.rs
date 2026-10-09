@@ -979,8 +979,12 @@ fn reader_plugins(
     .on_link_hover(move |url, active, position, window, cx| {
         let _ = hover_entity.update(cx, |this, cx| {
             if active {
-                this.pointer_link = Some(url.to_owned());
-            } else if this.pointer_link.as_deref() == Some(url) {
+                this.pointer_link = Some((url.to_owned(), this.navigation.preparation_generation));
+            } else if this
+                .pointer_link
+                .as_ref()
+                .is_some_and(|(link, _)| link == url)
+            {
                 this.pointer_link = None;
             }
             this.hover_link(url, active, position, window, cx)
@@ -1318,9 +1322,10 @@ struct Reader {
     /// Bumped on every offer change; a deferred push only shows the offer it
     /// was queued for (A → B → A cannot push A twice).
     recovery_toast_generation: u64,
-    /// The link under the pointer, from every link hover event: a right-click
-    /// there opens only the link's menu (#943).
-    pointer_link: Option<String>,
+    /// The link under the pointer, from every link hover event, stamped with
+    /// the document generation so a link left behind by navigation is stale:
+    /// a right-click there opens only the link's menu (#943).
+    pointer_link: Option<(String, u64)>,
     displayed_history_notice: Option<(uuid::Uuid, uuid::Uuid, String)>,
     history_notice_generation: u64,
     notice_generation: u64,

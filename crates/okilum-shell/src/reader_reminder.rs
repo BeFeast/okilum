@@ -244,12 +244,20 @@ impl Reader {
     /// The selected text and its date, when the whole selection is one. The
     /// action needs a vault note to link back to: not single-file mode, and not
     /// an attachment preview.
+    /// A link hovered in this document; one left over from a document that
+    /// navigation replaced does not count.
+    pub(super) fn pointer_on_link(&self) -> bool {
+        self.pointer_link
+            .as_ref()
+            .is_some_and(|(_, generation)| *generation == self.navigation.preparation_generation)
+    }
+
     pub(super) fn reminder_for_selection(&self, cx: &App) -> Option<(String, time::Date)> {
         // A right-click on a link belongs to the link's own menu (#943).
         if self.single_file
             || self.file_preview.is_some()
             || self.current_rel.is_empty()
-            || self.pointer_link.is_some()
+            || self.pointer_on_link()
         {
             return None;
         }
@@ -590,7 +598,7 @@ mod visual_tests {
             visual.simulate_mouse_move(at, None, Modifiers::default());
             visual.run_until_parked();
             reader
-                .read_with(visual, |v, _| v.pointer_link.is_some())
+                .read_with(visual, |v, _| v.pointer_on_link())
                 .then_some(at)
         });
         let link = link.expect("positive control: hovering the link is reported");
@@ -607,6 +615,16 @@ mod visual_tests {
         );
         visual.simulate_keystrokes("escape");
         visual.run_until_parked();
+        // A link left under the pointer by navigation is stale (review).
+        reader.update(visual, |v, _| {
+            v.navigation.preparation_generation =
+                v.navigation.preparation_generation.wrapping_add(1)
+        });
+        assert!(!reader.read_with(visual, |v, _| v.pointer_on_link()));
+        reader.update(visual, |v, _| {
+            v.navigation.preparation_generation =
+                v.navigation.preparation_generation.wrapping_sub(1)
+        });
         // Positive control: on the selection the reminder is still offered.
         let inside = bounds.origin + point(px(20.), px(10.));
         visual.simulate_mouse_move(inside, None, Modifiers::default());
