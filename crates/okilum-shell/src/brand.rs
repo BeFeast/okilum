@@ -39,7 +39,7 @@ pub const READER_COLLAPSE_ICON: &str = "icons/chevrons-down-up.svg";
 pub const READER_EXPAND_ICON: &str = "icons/chevrons-up-down.svg";
 pub const READER_FOCUS_ICON: &str = "icons/locate-fixed.svg";
 pub const SYSTEM_APPEARANCE_ICON: &str = "icons/monitor.svg";
-const IMAGES: [(&str, &[u8]); 26] = [
+const IMAGES: [(&str, &[u8]); 27] = [
     (
         "icons/code-xml.svg",
         include_bytes!("../assets/icons/code-xml.svg"),
