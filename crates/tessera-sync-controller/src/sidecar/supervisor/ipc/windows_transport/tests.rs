@@ -260,3 +260,94 @@ fn native_transport_protocol_status_stop_and_idempotent_reply() -> Result<()> {
     eprintln!("transport: native framed Status/Stop/repeated Stop passed; fixture runtime probed once, stopped once, durable gate checked twice");
     Ok(())
 }
+
+#[test]
+fn native_discovering_connect_verifies_the_server_then_exchanges_and_refuses_wrong_claims(
+) -> Result<()> {
+    use crate::sidecar::{
+        store::Hint,
+        supervisor::ipc::windows_discovery::{image_path, start_time, ImagePolicy},
+    };
+    use windows::Win32::System::Threading::GetCurrentProcess;
+    struct Trust;
+    impl ImagePolicy for Trust {
+        fn verify_image(&self, _: &std::path::Path) -> Result<()> {
+            Ok(())
+        }
+    }
+    let me = unsafe { GetCurrentProcess() };
+    let mut b = binding()?;
+    b.supervisor = image_path(me)?; // this process plays the supervisor
+    let probes = Arc::new(AtomicUsize::new(0));
+    let mut server = Server::new(
+        b.clone(),
+        Runtime {
+            probes: probes.clone(),
+            stops: Arc::new(AtomicUsize::new(0)),
+            intents: Arc::new(AtomicUsize::new(0)),
+        },
+    );
+    let s = server.scope().clone();
+    let deadline = Instant::now() + Duration::from_secs(5);
+
+    // A hint whose start time is not the server's is refused before any I/O.
+    let wrong = Hint::new(s.generation, start_time(me)? + 1)?;
+    let listening = PrivatePipe::create(&s)?;
+    ensure!(
+        WindowsTransport::connect_discovering(
+            b.clone(),
+            s.clone(),
+            wrong,
+            Arc::new(Trust),
+            deadline
+        )
+        .is_err(),
+        "wrong start time was accepted"
+    );
+    // A hint for another generation never reaches the pipe either.
+    let other = Hint::new(Uuid::new_v4(), start_time(me)?)?;
+    ensure!(
+        WindowsTransport::connect_discovering(
+            b.clone(),
+            s.clone(),
+            other,
+            Arc::new(Trust),
+            deadline
+        )
+        .is_err(),
+        "hint for another generation was accepted"
+    );
+    drop(listening);
+
+    // Positive control on the same scope: the genuine hint is verified and works.
+    let pipe = PrivatePipe::create(&s)?;
+    let expected = peer()?;
+    let (sb, ss) = (b.clone(), s.clone());
+    let worker = std::thread::spawn(move || -> Result<()> {
+        let mut transport = WindowsTransport::accept(sb, ss, pipe, expected, deadline)?;
+        server.serve_one(&mut transport)
+    });
+    let hint = Hint::new(s.generation, start_time(me)?)?;
+    let mut transport = WindowsTransport::connect_discovering(
+        b.clone(),
+        s.clone(),
+        hint,
+        Arc::new(Trust),
+        deadline,
+    )?;
+    ensure!(
+        exchange(
+            &mut transport,
+            &b,
+            &Request::new(s.clone(), Command::Status)
+        )? == Status::Running,
+        "status mismatch"
+    );
+    worker.join().expect("server fixture panicked")?;
+    ensure!(
+        probes.load(Ordering::SeqCst) == 1,
+        "status did not reach the runtime"
+    );
+    eprintln!("transport: discovering connect verified server image, owner and start time, then Status passed; wrong start time and wrong generation refused");
+    Ok(())
+}
