@@ -104,7 +104,7 @@ pub(crate) fn channel() -> &'static str {
     };
     #[cfg(target_os = "windows")]
     return if !windows::available() {
-        "Windows diagnostic"
+        "Portable"
     } else if windows::beta() {
         "Beta"
     } else {
