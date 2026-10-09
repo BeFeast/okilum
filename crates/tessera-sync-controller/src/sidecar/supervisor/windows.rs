@@ -108,39 +108,66 @@ impl JobChild {
             process: suspended.process.take().unwrap(),
         })
     }
+    /// A live descendant keeps the runtime running even after its root exits.
+    /// Only an empty job AND a signaled captured root establish complete exit.
     pub fn running(&self) -> Result<bool> {
+        Ok(self.active_processes()? != 0 || self.root_running()?)
+    }
+    fn root_running(&self) -> Result<bool> {
         match unsafe { WaitForSingleObject(raw(&self.process), 0) } {
             WAIT_OBJECT_0 => Ok(false),
             WAIT_TIMEOUT => Ok(true),
             _ => Err(windows::core::Error::from_win32().into()),
         }
     }
-    /// Confirms the entire job is empty, not merely that the main PID exited.
-    /// On timeout the caller must keep removal pending; Drop still closes the job.
+    fn active_processes(&self) -> Result<u32> {
+        let mut account = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
+        unsafe {
+            QueryInformationJobObject(
+                Some(raw(&self.job)),
+                JobObjectBasicAccountingInformation,
+                &mut account as *mut _ as _,
+                size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+                None,
+            )?;
+        }
+        Ok(account.ActiveProcesses)
+    }
+    /// Convenience for callers without an existing operation budget. IPC/hook
+    /// integration must use stop_until with its original absolute deadline.
     pub fn stop(&self, timeout: Duration) -> Result<()> {
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .ok_or_else(|| anyhow::anyhow!("invalid owned process stop timeout"))?;
+        self.stop_until(deadline)
+    }
+    /// Terminate and confirm the entire owned job within an existing budget.
+    /// An expired budget refuses termination. An error after termination is not
+    /// evidence of exit; retain pending intent and ownership for reconciliation.
+    /// Native queries/termination are synchronous; this bounds polling, not an
+    /// OS call that stalls. Drop still closes the kill-on-close job.
+    pub fn stop_until(&self, deadline: Instant) -> Result<()> {
+        ensure!(
+            Instant::now() < deadline,
+            "owned process stop deadline expired"
+        );
         unsafe {
             TerminateJobObject(raw(&self.job), 0)?;
         }
-        let deadline = Instant::now() + timeout;
         loop {
-            let mut account = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
-            unsafe {
-                QueryInformationJobObject(
-                    Some(raw(&self.job)),
-                    JobObjectBasicAccountingInformation,
-                    &mut account as *mut _ as _,
-                    size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
-                    None,
-                )?;
-            }
-            if account.ActiveProcesses == 0 && !self.running()? {
-                return Ok(());
-            }
             ensure!(
                 Instant::now() < deadline,
-                "owned process tree has not exited"
+                "owned process stop deadline expired"
             );
-            std::thread::sleep(Duration::from_millis(20));
+            let running = self.running()?;
+            let now = Instant::now();
+            // A late successful query cannot convert an exhausted budget into
+            // success or authorize unregister/removal in this exchange.
+            ensure!(now < deadline, "owned process stop deadline expired");
+            if !running {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(20).min(deadline - now));
         }
     }
 }
@@ -164,15 +191,16 @@ mod tests {
             let mut child = std::process::Command::new(std::env::current_exe().unwrap())
                 .arg("child").spawn().unwrap();
             std::fs::write(std::path::Path::new(&data).join("child.pid"), child.id().to_string()).unwrap();
+            if std::path::Path::new(&data).join("exit-parent").exists() {
+                return;
+            }
             let _ = child.wait();
         }
     "#;
 
-    #[test]
-    fn native_job_stop_and_drop_terminate_confirmed_descendant() -> Result<()> {
-        let root = tempfile::tempdir()?;
-        let source = root.path().join("fixture.rs");
-        let executable = root.path().join("fixture.exe");
+    fn compile_fixture(root: &std::path::Path) -> Result<std::path::PathBuf> {
+        let source = root.join("fixture.rs");
+        let executable = root.join("fixture.exe");
         fs::write(&source, FIXTURE)?;
         let compiled = Command::new("rustc")
             .arg("--edition=2021")
@@ -185,6 +213,13 @@ mod tests {
             "fixture compilation: {}",
             String::from_utf8_lossy(&compiled.stderr)
         );
+        Ok(executable)
+    }
+
+    #[test]
+    fn native_job_stop_and_drop_terminate_confirmed_descendant() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let executable = compile_fixture(root.path())?;
         for stop_explicitly in [true, false] {
             let data = root
                 .path()
@@ -247,6 +282,91 @@ mod tests {
                 if stop_explicitly { "stop" } else { "job close" }
             );
         }
+        Ok(())
+    }
+
+    fn live_fixture(root: &std::path::Path, exit_parent: bool) -> Result<(JobChild, OwnedHandle)> {
+        let executable = compile_fixture(root)?;
+        let data = root.join("data");
+        let config = root.join("config");
+        fs::create_dir(&data)?;
+        fs::create_dir(&config)?;
+        if exit_parent {
+            fs::write(data.join("exit-parent"), b"")?;
+        }
+        let job = JobChild::spawn(&Launch {
+            executable: executable.to_string_lossy().into_owned(),
+            config: config.to_string_lossy().into_owned(),
+            data: data.to_string_lossy().into_owned(),
+        })?;
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let pid = loop {
+            if let Ok(text) = fs::read_to_string(data.join("child.pid")) {
+                if let Ok(pid) = text.parse::<u32>() {
+                    break pid;
+                }
+            }
+            ensure!(Instant::now() < deadline, "descendant readiness timed out");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let descendant = unsafe {
+            OwnedHandle::from_raw_handle(OpenProcess(PROCESS_SYNCHRONIZE, false, pid)?.0)
+        };
+        ensure!(
+            unsafe { WaitForSingleObject(raw(&descendant), 0) } == WAIT_TIMEOUT,
+            "positive control: descendant must be alive"
+        );
+        Ok((job, descendant))
+    }
+
+    #[test]
+    fn native_job_reports_live_descendant_after_root_exit() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let (job, descendant) = live_fixture(root.path(), true)?;
+        ensure!(
+            unsafe { WaitForSingleObject(raw(&job.process), 10000) } == WAIT_OBJECT_0,
+            "fixture root did not exit"
+        );
+        ensure!(!job.root_running()?, "root must be exited");
+        ensure!(
+            job.active_processes()? >= 1,
+            "descendant missing from owned job"
+        );
+        ensure!(job.running()?, "root exit must not hide a live descendant");
+        job.stop_until(Instant::now() + Duration::from_secs(10))?;
+        ensure!(!job.running()?, "job still running after confirmed stop");
+        ensure!(
+            unsafe { WaitForSingleObject(raw(&descendant), 0) } == WAIT_OBJECT_0,
+            "descendant survived confirmed stop"
+        );
+        eprintln!("owned job: exited root with live descendant reported running; stop reaped both");
+        Ok(())
+    }
+
+    #[test]
+    fn native_job_expired_deadline_refuses_termination_with_stop_positive_control() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let (job, descendant) = live_fixture(root.path(), false)?;
+        let error = job.stop_until(Instant::now()).unwrap_err();
+        ensure!(error.to_string().contains("deadline expired"), "{error:#}");
+        ensure!(job.root_running()?, "expired stop terminated root");
+        ensure!(
+            job.active_processes()? >= 2,
+            "expired stop changed owned tree"
+        );
+        ensure!(
+            unsafe { WaitForSingleObject(raw(&descendant), 0) } == WAIT_TIMEOUT,
+            "expired stop terminated descendant"
+        );
+        // The same job must respond to a valid budget: refusal above is not a
+        // broken termination probe. No child is selected for termination by PID.
+        job.stop_until(Instant::now() + Duration::from_secs(10))?;
+        ensure!(!job.running()?, "positive stop did not empty job");
+        ensure!(
+            unsafe { WaitForSingleObject(raw(&descendant), 0) } == WAIT_OBJECT_0,
+            "positive stop did not reap descendant"
+        );
+        eprintln!("owned job: expired budget preserved live tree; valid budget reaped same tree");
         Ok(())
     }
 }

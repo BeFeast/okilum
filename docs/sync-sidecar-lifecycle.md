@@ -498,3 +498,29 @@ real runtime/journal binding and executable supervisor integration are still
 required before production use. Worker creation is still synchronous, and an
 unreturned OS setup/cancellation call can retain an admission slot. No Reader
 startup, registration or background-service behavior is enabled by this adapter.
+
+### Owned job status and stop budget
+
+Before connecting the real runtime to IPC, JobChild now treats a live descendant
+as running even when the captured root process has exited. Complete exit requires
+both zero active job processes and a signaled root handle. No PID is used to
+select a process for termination.
+
+`stop_until` accepts the caller's original absolute deadline. An already expired
+budget refuses termination; the budget is not restarted after TerminateJobObject
+or between exit queries. Even a successful exit query arriving after the deadline
+returns an error. Poll sleeps are capped to the remaining budget. The existing
+relative `stop` convenience wrapper computes its deadline before any native effect;
+IPC/hook integration must use `stop_until`. Windows queries and termination remain
+synchronous: this is not a claim that a stalled kernel call can be cancelled.
+An error after termination leaves the outcome unconfirmed and durable intent must
+remain pending. Retaining the JobChild preserves ownership; dropping it still
+invokes the existing kill-on-close behavior.
+
+Native regressions require a confirmed exited root with a live descendant to
+remain Running, and verify that an expired stop leaves the root and descendant
+alive before a valid stop reaps the same tree. These fixtures use disposable
+executables, not Syncthing or personal state. Native CI is required for acceptance.
+This slice supplies runtime prerequisites only; durable stop authorization, the
+controller/supervisor lock protocol, signed payload verification, generation
+discovery and actual executable wiring remain unimplemented.
