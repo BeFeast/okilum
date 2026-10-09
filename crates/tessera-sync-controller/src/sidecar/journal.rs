@@ -12,32 +12,40 @@ use std::{
 use uuid::Uuid;
 const NAME: &str = "sidecar.json";
 const LIMIT: u64 = 65536;
-pub struct UnixJournal {
-    directory: File,
+/// Verified private state directory. It holds no lock: the legacy journal locks
+/// its descriptor for its lifetime, the transactional store only per transaction.
+pub(super) struct Directory {
+    pub(super) handle: File,
     path: PathBuf,
+    #[cfg(test)]
+    pub(super) fault: std::cell::Cell<Option<Fault>>,
 }
-impl UnixJournal {
+/// Injected one-shot write failures, always paired with an unfaulted control.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Fault {
+    BeforeRename,
+    AfterRename,
+}
+impl Directory {
     /// Does not create directories or a journal. Preparation must explicitly
     /// supply a private directory outside installation, vault and index.
-    pub fn open_existing(path: &Path) -> Result<Self> {
+    pub(super) fn open(path: &Path) -> Result<Self> {
         ensure!(
             path.is_absolute(),
             "absolute private state directory required"
         );
-        let directory = OpenOptions::new()
+        let handle = OpenOptions::new()
             .read(true)
             .custom_flags((OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC).bits() as i32)
             .open(path)?;
-        Self::validate_directory(&directory)?;
-        directory
-            .try_lock()
-            .context("sidecar state is already in use")?;
-        let store = Self {
-            directory,
+        Self::validate_directory(&handle)?;
+        Ok(Self {
+            handle,
             path: path.to_path_buf(),
-        };
-        store.check_location()?;
-        Ok(store)
+            #[cfg(test)]
+            fault: Default::default(),
+        })
     }
     fn validate_directory(directory: &File) -> Result<()> {
         let m = directory.metadata()?;
@@ -47,10 +55,10 @@ impl UnixJournal {
         );
         Ok(())
     }
-    fn check_location(&self) -> Result<()> {
-        Self::validate_directory(&self.directory)?;
+    pub(super) fn check_location(&self) -> Result<()> {
+        Self::validate_directory(&self.handle)?;
         let current = std::fs::symlink_metadata(&self.path)?;
-        let opened = self.directory.metadata()?;
+        let opened = self.handle.metadata()?;
         ensure!(
             current.is_dir()
                 && !current.file_type().is_symlink()
@@ -60,12 +68,10 @@ impl UnixJournal {
         );
         Ok(())
     }
-}
-impl UnixJournal {
-    fn read_record<T: serde::de::DeserializeOwned>(&self, name: &str) -> Result<Option<T>> {
+    pub(super) fn read_bytes(&self, name: &str) -> Result<Option<Vec<u8>>> {
         self.check_location()?;
         let fd = match openat(
-            &self.directory,
+            &self.handle,
             name,
             OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
             Mode::empty(),
@@ -87,6 +93,66 @@ impl UnixJournal {
         let mut data = Vec::new();
         file.take(LIMIT + 1).read_to_end(&mut data)?;
         ensure!(data.len() as u64 <= LIMIT, "sidecar journal exceeds limit");
+        Ok(Some(data))
+    }
+    /// Atomic replace: flush the temporary file, rename, flush the directory.
+    /// An error after the rename means the new state may already be visible.
+    pub(super) fn write_bytes(&self, name: &str, data: &[u8]) -> Result<()> {
+        self.check_location()?;
+        // Refuse redirected prior state instead of overwriting it.
+        self.read_bytes(name)?;
+        ensure!(data.len() as u64 <= LIMIT, "sidecar journal exceeds limit");
+        let temporary = format!(".sidecar-{}.tmp", Uuid::new_v4());
+        let result = (|| -> Result<()> {
+            let fd = openat(
+                &self.handle,
+                temporary.as_str(),
+                OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::RUSR | Mode::WUSR,
+            )?;
+            let mut file = File::from(fd);
+            file.write_all(data)?;
+            file.sync_all()?;
+            self.check_location()?;
+            #[cfg(test)]
+            ensure!(
+                self.fault.get() != Some(Fault::BeforeRename),
+                "injected flush failure"
+            );
+            renameat(&self.handle, temporary.as_str(), &self.handle, name)?;
+            #[cfg(test)]
+            ensure!(
+                self.fault.get() != Some(Fault::AfterRename),
+                "injected directory flush failure"
+            );
+            self.handle.sync_all()?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = unlinkat(&self.handle, temporary.as_str(), AtFlags::empty());
+        }
+        result
+    }
+}
+
+pub struct UnixJournal {
+    dir: Directory,
+}
+impl UnixJournal {
+    pub fn open_existing(path: &Path) -> Result<Self> {
+        let dir = Directory::open(path)?;
+        dir.handle
+            .try_lock()
+            .context("sidecar state is already in use")?;
+        dir.check_location()?;
+        Ok(Self { dir })
+    }
+}
+impl UnixJournal {
+    fn read_record<T: serde::de::DeserializeOwned>(&self, name: &str) -> Result<Option<T>> {
+        let Some(data) = self.dir.read_bytes(name)? else {
+            return Ok(None);
+        };
         Ok(Some(
             serde_json::from_slice(&data).context("invalid sidecar journal; recovery required")?,
         ))
@@ -96,31 +162,9 @@ impl UnixJournal {
         name: &str,
         journal: &T,
     ) -> Result<()> {
-        self.check_location()?;
-        // Refuse corrupt or redirected prior state instead of overwriting it.
+        // Refuse corrupt prior state instead of overwriting it.
         self.read_record::<T>(name)?;
-        let data = serde_json::to_vec(journal)?;
-        ensure!(data.len() as u64 <= LIMIT, "sidecar journal exceeds limit");
-        let temporary = format!(".sidecar-{}.tmp", Uuid::new_v4());
-        let result = (|| -> Result<()> {
-            let fd = openat(
-                &self.directory,
-                temporary.as_str(),
-                OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                Mode::RUSR | Mode::WUSR,
-            )?;
-            let mut file = File::from(fd);
-            file.write_all(&data)?;
-            file.sync_all()?;
-            self.check_location()?;
-            renameat(&self.directory, temporary.as_str(), &self.directory, name)?;
-            self.directory.sync_all()?;
-            Ok(())
-        })();
-        if result.is_err() {
-            let _ = unlinkat(&self.directory, temporary.as_str(), AtFlags::empty());
-        }
-        result
+        self.dir.write_bytes(name, &serde_json::to_vec(journal)?)
     }
 }
 impl LockedJournal for UnixJournal {
