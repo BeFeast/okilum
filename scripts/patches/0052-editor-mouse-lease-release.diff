@@ -24,7 +24,7 @@ index 28086be5..efafae78 100644
              }
              state.refresh_native_candidate_geometry(window, cx);
 diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
-index 1abf94a3..0b81bd2e 100644
+index 1abf94a3..054636dd 100644
 --- a/crates/base/src/input/base/state.rs
 +++ b/crates/base/src/input/base/state.rs
 @@ -28,7 +28,7 @@ use gpui::{
@@ -120,7 +120,7 @@ index 1abf94a3..0b81bd2e 100644
      pub(super) fn on_mouse_move(
          &mut self,
          event: &MouseMoveEvent,
-@@ -4329,6 +4364,147 @@ mod tests {
+@@ -4329,6 +4364,148 @@ mod tests {
          }));
      }
  
@@ -252,7 +252,7 @@ index 1abf94a3..0b81bd2e 100644
 +                click_count: 1,
 +            };
 +            state.on_mouse_up(&up, window, cx);
-+            state.set_projection_provider(Some(Arc::new(ExactSourceProvider)), cx);
++            state.set_projection_provider(Some(Arc::new(RevealAllProvider)), cx);
 +            assert_eq!(state.projection.current.as_ref().unwrap().text(), painted,
 +                "the lease still pins the painted projection");
 +        }));
@@ -261,10 +261,34 @@ index 1abf94a3..0b81bd2e 100644
 +        v.run_until_parked();
 +        v.update(|_, cx| view.input.update(cx, |state, _| {
 +            assert!(!state.projection_mouse_hold);
-+            assert!(state.projection.current.is_none(), "release composes with the new provider");
++            assert_eq!(state.projection.current.as_ref().unwrap().text(), state.value().as_str(),
++                "release composes with the new provider");
 +        }));
 +    }
 +
      #[gpui::test]
      fn projection_first_vertical_key_derives_preferred_x_after_initial_paint(
          cx: &mut TestAppContext,
+@@ -4499,6 +4676,22 @@ mod tests {
+         }
+     }
+ 
++    /// Composes a real projection that never conceals, unlike PrefixRevealProvider.
++    struct RevealAllProvider;
++    impl ProjectionProvider for RevealAllProvider {
++        fn compose(
++            &self,
++            source: &super::super::projection::SourceSnapshot,
++            _: &ActiveSource,
++        ) -> Option<Arc<dyn super::super::projection::SourceProjection>> {
++            Some(Arc::new(PrefixRevealProjection {
++                source: source.clone(),
++                text: source.text.to_string(),
++                hidden: None,
++            }))
++        }
++    }
++
+     struct ExactSourceProvider;
+     impl ProjectionProvider for ExactSourceProvider {
+         fn compose(
