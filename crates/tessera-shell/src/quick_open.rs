@@ -147,7 +147,6 @@ fn label_matches(text: &str, query: &str) -> Vec<std::ops::Range<usize>> {
 
 /// The title already has its own row. Remove only an exact leading repeat
 /// from the display snippet; the original hit still drives jump-to-match.
-/// This intentionally does not parse or filter frontmatter (#746).
 fn without_repeated_title(mut snippet: PlainSnippet, title: &str) -> PlainSnippet {
     if title.is_empty() {
         return snippet;
@@ -168,6 +167,57 @@ fn without_repeated_title(mut snippet: PlainSnippet, title: &str) -> PlainSnippe
         })
         .collect();
     snippet
+}
+
+fn result_snippet(
+    root: &Path,
+    titles: &HashMap<String, String>,
+    vault: &Vault,
+    hit: &SearchHit,
+) -> PlainSnippet {
+    let mut snippet = hit
+        .display_snippet
+        .clone()
+        .unwrap_or_else(|| plain_snippet(&hit.snippet_html));
+    if let Some(reason) = &mut snippet.hidden_match {
+        reason.resolve_link_labels(|target, wiki| {
+            let resolution = if wiki {
+                vault.resolve_from(target, &hit.path)
+            } else {
+                vault.resolve_markdown(target, &hit.path)
+            };
+            match resolution {
+                tessera_core::vault::Resolution::Resolved { path } => {
+                    let vault_name = root
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("Vault");
+                    folder_note_title(vault_name, &path)
+                        .or_else(|| titles.get(&path).cloned())
+                        .unwrap_or_else(|| Vault::title_of(&path))
+                }
+                other => {
+                    let name = target
+                        .split(['#', '^'])
+                        .next()
+                        .unwrap_or(target)
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or(target)
+                        .trim_end_matches(".md");
+                    format!(
+                        "{} · {name}",
+                        if matches!(other, tessera_core::vault::Resolution::Ambiguous { .. }) {
+                            "Ambiguous"
+                        } else {
+                            "Missing"
+                        }
+                    )
+                }
+            }
+        });
+    }
+    without_repeated_title(snippet, &hit.title)
 }
 
 /// A one-line preview must reach the match before the trailing ellipsis.
@@ -197,6 +247,47 @@ fn visible_snippet(snippet: &PlainSnippet) -> PlainSnippet {
             .map(|r| r.start - start + prefix.len()..r.end - start + prefix.len())
             .collect(),
         hidden_match: snippet.hidden_match.clone(),
+        property_match: snippet.property_match.clone(),
+    }
+}
+
+/// Keep the reason's human prefix while bringing a distant value match into view.
+fn visible_context(
+    reason: &tessera_core::search_snippet::MatchContext,
+) -> tessera_core::search_snippet::MatchContext {
+    use unicode_segmentation::UnicodeSegmentation;
+    let Some(first) = reason.highlights.first() else {
+        return reason.clone();
+    };
+    let prefix = reason.text.find(": ").map_or(0, |at| at + 2);
+    if first.start <= prefix {
+        return reason.clone();
+    }
+    let start = reason.text[prefix..first.start]
+        .grapheme_indices(true)
+        .rev()
+        .nth(28)
+        .map_or(prefix, |(at, _)| prefix + at);
+    if start == prefix {
+        return reason.clone();
+    }
+    let lead = prefix + '…'.len_utf8();
+    tessera_core::search_snippet::MatchContext {
+        text: format!("{}…{}", &reason.text[..prefix], &reason.text[start..]),
+        highlights: reason
+            .highlights
+            .iter()
+            .filter_map(|r| {
+                if r.end <= prefix {
+                    Some(r.clone())
+                } else if r.end > start {
+                    Some(r.start.max(start) - start + lead..r.end - start + lead)
+                } else {
+                    None
+                }
+            })
+            .collect(),
+        ..Default::default()
     }
 }
 
@@ -396,6 +487,7 @@ impl Reader {
                             title: note.title,
                             score: 0.,
                             snippet_html: String::new(),
+                            display_snippet: None,
                         })
                         .collect();
                 Ok((rows, String::new()))
@@ -406,7 +498,7 @@ impl Reader {
                 }
                 let snippets = rows
                     .iter()
-                    .map(|hit| without_repeated_title(plain_snippet(&hit.snippet_html), &hit.title))
+                    .map(|hit| result_snippet(&title_root, &titles, &vault, hit))
                     .collect();
                 (rows, snippets, message)
             })
@@ -476,7 +568,6 @@ impl Reader {
         let full_text = self.quick_open.full_text;
         let selected_bg = palette.selected;
         let muted = palette.text_muted;
-        let text = palette.text;
         let mark = palette.accent.opacity(0.18);
         let entity = cx.entity().downgrade();
         let generation = self.quick_open.generation;
@@ -510,19 +601,7 @@ impl Reader {
                             } else {
                                 vec![]
                             };
-                            StyledText::new(value).with_highlights(ranges.into_iter().map(
-                                |range| {
-                                    (
-                                        range,
-                                        HighlightStyle {
-                                            background_color: Some(mark),
-                                            color: Some(text),
-                                            font_weight: Some(FontWeight::SEMIBOLD),
-                                            ..Default::default()
-                                        },
-                                    )
-                                },
-                            ))
+                            search_label::SearchLabel::new(value, ranges, mark)
                         };
                         let entity = entity.clone();
                         let root = root.clone();
@@ -600,85 +679,57 @@ impl Reader {
                             })
                             .when_some(
                                 snippets.get(ix).filter(|s| {
-                                    full_text && (!s.text.is_empty() || s.hidden_match.is_some())
+                                    full_text
+                                        && (!s.text.is_empty()
+                                            || s.hidden_match.is_some()
+                                            || s.property_match.is_some())
                                 }),
                                 |row, snippet| {
                                     let snippet = visible_snippet(snippet);
-                                    let highlights = snippet
-                                        .highlights
-                                        .iter()
-                                        .filter_map(|r| {
-                                            text_ranges::safe_highlight(&snippet.text, r.clone())
-                                        })
-                                        .map(|r| {
-                                            (
-                                                r,
-                                                HighlightStyle {
-                                                    background_color: Some(mark),
-                                                    color: Some(text),
-                                                    font_weight: Some(FontWeight::SEMIBOLD),
-                                                    ..Default::default()
-                                                },
-                                            )
-                                        })
-                                        .collect::<Vec<_>>();
-                                    row.when(!snippet.text.is_empty(), |row| {
+                                    let mut row = row.when(!snippet.text.is_empty(), |row| {
                                         row.child(
                                             div()
                                                 .id(("quick-open-snippet", ix))
+                                                .debug_selector(move || {
+                                                    format!("quick-open-snippet-{ix}")
+                                                })
                                                 .text_size(px(12.))
                                                 .line_height(px(18.))
                                                 .flex_none()
                                                 .text_color(muted)
                                                 .overflow_hidden()
                                                 .whitespace_nowrap()
-                                                .text_ellipsis()
-                                                .child(
-                                                    StyledText::new(snippet.text.clone())
-                                                        .with_highlights(highlights),
-                                                ),
+                                                .child(search_label::SearchLabel::new(
+                                                    snippet.text.clone(),
+                                                    snippet.highlights.clone(),
+                                                    mark,
+                                                )),
                                         )
-                                    })
-                                    .when_some(
+                                    });
+                                    for reason in [
+                                        snippet.property_match.as_ref(),
                                         snippet.hidden_match.as_ref(),
-                                        |row, reason| {
-                                            let highlights = reason
-                                                .highlights
-                                                .iter()
-                                                .filter_map(|r| {
-                                                    text_ranges::safe_highlight(
-                                                        &reason.text,
-                                                        r.clone(),
-                                                    )
-                                                })
-                                                .map(|r| {
-                                                    (
-                                                        r,
-                                                        HighlightStyle {
-                                                            background_color: Some(mark),
-                                                            color: Some(text),
-                                                            font_weight: Some(FontWeight::SEMIBOLD),
-                                                            ..Default::default()
-                                                        },
-                                                    )
-                                                })
-                                                .collect::<Vec<_>>();
-                                            row.child(
-                                                div()
-                                                    .text_size(px(12.))
-                                                    .line_height(px(18.))
-                                                    .flex_none()
-                                                    .text_color(muted)
-                                                    .overflow_hidden()
-                                                    .whitespace_nowrap()
-                                                    .text_ellipsis()
-                                                    .child(
-                                                        StyledText::new(reason.text.clone())
-                                                            .with_highlights(highlights),
-                                                    ),
-                                            )
-                                        },
-                                    )
+                                    ]
+                                    .into_iter()
+                                    .flatten()
+                                    {
+                                        let reason = visible_context(reason);
+                                        row = row.child(
+                                            div()
+                                                .text_size(px(12.))
+                                                .line_height(px(18.))
+                                                .flex_none()
+                                                .text_color(muted)
+                                                .overflow_hidden()
+                                                .whitespace_nowrap()
+                                                .child(search_label::SearchLabel::new(
+                                                    reason.text.clone(),
+                                                    reason.highlights.clone(),
+                                                    mark,
+                                                )),
+                                        );
+                                    }
+                                    row
                                 },
                             )
                     })
@@ -738,6 +789,81 @@ impl Reader {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    #[gpui::test]
+    fn content_palette_keeps_hebrew_and_human_property_and_target_context(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir_all(root.join("Projects")).unwrap();
+        std::fs::write(root.join("start.md"), "# Start").unwrap();
+        std::fs::write(root.join("Projects/roadcanary.md"), "# Human Roadmap").unwrap();
+        let source = "---\nqa_label: שלום\nupdated: 2026-10-08\n---\n# Source\nRead [[Projects/roadcanary.md|the overview]]. שלום.";
+        std::fs::write(root.join("source.md"), source).unwrap();
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("start.md".into()),
+                        index_dir: Some(temp.path().join("index")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        for query in ["שלום", "roadcanary", "updated"] {
+            reader.update_in(visual, |v, window, cx| {
+                v.open_quick_open(true, window, cx);
+                v.quick_open
+                    .input
+                    .update(cx, |i, cx| i.set_value(query, window, cx));
+                v.refresh_quick_open(cx);
+            });
+            visual.run_until_parked();
+            reader.read_with(visual, |v, _| {
+                let ix = v
+                    .quick_open
+                    .rows
+                    .iter()
+                    .position(|h| h.path == "source.md")
+                    .expect("indexed source positive control");
+                let snippet = &v.quick_open.snippets[ix];
+                assert!(!snippet.text.contains("qa_label"));
+                match query {
+                    "שלום" => {
+                        assert_eq!(&snippet.text[snippet.highlights[0].clone()], "שלום");
+                        let property = snippet.property_match.as_ref().unwrap();
+                        assert_eq!(property.text, "Property · Qa label: שלום");
+                        assert_eq!(&property.text[property.highlights[0].clone()], "שלום");
+                    }
+                    "roadcanary" => {
+                        let reason = snippet.hidden_match.as_ref().unwrap();
+                        assert_eq!(reason.text, "Link target: Human Roadmap");
+                        assert_eq!(&reason.text[reason.highlights[0].clone()], "Human Roadmap");
+                    }
+                    _ => assert_eq!(
+                        snippet.property_match.as_ref().unwrap().text,
+                        "Property · Updated: 8 Oct 2026"
+                    ),
+                }
+            });
+        }
+        assert_eq!(
+            std::fs::read_to_string(root.join("source.md")).unwrap(),
+            source
+        );
+    }
 
     #[test]
     fn search_row_label_marks_are_unicode_whole_words() {
@@ -818,6 +944,35 @@ mod tests {
     }
 
     #[test]
+    fn property_context_keeps_human_label_and_distant_unicode_value_match_visible() {
+        use tessera_core::search_snippet::MatchContext;
+        let text = format!(
+            "Property · Description: {}שלום and tail",
+            "שָׁ text ".repeat(80)
+        );
+        let at = text.find("שלום").unwrap();
+        let original = MatchContext {
+            text,
+            highlights: std::iter::once(at..at + "שלום".len()).collect(),
+            ..Default::default()
+        };
+        let shown = visible_context(&original);
+        assert!(shown.text.starts_with("Property · Description: …"));
+        assert_eq!(&shown.text[shown.highlights[0].clone()], "שלום");
+        assert!(shown.text[..shown.highlights[0].start].chars().count() < 65);
+        assert_eq!(
+            visible_context(&MatchContext::default()),
+            MatchContext::default()
+        );
+        let key = MatchContext {
+            text: "Property · Title: Value".into(),
+            highlights: std::iter::once(12..17).collect(),
+            ..Default::default()
+        };
+        assert_eq!(visible_context(&key), key);
+    }
+
+    #[test]
     fn result_titles_keep_file_identity_and_use_folder_for_indexes() {
         let root = std::env::temp_dir().join(format!("tessera-titles-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(root.join("Memory")).unwrap();
@@ -850,6 +1005,7 @@ mod tests {
                 title: Vault::title_of(path),
                 score: 0.,
                 snippet_html: String::new(),
+                display_snippet: None,
             };
             let title = result_title(&root, &HashMap::new(), &hit);
             assert_eq!(title, expected);
@@ -862,6 +1018,7 @@ mod tests {
             title: "Ignored".into(),
             score: 0.,
             snippet_html: String::new(),
+            display_snippet: None,
         };
         assert_eq!(
             result_title(&root, &HashMap::new(), &root_index),
@@ -878,6 +1035,7 @@ mod tests {
                 title: Vault::title_of(path),
                 score: 0.,
                 snippet_html: String::new(),
+                display_snippet: None,
             };
             assert_eq!(result_title(&root, &titles, &hit), expected);
         }
@@ -1401,6 +1559,7 @@ canaryhidden [[Target]]",
                 assert!(
                     snippet
                         .text
+                        .trim_end_matches(['…', '.'])
                         .ends_with("Unique canaryword landing near the start"),
                     "{snippet:?}"
                 );

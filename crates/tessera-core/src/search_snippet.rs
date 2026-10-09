@@ -19,6 +19,9 @@
 
 use std::ops::Range;
 
+mod source;
+pub(crate) use source::source_snippet;
+
 /// A snippet ready to show: plain text plus byte ranges of the matches in it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PlainSnippet {
@@ -27,18 +30,64 @@ pub struct PlainSnippet {
     pub highlights: Vec<Range<usize>>,
     /// One secondary reason line, only for matches in hidden link destinations.
     pub hidden_match: Option<MatchContext>,
+    /// A match in confirmed leading frontmatter, formatted independently of prose.
+    pub property_match: Option<MatchContext>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MatchContext {
     pub text: String,
     pub highlights: Vec<Range<usize>>,
+    /// Local destinations whose display labels can use the caller's title cache.
+    pub links: Vec<LinkMatch>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkMatch {
+    pub target: String,
+    pub wiki: bool,
+    pub label: Range<usize>,
+}
+
+impl MatchContext {
+    /// Replace labels from right to left so all remaining source byte ranges stay valid.
+    /// A hidden-target match marks its human title, just as an alias stands for a target.
+    pub fn resolve_link_labels(&mut self, mut label: impl FnMut(&str, bool) -> String) {
+        for link in self.links.iter().rev() {
+            let title = label(&link.target, link.wiki);
+            let old = link.label.clone();
+            let marked = self
+                .highlights
+                .iter()
+                .any(|r| r.start < old.end && r.end > old.start);
+            self.text.replace_range(old.clone(), &title);
+            self.highlights = self
+                .highlights
+                .iter()
+                .filter_map(|r| {
+                    if r.end <= old.start {
+                        Some(r.clone())
+                    } else if r.start >= old.end {
+                        Some(r.start - old.len() + title.len()..r.end - old.len() + title.len())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if marked && !title.is_empty() {
+                self.highlights.push(old.start..old.start + title.len());
+            }
+        }
+        self.highlights.sort_by_key(|r| r.start);
+        self.links.clear();
+    }
 }
 
 #[derive(Clone)]
 struct HiddenDestination {
     range: Range<usize>,
     url: bool,
+    wiki: bool,
 }
 
 fn hidden_context(
@@ -65,6 +114,7 @@ fn hidden_context(
             "Link target: "
         });
         let source = &raw[span.clone()];
+        let label_start = result.text.len();
         let end = source.find(['#', '^']).unwrap_or(source.len());
         let extension = (!destination.url && source[..end].ends_with(".md"))
             .then_some(end.saturating_sub(3)..end);
@@ -109,6 +159,13 @@ fn hidden_context(
         if to < chars.len() {
             result.text.push('…');
         }
+        if !destination.url {
+            result.links.push(LinkMatch {
+                target: source.to_owned(),
+                wiki: destination.wiki,
+                label: label_start..result.text.len(),
+            });
+        }
     }
     (!result.text.is_empty()).then_some(result)
 }
@@ -116,11 +173,15 @@ fn hidden_context(
 /// Snippet HTML (`<b>` marks, escaped text) to a plain-text snippet.
 pub fn plain_snippet(html: &str) -> PlainSnippet {
     let (raw, marks) = parse_marked(html);
-    let stripped = strip(&raw);
+    plain_marked(&raw, &marks)
+}
+
+fn plain_marked(raw: &str, marks: &[Range<usize>]) -> PlainSnippet {
+    let stripped = strip(raw);
     let mut highlights: Vec<Range<usize>> = Vec::new();
-    let hidden_match = hidden_context(&raw, &marks, &stripped.hidden);
+    let hidden_match = hidden_context(raw, marks, &stripped.hidden);
     for mark in marks {
-        let range = stripped.map(mark);
+        let range = stripped.map(mark.clone());
         if range.is_empty() {
             continue;
         }
@@ -136,6 +197,7 @@ pub fn plain_snippet(html: &str) -> PlainSnippet {
         text: stripped.text,
         highlights,
         hidden_match,
+        property_match: None,
     }
 }
 
@@ -466,6 +528,7 @@ fn wikilink(s: &mut Stripper, i: usize, to: usize) -> usize {
         s.hidden.push(HiddenDestination {
             range: hidden.start..hidden.end - 1,
             url: false,
+            wiki: true,
         });
     }
     s.hide(hidden.start, hidden.end, shown);
@@ -491,7 +554,8 @@ fn markdown_link(s: &mut Stripper, i: usize, to: usize) -> usize {
     let shown = shown_start..s.out.len();
     s.hidden.push(HiddenDestination {
         range: mid + 2..close,
-        url: true,
+        url: crate::document_links::is_external_url(&s.src[mid + 2..close]),
+        wiki: false,
     });
     let end = if close < to { close + 1 } else { close };
     s.hide(mid, end, shown);
@@ -744,5 +808,43 @@ mod tests {
         assert!(snippet.text.contains("ordinary words"));
         assert_eq!(&snippet.text[snippet.highlights[0].clone()], "words");
         assert!(snippet.hidden_match.is_none());
+    }
+
+    #[test]
+    fn human_link_titles_keep_highlights_and_do_not_rewrite_visible_aliases() {
+        let snippet = plain_snippet("[[Projects/<b>שלום</b>.md|overview]] and [guide](../<b>other</b>.md) [web](https://x.test/<b>needle</b>)");
+        assert_eq!(snippet.text, "overview and guide web");
+        let mut reason = snippet.hidden_match.unwrap();
+        reason.resolve_link_labels(|target, wiki| match (target, wiki) {
+            ("Projects/שלום.md", true) => "Human Hebrew title".into(),
+            ("../other.md", false) => "Other guide".into(),
+            _ => panic!("unexpected local destination {target}"),
+        });
+        assert_eq!(reason.text, "Link target: Human Hebrew title · Link target: Other guide · Link URL: https://x.test/needle");
+        let words: Vec<_> = reason
+            .highlights
+            .iter()
+            .map(|r| &reason.text[r.clone()])
+            .collect();
+        assert_eq!(words, ["Human Hebrew title", "Other guide", "needle"]);
+        assert!(reason.links.is_empty());
+    }
+
+    #[test]
+    fn colon_in_local_target_does_not_bypass_human_link_context() {
+        let mut reason =
+            plain_snippet("[alias](notes/<b>12:30</b>.md) [web](https://example.test/<b>term</b>)")
+                .hidden_match
+                .unwrap();
+        reason.resolve_link_labels(|target, wiki| {
+            assert!(!wiki);
+            assert_eq!(target, "notes/12:30.md");
+            "Meeting note".into()
+        });
+        assert_eq!(
+            reason.text,
+            "Link target: Meeting note · Link URL: https://example.test/term"
+        );
+        assert_eq!(&reason.text[reason.highlights[0].clone()], "Meeting note");
     }
 }
