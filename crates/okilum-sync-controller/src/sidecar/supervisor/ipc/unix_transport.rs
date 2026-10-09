@@ -10,6 +10,7 @@ use crate::sidecar::Binding;
 use anyhow::{ensure, Context, Result};
 use std::{
     io::{self, Read, Write},
+    os::fd::AsRawFd,
     os::unix::{
         fs::{MetadataExt, PermissionsExt},
         net::{UnixListener, UnixStream},
@@ -243,6 +244,10 @@ impl<C: PeerCheck> UnixTransport<C> {
                 && !binding.device_identity.is_empty(),
             "incomplete prepared binding"
         );
+        // Deadlines are enforced with poll(2) on a non-blocking socket, never with
+        // SO_RCVTIMEO/SO_SNDTIMEO: macOS answers setsockopt with EINVAL once the peer
+        // has closed, which is exactly how a one-exchange supervisor ends.
+        stream.set_nonblocking(true)?;
         Ok(Self {
             stream,
             end,
@@ -254,13 +259,16 @@ impl<C: PeerCheck> UnixTransport<C> {
             failed: false,
         })
     }
-    fn ready(&mut self) -> io::Result<Duration> {
+    fn ready(&mut self) -> io::Result<()> {
         if self.failed || !self.verified {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "transport is unverified or poisoned",
             ));
         }
+        self.remaining().map(|_| ())
+    }
+    fn remaining(&self) -> io::Result<Duration> {
         let left = self.deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
             return Err(io::Error::new(
@@ -269,6 +277,30 @@ impl<C: PeerCheck> UnixTransport<C> {
             ));
         }
         Ok(left)
+    }
+    /// Block until the socket is ready for `events` or the absolute deadline passes.
+    fn wait(&self, events: libc::c_short) -> io::Result<()> {
+        loop {
+            let left = self.remaining()?;
+            let mut poll = libc::pollfd {
+                fd: self.stream.as_raw_fd(),
+                events,
+                revents: 0,
+            };
+            // Round up so a sub-millisecond remainder cannot spin.
+            let millis = left.as_millis().saturating_add(1).min(i32::MAX as u128) as libc::c_int;
+            let ready = unsafe { libc::poll(&mut poll, 1, millis) };
+            match ready {
+                n if n > 0 => return Ok(()),
+                0 => continue, // re-check the deadline
+                _ => {
+                    let error = io::Error::last_os_error();
+                    if error.kind() != io::ErrorKind::Interrupted {
+                        return Err(error);
+                    }
+                }
+            }
+        }
     }
 }
 impl<C: PeerCheck> Transport for UnixTransport<C> {
@@ -289,25 +321,37 @@ impl<C: PeerCheck> Transport for UnixTransport<C> {
 }
 impl<C: PeerCheck> Read for UnixTransport<C> {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-        let result = self.ready().and_then(|left| {
-            self.stream.set_read_timeout(Some(left))?;
-            self.stream.read(bytes)
-        });
+        let result = (|| {
+            self.ready()?;
+            loop {
+                match self.stream.read(bytes) {
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => self.wait(libc::POLLIN)?,
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => (),
+                    other => return other,
+                }
+            }
+        })();
         self.failed |= result.is_err();
         result
     }
 }
 impl<C: PeerCheck> Write for UnixTransport<C> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let result = self.ready().and_then(|left| {
-            self.stream.set_write_timeout(Some(left))?;
-            self.stream.write(bytes)
-        });
+        let result = (|| {
+            self.ready()?;
+            loop {
+                match self.stream.write(bytes) {
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => self.wait(libc::POLLOUT)?,
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => (),
+                    other => return other,
+                }
+            }
+        })();
         self.failed |= result.is_err();
         result
     }
     fn flush(&mut self) -> io::Result<()> {
-        let result = self.ready().and_then(|_| self.stream.flush());
+        let result = self.ready().and_then(|()| self.stream.flush());
         self.failed |= result.is_err();
         result
     }
