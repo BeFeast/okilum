@@ -290,3 +290,17 @@ fn serialization_round_trips_and_rejects_unsafe_documents() {
     assert!(Envelope::from_slice(b"{}").is_err());
     assert!(Envelope::from_slice(&[]).is_err());
 }
+
+#[test]
+fn rollback_stop_survives_disable_while_update_stop_does_not() {
+    let g = scope(9);
+    let (disabled, _) = with_update(Phase::Rollback).disable(g.clone()).unwrap();
+    assert_eq!(disabled.intent(), Intent::Disabled);
+    let (armed, token) = disabled.arm_update_rollback(g.clone()).unwrap();
+    armed.authorize(&token, &g).unwrap();
+    let done = armed.complete_stop(&token, &g).unwrap();
+    assert_eq!(done.intent(), Intent::Disabled);
+
+    let (disabled, _) = with_update(Phase::Stop).disable(g.clone()).unwrap();
+    assert!(disabled.arm_update_stop(g).is_err());
+}

@@ -199,6 +199,9 @@ impl Envelope {
         ensure!(self.intent == Intent::Enabled, "update stop needs Enabled");
         Self::arm(self.next()?, scope, Reason::UpdateStop(id))
     }
+    /// Deliberately has no Enabled guard, unlike `arm_update_stop`: Disable/Remove
+    /// during an update drive it to Rollback, and that stop must still be
+    /// authorizable. Restarting the previous runtime is gated on Enabled elsewhere.
     pub fn arm_update_rollback(&self, scope: Scope) -> Result<(Self, StopToken)> {
         let id = self.pending_update(Phase::Rollback)?;
         Self::arm(self.next()?, scope, Reason::UpdateRollback(id))
