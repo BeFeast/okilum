@@ -8,3 +8,4 @@ Terminal=false
 Categories=Office;Utility;
 MimeType=text/markdown;
 StartupNotify=true
+StartupWMClass=okilum
