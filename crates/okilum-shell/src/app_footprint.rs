@@ -147,7 +147,11 @@ pub(crate) fn purge(
         }
         // Records can be lost (an earlier purge, a reset state dir), so a
         // root that holds notes is kept even when no record names it.
-        if vaults.iter().any(|vault| vault.starts_with(root)) || holds_user_notes(root) {
+        if vaults
+            .iter()
+            .any(|vault| inside(vault, root, cfg!(windows)))
+            || holds_user_notes(root)
+        {
             report.kept_holding_vault.push(root.clone());
             continue;
         }
@@ -163,6 +167,20 @@ pub(crate) fn purge(
         }
     }
     report
+}
+
+/// Whether `path` is `root` or below it. NTFS paths are case-insensitive, so
+/// a recorded vault that differs from the app root only in case still counts.
+fn inside(path: &Path, root: &Path, ignore_case: bool) -> bool {
+    if !ignore_case {
+        return path.starts_with(root);
+    }
+    let lower = |p: &Path| -> Vec<String> {
+        p.components()
+            .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
+            .collect()
+    };
+    lower(path).starts_with(&lower(root))
 }
 
 /// App directories hold JSON, logs and index files, never notes; Markdown or
@@ -440,6 +458,23 @@ mod tests {
         );
         assert_eq!(again.kept_holding_vault, vec![base.join("cache/okilum")]);
         assert!(inner_vault.join("note.md").exists());
+    }
+
+    #[test]
+    fn vault_containment_ignores_case_where_the_file_system_does() {
+        let root = Path::new("/Users/u/AppData/Local/okilum");
+        let vault = Path::new("/users/U/appdata/local/OKILUM/notes");
+        assert!(inside(vault, root, true), "NTFS-style comparison");
+        assert!(
+            !inside(vault, root, false),
+            "positive control: exact comparison differs"
+        );
+        assert!(!inside(
+            Path::new("/Users/u/AppData/Local/okilum2/x"),
+            root,
+            true
+        ));
+        assert!(inside(root, root, true));
     }
 
     #[test]
