@@ -184,6 +184,8 @@ pub fn classify(snapshot: &Snapshot) -> Classification {
     let mut options = Options::default();
     options.extension.strikethrough = true;
     options.extension.table = true;
+    // Task markers are authored container syntax, not paragraph text.
+    options.extension.tasklist = true;
     options.extension.wikilinks_title_after_pipe = true;
     let first_line = source.trim_start_matches('\u{feff}').lines().next();
     let delimiter = if first_line == Some("+++") {
@@ -213,16 +215,10 @@ pub fn classify(snapshot: &Snapshot) -> Classification {
     let mut headings = Vec::new();
     let mut reasons = Vec::new();
     let mut range_count = 0;
-    for node in root.children() {
+    let mut blocks = Vec::new();
+    content_blocks(root, &mut blocks, &mut reasons);
+    for node in blocks {
         let value = &node.data.borrow().value;
-        if !(matches!(value, NodeValue::Paragraph)
-            || matches!(value, NodeValue::Heading(h) if !h.setext))
-        {
-            // Unsupported containers are never traversed for formatting. Their
-            // exact bytes remain uncovered Source, including unusual positions.
-            reasons.push(SourceReason::UnsupportedOrAmbiguous);
-            continue;
-        }
         let Some(mut block) = context.range(node) else {
             return fallback(snapshot, SourceReason::ParserCoordinates);
         };
@@ -295,6 +291,28 @@ pub fn classify(snapshot: &Snapshot) -> Classification {
         links,
         headings,
         reasons,
+    }
+}
+
+/// Paragraphs and ATX headings at top level or inside supported list, task and
+/// quote containers. Container syntax on their lines stays visible Source.
+/// Other blocks and containers are never traversed for formatting; their exact
+/// bytes remain uncovered Source, including unusual positions.
+fn content_blocks<'a>(
+    node: &'a AstNode<'a>,
+    blocks: &mut Vec<&'a AstNode<'a>>,
+    reasons: &mut Vec<SourceReason>,
+) {
+    for child in node.children() {
+        match &child.data.borrow().value {
+            NodeValue::Paragraph => blocks.push(child),
+            NodeValue::Heading(h) if !h.setext => blocks.push(child),
+            NodeValue::List(_)
+            | NodeValue::Item(_)
+            | NodeValue::TaskItem(_)
+            | NodeValue::BlockQuote => content_blocks(child, blocks, reasons),
+            _ => reasons.push(SourceReason::UnsupportedOrAmbiguous),
+        }
     }
 }
 
