@@ -586,10 +586,12 @@ mod visual_tests {
 
     /// #955: Editor::context_menu runs its builder while the editor's own state
     /// is being updated (the vendor defers it with `defer_in`), so the builder
-    /// must not read that state. Right-click it for real.
-    #[gpui::test]
-    fn right_click_in_the_source_editor_reaches_the_menu_builder_without_panicking(
+    /// must not read that state. Right-click it for real, once per app: the menu
+    /// stays open afterwards and would swallow a second click.
+    fn right_click_in_the_source_editor(
         cx: &mut TestAppContext,
+        range: std::ops::Range<usize>,
+        date: Option<time::Date>,
     ) {
         let temp = std::env::temp_dir().join(format!("tessera-remind-{}", uuid::Uuid::new_v4()));
         let (root, state) = (temp.join("vault"), temp.join("state"));
@@ -606,31 +608,37 @@ mod visual_tests {
             bounds.size.width > px(100.),
             "the editor is laid out: {bounds:?}"
         );
+        input.update(visual, |i, cx| i.set_selected_range(range, cx));
+        visual.run_until_parked();
+        let mirrored = reader.read_with(visual, |v, _| {
+            v.editing.as_ref().unwrap().menu_facts().date()
+        });
+        assert_eq!(mirrored, date, "the snapshot follows the selection");
         let before = MENU_BUILDS.with(|builds| builds.get());
-        let mirrored = |visual: &mut VisualTestContext| {
-            reader.read_with(visual, |v, _| {
-                v.editing.as_ref().unwrap().menu_facts().date()
-            })
-        };
-        // Right-click twice: once with a selection (a date), once without.
-        for (range, date) in [
-            (7..17, Some(time::macros::date!(2026 - 11 - 01))),
-            (0..0, None),
-        ] {
-            input.update(visual, |i, cx| i.set_selected_range(range, cx));
-            visual.run_until_parked();
-            assert_eq!(mirrored(visual), date, "the snapshot follows the selection");
-            let at = bounds.origin + point(px(40.), px(12.));
-            visual.simulate_mouse_down(at, MouseButton::Right, Modifiers::default());
-            visual.simulate_mouse_up(at, MouseButton::Right, Modifiers::default());
-            visual.run_until_parked();
-        }
+        let at = bounds.origin + point(px(40.), px(12.));
+        visual.simulate_mouse_down(at, MouseButton::Right, Modifiers::default());
+        visual.simulate_mouse_up(at, MouseButton::Right, Modifiers::default());
+        visual.run_until_parked();
         assert_eq!(
             MENU_BUILDS.with(|builds| builds.get()) - before,
-            2,
-            "positive control: the real builder ran for each right-click"
+            1,
+            "positive control: the real builder ran for the right-click"
         );
         std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[gpui::test]
+    fn right_click_on_a_selected_date_reaches_the_menu_builder_without_panicking(
+        cx: &mut TestAppContext,
+    ) {
+        right_click_in_the_source_editor(cx, 7..17, Some(time::macros::date!(2026 - 11 - 01)));
+    }
+
+    #[gpui::test]
+    fn right_click_with_nothing_selected_reaches_the_menu_builder_without_panicking(
+        cx: &mut TestAppContext,
+    ) {
+        right_click_in_the_source_editor(cx, 0..0, None);
     }
 
     #[gpui::test]
