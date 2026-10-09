@@ -1,8 +1,21 @@
 diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
-index 28086be5..1965c91a 100644
+index 28086be5..efafae78 100644
 --- a/crates/base/src/input/base/element.rs
 +++ b/crates/base/src/input/base/element.rs
-@@ -2667,6 +2667,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -458,8 +458,11 @@ impl<M: InputModeKind> TextElement<M> {
+                     state.auto_scroll.stop();
+                     state.drag_anchors.clear();
+                     if state.selecting {
+-                        state.selecting = false;
++                        // Released outside the input: end the gesture as
++                        // on_mouse_up does, or the lease would never expire.
+                         state.projection.presentation_changed();
++                        state.finish_projection_mouse_gesture();
++                        state.schedule_projection_lease_release(cx);
+                         cx.notify();
+                     }
+                 });
+@@ -2667,6 +2670,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
                  state.on_mouse_down(&event, window, cx);
                  if released {
                      state.finish_projection_mouse_gesture();
@@ -11,7 +24,7 @@ index 28086be5..1965c91a 100644
              }
              state.refresh_native_candidate_geometry(window, cx);
 diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
-index 1abf94a3..d9a24390 100644
+index 1abf94a3..e58c55fa 100644
 --- a/crates/base/src/input/base/state.rs
 +++ b/crates/base/src/input/base/state.rs
 @@ -28,7 +28,7 @@ use gpui::{
@@ -107,7 +120,7 @@ index 1abf94a3..d9a24390 100644
      pub(super) fn on_mouse_move(
          &mut self,
          event: &MouseMoveEvent,
-@@ -4329,6 +4364,83 @@ mod tests {
+@@ -4329,6 +4364,105 @@ mod tests {
          }));
      }
  
@@ -182,8 +195,30 @@ index 1abf94a3..d9a24390 100644
 +        }));
 +        executor.advance_clock(PROJECTION_MOUSE_LEASE);
 +        v.run_until_parked();
-+        v.update(|_, cx| view.input.update(cx, |state, _| {
++        v.update(|_, cx| view.input.update(cx, |state, cx| {
 +            assert!(!state.projection_mouse_hold);
++            assert_eq!(shown(state), state.value().as_str());
++            // A drag that ends outside the input reaches only the window handler.
++            state.move_to(0, None, cx);
++            state.refresh_projection();
++            assert!(!shown(state).contains("**"));
++        }));
++        v.run_until_parked();
++        v.update(|_, cx| view.input.update(cx, |state, cx| {
++            state.selecting = true;
++            state.projection_mouse_hold = true;
++            state.move_to(9, None, cx);
++        }));
++        v.simulate_mouse_up(point(px(-50.), px(-50.)), MouseButton::Left, Default::default());
++        v.update(|_, cx| view.input.update(cx, |state, _| {
++            assert!(!state.selecting);
++            assert!(state.projection_mouse_hold);
++            assert!(!shown(state).contains("**"));
++        }));
++        executor.advance_clock(PROJECTION_MOUSE_LEASE);
++        v.run_until_parked();
++        v.update(|_, cx| view.input.update(cx, |state, _| {
++            assert!(!state.projection_mouse_hold, "an outside release must not keep the lease");
 +            assert_eq!(shown(state), state.value().as_str());
 +        }));
 +    }

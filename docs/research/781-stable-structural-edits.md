@@ -79,7 +79,9 @@ Patch 0052 (#978) ends the lease once the multi-click window (500 ms) passes
 after the last release with no new press. A settled click then reveals source,
 such as a heading's `#`, like a keyboard move. A further press within the window
 cancels the pending release, so double and triple clicks still hit the geometry
-the first press saw.
+the first press saw. A release outside the input arms the same timer. With a
+system multi-click interval above 500 ms, a slow second press can land on the
+revealed geometry and select a neighbouring word.
 
 The gpui-kit gesture regression checks release preserves projected text and epoch,
 then uses keyboard movement as a positive control for deferred provider adoption.
