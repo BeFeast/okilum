@@ -142,7 +142,9 @@ pub(crate) fn purge(
         if !root.exists() {
             continue;
         }
-        if vaults.iter().any(|vault| vault.starts_with(root)) {
+        // Records can be lost (an earlier purge, a reset state dir), so a
+        // root that holds notes is kept even when no record names it.
+        if vaults.iter().any(|vault| vault.starts_with(root)) || holds_user_notes(root) {
             report.kept_holding_vault.push(root.clone());
             continue;
         }
@@ -158,6 +160,30 @@ pub(crate) fn purge(
         }
     }
     report
+}
+
+/// App directories hold JSON, logs and index files, never notes; Markdown or
+/// an Obsidian folder inside one means a user put their vault there.
+fn holds_user_notes(root: &Path) -> bool {
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            let name = entry.file_name();
+            if name == ".obsidian" {
+                return true;
+            }
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                stack.push(path);
+            } else if path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown"))
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn search_sessions(temp: &Path) -> Vec<PathBuf> {
@@ -321,12 +347,15 @@ mod tests {
             "only drafts that differ from disk are exported"
         );
         assert!(report.failed.is_empty(), "{report:?}");
-        // A second run finds nothing left and changes nothing.
+        // A second run has lost the vault records with the state dir, yet
+        // still keeps the root holding notes and changes nothing else.
         let again = purge(&roots, Some(&state), &temp, &documents);
         assert!(
             again.removed.is_empty() && again.exported_drafts.is_empty(),
             "{again:?}"
         );
+        assert_eq!(again.kept_holding_vault, vec![base.join("cache/okilum")]);
+        assert!(inner_vault.join("note.md").exists());
     }
 
     #[test]
@@ -472,10 +501,11 @@ mod tests {
             }
         }
         found.sort();
-        let expected: Vec<(String, usize)> = BASE_DIRECTORY_SITES
+        let mut expected: Vec<(String, usize)> = BASE_DIRECTORY_SITES
             .iter()
             .map(|(path, count)| ((*path).to_owned(), *count))
             .collect();
+        expected.sort();
         assert_eq!(
             found, expected,
             "update docs/uninstall.md, roots() and this list"

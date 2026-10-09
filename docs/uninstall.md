@@ -23,7 +23,8 @@ and to `app_footprint::roots()` (or the OS-specific removal) before updating it.
 - **Vault guard:** vault roots recorded in `update-session.json` (`recent_roots`,
   `quick_roots`, `last_documents`) and `reader-ui.json` (`vaults`,
   `vault_colors`) are read first, with Windows `\\?\` / `\\?\UNC\` prefixes
-  stripped. A root that contains one of them is reported and kept.
+  stripped. A root that contains one of them, or any Markdown file or `.obsidian`
+  folder even without a record, is reported and kept.
 - **Unsaved drafts:** `<state>/editor-drafts/*.json` whose `text` differs from the
   file on disk, or whose file is gone, are exported to
   `Documents/Okilum unsaved drafts/` before the state is removed. Drafts equal to
