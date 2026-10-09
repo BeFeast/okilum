@@ -71,6 +71,13 @@ impl Reader {
             }
         };
         let reader = cx.weak_entity();
+        let now = reader_timeline::now_secs();
+        let rels: Vec<PathBuf> = listing
+            .versions
+            .iter()
+            .map(|v| v.note.strip_prefix(&root).unwrap_or(&v.note).to_path_buf())
+            .collect();
+        let ambiguous = reader_recovery_rows::ambiguous_titles(rels.iter().map(PathBuf::as_path));
         window.open_dialog(cx, move |dialog, _, _| {
             let reader = reader.clone(); let root = root.clone();
             dialog.title(if drafts_only { "Recover notes" } else { "Note history" }).width(px(760.))
@@ -81,10 +88,12 @@ impl Reader {
                 .child(v_flex().id("source-history-list").gap_2().max_h(px(360.)).overflow_y_scroll()
                     .children(listing.versions.iter().enumerate().map(|(index, version)| {
                         let version = version.clone(); let reader = reader.clone(); let root = root.clone();
-                        let date = time::OffsetDateTime::from_unix_timestamp((version.created / 1_000_000) as i64).map(|d| d.to_string()).unwrap_or_default();
-                        let name = version.note.strip_prefix(&root).unwrap_or(&version.note).display();
+                        let rel = &rels[index];
+                        let age = reader_timeline::age_at(version.created, now);
+                        let saved = reader_timeline::date(version.created);
                         Button::new(("history-version", index))
-                            .label(format!("{name} · {} · {date}{}", version.label, if version.protected { " · protected" } else { "" }))
+                            .label(reader_recovery_rows::row_label(rel, &version.label, &age, ambiguous.contains(&reader_recovery_rows::title(rel))))
+                            .tooltip(reader_recovery_rows::row_details(rel, &version.label, &saved, version.protected))
                             .on_click(move |_, window, cx| {
                                 window.close_dialog(cx);
                                 let _ = reader.update(cx, |r, cx| r.preview_source_version(version.clone(), root.clone(), drafts_only, window, cx));
