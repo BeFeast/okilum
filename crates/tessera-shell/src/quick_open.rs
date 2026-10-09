@@ -169,11 +169,50 @@ fn without_repeated_title(mut snippet: PlainSnippet, title: &str) -> PlainSnippe
     snippet
 }
 
+/// A hit whose only match is the file name while the displayed title (the first
+/// H1) differs from it would look unrelated. Say where the word was found, in
+/// the same quiet style as "Link target: …" (#921). Nothing is added when the
+/// title, the folder, the body, a property or a hidden link already explains it.
+fn file_name_context(
+    path: &str,
+    title: &str,
+    snippet: &PlainSnippet,
+    query: &str,
+) -> Option<tessera_core::search_snippet::MatchContext> {
+    const PREFIX: &str = "File name: ";
+    if !snippet.highlights.is_empty()
+        || snippet.hidden_match.is_some()
+        || snippet.property_match.is_some()
+    {
+        return None;
+    }
+    let name = Vault::title_of(path);
+    if name == title
+        || !label_matches(title, query).is_empty()
+        || !label_matches(&result_folder(path), query).is_empty()
+    {
+        return None;
+    }
+    let found = label_matches(&name, query);
+    if found.is_empty() {
+        return None;
+    }
+    Some(tessera_core::search_snippet::MatchContext {
+        text: format!("{PREFIX}{name}"),
+        highlights: found
+            .into_iter()
+            .map(|range| range.start + PREFIX.len()..range.end + PREFIX.len())
+            .collect(),
+        ..Default::default()
+    })
+}
+
 fn result_snippet(
     root: &Path,
     titles: &HashMap<String, String>,
     vault: &Vault,
     hit: &SearchHit,
+    query: &str,
 ) -> PlainSnippet {
     let mut snippet = hit
         .display_snippet
@@ -217,7 +256,9 @@ fn result_snippet(
             }
         });
     }
-    without_repeated_title(snippet, &hit.title)
+    let mut snippet = without_repeated_title(snippet, &hit.title);
+    snippet.name_match = file_name_context(&hit.path, &hit.title, &snippet, query);
+    snippet
 }
 
 /// A one-line preview must reach the match before the trailing ellipsis.
@@ -248,6 +289,7 @@ fn visible_snippet(snippet: &PlainSnippet) -> PlainSnippet {
             .collect(),
         hidden_match: snippet.hidden_match.clone(),
         property_match: snippet.property_match.clone(),
+        name_match: snippet.name_match.clone(),
     }
 }
 
@@ -498,7 +540,7 @@ impl Reader {
                 }
                 let snippets = rows
                     .iter()
-                    .map(|hit| result_snippet(&title_root, &titles, &vault, hit))
+                    .map(|hit| result_snippet(&title_root, &titles, &vault, hit, &query))
                     .collect();
                 (rows, snippets, message)
             })
@@ -682,7 +724,8 @@ impl Reader {
                                     full_text
                                         && (!s.text.is_empty()
                                             || s.hidden_match.is_some()
-                                            || s.property_match.is_some())
+                                            || s.property_match.is_some()
+                                            || s.name_match.is_some())
                                 }),
                                 |row, snippet| {
                                     let snippet = visible_snippet(snippet);
@@ -709,6 +752,7 @@ impl Reader {
                                     for reason in [
                                         snippet.property_match.as_ref(),
                                         snippet.hidden_match.as_ref(),
+                                        snippet.name_match.as_ref(),
                                     ]
                                     .into_iter()
                                     .flatten()
@@ -880,6 +924,52 @@ mod tests {
         assert_eq!(label_matches("Billing", "title:billing"), vec![0..7]);
         assert!(label_matches(text, "billing OR other").is_empty());
         assert!(label_matches(text, "-billing").is_empty());
+    }
+
+    #[test]
+    fn a_file_name_only_hit_says_where_the_word_was_found() {
+        let none = PlainSnippet::default();
+        let found = file_name_context("Ideas/Zebrafox ideas.md", "Ideas", &none, "zebrafox")
+            .expect("the H1 hides a file-name match");
+        assert_eq!(found.text, "File name: Zebrafox ideas");
+        assert_eq!(
+            found
+                .highlights
+                .iter()
+                .map(|r| &found.text[r.clone()])
+                .collect::<Vec<_>>(),
+            vec!["Zebrafox"]
+        );
+        // Unicode names are whole-word matched like the other labels.
+        let russian = file_name_context("Дом/Зебра идеи.md", "Идеи", &none, "зебра").unwrap();
+        assert_eq!(&russian.text[russian.highlights[0].clone()], "Зебра");
+    }
+
+    #[test]
+    fn a_file_name_reason_is_added_only_when_nothing_else_explains_the_hit() {
+        let none = PlainSnippet::default();
+        let path = "Ideas/Zebrafox ideas.md";
+        // The title is the file name: its own highlight already explains it.
+        assert!(file_name_context(path, "Zebrafox ideas", &none, "zebrafox").is_none());
+        // The word is in the displayed title or in the folder breadcrumb.
+        assert!(file_name_context(path, "Zebrafox plan", &none, "zebrafox").is_none());
+        assert!(file_name_context("Zebrafox/Ideas.md", "Plan", &none, "zebrafox").is_none());
+        // A body match, a hidden link or a property already gives a reason line.
+        let mut body = PlainSnippet {
+            text: "a zebrafox".into(),
+            highlights: std::iter::once(2..10).collect(),
+            ..Default::default()
+        };
+        assert!(file_name_context(path, "Ideas", &body, "zebrafox").is_none());
+        body.highlights.clear();
+        body.hidden_match = Some(Default::default());
+        assert!(file_name_context(path, "Ideas", &body, "zebrafox").is_none());
+        body.hidden_match = None;
+        body.property_match = Some(Default::default());
+        assert!(file_name_context(path, "Ideas", &body, "zebrafox").is_none());
+        // The word is not in the file name, and advanced syntax is left alone.
+        assert!(file_name_context(path, "Ideas", &none, "unrelated").is_none());
+        assert!(file_name_context(path, "Ideas", &none, "zebrafox AND ideas").is_none());
     }
 
     #[test]
