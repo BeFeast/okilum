@@ -96,13 +96,35 @@ impl Selection {
     /// the recorded digest. Call it right before the spawn and again right after.
     pub fn verify_file(&self, state: &Path) -> Result<PathBuf> {
         let path = self.resolve(state)?;
-        let metadata = std::fs::symlink_metadata(&path)
-            .with_context(|| format!("runtime executable {} is missing", path.display()))?;
+        // Open without following a link, then judge and hash the same open file, so
+        // a swap after the check cannot change what was verified.
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            options.custom_flags(0x0020_0000); // FILE_FLAG_OPEN_REPARSE_POINT
+        }
+        let mut file = match options.open(&path) {
+            Ok(file) => file,
+            #[cfg(unix)]
+            Err(e) if e.raw_os_error() == Some(libc::ELOOP) => {
+                anyhow::bail!("runtime executable must be a regular file, not a link")
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                anyhow::bail!("runtime executable {} is missing", path.display())
+            }
+            Err(e) => return Err(e.into()),
+        };
         ensure!(
-            metadata.is_file(),
+            file.metadata()?.is_file(),
             "runtime executable must be a regular file, not a link"
         );
-        let mut file = std::fs::File::open(&path)?;
         let mut hasher = Sha256::new();
         let mut buffer = vec![0u8; 1 << 16];
         loop {
