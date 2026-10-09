@@ -69,6 +69,13 @@ location / { proxy_pass http://127.0.0.1:8080; proxy_set_header Host $http_host;
     (compose/'compose.override.yml').write_text(json.dumps(override))
     class MeasuredDeployment(restart.Deployment):
         outage_start = None
+        def run(self, args):
+            try:
+                return super().run(args)
+            except Exception:
+                # Fixture commands contain only paths/IDs, never runtime credentials.
+                report['failed_command'] = args
+                raise
         def ordered_start(self):
             if self.outage_start is None:
                 self.outage_start = time.monotonic()
@@ -159,6 +166,10 @@ location / { proxy_pass http://127.0.0.1:8080; proxy_set_header Host $http_host;
                 stop.set()
                 monitor.join(timeout=10)
         report['status'] = 'PASS'
+    except BaseException as error:
+        report['status'] = 'FAIL'
+        report['error'] = type(error).__name__ + ': ' + str(error)
+        raise
     finally:
         (evidence/'summary.json').write_text(json.dumps(report, indent=2)+'\n')
         # Only the disposable fixture project. Never called against a live project.
