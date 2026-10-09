@@ -1,7 +1,7 @@
 //! Owned Windows process tree. No PID-based kill or shell launch. Not wired into
 //! a shipped supervisor until signature, state ownership and IPC gates are met.
-use super::Launch;
-use anyhow::{ensure, Result};
+use super::{ipc::Status, runtime::OwnedTree, Launch};
+use anyhow::{ensure, Context, Result};
 use std::{
     mem::size_of,
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
@@ -59,6 +59,45 @@ pub struct JobChild {
     // Keep process objects alive so their IDs cannot be reused between capture
     // and terminal completion. Never use these IDs as termination targets.
     descendants: Vec<OwnedHandle>,
+}
+
+/// The supervisor's `OwnedTree`: the captured Job Object. Stopped is reported only
+/// after `stop_until` and an independent `running()` both certify the root, every
+/// captured descendant and the job accounting. Any stop that cannot be certified
+/// inside the budget is Stopping, which never permits unregister or removal.
+pub struct JobTree {
+    child: JobChild,
+    budget: Duration,
+}
+impl JobTree {
+    /// `budget` bounds one Stop; it should sit inside the exchange deadline.
+    pub fn new(child: JobChild, budget: Duration) -> Self {
+        Self { child, budget }
+    }
+}
+impl OwnedTree for JobTree {
+    fn status(&mut self) -> Result<Status> {
+        Ok(if self.child.running()? {
+            Status::Running
+        } else {
+            Status::Stopped
+        })
+    }
+    fn stop(&mut self) -> Result<Status> {
+        let deadline = Instant::now()
+            .checked_add(self.budget)
+            .context("invalid owned process stop budget")?;
+        match self.child.stop_until(deadline) {
+            Ok(()) if self.child.running()? => Ok(Status::Stopping),
+            Ok(()) => Ok(Status::Stopped),
+            // Expired budget or a failed step: still alive means a timeout, not
+            // an error; anything unprovable stays an error and never reads as exit.
+            Err(error) => match self.child.running() {
+                Ok(true) => Ok(Status::Stopping),
+                _ => Err(error),
+            },
+        }
+    }
 }
 
 const MAX_JOB_PROCESSES: usize = 256;
@@ -478,6 +517,49 @@ mod tests {
             "positive stop did not reap descendant"
         );
         eprintln!("owned job: expired budget preserved live tree; valid budget reaped same tree");
+        Ok(())
+    }
+
+    #[test]
+    fn native_job_tree_reports_stopped_only_for_the_whole_tree_and_stopping_on_timeout(
+    ) -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let (job, descendant) = live_fixture(root.path(), false)?;
+        let mut tree = JobTree::new(job, Duration::ZERO);
+        ensure!(
+            tree.status()? == Status::Running,
+            "live tree must be Running"
+        );
+        // A zero budget refuses termination: Stopping, and nothing was touched.
+        ensure!(tree.stop()? == Status::Stopping, "timeout must be Stopping");
+        ensure!(
+            tree.status()? == Status::Running,
+            "refused stop changed the tree"
+        );
+        ensure!(
+            unsafe { WaitForSingleObject(raw(&descendant), 0) } == WAIT_TIMEOUT,
+            "refused stop terminated the descendant"
+        );
+        // Positive control: the same tree is stopped and certified with a real budget.
+        tree.budget = Duration::from_secs(10);
+        ensure!(
+            tree.stop()? == Status::Stopped,
+            "valid budget must stop the tree"
+        );
+        ensure!(
+            tree.status()? == Status::Stopped,
+            "stopped tree still running"
+        );
+        ensure!(
+            unsafe { WaitForSingleObject(raw(&descendant), 0) } == WAIT_OBJECT_0,
+            "stopped tree left the descendant alive"
+        );
+        // Repeating Stop on an exited tree is still Stopped (idempotent retry).
+        ensure!(
+            tree.stop()? == Status::Stopped,
+            "repeat stop must stay Stopped"
+        );
+        eprintln!("job tree: zero budget Stopping with tree intact; valid budget Stopped and reaped; repeat Stopped");
         Ok(())
     }
 
