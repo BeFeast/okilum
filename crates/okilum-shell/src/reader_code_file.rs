@@ -240,7 +240,9 @@ impl Render for CodePreview {
                 )
             }
             State::Content(input) => view.child(
+                // The element applies its own flag to the state on every render.
                 Editor::new(input)
+                    .readonly(true)
                     .appearance(false)
                     .font_family(crate::source_presentation::CODE_FONT)
                     .text_size(text_size(cx))
