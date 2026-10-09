@@ -5806,7 +5806,8 @@ fn toolbar_visible_actions(available: f32, title: f32, total: usize) -> usize {
 
 /// #774: the accent line height and the space the name dot takes.
 const VAULT_ACCENT_LINE: f32 = 2.;
-const VAULT_DOT_SLOT: f32 = 12.;
+/// 8 px dot + 4 px margin + the header row's 4 px gap.
+const VAULT_DOT_SLOT: f32 = 16.;
 
 /// «None» plus the presets, current one checked. Shared by the vault name
 /// menu; Settings uses swatches with the same store call.
@@ -7896,6 +7897,11 @@ mod document_link_landing_tests {
         assert_eq!(
             title_after.origin.y, title_before.origin.y,
             "the line is drawn over the header, not above it"
+        );
+        assert_eq!(
+            title_after.right(),
+            title_before.right(),
+            "the dot takes exactly its slot; header actions do not shift"
         );
         assert!(
             unrelated.debug_bounds("vault-accent-line").is_none(),

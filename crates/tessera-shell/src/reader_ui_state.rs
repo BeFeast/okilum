@@ -332,7 +332,12 @@ pub(crate) fn vault_color(root: &Path, cx: &App) -> Option<brand::VaultColor> {
 
 /// Every window of this vault repaints with the new colour at once.
 pub(crate) fn set_vault_color(root: &Path, color: Option<brand::VaultColor>, cx: &mut App) {
-    if cx.try_global::<Store>().is_none() || vault_color(root, cx) == color {
+    // Compare stored keys: «None» must also clear a preset this build
+    // does not know (written by a newer one), which reads back as `None`.
+    let Some(state) = cx.try_global::<Store>() else {
+        return;
+    };
+    if state.saved.vault_colors.get(root).map(String::as_str) == color.map(brand::VaultColor::key) {
         return;
     }
     let state = cx.global_mut::<Store>();
@@ -1099,6 +1104,10 @@ mod tests {
                 None,
                 "unknown preset shows nothing"
             );
+            // «None» still clears a preset this build does not know.
+            set_vault_color(&future, None, cx);
+            flush(cx);
+            assert!(!read(&path).unwrap().vault_colors.contains_key(&future));
             set_vault_color(&root, None, cx);
             flush(cx);
             assert!(!read(&path).unwrap().vault_colors.contains_key(&root));
