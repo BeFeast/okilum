@@ -131,8 +131,15 @@ impl Tree {
                 .or_default()
                 .push(entry.clone());
         }
-        if !rejected.is_empty() {
-            eprintln!("File tree ignored entries with invalid vault paths: {rejected:?}");
+        // Refresh runs per inventory change; keep one bounded line per refresh.
+        if let Some(examples) = rejected
+            .get(..rejected.len().min(3))
+            .filter(|e| !e.is_empty())
+        {
+            eprintln!(
+                "File tree ignored {} entries with invalid vault paths, e.g. {examples:?}",
+                rejected.len()
+            );
         }
         // A progressive inventory can contain only one known note. Its path
         // supplies ancestry, but never implies that unknown siblings are absent.
