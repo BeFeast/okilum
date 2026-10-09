@@ -204,6 +204,11 @@ impl Reader {
             .is_some_and(|editing| editing.live_preview.enabled)
     }
 
+    /// The source editor's input, while editing.
+    pub(super) fn source_input(&self) -> Option<Entity<EditorState>> {
+        self.editing.as_ref().map(|editing| editing.input.clone())
+    }
+
     pub(super) fn source_live_preview(&self) -> bool {
         self.editing.as_ref().is_some_and(|editing| {
             editing.live_preview.enabled || editing.live_preview.restore_after_find
@@ -361,15 +366,21 @@ impl Reader {
         let clipboard = cx
             .try_global::<platform::ManagedClipboard>()
             .map(|p| p.0.clone());
+        // Code files keep their grammar, line numbers and wrap preference (#998).
+        let code = plain_file
+            .then(|| crate::reader_code_file::language(self.selected_file()))
+            .flatten();
+        let language = code.unwrap_or(if plain_file { "text" } else { "markdown" });
+        let wrap = code.is_none() || reader_ui_state::code_soft_wrap(cx);
         let input = cx.new(|cx| {
             let mut input = EditorState::new(window, cx)
                 .document_newlines(true)
-                .language(if plain_file { "text" } else { "markdown" })
-                .line_number(false)
+                .language(language)
+                .line_number(code.is_some())
                 .folding(false)
                 .searchable(true)
                 .replaceable(false)
-                .soft_wrap(true)
+                .soft_wrap(wrap)
                 .wrapping_indent(WrappingIndent::None);
             input.set_search_query("", !reader_ui_state::find_case_sensitive(cx), cx);
             input.set_projection_provider(Some(Arc::new(ExactSource)), cx);
@@ -383,7 +394,7 @@ impl Reader {
         });
         let current_input = cx.new(|cx| {
             let mut input = EditorState::new(window, cx)
-                .language(if plain_file { "text" } else { "markdown" })
+                .language(language)
                 .line_number(false)
                 .soft_wrap(true);
             input.set_readonly(true, cx);

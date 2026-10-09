@@ -135,6 +135,8 @@ pub(crate) struct FilePreview {
     /// The inline reader for a PDF (#477); replaces the file card.
     pub pdf: Option<Entity<reader_pdf::PdfViewer>>,
     pub text: Option<Entity<reader_plain_text::PlainTextPreview>>,
+    /// Source code with syntax highlighting (#998).
+    pub code: Option<Entity<reader_code_file::CodePreview>>,
     pub table: Option<Entity<reader_delimited::TablePreview>>,
     #[cfg(any(target_os = "macos", all(test, unix)))]
     pub thumbnail: Option<Entity<reader_thumbnail::Thumbnail>>,
@@ -162,6 +164,7 @@ impl FilePreview {
             live_identity: Arc::new(()),
             _live: None,
             table: None,
+            code: None,
             rel: rel.into(),
             path,
             details: live::metadata_label(&ext, &meta),
@@ -341,6 +344,11 @@ impl Reader {
                         Some(cx.new(|cx| {
                             reader_delimited::TablePreview::new(preview.path.clone(), cx)
                         }));
+                } else if reader_code_file::eligible(rel) {
+                    let (root, path) = (self.vault_root.clone(), preview.path.clone());
+                    preview.code = Some(cx.new(|cx| {
+                        reader_code_file::CodePreview::new(root, rel.into(), path, window, cx)
+                    }));
                 } else if reader_plain_text::eligible(rel) {
                     preview.text = Some(cx.new(|cx| {
                         reader_plain_text::PlainTextPreview::new(
@@ -355,6 +363,7 @@ impl Reader {
                 if preview.pdf.is_none()
                     && preview.log.is_none()
                     && preview.text.is_none()
+                    && preview.code.is_none()
                     && preview.table.is_none()
                     && reader_thumbnail::eligible(rel)
                 {
@@ -431,6 +440,15 @@ impl Reader {
                 .size_full()
                 .child(self.render_document_header(window, cx))
                 .child(text.clone())
+                .into_any_element();
+        }
+        if let Some(code) = &preview.code {
+            return v_flex()
+                .id("reader-file-preview")
+                .key_context("ReaderFile")
+                .size_full()
+                .child(self.render_document_header(window, cx))
+                .child(code.clone())
                 .into_any_element();
         }
         if okilum_core::excalidraw::is_drawing(&preview.rel) {
