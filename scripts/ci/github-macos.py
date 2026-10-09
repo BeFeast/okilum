@@ -95,13 +95,24 @@ def hosted_request(api, path, *, sleep=time.sleep):
             sleep(5 * (2 ** attempt))
 
 
+# GitHub's hosted macOS pool is small and queues for well over an hour when
+# several PRs land at once; waiting is not a failure (2026-10-09). The
+# Forgejo job timeout in ci.yml must exceed QUEUE_TIMEOUT + RUN_TIMEOUT.
+QUEUE_TIMEOUT = 3 * 3600
+RUN_TIMEOUT = 2400
+PROGRESS_EVERY = 300
+
+
 def wait_for_run(api, branch, sha, *, clock=time.monotonic, sleep=time.sleep,
-                 queue_timeout=1800, run_timeout=2400, workflow=WORKFLOW,
-                 job_name="macos", build_step=BUILD_STEP):
+                 queue_timeout=QUEUE_TIMEOUT, run_timeout=RUN_TIMEOUT, workflow=WORKFLOW,
+                 job_name="macos", build_step=BUILD_STEP, log=print):
     query = urllib.parse.urlencode({"branch": branch, "head_sha": sha,
                                     "event": "push", "per_page": 100})
-    queued_until = clock() + queue_timeout
+    started = clock()
+    queued_until = started + queue_timeout
     running_until = None
+    never_started = False
+    next_progress = started + PROGRESS_EVERY
     while True:
         runs = hosted_request(api, f"actions/runs?{query}", sleep=sleep)["workflow_runs"]
         matches = [run for run in runs if run["head_sha"] == sha
@@ -126,9 +137,18 @@ def wait_for_run(api, branch, sha, *, clock=time.monotonic, sleep=time.sleep,
                 ):
                     return "failure", f"GitHub did not execute the native gate: {url}"
                 return "success", f"GitHub native gate passed: {url}"
-            if run["status"] == "in_progress" and running_until is None:
-                running_until = clock() + run_timeout
+            if run["status"] == "in_progress":
+                never_started = False
+                if running_until is None:
+                    running_until = clock() + run_timeout
+        if running_until is None and clock() >= next_progress:
+            next_progress = clock() + PROGRESS_EVERY
+            where = f": {matches[0]['html_url']}" if matches else ""
+            log(f"Waiting for a GitHub macOS runner, queued {int(clock() - started) // 60} min{where}", flush=True)
         if running_until is not None and clock() >= running_until:
+            if never_started:
+                return "failure", (f"GitHub macOS runner did not start within {queue_timeout // 60} min "
+                                   f"and the queued run could not be cancelled: {url}")
             # Do not turn a hanging test into a successful retry on another host.
             try:
                 api.request(f"actions/runs/{run['id']}/cancel", "POST")
@@ -144,6 +164,7 @@ def wait_for_run(api, branch, sha, *, clock=time.monotonic, sleep=time.sleep,
                     # Keep observing this exact run within one execution budget;
                     # never turn a live run into an unavailable/fallback result.
                     running_until = clock() + run_timeout
+                    never_started = matches[0]["status"] == "queued"
                     sleep(20)
                     continue
             raise Unavailable(f"GitHub did not start the gate within {queue_timeout} seconds")

@@ -1,4 +1,5 @@
 import copy
+import re
 import http.client
 import socket
 from unittest.mock import MagicMock, patch
@@ -122,6 +123,40 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(result, 'success')
         self.assertEqual(clock(), 600)
         self.assertFalse(any(method == 'POST' for _, method in api.calls))
+
+    def test_long_github_queue_is_waiting_not_failure(self):
+        # 2026-10-09: GitHub kept macOS jobs queued for over an hour; the old
+        # 30 min budget turned that into a red ci / check without any step.
+        clock = Clock()
+        lines = []
+        class LongQueue(API):
+            def request(self, path, method='GET', data=None):
+                self.runs = [dict(RUN, status='queued', conclusion=None)] if clock() < 2 * 3600 else [RUN]
+                return super().request(path, method, data)
+        api = LongQueue()
+        result, _ = bridge.wait_for_run(api, BRANCH, SHA, clock=clock, sleep=clock.sleep,
+                                       log=lambda line, **_: lines.append(line))
+        self.assertEqual(result, 'success')
+        self.assertFalse(any(method == 'POST' for _, method in api.calls))
+        self.assertTrue(any('Waiting for a GitHub macOS runner, queued 5 min' in line for line in lines))
+        self.assertGreaterEqual(len(lines), 20)
+        # The Forgejo job budget covers the full queue plus execution budget.
+        workflow = (Path(__file__).resolve().parents[2] / '.forgejo/workflows/ci.yml').read_text()
+        minutes = int(re.search(r'macos-github:.*?timeout-minutes: (\d+)', workflow, re.S)[1])
+        self.assertGreater(minutes * 60, bridge.QUEUE_TIMEOUT + bridge.RUN_TIMEOUT)
+
+    def test_never_started_run_says_so(self):
+        clock = Clock()
+        class Stuck(API):
+            def request(self, path, method='GET', data=None):
+                if method == 'POST':
+                    raise bridge.Unavailable('cancel refused')
+                return super().request(path, method, data)
+        result, message = bridge.wait_for_run(Stuck(runs=[dict(RUN, status='queued', conclusion=None)]),
+                                              BRANCH, SHA, clock=clock, sleep=clock.sleep,
+                                              queue_timeout=30, run_timeout=60, log=lambda *a, **k: None)
+        self.assertEqual(result, 'failure')
+        self.assertIn('did not start', message)
 
     def test_queue_cancel_refusal_waits_for_exact_run_result(self):
         for conclusion, expected in [('success', 'success'), ('failure', 'failure')]:

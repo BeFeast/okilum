@@ -33,6 +33,17 @@ class NativeGates(unittest.TestCase):
         # 09:00: local finished, but the repository variable now says hosted.
         self.assertTrue(gate('macos', MACOS_LANE='hosted'))
 
+    def test_draft_pr_skips_native_lanes_and_never_passes(self):
+        # Draft (WIP) PRs skip both macOS lanes; the required gate stays red.
+        self.assertFalse(gate('macos', DRAFT='true', LOCAL_RESULT='skipped'))
+        self.assertFalse(gate('macos', DRAFT='true'))
+        # Documentation-only drafts need no native runner at all.
+        self.assertTrue(gate('macos', DRAFT='true', MACOS_REQUIRED='false'))
+        # Ready PRs are unaffected.
+        self.assertTrue(gate('macos', DRAFT='false'))
+        workflow_if = re.findall(r'!github\.event\.pull_request\.draft', WORKFLOW)
+        self.assertEqual(len(workflow_if), 2, 'both native lanes skip draft PRs')
+
     def test_exactly_one_lane_must_execute_successfully(self):
         self.assertFalse(gate('macos', LOCAL_RESULT='skipped'))
         self.assertFalse(gate('macos', HOSTED_JOB='success', HOSTED_RESULT='success'))
