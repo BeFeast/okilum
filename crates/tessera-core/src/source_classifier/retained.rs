@@ -316,15 +316,31 @@ impl RetainedPresentation {
         {
             return None;
         }
+        // Only the document start may begin with a BOM; elsewhere it is text.
+        if updated.start != 0 && fragment.starts_with('\u{feff}') {
+            return None;
+        }
+        // The line above the run is outside the fragment. A paragraph there
+        // can take a setext underline or block a list that cannot interrupt
+        // it; only a blank line or an ATX heading is a proven boundary.
+        let above = new[..updated.start]
+            .strip_suffix('\n')
+            .map(|before| before.strip_suffix('\r').unwrap_or(before))
+            .map(|before| &before[before.rfind('\n').map_or(0, |i| i + 1)..]);
+        if above.is_some_and(|line| !line.trim().is_empty() && !atx_heading(line)) {
+            return None;
+        }
         let local = Snapshot::new(current.document(), current.generation(), fragment);
         // Oversized but context-local edits keep only their dirty run raw until
         // async adoption. Do not discard the already validated outer blocks.
         let classified = (dirty.len() <= LOCAL_BYTES && fragment.len() <= LOCAL_BYTES)
             .then(|| super::classify_with(&local, &self.references));
-        // Indented, tabbed and quote lines can attach to a container. Accept
-        // them only inside a container of this parse, which includes every
-        // container the run borders. A container reaching the run's end must
-        // not continue lazily into an adjacent line outside it.
+        // Indented, tabbed and quote lines can attach to a container, and a
+        // fence or HTML opener ends only with its container. Accept them only
+        // inside a container of this parse, which includes every container the
+        // run borders; old-coordinate spans may no longer hold after the edit.
+        // A container reaching the run's end must not continue lazily into an
+        // adjacent line outside it.
         let in_local = |at: usize| {
             classified
                 .as_ref()
@@ -332,8 +348,9 @@ impl RetainedPresentation {
         };
         let attaching = lines.iter().any(|&(at, line)| {
             let plain = line.trim_start();
-            (line.len() - plain.len() >= 4 || line.starts_with('\t') || plain.starts_with('>'))
-                && !in_spans(at)
+            (line.len() - plain.len() >= 4
+                || line.starts_with('\t')
+                || plain.starts_with(['>', '`', '~', '<']))
                 && !in_local(at)
         });
         let after = &new[updated.end..];
@@ -642,6 +659,18 @@ fn opens_list_item(line: &str) -> bool {
     rest.is_empty() || rest.starts_with([' ', '\t'])
 }
 
+/// An ATX heading line: up to three spaces, one to six `#`, then space or end.
+fn atx_heading(line: &str) -> bool {
+    let rest = line.trim_start_matches(' ');
+    let hashes = rest.bytes().take_while(|&b| b == b'#').count();
+    line.len() - rest.len() <= 3
+        && (1..=6).contains(&hashes)
+        && rest[hashes..]
+            .chars()
+            .next()
+            .is_none_or(|c| c == ' ' || c == '\t')
+}
+
 /// Line content after container prefixes: indentation, quote markers and
 /// list/task markers.
 fn container_content(line: &str) -> &str {
@@ -909,10 +938,6 @@ mod tests {
             // A paragraph after a list is reparsed with the list it borders.
             ("- a\n\nplain *p*", "- a\n\nplain *p*\nmore **m**"),
             ("- a\n\nplain *p*", "- a\n\n  plain *p*\n  more"),
-            (
-                "\u{feff}> a **b**\r\n> c",
-                "\u{feff}> a **b**\r\n> ש *x*\r\n> c",
-            ),
             // A new quote is parsed whole; a blank line ends it.
             ("plain *p*", "plain *p*\n> q **r**"),
         ] {
@@ -990,6 +1015,54 @@ mod tests {
         // Definitions change every use: only a full parse may adopt them.
         let redefined = snapshot(4, &format!("- a [l][Id]{}", tail.replace("/x", "/y")));
         assert!(retained.remap(&redefined).is_none());
+    }
+
+    #[test]
+    fn local_reparse_is_refused_or_equal_to_a_fresh_parse() {
+        // Review of #900: escaping fences/HTML and the paragraph above a run.
+        for (before, after, refused) in [
+            (
+                "> a **b**\n> c *d*\n\n**AFTER**",
+                "> a **b**\n```\n> c *d*\n\n**AFTER**",
+                true,
+            ),
+            ("- a\n- b *c*\n\nz *w*", "- a\n~~~\n- b *c*\n\nz *w*", true),
+            (
+                "> a **b**\n> c\n\nz *w*",
+                "> a **b**\n<script>\n> c\n\nz *w*",
+                true,
+            ),
+            (
+                "- a **b**\n- c\n\nz *w*",
+                "- a **b**\n<pre>\n- c\n\nz *w*",
+                true,
+            ),
+            ("Intro *t*:\n- a\n\nz", "Intro *t*:\n- \n\nz", true),
+            ("Intro *t*:\n1. a **b**", "Intro *t*:\n0. a **b**", true),
+            ("# H\n- a **b**", "# H\n- a **b**\n- c *d*", false),
+            ("> a **b**\n> c", "> a **b**\n> ```\n> x\n> ```\n> c", false),
+            // #832: a new list item next to an indented neighbor refuses.
+            ("a **b**\n\n  c *d*", "- a **b**\n\n  c *d*", true),
+            (
+                "\u{feff}> a **b**\r\n> c",
+                "\u{feff}> a **b**\r\n> ש *x*\r\n> c",
+                false,
+            ),
+        ] {
+            let old = snapshot(1, before);
+            let current = snapshot(2, after);
+            let local = RetainedPresentation::new(&classify(&old)).remap(&current);
+            assert_eq!(local.is_none(), refused, "{after:?}");
+            if let Some(local) = local {
+                let fresh = RetainedPresentation::new(&classify(&current));
+                assert_eq!(
+                    local.project(&Active::default()).unwrap().display(),
+                    fresh.project(&Active::default()).unwrap().display(),
+                    "{after:?}"
+                );
+                assert_eq!(local.styles(), fresh.styles(), "{after:?}");
+            }
+        }
     }
 
     #[test]

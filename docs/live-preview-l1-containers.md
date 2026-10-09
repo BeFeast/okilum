@@ -34,15 +34,23 @@ in the fragment. Between accepted blocks only whitespace and `>` may remain; an
 unsupported block refuses.
 
 Before parsing:
-- Outside containers, lines starting with a fence, `<` or `[` refuse.
-- Inside containers, fences and HTML end with the container and are allowed. A
-  definition-like line (`[` after container, list and task prefixes) refuses.
+- Outside known containers, lines starting with a fence, `<` or `[` refuse.
+- Inside them, a definition-like line (`[` after container, list and task
+  prefixes) refuses. Fences and HTML wait for the parse.
+- The line above the run is outside the fragment. Unless it is blank or an ATX
+  heading it could take a setext underline or block a list, so the run refuses.
+- A fragment may begin with a BOM only at the document start.
 
 After parsing:
-- Indented (4+), tabbed or `>` lines must lie inside a container of the local
-  parse or of the known contexts.
+- Indented (4+), tabbed, `>`, fence and HTML lines must lie inside a container
+  of the local parse. Old container ranges are not trusted for this: an edit can
+  move a fence to column 0, where it would run to the end of the document.
 - A container that reaches the run's end refuses when the next line is not
   blank: it could continue lazily outside the fragment.
+
+Recorded contexts may under-approximate after inline edits (for example an
+indented paragraph absorbed into a list). That is safe: widening also takes any
+container bordering the run across whitespace, and the parse decides the rest.
 
 Definitions change every use, so definition edits always need a full parse. A
 local reparse resolves only labels the full parse already resolved, with the
@@ -55,8 +63,8 @@ until the async full parse is adopted; it is never guessed.
 lazy quotes, BOM/CRLF, tabs, ru/he/niqqud/combining/emoji, unsupported siblings),
 reference forms and quiet definitions, local reparse equal to a fresh parse for
 edits in containers, and refusals for definitions, unsupported content,
-outside-container indentation and lazy absorption. The lazy and indentation
-guards were each disabled once to confirm their refusal tests fail.
+outside-container indentation, escaping fences/HTML, the paragraph above a run
+and lazy absorption. Each guard was disabled once to confirm its test fails.
 
 Native Reader acceptance for integrated L1 (Wayland, fcitx5, latency budget)
 is tracked on #868 and is not claimed by this PR.
