@@ -695,7 +695,11 @@ impl Reader {
         if !self.save_source(cx) {
             return false;
         }
-        self.ui_state.live_preview = self.source_live_preview();
+        // Document preparation can call leave_source again after the editor
+        // has already closed. That no-op must retain the last presentation.
+        if self.editing.is_some() {
+            self.ui_state.live_preview = self.source_live_preview();
+        }
         self.editing = None;
         true
     }

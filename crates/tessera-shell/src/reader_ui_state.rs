@@ -659,9 +659,6 @@ impl Reader {
         if self.editing.is_none() && !self.current_rel.is_empty() && self.file_preview.is_none() {
             self.cancel_pending_landing();
             self.toggle_source(window, cx);
-            if self.editing.is_some() && self.ui_state.live_preview {
-                self.set_live_preview(true, window, cx);
-            }
             if self.editing.is_none() {
                 if let Some(position) = self.ui_state.source_reader_position.take() {
                     // If draft recovery cannot open, preserve the preview landing

@@ -371,7 +371,17 @@ mod tests {
         });
         visual.simulate_keystrokes("escape");
         visual.run_until_parked();
-        reader.read_with(visual, |reader, _| assert!(reader.editing.is_none()));
+        reader.read_with(visual, |reader, _| {
+            assert!(reader.editing.is_none());
+            assert!(
+                reader.ui_state.live_preview,
+                "Reader retains the last editor mode"
+            );
+        });
+        reader.update_in(visual, |reader, _, cx| {
+            assert!(reader.leave_source(cx), "repeated leave is a no-op");
+            assert!(reader.ui_state.live_preview);
+        });
         let pencil = visual.debug_bounds("reader-edit").unwrap();
         visual.simulate_click(pencil.center(), Modifiers::default());
         visual.run_until_parked();
