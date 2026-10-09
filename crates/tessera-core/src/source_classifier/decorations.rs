@@ -120,18 +120,24 @@ fn quote_markers<'a>(node: &'a AstNode<'a>, context: &Context<'_>) -> Option<Vec
     let mut markers = Vec::new();
     for line in pos.start.line..=pos.end.line {
         let start = *context.lines.get(line - 1)?;
-        let offset = start + column;
-        if offset >= scope.end
-            || source.get(offset) != Some(&b'>')
-            // The first line's prefix is AST-proven (it may hold a list marker).
-            || (line != pos.start.line
-                && !source[start..offset].iter().all(|&b| b == b' ' || b == b'>'))
-        {
-            if line == pos.start.line {
-                return None;
-            }
+        // The first line's offset is AST-proven (its prefix may hold a list
+        // marker). Later lines: this quote's delimiter is the depth-th `>`
+        // after only spaces and parent delimiters, near the first column.
+        let offset = if line == pos.start.line {
+            Some(scope.start)
+        } else {
+            let prefix_end = source[start..]
+                .iter()
+                .position(|&b| b != b' ' && b != b'>')
+                .map_or(source.len(), |i| start + i);
+            (start..prefix_end)
+                .filter(|&i| source[i] == b'>')
+                .nth(depth - 1)
+                .filter(|&i| (i - start).abs_diff(column) <= 3)
+        };
+        let Some(offset) = offset.filter(|&offset| offset < scope.end) else {
             continue;
-        }
+        };
         let end = offset + 1 + usize::from(source.get(offset + 1) == Some(&b' '));
         // A delimiter joined to a combining mark cannot be replaced alone.
         if ![offset, offset + 1, end]
@@ -331,6 +337,33 @@ mod tests {
             .filter(|m| matches!(m.kind, Kind::Unordered { .. }))
             .count();
         assert_eq!(bullets, 4);
+    }
+
+    #[test]
+    fn quote_continuations_find_their_own_delimiter_near_the_first_column() {
+        // (text, expected (offset, depth) per quote marker)
+        for (text, expected) in [
+            ("> a\n > b\n", vec![(0, 1), (5, 1)]),
+            (" > a\n> b\n", vec![(1, 1), (5, 1)]),
+            (">  > a\n> > b\n", vec![(0, 1), (3, 2), (7, 1), (9, 2)]),
+            ("> > a\n>  > b\n", vec![(0, 1), (2, 2), (6, 1), (9, 2)]),
+            // Line 2's only `>` belongs to the outer quote.
+            ("> > a\n  > c\n", vec![(0, 1), (2, 2), (8, 1)]),
+            (">>a\n", vec![(0, 1), (1, 2)]),
+        ] {
+            let source = snapshot(text, 1);
+            let classified = classify(&source);
+            let got: Vec<_> = classified
+                .decorations_for(&source)
+                .unwrap()
+                .iter()
+                .filter_map(|m| match m.kind {
+                    Kind::Quote { depth } => Some((m.range.start, depth)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(got, expected, "{text:?}");
+        }
     }
 
     #[test]
