@@ -1,6 +1,7 @@
 //! Read-only delimited tables; editing and recovery stay in FileEditor.
 use super::*;
 use gpui_component::scroll::ScrollableElement as _;
+use std::cell::RefCell;
 use std::ops::Range;
 use tessera_core::delimited::{ReadLimits, Table};
 use unicode_segmentation::UnicodeSegmentation as _;
@@ -222,13 +223,43 @@ impl TablePreview {
 
 fn cell_tooltip(value: String, window: &mut Window, cx: &mut App) -> AnyView {
     let scroll = ScrollHandle::new();
-    gpui_component::tooltip::Tooltip::element(move |window, _| {
+    let rows = Rc::new(RefCell::new(None::<(f32, Vec<TooltipRow>)>));
+    gpui_component::tooltip::Tooltip::element(move |window, cx| {
         // Leave room for the tooltip's padding/margin and the window edges.
         // A retained field can be 64 KiB, so wrapping alone is insufficient:
         // keep the tooltip hoverable and let the reader scroll to its end.
         let viewport = window.viewport_size();
         let width = (f32::from(viewport.width) - 64.).clamp(1., 480.);
         let height = (f32::from(viewport.height) - 64.).clamp(1., 360.);
+        // GPUI's wrapped text loses RTL-first paragraphs (one stray glyph, the
+        // rest off-row), so each row is wrapped here and shaped as one line.
+        let family = cx.theme().font_family.clone();
+        let font_size = rems(0.875).to_pixels(window.rem_size());
+        let mut cached = rows.borrow_mut();
+        if cached.as_ref().is_none_or(|(at, _)| *at != width) {
+            let font = Font {
+                family: family.clone(),
+                ..window.text_style().font()
+            };
+            let text_system = window.text_system().clone();
+            let measure = |text: &str| {
+                let run = TextRun {
+                    len: text.len(),
+                    font: font.clone(),
+                    color: Hsla::default(),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                f32::from(text_system.layout_line(text, font_size, &[run], None).width)
+            };
+            // A pixel of slack absorbs kerning across measured segments.
+            *cached = Some((width, tooltip_rows(&value, width - 1., measure)));
+        }
+        let rows = cached
+            .as_ref()
+            .map(|(_, rows)| rows.clone())
+            .unwrap_or_default();
         div()
             .id("delimited-cell-tooltip")
             .debug_selector(|| "delimited-cell-tooltip".into())
@@ -237,16 +268,97 @@ fn cell_tooltip(value: String, window: &mut Window, cx: &mut App) -> AnyView {
             .overflow_y_scroll()
             .track_scroll(&scroll)
             .child(
-                div()
+                v_flex()
                     .id("delimited-cell-tooltip-value")
                     .debug_selector(|| "delimited-cell-tooltip-value".into())
                     .w_full()
-                    .whitespace_normal()
-                    .child(value.clone()),
+                    .font_family(family)
+                    .text_size(font_size)
+                    .children(rows.into_iter().enumerate().map(|(ix, row)| {
+                        div()
+                            .debug_selector(move || format!("delimited-cell-tooltip-row-{ix}"))
+                            .w_full()
+                            .whitespace_nowrap()
+                            .text_align(if row.rtl {
+                                TextAlign::Right
+                            } else {
+                                TextAlign::Left
+                            })
+                            // Keep blank lines one row tall.
+                            .child(if row.text.is_empty() {
+                                SharedString::from(" ")
+                            } else {
+                                row.text
+                            })
+                    })),
             )
             .vertical_scrollbar(&scroll)
     })
     .build(window, cx)
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct TooltipRow {
+    text: SharedString,
+    /// Paragraph base direction: the first strong character decides.
+    rtl: bool,
+}
+
+/// Wrap `value` into display rows no wider than `width` at UAX #14 break
+/// opportunities; an unbreakable run falls back to grapheme boundaries.
+/// Rows keep source order and every character; only the line breaks between
+/// rows and the whitespace that ends a wrapped row are not repeated.
+fn tooltip_rows(value: &str, width: f32, mut measure: impl FnMut(&str) -> f32) -> Vec<TooltipRow> {
+    let mut rows = Vec::new();
+    for paragraph in value.split('\n') {
+        let paragraph = paragraph.strip_suffix('\r').unwrap_or(paragraph);
+        let rtl = paragraph
+            .chars()
+            .find_map(|ch| match unicode_bidi::bidi_class(ch) {
+                unicode_bidi::BidiClass::R | unicode_bidi::BidiClass::AL => Some(true),
+                unicode_bidi::BidiClass::L => Some(false),
+                _ => None,
+            })
+            .unwrap_or(false);
+        let mut push = |text: &str| {
+            rows.push(TooltipRow {
+                text: text.to_owned().into(),
+                rtl,
+            })
+        };
+        if paragraph.is_empty() {
+            push("");
+            continue;
+        }
+        let (mut start, mut end, mut row_width) = (0, 0, 0.);
+        let mut previous = 0;
+        for (offset, _) in unicode_linebreak::linebreaks(paragraph) {
+            let segment = &paragraph[previous..offset];
+            // Trailing whitespace may hang past the edge, as in a paragraph.
+            let segment_width = measure(segment.trim_end());
+            if end > start && row_width + segment_width > width {
+                push(paragraph[start..end].trim_end());
+                (start, row_width) = (end, 0.);
+            }
+            if segment_width > width {
+                for (ix, grapheme) in segment.grapheme_indices(true) {
+                    let grapheme_width = measure(grapheme);
+                    let at = previous + ix;
+                    if at > start && row_width + grapheme_width > width {
+                        push(&paragraph[start..at]);
+                        (start, row_width) = (at, 0.);
+                    }
+                    row_width += grapheme_width;
+                }
+            } else {
+                row_width += measure(segment);
+            }
+            end = offset;
+            previous = offset;
+        }
+        push(paragraph[start..].trim_end());
+    }
+    rows
 }
 
 fn visible(value: &str) -> String {
@@ -425,6 +537,135 @@ mod tests {
         assert!(!eligible("note.md"));
     }
 
+    #[test]
+    fn delimited_tooltip_rows_wrap_at_word_breaks_and_keep_every_character() {
+        // Fake metrics: every character is 10 px wide.
+        let measure = |text: &str| text.chars().count() as f32 * 10.;
+        let value = "שלום עולם ".repeat(20) + "\r\n\nabc שלום 123\n" + &"q".repeat(95);
+        let rows = tooltip_rows(&value, 200., measure);
+        for row in &rows {
+            assert!(measure(&row.text) <= 200., "{row:?}");
+        }
+        let hebrew: Vec<_> = rows.iter().take_while(|row| row.rtl).collect();
+        assert!(hebrew.len() > 1);
+        for row in &hebrew {
+            // Break only between words: no Hebrew word is split across rows.
+            assert!(
+                row.text
+                    .split(' ')
+                    .all(|word| word == "שלום" || word == "עולם"),
+                "{row:?}"
+            );
+        }
+        let blank = rows.iter().position(|row| row.text.is_empty()).unwrap();
+        assert_eq!(
+            rows[blank + 1],
+            TooltipRow {
+                text: "abc שלום 123".into(),
+                rtl: false
+            }
+        );
+        // An unbroken token falls back to grapheme boundaries.
+        let tail: String = rows[blank + 2..]
+            .iter()
+            .map(|row| row.text.as_ref())
+            .collect();
+        assert_eq!(tail, "q".repeat(95));
+        assert_eq!(rows[blank + 2].text.len(), 20);
+        let words: Vec<&str> = rows[..blank + 2]
+            .iter()
+            .flat_map(|row| row.text.split_whitespace())
+            .collect();
+        let expected: Vec<&str> = value
+            .split_whitespace()
+            .filter(|word| !word.starts_with('q'))
+            .collect();
+        assert_eq!(words, expected);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn delimited_tooltip_rows_render_hebrew_first_text_with_real_shaping() {
+        let text_system = WindowTextSystem::new(Arc::new(TextSystem::new(Arc::new(
+            gpui_wgpu::CosmicTextSystem::new("DejaVu Sans"),
+        ))));
+        let font = font("DejaVu Sans");
+        let run = |len| TextRun {
+            len,
+            font: font.clone(),
+            color: Hsla::default(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let size = px(14.);
+        let paragraph = "שלום עולם, this is mixed text 123 ".repeat(30);
+        let shaped = text_system.layout_line(&paragraph, size, &[run(paragraph.len())], None);
+        let glyphs: Vec<_> = shaped.runs.iter().flat_map(|run| &run.glyphs).collect();
+        assert!(
+            glyphs.iter().all(|glyph| glyph.id.0 != 0),
+            "positive control: the shaping font covers Hebrew"
+        );
+        assert!(
+            glyphs[0].position.x > glyphs[1].position.x,
+            "positive control: real shaping places the first Hebrew glyph right to left"
+        );
+        // Positive control: GPUI's own wrapping of this paragraph is unusable,
+        // which is what the native tooltip showed (a blank row and one letter).
+        let wrapped = text_system
+            .shape_text(
+                paragraph.clone().into(),
+                size,
+                &[run(paragraph.len())],
+                Some(px(300.)),
+                None,
+            )
+            .unwrap();
+        let boundaries = wrapped[0].wrap_boundaries();
+        assert!(
+            boundaries.len() < 3 || boundaries[0].glyph_ix <= 1,
+            "GPUI wrapping became usable; this workaround may be unnecessary: {boundaries:?}"
+        );
+        let measure = |text: &str| {
+            f32::from(
+                text_system
+                    .layout_line(text, size, &[run(text.len())], None)
+                    .width,
+            )
+        };
+        let rows = tooltip_rows(&paragraph, 300., measure);
+        assert!(rows.len() > 10 && rows.iter().all(|row| row.rtl));
+        for row in &rows {
+            let line = text_system.layout_line(&row.text, size, &[run(row.text.len())], None);
+            assert!(
+                f32::from(line.width) <= 300.5,
+                "{row:?} is {:?}",
+                line.width
+            );
+            let drawn: usize = line.runs.iter().map(|run| run.glyphs.len()).sum();
+            assert!(
+                drawn + 1 >= row.text.chars().count(),
+                "every character of {row:?} is shaped"
+            );
+        }
+        let joined: Vec<String> = rows
+            .iter()
+            .flat_map(|row| {
+                row.text
+                    .split_whitespace()
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        assert_eq!(
+            joined,
+            paragraph
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        );
+    }
+
     #[gpui::test]
     fn delimited_full_value_tooltip_wraps_and_scrolls_inside_viewport(cx: &mut TestAppContext) {
         let fixture = tempfile::tempdir().unwrap();
@@ -477,6 +718,11 @@ mod tests {
                 assert!(tooltip.top() >= px(0.) && tooltip.bottom() <= viewport.height);
                 let content = visual.debug_bounds("delimited-cell-tooltip-value").unwrap();
                 assert!(content.size.width <= tooltip.size.width);
+                // Rows are wrapped by Tessera; GPUI must not re-wrap any of them.
+                let first = visual.debug_bounds("delimited-cell-tooltip-row-0").unwrap();
+                let second = visual.debug_bounds("delimited-cell-tooltip-row-1").unwrap();
+                assert!(first.size.height > px(0.) && second.top() >= first.bottom());
+                assert!(first.size.width <= content.size.width);
                 assert!(
                     content.top() >= tooltip.top(),
                     "positive control: a fresh tooltip starts at the beginning of the value"

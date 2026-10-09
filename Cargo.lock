@@ -7975,6 +7975,7 @@ dependencies = [
  "gpui-kit-assets",
  "gpui-pre",
  "gpui-pre-platform",
+ "gpui-pre-wgpu",
  "hayro",
  "image",
  "objc2 0.6.4",
