@@ -8,6 +8,8 @@ use std::io::{Read, Write};
 use uuid::Uuid;
 
 #[cfg(target_os = "windows")]
+pub mod windows_discovery;
+#[cfg(target_os = "windows")]
 pub mod windows_endpoint;
 #[cfg(target_os = "windows")]
 pub mod windows_io;

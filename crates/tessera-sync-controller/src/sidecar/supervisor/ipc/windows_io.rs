@@ -169,6 +169,27 @@ impl ClientIo {
         io.request(Operation::Verify)?;
         Ok(io)
     }
+    /// Like `connect`, but the server is identified from the connected pipe by
+    /// `identify` (connect-then-verify discovery) on the admitted worker, inside the
+    /// same absolute deadline.
+    pub fn connect_discovering(
+        scope: Scope,
+        identify: impl FnOnce(&std::os::windows::io::OwnedHandle) -> anyhow::Result<ProcessPeer>
+            + Send
+            + 'static,
+        deadline: Instant,
+    ) -> io::Result<Self> {
+        let mut io = Self::start_with(
+            move || {
+                PrivateClient::connect_discovering(&scope, identify)
+                    .map(Endpoint::Client)
+                    .map_err(io::Error::other)
+            },
+            deadline,
+        )?;
+        io.request(Operation::Verify)?;
+        Ok(io)
+    }
     fn start(endpoint: Endpoint, deadline: Instant) -> io::Result<Self> {
         Self::start_with(move || Ok(endpoint), deadline)
     }

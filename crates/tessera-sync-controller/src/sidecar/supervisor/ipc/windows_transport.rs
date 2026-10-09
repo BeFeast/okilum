@@ -1,15 +1,17 @@
 //! Binding/scope-checked adapter over owned native I/O. The caller still supplies
 //! trusted discovery and signature/installation verification of captured peers.
 use super::{
+    windows_discovery::{identify_server, ImagePolicy},
     windows_endpoint::PrivatePipe,
     windows_io::{ClientIo, ServerIo},
     windows_peer::ProcessPeer,
     Scope, Transport,
 };
-use crate::sidecar::Binding;
+use crate::sidecar::{store::Hint, Binding};
 use anyhow::{ensure, Result};
 use std::{
     io::{self, Read, Write},
+    sync::Arc,
     time::Instant,
 };
 
@@ -33,6 +35,9 @@ impl WindowsTransport {
             binding.owner == peer.owner_sid(),
             "prepared owner differs from captured peer owner"
         );
+        Self::validate_scope(binding, scope)
+    }
+    fn validate_scope(binding: &Binding, scope: &Scope) -> Result<()> {
         ensure!(
             !scope.installation.is_nil() && !scope.instance.is_nil() && !scope.generation.is_nil(),
             "nil transport scope"
@@ -57,6 +62,36 @@ impl WindowsTransport {
     ) -> Result<Self> {
         Self::validate(&binding, &scope, &peer)?;
         let wire = Wire::Client(ClientIo::connect(scope.clone(), peer, deadline)?);
+        Ok(Self {
+            binding,
+            scope,
+            wire,
+            verified: false,
+            failed: false,
+        })
+    }
+    /// Connect, then identify and verify the supervisor from the connected pipe
+    /// (design: docs/sync-sidecar-discovery.md). The hint only names the generation
+    /// and the start time to expect; the policy decides the signature; nothing is
+    /// sent before the server process has been verified and retained.
+    pub fn connect_discovering(
+        binding: Binding,
+        scope: Scope,
+        hint: Hint,
+        policy: Arc<dyn ImagePolicy + Send + Sync>,
+        deadline: Instant,
+    ) -> Result<Self> {
+        Self::validate_scope(&binding, &scope)?;
+        ensure!(
+            hint.generation() == scope.generation,
+            "hint names another supervisor generation"
+        );
+        let expected = binding.clone();
+        let wire = Wire::Client(ClientIo::connect_discovering(
+            scope.clone(),
+            move |pipe| identify_server(pipe, &expected, &hint, &*policy),
+            deadline,
+        )?);
         Ok(Self {
             binding,
             scope,
