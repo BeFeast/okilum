@@ -61,8 +61,10 @@ location / { proxy_pass http://127.0.0.1:8080; proxy_set_header Host $http_host;
 }}\n''')
     # Same Inbox Dockerfile and ingress configuration/topology as deployment.
     # Only origin, credential mount and loopback bind are fixture-specific.
+    env_file = root/'runtime.env'
+    env_file.write_text('FIXTURE_ORIGIN=https://localhost:8443\n')
     override = {'services': {
-        'inbox': {'environment': {'INBOX_ORIGIN': 'https://localhost:8443'}},
+        'inbox': {'environment': {'INBOX_ORIGIN': '${FIXTURE_ORIGIN:-https://invalid.example}'}},
         'edge': {'image': 'nginx:1.28-alpine', 'network_mode': 'host', 'volumes': [
             f'{root}/edge.conf:/etc/nginx/nginx.conf:ro', f'{root}/cert.pem:/cert.pem:ro',
             f'{root}/key.pem:/key.pem:ro']}}}
@@ -80,7 +82,7 @@ location / { proxy_pass http://127.0.0.1:8080; proxy_set_header Host $http_host;
             if self.outage_start is None:
                 self.outage_start = time.monotonic()
             return super().ordered_start()
-    d = MeasuredDeployment(compose, state, 'https://localhost:8443', timeout=20, outage_timeout=90)
+    d = MeasuredDeployment(compose, state, 'https://localhost:8443', timeout=20, outage_timeout=90, env_file=env_file)
     builder_name = 'inbox-restart-fixture-builder'
     try:
         run('docker', 'build', '-f', 'inbox/deploy/Dockerfile', '--target', 'build', '-t', 'inbox-restart-builder', '.', cwd=repo)
@@ -99,6 +101,19 @@ location / { proxy_pass http://127.0.0.1:8080; proxy_set_header Host $http_host;
         baseline = fingerprint(root/'fixture.db')
         report['images'] = d.images()
         original = d.nginx.read_bytes()
+        before_ids = {name: d.compose('ps', '-q', name) for name in ('inbox', 'ingress')}
+        receipts_before = set(state.glob('rollback-*'))
+        missing_env = restart.Deployment(compose, state, d.origin)
+        try:
+            missing_env.deploy()
+            raise AssertionError('Missing runtime env-file was accepted')
+        except RuntimeError as error:
+            assert 'resolved environment differs' in str(error)
+        assert before_ids == {name: d.compose('ps', '-q', name) for name in before_ids}
+        assert set(state.glob('rollback-*')) == receipts_before
+        restart.public_ready(d.origin)
+        report['cases'].append({'name': 'missing-env-file-refused', 'status': 'PASS',
+                                'service_mutations': 0, 'outage_upper_bound_seconds': 0})
         for name in ('same-image', 'explicit-same-image', 'config-only', 'broken-ingress-rollback'):
             config = None
             image = report['images']['inbox'] if name == 'explicit-same-image' else None

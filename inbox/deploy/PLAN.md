@@ -77,11 +77,11 @@ or touch `/srv/vault`.
 # Read-only public readiness (creates only an anonymous, expiring login challenge).
 python3 inbox/deploy/restart.py --check
 # Same-image restart; ingress may already be running.
-sudo python3 inbox/deploy/restart.py
+python3 inbox/deploy/restart.py --env-file /opt/tessera-inbox/runtime.env
 # Deploy a reviewed, already-loaded image; mutable tags are resolved to local IDs.
-sudo python3 inbox/deploy/restart.py --image tessera-inbox-qa:reviewed
+python3 inbox/deploy/restart.py --env-file /opt/tessera-inbox/runtime.env --image tessera-inbox-qa:reviewed
 # Same-image nginx configuration change, from a separate staged file.
-sudo python3 inbox/deploy/restart.py --nginx-config /path/to/reviewed-nginx.conf
+python3 inbox/deploy/restart.py --env-file /opt/tessera-inbox/runtime.env --nginx-config /path/to/reviewed-nginx.conf
 ```
 
 Build/import the reviewed image before this procedure; the tool never pulls or
@@ -141,3 +141,12 @@ The hosted `inbox-restart` acceptance asserts a conservative outage bound under
 120 seconds for each tested case, including automatic rollback. It uploads only
 sanitized `summary.json`; no DB, test passkey or TLS key is published. See
 `LIVE-ACCEPTANCE.md` for the separate, manager-approved live procedure.
+
+Runtime configuration is part of the rollback identity. Pass the existing
+private external interpolation file with `--env-file`; do not rely on an
+operator's shell environment. Before any snapshot or mutation, the helper
+compares resolved command, entrypoint and environment against both running
+containers, including image defaults. A mismatch stops without recreating a
+service and without logging either side's values. The same file is used for
+forward deployment and rollback. On CT119 the established file is
+`/opt/tessera-inbox/runtime.env`; invoke Docker through the existing sudo shim.
