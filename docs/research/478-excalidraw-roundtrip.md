@@ -477,6 +477,8 @@ edits. The writer in §4 is the shared foundation either way.
 | 5 | Reader UI | Replace the clipboard plus `draw.oklabs.uk` action with a glyph "Edit drawing" button (same 28px ghost button). Move "Copy scene" into More. Wording per platform. | 1–2 d |
 | 6 | (optional) New images to vault | Pasted images saved to the vault attachment folder plus a `## Embedded Files` line, instead of inline `data:` URLs. | 2–3 d |
 
+Slice 2 decision (manager, 2026-10-09): the plugin is AGPL-3.0, so it is a test-only oracle. CI fetches it at a pinned commit (sha256-verified); it is never committed, packaged or distributed. The non-required `excalidraw-compat` job runs it against writer output; see `scripts/excalidraw-compat/`.
+
 MVP (slices 1–5): about 3–3.5 weeks. Slice 1 is independently useful: it is
 the write half any editor, including a native one, needs.
 

@@ -1,0 +1,108 @@
+# #478 slice 2: check Excalidraw writer output with the Obsidian plugin's own
+# loader. Test-only oracle: the AGPL-3.0 plugin source is fetched at test time
+# (pinned commit, sha256-verified) and is not committed, packaged, uploaded or
+# distributed. This job uploads no artifacts.
+# Not a required check: GitHub/npm network trouble must never block a merge.
+name: excalidraw-compat
+
+on:
+  pull_request:
+    paths:
+      - 'crates/tessera-core/src/excalidraw/**'
+      - 'crates/tessera-core/tests/excalidraw_write.rs'
+      - 'crates/tessera-core/tests/fixtures/excalidraw/**'
+      - 'crates/tessera-shell/src/reader_drawing.rs'
+      - 'scripts/excalidraw-compat/**'
+      - '.forgejo/workflows/excalidraw-compat.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'crates/tessera-core/src/excalidraw/**'
+      - 'crates/tessera-core/tests/excalidraw_write.rs'
+      - 'crates/tessera-core/tests/fixtures/excalidraw/**'
+      - 'crates/tessera-shell/src/reader_drawing.rs'
+      - 'scripts/excalidraw-compat/**'
+      - '.forgejo/workflows/excalidraw-compat.yml'
+  schedule:
+    - cron: '41 2 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: excalidraw-compat-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  plugin-oracle:
+    runs-on: docker
+    container:
+      image: ghcr.io/catthehacker/ubuntu:act-24.04
+    timeout-minutes: 30
+    continue-on-error: true
+    env:
+      CARGO_INCREMENTAL: "0"
+      RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+      SCCACHE_BUCKET: ${{ vars.SCCACHE_BUCKET }}
+      SCCACHE_ENDPOINT: ${{ vars.SCCACHE_ENDPOINT }}
+      SCCACHE_REGION: ${{ vars.SCCACHE_REGION }}
+      SCCACHE_S3_USE_SSL: "false"
+      SCCACHE_S3_KEY_PREFIX: rust
+      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Oracle paths outside the checkout
+        run: |
+          echo "ORACLE_DIR=$RUNNER_TEMP/excalidraw-oracle" >> "$GITHUB_ENV"
+          echo "TESSERA_EXCALIDRAW_DUMP=$RUNNER_TEMP/excalidraw-dump" >> "$GITHUB_ENV"
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            build-essential cmake pkg-config curl git mold
+          node --version
+
+      - name: Install Rust
+        run: |
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Enable sccache
+        run: |
+          set -euo pipefail
+          source scripts/ci/release-cache.sh
+          for name in RUSTC_WRAPPER SCCACHE_SERVER_UDS SCCACHE_IDLE_TIMEOUT SCCACHE_IGNORE_SERVER_IO_ERROR; do
+            printf '%s=%s\n' "$name" "${!name:-}" >> "$GITHUB_ENV"
+          done
+          if [ -n "${RUSTC_WRAPPER:-}" ]; then dirname "$RUSTC_WRAPPER" >> "$GITHUB_PATH"; fi
+
+      - name: Restore pinned plugin download
+        uses: https://code.forgejo.org/actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/excalidraw-oracle/fetch/*.tar.gz
+          key: excalidraw-plugin-6d4eb0337d17284514898983609eeb742f2436d6c6cc1fd59ebee5da869a814b
+
+      - name: Writer tests, keeping every checked file
+        run: cargo test -p tessera-core --test excalidraw_write
+
+      - name: Fetch and verify the plugin (sha256), build the oracle
+        working-directory: scripts/excalidraw-compat
+        run: |
+          set -euo pipefail
+          ./fetch-plugin.sh "$ORACLE_DIR/fetch"
+          npm ci --no-audit --no-fund
+          node build.mjs "$ORACLE_DIR/fetch/plugin" "$ORACLE_DIR/oracle.cjs"
+
+      - name: Load writer output with the plugin's own loader
+        working-directory: scripts/excalidraw-compat
+        run: node check.cjs "$ORACLE_DIR/oracle.cjs" "$TESSERA_EXCALIDRAW_DUMP"
+
+      - name: Remove fetched plugin sources
+        if: always()
+        run: rm -rf "$ORACLE_DIR/fetch/plugin" "$ORACLE_DIR/oracle.cjs"
