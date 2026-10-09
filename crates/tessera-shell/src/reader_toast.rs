@@ -149,6 +149,7 @@ pub(super) fn push(
         })
         .detach();
     }
+    key
 }
 
 pub(super) fn dismiss(window: &mut Window, cx: &mut App) -> bool {
@@ -450,6 +451,85 @@ mod tests {
         visual.executor().advance_clock(Duration::from_secs(5));
         visual.run_until_parked();
         visual.update(|window, cx| assert!(window.notifications(cx).is_empty()));
+    }
+
+    /// #930: the «Restore unsaved edits» offer disappears as soon as the
+    /// note is being edited (startup restores the draft into the editor), and
+    /// a push deferred past that moment never shows up.
+    #[gpui::test]
+    fn recovery_offer_goes_away_when_editing_starts(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_reduce_motion(true);
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        std::fs::write(root.join("start.md"), "# Stable document\nBody").unwrap();
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        open_path: Some(root.join("start.md")),
+                        index_dir: Some(temp.path().join("index")),
+                        session_directory: Some(temp.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        let restore_shown = |visual: &mut VisualTestContext| {
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            visual.debug_bounds("restore-unsaved-edits").is_some()
+        };
+        let offer = |visual: &mut VisualTestContext| {
+            reader.update_in(visual, |r, _, cx| {
+                r.recovery_startup = true;
+                r.recovery_checked = true;
+                r.recovery_dismissed = false;
+                r.recovery_offer = true;
+                cx.notify();
+            });
+        };
+        // Shown, then editing starts: the offer is removed at once, long
+        // before its 4 s lifetime.
+        offer(visual);
+        visual.run_until_parked();
+        assert!(
+            restore_shown(visual),
+            "positive control: the offer is shown"
+        );
+        reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| assert!(r.editing.is_some()));
+        assert!(!restore_shown(visual), "offer removed when editing starts");
+        // Back to Reader with a fresh offer whose push is deferred, and
+        // editing starts in the same update: it must never appear.
+        reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
+        visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_secs(5));
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            r.recovery_offer = true;
+            r.recovery_dismissed = false;
+            r.sync_notice_toast(window, cx);
+            r.toggle_source(window, cx);
+        });
+        visual.run_until_parked();
+        assert!(
+            !restore_shown(visual),
+            "a deferred offer is dropped once editing"
+        );
     }
 
     #[gpui::test]
