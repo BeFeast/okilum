@@ -3380,6 +3380,11 @@ impl Reader {
         let actions = toolbar_visible_actions(width - 24., name_width + 16., total_actions);
         let name_tip = title.clone();
         let reader = cx.entity().downgrade();
+        let accent = left
+            .then(|| reader_ui_state::vault_color(&self.vault_root, cx))
+            .flatten();
+        let dot = if accent.is_some() { VAULT_DOT_SLOT } else { 0. };
+        let vault_root = self.vault_root.clone();
         h_flex()
             .h(px(READER_HEADER_HEIGHT))
             .flex_none()
@@ -3388,6 +3393,17 @@ impl Reader {
             .border_b_1()
             .border_color(brand::palette(cx).border_subtle)
             .text_size(px(brand::READER_CHROME_FONT_SIZE))
+            .when_some(accent, |header, color| {
+                header.child(
+                    div()
+                        .debug_selector(|| "sidebar-vault-dot".into())
+                        .flex_none()
+                        .size(px(8.))
+                        .ml_1()
+                        .rounded_full()
+                        .bg(color.color(cx)),
+                )
+            })
             .child(if left {
                 Button::new("sidebar-vault-title")
                     .ghost()
@@ -3395,6 +3411,7 @@ impl Reader {
                     .label(title)
                     .w(px((width
                         - 24.
+                        - dot
                         - 32.
                             * (actions + usize::from(actions < total_actions))
                                 as f32)
@@ -3407,7 +3424,8 @@ impl Reader {
                     .font_weight(FontWeight::SEMIBOLD)
                     .tooltip(name_tip)
                     .debug_selector(|| "sidebar-vault-title".into())
-                    .dropdown_menu(move |menu, _, _| {
+                    .dropdown_menu(move |menu, window, cx| {
+                        let root = vault_root.clone();
                         menu.item(
                             gpui_component::menu::PopupMenuItem::new(
                                 "Folders only / Restore sections",
@@ -3424,6 +3442,9 @@ impl Reader {
                                 }
                             }),
                         )
+                        .submenu("Vault colour", window, cx, move |menu, _, cx| {
+                            vault_color_menu(menu, &root, cx)
+                        })
                         .separator()
                         .menu("Open folder…", Box::new(reader_open::OpenFolder))
                         .menu("Open file…", Box::new(reader_open::OpenFile))
@@ -5810,6 +5831,33 @@ fn toolbar_visible_actions(available: f32, title: f32, total: usize) -> usize {
         .unwrap_or(0)
 }
 
+/// #774: the accent line height and the space the name dot takes.
+const VAULT_ACCENT_LINE: f32 = 2.;
+/// 8 px dot + 4 px margin + the header row's 4 px gap.
+const VAULT_DOT_SLOT: f32 = 16.;
+
+/// «None» plus the presets, current one checked. Shared by the vault name
+/// menu; Settings uses swatches with the same store call.
+fn vault_color_menu(
+    menu: gpui_component::menu::PopupMenu,
+    root: &Path,
+    cx: &App,
+) -> gpui_component::menu::PopupMenu {
+    use gpui_component::menu::PopupMenuItem;
+    let current = reader_ui_state::vault_color(root, cx);
+    let item = |label: &'static str, color: Option<brand::VaultColor>| {
+        let root = root.to_owned();
+        PopupMenuItem::new(label)
+            .checked(current == color)
+            .on_click(move |_, _, cx| reader_ui_state::set_vault_color(&root, color, cx))
+    };
+    brand::VaultColor::ALL
+        .into_iter()
+        .fold(menu.item(item("None", None)).separator(), |menu, color| {
+            menu.item(item(color.label(), Some(color)))
+        })
+}
+
 const HIDDEN_FILES_MENU: &str = "Show hidden files";
 const FOLDERS_HEADER_GROUP: &str = "folders-header";
 const COLLAPSE_FOLDERS_TOOLTIP: &str = "Collapse all";
@@ -6286,7 +6334,7 @@ impl Render for Reader {
             .text_color(cx.theme().foreground)
             .map(|view| {
                 let header = self.render_header(available, window, cx);
-                if self.embedded_in_workspace {
+                let view = if self.embedded_in_workspace {
                     // Workspace owns the window title bar; this is a plain row.
                     view.child(
                         div()
@@ -6305,7 +6353,22 @@ impl Render for Reader {
                             .when(window.is_fullscreen(), |bar| bar.pl(px(10.)))
                             .child(header),
                     )
-                }
+                };
+                let accent =
+                    reader_ui_state::vault_color(&self.vault_root, cx).map(|color| color.color(cx));
+                view.when_some(accent, |view, color| {
+                    // Drawn over the top edge, so the layout never moves (#774).
+                    view.child(
+                        div()
+                            .debug_selector(|| "vault-accent-line".into())
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .w_full()
+                            .h(px(VAULT_ACCENT_LINE))
+                            .bg(color),
+                    )
+                })
             })
             .child(
                 h_flex()
@@ -7797,6 +7860,84 @@ mod document_link_landing_tests {
                 );
             }
         });
+    }
+
+    /// #774: no colour draws nothing; a colour draws a 2 px line at the top
+    /// of every window of that vault and a dot at the vault name, without
+    /// moving the header. Another vault's window stays plain.
+    #[gpui::test]
+    fn vault_color_draws_line_and_dot_in_every_window_of_that_vault(cx: &mut gpui::TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        let other = fixture.path().join("other");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(&other).unwrap();
+        let state = fixture.path().join("state");
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+            reader_ui_state::install(&state, cx);
+        });
+        let open = |vault: &Path, cx: &mut gpui::TestAppContext| {
+            let mut reader = None;
+            let window = cx.add_window(|window, cx| {
+                let view = cx.new(|cx| Reader::new(Opts::default(), window, cx));
+                reader = Some(view.clone());
+                Root::new(view, window, cx)
+            });
+            let mut visual = gpui::VisualTestContext::from_window(window.into(), cx);
+            let view = reader.unwrap();
+            visual.simulate_resize(size(px(1200.), px(700.)));
+            view.update(&mut visual, |v, cx| {
+                v.loading = None;
+                v.vault_root = vault.to_owned();
+                v.panels.open(reader_layout::Panel::Notes);
+                cx.notify();
+            });
+            visual.run_until_parked();
+            visual
+        };
+        let mut first = open(&root, cx);
+        let mut second = open(&root, cx);
+        let mut unrelated = open(&other, cx);
+        for visual in [&mut first, &mut second, &mut unrelated] {
+            assert!(visual.debug_bounds("vault-accent-line").is_none());
+            assert!(visual.debug_bounds("sidebar-vault-dot").is_none());
+        }
+        let title_before = first.debug_bounds("sidebar-vault-title").unwrap();
+        first.update(|_, cx| {
+            reader_ui_state::set_vault_color(&root, Some(brand::VaultColor::Teal), cx)
+        });
+        for visual in [&mut first, &mut second, &mut unrelated] {
+            visual.run_until_parked();
+        }
+        for visual in [&mut first, &mut second] {
+            let line = visual.debug_bounds("vault-accent-line").unwrap();
+            assert_eq!(line.origin.y, px(0.));
+            assert_eq!(line.size.height, px(VAULT_ACCENT_LINE));
+            assert_eq!(line.size.width, px(1200.));
+            let dot = visual.debug_bounds("sidebar-vault-dot").unwrap();
+            let title = visual.debug_bounds("sidebar-vault-title").unwrap();
+            assert!(dot.right() <= title.left(), "dot sits before the name");
+        }
+        let title_after = first.debug_bounds("sidebar-vault-title").unwrap();
+        assert_eq!(
+            title_after.origin.y, title_before.origin.y,
+            "the line is drawn over the header, not above it"
+        );
+        assert_eq!(
+            title_after.right(),
+            title_before.right(),
+            "the dot takes exactly its slot; header actions do not shift"
+        );
+        assert!(
+            unrelated.debug_bounds("vault-accent-line").is_none(),
+            "positive control: only this vault's windows change"
+        );
+        first.update(|_, cx| reader_ui_state::set_vault_color(&root, None, cx));
+        first.run_until_parked();
+        assert!(first.debug_bounds("vault-accent-line").is_none());
+        assert!(first.debug_bounds("sidebar-vault-dot").is_none());
     }
 
     #[gpui::test]

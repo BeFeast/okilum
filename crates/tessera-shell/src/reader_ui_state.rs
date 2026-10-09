@@ -123,6 +123,9 @@ struct Saved {
     typed_views: tessera_core::typed_view::Preferences,
     toolbar_labels: bool,
     vaults: BTreeMap<PathBuf, Layout>,
+    /// Per-vault accent preset key (#774), keyed like `vaults` by the
+    /// canonical root. Unknown keys from a newer build are kept, not shown.
+    vault_colors: BTreeMap<PathBuf, String>,
     last_layout: Option<Layout>,
     frames: BTreeMap<String, window_state::Frame>,
     last_frame: Option<window_state::Frame>,
@@ -139,6 +142,7 @@ impl Default for Saved {
             typed_views: Default::default(),
             toolbar_labels: false,
             vaults: Default::default(),
+            vault_colors: Default::default(),
             last_layout: None,
             frames: Default::default(),
             last_frame: None,
@@ -156,6 +160,7 @@ struct Store {
     find_changed: bool,
     typed_views_changed: bool,
     toolbar_labels_changed: bool,
+    colors_changed: BTreeSet<PathBuf>,
     frames_changed: BTreeSet<String>,
     last_changed: bool,
     last_frame_changed: bool,
@@ -225,6 +230,7 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         // different process's newly saved mappings with our startup defaults.
         typed_views_changed: false,
         toolbar_labels_changed: false,
+        colors_changed: Default::default(),
         frames_changed: Default::default(),
         last_changed: false,
         last_frame_changed: false,
@@ -315,6 +321,42 @@ pub(crate) fn set_appearance(mode: Option<ThemeMode>, cx: &mut App) -> bool {
     true
 }
 
+/// The vault's accent colour (#774); `None` means no line and no dot.
+pub(crate) fn vault_color(root: &Path, cx: &App) -> Option<brand::VaultColor> {
+    cx.try_global::<Store>()?
+        .saved
+        .vault_colors
+        .get(root)
+        .and_then(|key| brand::VaultColor::from_key(key))
+}
+
+/// Every window of this vault repaints with the new colour at once.
+pub(crate) fn set_vault_color(root: &Path, color: Option<brand::VaultColor>, cx: &mut App) {
+    // Compare stored keys: «None» must also clear a preset this build
+    // does not know (written by a newer one), which reads back as `None`.
+    let Some(state) = cx.try_global::<Store>() else {
+        return;
+    };
+    if state.saved.vault_colors.get(root).map(String::as_str) == color.map(brand::VaultColor::key) {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    match color {
+        Some(color) => {
+            state
+                .saved
+                .vault_colors
+                .insert(root.to_owned(), color.key().into());
+        }
+        None => {
+            state.saved.vault_colors.remove(root);
+        }
+    }
+    state.colors_changed.insert(root.to_owned());
+    schedule(cx);
+    cx.refresh_windows();
+}
+
 pub(crate) fn record(root: &Path, layout: Layout, active: bool, cx: &mut App) {
     if cx.try_global::<Store>().is_none() {
         return;
@@ -349,6 +391,7 @@ struct WriteJob {
     find_changed: bool,
     typed_views_changed: bool,
     toolbar_labels_changed: bool,
+    colors_changed: BTreeSet<PathBuf>,
     serial: Arc<AtomicU64>,
     generation: u64,
 }
@@ -356,7 +399,12 @@ impl WriteJob {
     fn run(&self) -> anyhow::Result<()> {
         let directory = self.path.parent().context("Missing UI state directory")?;
         // Match the existing outside-vault guard, including symlink ancestors.
-        for root in self.saved.vaults.keys() {
+        for root in self
+            .saved
+            .vaults
+            .keys()
+            .chain(self.saved.vault_colors.keys())
+        {
             anyhow::ensure!(
                 outside_vault(root, &self.path),
                 "Refusing UI state inside a vault"
@@ -401,6 +449,17 @@ impl WriteJob {
         if self.toolbar_labels_changed {
             latest.toolbar_labels = self.saved.toolbar_labels;
         }
+        // Per root, like layouts: a colour removed here is removed there.
+        for root in &self.colors_changed {
+            match self.saved.vault_colors.get(root) {
+                Some(color) => {
+                    latest.vault_colors.insert(root.clone(), color.clone());
+                }
+                None => {
+                    latest.vault_colors.remove(root);
+                }
+            }
+        }
         if self.last_changed {
             latest.last_layout = self.saved.last_layout.clone();
         }
@@ -438,6 +497,7 @@ fn job(cx: &App) -> Option<WriteJob> {
             && !state.find_changed
             && !state.typed_views_changed
             && !state.toolbar_labels_changed
+            && state.colors_changed.is_empty()
             && !state.last_changed
             && !state.last_frame_changed)
     {
@@ -457,6 +517,7 @@ fn job(cx: &App) -> Option<WriteJob> {
         find_changed: state.find_changed,
         typed_views_changed: state.typed_views_changed,
         toolbar_labels_changed: state.toolbar_labels_changed,
+        colors_changed: state.colors_changed.clone(),
         serial: state.serial.clone(),
         generation: state.serial.load(Ordering::SeqCst),
     })
@@ -982,6 +1043,7 @@ fn mark_saved(generation: u64, cx: &mut App) {
         state.find_changed = false;
         state.typed_views_changed = false;
         state.toolbar_labels_changed = false;
+        state.colors_changed.clear();
         state.last_changed = false;
         state.last_frame_changed = false;
     }
@@ -992,6 +1054,71 @@ mod tests {
     use super::*;
     use ::core::prelude::v1::test;
     use gpui_component::WindowExt;
+
+    /// #774: colours are per canonical root, survive a restart, and merge
+    /// per root so another process's colour for a different vault (and an
+    /// unknown future preset) is neither lost nor overwritten.
+    #[gpui::test]
+    fn vault_colors_persist_per_root_and_merge_with_other_processes(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        let other = fixture.path().join("other");
+        let future = fixture.path().join("future");
+        for dir in [&root, &other, &future] {
+            std::fs::create_dir(dir).unwrap();
+        }
+        let directory = fixture.path().join("state");
+        let path = directory.join("reader-ui.json");
+        cx.update(|cx| {
+            install(&directory, cx);
+            assert_eq!(vault_color(&root, cx), None, "default is no colour");
+            set_vault_color(&root, Some(brand::VaultColor::Teal), cx);
+            set_vault_color(&other, Some(brand::VaultColor::Pink), cx);
+            flush(cx);
+            // Another process: removes `other`, leaves an unknown preset.
+            let mut external = read(&path).unwrap();
+            external.vault_colors.remove(&other);
+            external
+                .vault_colors
+                .insert(future.clone(), "future-colour".into());
+            std::fs::write(&path, serde_json::to_vec(&external).unwrap()).unwrap();
+            set_vault_color(&root, Some(brand::VaultColor::Blue), cx);
+            flush(cx);
+            let merged = read(&path).unwrap();
+            assert_eq!(
+                merged.vault_colors.get(&root).map(String::as_str),
+                Some("blue")
+            );
+            assert!(
+                !merged.vault_colors.contains_key(&other),
+                "unchanged roots come from the latest file"
+            );
+            assert_eq!(
+                merged.vault_colors.get(&future).map(String::as_str),
+                Some("future-colour")
+            );
+            install(&directory, cx);
+            assert_eq!(vault_color(&root, cx), Some(brand::VaultColor::Blue));
+            assert_eq!(
+                vault_color(&future, cx),
+                None,
+                "unknown preset shows nothing"
+            );
+            // «None» still clears a preset this build does not know.
+            set_vault_color(&future, None, cx);
+            flush(cx);
+            assert!(!read(&path).unwrap().vault_colors.contains_key(&future));
+            set_vault_color(&root, None, cx);
+            flush(cx);
+            assert!(!read(&path).unwrap().vault_colors.contains_key(&root));
+            // Positive control: a colour inside a vault is refused, like layouts.
+            let inside = root.join("state");
+            install(&inside, cx);
+            set_vault_color(&root, Some(brand::VaultColor::Red), cx);
+            flush(cx);
+            assert!(!inside.join("reader-ui.json").exists());
+        });
+    }
 
     #[gpui::test]
     fn global_preferences_and_vault_layout_survive_flush_and_new_vault_inherits_no_paths(
@@ -1117,6 +1244,7 @@ mod tests {
                 find_changed: false,
                 typed_views_changed: true,
                 toolbar_labels_changed: false,
+                colors_changed: Default::default(),
                 frames_changed: Default::default(),
                 last_changed: false,
                 last_frame_changed: false,
