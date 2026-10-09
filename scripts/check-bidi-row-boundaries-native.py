@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Home/End regression on painted rows, including a wrap inside Hebrew (#780).
+"""Home/End regression on painted rows, including a wrap inside Hebrew (#780)
+and a long mixed Hebrew paragraph that Live Preview must wrap in logical order (#931).
 
 Run on an exclusive X11 display (Xvfb supported) with Noto Sans installed:
 DISPLAY=:138 python3 scripts/check-bidi-row-boundaries-native.py OUTPUT [BINARY]
@@ -15,15 +16,18 @@ import time
 out = Path(sys.argv[1])
 out.mkdir(parents=True, exist_ok=True)
 binary = sys.argv[2] if len(sys.argv) > 2 else 'target/debug/examples/native_bidi737'
-text = 'word00 ' * 14 + 'שלום ' + ' '.join(f'word{i:02}' for i in range(85))
-# Formatting below the measured paragraph makes LP non-identity without changing
-# its wrap fixture. No user files are opened by the native example.
-text += '\n\n**projected**'
-source = text.encode()
+hebrew = 'שלום עולם זהו טקסט ארוך בעברית שנועד להתעטף בשורות רבות בחלון הצר ואנחנו בודקים '
+fixtures = {
+    'latin': 'word00 ' * 14 + 'שלום ' + ' '.join(f'word{i:02}' for i in range(85)),
+    'hebrew': 'abc 123 ' + hebrew * 5 + 'xyz end',
+}
 results = []
-for live in [False, True]:
-    for dark in [False, True]:
-        name = f'{"live" if live else "source"}-{"dark" if dark else "light"}'
+for (fixture, paragraph), live, dark in [(f, l, d) for f in fixtures.items() for l in [False, True] for d in [False, True]]:
+        # Formatting below the measured paragraph makes LP non-identity without changing
+        # its wrap fixture. No user files are opened by the native example.
+        text = paragraph + '\n\n**projected**'
+        source = text.encode()
+        name = f'{fixture}-{"live" if live else "source"}-{"dark" if dark else "light"}'
         env = dict(os.environ, WAYLAND_DISPLAY='', TESSERA_BIDI_TEXT=text,
                    __EGL_VENDOR_LIBRARY_FILENAMES='/usr/share/glvnd/egl_vendor.d/50_mesa.json')
         for key, enabled in [('TESSERA_BIDI_LIVE', live), ('TESSERA_BIDI_DARK', dark)]:
@@ -38,15 +42,32 @@ for live in [False, True]:
         def key(value):
             xd('key', value)
             time.sleep(.12)
+        def records():
+            return [json.loads(line) for line in log.read_text().splitlines() if line.startswith('{')]
         def record():
+            # The fixture writes asynchronously; wait for this request's line.
+            count = len(records())
             key('ctrl+alt+r')
-            return [json.loads(line) for line in log.read_text().splitlines() if line.startswith('{')][-1]
+            for _ in range(50):
+                if len(records()) > count:
+                    break
+                time.sleep(.05)
+            return records()[-1]
         def screen_y(state):
             return round(state['caret'][1] - state['scroll'][1], 2)
         try:
-            time.sleep(2)
-            win = xd('search', '--pid', proc.pid, '--name', 'Tessera').splitlines()[-1]
-            xd('windowmove', win, 0, 0, 'windowfocus', win)
+            # Wait until the window is mapped; focusing an unmapped window is BadMatch.
+            found = ''
+            for _ in range(40):
+                time.sleep(.5)
+                found = subprocess.run(['xdotool', 'search', '--onlyvisible', '--pid', str(proc.pid), '--name', 'Tessera'],
+                                       env=env, text=True, capture_output=True).stdout.split()
+                if found:
+                    break
+            assert found, f'{name}: window was not mapped within 20 s'
+            win = found[-1]
+            xd('windowmove', win, 0, 0)
+            xd('windowfocus', '--sync', win)
             for width in [500, 800, 1100]:
                 xd('windowsize', win, width, 700)
                 time.sleep(.3)
