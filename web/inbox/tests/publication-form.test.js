@@ -20,10 +20,10 @@ test('legacy missing destination and filename identifies both fields, without bl
 test('title suggestion and implied extension preserve Unicode while paths stay relative', async () => {
  const { markdownFilename, suggestedFilename, publicationLabel } = await import('../publication-form.js');
  assert.equal(suggestedFilename('Intro\n# План: Inbox / исполнение\nBody'), 'План  Inbox   исполнение');
- assert.equal(markdownFilename('tessera/Мой план'), 'tessera/Мой план.md');
+ assert.equal(markdownFilename('okilum/Мой план'), 'okilum/Мой план.md');
  assert.equal(markdownFilename('idea.md'), 'idea.md');
  assert.equal(markdownFilename(''), '');
- const valid = { folder: 'Projects', filename: 'tessera/Мой план.md', content: '# Plan' };
+ const valid = { folder: 'Projects', filename: 'okilum/Мой план.md', content: '# Plan' };
  assert.equal(publicationProblem(valid), '');
  for (const filename of ['/plan.md', '../plan.md', 'a/../plan.md', 'a//plan.md', 'a/.git/plan.md', 'a\\plan.md']) assert.ok(publicationProblem({ ...valid, filename }));
  assert.equal(publicationLabel({ state: 'published' }), 'Published');

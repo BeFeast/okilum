@@ -12,7 +12,7 @@ differs from Rough.js: geometry is stable but individual jitter samples will not
 be pixel-identical to the web editor. Compare recognizable geometry, typography,
 styles and relationships against the owner's seven drawings.
 
-Tessera owns scene interpretation: arrows, rotation, text placement and fonts,
+Okilum owns scene interpretation: arrows, rotation, text placement and fonts,
 images, frames and grouping. An in-memory SVG display list carries those vectors
 to the native resvg renderer and GPUI image surface. This is generated from the scene, not an export
 lookup. Expand must rerasterize vectors at the requested scale and support pan.
@@ -41,7 +41,7 @@ LRU budget (excluding currently displayed images and in-flight renderer allocati
 Vault watcher events invalidate decoded scenes, including external image dependencies.
 Rasterization caps each side at 4096 pixels; further zoom enlarges that raster.
 
-Tessera serializes roughr operation lists itself: roughr 0.14 emits `L` for
+Okilum serializes roughr operation lists itself: roughr 0.14 emits `L` for
 `Move` in its SVG helper. Pixel tests cover solid and patterned fills with no
 outline, preventing a broken path encoder from passing on text alone. Nunito
 subsets carry an internal ExtraLight family name and receive a fontdb alias.

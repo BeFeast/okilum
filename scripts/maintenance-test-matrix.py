@@ -20,7 +20,7 @@ def module(name, filename):
 
 
 def posture(root=ROOT):
-    text = (root / "crates/tessera-brain/src/maestro_links.rs").read_text()
+    text = (root / "crates/okilum-brain/src/maestro_links.rs").read_text()
     matches = re.findall(r'^pub const NEW_LINKS_ENABLED: bool = (true|false);$', text, re.MULTILINE)
     if len(matches) != 1:
         raise ValueError("Unknown maintenance capability declaration; refuse to select tests")
@@ -64,16 +64,16 @@ def artifact(entry, root):
     receipt = json.loads(freeze.read_text())
     source = receipt.get("commit", receipt.get("source_commit"))
     hashes = receipt.get("files", {})
-    actual = hashes.get("tessera-cored", receipt.get("backend_sha256", receipt.get("sha256")))
+    actual = hashes.get("okilum-cored", receipt.get("backend_sha256", receipt.get("sha256")))
     if source != entry["source"] or actual != entry["sha256"]:
         raise ValueError("Artifact identity does not match its frozen provenance")
     if entry["feature_graph"] == "gui+cored":
-        if not {"tessera", "tessera-cored"} <= receipt.get("compiler_artifacts", {}).keys():
+        if not {"okilum", "okilum-cored"} <= receipt.get("compiler_artifacts", {}).keys():
             raise ValueError("Missing actual full GUI+cored compiler artifact provenance")
-        gui_sha = hashes.get("tessera")
+        gui_sha = hashes.get("okilum")
         if not gui_sha or not re.fullmatch(r'[0-9a-f]{64}', gui_sha):
             raise ValueError("Full GUI+cored graph requires the companion GUI artifact receipt")
-        if base.digest(binary.with_name("tessera")) != gui_sha:
+        if base.digest(binary.with_name("okilum")) != gui_sha:
             raise ValueError("Companion GUI artifact differs from the release freeze")
     elif entry["feature_graph"] != "historical-cored-only":
         raise ValueError("Unknown artifact feature graph")

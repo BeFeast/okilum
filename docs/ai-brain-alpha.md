@@ -1,13 +1,13 @@
-# AI Brain alpha — one project, ordinary Tessera
+# AI Brain alpha — one project, ordinary Okilum
 
 Approved direction, 2026-09-05. This is the next bounded scope under the
-[product PRD](PRD.md), following the [accepted POC](https://git.oklabs.uk/BeFeast/tessera/issues/61#issuecomment-11336).
-Implementation is tracked in [alpha epic #79](https://git.oklabs.uk/BeFeast/tessera/issues/79).
+[product PRD](PRD.md), following the [accepted POC](https://git.oklabs.uk/BeFeast/okilum/issues/61#issuecomment-11336).
+Implementation is tracked in [alpha epic #79](https://git.oklabs.uk/BeFeast/okilum/issues/79).
 This describes required outcomes, not implemented capabilities or an installation.
 
 ## Outcome and boundary
 
-Open a separate copy of one project's Markdown brain from ordinary Tessera, browse
+Open a separate copy of one project's Markdown brain from ordinary Okilum, browse
 and edit its notes, and carry multiple thoughts through linked goals, conversation,
 Todoist tasks, T3 stages and saved results. Reopening uses the saved workspace and
 connections; evaluating the product no longer depends on a one-off POC launcher.
@@ -15,7 +15,7 @@ Export returns a portable, exact copy of that brain.
 
 Development, brainstorming, execution supervision, review and recovery remain in
 external T3 Code. The alpha may execute isolated acceptance goals. It does not take
-over Tessera development, the original project or daily work. The selected fixture
+over Okilum development, the original project or daily work. The selected fixture
 is a small engineering-only copy of halenote materials, not its live repository or
 Oleg's health records. This planning scope does not provision or migrate anything.
 
@@ -23,14 +23,14 @@ Oleg's health records. This planning scope does not provision or migrate anythin
 
 | Slice | Observable completion |
 |---|---|
-| One project workspace | Ordinary Tessera can open and return to the selected brain with an identifiable root and project label. Note navigation and links lead to that brain's files; unavailable or ambiguous targets remain explicit. Existing read-only vault use stays available. No test-specific launcher or operator-supplied goal IDs are needed. |
+| One project workspace | Ordinary Okilum can open and return to the selected brain with an identifiable root and project label. Note navigation and links lead to that brain's files; unavailable or ambiguous targets remain explicit. Existing read-only vault use stays available. No test-specific launcher or operator-supplied goal IDs are needed. |
 | Reusable inbox and goals | Capture two thoughts, select either goal and return to its own sources, conversation, task, criteria, stages and results. Switching and reopening cannot exchange or discard their identities. An explicit follow-up stage preserves its predecessor's result; at most one stage runs per goal. This is not a general scheduler. |
 | Source editing and preview | Open exact Markdown, edit and save with the existing rendered preview. Frontmatter, wikilinks and unchanged bytes remain intact. Switching notes/goals must not silently drop a dirty draft: retain it or require an explicit save/discard choice. Writes remain limited to the selected writable brain. |
 | Source conflicts | A second managed writer's independent or overlapping edit produces an inspectable conflict with retained draft/current and base when available. Resolve deliberately against the displayed current revision; a further change creates another conflict. Preview uses the existing Reader. No silent overwrite or invented base history. |
 | Saved connector settings | CLIProxyAPI, Todoist and T3 have persistent configuration reachable from the ordinary UI, clear connection/authentication state and a concrete recovery action. Reopen retains non-secret settings and uses the configured credential reference. Missing/expired auth does not become an empty inbox, a completed task or a repeated provider command. |
 | Continuous execution | Closing the desktop leaves backend-owned T3 work running. Reconnect/backend recovery returns the same goal, stage, thread and result without duplicate starts or receipts. Changing account/target settings cannot silently reroute unfinished work. Interrupted chat is shown honestly and is not implicitly resent. |
 | Understandable goal flow | Capture → discuss → task → stage → result is navigable with original sources and the actual T3 thread accessible. Current blockers, required decisions and final outcomes are readable; routine progress and technical/historical evidence open in details. Engine success and verified goal completion remain distinct; a completed goal does not ask for the same human acceptance again. |
-| Exact export | Export the selected brain's canonical Markdown and local attachments with original bytes and relative paths, plus a file/revision manifest. Extract into a fresh directory and inspect notes/media independently of Tessera's internal database. Missing/unreadable or concurrently changed files cause an explicit failure/retry instead of a false complete archive. |
+| Exact export | Export the selected brain's canonical Markdown and local attachments with original bytes and relative paths, plus a file/revision manifest. Extract into a fresh directory and inspect notes/media independently of Okilum's internal database. Missing/unreadable or concurrently changed files cause an explicit failure/retry instead of a false complete archive. |
 
 Todoist remains task authority. A locally accepted planning artifact does not close
 an actual errand. Criteria that require human review retain the real review actor,
@@ -49,8 +49,8 @@ choice subject to these checks.
 
 The POC proved the real task/T3 round trip, human review, desktop absence during an
 active turn and native manual conflict resolution. See its
-[final receipt](https://git.oklabs.uk/BeFeast/tessera/issues/61#issuecomment-11336).
-[Source conflict issue #77](https://git.oklabs.uk/BeFeast/tessera/issues/77) and
+[final receipt](https://git.oklabs.uk/BeFeast/okilum/issues/61#issuecomment-11336).
+[Source conflict issue #77](https://git.oklabs.uk/BeFeast/okilum/issues/77) and
 [the application contract](ai-brain-application-api.md#source-conflict-inspection-and-explicit-resolution)
 explicitly distinguish preserved versions and manual resolution from automatic
 independent-edit merge. The alpha integrates that verified behavior; automatic
@@ -71,13 +71,13 @@ scope. Existing quality/performance gates remain binding.
 Each row is a small behavior issue with its own evidence; the final row joins them.
 Do not use this document to mark implementation or live acceptance complete.
 
-1. [Ordinary brain workspace/profile and note navigation (#80)](https://git.oklabs.uk/BeFeast/tessera/issues/80).
-2. [Multiple goals and retained sequential stages, with inbox selection/recovery (#81)](https://git.oklabs.uk/BeFeast/tessera/issues/81).
-3. [Source editor, preview and safe in-session conflict resolution in that workspace (#82)](https://git.oklabs.uk/BeFeast/tessera/issues/82).
-4. [Persistent connector settings, auth state and reconnect behavior (#83)](https://git.oklabs.uk/BeFeast/tessera/issues/83).
-5. [Integrated goal flow, current attention and expandable evidence/history details (#84)](https://git.oklabs.uk/BeFeast/tessera/issues/84).
-6. [Exact Markdown and attachment export with independent extraction checks (#85)](https://git.oklabs.uk/BeFeast/tessera/issues/85).
-7. [Joined halenote acceptance through ordinary Tessera (#86)](https://git.oklabs.uk/BeFeast/tessera/issues/86).
+1. [Ordinary brain workspace/profile and note navigation (#80)](https://git.oklabs.uk/BeFeast/okilum/issues/80).
+2. [Multiple goals and retained sequential stages, with inbox selection/recovery (#81)](https://git.oklabs.uk/BeFeast/okilum/issues/81).
+3. [Source editor, preview and safe in-session conflict resolution in that workspace (#82)](https://git.oklabs.uk/BeFeast/okilum/issues/82).
+4. [Persistent connector settings, auth state and reconnect behavior (#83)](https://git.oklabs.uk/BeFeast/okilum/issues/83).
+5. [Integrated goal flow, current attention and expandable evidence/history details (#84)](https://git.oklabs.uk/BeFeast/okilum/issues/84).
+6. [Exact Markdown and attachment export with independent extraction checks (#85)](https://git.oklabs.uk/BeFeast/okilum/issues/85).
+7. [Joined halenote acceptance through ordinary Okilum (#86)](https://git.oklabs.uk/BeFeast/okilum/issues/86).
 
 The workflow slice depends on goal identity and connector settings; source editing
 and export build on the workspace boundary. The joined run requires all slices.

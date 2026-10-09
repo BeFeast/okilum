@@ -22,17 +22,17 @@ static long delay_ns;
 static long metadata_delay_ns;
 
 __attribute__((constructor)) static void initialize(void) {
-    prefix = getenv("TESSERA_SLOW_FS_PREFIX");
-    const char *ms = getenv("TESSERA_SLOW_FS_MS");
+    prefix = getenv("OKILUM_SLOW_FS_PREFIX");
+    const char *ms = getenv("OKILUM_SLOW_FS_MS");
     delay_ns = ms ? strtol(ms, NULL, 10) * 1000000L : 0;
-    const char *metadata_us = getenv("TESSERA_SLOW_FS_METADATA_US");
+    const char *metadata_us = getenv("OKILUM_SLOW_FS_METADATA_US");
     metadata_delay_ns = metadata_us ? strtol(metadata_us, NULL, 10) * 1000L : delay_ns;
 }
 
-void tessera_slow_fs_phase(const char *name) {
+void okilum_slow_fs_phase(const char *name) {
     atomic_store(&phase, !strcmp(name, "positive_control") ? 1 : !strcmp(name, "warm_primary") ? 2 : !strcmp(name, "complete_graph") ? 3 : !strcmp(name, "warm_reconcile") ? 4 : !strcmp(name, "serial_sources") ? 5 : !strcmp(name, "parallel_sources") ? 6 : 0);
 }
-unsigned long tessera_slow_fs_count(int operation) {
+unsigned long okilum_slow_fs_count(int operation) {
     return atomic_load(&counts[atomic_load(&phase)][operation]);
 }
 static int matches(const char *path) {

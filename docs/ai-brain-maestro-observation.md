@@ -1,11 +1,11 @@
 # Linked Maestro work — observation contract
 
-P1 [issue152](https://git.oklabs.uk/BeFeast/tessera/issues/152). Backend implementation
+P1 [issue152](https://git.oklabs.uk/BeFeast/okilum/issues/152). Backend implementation
 contract; native integration and live alpha delivery have separate acceptance.
 This is **linked existing work**, not a complete Maestro execution adapter.
-Tessera still owns goals and outcome criteria; Maestro owns its queue, worker
+Okilum still owns goals and outcome criteria; Maestro owns its queue, worker
 attempts and PR execution. Linking invokes no Maestro command and creates no
-Tessera stage, StartEnvelope, ResultRecord or criterion evaluation.
+Okilum stage, StartEnvelope, ResultRecord or criterion evaluation.
 
 ## Configuration and capabilities
 
@@ -203,10 +203,10 @@ older executable unaware of the new journal/settings is not a compatible fallbac
 Preparing/verifying that build precedes any live alpha enrollment.
 
 No live Maestro action is necessary for fixture testing or deployment acceptance.
-The Tessera Maestro row remains paused. Full Maestro stage dispatch, context
+The Okilum Maestro row remains paused. Full Maestro stage dispatch, context
 transfer, start idempotency, cancellation and guarded approval control remain
 separate work. The current Maestro approval API must gain an atomic expected
-payload/revision guard before Tessera can promise approval of the exact displayed
+payload/revision guard before Okilum can promise approval of the exact displayed
 proposal; a stable approval ID alone is insufficient.
 
 A fixture verifier checks the actual enabled and maintenance executables against
@@ -215,5 +215,5 @@ GET observation, disabled new enrollment and unlink/restart. It uses no live
 provider or installed service:
 
 ```bash
-python3 scripts/verify-maestro-maintenance.py --enabled /path/to/enabled/tessera-cored --maintenance /path/to/maintenance/tessera-cored
+python3 scripts/verify-maestro-maintenance.py --enabled /path/to/enabled/okilum-cored --maintenance /path/to/maintenance/okilum-cored
 ```

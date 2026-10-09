@@ -1,7 +1,7 @@
 # Ordinary project workspace
 
 Issue #80 adds an ordinary app Workspace entrypoint, retaining the existing
-read-only Reader and the backend-backed BrainView. Starting `tessera` without
+read-only Reader and the backend-backed BrainView. Starting `okilum` without
 arguments opens the workspace entry. The existing `--vault` path remains available;
 a saved project brain reopens automatically when no local vault is requested.
 An explicit vault request preserves the Reader entrypoint; the saved brain remains
@@ -16,7 +16,7 @@ old servers lacking guarded workspace capability cannot be selected. The legacy
 
 ## Persistence and boundaries
 
-`$XDG_CONFIG_HOME/tessera/workspace.json` (fallback `~/.config/tessera/workspace.json`)
+`$XDG_CONFIG_HOME/okilum/workspace.json` (fallback `~/.config/okilum/workspace.json`)
 is an atomically replaced, non-secret JSON profile:
 
 ```json

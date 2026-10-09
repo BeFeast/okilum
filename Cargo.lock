@@ -7889,7 +7889,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tessera-brain"
+name = "okilum-brain"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -7903,7 +7903,7 @@ dependencies = [
  "sha2 0.10.9",
  "tar",
  "tempfile",
- "tessera-core",
+ "okilum-core",
  "time",
  "tokio",
  "tungstenite",
@@ -7911,7 +7911,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tessera-core"
+name = "okilum-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -7944,7 +7944,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tessera-cored"
+name = "okilum-cored"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -7953,13 +7953,13 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
- "tessera-brain",
- "tessera-core",
+ "okilum-brain",
+ "okilum-core",
  "tungstenite",
 ]
 
 [[package]]
-name = "tessera-shell"
+name = "okilum-shell"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -7993,8 +7993,8 @@ dependencies = [
  "signal-hook-registry",
  "similar",
  "tempfile",
- "tessera-core",
- "tessera-sync-controller",
+ "okilum-core",
+ "okilum-sync-controller",
  "time",
  "unicode-bidi",
  "unicode-linebreak",
@@ -8009,7 +8009,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tessera-sync"
+name = "okilum-sync"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -8019,7 +8019,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tessera-sync-controller"
+name = "okilum-sync-controller"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -8034,7 +8034,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
- "tessera-sync",
+ "okilum-sync",
  "url",
  "uuid",
  "windows 0.61.3",

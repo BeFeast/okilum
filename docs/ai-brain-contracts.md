@@ -14,7 +14,7 @@ values; these are not current cored commands or MCP tools. The existing reader
   outside records. Paths are relative to that root. Reject absolute paths, `..`,
   and symlink traversal escaping it. Preserve existing file paths and bytes.
 - Existing notes retain v0 path identity; do not insert IDs into unrelated notes.
-  New Tessera-owned goal/stage/context/result documents carry stable record IDs.
+  New Okilum-owned goal/stage/context/result documents carry stable record IDs.
   File moves do not change these IDs; duplicate IDs are an explicit conflict.
 - Timestamps are UTC RFC3339 strings. Missing facts are `null` or an empty list
   as defined below, never guessed values. Schema-required fields remain present.
@@ -220,7 +220,7 @@ Do not use a timeout, process absence or empty snapshot as proof of `not_started
 
 For T3, use its typed WebSocket create/start and snapshot/event/replay primitives;
 map actual status and outcome/diff evidence. Goal/thread mapping and extraction are
-Tessera responsibilities. A web route exists; verify the chosen opening path rather
+Okilum responsibilities. A web route exists; verify the chosen opening path rather
 than assume native desktop deep links. For Todoist, keep remote task authority and
 validate recurrence/reminder semantics for the selected operation. CLIProxyAPI serves
 native conversation; model errors/fallback must remain observable.
@@ -253,7 +253,7 @@ The POC's actual interactive acceptance remains in [scope and acceptance](ai-bra
 
 ## 6. Undispatched preparation correction — local workspace API
 
-Issue [#98](https://git.oklabs.uk/BeFeast/tessera/issues/98) adds two guarded
+Issue [#98](https://git.oklabs.uk/BeFeast/okilum/issues/98) adds two guarded
 operations to `ai-brain/workspace-v1` (the explicit legacy `ai-brain/v1` transport
 also accepts them). Capabilities advertise `prepared_stage_edit: true` and
 `guarded_start: true`. Clients connected to an older backend must not offer these

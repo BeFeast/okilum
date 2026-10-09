@@ -3,7 +3,7 @@
 The alpha export is a **knowledge archive**, not an execution backup. Its tar
 contains `brain/<original relative path>` for every included saved file and
 `manifest.json` beside that directory. Extract the tar with an ordinary archive
-manager, then open `brain/` as Markdown and media. No Tessera database, provider
+manager, then open `brain/` as Markdown and media. No Okilum database, provider
 connection or session is needed to inspect the files.
 
 The manifest records `tessera-knowledge-export/v1`, the original relative paths,
@@ -32,9 +32,9 @@ editors into an atomic snapshot boundary. All canonical writers must honor the
 managed boundary during export.
 
 Hidden Markdown and adjacent media remain canonical. The explicit reserved names
-`.git`, `.obsidian`, `.tessera`, `.tessera-index`, `.env`, `.env.local`,
+`.git`, `.obsidian`, `.okilum`, `.tessera-index`, `.env`, `.env.local`,
 `.env.production` and `credentials.json` are excluded at every directory level
-and listed in the manifest. Tessera connector credentials, configuration, drafts,
+and listed in the manifest. Okilum connector credentials, configuration, drafts,
 indexes and execution journals belong outside the canonical root; these names do
 not constitute secret-content scanning. Other regular files are included as local
 attachments regardless of file extension or renderer support. Originals are never
@@ -66,7 +66,7 @@ local destination. A backend filesystem path is not a client download.
 ## Ordinary desktop flow and API
 
 With a project brain open, choose **Export brain** in the Workspace bar, then a
-new local filename in the system save dialog. Tessera prepares saved knowledge on
+new local filename in the system save dialog. Okilum prepares saved knowledge on
 the backend, transfers bounded chunks and verifies the complete archive before
 publishing on this computer. **Show file** reveals the result. The banner reports
 file, exclusion and link-dependency counts; inspect `manifest.json` after extraction

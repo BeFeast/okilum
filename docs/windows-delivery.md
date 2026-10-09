@@ -8,8 +8,8 @@ PR artifacts never publish. Main publishes beta; the [unified releases workflow]
 promotes the matching builds on all three platforms without rebuilding or signing them.
 
 Public installer URLs:
-- https://updates.befeast.com/tessera/windows/beta/Setup.exe
-- https://updates.befeast.com/tessera/windows/stable/Setup.exe
+- https://updates.befeast.com/okilum/windows/beta/Setup.exe
+- https://updates.befeast.com/okilum/windows/stable/Setup.exe
 
 Beta is the default update preference, matching the packaged beta channel and
 the first published feed. To receive only promoted releases, select
@@ -32,8 +32,8 @@ applies a pending update.
 An offline check leaves the current version intact. Portable diagnostic builds
 have no automatic updates; use an installed release for update acceptance.
 
-Installation lives under `%LOCALAPPDATA%\BeFeast.Tessera`, separate from existing
-Reader state `%LOCALAPPDATA%\tessera`. No uninstall hook deletes user state or
+Installation lives under `%LOCALAPPDATA%\BeFeast.Okilum`, separate from existing
+Reader state `%LOCALAPPDATA%\okilum`. No uninstall hook deletes user state or
 vaults. The Windows Reader reads, searches and edits notes with native safe
 saves. Shaders and third-party notices ship with the app. The installer and app are currently unsigned: Windows SmartScreen
 may show “Windows protected your PC”; verify the official URL, then use
@@ -43,7 +43,7 @@ CI restores the previous full beta package to create deltas. Publishing verifies
 package sizes/SHA256, uploads packages first and the feed last; failure before
 feed publication leaves clients on the previous release. Immutable build metadata
 and Setup.exe support exact-build promotion. Failed or older publications cannot
-roll the feed back. The optional `TESSERA_WINDOWS_SIGN_TEMPLATE` packager hook is
+roll the feed back. The optional `OKILUM_WINDOWS_SIGN_TEMPLATE` packager hook is
 unset until a signing service/certificate is configured; no signing secret exists.
 The unsigned feed relies on HTTPS and the update host; package hashes provide
 integrity, not independent publisher authentication.
@@ -56,7 +56,7 @@ integrity, not independent publisher authentication.
    dismiss the toast and verify **Restart to update** remains in About/menu.
    Select Restart: About must show N+1; window/theme/current document survive.
    Repeat with an unsaved edit and a standalone file; failed draft protection
-   must keep Tessera open. A second open document window must block Restart
+   must keep Okilum open. A second open document window must block Restart
    with a clear instruction, and closing it must permit an explicit retry.
 3. Repeat offline: checking shows an error, and the existing app/vault still work.
 4. Uninstall through Windows Settings. The vault and Reader user state remain.

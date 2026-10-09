@@ -22,7 +22,7 @@ class ReleasePathsTests(unittest.TestCase):
         ]:
             paths = patterns(workflow)
             self.assertTrue(paths)
-            for path in ['crates/tessera-shell/src/reader_settings.rs',
+            for path in ['crates/okilum-shell/src/reader_settings.rs',
                          'docs/releases.md', 'README.md', unrelated]:
                 self.assertFalse(any(fnmatch.fnmatchcase(path, p) for p in paths), path)
 
@@ -40,7 +40,7 @@ class ReleasePathsTests(unittest.TestCase):
         for workflow in ['linux-release.yml', 'windows-diagnostic.yml']:
             paths = patterns(workflow)
             for path in ['Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml',
-                         'crates/tessera-shell/Cargo.toml', 'crates/tessera-shell/build.rs',
+                         'crates/okilum-shell/Cargo.toml', 'crates/okilum-shell/build.rs',
                          'scripts/vendor-setup.sh', 'scripts/patches/0001-test.diff',
                          'scripts/ci/release-cache.sh']:
                 self.assertFalse(any(fnmatch.fnmatchcase(path, p) for p in paths), path)

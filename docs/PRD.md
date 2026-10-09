@@ -1,4 +1,4 @@
-# Tessera — Product Requirements
+# Okilum — Product Requirements
 
 Approved at the promotion interview on 2026-09-02. This file is the canonical product
 contract for the code. It supersedes the intake idea note, which stays as the origin
@@ -29,7 +29,7 @@ provider jobs, canonical enrollment or deployment.
 
 **Typed note views extension (2026-10-07, #636):** [typed views and Tasks editing](typed-note-views.md) defines native views over plain Markdown, explicit revision-checked task edits and Undo. The reader/MCP protocol remains read-only.
 
-## 1. What Tessera is
+## 1. What Okilum is
 
 A local-first desktop knowledge environment that replaces Obsidian without taking
 ownership of the files.
@@ -47,7 +47,7 @@ Product pillars, in the order they will be defended when they conflict:
 ## 2. Canonical data
 
 - Markdown and adjacent media files are canonical, inspectable, portable, and
-  editable without Tessera.
+  editable without Okilum.
 - Search indexes, thumbnails, embeddings, graph projections, and caches are **derived**
   and must be rebuildable from the files alone.
 - **v0 does not write to your notes.** Editing is external. This is a hard constraint,
@@ -66,7 +66,7 @@ client over the frozen protocol.
 **Decision (2026-09-02): identity is the path from the vault root.**
 
 Resolution follows Obsidian's shortest-unique-path rule so existing vaults keep
-working. Where Tessera departs from Obsidian: **an ambiguous link is surfaced as
+working. Where Okilum departs from Obsidian: **an ambiguous link is surfaced as
 ambiguous.** It is not silently resolved to an arbitrary winner.
 
 The vault this was decided against has 3933 notes, 580 of them (14.6%) sharing a
@@ -96,9 +96,9 @@ disambiguates itself. The measured number is 199.
 Rejected alternatives, and why:
 
 - **Frontmatter UUID as canonical id.** The most robust answer to renames, moves, and
-  sync — and it requires Tessera to write into the user's files, which §2 forbids in
+  sync — and it requires Okilum to write into the user's files, which §2 forbids in
   v0. Revisit if and when v0's read-only constraint is lifted.
-- **Tessera-owned sidecar identity database.** Survives renames without touching
+- **Okilum-owned sidecar identity database.** Survives renames without touching
   files, but introduces authoritative state that can drift from disk and does not
   travel between devices. Rejected as a worse trade than honest path identity.
 
@@ -256,7 +256,7 @@ measurable.
 
 ## 11. AI Brain POC
 
-Tessera carries a thought through task, execution and durable knowledge, removing
+Okilum carries a thought through task, execution and durable knowledge, removing
 manual context transfer between systems. It owns the goal and overall plan while
 execution engines own their delegated stages. The selected vertical is inbox →
 native conversation → task connector → T3 stage → Markdown outcome/evidence →

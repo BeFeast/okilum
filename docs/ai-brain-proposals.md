@@ -2,8 +2,8 @@
 
 **Status: proposed P1 implementation contract.** This document defines the next
 slice; it does not enable jobs, provider requests, source enrollment or deployment.
-Track work in [#166](https://git.oklabs.uk/BeFeast/tessera/issues/166); goal context
-continuity from [#160](https://git.oklabs.uk/BeFeast/tessera/issues/160) is a prerequisite.
+Track work in [#166](https://git.oklabs.uk/BeFeast/okilum/issues/166); goal context
+continuity from [#160](https://git.oklabs.uk/BeFeast/okilum/issues/160) is a prerequisite.
 The [approved autonomy boundary](ai-brain-poc.md#data-autonomy-and-completion)
 permits proactive drafts. Existing task, engine and completion authority remains.
 
@@ -60,12 +60,12 @@ goal from similarity or silently widen scope. Reuse
 [retrieval/context freshness](ai-brain-retrieval-context.md#retrieval-boundary).
 
 A versioned, workspace-owned policy selects the existing saved Chat provider/model
-and credential reference through [connector settings](../crates/tessera-brain/src/settings.rs).
+and credential reference through [connector settings](../crates/okilum-brain/src/settings.rs).
 Freeze non-secret provider/model identity and exact input revisions into each
 attempt; resolve credentials at dispatch. Never copy credentials into the proposal,
 model response or export. Missing configuration is visible `unavailable`, not an
 implicit model/provider fallback. Reuse bounded transport/cancellation from
-[Chat](../crates/tessera-brain/src/chat.rs); run outside the Runner lock.
+[Chat](../crates/okilum-brain/src/chat.rs); run outside the Runner lock.
 
 Initial limits: one running attempt per brain, 32 queued trigger intents, 20 exact
 citations, 48 KiB cited bytes and 64 KiB total input. Oversized/incomplete input is
@@ -87,7 +87,7 @@ not lose user decisions. Source updates use normal revision guards/conflict rete
 
 Keep trigger/attempt/adoption receipts and cursor state outside the deletable index.
 Reuse atomic write/fsync/cancel/restart techniques in
-[context jobs](../crates/tessera-brain/src/context_jobs.rs), not its export-job schema:
+[context jobs](../crates/okilum-brain/src/context_jobs.rs), not its export-job schema:
 exports currently require a reviewed goal packet and cannot represent unplanned
 Inbox input. Use a create-only source operation retained before writing the draft;
 crashes between projection and receipt must recover the same canonical record.
@@ -131,7 +131,7 @@ are already sufficient. Inbox adoption uses the existing idempotent
 [inbox_plan](ai-brain-inbox-planning.md#native-command) request and records its goal
 receipt. Context adoption wraps the existing context form/preparation path, retaining
 its target packet identity and complete payload before writes: current
-[context_prepare](../crates/tessera-brain/src/application.rs) allocates a fresh packet
+[context_prepare](../crates/okilum-brain/src/application.rs) allocates a fresh packet
 per call and cannot itself deduplicate a lost adoption response. Extend its internal
 creation seam to reuse the operation-bound target; do not retry arbitrary packet
 creation. This extension is part of implementation slice A below.

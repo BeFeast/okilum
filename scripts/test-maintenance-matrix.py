@@ -30,7 +30,7 @@ class Guards(unittest.TestCase):
     def test_unknown_or_ambiguous_posture_refuses(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
-            path = root / "crates/tessera-brain/src/maestro_links.rs"
+            path = root / "crates/okilum-brain/src/maestro_links.rs"
             path.parent.mkdir(parents=True)
             for text in ["", "pub const NEW_LINKS_ENABLED: bool = dynamic();", "pub const NEW_LINKS_ENABLED: bool = true;\npub const NEW_LINKS_ENABLED: bool = false;"]:
                 path.write_text(text)
@@ -54,18 +54,18 @@ class Guards(unittest.TestCase):
     def test_frozen_receipt_and_gui_binding_reject_tampering(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
-            (root / "tessera-cored").write_bytes(b"backend")
-            (root / "tessera").write_bytes(b"gui")
+            (root / "okilum-cored").write_bytes(b"backend")
+            (root / "okilum").write_bytes(b"gui")
             sha = lambda data: hashlib.sha256(data).hexdigest()
-            receipt = {"commit": "a" * 40, "files": {"tessera-cored": sha(b"backend"), "tessera": sha(b"gui")}, "compiler_artifacts": {"tessera": {}, "tessera-cored": {}}}
+            receipt = {"commit": "a" * 40, "files": {"okilum-cored": sha(b"backend"), "okilum": sha(b"gui")}, "compiler_artifacts": {"okilum": {}, "okilum-cored": {}}}
             freeze = root / "freeze.json"
             freeze.write_text(json.dumps(receipt))
-            entry = {"binary": "tessera-cored", "sha256": sha(b"backend"), "source": "a" * 40, "freeze": "freeze.json", "freeze_sha256": sha(freeze.read_bytes()), "feature_graph": "gui+cored"}
-            self.assertEqual(m.artifact(entry, root), root / "tessera-cored")
-            (root / "tessera").write_bytes(b"another gui")
+            entry = {"binary": "okilum-cored", "sha256": sha(b"backend"), "source": "a" * 40, "freeze": "freeze.json", "freeze_sha256": sha(freeze.read_bytes()), "feature_graph": "gui+cored"}
+            self.assertEqual(m.artifact(entry, root), root / "okilum-cored")
+            (root / "okilum").write_bytes(b"another gui")
             with self.assertRaises(ValueError):
                 m.artifact(entry, root)
-            (root / "tessera").write_bytes(b"gui")
+            (root / "okilum").write_bytes(b"gui")
             freeze.write_text(json.dumps({**receipt, "commit": "b" * 40}))
             with self.assertRaises(ValueError):
                 m.artifact(entry, root)

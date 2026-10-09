@@ -1,6 +1,6 @@
 # Managed incoming references
 
-Approved contract for [issue297](https://git.oklabs.uk/BeFeast/tessera/issues/297). Incoming references are a derived, read-only view of the current managed workspace. Engineering budgets below are explicit bounds, not measured performance claims.
+Approved contract for [issue297](https://git.oklabs.uk/BeFeast/okilum/issues/297). Incoming references are a derived, read-only view of the current managed workspace. Engineering budgets below are explicit bounds, not measured performance claims.
 
 ## User behavior and coverage
 

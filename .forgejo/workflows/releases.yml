@@ -19,7 +19,7 @@ on:
 # Scheduled Beta never edits the appcast or queues against the M4 release.
 # Platform beta publishers finish independently; Beta mirrors each current public platform head.
 concurrency:
-  group: ${{ inputs.build != '' && 'tessera-macos-release' || 'tessera-github-beta' }}
+  group: ${{ inputs.build != '' && 'okilum-macos-release' || 'okilum-github-beta' }}
   cancel-in-progress: false
 jobs:
   github-mirror:
@@ -39,7 +39,7 @@ jobs:
         env:
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FORGEJO_URL: ${{ github.server_url }}
-          MIRROR_TOKEN: ${{ secrets.TESSERA_GITHUB_MIRROR }}
+          MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
           R2_ENDPOINT: ${{ vars.R2_ENDPOINT }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}

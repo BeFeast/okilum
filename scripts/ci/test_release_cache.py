@@ -26,7 +26,7 @@ class CacheFallbackTests(unittest.TestCase):
                     path.write_text('#!/bin/bash\n' + body + '\n')
                     path.chmod(0o755)
                 env = dict(os.environ, PATH=str(root) + ':' + os.environ['PATH'],
-                           TESSERA_SCCACHE_HOME=str(root / 'cache'), AWS_ACCESS_KEY_ID='test',
+                           OKILUM_SCCACHE_HOME=str(root / 'cache'), AWS_ACCESS_KEY_ID='test',
                            SCCACHE_ENDPOINT='test', MODE=mode, CALLS=str(root / 'calls'))
                 shell = r"""
                 ulimit() {
@@ -64,7 +64,7 @@ class CacheFallbackTests(unittest.TestCase):
                 curl.chmod(0o755)
                 env = {**os.environ, 'PATH': str(root) + ':' + os.environ['PATH'],
                        'AWS_ACCESS_KEY_ID': 'test', 'SCCACHE_ENDPOINT': 'test',
-                       'TESSERA_SCCACHE_HOME': str(root / 'cache'),
+                       'OKILUM_SCCACHE_HOME': str(root / 'cache'),
                        'CACHE_TEST_CALLED': str(root / 'called')}
                 env.pop('RUSTC_WRAPPER', None)
                 result = subprocess.run(['bash', '-eu', '-c',
@@ -98,7 +98,7 @@ class CacheFallbackTests(unittest.TestCase):
                     p.chmod(0o755)
                 env = {**os.environ, 'PATH': str(root) + ':' + os.environ['PATH'],
                        'AWS_ACCESS_KEY_ID': 'test', 'SCCACHE_ENDPOINT': 'http://cache.invalid',
-                       'TESSERA_SCCACHE_HOME': str(root / 'cache'),
+                       'OKILUM_SCCACHE_HOME': str(root / 'cache'),
                        'RUSTC_WRAPPER': '/stale/wrapper', 'PROBE_ARGS': str(root / 'args')}
                 result = subprocess.run(['bash', '-eu', '-c',
                     'source "$1"; printf "wrapper=%s\\n" "${RUSTC_WRAPPER:-}"; printf "socket=%s\\n" "${SCCACHE_SERVER_UDS:-}"; echo compiler-continues',

@@ -1,6 +1,6 @@
 # LAN QA deployment plan (#465)
 
-Target: `ssh tessera-inbox-dev`, DevBox CT119, Debian 13, `/opt/tessera-inbox`.
+Target: `ssh okilum-inbox-dev`, DevBox CT119, Debian 13, `/opt/okilum-inbox`.
 Compose ingress binds **10.10.0.34:8080**; existing NPM terminates TLS at
 `https://inbox-qa.oklabs.uk`. Keep the daemon listener on loopback inside the
 Compose network namespace shared with the ingress proxy. The daemon is never
@@ -31,15 +31,15 @@ This plan is not a claim that a hook or restore test has already been installed.
 
 ## Compose procedure
 
-Copy a reviewed source tree to `/opt/tessera-inbox/source` on CT119. From
+Copy a reviewed source tree to `/opt/okilum-inbox/source` on CT119. From
 `source/inbox/deploy`, run `sudo docker compose build` then `sudo docker compose up -d`.
 The init service creates private data/backups and four allowed fixture folders.
-Provision `/opt/tessera-inbox/secrets/cliproxy-key` as god (uid1000), mode0600,
+Provision `/opt/okilum-inbox/secrets/cliproxy-key` as god (uid1000), mode0600,
 from an Infisical reference; never include it in the source archive or `.env`.
 Compose `.env` may hold `AI_ENDPOINT`, `AI_MODEL`, `CLIPROXY_CREDENTIAL_FILE` only.
 For capture-only checks, an empty private credential file is sufficient with AI unset.
 
-Enrollment: `sudo docker compose exec inbox tessera-inboxd bootstrap --data-dir
+Enrollment: `sudo docker compose exec inbox okilum-inboxd bootstrap --data-dir
 /data --origin https://inbox-qa.oklabs.uk`. Run in a private terminal and open the
 printed fragment URL within ten minutes. Do not copy it into issue comments/logs.
 The UI can publish only into Projects/Areas/Resources/Archives on the fixture volume.

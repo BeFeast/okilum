@@ -1,0 +1,23 @@
+[package]
+name = "okilum-cored"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[[bin]]
+name = "okilum-cored"
+path = "src/main.rs"
+
+[dependencies]
+okilum-core = { workspace = true, features = ["brain"] }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+okilum-brain = { path = "../okilum-brain" }
+
+[dev-dependencies]
+base64 = "0.22"
+tempfile = "3"
+sha2 = "0.10"
+tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }

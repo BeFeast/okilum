@@ -59,7 +59,7 @@ until the async full parse is adopted; it is never guessed.
 
 ## Evidence
 
-`tessera-core`: container display corpus (three depths, ordered/task markers,
+`okilum-core`: container display corpus (three depths, ordered/task markers,
 lazy quotes, BOM/CRLF, tabs, ru/he/niqqud/combining/emoji, unsupported siblings),
 reference forms and quiet definitions, local reparse equal to a fresh parse for
 edits in containers, and refusals for definitions, unsupported content,

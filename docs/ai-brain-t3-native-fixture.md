@@ -9,7 +9,7 @@ refused. This does not launch a GUI or access an existing brain/provider.
 Prerequisites: Python 3 with `aiohttp`; the pinned Rust toolchain. Build the fixture:
 
 ```sh
-cargo build -p tessera-brain --example t3-target-native-fixture
+cargo build -p okilum-brain --example t3-target-native-fixture
 python3 scripts/t3-target-fake-provider.py --self-test
 python3 scripts/t3-target-fake-provider.py --directory /absolute/fresh/fake
 ```
@@ -24,7 +24,7 @@ target/debug/examples/t3-target-native-fixture /absolute/fresh/brain http://127.
 
 The Brain fixture rejects existing directories and non-loopback endpoints. It
 creates `fixture.json`, canonical records, durable runtime state, a public fixture
-token file and `config/tessera/workspace.json`. The fixture's candidate uses this
+token file and `config/okilum/workspace.json`. The fixture's candidate uses this
 file reference, so no environment credential or actual provider is needed.
 
 Headless integration verification:

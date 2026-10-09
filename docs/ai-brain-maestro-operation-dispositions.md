@@ -1,7 +1,7 @@
 # Recoverable Maestro operation dispositions
 
-Follow-up [issue156](https://git.oklabs.uk/BeFeast/tessera/issues/156), stacked on
-[PR155](https://git.oklabs.uk/BeFeast/tessera/pulls/155). This extends local link and
+Follow-up [issue156](https://git.oklabs.uk/BeFeast/okilum/issues/156), stacked on
+[PR155](https://git.oklabs.uk/BeFeast/okilum/pulls/155). This extends local link and
 unlink recovery; it introduces no Maestro control operation or execution framework.
 
 ## Durable meaning

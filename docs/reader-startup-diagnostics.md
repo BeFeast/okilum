@@ -8,12 +8,12 @@ reports append without replacing startup timings. No note content is logged.
 On macOS, send the latest launch timings with one Terminal command:
 
 ```sh
-tail -n 250 "$HOME/Library/Application Support/uk.oklabs.tessera/reader-diagnostic.log"
+tail -n 250 "$HOME/Library/Application Support/com.befeast.okilum/reader-diagnostic.log"
 ```
 
-On Linux the file is `$XDG_STATE_HOME/tessera/reader-diagnostic.log`, or
-`~/.local/state/tessera/reader-diagnostic.log` when that variable is unset.
-Windows retains `%LOCALAPPDATA%\tessera\reader-diagnostic.log`.
+On Linux the file is `$XDG_STATE_HOME/okilum/reader-diagnostic.log`, or
+`~/.local/state/okilum/reader-diagnostic.log` when that variable is unset.
+Windows retains `%LOCALAPPDATA%\okilum\reader-diagnostic.log`.
 
 `elapsed_ms` uses the process startup clock; `details.duration_ms` measures a
 single operation. `launch`, `build`, and `version` distinguish runs. The clock
@@ -61,13 +61,13 @@ creation are excluded. Build and run from the repository root:
 ```sh
 /usr/bin/cc -shared -fPIC -O2 -Wall -Wextra -Werror \
   scripts/probes/slow-vault-fs.c -ldl -o target/slow-vault-fs.so
-cargo test --locked -p tessera-core --lib \
+cargo test --locked -p okilum-core --lib \
   warm_primary_five_thousand_links_cloud_profile --no-run
-# Use the tessera_core executable printed by cargo, not cargo itself:
-TESSERA_SLOW_FS_PREFIX=/tmp/tessera-cloud-link- \
-TESSERA_SLOW_FS_MS=2 TESSERA_CLOUD_PROFILE_SAMPLES=3 \
+# Use the okilum_core executable printed by cargo, not cargo itself:
+OKILUM_SLOW_FS_PREFIX=/tmp/okilum-cloud-link- \
+OKILUM_SLOW_FS_MS=2 OKILUM_CLOUD_PROFILE_SAMPLES=3 \
 LD_PRELOAD="$PWD/target/slow-vault-fs.so" \
-  target/debug/deps/tessera_core-<hash> \
+  target/debug/deps/okilum_core-<hash> \
   warm_primary_five_thousand_links_cloud_profile \
   --ignored --nocapture --test-threads=1
 ```
@@ -93,11 +93,11 @@ To include startup cache loading, text preparation and the first GPUI test-rende
 draw, build the shell test executable and run the publication probe:
 
 ```sh
-cargo test --locked -p tessera-shell warm_first_tree_frame_profile --no-run
-TESSERA_SLOW_FS_PREFIX=/tmp/tessera-warm-frame- TESSERA_SLOW_FS_MS=2 \
-TESSERA_WARM_PROFILE_PARAGRAPHS=350 TESSERA_WARM_PROFILE_LINKS=100 \
+cargo test --locked -p okilum-shell warm_first_tree_frame_profile --no-run
+OKILUM_SLOW_FS_PREFIX=/tmp/okilum-warm-frame- OKILUM_SLOW_FS_MS=2 \
+OKILUM_WARM_PROFILE_PARAGRAPHS=350 OKILUM_WARM_PROFILE_LINKS=100 \
 LD_PRELOAD="$PWD/target/slow-vault-fs.so" \
-  target/debug/deps/tessera-<hash> warm_first_tree_frame_profile \
+  target/debug/deps/okilum-<hash> warm_first_tree_frame_profile \
   --ignored --nocapture --test-threads=1
 ```
 
@@ -111,7 +111,7 @@ from the deterministic executor's serial background execution; it is not the
 latency injection. The probe cancels that reconcile after measurement. Existing
 warm UI regressions cover completion, input, selection and position retention.
 These test-renderer numbers exclude native window/GPU presentation.
-With `TESSERA_WARM_PROFILE_LINKS=5000`, three clean stress samples were
+With `OKILUM_WARM_PROFILE_LINKS=5000`, three clean stress samples were
 1848.39/1797.36/1926.43 ms, still before reconciliation. The extra time is text
 preparation/layout, not per-link vault I/O; filesystem counts stayed identical.
 
@@ -141,10 +141,10 @@ purely in-memory resolutions.
 Run the complete-graph probe with the same test executable and preload:
 
 ```sh
-TESSERA_SLOW_FS_PREFIX=/tmp/tessera-cloud-graph- \
-TESSERA_SLOW_FS_MS=2 TESSERA_CLOUD_PROFILE_SAMPLES=2 \
+OKILUM_SLOW_FS_PREFIX=/tmp/okilum-cloud-graph- \
+OKILUM_SLOW_FS_MS=2 OKILUM_CLOUD_PROFILE_SAMPLES=2 \
 LD_PRELOAD="$PWD/target/slow-vault-fs.so" \
-  target/debug/deps/tessera_core-<hash> complete_backlinks_cloud_profile \
+  target/debug/deps/okilum_core-<hash> complete_backlinks_cloud_profile \
   --ignored --nocapture --test-threads=1
 ```
 
@@ -201,10 +201,10 @@ matching defect, and these native counters distinguish any remaining cause.
 Run the imported-time fixture using the core test executable and the same preload:
 
 ```sh
-TESSERA_SLOW_FS_PREFIX=/tmp/tessera-coarse-reconcile- \
-TESSERA_SLOW_FS_MS=2 TESSERA_SLOW_FS_METADATA_US=100 \
-TESSERA_CLOUD_PROFILE_SAMPLES=2 LD_PRELOAD="$PWD/target/slow-vault-fs.so" \
-  target/debug/deps/tessera_core-<hash> imported_mtime_warm_reconcile_profile \
+OKILUM_SLOW_FS_PREFIX=/tmp/okilum-coarse-reconcile- \
+OKILUM_SLOW_FS_MS=2 OKILUM_SLOW_FS_METADATA_US=100 \
+OKILUM_CLOUD_PROFILE_SAMPLES=2 LD_PRELOAD="$PWD/target/slow-vault-fs.so" \
+  target/debug/deps/okilum_core-<hash> imported_mtime_warm_reconcile_profile \
   --ignored --nocapture --test-threads=1
 ```
 
@@ -258,10 +258,10 @@ directory classification and invalid-history flags.
 Run the paired 5001-note root-event probe using the shell test executable:
 
 ```sh
-TESSERA_SLOW_FS_PREFIX=/tmp/tessera-replay-directory- \
-TESSERA_SLOW_FS_MS=2 TESSERA_SLOW_FS_METADATA_US=100 \
+OKILUM_SLOW_FS_PREFIX=/tmp/okilum-replay-directory- \
+OKILUM_SLOW_FS_MS=2 OKILUM_SLOW_FS_METADATA_US=100 \
 LD_PRELOAD="$PWD/target/slow-vault-fs.so" \
-  target/debug/deps/tessera-<hash> \
+  target/debug/deps/okilum-<hash> \
   reader_replay::tests::directory_replay_cloud_profile \
   --exact --ignored --nocapture --test-threads=1
 ```
@@ -334,11 +334,11 @@ after builds and other tests in this worktree have finished:
 ```sh
 /usr/bin/cc -shared -fPIC -O2 -Wall -Wextra -Werror \
   scripts/probes/slow-vault-fs.c -ldl -o target/slow-vault-fs.so
-cargo test --locked -p tessera-core --lib parallel_source_latency_profile --no-run
-TESSERA_SLOW_FS_PREFIX=/tmp/tessera-source-latency- \
-TESSERA_SLOW_FS_MS=2 TESSERA_SLOW_FS_METADATA_US=100 \
-TESSERA_CLOUD_PROFILE_SAMPLES=2 LD_PRELOAD="$PWD/target/slow-vault-fs.so" \
-  target/debug/deps/tessera_core-<hash> \
+cargo test --locked -p okilum-core --lib parallel_source_latency_profile --no-run
+OKILUM_SLOW_FS_PREFIX=/tmp/okilum-source-latency- \
+OKILUM_SLOW_FS_MS=2 OKILUM_SLOW_FS_METADATA_US=100 \
+OKILUM_CLOUD_PROFILE_SAMPLES=2 LD_PRELOAD="$PWD/target/slow-vault-fs.so" \
+  target/debug/deps/okilum_core-<hash> \
   vault::warm::tests::parallel_source_latency_profile \
   --exact --ignored --nocapture --test-threads=1
 ```
@@ -392,8 +392,8 @@ Benchmark (release profile, 5001 generated notes, 48.45 MB source bank; every
 warm sample asserts zero source reads, 5001 reused and a retained graph):
 
 ```sh
-cargo test --release --locked -p tessera-shell --bin tessera --no-run
-target/release/deps/tessera-<hash> warm_startup_tail_profile \
+cargo test --release --locked -p okilum-shell --bin okilum --no-run
+target/release/deps/okilum-<hash> warm_startup_tail_profile \
   --ignored --nocapture --test-threads=1
 ```
 
@@ -408,7 +408,7 @@ Same Linux container and session, paired binaries, five samples each (ms):
 | reconcile start to Ready | 754.7–847.9 | 405.1–560.4 |
 
 The test asserts a 400 ms tail budget in release builds;
-`TESSERA_WARM_TAIL_BUDGET_MS` overrides it for a slower host. `vault_ready` is
+`OKILUM_WARM_TAIL_BUDGET_MS` overrides it for a slower host. `vault_ready` is
 a UI-thread event: this probe measures the worker up to the Ready event, not
 native window/GPU presentation. Native macOS/iCloud timings remain owner QA.
 

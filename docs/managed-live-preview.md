@@ -1,6 +1,6 @@
 # Managed-note Live Preview — bounded first slice
 
-Status: reviewed contract for [P1 issue #211](https://git.oklabs.uk/BeFeast/tessera/issues/211).
+Status: reviewed contract for [P1 issue #211](https://git.oklabs.uk/BeFeast/okilum/issues/211).
 The mapping/classifier and native adapter are accepted through #216/#218/#219.
 Managed integration is implemented in #220; its integrated native acceptance is
 tracked separately from source tests. See [integration](managed-live-preview-integration.md).

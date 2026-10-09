@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#F2F6FC">
   <meta name="referrer" content="no-referrer">
-  <title>Inbox · Tessera</title>
+  <title>Inbox · Okilum</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml" media="(prefers-color-scheme: light)">
   <link rel="icon" href="/icon-dark.svg" type="image/svg+xml" media="(prefers-color-scheme: dark)">
   <link rel="manifest" href="/manifest.webmanifest">
@@ -14,7 +14,7 @@
 </head>
 <body>
   <aside class="sidebar">
-    <a class="brand" href="/" aria-label="Tessera home"><img src="/icon.svg" alt="" width="28" height="28"><span>Tessera</span><span class="edition">Inbox</span></a>
+    <a class="brand" href="/" aria-label="Okilum home"><img src="/icon.svg" alt="" width="28" height="28"><span>Okilum</span><span class="edition">Inbox</span></a>
     <button id="new-thought" class="new-thought" aria-label="New thought">New thought</button>
     <nav aria-label="Main navigation"><button data-nav="inbox">Inbox</button><button data-nav="questions">Questions</button><button data-nav="projects">Projects</button><button data-nav="overview">Overview</button></nav>
     <div class="sidebar-bottom"><span class="workspace-mark">T</span><div>Your workspace<small>Personal · LAN</small></div><button id="devices-settings"></button><button id="theme-toggle"></button></div>
@@ -95,11 +95,11 @@
   <dialog id="signout-dialog"><h2>Keep your unsent thoughts</h2><p>Some thoughts are still on this device. Export a copy before signing out. The local originals will stay here for this account.</p><div class="dialog-actions"><button id="cancel-signout" class="quiet">Stay signed in</button><button id="export-signout">Export and sign out</button></div></dialog>
   <dialog id="sync-pairing-dialog" aria-labelledby="sync-pairing-title">
     <div class="dialog-heading"><h2 id="sync-pairing-title">Add this computer</h2><button id="sync-pairing-close" class="icon-button" aria-label="Close folder sync">×</button></div>
-    <p id="sync-pairing-intro">Connect Tessera on your computer to a vault. Approve only a request you started.</p>
+    <p id="sync-pairing-intro">Connect Okilum on your computer to a vault. Approve only a request you started.</p>
     <button id="sync-pairing-login">Sign in with passkey</button>
     <section id="sync-pairing-details" hidden>
       <h3 id="sync-pairing-name"></h3><small>Computer identity</small><p id="sync-pairing-device" class="sync-device-id"></p>
-      <p>Compare this code with Tessera:</p><strong id="sync-pairing-code"></strong>
+      <p>Compare this code with Okilum:</p><strong id="sync-pairing-code"></strong>
       <label class="sync-code-match"><input id="sync-pairing-match" type="checkbox"><span>The code matches my computer</span></label>
       <label for="sync-pairing-vault">Vault</label><select id="sync-pairing-vault"></select>
       <p class="muted">Changes and deletions will sync between connected computers. Sync is not a backup.</p>
@@ -116,6 +116,6 @@
   </dialog>
   <dialog id="devices-dialog" aria-labelledby="devices-title"><div class="dialog-heading"><h2 id="devices-title">Passkeys &amp; devices</h2><button id="devices-close" class="icon-button" aria-label="Close settings">×</button></div><button id="sync-pairing-open" class="quiet">Folder sync computers</button><ul id="passkey-list" class="device-list"></ul><p class="muted">Synced copies share a key. Revoking it signs out every copy.</p><form id="add-passkey-form"><input id="passkey-name" aria-label="Passkey name" placeholder="Name this passkey" required maxlength="100"><button type="submit">Add passkey here</button></form><div class="dialog-actions"><button id="invite-device" class="quiet">Add another device</button></div><div id="invite-link-row" hidden><input id="invite-link" aria-label="One-use device link" readonly><button id="copy-invite" class="quiet">Copy link</button><p class="muted">Open on the new device within five minutes, then confirm its code here.</p></div><ul id="device-invitations" class="device-list"></ul><p id="devices-status" role="status"></p></dialog>
   <dialog id="join-device-dialog" aria-labelledby="join-device-title"><div class="dialog-heading"><h2 id="join-device-title">Add this device</h2><button id="join-device-close" class="icon-button" aria-label="Close">×</button></div><form id="join-device-form"><input id="join-device-name" aria-label="Device name" placeholder="Name this device" required maxlength="100"><button id="join-device-save">Create passkey</button></form><p id="join-device-code" class="pairing-code"></p><p id="join-device-status" role="status"></p><button id="join-device-login" hidden>Sign in</button></dialog>
-  <noscript>This Inbox needs JavaScript for passkey sign-in and local offline capture. Tessera Reader remains available separately.</noscript>
+  <noscript>This Inbox needs JavaScript for passkey sign-in and local offline capture. Okilum Reader remains available separately.</noscript>
 </body>
 </html>

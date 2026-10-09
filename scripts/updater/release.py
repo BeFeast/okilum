@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """Publish macOS builds to the shared BeFeast update feed and Forgejo releases.
 
-  release.py --app tessera publish ARCHIVE --build N --short-version V
+  release.py --app okilum publish ARCHIVE --build N --short-version V
              --source SHA --tree SHA --signature EDSIG --channel beta
-  release.py --app tessera promote --build N
+  release.py --app okilum promote --build N
 
 The feed is the Cloudflare R2 bucket `befeast-updates` behind
 https://updates.befeast.com, one folder per app: `<app>/appcast.xml` and
 `<app>/<build>/<zip>`. Each build is also kept as Forgejo release
 `macos-stable-<build>` in the calling repository for rollback. If that repository
-has a `macos-stable` release (Tessera's feed up to build 5873), the appcast is
+has a `macos-stable` release (Okilum's feed up to build 5873), the appcast is
 mirrored there too.
 
 Environment: FORGEJO_TOKEN, GITHUB_REPOSITORY (owner/repo, set by Actions),
@@ -31,7 +31,7 @@ import urllib.parse
 import urllib.request
 import uuid
 
-REPO = os.environ.get('GITHUB_REPOSITORY', 'BeFeast/tessera')
+REPO = os.environ.get('GITHUB_REPOSITORY', 'BeFeast/okilum')
 FEED_TAG = 'macos-stable'
 BUCKET = 'befeast-updates'
 PUBLIC = 'https://updates.befeast.com'
@@ -157,7 +157,7 @@ def publish(a):
     if forgejo.release(tag) is not None:
         sys.exit(f'Release {tag} already exists')
     release = forgejo.call('POST', '/releases', {
-        'tag_name': tag, 'target_commitish': a.source, 'name': f'Tessera {a.short_version} ({a.build})',
+        'tag_name': tag, 'target_commitish': a.source, 'name': f'Okilum {a.short_version} ({a.build})',
         'body': f'Signed and notarized macOS arm64 build {a.build} from {a.source}.\n'
                 f'Channel at publication: {a.channel}.',
         'draft': False, 'prerelease': a.channel != 'stable'})
@@ -169,10 +169,10 @@ def publish(a):
                              '--channel', a.channel, '--url', f'{PUBLIC}/{key}',
                              '--length', str(archive.stat().st_size), '--signature', a.signature,
                              '--source', a.source, '--tree', a.tree])
-    if a.app == 'tessera':
+    if a.app == 'okilum':
         catalog.record(r2, 'macos', a.build, a.source,
-                       [catalog.asset(key, 'Tessera-macos.zip', data)])
-        r2.put('tessera/macos/beta/latest.zip', data, 'application/zip', 'no-cache')
+                       [catalog.asset(key, 'Okilum-macos.zip', data)])
+        r2.put('okilum/macos/beta/latest.zip', data, 'application/zip', 'no-cache')
 
 
 def promote(a):
@@ -185,7 +185,7 @@ def promote(a):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument('--app', required=True, help='feed folder, e.g. tessera')
+    p.add_argument('--app', required=True, help='feed folder, e.g. okilum')
     sub = p.add_subparsers(dest='command', required=True)
     a = sub.add_parser('publish')
     a.add_argument('archive')

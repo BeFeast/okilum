@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: tessera-arch-build-${{ github.ref }}
+  group: okilum-arch-build-${{ github.ref }}
   # Finish useful work even while main keeps advancing. Publication is monotonic.
   cancel-in-progress: false
 
@@ -35,7 +35,7 @@ jobs:
 
   release:
     needs: select
-    if: needs.select.outputs.build == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || vars.TESSERA_PR_LANE == 'local')
+    if: needs.select.outputs.build == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || vars.OKILUM_PR_LANE == 'local')
     runs-on: ubuntu-latest
     container:
       image: archlinux:base-devel@sha256:51dd3d24f7fba779e7c471caeee7804c50e8c134ad948e19685a1c83a42facc3
@@ -66,7 +66,7 @@ jobs:
             /home/builder/.cargo/registry/
             /home/builder/.cargo/git/
             vendor/gpui-component/
-          key: tessera-arch-downloads-v1-${{ hashFiles('Cargo.lock', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff') }}
+          key: okilum-arch-downloads-v1-${{ hashFiles('Cargo.lock', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff') }}
       - name: Build package as an unprivileged user
         run: |
           chown -R builder:builder "$GITHUB_WORKSPACE" /home/builder
@@ -75,13 +75,13 @@ jobs:
           if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$GITHUB_REF" != refs/heads/main ]; then
             harness=1
           fi
-          runuser -u builder -- env TESSERA_SETTINGS_UI_HARNESS="$harness" TESSERA_BUILD_VERSION="$((5000 + GITHUB_RUN_NUMBER))" bash scripts/arch/build.sh
+          runuser -u builder -- env OKILUM_SETTINGS_UI_HARNESS="$harness" OKILUM_BUILD_VERSION="$((5000 + GITHUB_RUN_NUMBER))" bash scripts/arch/build.sh
       - name: Validate package and install without changing MIME defaults
         run: |
-          desktop-file-validate scripts/arch/tessera.desktop
-          pacman -U --noconfirm dist/arch/tessera-*.pkg.tar.zst
-          tessera --help
-          if ldd /usr/bin/tessera | grep 'not found'; then exit 1; fi
+          desktop-file-validate scripts/arch/okilum.desktop
+          pacman -U --noconfirm dist/arch/okilum-*.pkg.tar.zst
+          okilum --help
+          if ldd /usr/bin/okilum | grep 'not found'; then exit 1; fi
           python -m unittest discover -s scripts/arch -p 'test_*.py'
           xvfb-run -a -s '-screen 0 1280x800x24' dbus-run-session -- bash scripts/arch/smoke-x11.sh
       - uses: https://code.forgejo.org/actions/upload-artifact@v3
@@ -109,7 +109,7 @@ jobs:
 
   arch-github:
     if: >-
-      github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.TESSERA_PR_LANE != 'local'
+      github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.OKILUM_PR_LANE != 'local'
     runs-on: bridge
     timeout-minutes: 125
     steps:
@@ -120,7 +120,7 @@ jobs:
           persist-credentials: false
       - name: Wait for exact-head hosted arch
         env:
-          MIRROR_TOKEN: ${{ secrets.TESSERA_GITHUB_MIRROR }}
+          MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CI_LANE: arch

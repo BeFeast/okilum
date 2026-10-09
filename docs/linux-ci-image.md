@@ -15,10 +15,10 @@ checkout. No app source, vault, target, cache or credentials enter that context.
 
 Run the workflow on a reviewed commit with `publish=false` first. Set
 `publish=true` to push a unique candidate tag to
-`registry.oklabs.uk/tessera-ci-reader`. The receipt records the source revision,
+`registry.oklabs.uk/okilum-ci-reader`. The receipt records the source revision,
 base digest, toolchain hash, local image ID and, after publication, repository
 digest. Detailed toolchain and installed-package versions are inside the image
-at `/opt/tessera-ci/`. Candidates never move `latest` or an active tag.
+at `/opt/okilum-ci/`. Candidates never move `latest` or an active tag.
 
 Registry preflight found no existing registry credential in Infisical
 services/prod and anonymous `/v2/` GET succeeded. Anonymous **push has not yet

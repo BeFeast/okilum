@@ -1,12 +1,12 @@
 [workspace]
 resolver = "2"
-members = ["crates/tessera-core", "crates/tessera-cored", "crates/tessera-shell", "crates/tessera-brain", "crates/tessera-sync", "crates/tessera-sync-controller"]
+members = ["crates/okilum-core", "crates/okilum-cored", "crates/okilum-shell", "crates/okilum-brain", "crates/okilum-sync", "crates/okilum-sync-controller"]
 # The vendored gpui-kit clone is its own Cargo workspace. Excluding it
 # keeps its members inheriting from their own root while we path-depend into it.
 exclude = ["vendor", "inbox"]
 
 [workspace.dependencies]
-tessera-core = { path = "crates/tessera-core", default-features = false }
+okilum-core = { path = "crates/okilum-core", default-features = false }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 # Canonical YAML embeds JSON objects; retain their key order in standalone backends too.

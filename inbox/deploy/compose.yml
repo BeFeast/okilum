@@ -1,7 +1,7 @@
-name: tessera-inbox-qa
+name: okilum-inbox-qa
 services:
   init:
-    image: tessera-inbox-qa:local
+    image: okilum-inbox-qa:local
     build:
       context: ../..
       dockerfile: inbox/deploy/Dockerfile
@@ -13,7 +13,7 @@ services:
       - fixture:/fixture-vault
       - backups:/backups
   inbox:
-    image: tessera-inbox-qa:local
+    image: okilum-inbox-qa:local
     depends_on:
       init:
         condition: service_completed_successfully
@@ -28,7 +28,7 @@ services:
       - data:/data
       - fixture:/fixture-vault
       - backups:/backups
-      - ${CLIPROXY_CREDENTIAL_FILE:-/opt/tessera-inbox/secrets/cliproxy-key}:/run/credentials/cliproxy-key:ro
+      - ${CLIPROXY_CREDENTIAL_FILE:-/opt/okilum-inbox/secrets/cliproxy-key}:/run/credentials/cliproxy-key:ro
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]

@@ -25,8 +25,8 @@ def png(rgba, pixels):
 def main():
     raw, output = map(Path, sys.argv[1:])
     output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix='tessera-icon-') as temporary:
-        iconset = Path(temporary) / 'Tessera.iconset'
+    with tempfile.TemporaryDirectory(prefix='okilum-icon-') as temporary:
+        iconset = Path(temporary) / 'Okilum.iconset'
         iconset.mkdir()
         for points in (16, 32, 128, 256, 512):
             for scale in (1, 2):

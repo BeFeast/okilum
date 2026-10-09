@@ -21,6 +21,6 @@ jobs:
           persist-credentials: false
       - name: Delete this PR's GitHub native-check refs
         env:
-          MIRROR_TOKEN: ${{ secrets.TESSERA_GITHUB_MIRROR }}
+          MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: python3 scripts/ci/github-macos.py cleanup

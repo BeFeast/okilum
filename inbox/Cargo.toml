@@ -2,7 +2,7 @@
 # graph, lockfile or required workspace-wide lint/test job.
 [workspace]
 resolver = "2"
-members = ["crates/tessera-inbox-domain", "crates/tessera-inboxd"]
+members = ["crates/okilum-inbox-domain", "crates/okilum-inboxd"]
 
 [workspace.package]
 version = "0.1.0"

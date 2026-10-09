@@ -1,6 +1,6 @@
 # Durable Discussion send correlation and recovery
 
-Approved bounded implementation contract for [issue #244](https://git.oklabs.uk/BeFeast/tessera/issues/244), 2026-09-08. **Backend implementation and test boundaries: [evidence](ai-brain-discussion-send-backend-evidence.md). Shell/native and frozen old-writer acceptance are tracked separately.** This extends [Discussion context](ai-brain-discussion-context.md) and the [foundation source boundary](ai-brain-contracts.md) without changing their existing v1 formats. Source audit: `764c7fcd9cc7248de1ddf629905de035060dcc07`, merged as `7b29ef3c219e5891e34f0268427e6e67e42953ff` with the same tree.
+Approved bounded implementation contract for [issue #244](https://git.oklabs.uk/BeFeast/okilum/issues/244), 2026-09-08. **Backend implementation and test boundaries: [evidence](ai-brain-discussion-send-backend-evidence.md). Shell/native and frozen old-writer acceptance are tracked separately.** This extends [Discussion context](ai-brain-discussion-context.md) and the [foundation source boundary](ai-brain-contracts.md) without changing their existing v1 formats. Source audit: `764c7fcd9cc7248de1ddf629905de035060dcc07`, merged as `7b29ef3c219e5891e34f0268427e6e67e42953ff` with the same tree.
 
 ## Scope and authority
 

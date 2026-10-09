@@ -37,7 +37,7 @@ class GitHub:
     def call(self, method, path, body=None, binary=False):
         base = 'https://uploads.github.com' if binary else 'https://api.github.com'
         data = body if binary else (catalog.encode(body) if body is not None else None)
-        req = urllib.request.Request(base + '/repos/BeFeast/tessera' + path, data=data, method=method,
+        req = urllib.request.Request(base + '/repos/BeFeast/okilum' + path, data=data, method=method,
             headers={'Authorization': 'Bearer ' + os.environ['MIRROR_TOKEN'],
                      'Accept': 'application/vnd.github+json',
                      'Content-Type': 'application/octet-stream' if binary else 'application/json',
@@ -53,7 +53,7 @@ class GitHub:
 
 
 def choose(store, build=None):
-    raw = store.call('GET', 'tessera/appcast.xml')
+    raw = store.call('GET', 'okilum/appcast.xml')
     if raw is None:
         return None
     items = ET.fromstring(raw).findall('./channel/item')
@@ -71,9 +71,9 @@ def choose(store, build=None):
 
 def choose_beta(store):
     """Resolve public channel heads, never unpublished or merely built artifacts."""
-    raw = store.call('GET', 'tessera/appcast.xml')
-    win = store.call('GET', 'tessera/windows/beta/releases.beta.json')
-    linux = store.call('GET', 'tessera/arch/beta/x86_64/latest.json')
+    raw = store.call('GET', 'okilum/appcast.xml')
+    win = store.call('GET', 'okilum/windows/beta/releases.beta.json')
+    linux = store.call('GET', 'okilum/arch/beta/x86_64/latest.json')
     if raw is None or win is None or linux is None:
         return None
     items = ET.fromstring(raw).findall('./channel/item')
@@ -84,7 +84,7 @@ def choose_beta(store):
     if not full:
         raise ValueError('Windows beta has no full package')
     win_build = max(windows.version_key(a['Version'])[2] for a in full)
-    win_raw = store.call('GET', f'tessera/windows/builds/{win_build}/release.json')
+    win_raw = store.call('GET', f'okilum/windows/builds/{win_build}/release.json')
     if win_raw is None:
         return None
     win_meta = json.loads(win_raw)
@@ -181,7 +181,7 @@ def github_release(github, tag, release, files, body, stable):
         current = exact[0] if exact else min(matches, key=lambda r: r['id'])
     if current is None:
         current = github.call('POST', '/releases', {'tag_name': tag, 'draft': True,
-                              'name': 'Beta' if not stable else f'Tessera 0.1.{release["build"]}',
+                              'name': 'Beta' if not stable else f'Okilum 0.1.{release["build"]}',
                               'prerelease': not stable})
     rid = current['id']
     # Hide an existing rolling release while replacing its matching asset set.
@@ -191,7 +191,7 @@ def github_release(github, tag, release, files, body, stable):
     for name, data in files.items():
         github.call('POST', f'/releases/{rid}/assets?name={urllib.parse.quote(name)}', data, binary=True)
     github.call('PATCH', f'/releases/{rid}', {
-        'name': f'Tessera 0.1.{release["build"]}' if stable else 'Beta',
+        'name': f'Okilum 0.1.{release["build"]}' if stable else 'Beta',
         'tag_name': tag, 'target_commitish': release['source'],
         'body': body, 'draft': False, 'prerelease': not stable})
     published = github.call('GET', f'/releases/tags/{tag}')
@@ -209,7 +209,7 @@ def github_release(github, tag, release, files, body, stable):
 def preflight_stable(store, release):
     """Check all channel rollback guards and archived metadata before mutating any."""
     win_build = release['platforms']['windows']['build']
-    meta = json.loads(store.call('GET', f'tessera/windows/builds/{win_build}/release.json'))
+    meta = json.loads(store.call('GET', f'okilum/windows/builds/{win_build}/release.json'))
     if meta['source'] != release['source'] or meta['build'] != win_build:
         raise ValueError('Windows archived source mismatch')
     class ValidateOnly:
@@ -222,17 +222,17 @@ def preflight_stable(store, release):
     # Run the real Windows preparation/validation, discarding its planned writes.
     windows.promote(win_build, ValidateOnly())
     linux = release['platforms']['linux']['build']
-    meta = json.loads(store.call('GET', f'tessera/arch/builds/{linux}/manifest.json'))
+    meta = json.loads(store.call('GET', f'okilum/arch/builds/{linux}/manifest.json'))
     if meta['source'] != release['source'] or meta['build'] != linux:
         raise ValueError('Arch archived source mismatch')
     package = release['platforms']['linux']['assets'][0]
     if meta['sha256'] != package['sha256'] or meta['filename'] != package['name']:
         raise ValueError('Arch manifest differs from release catalog')
-    old = store.call('GET', 'tessera/arch/stable/x86_64/latest.json')
+    old = store.call('GET', 'okilum/arch/stable/x86_64/latest.json')
     if old and json.loads(old)['build'] > linux:
         raise ValueError('Arch stable would roll back')
     found = False
-    for item in ET.fromstring(store.call('GET', 'tessera/appcast.xml')).findall('./channel/item'):
+    for item in ET.fromstring(store.call('GET', 'okilum/appcast.xml')).findall('./channel/item'):
         if int(item.findtext(appcast.s('version'))) == release['build']:
             mac = release['platforms']['macos']['assets'][0]
             enclosure = item.find('enclosure')
@@ -301,8 +301,8 @@ def execute(store, github, forgejo, build=None, supersede_pending=False):
             arch.execute(SimpleNamespace(command='promote', build=release['platforms']['linux']['build']),
                          store, signing, directory)
             windows.promote(release['platforms']['windows']['build'], store)
-            promote_macos(SimpleNamespace(app='tessera', build=release['build']))
-        store.put('tessera/macos/latest.zip', files['Tessera-macos.zip'], 'application/zip', 'no-cache')
+            promote_macos(SimpleNamespace(app='okilum', build=release['build']))
+        store.put('okilum/macos/latest.zip', files['Okilum-macos.zip'], 'application/zip', 'no-cache')
     else:
         tag = mirror_tag(release, False)
     github_release(github, tag, release, files, body, stable)

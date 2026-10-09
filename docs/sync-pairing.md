@@ -91,7 +91,7 @@ available while its registrations need reconciliation.
 
 ## Host adapter
 
-`tessera-sync-hub --config <private JSON file>` is a separate Unix process. Its
+`okilum-sync-hub --config <private JSON file>` is a separate Unix process. Its
 configuration contains owner UUID, vault UUID, folder ID and expected folder path,
 hub device ID, literal loopback REST address, private REST-key file, private data
 directory and socket path. It alone reads the REST key. The socket has mode 0600
@@ -138,11 +138,11 @@ are positive controls before absence assertions.
 # On the authorized isolated development host, with the build wrapper:
 cd inbox
 cargo fmt --check
-cargo fmt --manifest-path ../crates/tessera-sync/Cargo.toml -p tessera-sync --check
+cargo fmt --manifest-path ../crates/okilum-sync/Cargo.toml -p okilum-sync --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace
-TESSERA_SYNC_HUB=/path/to/pinned/syncthing-1.29.5 \
-  cargo test --locked -p tessera-inboxd --test sync_hub -- --ignored
+OKILUM_SYNC_HUB=/path/to/pinned/syncthing-1.29.5 \
+  cargo test --locked -p okilum-inboxd --test sync_hub -- --ignored
 ```
 
 Real browser/passkey UX is verified in a separate QA session against the sandbox

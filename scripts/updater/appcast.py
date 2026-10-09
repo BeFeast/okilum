@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Edit the Tessera Sparkle appcast: add a build to a channel, or promote one.
+"""Edit the Okilum Sparkle appcast: add a build to a channel, or promote one.
 
 Every item names a channel, `beta` or `stable`; the app always accepts `stable`.
-`tessera:source`/`tessera:tree` record the commit each build came from.
+`okilum:source`/`okilum:tree` record the commit each build came from.
 """
 import argparse
 import email.utils
@@ -10,13 +10,13 @@ import sys
 import xml.etree.ElementTree as ET
 
 SPARKLE = 'http://www.andymatuschak.org/xml-namespaces/sparkle'
-TESSERA = 'https://git.oklabs.uk/BeFeast/tessera/update-metadata'
+OKILUM = 'https://git.oklabs.uk/BeFeast/okilum/update-metadata'
 ET.register_namespace('sparkle', SPARKLE)
-ET.register_namespace('tessera', TESSERA)
+ET.register_namespace('okilum', OKILUM)
 CHANNELS = ('beta', 'stable')
 EMPTY = f'''<?xml version="1.0" encoding="utf-8"?>
-<rss xmlns:sparkle="{SPARKLE}" xmlns:tessera="{TESSERA}" version="2.0">
-  <channel><title>Tessera updates</title></channel>
+<rss xmlns:sparkle="{SPARKLE}" xmlns:okilum="{OKILUM}" version="2.0">
+  <channel><title>Okilum updates</title></channel>
 </rss>'''
 
 
@@ -25,7 +25,7 @@ def s(name):
 
 
 def t(name):
-    return f'{{{TESSERA}}}{name}'
+    return f'{{{OKILUM}}}{name}'
 
 
 def load(path):
@@ -54,7 +54,7 @@ def add(tree, a):
         sys.exit(f'Build {a.build} is not newer than {newest}')
     item = ET.Element('item')
     for tag, text in (
-        ('title', f'Tessera {a.short_version}'),
+        ('title', f'Okilum {a.short_version}'),
         ('pubDate', email.utils.formatdate(usegmt=True)),
         (s('version'), str(a.build)),
         (s('shortVersionString'), a.short_version),

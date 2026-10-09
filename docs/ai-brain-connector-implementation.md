@@ -1,14 +1,14 @@
-# Tessera P1 connector: wire and ownership
+# Okilum P1 connector: wire and ownership
 
 Implementation brief for [ok-gobot #80](https://git.oklabs.uk/BeFeast/ok-gobot/issues/80)
-and [Tessera #134](https://git.oklabs.uk/BeFeast/tessera/issues/134). This document
+and [Okilum #134](https://git.oklabs.uk/BeFeast/okilum/issues/134). This document
 freezes the implemented server transport boundary and matching client contract. Code and isolated
-tests only; live transport and deployment belong to Tessera #127.
+tests only; live transport and deployment belong to Okilum #127.
 
 ## Transport and authority
 
 Use a separate, disabled-by-default loopback JSON-lines listener sharing the
-existing Tessera `Arc<Mutex<Backend>>`. A fixed operator-controlled tunnel carries
+existing Okilum `Arc<Mutex<Backend>>`. A fixed operator-controlled tunnel carries
 this port to the bot host. Never send connector traffic to the native port, fall
 back to native on authentication failure, invoke SSH per request, or expose the
 unauthenticated native listener.
@@ -59,7 +59,7 @@ receipt recovery, alias reservation or attention observation logic.
 
 ## Frozen configuration, responses and errors
 
-Tessera CLI adds only `--connector-config <operational-json-file>`. Absence means
+Okilum CLI adds only `--connector-config <operational-json-file>`. Absence means
 no listener. The file has `schema: "ai-brain/connector-config-v1"`, `listen`
 (loopback address), `connector_id`, `token_file`, `workspace` (exact object above),
 `instance_id`, `account_id`, `actor_id`, `sender_id`, and `routes` (nonempty array
@@ -125,12 +125,12 @@ mutation intents and outbox/reply bindings.
 
 ## Bot data and deterministic interaction
 
-`internal/tessera` owns the typed client and connector coordinator, with an injected
+`internal/okilum` owns the typed client and connector coordinator, with an injected
 transport for isolated tests. `/capture`, `/inbox`, `/attention` and bound ForceReply
 handling run before provider inference. Provider outage must not prevent capture,
 list/read, exact-target reply, seen acknowledgement, or durable retry.
 
-`internal/storage/tessera.go` adds mutation intents keyed by immutable upstream
+`internal/storage/okilum.go` adds mutation intents keyed by immutable upstream
 identity and normalized payload digest. Commit a generated operation ID and exact
 nonsecret request before transport. Retry sends that same request after timeout,
 lost response and process restart. A duplicate identity with different text/target
@@ -168,12 +168,12 @@ existing intent before a regenerated model response could create another capture
 
 ## File ownership and sequence
 
-1. Tessera server author: connector config/listener and service allowlist; narrow
+1. Okilum server author: connector config/listener and service allowlist; narrow
    runtime/inbox/attention validation refactor; server integration tests. Owns
-   `crates/tessera-brain/src/connector.rs`, service and runtime boundary changes,
-   `crates/tessera-cored` optional config wiring, and canonical wire documentation.
-2. Bot author: `internal/tessera/*`, `internal/storage/tessera*`, additive outbox
-   metadata, `internal/bot/tessera*`, config struct/schema/default/env loader tests,
+   `crates/okilum-brain/src/connector.rs`, service and runtime boundary changes,
+   `crates/okilum-cored` optional config wiring, and canonical wire documentation.
+2. Bot author: `internal/okilum/*`, `internal/storage/okilum*`, additive outbox
+   metadata, `internal/bot/okilum*`, config struct/schema/default/env loader tests,
    tool implementation and immutable runtime context propagation. Existing approval
    callbacks, forum routing and unrelated model configuration stay intact.
 3. Freeze actual wire shape and config field names with both authors, then implement

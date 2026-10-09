@@ -49,7 +49,7 @@ fixture; no ordinary launcher or global process environment receives the shim.
 
 ## Application-owned Quit
 
-**Quit Tessera** in the application menu and the platform secondary-Q binding
+**Quit Okilum** in the application menu and the platform secondary-Q binding
 (Cmd-Q on macOS, Ctrl-Q elsewhere) enter a process-wide draft coordinator. The
 coordinator freezes the current window set and registered managed editor identities.
 It asks every editor to protect its exact latest generation using the same close

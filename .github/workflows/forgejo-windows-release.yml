@@ -18,13 +18,13 @@ jobs:
       - run: |
           python3 -m venv /tmp/icon-env
           /tmp/icon-env/bin/pip install CairoSVG==2.8.2
-          /tmp/icon-env/bin/python scripts/windows-icon.py crates/tessera-shell/assets/brand/app-icon-light.svg target/windows-dist/tessera.ico
+          /tmp/icon-env/bin/python scripts/windows-icon.py crates/okilum-shell/assets/brand/app-icon-light.svg target/windows-dist/okilum.ico
       - name: Validate cross-build helpers and publication logic
         run: python3 -m unittest discover -s scripts/windows -p 'test_*.py'
       - uses: actions/upload-artifact@v4
         with:
           name: windows-icon
-          path: target/windows-dist/tessera.ico
+          path: target/windows-dist/okilum.ico
           retention-days: 1
           if-no-files-found: error
   windows-release:

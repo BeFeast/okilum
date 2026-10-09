@@ -1,0 +1,33 @@
+[package]
+name = "okilum-sync-controller"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+sha2 = "0.10"
+rustix = { version = "=1.1.4", features = ["process", "fs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+okilum-sync = { path = "../okilum-sync" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "rustls-tls"] }
+url = "2"
+xmltree = "0.11"
+getrandom = "0.3"
+
+[dev-dependencies]
+tempfile = "3"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.4"
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString", "NSError", "NSProcessInfo"] }
+objc2-service-management = { version = "0.3.2", default-features = false, features = ["std", "objc2", "objc2-foundation", "SMAppService"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_System_Com", "Win32_System_Ole", "Win32_System_Variant", "Win32_System_TaskScheduler", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_Pipes", "Win32_System_IO", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem"] }

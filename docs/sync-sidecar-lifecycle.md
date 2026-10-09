@@ -49,7 +49,7 @@ the intended exclusion. The regression requires a sharing violation while held
 and a successful rename after release. Native confirmation passed on hosted windows-2022 with Rust 1.99.0 MSVC:
 all four DACL/token SID/preparation tests passed, none ignored, including rename
 prevention while held, rename after release and shared-directory refusal.
-Evidence: https://github.com/BeFeast/tessera/actions/runs/37754095376 (the run's
+Evidence: https://github.com/BeFeast/okilum/actions/runs/37754095376 (the run's
 Rust source exactly matches the directory-guard candidate; only CI LF preparation
 was added). This does not establish Task Scheduler or Job Object acceptance.
 This is not yet the Windows locked journal, durable file replacement or full
@@ -165,7 +165,7 @@ XML path escaping; macOS approval, missing helper and the macOS 13 boundary.
 with clippy for aarch64-apple-darwin and x86_64-pc-windows-msvc on CT141. It uses a
 small generated probe and seeds dependency resolution from the repository lockfile;
 this avoids GPUI and unrelated native C dependencies. Install the two Rust 1.99.0
-standard-library targets first, and invoke the script inside `tessera-build`.
+standard-library targets first, and invoke the script inside `okilum-build`.
 Both target checks and the 54 Linux controller tests pass. This is type/lint
 validation, not linking a signed application or executing either native API.
 The cross-check includes target-gated tests: Windows descriptor alias/missing-owner
@@ -184,11 +184,11 @@ the isolated CT141 test hub are authorized. Production CT119 is not part of this
 Hosted windows-2022 with Rust 1.99.0 (`x86_64-pc-windows-msvc`) verified:
 
 - Private-directory owner/DACL and token SID: four passed, none ignored.
-  https://github.com/BeFeast/tessera/actions/runs/37754095376
+  https://github.com/BeFeast/okilum/actions/runs/37754095376
   The held handle prevents rename; releasing it allows rename; an existing shared
   directory is refused without changing its contents.
 - Process tree and Task Scheduler transport: two passed, none ignored.
-  https://github.com/BeFeast/tessera/actions/runs/37757252886
+  https://github.com/BeFeast/okilum/actions/runs/37757252886
   A live parent and descendant are confirmed in the Job Object before explicit
   stop and kill-on-close. The disabled, uniquely named Scheduler task verifies
   registration, collision refusal, owner/definition refusal and owned removal.
@@ -204,7 +204,7 @@ cases exercise this comparison on Linux.
 
 The final combined `sidecar::` run passed 31 tests with none failed or ignored
 on exact PR #768 source `78022224a824baa11a10f0d6c42fdd7bec19bfe0`:
-https://github.com/BeFeast/tessera/actions/runs/37762178783 . Its run SHA
+https://github.com/BeFeast/okilum/actions/runs/37762178783 . Its run SHA
 `aa3df9ca9b8f2abe4ff6f13987c159cbf77cb2e1` adds only CI LF preparation;
 Rust/Cargo sources were verified identical. This predates the IPC protocol. They do not establish authenticated
 interactive supervisor start/stop, a complete Windows locked journal, or shipped
@@ -282,10 +282,10 @@ production endpoint ACL acceptance.
 
 The native run on windows-2022, Rust 1.99.0 MSVC passed 41 `sidecar::` tests with
 zero failures or ignored tests, including both named pipe-peer fixtures:
-https://github.com/BeFeast/tessera/actions/runs/37813567283 . Run/source SHA was
+https://github.com/BeFeast/okilum/actions/runs/37813567283 . Run/source SHA was
 `b4a359be85e3bd62fbaccc1651fb1c9fee046380`, tree
 `97c2613b4335630fb9acf1e589ee265a4401424d`, with no extra source/workflow commit.
-The dispatch used package `tessera-sync-controller`, no features, filter
+The dispatch used package `okilum-sync-controller`, no features, filter
 `sidecar::`, and one test thread. This confirms this peer-identity primitive,
 not the remaining production transport, private endpoint ACL or Sync acceptance.
 
@@ -330,10 +330,10 @@ flags; access rights such as READ_CONTROL are not added to dwOpenMode.
 The exact-source native run on windows-2022 passed 45 `sidecar::` tests with zero
 failures or ignored tests, including all three endpoint fixtures, the metadata
 regression and both peer-identity fixtures:
-https://github.com/BeFeast/tessera/actions/runs/37822215299 . Run/source SHA was
+https://github.com/BeFeast/okilum/actions/runs/37822215299 . Run/source SHA was
 `a3f200239f68aa449a7dfb7cba1199de4eb2afa0`, tree
 `e3bc443677aebcd11a640c490411bb3ecece5c73`, with no extra source/workflow commit.
-The dispatch used package `tessera-sync-controller`, default features, filter
+The dispatch used package `okilum-sync-controller`, default features, filter
 `sidecar::`, and one test thread. Toolchain: rustc 1.99.0
 (b940084d7 2026-09-28), x86_64-pc-windows-msvc, LLVM 23.1.1.
 The restricted token received ERROR_ACCESS_DENIED for read/write; the ordinary
@@ -367,8 +367,8 @@ server-end bit. Windows Server 2022 confirms that client-side read-back too.
 Part 3a native acceptance passed on exact source
 `740110a9ef3d394b802bb8e2d275d93782e3ca5d`, tree
 `8c00df76e15a578144c6434773b73dfd77b7cac3`:
-https://github.com/BeFeast/tessera/actions/runs/37832157442 . The single dispatch
-ran `tessera-sync-controller`, default features, `sidecar::`, one test thread on
+https://github.com/BeFeast/okilum/actions/runs/37832157442 . The single dispatch
+ran `okilum-sync-controller`, default features, `sidecar::`, one test thread on
 Windows: 48 passed, zero failed or ignored. All three client fixtures and the six
 existing endpoint/metadata/peer tests passed. The positive owner connection and
 negative missing/busy/nil, shared-descriptor and wrong-captured-server controls
@@ -410,10 +410,10 @@ a full pipe with positive write progress, and a shared deadline across successiv
 fragments. The timeout probes require actual pending I/O, an aborted completion
 and worker release, plus a readable-peer positive control. The exact-source Windows-native run passed 52 tests, zero failed or ignored,
 including all four I/O fixtures and the nine existing client/endpoint/peer tests:
-https://github.com/BeFeast/tessera/actions/runs/37843885098 . Source SHA
+https://github.com/BeFeast/okilum/actions/runs/37843885098 . Source SHA
 `7dbb17791b6f62c8e204afc434116def972938fa`, tree
 `c824181ead5f7b276e66cce03002b2813aff7866`; no extra source/CI commit.
-The single dispatch used default features, package `tessera-sync-controller`,
+The single dispatch used default features, package `okilum-sync-controller`,
 filter `sidecar::`, one test thread; rustc 1.99.0 (b940084d7 2026-09-28),
 x86_64-pc-windows-msvc, LLVM 23.1.1. This validates established-client I/O and
 cancellation fixtures, not server transport or full Sync acceptance.
@@ -462,9 +462,9 @@ outstanding. Native acceptance passed on exact source
 `8fe4289a2bba183d82a5e867cb90abad5e02de94`, tree
 `1eeead14f490634e8735cefadb4ce0fad06f2a8e`: 58 passed, zero failed or ignored,
 including all three worker-open tests and the previous 16 IPC fixtures.
-https://github.com/BeFeast/tessera/actions/runs/37856660074
+https://github.com/BeFeast/okilum/actions/runs/37856660074
 The same source passed the full hosted Linux gate:
-https://github.com/BeFeast/tessera/actions/runs/37856660511
+https://github.com/BeFeast/okilum/actions/runs/37856660511
 Native tests used rustc 1.99.0, x86_64-pc-windows-msvc, default features,
 `sidecar::`, one test thread. The injected setup stall validates caller waiting
 and retained cleanup ownership, not cancellation of a real blocked CreateFileW.
@@ -529,7 +529,7 @@ discovery and actual executable wiring remain unimplemented.
 
 The first candidate exposed a native completion race: job accounting reached
 zero while the captured descendant handle was not yet signaled. Windows native
-run https://github.com/BeFeast/tessera/actions/runs/37872415337 failed that strict
+run https://github.com/BeFeast/okilum/actions/runs/37872415337 failed that strict
 regression (62 passed, one failed); no acceptance is claimed for that candidate.
 TerminateJobObject has the asynchronous termination semantics of TerminateProcess;
 job accounting alone is insufficient terminal proof.

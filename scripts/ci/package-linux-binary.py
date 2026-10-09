@@ -15,13 +15,13 @@ def package(binary, output, source_sha):
     if not binary.is_file() or binary.is_symlink():
         raise ValueError('Expected a regular compiled binary')
     output.mkdir(parents=True, exist_ok=True)
-    name = f'tessera-linux-x86_64-{source_sha}'
+    name = f'okilum-linux-x86_64-{source_sha}'
     archive = output / (name + '.tar.zst')
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary) / name
         root.mkdir()
-        shutil.copyfile(binary, root / 'tessera')
-        (root / 'tessera').chmod(0o755)
+        shutil.copyfile(binary, root / 'okilum')
+        (root / 'okilum').chmod(0o755)
         (root / 'SOURCE_SHA').write_text(source_sha + '\n')
         for notice in ('LICENSE', 'THIRD_PARTY_NOTICES.md'):
             shutil.copyfile(Path(__file__).resolve().parents[2] / notice, root / notice)

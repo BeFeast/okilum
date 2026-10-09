@@ -90,7 +90,7 @@ async def listen(fixture, port):
     return runner, site._server.sockets[0].getsockname()[1]
 
 async def self_test():
-    with tempfile.TemporaryDirectory(prefix='tessera-319-fake-t3-') as path:
+    with tempfile.TemporaryDirectory(prefix='okilum-319-fake-t3-') as path:
         fixture = FakeT3(path, 'synthetic-new-environment', 'synthetic-project')
         runner, port = await listen(fixture, 0)
         try:
@@ -128,7 +128,7 @@ async def main():
     fixture.persist()
     runner, port = await listen(fixture, args.port)
     ready = {'base_url': f'http://127.0.0.1:{port}', 'environment_id': args.environment,
-             'project_id': args.project, 'token_env': 'env:TESSERA_319_FAKE_TOKEN',
+             'project_id': args.project, 'token_env': 'env:OKILUM_319_FAKE_TOKEN',
              'model_instance_id': 'synthetic-provider', 'model': 'synthetic-model',
              'runtime_mode': 'approval-required', 'interaction_mode': 'default'}
     (directory / 'candidate.json').write_text(json.dumps(ready, indent=2) + '\n')

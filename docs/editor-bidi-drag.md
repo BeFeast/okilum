@@ -27,7 +27,7 @@ still equals the highlight.
 ## Regression evidence
 
 `scripts/check-bidi-drag-native.py` drives `native_bidi737` configured like the
-Reader Source editor (`TESSERA_BIDI_APP`: markdown highlighter, exact-source
+Reader Source editor (`OKILUM_BIDI_APP`: markdown highlighter, exact-source
 projection, document newlines) with Cascadia Code 13 and the BOM + CRLF fixture,
 in light and dark. Positions come from caret readouts, not fixed pixels.
 

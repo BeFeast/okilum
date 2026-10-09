@@ -1,7 +1,7 @@
 # Linux Sync controller (#587)
 
 The first part of this slice supplies an unconnected service-lifecycle library,
-`tessera-sync-controller`. Reader startup, Settings and package installation do
+`okilum-sync-controller`. Reader startup, Settings and package installation do
 not call it. Discovery/reuse, daemon preparation, pairing, folder enrollment,
 package dependencies and the native Settings screen follow separately. This is
 not yet user-facing Enable Sync.
@@ -29,7 +29,7 @@ published complete, without replacing an occupied path. The service invokes the
 absolute executable directly, with systemd argument/specifier escaping and no
 REST key in argv. It runs Syncthing with browser/upgrades disabled and a private
 umask; user login owns the service lifetime, not the reader window. Closing
-Tessera does not stop an explicitly enabled unit.
+Okilum does not stop an explicitly enabled unit.
 
 Disable stops and disables only the journal's unit, verifies its file has not
 changed, removes it and reloads the user manager. Stop failure retains the file
@@ -63,11 +63,11 @@ cleans up its own service. It never contacts CT119 or reuses a normal user daemo
 From the complete repository workspace on the isolated authorized development host:
 
 ```sh
-~/bin/tessera-build cargo fmt -p tessera-sync-controller --check
-~/bin/tessera-build cargo clippy --locked -p tessera-sync-controller --tests -- -D warnings
-~/bin/tessera-build cargo test --locked -p tessera-sync-controller
-TESSERA_SYNC_CLIENT=/path/to/pinned/syncthing-2.1.6 \
-  ~/bin/tessera-build cargo test --locked -p tessera-sync-controller --test linux_service -- --ignored
+~/bin/okilum-build cargo fmt -p okilum-sync-controller --check
+~/bin/okilum-build cargo clippy --locked -p okilum-sync-controller --tests -- -D warnings
+~/bin/okilum-build cargo test --locked -p okilum-sync-controller
+OKILUM_SYNC_CLIENT=/path/to/pinned/syncthing-2.1.6 \
+  ~/bin/okilum-build cargo test --locked -p okilum-sync-controller --test linux_service -- --ignored
 ```
 
 A container user-manager test is not native desktop/login QA. Before a later UI

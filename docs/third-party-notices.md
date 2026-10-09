@@ -1,7 +1,7 @@
 # Third-party notices
 
-Tessera is built with open-source software. Each dependency retains its own
-license and copyright notices; Tessera's MIT license does not replace them.
+Okilum is built with open-source software. Each dependency retains its own
+license and copyright notices; Okilum's MIT license does not replace them.
 
 - [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) powers the native interface.
 - [gpui-kit](https://github.com/longbridge/gpui-kit) supplies UI components
@@ -16,12 +16,12 @@ license and copyright notices; Tessera's MIT license does not replace them.
 
 Bundled font notices:
 
-- [Noto Sans](../crates/tessera-shell/assets/brand/fonts/notosans-OFL.txt)
-- [Cascadia Code](../crates/tessera-shell/assets/brand/fonts/cascadiacode-OFL.txt)
-- [Excalifont](../crates/tessera-shell/assets/drawings/fonts/Excalifont-LICENSE.txt)
-- [Nunito](../crates/tessera-shell/assets/drawings/fonts/Nunito-LICENSE.txt)
-- [Liberation Sans](../crates/tessera-shell/assets/drawings/fonts/LiberationSans-LICENSE.txt)
-- [Virgil](../crates/tessera-shell/assets/drawings/fonts/Virgil-LICENSE.txt)
+- [Noto Sans](../crates/okilum-shell/assets/brand/fonts/notosans-OFL.txt)
+- [Cascadia Code](../crates/okilum-shell/assets/brand/fonts/cascadiacode-OFL.txt)
+- [Excalifont](../crates/okilum-shell/assets/drawings/fonts/Excalifont-LICENSE.txt)
+- [Nunito](../crates/okilum-shell/assets/drawings/fonts/Nunito-LICENSE.txt)
+- [Liberation Sans](../crates/okilum-shell/assets/drawings/fonts/LiberationSans-LICENSE.txt)
+- [Virgil](../crates/okilum-shell/assets/drawings/fonts/Virgil-LICENSE.txt)
 
 This is an overview, not an exhaustive dependency inventory. Exact Rust dependency
 versions are recorded in [Cargo.lock](../Cargo.lock); their source distributions

@@ -36,7 +36,7 @@ document title exposes the full chosen root in its tooltip. Standalone Reader
 retains its title bar and Open controls. Entry Open buttons use normal primary
 styling; toolbar Open buttons remain compact, with the same picker handlers.
 
-Widths are saved on drag completion to application config `tessera/reader-layout.json`,
+Widths are saved on drag completion to application config `okilum/reader-layout.json`,
 not canonical notes or their derived index. A configured path inside the selected
 vault is refused. Tests drive actual mouse down/move/up through the toolkit handle
 and verify persisted widths plus retained TextView/history. Native acceptance must

@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 # Compile the actual native transport modules without GPUI or native C dependencies.
-# Run under tessera-build on CT141; this is a type check, not native acceptance.
+# Run under okilum-build on CT141; this is a type check, not native acceptance.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
-probe="${TESSERA_SIDECAR_CHECK_DIR:-$HOME/.cache/tessera-qa/588/native-probe}"
+probe="${OKILUM_SIDECAR_CHECK_DIR:-$HOME/.cache/okilum-qa/588/native-probe}"
 mkdir -p "$probe/src"
 python3 - "$root" "$probe" <<'PY'
 import json,sys
 from pathlib import Path
 root, probe = map(Path, sys.argv[1:])
-source = root/'crates/tessera-sync-controller/src/sidecar/mod.rs'
+source = root/'crates/okilum-sync-controller/src/sidecar/mod.rs'
 (probe/'src/lib.rs').write_text('#[path = '+json.dumps(str(source),ensure_ascii=False)+']\npub mod sidecar;\n')
 # Keep direct versions aligned with the shipping crate, using its lockfile below.
 (probe/'Cargo.toml').write_text('''[package]
-name = "tessera-sidecar-native-probe"
+name = "okilum-sidecar-native-probe"
 version = "0.0.0"
 edition = "2021"
 [workspace]

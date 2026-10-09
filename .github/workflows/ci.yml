@@ -54,4 +54,4 @@ jobs:
       - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Reader tests
-        run: cargo test -p tessera-core -p tessera-shell
+        run: cargo test -p okilum-core -p okilum-shell

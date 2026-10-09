@@ -33,7 +33,7 @@ jobs:
     - run: bash scripts/vendor-setup.sh
     - shell: pwsh
       env:
-        PKG: tessera-core
+        PKG: okilum-core
         FEATURES: ''
         FILTER: windows_
       run: |

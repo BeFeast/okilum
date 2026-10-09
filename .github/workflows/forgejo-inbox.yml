@@ -30,7 +30,7 @@ jobs:
         # --all follows path dependencies into the Reader workspace, whose
         # GPUI vendor is intentionally absent from this isolated Inbox job.
         cargo fmt --check
-        cargo fmt --manifest-path ../crates/tessera-sync/Cargo.toml -p tessera-sync --check
+        cargo fmt --manifest-path ../crates/okilum-sync/Cargo.toml -p okilum-sync --check
         cargo clippy --locked --workspace --all-targets -- -D warnings
         cargo test --locked --workspace
     - name: Consistent SQLite backup and restore
@@ -42,9 +42,9 @@ jobs:
         npm test
     - name: T3 bridge projection, transport and recovery tests
       run: |
-        python3 -m venv /tmp/tessera-bridge-tests
-        /tmp/tessera-bridge-tests/bin/pip install --require-hashes --only-binary=:all: -r inbox/bridge/requirements.txt
-        /tmp/tessera-bridge-tests/bin/python -m unittest discover -s inbox/bridge -p 'test_*.py' -v
+        python3 -m venv /tmp/okilum-bridge-tests
+        /tmp/okilum-bridge-tests/bin/pip install --require-hashes --only-binary=:all: -r inbox/bridge/requirements.txt
+        /tmp/okilum-bridge-tests/bin/python -m unittest discover -s inbox/bridge -p 'test_*.py' -v
     - name: Read-only Forgejo collector pagination and failure tests
       run: python3 -m unittest discover -s inbox/forgejo -p 'test_*.py' -v
     - name: Run Inbox tests

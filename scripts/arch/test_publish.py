@@ -29,7 +29,7 @@ class Validation(unittest.TestCase):
         for value in [0, -1, '../stable', '1/2', '01']:
             with self.assertRaises(ValueError):
                 publish.package_name(value)
-        self.assertEqual(publish.package_name(42), 'tessera-0.1.42-1-x86_64.pkg.tar.zst')
+        self.assertEqual(publish.package_name(42), 'okilum-0.1.42-1-x86_64.pkg.tar.zst')
 
 
 @unittest.skipUnless(shutil.which('repo-add'), 'Arch packaging tools required')
@@ -46,7 +46,7 @@ class SignedRepository(unittest.TestCase):
             secret = publish.run('gpg', '--homedir', str(home), '--armor', '--export-secret-keys').decode()
             package = root / publish.package_name(42)
             info_path = root / '.PKGINFO'
-            info_path.write_text('pkgname = tessera\npkgver = 0.1.42-1\narch = x86_64\npkgdesc = test\nsize = 0\n')
+            info_path.write_text('pkgname = okilum\npkgver = 0.1.42-1\narch = x86_64\npkgdesc = test\nsize = 0\n')
             publish.run('bsdtar', '-caf', str(package), '-C', str(root), '.PKGINFO')
             store = MemoryR2()
             with patch.dict(os.environ, ARCH_GPG_PRIVATE_KEY=secret, ARCH_GPG_FINGERPRINT=fingerprint):
@@ -56,23 +56,23 @@ class SignedRepository(unittest.TestCase):
                         tmp = root / channel
                         tmp.mkdir()
                         publish.execute(args, store, key, tmp)
-                        prefix = f'tessera/arch/{channel}/x86_64'
-                        db = tmp / f'tessera-{channel}.db'
+                        prefix = f'okilum/arch/{channel}/x86_64'
+                        db = tmp / f'okilum-{channel}.db'
                         db.write_bytes(store.objects[f'{prefix}/{db.name}'])
                         Path(str(db) + '.sig').write_bytes(store.objects[f'{prefix}/{db.name}.sig'])
                         key.verify(db)
-                        self.assertIn('tessera-0.1.42-1', publish.run('bsdtar', '-tf', str(db)).decode())
+                        self.assertIn('okilum-0.1.42-1', publish.run('bsdtar', '-tf', str(db)).decode())
                         args.command = 'promote'
                     for suffix in ['', '.sig']:
                         filename = package.name + suffix
-                        self.assertEqual(store.objects[f'tessera/arch/beta/x86_64/{filename}'],
-                                         store.objects[f'tessera/arch/stable/x86_64/{filename}'])
-                    store.objects[f'tessera/arch/builds/42/{package.name}'] += b'tampered'
+                        self.assertEqual(store.objects[f'okilum/arch/beta/x86_64/{filename}'],
+                                         store.objects[f'okilum/arch/stable/x86_64/{filename}'])
+                    store.objects[f'okilum/arch/builds/42/{package.name}'] += b'tampered'
                     with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
                         publish.execute(args, store, key, root)
-                    manifest = json.loads(store.objects['tessera/arch/stable/x86_64/latest.json'])
+                    manifest = json.loads(store.objects['okilum/arch/stable/x86_64/latest.json'])
                     manifest['build'] = 43
-                    store.objects['tessera/arch/stable/x86_64/latest.json'] = publish.encode(manifest)
+                    store.objects['okilum/arch/stable/x86_64/latest.json'] = publish.encode(manifest)
                     with self.assertRaisesRegex(ValueError, 'backwards'):
                         publish.publish_channel(store, key, root, 'stable', {'build': 42}, b'', b'')
             publish.run('gpgconf', '--homedir', str(home), '--kill', 'all')

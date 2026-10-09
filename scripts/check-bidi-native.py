@@ -27,12 +27,12 @@ for live in [False, True]:
         name = f'{kind}-{live}'
         log = out / f'{name}.jsonl'
         with log.open('w') as stream:
-            proc = subprocess.Popen(['target/debug/examples/native_bidi737'], env=dict(env, TESSERA_BIDI_TEXT=text), stdout=stream, stderr=subprocess.STDOUT)
+            proc = subprocess.Popen(['target/debug/examples/native_bidi737'], env=dict(env, OKILUM_BIDI_TEXT=text), stdout=stream, stderr=subprocess.STDOUT)
         try:
             # Wait until the window is mapped; focusing an unmapped window is BadMatch.
             for _ in range(40):
                 time.sleep(.5)
-                found = subprocess.run(['xdotool', 'search', '--onlyvisible', '--pid', str(proc.pid), '--name', 'Tessera'], env=env, text=True, capture_output=True).stdout.split()
+                found = subprocess.run(['xdotool', 'search', '--onlyvisible', '--pid', str(proc.pid), '--name', 'Okilum'], env=env, text=True, capture_output=True).stdout.split()
                 if found:
                     break
             assert found, f'{name}: window was not mapped within 20 s'

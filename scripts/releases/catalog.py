@@ -3,7 +3,7 @@ import hashlib
 import json
 import re
 
-PREFIX = 'tessera/releases'
+PREFIX = 'okilum/releases'
 PLATFORMS = ('macos', 'windows', 'linux')
 
 

@@ -32,7 +32,7 @@ jobs:
           persist-credentials: false
       - name: Run exact commit in hosted CI
         env:
-          MIRROR_TOKEN: ${{ secrets.TESSERA_GITHUB_MIRROR }}
+          MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
           PR_NUMBER: ${{ github.run_number }}
           PR_HEAD_SHA: ${{ github.sha }}
           CI_LANE: ${{ inputs.lane || 'linux' }}
@@ -59,7 +59,7 @@ jobs:
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
       - name: Build exact main baseline without publication
         env:
-          MIRROR_TOKEN: ${{ secrets.TESSERA_GITHUB_MIRROR }}
+          MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
           PR_NUMBER: ${{ github.run_number }}
           PR_HEAD_SHA: ${{ steps.source.outputs.sha }}
           CI_LANE: linux-binary

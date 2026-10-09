@@ -11,21 +11,21 @@ The everyday entrypoint is an inbox and attention overview. The core outcome is
 thought → task → execution → knowledge without repeatedly assembling and copying
 context between tools.
 
-Tessera owns the goal and overall plan. Engines execute delegated stages and return
-results. A Maestro stage owns its own workers and PR execution; Tessera chooses the
+Okilum owns the goal and overall plan. Engines execute delegated stages and return
+results. A Maestro stage owns its own workers and PR execution; Okilum chooses the
 next step after its outcome or failure. This is a product ownership boundary, not
 an instruction to duplicate an engine's scheduler.
 
-Development of Tessera stays under external T3 Code control: brainstorming,
+Development of Okilum stays under external T3 Code control: brainstorming,
 implementation steering, review, debugging and recovery. No dogfooding or daily
-workflow migration at this stage. Tessera may drive a selected test goal inside
+workflow migration at this stage. Okilum may drive a selected test goal inside
 the POC; it does not manage its own development. A separate fixture brain, test
 task project and thread are the proposed test setup, not already provisioned state.
 
 ## Selected vertical
 
-1. Capture an inbox item in the actual Tessera UI and open its goal context.
-2. Clarify the goal in native Tessera conversation through CLIProxyAPI, backed by
+1. Capture an inbox item in the actual Okilum UI and open its goal context.
+2. Clarify the goal in native Okilum conversation through CLIProxyAPI, backed by
    the shared Markdown brain.
 3. Create or associate a task through the Todoist connector. Todoist remains the
    authority for that task during transition.
@@ -72,7 +72,7 @@ Backend-only scripted success does not satisfy interactive acceptance.
 
 | Scenario | Required observation |
 |---|---|
-| Capture and conversation | User operates real Tessera UI; inbox, goal, conversation and sources remain associated. |
+| Capture and conversation | User operates real Okilum UI; inbox, goal, conversation and sources remain associated. |
 | Connected task | Real Todoist identity/status are linked to the goal; local projection is not authoritative. |
 | T3 handoff | Real thread receives the complete context packet; user can open that thread. |
 | Return | Real correlated status/outcome/evidence returns automatically and is inspectable in saved Markdown. |

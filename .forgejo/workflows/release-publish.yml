@@ -12,7 +12,7 @@ on:
 # Also shares the unified stable promotion's lock. Publication is short and
 # serialized across platforms; compilation uses independent cancellable groups.
 concurrency:
-  group: tessera-macos-release
+  group: okilum-macos-release
   cancel-in-progress: false
 jobs:
   publish:

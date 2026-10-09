@@ -67,8 +67,8 @@ class HostedPRTests(unittest.TestCase):
             def evaluate(name, event, setting, fork):
                 block = re.search(rf'^  {name}:\n(.*?)(?=^  [\w-]+:|\Z)', workflow, re.M | re.S)[1]
                 expr = re.search(r'    if: (?:>-\n      )?([^\n]+)', block)[1]
-                replacements = {'github.event.pull_request.head.repo.full_name': 'fork/repo' if fork else 'BeFeast/tessera',
-                    'github.repository': 'BeFeast/tessera', 'github.event_name': event, 'vars.TESSERA_PR_LANE': setting,
+                replacements = {'github.event.pull_request.head.repo.full_name': 'fork/repo' if fork else 'BeFeast/okilum',
+                    'github.repository': 'BeFeast/okilum', 'github.event_name': event, 'vars.OKILUM_PR_LANE': setting,
                     'needs.select.outputs.build': 'true'}
                 for key, value in replacements.items():
                     expr = expr.replace(key, repr(value))

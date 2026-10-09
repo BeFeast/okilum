@@ -8,19 +8,19 @@ name: excalidraw-compat
 on:
   pull_request:
     paths:
-      - 'crates/tessera-core/src/excalidraw/**'
-      - 'crates/tessera-core/tests/excalidraw_write.rs'
-      - 'crates/tessera-core/tests/fixtures/excalidraw/**'
-      - 'crates/tessera-shell/src/reader_drawing.rs'
+      - 'crates/okilum-core/src/excalidraw/**'
+      - 'crates/okilum-core/tests/excalidraw_write.rs'
+      - 'crates/okilum-core/tests/fixtures/excalidraw/**'
+      - 'crates/okilum-shell/src/reader_drawing.rs'
       - 'scripts/excalidraw-compat/**'
       - '.forgejo/workflows/excalidraw-compat.yml'
   push:
     branches: [main]
     paths:
-      - 'crates/tessera-core/src/excalidraw/**'
-      - 'crates/tessera-core/tests/excalidraw_write.rs'
-      - 'crates/tessera-core/tests/fixtures/excalidraw/**'
-      - 'crates/tessera-shell/src/reader_drawing.rs'
+      - 'crates/okilum-core/src/excalidraw/**'
+      - 'crates/okilum-core/tests/excalidraw_write.rs'
+      - 'crates/okilum-core/tests/fixtures/excalidraw/**'
+      - 'crates/okilum-shell/src/reader_drawing.rs'
       - 'scripts/excalidraw-compat/**'
       - '.forgejo/workflows/excalidraw-compat.yml'
   schedule:
@@ -59,7 +59,7 @@ jobs:
       - name: Oracle paths outside the checkout
         run: |
           echo "ORACLE_DIR=$RUNNER_TEMP/excalidraw-oracle" >> "$GITHUB_ENV"
-          echo "TESSERA_EXCALIDRAW_DUMP=$RUNNER_TEMP/excalidraw-dump" >> "$GITHUB_ENV"
+          echo "OKILUM_EXCALIDRAW_DUMP=$RUNNER_TEMP/excalidraw-dump" >> "$GITHUB_ENV"
 
       - name: Install build tools
         run: |
@@ -73,7 +73,7 @@ jobs:
           curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
-      # Cargo resolves the whole workspace, and tessera-shell points at vendor.
+      # Cargo resolves the whole workspace, and okilum-shell points at vendor.
       - name: Resolve pinned workspace path dependencies
         run: |
           scripts/vendor-setup.sh
@@ -95,7 +95,7 @@ jobs:
           key: excalidraw-plugin-6d4eb0337d17284514898983609eeb742f2436d6c6cc1fd59ebee5da869a814b
 
       - name: Writer tests, keeping every checked file
-        run: cargo test -p tessera-core --test excalidraw_write
+        run: cargo test -p okilum-core --test excalidraw_write
 
       - name: Fetch and verify the plugin (sha256), build the oracle
         working-directory: scripts/excalidraw-compat
@@ -107,7 +107,7 @@ jobs:
 
       - name: Load writer output with the plugin's own loader
         working-directory: scripts/excalidraw-compat
-        run: node check.cjs "$ORACLE_DIR/oracle.cjs" "$TESSERA_EXCALIDRAW_DUMP"
+        run: node check.cjs "$ORACLE_DIR/oracle.cjs" "$OKILUM_EXCALIDRAW_DUMP"
 
       - name: Remove fetched plugin sources
         if: always()

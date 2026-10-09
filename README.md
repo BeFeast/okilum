@@ -2,7 +2,7 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/readme/hero-dark@2x.png">
     <img src="docs/images/readme/hero-light@2x.png" width="100%"
-         alt="Tessera — a native desktop app for Markdown notes. Your Markdown vault, open in a second. Open source, MIT, macOS, Linux, Windows.">
+         alt="Okilum — a native desktop app for Markdown notes. Your Markdown vault, open in a second. Open source, MIT, macOS, Linux, Windows.">
   </picture>
 </p>
 
@@ -14,9 +14,9 @@
   </picture>
 </p>
 
-# Tessera
+# Okilum
 
-Tessera is a fast, native desktop app for a folder of Markdown notes — an
+Okilum is a fast, native desktop app for a folder of Markdown notes — an
 Obsidian-style vault. Your notes stay ordinary files on your disk: no account,
 no server, no import. Indexes and previews are rebuildable caches.
 
@@ -24,7 +24,7 @@ no server, no import. Indexes and previews are rebuildable caches.
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/readme/shot-reader-dark@2x.png">
     <img src="docs/images/readme/shot-reader-light@2x.png" width="100%"
-         alt="Read your vault the way you wrote it. Tree, properties, contents and backlinks around every note. Screenshot of Tessera with a folder tree, a rendered note with an image and a specifications table, and a right panel with Properties, Contents and Linked from.">
+         alt="Read your vault the way you wrote it. Tree, properties, contents and backlinks around every note. Screenshot of Okilum with a folder tree, a rendered note with an image and a specifications table, and a right panel with Properties, Contents and Linked from.">
   </picture>
 </p>
 
@@ -54,12 +54,12 @@ no server, no import. Indexes and previews are rebuildable caches.
 
 | Platform | Download Beta | Stable (after first promotion) |
 |---|---|---|
-| macOS (Apple Silicon) | [Download ZIP](https://updates.befeast.com/tessera/macos/beta/latest.zip) · signed and notarized | [Download ZIP](https://updates.befeast.com/tessera/macos/latest.zip) |
-| Windows (x64) | [Download Setup.exe](https://updates.befeast.com/tessera/windows/beta/Setup.exe) · reading, search and editing; build not yet signed | [Download Setup.exe](https://updates.befeast.com/tessera/windows/stable/Setup.exe) |
-| Arch Linux (x86_64) | [Install signed beta pacman repository](docs/linux-releases.md) · [package on GitHub Beta](https://github.com/BeFeast/tessera/releases/tag/beta) | [Install stable repository](docs/linux-releases.md#stable-channel) |
+| macOS (Apple Silicon) | [Download ZIP](https://updates.befeast.com/okilum/macos/beta/latest.zip) · signed and notarized | [Download ZIP](https://updates.befeast.com/okilum/macos/latest.zip) |
+| Windows (x64) | [Download Setup.exe](https://updates.befeast.com/okilum/windows/beta/Setup.exe) · reading, search and editing; build not yet signed | [Download Setup.exe](https://updates.befeast.com/okilum/windows/stable/Setup.exe) |
+| Arch Linux (x86_64) | [Install signed beta pacman repository](docs/linux-releases.md) · [package on GitHub Beta](https://github.com/BeFeast/okilum/releases/tag/beta) | [Install stable repository](docs/linux-releases.md#stable-channel) |
 
-[GitHub Beta release and checksums](https://github.com/BeFeast/tessera/releases/tag/beta) ·
-[all releases](https://github.com/BeFeast/tessera/releases) ·
+[GitHub Beta release and checksums](https://github.com/BeFeast/okilum/releases/tag/beta) ·
+[all releases](https://github.com/BeFeast/okilum/releases) ·
 [macOS help](docs/macos-auto-update.md) · [Windows help](docs/windows-delivery.md) ·
 [Linux help](docs/linux-releases.md)
 
@@ -73,7 +73,7 @@ cross-platform performance approval; until then, use Beta.
 GitHub's rolling **Beta** groups completed builds from the same commit; individual
 platform update feeds can be newer while another platform is still building.
 
-Tessera is under active development. Keep normal backups of your notes.
+Okilum is under active development. Keep normal backups of your notes.
 
 ## Build from source
 
@@ -82,12 +82,12 @@ With rustup and your platform libraries installed, Cargo automatically selects
 the version and components in `rust-toolchain.toml` (currently Rust 1.99.0):
 
 ```sh
-git clone https://github.com/BeFeast/tessera.git
-cd tessera
+git clone https://github.com/BeFeast/okilum.git
+cd okilum
 bash scripts/vendor-setup.sh
 bash scripts/vendor-setup.sh --verify
-cargo build --release --locked -p tessera-shell
-./target/release/tessera --vault /path/to/notes
+cargo build --release --locked -p okilum-shell
+./target/release/okilum --vault /path/to/notes
 ```
 
 The vendor script downloads the pinned gpui-component source and applies our
@@ -96,21 +96,21 @@ needs the pinned Sparkle framework — follow the platform guide.
 
 ## Contributing
 
-Bug reports and ideas are welcome in [GitHub issues](https://github.com/BeFeast/tessera/issues).
+Bug reports and ideas are welcome in [GitHub issues](https://github.com/BeFeast/okilum/issues).
 Pull requests are welcome too: development happens on a private Forgejo
 instance and this repository mirrors `main` and releases, so accepted changes
 are landed there and appear here with your authorship preserved.
 
 The [product contract](docs/PRD.md) and [Reader design](docs/design/reader.md)
-describe how Tessera is meant to behave. The workspace is split into
-`tessera-core` (files, parsing, indexing, rendering model) and `tessera-shell`
+describe how Okilum is meant to behave. The workspace is split into
+`okilum-core` (files, parsing, indexing, rendering model) and `okilum-shell`
 (the GPUI desktop app).
 
 ## License
 
 Maintained by Oleg Kossoy.
 
-Tessera is licensed under the [MIT License](LICENSE). Dependencies and bundled
+Okilum is licensed under the [MIT License](LICENSE). Dependencies and bundled
 fonts and icons keep their own licenses — see
 [third-party notices](THIRD_PARTY_NOTICES.md) and
 [license sources](licenses/README.md).

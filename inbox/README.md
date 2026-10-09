@@ -2,7 +2,7 @@
 
 This is an independent Cargo workspace so the Inbox server does not expand the
 Reader dependency graph, root lockfile, or required workspace lint/test job.
-It does not depend on `tessera-brain`, GPUI, or the Reader. The existing Reader
+It does not depend on `okilum-brain`, GPUI, or the Reader. The existing Reader
 build and startup behavior are unchanged. Run commands from this directory:
 
 ```sh
@@ -20,9 +20,9 @@ connection to a real vault remain owner-gated.
 
 ```sh
 mkdir -m 700 /path/to/private-inbox-data
-cargo run --locked -p tessera-inboxd -- bootstrap \
+cargo run --locked -p okilum-inboxd -- bootstrap \
   --data-dir /path/to/private-inbox-data --origin https://inbox-qa.example.test
-cargo run --locked -p tessera-inboxd -- serve \
+cargo run --locked -p okilum-inboxd -- serve \
   --data-dir /path/to/private-inbox-data --origin https://inbox-qa.example.test
 ```
 
@@ -321,7 +321,7 @@ set `scope.launches: true` and `launch_targets: [Target]`, where Target contains
 `id`, `label`, `repository`, `base_commit` (40-character lowercase commit),
 `model_selection` (native instanceId/model/options), `runtime_mode` and
 `interaction_mode`. Scope fixes owner, Inbox project and source project. Provision
-only the isolated pilot; do not grant authority to Tessera development or a real
+only the isolated pilot; do not grant authority to Okilum development or a real
 vault. GET `/api/v1/projects/{id}/launch-targets` returns immutable snapshots and
 fingerprints. The bridge's separate local configuration must allow those exact
 snapshots too; backend configuration alone cannot broaden native execution.
@@ -353,7 +353,7 @@ The responsive Project panel combines guarded status/next-step edits, source
 questions (the existing reply dialog), executor identities/state/final output,
 explicitly mapped Forgejo repositories, and publication/QA history. Assignees and
 executors remain separate. Independent source errors retain observations with a
-stale/unavailable label. The fixture pilot is not mapped to Tessera development.
+stale/unavailable label. The fixture pilot is not mapped to Okilum development.
 
 Schema 10 adds durable `execution_outputs` and `execution_results`. The scoped
 launch bridge stores the final non-streaming assistant message from the exact

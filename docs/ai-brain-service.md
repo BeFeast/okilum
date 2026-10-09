@@ -1,6 +1,6 @@
 # AI Brain POC local service
 
-The optional `tessera-cored brain` entrypoint serves `ai-brain/v1` JSON-lines over
+The optional `okilum-cored brain` entrypoint serves `ai-brain/v1` JSON-lines over
 an explicitly selected loopback TCP address. Existing cored JSON-lines and MCP
 stdio commands remain unchanged. The process owns the runner; closing one client
 connection does not cancel work or shut down the listener.
@@ -15,7 +15,7 @@ additive application commands are documented in the
 
 ```bash
 mkdir -p fixture/brain/records fixture/runtime
-cargo run -p tessera-cored -- brain \
+cargo run -p okilum-cored -- brain \
   --brain-id 01000000-0000-4000-8000-000000000001 \
   --vault fixture/brain --operational-dir fixture/runtime \
   --records-dir records --listen 127.0.0.1:0 --managed-brain
@@ -53,7 +53,7 @@ Malformed requests and unsupported schema versions do not dispatch work.
 | `accept_human` | `criterion_id`, `actor`, `observed_at`, `source` | Canonical human receipt and re-evaluation of an existing result |
 
 Record/envelope fields are defined by [the foundation contract](ai-brain-contracts.md)
-and [the shared Rust types](../crates/tessera-brain/src/types.rs). `Goal` and `Stage`
+and [the shared Rust types](../crates/okilum-brain/src/types.rs). `Goal` and `Stage`
 include required empty lists/null fields, rather than silently inventing missing
 criteria or task state. The initial API accepts one goal and one stage, not a
 workflow graph. `accept_human` is an explicit operator action; imported engine

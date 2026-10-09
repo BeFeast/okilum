@@ -1,12 +1,12 @@
 # Native brand foundation
 
-Issue [#101](https://git.oklabs.uk/BeFeast/tessera/issues/101) integrates approved
+Issue [#101](https://git.oklabs.uk/BeFeast/okilum/issues/101) integrates approved
 brand delivery B1.2.0 and GUI V2. This module supplies appearance and assets;
 application routing, callbacks, editing and provider behavior belong to the shell.
 
 ## Sources and precedence
 
-`crates/tessera-shell/assets/brand/manifest.json` pins every production asset,
+`crates/okilum-shell/assets/brand/manifest.json` pins every production asset,
 its byte length and SHA256, and every input path/hash at its exact source commit.
 
 - Brand: `7bf512a0041b51b90b88652aae12bef6ead17b83`, canonical B symbol and app
@@ -35,8 +35,8 @@ Reproduce assets from the pinned design checkouts:
 
 ```sh
 uv run --with fonttools==4.64.0 --with brotli==1.2.0 python scripts/brand-assets.py import \
-  --brand-source /path/to/tessera-brand-identity \
-  --gui-source /path/to/tessera-app-gui
+  --brand-source /path/to/okilum-brand-identity \
+  --gui-source /path/to/okilum-app-gui
 python3 scripts/brand-assets.py verify
 ```
 
@@ -67,7 +67,7 @@ reading size and heading hierarchy.
 The macOS artifact lane renders the approved `app-icon-light.svg` through GPUI's
 full-color SVG renderer in a build-only example. Its straight BGRA output is
 converted to RGBA PNG iconset representations, then native `iconutil` creates
-`Contents/Resources/Tessera.icns`. `CFBundleIconFile` declares it before codesign.
+`Contents/Resources/Okilum.icns`. `CFBundleIconFile` declares it before codesign.
 The build checks a native iconset round trip and records the source SVG and ICNS
 hashes in the artifact receipt. No GUI startup or tool installation is needed.
 
@@ -76,7 +76,7 @@ python3 scripts/brand-assets.py package /new/package-stage
 ```
 
 The helper verifies every production file and creates a new directory containing
-`share/tessera/brand/` and `share/icons/hicolor/scalable/apps/tessera.svg`. This
+`share/okilum/brand/` and `share/icons/hicolor/scalable/apps/okilum.svg`. This
 stages files only; it does not modify any desktop, icon cache, fontconfig or OS
 settings. Fonts and shell symbols already live inside the binary. Packaging keeps
 the manifest and notices available outside it for inspection. Merge this stage

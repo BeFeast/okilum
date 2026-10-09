@@ -21,7 +21,7 @@ explicit reuse, durable promotion, offline local removal and cleanup boundaries.
 
 The next increment creates concurrent edits from a shared base while the hub is
 stopped. Both replicas retain both contents (main note plus Syncthing conflict copy)
-after reconnect, and Tessera's bounded conflict inventory finds the actual copy
+after reconnect, and Okilum's bounded conflict inventory finds the actual copy
 without changing either version. A per-folder 100% minimum-free-space setting then
 blocks a real incoming file. The controller reports Needs attention with the actual
 `insufficient space` error; restoring the prior reserve permits the queued transfer.
@@ -53,11 +53,11 @@ Do not run that destructive fixture on a personal vault.
 ## Reproduce on CT141 only
 
 ```sh
-mkdir -p "$HOME/.cache/tessera-qa/589/scratch"
-export TMPDIR="$HOME/.cache/tessera-qa/589/scratch"
-export TESSERA_SYNC_HUB="$HOME/.cache/tessera-sync-fixture/syncthing-linux-amd64-v1.29.5/syncthing"
-export TESSERA_SYNC_CLIENT="$HOME/.cache/tessera-sync-fixture/syncthing-linux-amd64-v2.1.6/syncthing"
-~/bin/tessera-build cargo test -p tessera-sync-controller --test folder \
+mkdir -p "$HOME/.cache/okilum-qa/589/scratch"
+export TMPDIR="$HOME/.cache/okilum-qa/589/scratch"
+export OKILUM_SYNC_HUB="$HOME/.cache/okilum-sync-fixture/syncthing-linux-amd64-v1.29.5/syncthing"
+export OKILUM_SYNC_CLIENT="$HOME/.cache/okilum-sync-fixture/syncthing-linux-amd64-v2.1.6/syncthing"
+~/bin/okilum-build cargo test -p okilum-sync-controller --test folder \
   owned_folder_and_external_replica_keep_their_boundaries -- --ignored --nocapture --test-threads=1
 ```
 

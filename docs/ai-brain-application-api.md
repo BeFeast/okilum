@@ -100,16 +100,16 @@ are placeholders, and credentials are environment references only):
   "chat": {
     "base_url": "http://127.0.0.1:8317/v1",
     "model": "configured-model",
-    "api_key_env": "TESSERA_CHAT_KEY"
+    "api_key_env": "OKILUM_CHAT_KEY"
   },
   "todoist": {
     "base_url": "https://api.todoist.com/api/v1/",
     "instance_id": "personal-todoist",
-    "token_env": "TESSERA_TODOIST_TOKEN"
+    "token_env": "OKILUM_TODOIST_TOKEN"
   },
   "t3": {
     "base_url": "http://127.0.0.1:3773",
-    "token_env": "TESSERA_T3_SESSION_TOKEN",
+    "token_env": "OKILUM_T3_SESSION_TOKEN",
     "environment_id": "configured-environment",
     "project_id": "configured-project",
     "model_instance_id": "configured-provider",
@@ -165,7 +165,7 @@ time. Before a turn is assigned, `thread_url` can already open the persisted
 submitted attempt; this URL does not claim that execution or correlation succeeded.
 
 A completed turn must expose its declared final assistant message with the same
-turn ID, nonempty text and `streaming: false` before Tessera records an outcome.
+turn ID, nonempty text and `streaming: false` before Okilum records an outcome.
 An available checkpoint/diff is retained. An absent checkpoint is explicit
 `engine_checkpoint_unavailable` evidence with `unverified` status: non-git planning
 projects may never create one. The first terminal receipt freezes only the evidence

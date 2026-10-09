@@ -2,7 +2,7 @@ name: Windows native diagnostics
 on:
   workflow_dispatch:
     inputs:
-      package: {required: true, default: tessera-sync-controller}
+      package: {required: true, default: okilum-sync-controller}
       features: {required: false, default: ''}
       test-filter: {description: 'One test-name substring, not multiple filters or extra flags', required: false, default: ''}
 permissions: {contents: read}

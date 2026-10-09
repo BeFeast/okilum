@@ -32,7 +32,7 @@ def main():
                 or int(metadata['BUILD']) != 5000 + int(os.environ['GITHUB_RUN_NUMBER'])
                 or Path(metadata['archive']).name != metadata['archive']):
             raise ValueError('Release artifact does not belong to this run')
-        publish(SimpleNamespace(app='tessera', archive=str(root / metadata['archive']),
+        publish(SimpleNamespace(app='okilum', archive=str(root / metadata['archive']),
                 build=int(metadata['BUILD']), short_version=metadata['DISPLAY_VERSION'],
                 source=metadata['SOURCE_SHA'], tree=metadata['SOURCE_TREE'],
                 signature=metadata['SIGNATURE'], channel='beta'))

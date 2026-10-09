@@ -1,6 +1,6 @@
 # Goal context brief
 
-Issue [160](https://git.oklabs.uk/BeFeast/tessera/issues/160) adds a derived,
+Issue [160](https://git.oklabs.uk/BeFeast/okilum/issues/160) adds a derived,
 read-only view of a goal's saved inputs. It introduces no canonical record,
 operational journal, provider request, Chat prompt change, or engine action.
 

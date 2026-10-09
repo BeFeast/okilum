@@ -24,9 +24,9 @@ Native acceptance on Linux: repeat folder/recent/CLI opens, then explicit duplic
 independent navigation, external edit visible in both windows, close the first
 window during changes, and open a different vault. Repeat native handler/shortcut
 checks on macOS and Windows. Linux diagnostics:
-`~/.local/state/tessera/reader-diagnostic.log` (or absolute `$XDG_STATE_HOME`).
+`~/.local/state/okilum/reader-diagnostic.log` (or absolute `$XDG_STATE_HOME`).
 
-For QA beside a user's running Reader, set an absolute `TESSERA_STATE_DIR` (and
+For QA beside a user's running Reader, set an absolute `OKILUM_STATE_DIR` (and
 `--index-dir`): that instance then owns its own state, instance lock, drafts,
 diagnostics and presentation config (`<dir>/config`) instead of forwarding to the
 running Reader. This is the only per-user override on Windows.

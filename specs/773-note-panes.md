@@ -109,7 +109,7 @@ before destination routing is added.
 
 ## Reader decomposition (before the pane host)
 
-`Reader` (`crates/tessera-shell/src/main.rs`) is one struct of about 150 fields.
+`Reader` (`crates/okilum-shell/src/main.rs`) is one struct of about 150 fields.
 Only `reader_navigation::State` is per-document today. A second visible document
 needs the rest of the document state moved behind a pane-owned type first. Raw
 `.field` reference counts below are upper bounds (some names also match other

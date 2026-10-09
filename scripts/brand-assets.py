@@ -13,7 +13,7 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-ASSETS = ROOT / 'crates/tessera-shell/assets/brand'
+ASSETS = ROOT / 'crates/okilum-shell/assets/brand'
 BRAND_REV = '7bf512a0041b51b90b88652aae12bef6ead17b83'
 GUI_REV = '3ba23948adbabb4288bb3bc6fa0d3e4e074861e2'
 LOGOS = ('symbol-primary.svg', 'symbol-reversed.svg', 'app-icon-light.svg', 'app-icon-dark.svg')
@@ -80,7 +80,7 @@ def import_assets(brand, gui):
                 merged['OS/2'].fsSelection |= 32 if weight == 700 else 64
                 merged['head'].macStyle = 1 if weight == 700 else 0
                 assert set(merged.getBestCmap()) == expected_cmap
-                assert set(map(ord, 'Tessera Привет Ёё')).issubset(expected_cmap)
+                assert set(map(ord, 'Okilum Привет Ёё')).issubset(expected_cmap)
                 target = fonts / (stem + '-' + str(weight) + '.ttf')
                 merged.save(target)
                 restored = TTFont(target)
@@ -116,10 +116,10 @@ def verify():
 def package(output):
     verify()
     output.mkdir(parents=True, exist_ok=False)
-    shutil.copytree(ASSETS, output / 'share/tessera/brand')
+    shutil.copytree(ASSETS, output / 'share/okilum/brand')
     icons = output / 'share/icons/hicolor/scalable/apps'
     icons.mkdir(parents=True)
-    shutil.copyfile(ASSETS / 'app-icon-light.svg', icons / 'tessera.svg')
+    shutil.copyfile(ASSETS / 'app-icon-light.svg', icons / 'okilum.svg')
     print('Staged assets and canonical app icon; no desktop installation: ' + str(output))
 
 

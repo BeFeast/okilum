@@ -1,7 +1,7 @@
 {
   "revision": "2.0.0",
   "prototype": {
-    "url": "https://html.me.uk/t/tessera-gui-2026-09-06/prototype.html",
+    "url": "https://html.me.uk/t/okilum-gui-2026-09-06/prototype.html",
     "short": "https://oklb.uk/merry-badger",
     "sha256": "f587f50711ede3aede84e0dd5e7db431217abb60aa1afb95a6c5f88d8b9628e0"
   },
@@ -11,189 +11,189 @@
       "expires_at": "2026-10-06T10:47:36.468442833Z",
       "private": false,
       "short": null,
-      "url": "https://html.me.uk/t/tessera-gui-2026-09-06/screens/01-attention-light.png"
+      "url": "https://html.me.uk/t/okilum-gui-2026-09-06/screens/01-attention-light.png"
     },
     {
       "file": "screens/02-attention-dark.png",
       "expires_at": "2026-10-06T10:47:36.729831278Z",
       "private": false,
       "short": null,
-      "url": "https://html.me.uk/t/tessera-gui-2026-09-06/screens/02-attention-dark.png"
+      "url": "https://html.me.uk/t/okilum-gui-2026-09-06/screens/02-attention-dark.png"
     },
     {
       "file": "screens/03-discussion.png",
       "expires_at": "2026-10-06T10:47:37.030949828Z",
       "private": false,
       "short": null,
-      "url": "https://html.me.uk/t/tessera-gui-2026-09-06/screens/03-discussion.png"
+      "url": "https://html.me.uk/t/okilum-gui-2026-09-06/screens/03-discussion.png"
     },
     {
       "file": "screens/04-execution.png",
       "expires_at": "2026-10-06T10:47:37.278553074Z",
       "private": false,
       "short": null,
-      "url": "https://html.me.uk/t/tessera-gui-2026-09-06/screens/04-execution.png"
+      "url": "https://html.me.uk/t/okilum-gui-2026-09-06/screens/04-execution.png"
     },
     {
       "file": "screens/05-blocker.png",
       "expires_at": "2026-10-06T10:47:37.564772508Z",
       "private": false,
       "short": null,
-      "url": "https://html.me.uk/t/tessera-gui-2026-09-06/screens/05-blocker.png"
+      "url": "https://html.me.uk/t/okilum-gui-2026-09-06/screens/05-blocker.png"
     },
     {
       "file": "screens/06-outcome-review.png",
       "expires_at": "2026-10-06T10:47:37.85184082Z",
       "private": false,
       "short": null,
-      "url": "https://html.me.uk/t/tessera-gui-2026-09-06/screens/06-outcome-review.png"
+      "url": "https://html.me.uk/t/okilum-gui-2026-09-06/screens/06-outcome-review.png"
     },
     {
       "file": "screens/07-completed.png",
       "expires_at": "2026-10-06T10:47:38.108044824Z",
       "private": false,
       "short": null,
-      "url": "https://html.me.uk/t/tessera-gui-2026-09-06/screens/07-completed.png"
+      "url": "https://html.me.uk/t/okilum-gui-2026-09-06/screens/07-completed.png"
     },
     {
       "file": "screens/08-prior-stage.png",
       "expires_at": "2026-10-06T10:47:38.311848793Z",
       "private": false,
       "short": null,
-      "url": "https://html.me.uk/t/tessera-gui-2026-09-06/screens/08-prior-stage.png"
+      "url": "https://html.me.uk/t/okilum-gui-2026-09-06/screens/08-prior-stage.png"
     },
     {
       "file": "screens/09-source-preview.png",
       "expires_at": "2026-10-06T10:47:38.543382293Z",
       "private": false,
       "short": null,
-      "url": "https://html.me.uk/t/tessera-gui-2026-09-06/screens/09-source-preview.png"
+      "url": "https://html.me.uk/t/okilum-gui-2026-09-06/screens/09-source-preview.png"
     },
     {
       "file": "screens/10-dirty-navigation.png",
       "expires_at": "2026-10-06T10:47:38.80921883Z",
       "private": false,
       "short": null,
-      "url": "https://html.me.uk/t/tessera-gui-2026-09-06/screens/10-dirty-navigation.png"
+      "url": "https://html.me.uk/t/okilum-gui-2026-09-06/screens/10-dirty-navigation.png"
     },
     {
       "file": "screens/11-newer-conflict.png",
       "expires_at": "2026-10-06T10:47:39.108184004Z",
       "private": false,
       "short": null,
-      "url": "https://html.me.uk/t/tessera-gui-2026-09-06/screens/11-newer-conflict.png"
+      "url": "https://html.me.uk/t/okilum-gui-2026-09-06/screens/11-newer-conflict.png"
     },
     {
       "file": "screens/12-conflict-reviewed.png",
       "expires_at": "2026-10-06T10:47:39.364753418Z",
       "private": false,
       "short": null,
-      "url": "https://html.me.uk/t/tessera-gui-2026-09-06/screens/12-conflict-reviewed.png"
+      "url": "https://html.me.uk/t/okilum-gui-2026-09-06/screens/12-conflict-reviewed.png"
     },
     {
       "file": "screens/13-connections.png",
       "expires_at": "2026-10-06T10:47:39.659290648Z",
       "private": false,
       "short": null,
-      "url": "https://html.me.uk/t/tessera-gui-2026-09-06/screens/13-connections.png"
+      "url": "https://html.me.uk/t/okilum-gui-2026-09-06/screens/13-connections.png"
     },
     {
       "file": "screens/14-export-success.png",
       "expires_at": "2026-10-06T10:47:39.899202918Z",
       "private": false,
       "short": null,
-      "url": "https://html.me.uk/t/tessera-gui-2026-09-06/screens/14-export-success.png"
+      "url": "https://html.me.uk/t/okilum-gui-2026-09-06/screens/14-export-success.png"
     },
     {
       "file": "screens/15-export-failure.png",
       "expires_at": "2026-10-06T10:47:40.110454597Z",
       "private": false,
       "short": null,
-      "url": "https://html.me.uk/t/tessera-gui-2026-09-06/screens/15-export-failure.png"
+      "url": "https://html.me.uk/t/okilum-gui-2026-09-06/screens/15-export-failure.png"
     },
     {
       "file": "screens/16-state-library.png",
       "expires_at": "2026-10-06T10:47:40.321462409Z",
       "private": false,
       "short": null,
-      "url": "https://html.me.uk/t/tessera-gui-2026-09-06/screens/16-state-library.png"
+      "url": "https://html.me.uk/t/okilum-gui-2026-09-06/screens/16-state-library.png"
     },
     {
       "file": "screens/17-offline.png",
       "expires_at": "2026-10-06T10:47:40.558901146Z",
       "private": false,
       "short": null,
-      "url": "https://html.me.uk/t/tessera-gui-2026-09-06/screens/17-offline.png"
+      "url": "https://html.me.uk/t/okilum-gui-2026-09-06/screens/17-offline.png"
     },
     {
       "file": "screens/18-laptop-compact.png",
       "expires_at": "2026-10-06T10:47:40.852907083Z",
       "private": false,
       "short": null,
-      "url": "https://html.me.uk/t/tessera-gui-2026-09-06/screens/18-laptop-compact.png"
+      "url": "https://html.me.uk/t/okilum-gui-2026-09-06/screens/18-laptop-compact.png"
     },
     {
       "file": "screens/19-laptop-dark.png",
       "expires_at": "2026-10-06T10:47:41.105603645Z",
       "private": false,
       "short": null,
-      "url": "https://html.me.uk/t/tessera-gui-2026-09-06/screens/19-laptop-dark.png"
+      "url": "https://html.me.uk/t/okilum-gui-2026-09-06/screens/19-laptop-dark.png"
     },
     {
       "file": "screens/20-source-laptop.png",
       "expires_at": "2026-10-06T10:47:41.339650868Z",
       "private": false,
       "short": null,
-      "url": "https://html.me.uk/t/tessera-gui-2026-09-06/screens/20-source-laptop.png"
+      "url": "https://html.me.uk/t/okilum-gui-2026-09-06/screens/20-source-laptop.png"
     },
     {
       "file": "screens/21-zoom-equivalent.png",
       "expires_at": "2026-10-06T10:47:41.665143872Z",
       "private": false,
       "short": null,
-      "url": "https://html.me.uk/t/tessera-gui-2026-09-06/screens/21-zoom-equivalent.png"
+      "url": "https://html.me.uk/t/okilum-gui-2026-09-06/screens/21-zoom-equivalent.png"
     },
     {
       "file": "screens/22-mobile-future.png",
       "expires_at": "2026-10-06T10:47:41.935750557Z",
       "private": false,
       "short": null,
-      "url": "https://html.me.uk/t/tessera-gui-2026-09-06/screens/22-mobile-future.png"
+      "url": "https://html.me.uk/t/okilum-gui-2026-09-06/screens/22-mobile-future.png"
     },
     {
       "file": "screens/archive-check.json",
       "expires_at": "2026-10-06T10:47:42.131578519Z",
       "private": false,
       "short": null,
-      "url": "https://html.me.uk/t/tessera-gui-2026-09-06/screens/archive-check.json"
+      "url": "https://html.me.uk/t/okilum-gui-2026-09-06/screens/archive-check.json"
     },
     {
       "file": "screens/captures.json",
       "expires_at": "2026-10-06T10:47:42.318089442Z",
       "private": false,
       "short": null,
-      "url": "https://html.me.uk/t/tessera-gui-2026-09-06/screens/captures.json"
+      "url": "https://html.me.uk/t/okilum-gui-2026-09-06/screens/captures.json"
     },
     {
       "file": "screens/checks.json",
       "expires_at": "2026-10-06T10:47:42.502193318Z",
       "private": false,
       "short": null,
-      "url": "https://html.me.uk/t/tessera-gui-2026-09-06/screens/checks.json"
+      "url": "https://html.me.uk/t/okilum-gui-2026-09-06/screens/checks.json"
     },
     {
       "file": "screens/layout-final.json",
       "expires_at": "2026-10-06T10:47:42.710009661Z",
       "private": false,
       "short": null,
-      "url": "https://html.me.uk/t/tessera-gui-2026-09-06/screens/layout-final.json"
+      "url": "https://html.me.uk/t/okilum-gui-2026-09-06/screens/layout-final.json"
     },
     {
       "file": "screens/index.html",
       "expires_at": "2026-10-06T10:47:42.909273483Z",
       "private": false,
       "short": "https://oklb.uk/sleek-raven-3148",
-      "url": "https://html.me.uk/t/tessera-gui-2026-09-06/screens/index.html"
+      "url": "https://html.me.uk/t/okilum-gui-2026-09-06/screens/index.html"
     }
   ],
   "source_package": {
@@ -205,7 +205,7 @@
     "sha256": "1acc4fa83d8e7b86389383983b74fc94461a9ee718f8a1a51b1e27cbecf4be6e",
     "short": "https://oklb.uk/rapid-tiger",
     "size": 2507365,
-    "url": "https://pomoi.co/f/64d42448-7195-4c22-bf73-04d018494497/tessera-gui-v2.zip",
+    "url": "https://pomoi.co/f/64d42448-7195-4c22-bf73-04d018494497/okilum-gui-v2.zip",
     "note": "Final V2 source snapshot before recording its own publication receipt."
   }
 }

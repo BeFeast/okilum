@@ -44,4 +44,4 @@ jobs:
         key: cargo-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'scripts/vendor-setup.sh',
           'scripts/patches/*.diff') }}
     - name: Run Brain tests
-      run: cargo test -p tessera-brain -p tessera-cored --no-fail-fast
+      run: cargo test -p okilum-brain -p okilum-cored --no-fail-fast

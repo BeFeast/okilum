@@ -1,4 +1,4 @@
-# Tessera GUI information architecture
+# Okilum GUI information architecture
 
 Design proposal, 2026-09-06. Synthetic content only. This reorganizes existing alpha capabilities; it does not certify native implementation or change the [approved scope](../../docs/ai-brain-alpha.md). The prototype is a disposable interaction model, not a framework decision.
 

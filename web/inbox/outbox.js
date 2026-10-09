@@ -1,6 +1,6 @@
 import { publicationProblem } from './publication-form.js';
 // Only unsent captures and the last verified account live here. No session token.
-export function openOutbox(factory = indexedDB, name = 'tessera-inbox-v1') {
+export function openOutbox(factory = indexedDB, name = 'okilum-inbox-v1') {
   return new Promise((resolve, reject) => {
     const request = factory.open(name, 1);
     request.onupgradeneeded = () => {

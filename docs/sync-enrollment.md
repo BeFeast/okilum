@@ -11,7 +11,7 @@ indexes remain disposable, identity/grants/operation journals do not.
   window and starts at login. Logout/sleep/offline is not loss of the local vault.
   Linux packages offer Syncthing as an optional dependency; installation never starts it or registers
   any service/autostart. Registration starts only on Enable Sync; Disable/Remove
-  unregister Tessera-owned services, preserving externally owned services. macOS and
+  unregister Okilum-owned services, preserving externally owned services. macOS and
   Windows bundle an unchanged sidecar with matching MPL notices/source access.
 - Offer reuse of an existing daemon after confirming identity, path, and user
   consent. Never take over its lifecycle or replace its complete configuration.
@@ -36,7 +36,7 @@ indexes remain disposable, identity/grants/operation journals do not.
   mount. The compatibility crate deliberately does not implement promotion.
 - Pause is per folder, including all peers. Remove is cooperative local stop plus
   service/hub revocation, retaining local files. Reuse removes only recorded
-  Tessera additions; previously configured sync may continue. Hub offline means
+  Okilum additions; previously configured sync may continue. Hub offline means
   removal pending. Durable deny/reconciliation prevents re-introduction at the
   hub, with an eventual-enforcement window, not guaranteed fleet isolation.
   Lost-device fleet revoke is separate; already copied data cannot be revoked.
@@ -72,7 +72,7 @@ session; no desktop/platform behavior is inferred from a Linux container test.
 
 ## Slice 1 compatibility boundary
 
-`tessera-sync` is a small independent crate consumed by the opt-in host adapter. It
+`okilum-sync` is a small independent crate consumed by the opt-in host adapter. It
 uses scoped REST endpoints, authenticated identity/version inspection, explicit
 paused folder creation, scoped folder patch/read-back, ignore read-back, scan and
 status/error inspection. It never PUTs the whole configuration. The controller
@@ -88,14 +88,14 @@ version-check and reject unsupported behavior; this does not upgrade the hub.
 No source changes or system installation of Syncthing are involved.
 
 Reproduce on an isolated Linux amd64 development machine with Rust, Python 3,
-curl, tar and sha256sum (Tessera executors must use the authorized remote build
+curl, tar and sha256sum (Okilum executors must use the authorized remote build
 host and wrap the complete command in its build lock):
 
 ```sh
-cargo test -p tessera-sync
+cargo test -p okilum-sync
 bash scripts/sync-compatibility.sh
 cargo fmt --all --check
-cargo clippy --tests -p tessera-sync -- -D warnings
+cargo clippy --tests -p okilum-sync -- -D warnings
 ```
 
 The script downloads the two pinned Linux amd64 archives, verifies their committed
@@ -113,9 +113,9 @@ The first Linux controller component is documented in [Linux lifecycle ownership
 ### Linux package boundary (#587)
 
 The Arch package declares `syncthing: sync between devices` in `optdepends`, not
-`depends`. Reader installation and use do not require Syncthing. Tessera installs
+`depends`. Reader installation and use do not require Syncthing. Okilum installs
 no service unit or package install hook; discovering the package does not run it.
-Only explicit Enable Sync may prepare Tessera's private instance and register
+Only explicit Enable Sync may prepare Okilum's private instance and register
 its user service. Disable/Remove unregister that owned service. External reused
 instances keep their lifecycle.
 
@@ -180,7 +180,7 @@ It checks local filenames using Syncthing's timestamp/device suffix convention,
 without reading contents or writing either version. Results are possible copies
 from that check, not proof of unresolved conflicts. File Manager reveal is explicit;
 there is no automatic resolve/delete. The walker does not follow directory symlinks,
-and omits Syncthing history/marker and Tessera index directories. Enumeration uses
+and omits Syncthing history/marker and Okilum index directories. Enumeration uses
 open directory descriptors and is limited to 100,000 entries, 50 results, 64 nested
 directories and a cooperative two-second budget. Unreadable entries or exhausted
 limits produce an incomplete result, never a false all-clear. Kernel filesystem

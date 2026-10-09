@@ -1,6 +1,6 @@
 # Independent Markdown merge preview
 
-Approved bounded scope: [issue148](https://git.oklabs.uk/BeFeast/tessera/issues/148).
+Approved bounded scope: [issue148](https://git.oklabs.uk/BeFeast/okilum/issues/148).
 This is an incremental assistant toward automatic independent-edit merging, not
 silent automatic save. The managed Source conflict surface exposes the explicit
 preview/adopt flow; actual native acceptance is recorded separately.

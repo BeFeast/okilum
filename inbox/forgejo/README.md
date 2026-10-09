@@ -27,7 +27,7 @@ Credential file: `{"token":"…"}`, mode 0600. `account_id` is the numeric `/use
 identity, never the login spelling. The config (project/repository associations)
 is operational configuration and must be backed up; `/derived` is replaceable.
 Changing account/instance requires a new cache, never reusing another identity.
-Secrets should come from Infisical `services/prod/tessera`, outside the checkout.
+Secrets should come from Infisical `services/prod/okilum`, outside the checkout.
 
 Run `python3 inbox/forgejo/collector.py --config /private/forgejo.json` (or
 `--once`). One process owns a cache lock. Five-minute intervals; each request has
@@ -65,7 +65,7 @@ existing backend command/credentials when adding `--forgejo-cache-file`):
 ```yaml
 services:
   forgejo:
-    image: tessera-inbox-qa:local
+    image: okilum-inbox-qa:local
     entrypoint: [python3, /usr/local/bin/forgejo-collector]
     command: [--config, /run/credentials/forgejo-config.json]
     restart: unless-stopped
@@ -73,8 +73,8 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     volumes:
-      - /opt/tessera-inbox/secrets/forgejo-config.json:/run/credentials/forgejo-config.json:ro
-      - /opt/tessera-inbox/secrets/forgejo-token.json:/run/credentials/forgejo.json:ro
+      - /opt/okilum-inbox/secrets/forgejo-config.json:/run/credentials/forgejo-config.json:ro
+      - /opt/okilum-inbox/secrets/forgejo-token.json:/run/credentials/forgejo.json:ro
       - forgejo-derived:/derived
   inbox:
     volumes:

@@ -107,7 +107,7 @@ resolved by reading the recorded receipt. An unreadable durable outcome fences
 further journal writes until recovery/restart. Startup does not resend provider
 work because a selection changed.
 
-The first adoption writes the journal under the `tessera-runtime/routes-v2`
+The first adoption writes the journal under the `okilum-runtime/routes-v2`
 wrapper. Older binaries require legacy root fields absent from this wrapper and
 therefore fail closed. New code decodes legacy journals and this explicit version;
 unknown versions are refused. Enrollment checks for unrelated Attention, Inbox and
@@ -124,9 +124,9 @@ The standalone tool exercises the same local terminal-admission verifier without
 opening a Runner, recovering state, resolving credentials or calling a provider:
 
 ```sh
-CARGO_TARGET_DIR="$HOME/.cache/tessera-recovery" cargo build --locked \
-  -p tessera-brain --example t3-target-inventory
-"$HOME/.cache/tessera-recovery/debug/examples/t3-target-inventory" \
+CARGO_TARGET_DIR="$HOME/.cache/okilum-recovery" cargo build --locked \
+  -p okilum-brain --example t3-target-inventory
+"$HOME/.cache/okilum-recovery/debug/examples/t3-target-inventory" \
   --operational /private/brain-state --brain /private/brain
 ```
 
@@ -169,14 +169,14 @@ and cannot obtain an adapter or credential lookup from the current generation.
 
 ## Production startup regression
 
-`cargo test --locked -p tessera-cored --test t3_origin` launches the actual cored
+`cargo test --locked -p okilum-cored --test t3_origin` launches the actual cored
 entrypoint on isolated settled-history fixtures. It covers explicit configuration
 and saved settings, reconnect, unknown and known origins, preparation, adoption,
 restart, immutable evidence and forbidden operation calls. A separate synthetic
 provider instance supplies the detector's positive control. Checkpoints capture
 state before startup and after startup, preparation, adoption and restart.
 
-Set `TESSERA_CORED_TEST_BINARY` to an absolute executable path to run the same
+Set `OKILUM_CORED_TEST_BINARY` to an absolute executable path to run the same
 regression against a frozen release binary. Development test success does not
 qualify a deployed release; a future integrated backend artifact must pass this
 actual-entrypoint regression at its exact build before acceptance.

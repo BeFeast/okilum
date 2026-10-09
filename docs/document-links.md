@@ -54,7 +54,7 @@ launches an external application.
 No source normalization or automatic conversion is performed.
 
 The portable synthetic corpus lives under
-`crates/tessera-core/tests/fixtures/document-links/`. Regression checks include
+`crates/okilum-core/tests/fixtures/document-links/`. Regression checks include
 root/sibling sentinels, exact fragments/ranges, encoding once, code exclusion,
 wiki compatibility, fallback boundaries, heading ambiguity and actual managed
 navigation/Back. Native acceptance records exact binary/source/vendor, host,

@@ -14,4 +14,4 @@ if [ -n "${RELEASE_TAG:-}" ]; then
         args+=("refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG")
     fi
 fi
-git push "https://x-access-token:${MIRROR_TOKEN}@github.com/BeFeast/tessera.git" "${args[@]}"
+git push "https://x-access-token:${MIRROR_TOKEN}@github.com/BeFeast/okilum.git" "${args[@]}"

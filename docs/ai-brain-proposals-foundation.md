@@ -5,7 +5,7 @@ The description below records the original A1 boundary; production enrollment,
 generation and canonical draft/adoption remain disabled.
 
 This is implementation sub-slice A1 of the proposed
-[proposal contract](https://git.oklabs.uk/BeFeast/tessera/pulls/167).
+[proposal contract](https://git.oklabs.uk/BeFeast/okilum/pulls/167).
 It is a private, deliberately unused library module. No Runner, service startup,
 provider, source projection, API command, capability or GUI opens the store.
 Nothing is enrolled or generated in an existing workspace by this change.

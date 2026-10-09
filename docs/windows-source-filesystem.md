@@ -1,6 +1,6 @@
 # Native Windows source filesystem (#765)
 
-The backend slice (#776) added NTFS primitives in `tessera_core::windows_files`.
+The backend slice (#776) added NTFS primitives in `okilum_core::windows_files`.
 The desktop integration (#765) adapts the shared editor, drafts/history,
 conflicts, creation and rename flows to those primitives. The Reader/MCP
 protocol remains read-only.
@@ -49,7 +49,7 @@ They provide filesystem primitives, not an independent editor or journal format.
 ## Verification
 
 `windows_files::tests::windows_save_*` must run in the Windows-native workflow
-on the exact backend SHA, using package `tessera-core` and test filter
+on the exact backend SHA, using package `okilum-core` and test filter
 `windows_save_`. Acceptance requires all eleven named tests to execute; zero
 matched tests or skipped symlink/junction controls are not passing evidence.
 They cover lossless BOM/CRLF/ru/he/en, displaced-source races, sharing failures
@@ -117,7 +117,7 @@ history names move with a folder. No automatic rollback overwrites a concurrent
 writer; post-publication verification failures are reported as completed moves
 requiring inspection.
 
-`python scripts/tessera-save-dry-run.py /absolute/vault/root` prints a read-only
+`python scripts/okilum-save-dry-run.py /absolute/vault/root` prints a read-only
 JSON inventory grouped into canonical Windows UUID `.previous` names, legacy
 six-character tempfile names and other `.tessera-save-*` entries. It reads only
 directory entries and metadata, never file contents, and does not follow symlinks

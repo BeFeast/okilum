@@ -19,7 +19,7 @@ _enable_release_cache() {
       cache_hash=308184519b646f5125289e8515b36f6ca65a13a041923994aebe702348674e8e ;;
     *) return 1 ;;
   esac
-  cache_dir="${TESSERA_SCCACHE_HOME:-$HOME/.cache/tessera-sccache}/0.18.0-$cache_target"
+  cache_dir="${OKILUM_SCCACHE_HOME:-$HOME/.cache/okilum-sccache}/0.18.0-$cache_target"
   if [[ ! -x $cache_dir/sccache ]]; then
     mkdir -p "$cache_dir" || return 1
     cache_stage=$(mktemp -d "$cache_dir/install.XXXXXX") || return 1

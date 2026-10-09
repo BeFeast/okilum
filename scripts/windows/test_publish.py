@@ -25,14 +25,14 @@ class Store:
 
 
 def fixture(root, build=7000):
-    name = f'BeFeast.Tessera-0.1.{build}-beta-full.nupkg'
+    name = f'BeFeast.Okilum-0.1.{build}-beta-full.nupkg'
     data = b'package contents'
     (root / name).write_bytes(data)
-    feed = {'Assets': [{'PackageId': 'BeFeast.Tessera', 'Version': f'0.1.{build}',
+    feed = {'Assets': [{'PackageId': 'BeFeast.Okilum', 'Version': f'0.1.{build}',
         'Type': 'Full', 'FileName': name, 'Size': len(data),
         'SHA256': hashlib.sha256(data).hexdigest()}]}
     (root / 'releases.beta.json').write_text(json.dumps(feed))
-    (root / 'BeFeast.Tessera-beta-Setup.exe').write_bytes(b'MZinstaller')
+    (root / 'BeFeast.Okilum-beta-Setup.exe').write_bytes(b'MZinstaller')
     return name, feed
 
 
@@ -60,13 +60,13 @@ class PublicationTests(unittest.TestCase):
             name, feed = fixture(root)
             store = Store()
             p.publish(root, 7000, 'source', store)
-            self.assertEqual(store.writes[-1], 'tessera/windows/beta/releases.beta.json')
+            self.assertEqual(store.writes[-1], 'okilum/windows/beta/releases.beta.json')
             p.prepare(root / 'next', store)
             self.assertEqual((root / 'next' / name).read_bytes(), (root / name).read_bytes())
             p.promote(7000, store)
-            self.assertEqual(store.writes[-1], 'tessera/windows/stable/releases.stable.json')
-            self.assertEqual(store.data[f'tessera/windows/stable/{name}'], (root / name).read_bytes())
-            self.assertEqual(store.data['tessera/windows/stable/Setup.exe'], b'MZinstaller')
+            self.assertEqual(store.writes[-1], 'okilum/windows/stable/releases.stable.json')
+            self.assertEqual(store.data[f'okilum/windows/stable/{name}'], (root / name).read_bytes())
+            self.assertEqual(store.data['okilum/windows/stable/Setup.exe'], b'MZinstaller')
             self.assertEqual(json.loads(store.data[store.writes[-1]]), feed)
 
     def test_corruption_and_traversal_never_publish_feed(self):
@@ -102,9 +102,9 @@ class PublicationTests(unittest.TestCase):
             fixture(root)
             store = Store()
             p.publish(root, 7000, 'source', store)
-            store.data['tessera/windows/builds/7000/Setup.exe'] = b'MZcorrupt'
+            store.data['okilum/windows/builds/7000/Setup.exe'] = b'MZcorrupt'
             with self.assertRaises(ValueError): p.promote(7000, store)
-            self.assertNotIn('tessera/windows/stable/releases.stable.json', store.data)
+            self.assertNotIn('okilum/windows/stable/releases.stable.json', store.data)
 
 
 if __name__ == '__main__': unittest.main()

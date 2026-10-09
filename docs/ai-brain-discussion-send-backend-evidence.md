@@ -1,6 +1,6 @@
 # Discussion send backend evidence
 
-Backend implementation for [#244](https://git.oklabs.uk/BeFeast/tessera/issues/244),
+Backend implementation for [#244](https://git.oklabs.uk/BeFeast/okilum/issues/244),
 following the [frozen send/recovery contract](ai-brain-discussion-send-recovery.md).
 The shell, frozen old-writer round trip and isolated native acceptance are separate
 checks; the backend tests below do not claim those outcomes.

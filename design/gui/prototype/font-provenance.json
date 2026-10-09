@@ -4,22 +4,22 @@
   "assets": [
     {
       "file": "noto-sans-latin.woff2",
-      "source": "/home/example/src/tessera-brand-identity/design/brand/fonts/noto-sans-latin.woff2",
+      "source": "/home/example/src/okilum-brand-identity/design/brand/fonts/noto-sans-latin.woff2",
       "sha256": "51ca196f49a33e79e7870ff88ebd2829a3f627a51e7d690986618f0e7ad2b52d"
     },
     {
       "file": "cascadia-code-latin.woff2",
-      "source": "/home/example/src/tessera-brand-identity/design/brand/fonts/cascadia-code-latin.woff2",
+      "source": "/home/example/src/okilum-brand-identity/design/brand/fonts/cascadia-code-latin.woff2",
       "sha256": "a3018c0c6b4ed21b123349cc6c8d4d35d32cb11f91fe5e960aa4886eb27a9209"
     },
     {
       "file": "noto-sans-cyrillic.woff2",
-      "source": "/home/example/src/tessera-brand-identity/design/brand/fonts/noto-sans-cyrillic.woff2",
+      "source": "/home/example/src/okilum-brand-identity/design/brand/fonts/noto-sans-cyrillic.woff2",
       "sha256": "6ab64433de6077ca5ad31b05420450ce986a616a4ea47b6ad16f3217055dafc3"
     },
     {
       "file": "cascadia-code-cyrillic.woff2",
-      "source": "/home/example/src/tessera-brand-identity/design/brand/fonts/cascadia-code-cyrillic.woff2",
+      "source": "/home/example/src/okilum-brand-identity/design/brand/fonts/cascadia-code-cyrillic.woff2",
       "sha256": "2b5394007fc6896185de6c6bc0ceac0440409eb47a76c51aa9ca5a620dce755b"
     }
   ]

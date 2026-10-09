@@ -2,7 +2,7 @@
 
 This is the first child of [managed Live Preview](managed-live-preview.md), not a
 Markdown classifier, native editor adapter or completed Live Preview mode. The
-module is `tessera_core::source_projection`; no shell, source API or vendor call
+module is `okilum_core::source_projection`; no shell, source API or vendor call
 uses it yet.
 
 A `Snapshot` owns immutable full authored UTF-8 text, document identity and a

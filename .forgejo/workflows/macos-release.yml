@@ -10,7 +10,7 @@ on:
 
 # Finish the selected daily/manual snapshot even when main advances.
 concurrency:
-  group: tessera-macos-build-${{ github.ref }}
+  group: okilum-macos-build-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -49,12 +49,12 @@ jobs:
       - name: Build, sign and notarize
         shell: bash
         env:
-          TESSERA_SIGNING_IDENTITY: ${{ vars.TESSERA_SIGNING_IDENTITY }}
-          TESSERA_NOTARY_PROFILE: ${{ vars.TESSERA_NOTARY_PROFILE }}
+          OKILUM_SIGNING_IDENTITY: ${{ vars.OKILUM_SIGNING_IDENTITY }}
+          OKILUM_NOTARY_PROFILE: ${{ vars.OKILUM_NOTARY_PROFILE }}
           SPARKLE_PUBLIC_ED_KEY: TH/Jc6vRfSSFtR3R2rLqBGBnFylMUWdKJ6dr18Ys8CY=
         run: |
           # Monotonic and above the last hand-numbered build (4792).
-          export TESSERA_BUILD_VERSION=$((5000 + ${GITHUB_RUN_NUMBER:?}))
+          export OKILUM_BUILD_VERSION=$((5000 + ${GITHUB_RUN_NUMBER:?}))
           bash scripts/build-macos-ci.sh "$RUNNER_TEMP/release"
 
       - name: Check the macOS pasteboard adapter on an isolated named pasteboard
@@ -64,32 +64,32 @@ jobs:
           export CC=/usr/bin/clang CXX=/usr/bin/clang++
           SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
           export SDKROOT
-          export CARGO_TARGET_DIR="$HOME/.cache/tessera-macos/reader-arm64"
+          export CARGO_TARGET_DIR="$HOME/.cache/okilum-macos/reader-arm64"
           export CARGO_INCREMENTAL=0
-          # The test binary runs outside Tessera.app; use the verified source framework.
-          env DYLD_FRAMEWORK_PATH="$PWD/vendor/sparkle" cargo test --release --locked --target aarch64-apple-darwin -p tessera-shell platform::exact_macos_clipboard::native_tests -- --test-threads=1
+          # The test binary runs outside Okilum.app; use the verified source framework.
+          env DYLD_FRAMEWORK_PATH="$PWD/vendor/sparkle" cargo test --release --locked --target aarch64-apple-darwin -p okilum-shell platform::exact_macos_clipboard::native_tests -- --test-threads=1
           # #471: real-vault sidecars/invalid UTF-8 cannot abort rename or enter search.
-          cargo test --release --locked --target aarch64-apple-darwin -p tessera-core --lib link_rewrite::tests::sidecars_and_invalid_utf8_do_not_abort_move_or_enter_search -- --exact
+          cargo test --release --locked --target aarch64-apple-darwin -p okilum-core --lib link_rewrite::tests::sidecars_and_invalid_utf8_do_not_abort_move_or_enter_search -- --exact
           # #453: synchronous lock release, pending-writer exclusion and 128 reopen iterations.
           for lock_test in \
             completed_exchange_before_journal_acknowledgement_recovers_without_conflict \
             immediate_reopen_releases_lock_despite_an_inherited_descriptor \
             pending_draft_retains_exclusion_until_it_finishes_then_reopens_immediately \
             destination_reservation_protects_orphaned_drafts_and_active_writers; do
-            cargo test --release --locked --target aarch64-apple-darwin -p tessera-core --lib "file_editor::tests::$lock_test" -- --exact
+            cargo test --release --locked --target aarch64-apple-darwin -p okilum-core --lib "file_editor::tests::$lock_test" -- --exact
           done
           # #398: exercise release-mode UTF-8 guards and native pointer routing.
-          env DYLD_FRAMEWORK_PATH="$PWD/vendor/sparkle" cargo test --release --locked --target aarch64-apple-darwin -p tessera-shell text_ranges::tests -- --test-threads=1
-          env DYLD_FRAMEWORK_PATH="$PWD/vendor/sparkle" cargo test --release --locked --target aarch64-apple-darwin -p tessera-shell reader_editor::tests -- --test-threads=1
-          env DYLD_FRAMEWORK_PATH="$PWD/vendor/sparkle" cargo test --release --locked --target aarch64-apple-darwin -p tessera-shell reader_create::tests -- --test-threads=1
-          env DYLD_FRAMEWORK_PATH="$PWD/vendor/sparkle" cargo test --release --locked --target aarch64-apple-darwin -p tessera-shell reader_move::tests -- --test-threads=1
+          env DYLD_FRAMEWORK_PATH="$PWD/vendor/sparkle" cargo test --release --locked --target aarch64-apple-darwin -p okilum-shell text_ranges::tests -- --test-threads=1
+          env DYLD_FRAMEWORK_PATH="$PWD/vendor/sparkle" cargo test --release --locked --target aarch64-apple-darwin -p okilum-shell reader_editor::tests -- --test-threads=1
+          env DYLD_FRAMEWORK_PATH="$PWD/vendor/sparkle" cargo test --release --locked --target aarch64-apple-darwin -p okilum-shell reader_create::tests -- --test-threads=1
+          env DYLD_FRAMEWORK_PATH="$PWD/vendor/sparkle" cargo test --release --locked --target aarch64-apple-darwin -p okilum-shell reader_move::tests -- --test-threads=1
           # Manual branch validation stress-repeats the real FSEvents test (#459).
           # Main releases retain a single run; failures are never retried away.
           replay_runs=1
           if [ "${GITHUB_REF:-}" != "refs/heads/main" ]; then replay_runs=20; fi
           for ((attempt = 1; attempt <= replay_runs; attempt++)); do
             echo "FSEvents replay stress $attempt/$replay_runs"
-            env DYLD_FRAMEWORK_PATH="$PWD/vendor/sparkle" cargo test --release --locked --target aarch64-apple-darwin -p tessera-shell reader_replay::native::tests -- --test-threads=1 || exit "$?"
+            env DYLD_FRAMEWORK_PATH="$PWD/vendor/sparkle" cargo test --release --locked --target aarch64-apple-darwin -p okilum-shell reader_replay::native::tests -- --test-threads=1 || exit "$?"
           done
 
       - name: Stage signed update for publication

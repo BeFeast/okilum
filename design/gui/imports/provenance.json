@@ -1,6 +1,6 @@
 {
-  "source_branch": "design/tessera-brand-identity",
-  "source_worktree": "/home/example/src/tessera-brand-identity",
+  "source_branch": "design/okilum-brand-identity",
+  "source_worktree": "/home/example/src/okilum-brand-identity",
   "source_HEAD_at_import": "a68a7d15fa435a06445641d4aabb6d96994fc112",
   "note": "Snapshots copied read-only from uncommitted brand lane files; HEAD is base, not a commit containing these token files. Content hashes identify the exact imports.",
   "imports": [

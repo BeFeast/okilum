@@ -1,10 +1,10 @@
 # Built from a checked-out, pinned source revision by build.sh.
-pkgname=tessera
+pkgname=okilum
 pkgver=0.1.0
 pkgrel=1
 pkgdesc='Local-first Markdown reader and knowledge environment'
 arch=('x86_64')
-url='https://git.oklabs.uk/BeFeast/tessera'
+url='https://git.oklabs.uk/BeFeast/okilum'
 license=('MIT')
 depends=('gcc-libs' 'glibc' 'fontconfig' 'freetype2' 'libxcb' 'libxkbcommon' 'libxkbcommon-x11' 'wayland' 'vulkan-icd-loader')
 optdepends=('syncthing: sync between devices')
@@ -12,25 +12,25 @@ makedepends=('git' 'cmake' 'pkgconf' 'clang' 'mold')
 options=('!debug' '!lto')
 
 build() {
-    cd "$TESSERA_SOURCE"
+    cd "$OKILUM_SOURCE"
     scripts/vendor-setup.sh
     scripts/vendor-setup.sh --verify
     python3 scripts/brand-assets.py verify
     local qa_features=()
-    if [[ ${TESSERA_SETTINGS_UI_HARNESS:-0} == 1 ]]; then
+    if [[ ${OKILUM_SETTINGS_UI_HARNESS:-0} == 1 ]]; then
         qa_features=(--features settings-ui-harness)
     fi
-    cargo build --release --locked -p tessera-shell "${qa_features[@]}"
-    if [[ ${TESSERA_SETTINGS_UI_HARNESS:-0} == 1 ]]; then
-        cargo test --release --locked -p tessera-shell --features settings-ui-harness \
+    cargo build --release --locked -p okilum-shell "${qa_features[@]}"
+    if [[ ${OKILUM_SETTINGS_UI_HARNESS:-0} == 1 ]]; then
+        cargo test --release --locked -p okilum-shell --features settings-ui-harness \
             reader_settings::tests
     fi
 }
 
 package() {
-    cd "$TESSERA_SOURCE"
-    install -Dm755 target/release/tessera "$pkgdir/usr/bin/tessera"
-    install -Dm644 scripts/arch/tessera.desktop "$pkgdir/usr/share/applications/tessera.desktop"
-    install -Dm644 crates/tessera-shell/assets/brand/app-icon-light.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/tessera.svg"
-    python3 scripts/third-party-notices.py --stage "$pkgdir/usr/share/licenses/tessera"
+    cd "$OKILUM_SOURCE"
+    install -Dm755 target/release/okilum "$pkgdir/usr/bin/okilum"
+    install -Dm644 scripts/arch/okilum.desktop "$pkgdir/usr/share/applications/okilum.desktop"
+    install -Dm644 crates/okilum-shell/assets/brand/app-icon-light.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/okilum.svg"
+    python3 scripts/third-party-notices.py --stage "$pkgdir/usr/share/licenses/okilum"
 }

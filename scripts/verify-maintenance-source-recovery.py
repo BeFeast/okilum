@@ -22,7 +22,7 @@ def verify(enabled, maintenance):
     thread.start()
     try:
         base.positive_control(server, base.Fixture)
-        with tempfile.TemporaryDirectory(prefix="tessera-maintenance-source-") as temporary:
+        with tempfile.TemporaryDirectory(prefix="okilum-maintenance-source-") as temporary:
             root = pathlib.Path(temporary)
             records = root / "brain/records"
             records.mkdir(parents=True)

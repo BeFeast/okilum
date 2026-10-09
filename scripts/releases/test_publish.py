@@ -26,8 +26,8 @@ class Store:
 
 
 def fixture(store):
-    names = {'macos': ['Tessera-macos.zip'], 'windows': ['Setup.exe', 'Tessera-windows-portable.zip'],
-             'linux': ['tessera-0.1.702-1-x86_64.pkg.tar.zst', 'tessera-0.1.702-1-x86_64.pkg.tar.zst.sig']}
+    names = {'macos': ['Okilum-macos.zip'], 'windows': ['Setup.exe', 'Okilum-windows-portable.zip'],
+             'linux': ['okilum-0.1.702-1-x86_64.pkg.tar.zst', 'okilum-0.1.702-1-x86_64.pkg.tar.zst.sig']}
     for offset, (platform, filenames) in enumerate(names.items()):
         assets = []
         for name in filenames:
@@ -36,12 +36,12 @@ def fixture(store):
             store.data[key] = data
             assets.append(catalog.asset(key, name, data))
         catalog.record(store, platform, 700 + offset, SOURCE, assets)
-    store.data['tessera/appcast.xml'] = f'''<rss xmlns:s="{p.appcast.SPARKLE}" xmlns:t="{p.appcast.TESSERA}">
+    store.data['okilum/appcast.xml'] = f'''<rss xmlns:s="{p.appcast.SPARKLE}" xmlns:t="{p.appcast.OKILUM}">
       <channel><item><s:version>700</s:version><s:channel>beta</s:channel><t:source>{SOURCE}</t:source></item></channel></rss>'''.encode()
-    store.data['tessera/windows/beta/releases.beta.json'] = catalog.encode(
+    store.data['okilum/windows/beta/releases.beta.json'] = catalog.encode(
         {'Assets': [{'Type': 'Full', 'Version': '0.1.701'}]})
-    store.data['tessera/windows/builds/701/release.json'] = catalog.encode({'build': 701, 'source': SOURCE})
-    store.data['tessera/arch/beta/x86_64/latest.json'] = catalog.encode({'build': 702, 'source': SOURCE})
+    store.data['okilum/windows/builds/701/release.json'] = catalog.encode({'build': 701, 'source': SOURCE})
+    store.data['okilum/arch/beta/x86_64/latest.json'] = catalog.encode({'build': 702, 'source': SOURCE})
     store.writes.clear()
     return catalog.bundle(store, SOURCE, 700)
 
@@ -187,7 +187,7 @@ class CatalogTests(unittest.TestCase):
             self.assertTrue(github.call_args.args[-1])
             self.assertEqual(store.writes[0], f'{catalog.PREFIX}/promoting.json')
             self.assertEqual(store.writes[-1], f'{catalog.PREFIX}/stable.json')
-            self.assertEqual(store.data['tessera/macos/latest.zip'], b'Tessera-macos.zip')
+            self.assertEqual(store.data['okilum/macos/latest.zip'], b'Okilum-macos.zip')
 
     def test_catalog_rejects_reused_build_and_path_injection(self):
         store = Store()
@@ -202,20 +202,20 @@ class CatalogTests(unittest.TestCase):
         store = Store()
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            name = 'BeFeast.Tessera-0.1.701-beta-full.nupkg'
+            name = 'BeFeast.Okilum-0.1.701-beta-full.nupkg'
             data = b'package'
             (root / name).write_bytes(data)
-            feed = {'Assets': [{'FileName': name, 'PackageId': 'BeFeast.Tessera', 'Type': 'Full',
+            feed = {'Assets': [{'FileName': name, 'PackageId': 'BeFeast.Okilum', 'Type': 'Full',
                                'Version': '0.1.701', 'Size': len(data), 'SHA256': hashlib.sha256(data).hexdigest()}]}
             (root / 'releases.beta.json').write_text(json.dumps(feed))
-            (root / 'BeFeast.Tessera-beta-Setup.exe').write_bytes(b'MZsetup')
+            (root / 'BeFeast.Okilum-beta-Setup.exe').write_bytes(b'MZsetup')
             portable = root / 'portable.zip'
             portable.write_bytes(b'PKportable')
             p.windows.publish(root, 701, SOURCE, store, portable)
             entry = json.loads(store.data[f'{catalog.PREFIX}/{SOURCE}/windows.json'])
             for a in entry['assets']:
                 self.assertEqual(hashlib.sha256(store.data[a['key']]).hexdigest(), a['sha256'])
-            self.assertEqual([a['name'] for a in entry['assets']], ['Setup.exe', 'Tessera-windows-portable.zip'])
+            self.assertEqual([a['name'] for a in entry['assets']], ['Setup.exe', 'Okilum-windows-portable.zip'])
 
 
 class GitHubTests(unittest.TestCase):
@@ -229,7 +229,7 @@ class GitHubTests(unittest.TestCase):
              patch.object(p.urllib.request, 'urlopen', return_value=response) as request:
             p.GitHub().call('DELETE', '/releases/assets/9')
         sent = request.call_args.args[0]
-        self.assertEqual(sent.full_url, 'https://api.github.com/repos/BeFeast/tessera/releases/assets/9')
+        self.assertEqual(sent.full_url, 'https://api.github.com/repos/BeFeast/okilum/releases/assets/9')
         self.assertEqual(sent.method, 'DELETE')
 
     def test_rolling_release_reuses_id_and_publishes_after_all_uploads(self):
@@ -312,9 +312,9 @@ class RollingBetaTests(unittest.TestCase):
         old = json.loads(store.data[f'{catalog.PREFIX}/{SOURCE}/windows.json'])
         old.update(source=source, build=703)
         store.data[f'{catalog.PREFIX}/{source}/windows.json'] = catalog.encode(old)
-        store.data['tessera/windows/beta/releases.beta.json'] = catalog.encode(
+        store.data['okilum/windows/beta/releases.beta.json'] = catalog.encode(
             {'Assets': [{'Type': 'Full', 'Version': '0.1.703'}]})
-        store.data['tessera/windows/builds/703/release.json'] = catalog.encode({'build': 703, 'source': source})
+        store.data['okilum/windows/builds/703/release.json'] = catalog.encode({'build': 703, 'source': source})
         release = p.choose_beta(store)
         self.assertEqual(release['platforms']['windows']['source'], source)
         self.assertEqual(release['platforms']['windows']['build'], 703)

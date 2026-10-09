@@ -17,7 +17,7 @@ Issue: #50. Measured 2026-09-05 on `main` @ `735d4b5` (vendor gpui-kit
 | Mesa | 26.2.2-arch3.2 (`vulkaninfo --summary`: Vulkan 1.4.354) |
 | Kernel | 7.2.2-1-cachyos |
 | Compositor | Hyprland 0.56.2, nested evidence rig (Wayland backend, no seat), output `HEADLESS-1` 1920x1080@60, scale 1 |
-| Window | Tessera fullscreen on that output, 1920x1080 |
+| Window | Okilum fullscreen on that output, 1920x1080 |
 | Note | `Dev/Areas/ok-player/_index.md` from the spike corpus snapshot — 131 641 B, the same 132 KB note the spike measured |
 | Index | throwaway `--index-dir` on tmpfs |
 
@@ -34,7 +34,7 @@ run on this host is within ~1 ms of the others, so three is enough to show that.
 
 ### A. Self-driven sweep (spike parity — this is what produced p50 16.9 / p99 40.9)
 
-The spike reader (`~/dev/spikes/tessera/gpui-reader/src/main.rs`, `--sweep`)
+The spike reader (`~/dev/spikes/okilum/gpui-reader/src/main.rs`, `--sweep`)
 scrolls the list by 120 px once per frame from `Window::on_next_frame` until the
 bottom, recording the inter-frame interval. No input injection, so it is immune
 to seat and pointer-focus problems, and it includes the app's own re-render.
@@ -42,7 +42,7 @@ It is a worst-case stress: 120 px every frame is ~1.5x faster than the injected
 wheel below.
 
 The product binary has no such flag (the port removed the probe instrumentation
-on purpose). For a rerun, add it temporarily to `crates/tessera-shell/src/main.rs`
+on purpose). For a rerun, add it temporarily to `crates/okilum-shell/src/main.rs`
 and do not commit it: an `Opts.sweep: bool` set by `"--sweep"` in `main()`, and
 this block at the end of `Reader::new`, immediately before `this` is returned
 (verbatim from the spike, with p95 added):
@@ -107,7 +107,7 @@ address with `rigctl dispatch focuswindow` / `fullscreen 0`; the sweep starts 2 
 after the window opens and prints one `sweep:` line to stderr:
 
 ```
-tessera --vault ~/dev/spikes/tessera/corpus --index-dir /tmp/tessera-idx \
+okilum --vault ~/dev/spikes/okilum/corpus --index-dir /tmp/okilum-idx \
         --note Dev/Areas/ok-player/_index.md --sweep
 ```
 
@@ -121,12 +121,12 @@ by libwayland at the client. This is the frame rate the compositor actually
 paced the app at, so it saturates at the 60 Hz output (16.7 ms floor).
 
 ```
-env WAYLAND_DEBUG=1 tessera --vault ~/dev/spikes/tessera/corpus \
-    --index-dir /tmp/tessera-idx --note Dev/Areas/ok-player/_index.md 2>run.log &
+env WAYLAND_DEBUG=1 okilum --vault ~/dev/spikes/okilum/corpus \
+    --index-dir /tmp/okilum-idx --note Dev/Areas/ok-player/_index.md 2>run.log &
 # focus + fullscreen by address, wait 3 s
 rigctl dispatch movecursor 1200 600      # see trap below
 ~/rig/ptr.sh move 1200 600
-python3 ~/dev/spikes/tessera/scripts/wheel-stream.py 500 15
+python3 ~/dev/spikes/okilum/scripts/wheel-stream.py 500 15
 ```
 
 Then keep only the `wl_callback#N.done` lines whose `N` was created by a
@@ -192,10 +192,10 @@ change possible on a prebuilt binary). Same rig, same note, same session.
 
 | Binary | Run | Frames | p50 | p90 | p95 | p99 | max | mean |
 |---|---|---|---|---|---|---|---|---|
-| `tessera-pre27` — main before #27 (fonts/heading scale), built 11:07 | 1 | 319 | 20.90 | 37.20 | 45.05 | 55.20 | 78.07 | 24.45 |
+| `okilum-pre27` — main before #27 (fonts/heading scale), built 11:07 | 1 | 319 | 20.90 | 37.20 | 45.05 | 55.20 | 78.07 | 24.45 |
 | | 2 | 317 | 20.94 | 37.11 | 45.16 | 56.92 | 77.69 | 24.64 |
 | | 3 | 316 | 20.85 | 37.62 | 44.88 | 57.08 | 78.55 | 24.69 |
-| `tessera-main` — main @ ~`561ef44` (with #27), built 11:45 | 1 | 267 | 31.00 | 44.19 | 49.34 | 56.45 | 57.23 | 29.40 |
+| `okilum-main` — main @ ~`561ef44` (with #27), built 11:45 | 1 | 267 | 31.00 | 44.19 | 49.34 | 56.45 | 57.23 | 29.40 |
 | | 2 | 270 | 27.59 | 45.04 | 48.21 | 54.87 | 57.83 | 29.07 |
 | | 3 | 274 | 26.89 | 43.58 | 47.03 | 55.56 | 57.70 | 28.67 |
 
