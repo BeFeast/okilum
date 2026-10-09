@@ -88,12 +88,25 @@ mod imp {
         Ok(start_of(&info))
     }
     pub fn live_copies(image: &Path, uid: u32, since: u64) -> Result<Vec<u32>> {
-        let capacity = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
-        ensure!(capacity > 0, "cannot list processes");
-        let mut pids = vec![0 as libc::pid_t; capacity as usize * 2];
-        let bytes = (pids.len() * std::mem::size_of::<libc::pid_t>()) as libc::c_int;
-        let count = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
-        ensure!(count > 0, "cannot list processes");
+        // The process table can grow between sizing and filling; a full buffer may
+        // have been truncated, so grow and retry until the result leaves room. An
+        // undercount would let an escaped copy go unseen, so give up loudly.
+        let mut slots = {
+            let size = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+            ensure!(size > 0, "cannot list processes");
+            size as usize * 2
+        };
+        let (pids, count) = loop {
+            let mut pids = vec![0 as libc::pid_t; slots];
+            let bytes = (slots * std::mem::size_of::<libc::pid_t>()) as libc::c_int;
+            let count = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
+            ensure!(count > 0, "cannot list processes");
+            if (count as usize) < slots {
+                break (pids, count);
+            }
+            ensure!(slots < (1 << 22), "process table too large to scan");
+            slots *= 2;
+        };
         let mut found = vec![];
         for &pid in &pids[..count as usize] {
             if pid <= 0 {
