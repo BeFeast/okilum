@@ -61,6 +61,9 @@ class FakeDeployment(restart.Deployment):
         self.backup_fails = False
         self.health = 'healthy'
 
+    def preflight(self):
+        pass
+
     def compose(self, *args):
         self.events.append(('compose', args))
         if args[:2] == ('ps', '-q'):
@@ -80,6 +83,26 @@ class FakeDeployment(restart.Deployment):
         if self.backup_fails:
             raise RuntimeError('backup refused')
         (directory / 'nginx.conf').write_bytes(self.nginx.read_bytes())
+
+
+class RuntimePreflightTests(unittest.TestCase):
+    def test_external_env_omission_fails_without_leaking_values(self):
+        desired = {'command': ['serve', '--ai-endpoint', ''], 'environment': {'AI_ENDPOINT': ''}}
+        actual = {'Cmd': ['serve', '--ai-endpoint', 'private-endpoint'], 'Entrypoint': None,
+                  'Env': ['AI_ENDPOINT=private-endpoint']}
+        with self.assertRaisesRegex(RuntimeError, 'resolved command differs') as error:
+            restart.Deployment.validate_runtime('inbox', desired, {}, actual)
+        self.assertNotIn('private-endpoint', str(error.exception))
+
+    def test_environment_only_drift_fails(self):
+        with self.assertRaisesRegex(RuntimeError, 'resolved environment differs'):
+            restart.Deployment.validate_runtime('inbox', {'environment': {'AI_MODEL': ''}},
+                {'Env': ['PATH=/bin']}, {'Env': ['PATH=/bin', 'AI_MODEL=private-model']})
+
+    def test_matching_external_env_and_image_defaults_pass(self):
+        restart.Deployment.validate_runtime('inbox', {'environment': {'AI_MODEL': 'fixture'}},
+            {'Cmd': ['serve'], 'Entrypoint': ['entry'], 'Env': ['PATH=/bin']},
+            {'Cmd': ['serve'], 'Entrypoint': ['entry'], 'Env': ['PATH=/bin', 'AI_MODEL=fixture']})
 
 
 class DeploymentTests(unittest.TestCase):

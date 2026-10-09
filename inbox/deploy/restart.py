@@ -42,10 +42,11 @@ def public_ready(origin, opener=None):
 
 
 class Deployment:
-    def __init__(self, compose_dir, state, origin, timeout=120, outage_timeout=90):
+    def __init__(self, compose_dir, state, origin, timeout=120, outage_timeout=90, env_file=None):
         self.compose_dir = compose_dir.resolve()
         self.state = state.resolve()
         self.origin = origin
+        self.env_file = env_file.resolve() if env_file else None
         self.timeout = timeout
         self.outage_timeout = outage_timeout
         self.active = self.state / "active-image.json"
@@ -62,6 +63,8 @@ class Deployment:
     def compose_command(self, *args):
         command = ["docker", "compose", "--project-directory", str(self.compose_dir),
                    "-f", str(self.compose_dir / "compose.yml")]
+        if self.env_file is not None:
+            command += ["--env-file", str(self.env_file)]
         override = self.compose_dir / "compose.override.yml"
         if override.exists():
             command += ["-f", str(override)]
@@ -90,6 +93,39 @@ class Deployment:
                 raise RuntimeError("Expected one running Inbox and ingress container")
             images[service] = self.run(["docker", "inspect", "--format", "{{.Image}}", container])
         return images
+
+    @staticmethod
+    def validate_runtime(service, desired, image, actual):
+        # Values stay in memory; mismatch errors must not expose credentials.
+        for field, key in (("command", "Cmd"), ("entrypoint", "Entrypoint")):
+            expected = desired.get(field)
+            if expected is None:
+                expected = image.get(key)
+            if expected != actual.get(key):
+                raise RuntimeError(f"{service}: resolved {field} differs from running container; stop")
+        actual_env = dict(item.split("=", 1) for item in actual.get("Env", []) if "=" in item)
+        expected_env = dict(item.split("=", 1) for item in image.get("Env", []) if "=" in item)
+        for key, value in desired.get("environment", {}).items():
+            if value is None:
+                expected_env.pop(key, None)
+            else:
+                expected_env[key] = str(value)
+        if expected_env != actual_env:
+            raise RuntimeError(f"{service}: resolved environment differs from running container; stop")
+
+    def preflight(self):
+        if self.env_file is not None:
+            if not self.env_file.is_file() or self.env_file.stat().st_mode & 0o077:
+                raise RuntimeError("Explicit env file must exist and be private")
+            if self.env_file.is_relative_to(self.compose_dir.parent.parent):
+                raise RuntimeError("Keep runtime env file outside the archived source tree")
+        resolved = json.loads(self.compose("config", "--format", "json"))
+        for service in ("inbox", "ingress"):
+            container = self.compose("ps", "-q", service)
+            actual = json.loads(self.run(["docker", "inspect", container]))[0]
+            image = json.loads(self.run(["docker", "image", "inspect", actual["Image"]]))[0]
+            self.validate_runtime(service, resolved["services"][service], image["Config"], actual["Config"])
+        public_ready(self.origin)
 
     def select_images(self, images):
         data = {"services": {name: {"image": image} for name, image in images.items()}}
@@ -174,10 +210,11 @@ class Deployment:
         (directory / "images.json").write_text(json.dumps(images))
         (directory / "configuration-references.json").write_text(json.dumps({
             "compose_directory": str(self.compose_dir),
-            "env_file": str(self.compose_dir / ".env"),
+            "env_file": str(self.env_file) if self.env_file else str(self.compose_dir / ".env"),
             "credentials": "External references remain in the existing Compose configuration"}))
 
     def deploy(self, image=None, nginx=None):
+        self.preflight()
         old = self.images()
         desired = dict(old)
         if image:
@@ -218,6 +255,7 @@ def main():
     parser.add_argument("--compose-dir", type=Path, default=Path("/opt/tessera-inbox/source/inbox/deploy"))
     parser.add_argument("--state-dir", type=Path, default=Path("/opt/tessera-inbox/deployment-state"))
     parser.add_argument("--origin", default="https://inbox-qa.oklabs.uk")
+    parser.add_argument("--env-file", type=Path, help="Existing private external Compose interpolation file; never inferred")
     parser.add_argument("--image", help="Already-loaded Inbox image tag or digest; never pulled by this tool")
     parser.add_argument("--nginx-config", type=Path)
     parser.add_argument("--check", action="store_true", help="Public readiness only, without Docker or restarts")
@@ -240,7 +278,7 @@ def main():
         parser.error("state directory must be private (mode 0700)")
     with (state / "deploy.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        deployment = Deployment(args.compose_dir, state, args.origin)
+        deployment = Deployment(args.compose_dir, state, args.origin, env_file=args.env_file)
         print(json.dumps(deployment.deploy(args.image, args.nginx_config)))
 
 

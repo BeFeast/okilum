@@ -22,7 +22,8 @@ Do not inject ingress failures on CT119; test these only on the isolated stand.
 ## Exact mutation
 
 5. Run `sudo python3 /approved/path/restart.py` once, with no image or config
-   arguments. This is a same-image restart only. The tool acquires
+   arguments. This is a same-image restart only. Include the established external
+   `--env-file /opt/tessera-inbox/runtime.env`; resolved runtime preflight must pass. The tool acquires
    `/opt/tessera-inbox/deployment-state/deploy.lock`, creates a private
    `rollback-<id>/` snapshot (online DB, source, images, nginx and image IDs),
    and writes `active-image.json` selecting existing exact images.
@@ -72,14 +73,15 @@ state = pathlib.Path("/opt/tessera-inbox/deployment-state")
 backup = pathlib.Path(sys.argv[2]).resolve()
 assert backup.parent == state and backup.name.startswith("rollback-")
 d = m.Deployment(pathlib.Path("/opt/tessera-inbox/source/inbox/deploy"),
-                 state, "https://inbox-qa.oklabs.uk")
+                 state, "https://inbox-qa.oklabs.uk",
+                 env_file=pathlib.Path("/opt/tessera-inbox/runtime.env"))
 with (state / "deploy.lock").open("a") as lock:
     fcntl.flock(lock, fcntl.LOCK_EX)
     images = json.loads((backup / "images.json").read_text())
     d.run(["docker", "image", "load", "--input", str(backup / "images.tar")])
     d.nginx.write_bytes((backup / "nginx.conf").read_bytes())
     d.select_images(images)
-    d.ordered_start()
+    d.bounded_start()
     print("Previous images/config publicly ready; durable reconciliation still required")
 PYRECOVER
 ```
@@ -108,3 +110,13 @@ DB and delivered reply. It receives no CT119 access or production credentials.
 The fixture HTTPS edge uses an ephemeral trusted certificate; no TLS bypass.
 Only sanitized timings, image IDs and assertions are uploaded, never the DB/key.
 Live acceptance remains pending a hosted PASS and a new manager-approved procedure.
+
+
+The subsequent live attempt on 2026-10-09 failed because the helper omitted
+that external env-file. It recreated Inbox with empty AI arguments; automatic
+rollback repeated the same configuration error. Authorized manual recovery
+with the original env-file restored public readiness at 00:33:44 UTC. The
+attempt-to-recovery upper bound was 218 seconds. Delivery tables were unchanged;
+only five question `observed_at` freshness timestamps advanced. Keep the PR
+WIP until the external-env regression passes hosted integration and the manager
+approves any further live acceptance. Do not reuse the old wrapper/checksums.
