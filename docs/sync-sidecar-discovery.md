@@ -88,12 +88,22 @@ conservative answer.
 
 ## Signature policy
 
-Verification is an injected `SignaturePolicy`, never a default no-op: an Authenticode
-signer pin on Windows and a Team ID plus identifier requirement on macOS. The concrete
-pins depend on the release signing identities, which this repository does not hold, so
-they are an input to the implementation, not something it can invent. A development
-policy that accepts a staged unsigned build exists only behind a compile-time `cfg` and
-a pinned digest of the staged binary; production builds cannot select it at run time.
+Verification is an injected policy, never a default no-op, and no signing identity is
+written into code or tests. Inputs, as decided for the release pipeline:
+
+- macOS: the Team ID is the release-signing value (`TESSERA_SIGNING_TEAM_ID`, see
+  [macOS auto-update](macos-auto-update.md)), read at release build time. The helper's
+  bundle identifier is derived from the same build configuration as the app's, not
+  pinned as a string: it is `uk.oklabs.tessera` today, and a rebrand will change it.
+- Windows: the Authenticode policy is built on the certificate **subject plus the
+  issuer chain** of the code-signing authority, never on a thumbprint, because the
+  thumbprint changes at every yearly renewal. The certificate is not issued yet; its
+  values are supplied when it exists.
+
+Until then, unsigned development builds are accepted only behind a compile-time `cfg`
+and a pinned digest of the staged binary; production builds cannot select that policy
+at run time. Native acceptance of the Windows signature check follows the certificate;
+the macOS one can come earlier.
 
 ## Acceptance (native, none of it established by Linux tests)
 

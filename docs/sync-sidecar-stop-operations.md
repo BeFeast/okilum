@@ -186,7 +186,8 @@ exchange's deadline with `begin_exchange` before each `serve_one`.
 Platforms without an authenticated IPC channel (both native adapters today) stop
 natively and unregister under the same lock instead of sending a token.
 
-Residual: `write` validates the current journal and then replaces it inside one
+Residual: `write` (and `remove`, used by the generation hint) validates the current
+file and then replaces or deletes it inside one
 transaction, so no cooperating process can interleave and other users are excluded by
 the owner-only permissions. A hostile process running as the same user (or an
 administrator) could still swap the file in that window; neither permission model is a
