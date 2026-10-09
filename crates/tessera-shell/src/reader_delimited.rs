@@ -484,10 +484,14 @@ mod tests {
                     ..Default::default()
                 });
                 visual.run_until_parked();
+                // Wheel dispatch invalidates the view; the test platform does
+                // not guarantee a frame before debug_bounds is read. Observe
+                // the actual next frame, as the scrollbar interaction tests do.
+                visual.update(|window, cx| window.draw(cx).clear(cx));
                 let end = visual.debug_bounds("delimited-cell-tooltip-value").unwrap();
                 assert!(
                     end.top() < content.top(),
-                    "positive control: wheel moved the full value"
+                    "positive control: wheel moved the full value: {content:?} -> {end:?}"
                 );
                 assert!(
                     end.bottom() <= tooltip.bottom() + px(1.),
