@@ -3,33 +3,33 @@
   "brand_delivery": "B1.2.0",
   "brand_tokens": "1.1.0",
   "interface_tokens": "2.0.0",
-  "brand_commit": "7bf512a0041b51b90b88652aae12bef6ead17b83",
+  "brand_commit": "32f1427e3c766541b3ad8de042f21f3cd0dccd73",
   "gui_commit": "3ba23948adbabb4288bb3bc6fa0d3e4e074861e2",
   "transform": "fontTools4.64.0: instantiate wght400/500/600/700, merge Latin+Cyrillic, emit native TTF; SVG bytes unchanged",
   "font_scope": "Embedded upright Latin and Cyrillic. Other scripts use platform fallback; italic may be synthesized.",
   "inputs": [
     {
-      "commit": "7bf512a0041b51b90b88652aae12bef6ead17b83",
+      "commit": "32f1427e3c766541b3ad8de042f21f3cd0dccd73",
       "path": "design/brand/recommended/symbol-primary.svg",
-      "sha256": "2c9e2f569e1ca931ffd07e21a8f1aed0b7e5857d437697ab311638bdfdb7e5de"
+      "sha256": "445f7d4907f5df3763fc2d9ac774ddf764852d7004b4244aa7e24dd37cfaccfe"
     },
     {
-      "commit": "7bf512a0041b51b90b88652aae12bef6ead17b83",
+      "commit": "32f1427e3c766541b3ad8de042f21f3cd0dccd73",
       "path": "design/brand/recommended/symbol-reversed.svg",
-      "sha256": "2d3c5bb46581f7ed7105bca8c95abc9018e10541597a724e2af83a772cccf869"
+      "sha256": "6a0fedcb83e59c9384f31a1c4ae0d665c26c2ecb9091a4e2dbb9fb6a4d42beb4"
     },
     {
-      "commit": "7bf512a0041b51b90b88652aae12bef6ead17b83",
+      "commit": "32f1427e3c766541b3ad8de042f21f3cd0dccd73",
       "path": "design/brand/recommended/app-icon-light.svg",
-      "sha256": "cd76f874a40336abd71ae16ffa569f91a6febfa1c518197015aeb561164fa58e"
+      "sha256": "15ae26cf29c68814bd9d05f1ee0df7b865d30951c778977ca40c22b7a5f5f54c"
     },
     {
-      "commit": "7bf512a0041b51b90b88652aae12bef6ead17b83",
+      "commit": "32f1427e3c766541b3ad8de042f21f3cd0dccd73",
       "path": "design/brand/recommended/app-icon-dark.svg",
-      "sha256": "f84276520ff797318f7aadb8a15408d69d764f5e9f41f6e307024a920f1b58d6"
+      "sha256": "fba80d5bf2a661ba9fb7e7839c854d1bdcaec93031fbdb34057281e9196a9888"
     },
     {
-      "commit": "7bf512a0041b51b90b88652aae12bef6ead17b83",
+      "commit": "32f1427e3c766541b3ad8de042f21f3cd0dccd73",
       "path": "design/brand/versions/tokens-1.1.0.json",
       "sha256": "30695163008319c101007248dc8501c768dbabdeac0480110ee17744c066b27b"
     },
@@ -39,32 +39,32 @@
       "sha256": "132abd63ef60579cc79540352f41c752328d470dfc379511150421dcbe6abbad"
     },
     {
-      "commit": "7bf512a0041b51b90b88652aae12bef6ead17b83",
+      "commit": "32f1427e3c766541b3ad8de042f21f3cd0dccd73",
       "path": "design/brand/fonts/notosans-OFL.txt",
       "sha256": "cee9892f9f0cc8fe882c9e9537ee6a89621d86ee7ceaf70b02e2b2b1c25c061a"
     },
     {
-      "commit": "7bf512a0041b51b90b88652aae12bef6ead17b83",
+      "commit": "32f1427e3c766541b3ad8de042f21f3cd0dccd73",
       "path": "design/brand/fonts/noto-sans-latin.woff2",
       "sha256": "51ca196f49a33e79e7870ff88ebd2829a3f627a51e7d690986618f0e7ad2b52d"
     },
     {
-      "commit": "7bf512a0041b51b90b88652aae12bef6ead17b83",
+      "commit": "32f1427e3c766541b3ad8de042f21f3cd0dccd73",
       "path": "design/brand/fonts/noto-sans-cyrillic.woff2",
       "sha256": "6ab64433de6077ca5ad31b05420450ce986a616a4ea47b6ad16f3217055dafc3"
     },
     {
-      "commit": "7bf512a0041b51b90b88652aae12bef6ead17b83",
+      "commit": "32f1427e3c766541b3ad8de042f21f3cd0dccd73",
       "path": "design/brand/fonts/cascadiacode-OFL.txt",
       "sha256": "82c05d6c53dfa0c9025985c19e371810020b74ed2c61d51d370f2a8ab2506d52"
     },
     {
-      "commit": "7bf512a0041b51b90b88652aae12bef6ead17b83",
+      "commit": "32f1427e3c766541b3ad8de042f21f3cd0dccd73",
       "path": "design/brand/fonts/cascadia-code-latin.woff2",
       "sha256": "a3018c0c6b4ed21b123349cc6c8d4d35d32cb11f91fe5e960aa4886eb27a9209"
     },
     {
-      "commit": "7bf512a0041b51b90b88652aae12bef6ead17b83",
+      "commit": "32f1427e3c766541b3ad8de042f21f3cd0dccd73",
       "path": "design/brand/fonts/cascadia-code-cyrillic.woff2",
       "sha256": "2b5394007fc6896185de6c6bc0ceac0440409eb47a76c51aa9ca5a620dce755b"
     }
@@ -130,13 +130,13 @@
   "files": [
     {
       "path": "app-icon-dark.svg",
-      "bytes": 441,
-      "sha256": "f84276520ff797318f7aadb8a15408d69d764f5e9f41f6e307024a920f1b58d6"
+      "bytes": 725,
+      "sha256": "fba80d5bf2a661ba9fb7e7839c854d1bdcaec93031fbdb34057281e9196a9888"
     },
     {
       "path": "app-icon-light.svg",
-      "bytes": 443,
-      "sha256": "cd76f874a40336abd71ae16ffa569f91a6febfa1c518197015aeb561164fa58e"
+      "bytes": 725,
+      "sha256": "15ae26cf29c68814bd9d05f1ee0df7b865d30951c778977ca40c22b7a5f5f54c"
     },
     {
       "path": "brand-tokens.json",
@@ -200,13 +200,13 @@
     },
     {
       "path": "symbol-primary.svg",
-      "bytes": 395,
-      "sha256": "2c9e2f569e1ca931ffd07e21a8f1aed0b7e5857d437697ab311638bdfdb7e5de"
+      "bytes": 596,
+      "sha256": "445f7d4907f5df3763fc2d9ac774ddf764852d7004b4244aa7e24dd37cfaccfe"
     },
     {
       "path": "symbol-reversed.svg",
-      "bytes": 395,
-      "sha256": "2d3c5bb46581f7ed7105bca8c95abc9018e10541597a724e2af83a772cccf869"
+      "bytes": 596,
+      "sha256": "6a0fedcb83e59c9384f31a1c4ae0d665c26c2ecb9091a4e2dbb9fb6a4d42beb4"
     }
   ]
 }
