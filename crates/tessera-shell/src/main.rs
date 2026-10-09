@@ -78,6 +78,7 @@ mod input_newline_tests;
 mod reader_recent;
 #[cfg(any(unix, windows))]
 mod reader_recovery_rows;
+mod reader_reminder;
 #[cfg(any(unix, windows))]
 mod reader_source_history;
 mod reader_startup;
@@ -1221,6 +1222,8 @@ struct Reader {
     #[cfg(any(unix, windows))]
     creation_undo: Option<Arc<reader_create::CreatedUndo>>,
     #[cfg(any(unix, windows))]
+    reminder_undo: Option<Arc<tessera_core::reminder_append::write::Receipt>>,
+    #[cfg(any(unix, windows))]
     renaming: Option<reader_move::Renaming>,
     #[cfg(any(unix, windows))]
     move_picker: reader_move_picker::PickerState,
@@ -1519,6 +1522,8 @@ impl Reader {
             creation: None,
             #[cfg(any(unix, windows))]
             creation_undo: None,
+            #[cfg(any(unix, windows))]
+            reminder_undo: None,
             #[cfg(any(unix, windows))]
             renaming: None,
             #[cfg(any(unix, windows))]
@@ -4670,51 +4675,71 @@ impl Reader {
                     .when_some(self.render_properties_strip(cx), |column, strip| {
                         column.child(strip)
                     })
-                    .child(
-                        reader_plugins(
-                            self.vault_root.clone(),
-                            TextView::new(&self.content)
-                                .scrollable(true)
-                                .selectable(true)
-                                // The element pushes its flags into the state every frame
-                                // (same trap as `scrollable`): the state-side
-                                // selection_format is clobbered unless set here too.
-                                .selection_format(self.sel_format)
-                                .style(style)
-                                .text_size(px(reader_ui_state::font_size(cx)))
-                                .px(px(READER_SIDE_PADDING))
-                                .pt(self.reader_top_inset(cx))
-                                .w_full()
-                                .flex_1()
-                                .min_h_0(),
-                            entity.clone(),
-                            self.sel_format,
-                            self.link_presentations.clone(),
-                            &self.link_identities,
-                        )
-                        .table_actions(move |data, _, _| {
-                            // #368: only a table wider than the column offers it.
-                            let entity = entity.clone();
-                            let markdown = data.markdown.clone();
-                            h_flex().justify_end().when(data.overflows, move |d| {
-                                d.child(
-                                    Button::new("expand-table")
-                                        .small()
-                                        .icon(IconName::Maximize)
-                                        .label(format!("{} columns", data.headers.len()))
-                                        .ghost()
-                                        .debug_selector(|| "expand-table-badge".into())
-                                        .tooltip("Show the whole table")
-                                        .on_click(move |_, window, cx| {
-                                            let markdown = markdown.clone();
-                                            let _ = entity.update(cx, |this, cx| {
-                                                this.open_table_overlay(&markdown, window, cx)
-                                            });
-                                        }),
-                                )
+                    .child({
+                        let menu_entity = entity.clone();
+                        // The vendored TextView has no selection menu of its own, so
+                        // this container offers context actions for the selected text.
+                        v_flex()
+                            .id("reader-text")
+                            .flex_1()
+                            .min_h_0()
+                            .w_full()
+                            .context_menu(move |menu, _, cx| {
+                                reader_reminder::menu(menu, &menu_entity, cx)
                             })
-                        }),
-                    ),
+                            .child(
+                                reader_plugins(
+                                    self.vault_root.clone(),
+                                    TextView::new(&self.content)
+                                        .scrollable(true)
+                                        .selectable(true)
+                                        // The element pushes its flags into the state every frame
+                                        // (same trap as `scrollable`): the state-side
+                                        // selection_format is clobbered unless set here too.
+                                        .selection_format(self.sel_format)
+                                        .style(style)
+                                        .text_size(px(reader_ui_state::font_size(cx)))
+                                        .px(px(READER_SIDE_PADDING))
+                                        .pt(self.reader_top_inset(cx))
+                                        .w_full()
+                                        .flex_1()
+                                        .min_h_0(),
+                                    entity.clone(),
+                                    self.sel_format,
+                                    self.link_presentations.clone(),
+                                    &self.link_identities,
+                                )
+                                .table_actions(
+                                    move |data, _, _| {
+                                        // #368: only a table wider than the column offers it.
+                                        let entity = entity.clone();
+                                        let markdown = data.markdown.clone();
+                                        h_flex().justify_end().when(data.overflows, move |d| {
+                                            d.child(
+                                                Button::new("expand-table")
+                                                    .small()
+                                                    .icon(IconName::Maximize)
+                                                    .label(format!(
+                                                        "{} columns",
+                                                        data.headers.len()
+                                                    ))
+                                                    .ghost()
+                                                    .debug_selector(|| "expand-table-badge".into())
+                                                    .tooltip("Show the whole table")
+                                                    .on_click(move |_, window, cx| {
+                                                        let markdown = markdown.clone();
+                                                        let _ = entity.update(cx, |this, cx| {
+                                                            this.open_table_overlay(
+                                                                &markdown, window, cx,
+                                                            )
+                                                        });
+                                                    }),
+                                            )
+                                        })
+                                    },
+                                ),
+                            )
+                    }),
             )
             .into_any_element()
     }
