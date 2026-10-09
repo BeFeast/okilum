@@ -29,6 +29,7 @@ const oracle = {
   setup(build) {
     build.onResolve({ filter: /.*/ }, (args) => {
       if (args.kind === "entry-point") return undefined;
+      if (args.path === "nanoid") return { path: path.join(here, "nanoid-shim.cjs") };
       if (args.path === "lz-string") {
         return { path: path.join(here, "node_modules/lz-string/libs/lz-string.js") };
       }

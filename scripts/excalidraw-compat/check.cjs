@@ -49,6 +49,7 @@ const sorted = (entries) => JSON.stringify(Object.fromEntries([...entries].sort(
   const files = fs.readdirSync(dir).filter((f) => f.endsWith(".excalidraw.md")).sort();
   let checked = 0;
   let normalised = 0;
+  let regenerated = 0;
   const failures = [];
   for (const name of files) {
     const raw = fs.readFileSync(path.join(dir, name), "utf8");
@@ -65,13 +66,24 @@ const sorted = (entries) => JSON.stringify(Object.fromEntries([...entries].sort(
     const file = { path: name, basename: name.replace(/\.md$/, ""), extension: "md", stat: { mtime: 1 } };
     try {
       if (!(await loaded.loadData(data, file, "raw"))) throw new Error("loadData returned false");
-      const text = sorted([...loaded.textElements].map(([id, value]) => [id, value.raw]));
-      const links = sorted(loaded.elementLinks);
+      // Entries under the file's own element ids come from its Markdown sections
+      // and override the JSON: they must equal what Tessera wrote. Entries under
+      // ids the plugin minted ("~…", see nanoid-shim.cjs) are indexed from the
+      // JSON itself after load and cannot revert an edit; they are only counted.
+      const own = new Set(expected.ids);
+      const pick = (entries) => [...entries].filter(([id]) => own.has(id));
+      regenerated += [...loaded.textElements.keys(), ...loaded.elementLinks.keys()].filter((id) => !own.has(id)).length;
+      const text = sorted(pick(loaded.textElements).map(([id, value]) => [id, value.raw]));
       if (text !== sorted(Object.entries(expected.text))) {
         throw new Error(`text elements differ\n  plugin:   ${text}\n  expected: ${sorted(Object.entries(expected.text))}`);
       }
-      if (links !== sorted(Object.entries(expected.links))) {
-        throw new Error(`element links differ\n  plugin:   ${links}\n  expected: ${sorted(Object.entries(expected.links))}`);
+      const links = pick(loaded.elementLinks);
+      const wrong = links.filter(([id, link]) => expected.links[id] !== link);
+      const missing = Object.entries(expected.links).filter(
+        ([id, link]) => link.startsWith("[[") && loaded.elementLinks.get(id) !== link,
+      );
+      if (wrong.length || missing.length) {
+        throw new Error(`element links differ\n  plugin:   ${sorted(links)}\n  expected: ${sorted(Object.entries(expected.links))}`);
       }
     } catch (error) {
       failures.push(`${name}: ${error && error.message}`);
@@ -96,7 +108,7 @@ const sorted = (entries) => JSON.stringify(Object.fromEntries([...entries].sort(
   }
   if (control) failures.push(`positive control: ${control}`);
   else console.log("positive control: a stale Text Elements entry is detected");
-  console.log(`plugin oracle: ${checked} Markdown drawings checked (${normalised} CRLF normalised), ${failures.length} failed`);
+  console.log(`plugin oracle: ${checked} Markdown drawings checked (${normalised} CRLF normalised, ${regenerated} entries indexed by the plugin from JSON), ${failures.length} failed`);
   for (const failure of failures) console.log(`FAIL ${failure}`);
   // An empty dump would make this check vacuous.
   if (checked === 0) {
