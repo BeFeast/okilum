@@ -135,6 +135,7 @@ pub(crate) struct FilePreview {
     /// The inline reader for a PDF (#477); replaces the file card.
     pub pdf: Option<Entity<reader_pdf::PdfViewer>>,
     pub text: Option<Entity<reader_plain_text::PlainTextPreview>>,
+    pub table: Option<Entity<reader_delimited::TablePreview>>,
     #[cfg(any(target_os = "macos", all(test, unix)))]
     pub thumbnail: Option<Entity<reader_thumbnail::Thumbnail>>,
     /// The log view, for a log opened in the quick viewer (#602).
@@ -160,6 +161,7 @@ impl FilePreview {
             image_cache: None,
             live_identity: Arc::new(()),
             _live: None,
+            table: None,
             rel: rel.into(),
             path,
             details: live::metadata_label(&ext, &meta),
@@ -334,6 +336,11 @@ impl Reader {
                     let view = cx.new(|cx| reader_log::LogView::indexing(rel, path, window, cx));
                     view.read(cx).focus_handle().clone().focus(window, cx);
                     preview.log = Some(view);
+                } else if reader_delimited::eligible(rel) {
+                    preview.table =
+                        Some(cx.new(|cx| {
+                            reader_delimited::TablePreview::new(preview.path.clone(), cx)
+                        }));
                 } else if reader_plain_text::eligible(rel) {
                     preview.text = Some(cx.new(|cx| {
                         reader_plain_text::PlainTextPreview::new(
@@ -348,6 +355,7 @@ impl Reader {
                 if preview.pdf.is_none()
                     && preview.log.is_none()
                     && preview.text.is_none()
+                    && preview.table.is_none()
                     && reader_thumbnail::eligible(rel)
                 {
                     preview.thumbnail = Some(cx.new(|cx| {
@@ -359,8 +367,11 @@ impl Reader {
                 self.find_open = false;
                 self.link_notice = None;
                 self.editing = None;
+                if reader_delimited::editable(rel) {
+                    self.discover_source_recovery(cx);
+                }
                 window.set_window_title(&format!("Tessera — {}", self.selected_title()));
-                if log {
+                if log || reader_delimited::editable(rel) {
                     self.record_usable_document(cx);
                 } else {
                     self.focus_handle.focus(window, cx);
@@ -376,6 +387,14 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if self.editing.is_some() {
+            return v_flex()
+                .size_full()
+                .min_h_0()
+                .child(self.render_document_header(window, cx))
+                .child(self.render_source(window, cx))
+                .into_any_element();
+        }
         if let Some(message) = &preview.unavailable {
             return v_flex()
                 .id("reader-file-unavailable")
@@ -391,6 +410,14 @@ impl Reader {
                         .text_color(cx.theme().muted_foreground)
                         .child(message.clone()),
                 )
+                .into_any_element();
+        }
+        if let Some(table) = &preview.table {
+            return v_flex()
+                .size_full()
+                .min_h_0()
+                .child(self.render_document_header(window, cx))
+                .child(table.clone())
                 .into_any_element();
         }
         if let Some(log) = &preview.log {
@@ -579,6 +606,130 @@ mod tests {
     use super::*;
     use ::core::prelude::v1::test;
 
+    #[gpui::test]
+    fn delimited_attachment_edit_saves_only_changed_bytes_and_conflicts_keep_drafts(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        let state = fixture.path().join("state");
+        std::fs::create_dir(&root).unwrap();
+        let note = "# Unrelated Markdown\n";
+        std::fs::write(root.join("note.md"), note).unwrap();
+        let source =
+            "\u{feff}name,value\r\n\"שלום, world\",\"original\"\r\n\"line\r\nnext\",123\r\n";
+        for name in ["sheet.csv", "sheet.tsv", "sheet.txt"] {
+            std::fs::write(root.join(name), source).unwrap();
+        }
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let entity = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("note.md".into()),
+                        index_dir: Some(fixture.path().join("index")),
+                        session_directory: Some(state.clone()),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(entity.clone());
+            Root::new(entity, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        for name in ["sheet.csv", "sheet.tsv", "sheet.txt"] {
+            reader.update_in(visual, |r, window, cx| {
+                r.preview_file(name, window, cx);
+                r.toggle_source(window, cx);
+                let input = r.editing.as_ref().unwrap().test_input();
+                assert_eq!(input.read(cx).value().as_ref(), source);
+                let start = source.find("original").unwrap();
+                input.update(cx, |s, cx| s.set_selected_range(start..start + 8, cx));
+            });
+            visual.simulate_input("changed");
+            visual.run_until_parked();
+            let changed = source.replacen("original", "changed", 1);
+            reader.update_in(visual, |r, window, cx| {
+                assert!(r.save_source(cx));
+                r.toggle_source(window, cx);
+                assert!(r.editing.is_none());
+            });
+            visual.run_until_parked();
+            assert_eq!(std::fs::read(root.join(name)).unwrap(), changed.as_bytes());
+            assert_eq!(
+                std::fs::read(root.join("note.md")).unwrap(),
+                note.as_bytes()
+            );
+            reader.update_in(visual, |r, window, cx| {
+                if reader_delimited::eligible(name) {
+                    assert!(r.file_preview.as_ref().unwrap().table.is_some());
+                }
+                r.toggle_source(window, cx);
+                r.toggle_live_preview(window, cx);
+                assert!(!r.source_live_preview());
+                r.open_find(window, cx);
+                assert!(
+                    r.editing
+                        .as_ref()
+                        .unwrap()
+                        .test_input()
+                        .read(cx)
+                        .search_session()
+                        .open
+                );
+                r.editing
+                    .as_ref()
+                    .unwrap()
+                    .set_value("recoverable local draft", window, cx);
+            });
+            visual.run_until_parked();
+            std::fs::write(root.join(name), "external change").unwrap();
+            reader.update_in(visual, |r, window, cx| {
+                assert!(!r.save_source(cx));
+                r.preview_file("note.md", window, cx);
+                assert_eq!(
+                    r.selected_file(),
+                    name,
+                    "navigation cannot discard a conflicted draft"
+                );
+                assert_eq!(
+                    r.editing
+                        .as_ref()
+                        .unwrap()
+                        .test_input()
+                        .read(cx)
+                        .value()
+                        .as_ref(),
+                    "recoverable local draft"
+                );
+            });
+            assert_eq!(
+                std::fs::read_to_string(root.join(name)).unwrap(),
+                "external change"
+            );
+            let store = tessera_core::file_editor::FileEditor::open(
+                &root.join(name),
+                &state.join("editor-drafts"),
+            )
+            .unwrap();
+            assert_eq!(store.text(), "recoverable local draft");
+            assert!(store.dirty());
+            reader.update_in(visual, |r, window, cx| {
+                r.editing = None;
+                r.preview_file("note.md", window, cx);
+            });
+        }
+        assert_eq!(std::fs::read_to_string(root.join("note.md")).unwrap(), note);
+    }
+
     struct Fixture(PathBuf);
     impl Fixture {
         fn new() -> Self {
@@ -682,8 +833,6 @@ mod tests {
             reader.preview_file("plain.txt", window, cx);
             assert_eq!(reader.selected_file(), "plain.txt");
             assert!(reader.file_preview.as_ref().unwrap().text.is_some());
-            reader.toggle_source(window, cx);
-            assert!(reader.editing.is_none());
             reader.file_action(FileAction::Relative, window, cx);
             assert_eq!(
                 cx.read_from_clipboard().unwrap().text().unwrap(),
@@ -692,10 +841,11 @@ mod tests {
             assert!(!reader.single_file, "vault-mode positive control");
             reader.preview_file("plain.csv", window, cx);
             let preview = reader.file_preview.as_ref().unwrap();
-            assert!(preview.text.is_some());
+            assert!(preview.table.is_some());
+            assert!(preview.text.is_none());
             assert!(
                 preview.log.is_none(),
-                "CSV attachments use the literal preview"
+                "CSV attachments use the read-only table preview"
             );
             assert_eq!(reader.selected_file(), "plain.csv");
             assert_eq!(

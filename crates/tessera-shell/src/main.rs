@@ -34,6 +34,7 @@ mod reader_confirm;
 mod reader_create;
 #[cfg(windows)]
 mod reader_creation_undo_windows;
+mod reader_delimited;
 mod reader_diagnostics;
 mod reader_document_menu;
 mod reader_drawing;
@@ -265,6 +266,7 @@ fn bind_keys(cx: &mut App) {
     #[cfg(any(unix, windows))]
     reader_move_picker::bind_keys(cx);
     reader_log::bind_keys(cx);
+    reader_delimited::bind_keys(cx);
     cx.bind_keys([
         KeyBinding::new("alt-cmd-r", RevealFile, Some(READER_CONTEXT)),
         KeyBinding::new("alt-cmd-c", CopyVaultPath, Some(READER_CONTEXT)),
@@ -2043,7 +2045,7 @@ impl Reader {
     // --- find in note (#48) ---
 
     fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.file_preview.is_some() {
+        if self.file_preview.is_some() && self.editing.is_none() {
             return;
         }
         self.quick_open.open = false;

@@ -122,6 +122,7 @@ struct Saved {
     find_case_sensitive: bool,
     typed_views: tessera_core::typed_view::Preferences,
     toolbar_labels: bool,
+    delimited_no_header: BTreeSet<PathBuf>,
     vaults: BTreeMap<PathBuf, Layout>,
     /// Per-vault accent preset key (#774), keyed like `vaults` by the
     /// canonical root. Unknown keys from a newer build are kept, not shown.
@@ -141,6 +142,7 @@ impl Default for Saved {
             find_case_sensitive: false,
             typed_views: Default::default(),
             toolbar_labels: false,
+            delimited_no_header: Default::default(),
             vaults: Default::default(),
             vault_colors: Default::default(),
             last_layout: None,
@@ -161,6 +163,7 @@ struct Store {
     typed_views_changed: bool,
     toolbar_labels_changed: bool,
     colors_changed: BTreeSet<PathBuf>,
+    delimited_changed: BTreeSet<PathBuf>,
     frames_changed: BTreeSet<String>,
     last_changed: bool,
     last_frame_changed: bool,
@@ -231,6 +234,7 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         typed_views_changed: false,
         toolbar_labels_changed: false,
         colors_changed: Default::default(),
+        delimited_changed: Default::default(),
         frames_changed: Default::default(),
         last_changed: false,
         last_frame_changed: false,
@@ -392,6 +396,7 @@ struct WriteJob {
     typed_views_changed: bool,
     toolbar_labels_changed: bool,
     colors_changed: BTreeSet<PathBuf>,
+    delimited_changed: BTreeSet<PathBuf>,
     serial: Arc<AtomicU64>,
     generation: u64,
 }
@@ -446,6 +451,13 @@ impl WriteJob {
         if self.find_changed {
             latest.find_case_sensitive = self.saved.find_case_sensitive;
         }
+        for path in &self.delimited_changed {
+            if self.saved.delimited_no_header.contains(path) {
+                latest.delimited_no_header.insert(path.clone());
+            } else {
+                latest.delimited_no_header.remove(path);
+            }
+        }
         if self.toolbar_labels_changed {
             latest.toolbar_labels = self.saved.toolbar_labels;
         }
@@ -498,6 +510,7 @@ fn job(cx: &App) -> Option<WriteJob> {
             && !state.typed_views_changed
             && !state.toolbar_labels_changed
             && state.colors_changed.is_empty()
+            && state.delimited_changed.is_empty()
             && !state.last_changed
             && !state.last_frame_changed)
     {
@@ -518,6 +531,7 @@ fn job(cx: &App) -> Option<WriteJob> {
         typed_views_changed: state.typed_views_changed,
         toolbar_labels_changed: state.toolbar_labels_changed,
         colors_changed: state.colors_changed.clone(),
+        delimited_changed: state.delimited_changed.clone(),
         serial: state.serial.clone(),
         generation: state.serial.load(Ordering::SeqCst),
     })
@@ -827,7 +841,11 @@ impl Reader {
             recent_expanded: self.recent_expanded,
             properties_open: self.properties_open,
             hidden_properties: self.show_hidden_properties,
-            note: self.current_rel.clone(),
+            note: self
+                .file_preview
+                .as_ref()
+                .filter(|p| p.log.is_some() || reader_delimited::editable(&p.rel))
+                .map_or_else(|| self.current_rel.clone(), |p| p.rel.clone()),
             history,
             history_index: self.navigation.history_ix,
             position: position.into(),
@@ -1001,6 +1019,26 @@ pub(crate) fn set_toolbar_labels(value: bool, cx: &mut App) {
     cx.refresh_windows();
 }
 
+pub(crate) fn delimited_header(path: &Path, cx: &App) -> bool {
+    !cx.try_global::<Store>()
+        .is_some_and(|state| state.saved.delimited_no_header.contains(path))
+}
+
+pub(crate) fn set_delimited_header(path: PathBuf, header: bool, cx: &mut App) {
+    if !installed(cx) || delimited_header(&path, cx) == header {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    if header {
+        state.saved.delimited_no_header.remove(&path);
+    } else {
+        state.saved.delimited_no_header.insert(path.clone());
+    }
+    state.delimited_changed.insert(path);
+    schedule(cx);
+    cx.refresh_windows();
+}
+
 pub(crate) fn font_size(cx: &App) -> f32 {
     cx.try_global::<Store>().map_or(BODY_FONT_SIZE, |state| {
         state.saved.font_size.clamp(12., 24.)
@@ -1044,6 +1082,7 @@ fn mark_saved(generation: u64, cx: &mut App) {
         state.typed_views_changed = false;
         state.toolbar_labels_changed = false;
         state.colors_changed.clear();
+        state.delimited_changed.clear();
         state.last_changed = false;
         state.last_frame_changed = false;
     }
@@ -1052,6 +1091,44 @@ fn mark_saved(generation: u64, cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn delimited_header_preferences_survive_restart_and_merge_per_file(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let directory = fixture.path().join("state");
+        let first = fixture.path().join("one.csv");
+        let second = fixture.path().join("two.tsv");
+        cx.update(|cx| {
+            install(&directory, cx);
+            assert!(delimited_header(&first, cx) && delimited_header(&second, cx));
+            set_delimited_header(first.clone(), false, cx);
+            let mut independent = job(cx).unwrap();
+            // A second process's stale snapshot changes only its own file.
+            independent.serial = Arc::new(AtomicU64::new(independent.generation));
+            independent.saved.delimited_no_header = BTreeSet::from([second.clone()]);
+            independent.delimited_changed = BTreeSet::from([second.clone()]);
+            flush(cx);
+            independent.run().unwrap();
+            install(&directory, cx);
+            assert!(!delimited_header(&first, cx));
+            assert!(!delimited_header(&second, cx));
+            set_delimited_header(first.clone(), true, cx);
+            flush(cx);
+            install(&directory, cx);
+            assert!(
+                delimited_header(&first, cx),
+                "positive control: restoring the header persists too"
+            );
+            assert!(
+                !delimited_header(&second, cx),
+                "an unrelated file's preference survives the write"
+            );
+        });
+        assert!(
+            !first.exists() && !second.exists(),
+            "preferences never create or write the canonical files"
+        );
+    }
     use ::core::prelude::v1::test;
     use gpui_component::WindowExt;
 
@@ -1245,6 +1322,7 @@ mod tests {
                 typed_views_changed: true,
                 toolbar_labels_changed: false,
                 colors_changed: Default::default(),
+                delimited_changed: Default::default(),
                 frames_changed: Default::default(),
                 last_changed: false,
                 last_frame_changed: false,
