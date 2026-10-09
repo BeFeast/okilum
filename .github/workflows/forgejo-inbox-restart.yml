@@ -1,0 +1,27 @@
+name: forgejo-inbox-restart
+'on':
+  push:
+    branches: ['forgejo-inbox-restart-pr/**']
+permissions:
+  contents: read
+concurrency:
+  group: forgejo-inbox-restart-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  inbox-restart:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Run Inbox restart integration
+        run: python3 inbox/deploy/integration_restart.py
+      - name: Upload sanitized restart evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: inbox-restart-${{ github.sha }}
+          path: target/inbox-restart-evidence/summary.json
+          if-no-files-found: error
+          retention-days: 3

@@ -87,15 +87,24 @@ PYRECOVER
 ## Downtime and outstanding prerequisite
 
 Backup happens before planned outage. Outage begins when ingress is removed
-and ends only after public readiness succeeds. Each health/readiness phase has
-an approximately 120-second polling budget; individual Docker commands allow
-300 seconds and HTTP requests allow 10 seconds. These are not an end-to-end
-outage bound. Automatic rollback can extend downtime substantially. Do not
-promise a short or bounded maintenance window until isolated measurements
-establish normal restart and rollback durations and the manager accepts them.
+and ends only after public readiness succeeds. The helper now arms a 90-second deadline covering the whole ordered startup,
+including Docker, health and public checks. Expiry initiates automatic rollback;
+rollback has its own 90-second limit. This does not guarantee recovery within
+120 seconds on a failed host. Stop after any unexpected outcome and report it.
+The hosted integration reports conservative outage bounds from ingress removal
+through public readiness, including rollback, and asserts each is under 120 seconds.
 
-Current blocker: CT141's unprivileged LXC denies the OCI `/proc` mount even for
-`docker run --rm --network none python:3.13-alpine ...`. A scratch-only Docker
-daemon starts, but no container can execute. No LXC configuration was changed.
-An approved container-capable stand (or an approved CT141 nesting procedure)
-is required before this proposal is ready for live approval.
+The first live attempt stopped before service mutation because `sudo docker cp`
+created an unreadable root-owned 0600 snapshot. No restart occurred. The helper
+now streams the snapshot into a private file owned by its operator and restores
+it into a temporary DB before any service mutation. Hosted tests must validate
+this fix before another live procedure is proposed.
+
+CT141 configuration remains unchanged. Real isolated integration runs only on a
+disposable GitHub-hosted runner via the proposed `inbox-restart` commit-ci lane.
+It builds the canonical Inbox Dockerfile at the tested SHA, uses the deployment
+nginx image/config and shared namespace topology, and creates a synthetic enrolled
+DB and delivered reply. It receives no CT119 access or production credentials.
+The fixture HTTPS edge uses an ephemeral trusted certificate; no TLS bypass.
+Only sanitized timings, image IDs and assertions are uploaded, never the DB/key.
+Live acceptance remains pending a hosted PASS and a new manager-approved procedure.

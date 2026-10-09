@@ -155,13 +155,30 @@ class DeploymentTests(unittest.TestCase):
         (self.deploy.compose_dir / '.env').write_text('private environment')
         directory = self.deploy.state / 'snapshot-test'
         directory.mkdir()
-        restart.Deployment.snapshot(self.deploy, directory, {'inbox': 'old-inbox', 'ingress': 'old-ingress'})
+        with patch.object(self.deploy, "verify_restore"), patch.object(self.deploy, "copy_backup"):
+            restart.Deployment.snapshot(self.deploy, directory, {'inbox': 'old-inbox', 'ingress': 'old-ingress'})
         with tarfile.open(directory / 'source.tar.gz') as archive:
             names = archive.getnames()
         self.assertIn('source/code.py', names)
         self.assertIn('source/inbox/deploy/nginx.conf', names)
         self.assertFalse(any('must-not-copy' in name or name.endswith('/.env') for name in names))
         self.assertTrue(any(e[0] == 'compose' and e[1][:3] == ('exec', '-T', 'inbox') for e in self.deploy.events))
+
+    def test_total_outage_timeout_triggers_rollback(self):
+        with patch.object(self.deploy, 'ordered_start', side_effect=[TimeoutError('deadline'), None]):
+            with self.assertRaisesRegex(RuntimeError, 'previous services publicly ready'):
+                self.deploy.deploy()
+        receipt = next(self.deploy.state.glob('rollback-*/receipt.json'))
+        self.assertEqual(json.loads(receipt.read_text())['status'], 'rolled_back_public_ready')
+
+    def test_restore_check_rejects_missing_tables(self):
+        import sqlite3
+        snapshot = Path(self.temp.name) / 'inbox.db'
+        with restart.closing(sqlite3.connect(snapshot)) as db:
+            db.execute('CREATE TABLE captures (id INTEGER)')
+        with self.assertRaises(sqlite3.OperationalError):
+            restart.Deployment.verify_restore(snapshot)
+        self.assertFalse(list(snapshot.parent.glob('restore-check-*')))
 
     def test_broken_rollback_is_never_reported_as_ready(self):
         with patch.object(restart, 'public_ready', side_effect=RuntimeError('503')):

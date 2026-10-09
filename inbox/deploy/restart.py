@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """Ordered CT119 Inbox deployment. Run on CT119, never against the real vault."""
 import argparse
+from contextlib import closing
 import fcntl
 import json
 import os
+import signal
+import sqlite3
+import tempfile
 from pathlib import Path
 import subprocess
 import tarfile
@@ -34,11 +38,12 @@ def public_ready(origin, opener=None):
 
 
 class Deployment:
-    def __init__(self, compose_dir, state, origin, timeout=120):
+    def __init__(self, compose_dir, state, origin, timeout=120, outage_timeout=90):
         self.compose_dir = compose_dir.resolve()
         self.state = state.resolve()
         self.origin = origin
         self.timeout = timeout
+        self.outage_timeout = outage_timeout
         self.active = self.state / "active-image.json"
         self.nginx = self.compose_dir / "nginx.conf"
 
@@ -50,7 +55,7 @@ class Deployment:
             raise RuntimeError("Docker operation failed (output suppressed to protect configuration)")
         return result.stdout.strip()
 
-    def compose(self, *args):
+    def compose_command(self, *args):
         command = ["docker", "compose", "--project-directory", str(self.compose_dir),
                    "-f", str(self.compose_dir / "compose.yml")]
         override = self.compose_dir / "compose.override.yml"
@@ -58,7 +63,20 @@ class Deployment:
             command += ["-f", str(override)]
         if self.active.exists():
             command += ["-f", str(self.active)]
-        return self.run(command + list(args))
+        return command + list(args)
+
+    def compose(self, *args):
+        return self.run(self.compose_command(*args))
+
+    def copy_backup(self, destination):
+        # The caller writes the private copy: sudo docker cp would create a
+        # root-owned 0600 file that an unprivileged operator cannot restore-check.
+        with destination.open("xb") as output:
+            result = subprocess.run(self.compose_command("exec", "-T", "inbox",
+                "cat", "/backups/inbox-latest.db"), stdout=output,
+                stderr=subprocess.DEVNULL, cwd=self.compose_dir, timeout=300)
+        if result.returncode:
+            raise RuntimeError("Backup export failed")
 
     def images(self):
         images = {}
@@ -103,9 +121,38 @@ class Deployment:
                     raise RuntimeError("Public HTTPS/WebAuthn readiness deadline expired") from None
                 time.sleep(2)
 
+    def bounded_start(self):
+        # One deadline covers Docker, health and public checks, not each phase.
+        def expired(signum, frame):
+            raise TimeoutError("Outage budget expired; rollback required")
+        previous = signal.signal(signal.SIGALRM, expired)
+        signal.setitimer(signal.ITIMER_REAL, self.outage_timeout)
+        try:
+            self.ordered_start()
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous)
+
+    @staticmethod
+    def verify_restore(snapshot):
+        # Restore only to a disposable DB, never over live operational state.
+        with tempfile.TemporaryDirectory(prefix="restore-check-", dir=snapshot.parent) as temp:
+            with closing(sqlite3.connect(snapshot.resolve().as_uri() + "?mode=ro", uri=True)) as saved:
+                with closing(sqlite3.connect(str(Path(temp) / "restored.db"))) as restored:
+                    saved.backup(restored)
+                    if restored.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
+                        raise RuntimeError("Restored backup integrity check failed")
+                    for table in ("captures", "capture_operations", "auth_owner",
+                                  "discussion_turns", "publications"):
+                        before = saved.execute(f'SELECT count(*) FROM {table}').fetchone()
+                        after = restored.execute(f'SELECT count(*) FROM {table}').fetchone()
+                        if before != after:
+                            raise RuntimeError("Restored backup count mismatch")
+
     def snapshot(self, directory, images):
         self.compose("exec", "-T", "inbox", "/usr/local/bin/inbox-backup")
-        self.compose("cp", "inbox:/backups/inbox-latest.db", str(directory / "inbox.db"))
+        self.copy_backup(directory / "inbox.db")
+        self.verify_restore(directory / "inbox.db")
         self.run(["docker", "image", "save", "--output", str(directory / "images.tar"),
                   *sorted(set(images.values()))])
         # Back up source, including runtime Compose overrides, without following
@@ -146,13 +193,13 @@ class Deployment:
             if config is not None:
                 # Keep the mounted inode until ingress is recreated.
                 self.nginx.write_bytes(config)
-            self.ordered_start()
+            self.bounded_start()
         except BaseException:
             record("rolling_back")
             try:
                 self.nginx.write_bytes((directory / "nginx.conf").read_bytes())
                 self.select_images(old)
-                self.ordered_start()
+                self.bounded_start()
                 record("rolled_back_public_ready")
             except BaseException:
                 record("rollback_failed")
