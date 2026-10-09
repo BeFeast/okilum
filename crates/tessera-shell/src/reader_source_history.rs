@@ -74,9 +74,10 @@ impl Reader {
         window.open_dialog(cx, move |dialog, _, _| {
             let reader = reader.clone(); let root = root.clone();
             dialog.title(if drafts_only { "Recover notes" } else { "Note history" }).width(px(760.))
-                .child("Completed history: 20 versions per note, 30 days, 128 MiB. Unsaved drafts and interrupted recovery are protected. Restore checks the current file; Save as recovered note never replaces an existing file.")
+                .child(div().id("recovery-explanation").child("Choose a note to preview. Saving a recovered copy leaves the original unchanged.")
+                    .tooltip(|window, cx| gpui_component::tooltip::Tooltip::new("Completed history keeps up to 20 versions per note for 30 days, within 128 MiB. Unsaved drafts and interrupted recovery are protected.").build(window, cx)))
                 .children(listing.warnings.iter().map(|text| div().child(text.clone())))
-                .child(if listing.versions.is_empty() { "No retained versions found." } else { "Choose a version to preview:" })
+                .child(if listing.versions.is_empty() { "No notes to recover." } else { "Choose a note:" })
                 .child(v_flex().id("source-history-list").gap_2().max_h(px(360.)).overflow_y_scroll()
                     .children(listing.versions.iter().enumerate().map(|(index, version)| {
                         let version = version.clone(); let reader = reader.clone(); let root = root.clone();
@@ -120,7 +121,7 @@ impl Reader {
             let restore_root = root.clone();
             let reviewed = reviewed.clone();
             dialog
-                .title("Preview recovered source")
+                .title("Preview recovered note")
                 .width(px(760.))
                 .child(version.label.clone())
                 .child(

@@ -968,9 +968,9 @@ impl Reader {
         window.open_dialog(cx,move |dialog,_,_|{
             let reader=reader.clone();let state=state.clone();
             dialog.title("Recover link moves").width(px(720.))
-                .child("Original bytes are retained for each operation. Revert refuses later external edits. Unsaved affected editors must be saved or discarded before reverting.")
+                .child("Review a move before undoing it. Its files must be unchanged since the move. Save or discard any open edits first.")
                 .children(warnings.iter().map(|warning|div().child(warning.clone())))
-                .child(if entries.is_empty(){"No retained link moves for this folder."}else{"Select an operation to review its files before reverting:"})
+                .child(if entries.is_empty(){"No moves to recover."}else{"Choose a move to review:"})
                 .child(v_flex().id("link-move-recovery-list").max_h(px(360.)).overflow_y_scroll().gap_2().children(entries.iter().enumerate().map(|(i,(path,label))|{
                     let reader=reader.clone();let state=state.clone();let path=path.clone();
                     Button::new(("recover-link-move",i)).label(label.clone()).on_click(move |_,window,cx|{
