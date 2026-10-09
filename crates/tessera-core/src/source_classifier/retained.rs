@@ -1,5 +1,5 @@
 //! Presentation-only edit mapping. Never reuse stale navigation or parser metadata.
-use super::{Classification, Reference, StyleSpan, MAX_BYTES};
+use super::{Classification, Reference, Style, StyleSpan, MAX_BYTES};
 use crate::source_projection::{Active, Plan, Region, Snapshot};
 use std::{ops::Range, sync::Arc};
 
@@ -100,7 +100,7 @@ impl RetainedPresentation {
     }
 
     /// Reveal the syntactic fragment touched by caret/selection/IME, not every
-    /// link in its paragraph. Heading markers have their own small scope.
+    /// link in its paragraph. Heading markers reveal for the whole heading.
     pub fn project(
         &self,
         active: &Active,
@@ -121,6 +121,30 @@ impl RetainedPresentation {
             projection: self.base.clone()?,
         };
         let mut revealed = false;
+        // A heading reveals its `#` markers from a caret anywhere on its line
+        // (#915). Opening markers end where heading content starts; closing ones
+        // start where it ends. Heading spans never overlap, so both orders agree.
+        let headings: Vec<_> = self
+            .styles
+            .iter()
+            .filter(|style| matches!(style.style, Style::Heading(_)))
+            .map(|style| style.range.clone())
+            .collect();
+        let heading_scope = |marker: &Range<usize>| {
+            let heading = headings
+                .binary_search_by_key(&marker.end, |h| h.start)
+                .or_else(|_| headings.binary_search_by_key(&marker.start, |h| h.end))
+                .ok()?;
+            // An ATX heading is one line: every marker's scope is that whole line,
+            // so a caret in the closing hashes also reveals the opening ones.
+            let h = &headings[heading];
+            let source = self.snapshot.source();
+            let start = source[..h.start].rfind('\n').map_or(0, |i| i + 1);
+            let end = source[h.end..]
+                .find(['\r', '\n'])
+                .map_or(source.len(), |i| h.end + i);
+            Some(start.min(marker.start)..end.max(marker.end))
+        };
         let regions = self
             .plan
             .regions()
@@ -132,13 +156,16 @@ impl RetainedPresentation {
                     markers: markers
                         .iter()
                         .filter(|marker| {
-                            let scope = self
-                                .marker_scopes
-                                .binary_search_by_key(&marker.start, |(m, _)| m.start)
-                                .ok()
-                                .map(|i| &self.marker_scopes[i].1)
-                                .unwrap_or(marker);
-                            let touched = reveal.touches(scope);
+                            let scope = heading_scope(marker).unwrap_or_else(|| {
+                                self.marker_scopes
+                                    .binary_search_by_key(&marker.start, |(m, _)| m.start)
+                                    .ok()
+                                    .map_or_else(
+                                        || (*marker).clone(),
+                                        |i| self.marker_scopes[i].1.clone(),
+                                    )
+                            });
+                            let touched = reveal.touches(&scope);
                             revealed |= touched;
                             !touched
                         })
@@ -1190,6 +1217,51 @@ mod tests {
                 composition: None
             })
             .is_err());
+    }
+
+    #[test]
+    fn caret_anywhere_in_a_heading_reveals_its_markers_only() {
+        let text = "## Title **b** [l](d) ##\n\nplain *e*";
+        let retained = RetainedPresentation::new(&classify(&snapshot(1, text)));
+        let shown = |caret: usize| {
+            retained
+                .project(&Active {
+                    selection: Some(caret..caret),
+                    composition: None,
+                })
+                .unwrap()
+                .display()
+                .to_owned()
+        };
+        // Positive control: on the blank line every marker is concealed.
+        let blank = text.find("\n\n").unwrap() + 1;
+        assert_eq!(shown(blank), "Title b l\n\nplain e");
+        let title = text.find("itle").unwrap();
+        // Mid-heading caret: `##` markers show; inline syntax elsewhere stays.
+        assert_eq!(shown(title), "## Title b l ##\n\nplain e");
+        assert_eq!(
+            // Inside the closing hashes; their start touches the link's `](d)`.
+            shown(text.find(" ##").unwrap() + 2),
+            "## Title b l ##\n\nplain e"
+        );
+        // A caret in the link reveals the heading markers and that link only.
+        let link = text.find("l]").unwrap();
+        assert_eq!(shown(link), "## Title b [l](d) ##\n\nplain e");
+        // A caret in one heading leaves another heading's markers hidden.
+        let two = "# A\r\n\r\n> # B";
+        let retained = RetainedPresentation::new(&classify(&snapshot(1, two)));
+        let shown = |caret: usize| {
+            retained
+                .project(&Active {
+                    selection: Some(caret..caret),
+                    composition: None,
+                })
+                .unwrap()
+                .display()
+                .to_owned()
+        };
+        assert_eq!(shown(2), "# A\r\n\r\n> B");
+        assert_eq!(shown(two.len()), "A\r\n\r\n> # B");
     }
 
     #[test]
