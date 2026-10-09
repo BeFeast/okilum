@@ -1480,7 +1480,11 @@ mod tests {
             let input = r.editing.as_ref().unwrap().input().clone();
             input.update(cx, |input, cx| input.focus_handle(cx).focus(window, cx));
         });
-        visual.simulate_keystrokes("ctrl-end");
+        visual.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-down"
+        } else {
+            "ctrl-end"
+        });
         visual.simulate_input(" Unsaved open-in sentinel");
         visual.run_until_parked();
         let path = root.join("note.md");
