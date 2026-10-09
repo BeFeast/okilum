@@ -509,7 +509,9 @@ fn sha256_of(path: &Path) -> Result<String, ImportError> {
 }
 
 /// Copy through a temporary sibling, fsync, verify, then rename into place, so
-/// a target is either absent or complete. Keeps the source's modified time.
+/// a target is either absent or complete. Keeps the source's modified time and
+/// permissions; the permissions are applied last, so a read-only source does
+/// not stop the copy from being synced.
 fn copy_verified(
     source: &Path,
     target: &Path,
@@ -521,16 +523,16 @@ fn copy_verified(
     })?;
     fs::create_dir_all(parent).map_err(io_at(parent))?;
     let temporary = parent.join(format!(".okilum-copy-{}.tmp", uuid::Uuid::new_v4()));
-    let bytes = fs::copy(source, &temporary).map_err(io_at(source))?;
-    let sync = File::options()
-        .write(true)
-        .open(&temporary)
-        .map_err(io_at(&temporary))?;
-    if let Ok(modified) = fs::metadata(source).and_then(|m| m.modified()) {
-        let _ = sync.set_modified(modified);
+    let metadata = fs::metadata(source).map_err(io_at(source))?;
+    let mut reader = File::open(source).map_err(io_at(source))?;
+    let mut writer = File::create_new(&temporary).map_err(io_at(&temporary))?;
+    let bytes = io::copy(&mut reader, &mut writer).map_err(io_at(&temporary))?;
+    if let Ok(modified) = metadata.modified() {
+        let _ = writer.set_modified(modified);
     }
-    sync.sync_all().map_err(io_at(&temporary))?;
-    drop(sync);
+    writer.sync_all().map_err(io_at(&temporary))?;
+    drop(writer);
+    fs::set_permissions(&temporary, metadata.permissions()).map_err(io_at(&temporary))?;
     let expected = sha256_of(source)?;
     if sha256_of(&temporary)? != expected {
         let _ = fs::remove_file(&temporary);

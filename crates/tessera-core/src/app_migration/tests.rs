@@ -6,8 +6,12 @@ fn write(path: &Path, bytes: &[u8]) {
     fs::write(path, bytes).unwrap();
 }
 
-/// Relative path → contents for every regular file under `root`.
+/// Relative path → contents for every regular file under `root` (empty when
+/// `root` does not exist).
 fn snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    if !root.exists() {
+        return BTreeMap::new();
+    }
     walkdir::WalkDir::new(root)
         .into_iter()
         .map(Result::unwrap)
@@ -315,6 +319,12 @@ fn populated_old_and_new_roots_merge_without_overwriting() {
         br#"{"sidebar":280}"#,
     );
     write(&config.old.join("editor-recovery/b/draft.md"), DRAFT);
+    // A read-only legacy file still copies (and keeps its permissions).
+    let readonly = config.old.join("editor-recovery/b/sealed.json");
+    write(&readonly, b"{}");
+    let mut permissions = fs::metadata(&readonly).unwrap().permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(&readonly, permissions).unwrap();
     // Okilum already wrote its own settings before the import ran.
     write(&config.new.join("appearance.json"), br#"{"theme":"light"}"#);
     write(
@@ -343,10 +353,10 @@ fn populated_old_and_new_roots_merge_without_overwriting() {
     assert_eq!(
         outcome,
         &Outcome::Merged {
-            copied: 0,
+            copied: 2,
             conflicts: vec![PathBuf::from("appearance.json")]
         },
-        "the draft was copied by the interrupted run; only the conflict remains"
+        "files go in name order: the interrupted run kept the conflict copy, the resume adds the draft and the read-only file"
     );
     assert_eq!(
         fs::read_to_string(config.new.join("appearance.json")).unwrap(),
@@ -362,6 +372,9 @@ fn populated_old_and_new_roots_merge_without_overwriting() {
         fs::read(config.new.join("editor-recovery/b/draft.md")).unwrap(),
         DRAFT
     );
+    let sealed = config.new.join("editor-recovery/b/sealed.json");
+    assert_eq!(fs::read(&sealed).unwrap(), b"{}");
+    assert!(fs::metadata(&sealed).unwrap().permissions().readonly());
     assert!(matches!(
         run(&roots, &lock)
             .roots
