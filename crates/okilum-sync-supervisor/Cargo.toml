@@ -1,0 +1,26 @@
+[package]
+name = "okilum-sync-supervisor"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[[bin]]
+name = "okilum-sync-supervisor"
+path = "src/main.rs"
+
+[features]
+# Accept any same-user peer. Development only: a release build gets a signature policy
+# (docs/sync-supervisor-contract.md) and, without one, the binary refuses to serve.
+dev-same-user = []
+
+[dependencies]
+anyhow = "1"
+uuid = { version = "1", features = ["v4"] }
+okilum-sync-controller = { path = "../okilum-sync-controller" }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+sha2 = "0.10"

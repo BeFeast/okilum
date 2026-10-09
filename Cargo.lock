@@ -8042,6 +8042,18 @@ dependencies = [
  "xmltree",
 ]
 
+
+[[package]]
+name = "okilum-sync-supervisor"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "okilum-sync-controller",
+ "sha2 0.10.9",
+ "tempfile",
+ "uuid",
+]
 [[package]]
 name = "thiserror"
 version = "1.0.69"

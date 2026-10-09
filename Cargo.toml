@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/okilum-core", "crates/okilum-cored", "crates/okilum-shell", "crates/okilum-brain", "crates/okilum-sync", "crates/okilum-sync-controller"]
+members = ["crates/okilum-core", "crates/okilum-cored", "crates/okilum-shell", "crates/okilum-brain", "crates/okilum-sync", "crates/okilum-sync-controller", "crates/okilum-sync-supervisor"]
 # The vendored gpui-kit clone is its own Cargo workspace. Excluding it
 # keeps its members inheriting from their own root while we path-depend into it.
 exclude = ["vendor", "inbox"]
