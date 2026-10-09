@@ -990,16 +990,24 @@ impl Reader {
                 return;
             }
         };
-        let detail=format!("{} → {}\n\nRevert the move and link changes in:\n{}\n\nFiles edited since this operation will not be overwritten. Original bytes remain available if recovery cannot finish.",operation.to,operation.from,operation.files.keys().cloned().collect::<Vec<_>>().join("\n"));
-        let answer = window.prompt(
-            PromptLevel::Warning,
-            "Revert this link move?",
-            Some(&detail),
-            &["Cancel", "Revert"],
+        let answer = reader_confirm::confirm(
+            window,
             cx,
+            "Revert this link move?",
+            reader_confirm::Body {
+                intro: vec![
+                    format!("{} → {}", operation.to, operation.from),
+                    "Revert the move and link changes in:".into(),
+                ],
+                items: operation.files.keys().cloned().collect(),
+                outro: vec!["Files edited since this operation will not be overwritten. Original bytes remain available if recovery cannot finish.".into()],
+            },
+            "Revert",
         );
         cx.spawn_in(window, async move |this, cx| {
-            if answer.await != Ok(1) {
+            if answer.recv().await != Ok(true) {
+                // Back to the list the review came from; it only reads.
+                let _ = this.update_in(cx, |this, window, cx| this.recover_link_moves(window, cx));
                 return;
             }
             let _ = this.update_in(cx, |this, window, cx| {

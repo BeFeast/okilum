@@ -29,6 +29,8 @@ mod reader_cache;
 mod reader_code;
 mod reader_code_language;
 #[cfg(any(unix, windows))]
+mod reader_confirm;
+#[cfg(any(unix, windows))]
 mod reader_create;
 #[cfg(windows)]
 mod reader_creation_undo_windows;
