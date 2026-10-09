@@ -1,0 +1,174 @@
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -317,6 +317,7 @@
+     pub(super) projection: ProjectionSession,
+     pub(super) marker_source_cache: std::cell::RefCell<Option<std::sync::Arc<super::marker_paint::MarkerSource>>>,
+     exact_clipboard: ClipboardSession,
++    document_newlines: bool,
+     projection_mouse_hold: bool,
+     pub(super) projection_pending_click: Option<(MouseDownEvent, bool)>,
+     pub(super) projection_pending_vertical: Option<super::movement::PendingVertical>,
+@@ -667,6 +668,7 @@
+             projection: ProjectionSession::default(),
+             marker_source_cache: Default::default(),
+             exact_clipboard: ClipboardSession::default(),
++            document_newlines: false,
+             projection_mouse_hold: false,
+             projection_pending_click: None,
+             projection_pending_vertical: None,
+@@ -1277,6 +1279,29 @@
+         self.clean_on_escape = clean;
+     }
+ 
++    /// Opt into document-style newlines for Enter and clipboard insertion only.
++    /// The default preserves exact clipboard bytes for existing consumers.
++    pub fn document_newlines(mut self, enabled: bool) -> Self {
++        self.document_newlines = enabled;
++        self
++    }
++
++    fn insertion_newline(&self) -> &'static str {
++        if self.document_newlines {
++            super::document_newlines::delimiter(self.text.bytes())
++        } else {
++            "\n"
++        }
++    }
++
++    fn clipboard_newlines<'a>(&self, text: &'a str) -> Cow<'a, str> {
++        if self.document_newlines {
++            super::document_newlines::normalize(text, self.insertion_newline())
++        } else {
++            Cow::Borrowed(text)
++        }
++    }
++
+     /// Set true to treat `Enter` as a submit action in multi-line mode,
+     /// while `Shift+Enter` inserts a newline.
+     ///
+@@ -1913,7 +1938,8 @@
+             };
+ 
+             // Add newline and indent
+-            let new_line_text = format!("\n{}", indent);
++            let newline = self.insertion_newline();
++            let new_line_text = format!("{}{}", newline, indent);
+             self.replace_text_in_range_silent(None, &new_line_text, window, cx);
+             self.pause_blink_cursor(cx);
+         } else {
+@@ -2339,6 +2365,7 @@
+         }
+         if let Some(clipboard) = cx.read_from_clipboard() {
+             let new_text = clipboard.text().unwrap_or_default();
++            let new_text = self.clipboard_newlines(&new_text);
+             self.undo_manager.pending_intent = Some(EditIntent::Atomic);
+             self.replace_text_in_range_silent(None, &new_text, window, cx);
+             self.scroll_to(self.cursor(), None, cx);
+@@ -2383,6 +2410,7 @@
+                 }
+                 match result {
+                     Ok(Some(text)) => {
++                        let text = state.clipboard_newlines(&text);
+                         state.undo_manager.pending_intent = Some(EditIntent::Atomic);
+                         state.replace_text_in_range_silent(None, &text, window, cx);
+                         state.scroll_to(state.cursor(), None, cx);
+--- a/crates/base/src/input/mod.rs
++++ b/crates/base/src/input/mod.rs
+@@ -17,6 +17,7 @@
+ #[path = "base/change.rs"]
+ mod change;
+ pub mod clipboard;
++mod document_newlines;
+ #[path = "base/cursor.rs"]
+ mod cursor;
+ #[path = "editor/decorations.rs"]
+--- /dev/null
++++ b/crates/base/src/input/document_newlines.rs
+@@ -0,0 +1,87 @@
++//! User insertion policy only. Never apply to loading, IME or history replay.
++use std::borrow::Cow;
++
++/// First LF determines the document style. A standalone CR remains ordinary data.
++/// Empty/single-line documents default to LF; mixed files are not rewritten.
++pub(super) fn delimiter(bytes: impl IntoIterator<Item = u8>) -> &'static str {
++    let mut previous = None;
++    for byte in bytes {
++        if byte == b'\n' {
++            return if previous == Some(b'\r') {
++                "\r\n"
++            } else {
++                "\n"
++            };
++        }
++        previous = Some(byte);
++    }
++    "\n"
++}
++
++pub(super) fn normalize<'a>(text: &'a str, newline: &str) -> Cow<'a, str> {
++    let bytes = text.as_bytes();
++    let mismatched = bytes
++        .iter()
++        .enumerate()
++        .any(|(i, b)| *b == b'\n' && (i > 0 && bytes[i - 1] == b'\r') != (newline == "\r\n"));
++    if !mismatched {
++        return Cow::Borrowed(text);
++    }
++    let mut result = String::with_capacity(text.len());
++    let mut start = 0;
++    for (i, byte) in bytes.iter().enumerate() {
++        if *byte == b'\n' {
++            let end = if i > start && bytes[i - 1] == b'\r' {
++                i - 1
++            } else {
++                i
++            };
++            result.push_str(&text[start..end]);
++            result.push_str(newline);
++            start = i + 1;
++        }
++    }
++    result.push_str(&text[start..]);
++    Cow::Owned(result)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    #[test]
++    fn detects_document_style_without_rewriting_mixed_input() {
++        for (source, expected) in [
++            ("", "\n"),
++            ("שלום", "\n"),
++            ("a\r\nb\n", "\r\n"),
++            ("a\nb\r\n", "\n"),
++            ("a\rb", "\n"),
++        ] {
++            assert_eq!(delimiter(source.bytes()), expected);
++        }
++    }
++    #[test]
++    fn paste_normalizes_only_line_terminators() {
++        let input = "שלום\r\n😀\nЖ\rdata\r\n\n";
++        assert_eq!(normalize(input, "\r\n"), "שלום\r\n😀\r\nЖ\rdata\r\n\r\n");
++        assert_eq!(normalize(input, "\n"), "שלום\n😀\nЖ\rdata\n\n");
++    }
++    #[test]
++    fn matching_and_single_line_paste_borrow() {
++        for (input, newline) in [("abc", "\r\n"), ("a\r\nb", "\r\n"), ("a\nb", "\n")] {
++            assert!(matches!(normalize(input, newline), Cow::Borrowed(_)));
++        }
++    }
++    #[test]
++    fn replacement_preserves_surrounding_bytes_and_undo() {
++        let original = "# title\r\nשלום\r\nlast\r\n";
++        let range = 9..17;
++        assert_eq!(&original[range.clone()], "שלום");
++        let insertion = normalize("a\nb", delimiter(original.bytes()));
++        let mut edited = original.to_owned();
++        edited.replace_range(range.clone(), &insertion);
++        assert_eq!(edited, "# title\r\na\r\nb\r\nlast\r\n");
++        edited.replace_range(range.start..range.start + insertion.len(), &original[range]);
++        assert_eq!(edited.as_bytes(), original.as_bytes());
++    }
++}

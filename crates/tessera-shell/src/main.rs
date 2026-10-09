@@ -73,6 +73,8 @@ mod reader_navigation;
 use reader_link_navigation::handle_link;
 #[cfg(test)]
 mod input_navigation_tests;
+#[cfg(test)]
+mod input_newline_tests;
 mod reader_recent;
 #[cfg(any(unix, windows))]
 mod reader_source_history;
@@ -107,6 +109,10 @@ mod updater;
 #[allow(dead_code)]
 #[path = "../../../vendor/gpui-component/crates/base/src/input/bidi_geometry.rs"]
 mod vendor_bidi_geometry;
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../../../vendor/gpui-component/crates/base/src/input/document_newlines.rs"]
+mod vendor_document_newlines;
 #[cfg(test)]
 #[allow(dead_code)]
 #[path = "../../../vendor/gpui-component/crates/base/src/text_boundary.rs"]
