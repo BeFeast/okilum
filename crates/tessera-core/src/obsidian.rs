@@ -550,6 +550,19 @@ fn list_item_indent(line: &str) -> Option<usize> {
 /// list item (with its children) the ID ends, or for an ID alone on its line
 /// the block before it. `None` when the ID is missing or ambiguous.
 pub fn block_section(body: &str, id: &str) -> Option<String> {
+    block_section_result(body, id).ok()
+}
+
+/// A missing block and a repeated ID need different explanations. Neither
+/// outcome may select a different block or modify the original source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockSectionFailure {
+    Missing,
+    Ambiguous,
+}
+
+/// Resolve the embedded block while retaining the reason it cannot be selected.
+pub fn block_section_result(body: &str, id: &str) -> Result<String, BlockSectionFailure> {
     let prose = prose_spans(body);
     let lines: Vec<(usize, &str)> = body
         .split_inclusive('\n')
@@ -577,11 +590,11 @@ pub fn block_section(body: &str, id: &str) -> Option<String> {
             None
         }
     });
-    let (k, standalone) = matches.next()?;
+    let (k, standalone) = matches.next().ok_or(BlockSectionFailure::Missing)?;
     // The heading inventory rejects duplicate IDs case-insensitively. Embeds
     // must use that same ambiguity contract rather than choose the first block.
     if matches.next().is_some() {
-        return None;
+        return Err(BlockSectionFailure::Ambiguous);
     }
     let blank = |l: &str| l.trim().is_empty();
     let stops = |l: &str| {
@@ -594,7 +607,7 @@ pub fn block_section(body: &str, id: &str) -> Option<String> {
             end -= 1;
         }
         if end == 0 {
-            return None;
+            return Err(BlockSectionFailure::Missing);
         }
         let mut start = end - 1;
         while start > 0 && !blank(lines[start - 1].1) {
@@ -614,7 +627,7 @@ pub fn block_section(body: &str, id: &str) -> Option<String> {
             .iter()
             .map(|(_, l)| l.get(indent..).unwrap_or(l.trim_start()))
             .collect();
-        return Some(section.join("\n"));
+        return Ok(section.join("\n"));
     } else {
         let mut start = k;
         while start > 0 && !stops(lines[start - 1].1) && !stops(lines[start].1) {
@@ -622,13 +635,11 @@ pub fn block_section(body: &str, id: &str) -> Option<String> {
         }
         (start, k + 1)
     };
-    Some(
-        lines[start..end]
-            .iter()
-            .map(|(_, l)| *l)
-            .collect::<Vec<_>>()
-            .join("\n"),
-    )
+    Ok(lines[start..end]
+        .iter()
+        .map(|(_, l)| *l)
+        .collect::<Vec<_>>()
+        .join("\n"))
 }
 
 /// Top-level block index of the definition footnote `id` lands on, in the
@@ -787,5 +798,28 @@ mod tests {
         assert_eq!(block_section(body, "tbl").as_deref(), Some("| a |\n|---|"));
         assert_eq!(block_section(body, "nope"), None);
         assert_eq!(block_section("`a ^c`\n", "c"), None);
+    }
+
+    #[test]
+    fn block_section_errors_distinguish_missing_and_duplicate_prose_ids() {
+        use BlockSectionFailure::{Ambiguous, Missing};
+        assert_eq!(
+            block_section_result("First ^dup\n\nSecond ^DUP\n", "dup"),
+            Err(Ambiguous)
+        );
+        assert_eq!(
+            block_section_result("First ^unique\n", "missing"),
+            Err(Missing)
+        );
+        assert_eq!(block_section_result("^empty\n", "empty"), Err(Missing));
+        let body = "First ^unique\n\n```\nExample ^UNIQUE\n```\n\n`Example ^unique`\n";
+        assert_eq!(
+            block_section_result(body, "unique"),
+            Ok("First ^unique".into())
+        );
+        assert_eq!(
+            block_section_result("`Example ^code`\n", "code"),
+            Err(Missing)
+        );
     }
 }

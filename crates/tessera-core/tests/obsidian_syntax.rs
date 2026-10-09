@@ -105,12 +105,28 @@ fn embeds_take_a_heading_section_or_one_block() {
         "{out}"
     );
     assert!(out.contains("~~~~math"), "math inside the embedded section");
-    assert!(
-        out.contains("embed obsidian-syntax.md#^item-2\n- Second item<!--^item-2-->\n"),
-        "{out}"
+    let blocks: Vec<_> = out
+        .lines()
+        .filter_map(|line| {
+            tessera_core::render::block_embed::Info::parse(
+                line.trim_start_matches('~').strip_prefix("embed ")?,
+            )
+        })
+        .collect();
+    assert_eq!(blocks.len(), 2);
+    assert_eq!(blocks[0].path.as_deref(), Some("obsidian-syntax.md"));
+    assert_eq!(blocks[0].id, "item-2");
+    assert_eq!(blocks[0].title, "Obsidian syntax");
+    assert_eq!(
+        blocks[0].status,
+        tessera_core::render::block_embed::Status::Ready
     );
+    assert!(out.contains("- Second item<!--^item-2-->\n"), "{out}");
     assert!(!out.contains("First item"), "only the block is embedded");
-    assert!(out.contains("embed missing obsidian-syntax#^missing"));
+    assert_eq!(
+        blocks[1].status,
+        tessera_core::render::block_embed::Status::MissingBlock
+    );
 }
 
 #[test]
@@ -128,7 +144,19 @@ fn block_embeds_refuse_ambiguous_ids_without_picking_a_winner() {
         "![[target#^shared]]\n\n![[target#^UNIQUE]]\n",
     )
     .rendered;
-    assert!(out.contains("embed missing target#^shared"), "{out}");
+    let blocks: Vec<_> = out
+        .lines()
+        .filter_map(|line| {
+            tessera_core::render::block_embed::Info::parse(
+                line.trim_start_matches('~').strip_prefix("embed ")?,
+            )
+        })
+        .collect();
+    assert_eq!(
+        blocks[0].status,
+        tessera_core::render::block_embed::Status::DuplicateBlock
+    );
+    assert_eq!(blocks[0].path.as_deref(), Some("target.md"));
     assert!(
         !out.contains("First candidate"),
         "an ambiguous embed must not guess"

@@ -33,6 +33,7 @@ pub mod note_move;
 pub mod note_move;
 #[cfg(any(unix, windows))]
 pub mod note_templates;
+pub mod note_title;
 pub mod obsidian;
 pub mod projects;
 pub mod properties;

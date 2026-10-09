@@ -164,3 +164,48 @@ fn note_source_keeps_embeds_as_written() {
     let out = note_source(&v, "demo.md").unwrap();
     assert_eq!(out, format!("[alpha]({WIKI_SCHEME}alpha.md)\n"));
 }
+
+#[test]
+fn block_embed_context_uses_captured_human_title_and_keeps_source_bytes() {
+    use tessera_core::render::block_embed::{Info, Status};
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(temp.path().join("Projects")).unwrap();
+    let raw = "---\ntitle: Frontmatter title\n---\n# Human שלום \"Roadmap\"\n\nSelected paragraph. ^unique\n\nFirst candidate. ^dup\n\nSecond candidate. ^DUP\n";
+    let target = temp.path().join("Projects/technical-name.md");
+    std::fs::write(&target, raw).unwrap();
+    let host = "![[Projects/technical-name#^unique]]\n\n![[Projects/technical-name#^missing]]\n\n![[Projects/technical-name#^dup]]\n\n![[absent#^id]]\n";
+    std::fs::write(temp.path().join("host.md"), host).unwrap();
+    let vault = Vault::scan(temp.path()).unwrap();
+    let rendered = reader_source(&vault, "host.md").unwrap();
+    let infos: Vec<_> = rendered
+        .lines()
+        .filter_map(|line| Info::parse(line.trim_start_matches('~').strip_prefix("embed ")?))
+        .collect();
+    assert_eq!(infos.len(), 4);
+    assert_eq!(
+        infos.iter().map(|i| i.status).collect::<Vec<_>>(),
+        [
+            Status::Ready,
+            Status::MissingBlock,
+            Status::DuplicateBlock,
+            Status::MissingNote
+        ]
+    );
+    for info in &infos[..3] {
+        assert_eq!(info.title, "Human שלום \"Roadmap\"");
+        assert_eq!(info.path.as_deref(), Some("Projects/technical-name.md"));
+        assert_eq!(Info::parse(&info.fence_meta()).as_ref(), Some(info));
+    }
+    assert_eq!(infos[3].path, None);
+    assert!(
+        rendered.contains("Selected paragraph."),
+        "positive control: block expanded"
+    );
+    assert!(!rendered.contains("First candidate."));
+    assert!(!rendered.contains("Second candidate."));
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), raw);
+    assert_eq!(
+        std::fs::read_to_string(temp.path().join("host.md")).unwrap(),
+        host
+    );
+}
