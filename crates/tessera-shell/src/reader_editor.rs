@@ -272,6 +272,17 @@ impl Reader {
         }));
     }
 
+    /// ⌘⇧E / Ctrl+Shift+E (#916): Live Preview from any mode. From Reader it
+    /// enters editing first; a note that cannot be edited stays as it is.
+    pub(super) fn open_live_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editing.is_none() {
+            self.toggle_source(window, cx);
+        }
+        if self.editing.is_some() {
+            self.set_live_preview(true, window, cx);
+        }
+    }
+
     pub(super) fn toggle_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.move_applying {
             return;
@@ -1364,6 +1375,69 @@ impl Reader {
 
 #[cfg(test)]
 mod tests {
+
+    /// #916: the shortcut goes straight to Live Preview from Reader (entering
+    /// editing) and from Source; pressed again it stays in Live Preview.
+    #[gpui::test]
+    fn live_preview_shortcut_from_reader_and_source(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("vault");
+        let state = dir.path().join("state");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(root.join("note.md"), "# Note\n\nSome **bold** text.\n").unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+            reader_ui_state::install(&state, cx);
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        open_path: Some(root.join("note.md")),
+                        session_directory: Some(state.clone()),
+                        index_dir: Some(dir.path().join("index")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        let keys = if cfg!(target_os = "macos") {
+            "cmd-shift-e"
+        } else {
+            "ctrl-shift-e"
+        };
+        let mode = |visual: &mut VisualTestContext| {
+            reader.read_with(visual, |r, _| {
+                r.editing.as_ref().map(|e| e.live_preview.enabled)
+            })
+        };
+        assert_eq!(mode(visual), None, "positive control: starts in Reader");
+        reader.update_in(visual, |r, window, cx| r.focus_handle.focus(window, cx));
+        visual.simulate_keystrokes(keys);
+        visual.run_until_parked();
+        assert_eq!(mode(visual), Some(true), "Reader -> Live Preview");
+        reader.update_in(visual, |r, window, cx| {
+            r.set_live_preview(false, window, cx)
+        });
+        visual.run_until_parked();
+        assert_eq!(mode(visual), Some(false), "positive control: in Source");
+        visual.simulate_keystrokes(keys);
+        visual.run_until_parked();
+        assert_eq!(mode(visual), Some(true), "Source -> Live Preview");
+        visual.simulate_keystrokes(keys);
+        visual.run_until_parked();
+        assert_eq!(mode(visual), Some(true), "not a toggle");
+    }
 
     #[gpui::test]
     fn find_menu_action_matches_case_insensitively_in_preview_and_source(cx: &mut TestAppContext) {

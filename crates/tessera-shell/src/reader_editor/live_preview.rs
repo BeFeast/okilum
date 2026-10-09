@@ -129,9 +129,9 @@ impl Reader {
                     .when(labels, |button| button.label("Live Preview"))
                     .accessibility_label("Live Preview")
                     .tooltip(if limited {
-                        "Live Preview uses Source for this note"
+                        SharedString::from("Live Preview uses Source for this note")
                     } else {
-                        "Live Preview"
+                        reader_shortcuts::hint("Live Preview", &OpenLivePreview, cx)
                     })
                     .debug_selector(|| "reader-live-preview".into())
                     .selected(live)
