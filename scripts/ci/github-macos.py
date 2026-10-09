@@ -115,6 +115,7 @@ class Cancellation:
     def __init__(self, api, branch, sha, workflow):
         self.api, self.branch, self.sha, self.workflow = api, branch, sha, workflow
         self.run_id = None
+        self.finished = False
         self.receipt = os.environ.get("TESSERA_CANCELLATION_RECEIPT")
         self.persist()
 
@@ -123,7 +124,8 @@ class Cancellation:
             receipt = Path(self.receipt)
             temporary = receipt.with_suffix(".tmp")
             temporary.write_text(json.dumps(dict(branch=self.branch, sha=self.sha,
-                                                workflow=self.workflow, run_id=self.run_id)))
+                                                workflow=self.workflow, run_id=self.run_id,
+                                                finished=self.finished)))
             temporary.chmod(0o600)
             temporary.replace(receipt)
 
@@ -157,8 +159,11 @@ class Cancellation:
                     or run.get("path") != self.workflow):
                 print("::warning::Cancel refused: GitHub run identity mismatch", flush=True)
                 return
-            if run["status"] == "completed":
+            if run.get("status") == "completed":
                 print(f"Owned GitHub run {self.run_id} already completed", flush=True)
+                return
+            if run.get("status") not in ("queued", "in_progress", "waiting", "requested", "pending"):
+                print("::warning::Cancel refused: unknown GitHub run status", flush=True)
                 return
             self.api.request(f"actions/runs/{self.run_id}/cancel", "POST")
             print(f"Cancellation accepted for owned GitHub run {self.run_id}", flush=True)
@@ -178,6 +183,8 @@ def cancellation_scope(api, branch, sha, workflow):
         previous[sig] = signal.signal(sig, terminate)
     try:
         yield cancellation
+        cancellation.finished = True
+        cancellation.persist()
     except BridgeCancelled:
         # A second termination signal must not interrupt our bounded cancel request.
         for sig in previous:

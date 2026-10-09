@@ -6,7 +6,7 @@ const { spawnSync } = require('node:child_process');
 if (process.env.STATE_receipt) {
   const receipt = process.env.STATE_receipt;
   try {
-    if (fs.existsSync(receipt)) {
+    if (fs.existsSync(receipt) && !JSON.parse(fs.readFileSync(receipt, "utf8")).finished) {
       const result = spawnSync('python3', [path.join(process.env.GITHUB_WORKSPACE,
         'scripts/ci/github-cancel.py'), receipt], {
         env: { ...process.env, MIRROR_TOKEN: process.env.INPUT_TOKEN },

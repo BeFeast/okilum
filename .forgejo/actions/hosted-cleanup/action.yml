@@ -8,4 +8,4 @@ runs:
   using: node20
   main: index.js
   post: index.js
-  post-if: cancelled()
+  post-if: always()

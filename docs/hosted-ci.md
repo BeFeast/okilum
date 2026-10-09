@@ -49,7 +49,7 @@ large per-branch target caches into the shared 10 GiB quota. Missing caches
 fall back to cold builds. Capacity incidents are reported, not retried in a loop.
 
 Bridge cancellation: a local JavaScript post-action registered before dispatch
-runs on a cancelled Forgejo job, even when its host executor kills the Python
+runs after the job and cancels only an unfinished receipt, even when the host executor kills the Python
 step with SIGKILL. The bridge atomically records its unique ref, source SHA,
 workflow and discovered run ID in a temporary receipt (no credentials). The
 post-action rechecks that identity before requesting cancellation; a replacement

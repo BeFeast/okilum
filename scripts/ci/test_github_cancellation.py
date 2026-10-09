@@ -2,6 +2,8 @@
 import copy
 import importlib.util
 import os
+import json
+import tempfile
 from pathlib import Path
 import signal
 import subprocess
@@ -85,6 +87,43 @@ class CancellationTests(unittest.TestCase):
             with bridge.cancellation_scope(api, BRANCH, SHA, bridge.WORKFLOW):
                 self.assertIn(result, ['success', 'failure'])
         self.assertEqual(api.calls, [])
+
+    def test_missing_status_is_not_a_cancel_target(self):
+        run = dict(RUN)
+        del run['status']
+        self.assertEqual(self.cancel(API(run)), [])
+
+    def test_receipt_survives_before_discovery_and_records_owned_id(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'receipt.json'
+            with patch.dict(os.environ, TESSERA_CANCELLATION_RECEIPT=str(path)):
+                owner = bridge.Cancellation(API(), BRANCH, SHA, bridge.WORKFLOW)
+                self.assertIsNone(json.loads(path.read_text())['run_id'])
+                owner.observed(RUN)
+                data = json.loads(path.read_text())
+                self.assertEqual(data, dict(run_id=42, branch=BRANCH, sha=SHA, workflow=bridge.WORKFLOW, finished=False))
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+                self.assertFalse(path.with_suffix('.tmp').exists())
+
+    def test_post_action_registers_unique_receipt_and_invokes_cleanup_after_step_death(self):
+        action = Path(__file__).resolve().parents[2] / '.forgejo/actions/hosted-cleanup/index.js'
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state, envfile, evidence = [root / name for name in ['state', 'env', 'evidence']]
+            env = dict(os.environ, RUNNER_TEMP=directory, GITHUB_STATE=str(state),
+                       GITHUB_ENV=str(envfile), GITHUB_WORKSPACE=str(root), INPUT_TOKEN='fixture')
+            env.pop('STATE_receipt', None)
+            subprocess.run(['node', str(action)], env=env, check=True, timeout=5)
+            receipt = state.read_text().strip().split('=', 1)[1]
+            self.assertEqual(envfile.read_text(), f'TESSERA_CANCELLATION_RECEIPT={receipt}\n')
+            Path(receipt).write_text('{}')
+            python = root / 'python3'
+            python.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$EVIDENCE"\n')
+            python.chmod(0o755)
+            env.update(STATE_receipt=receipt, EVIDENCE=str(evidence), PATH=directory+':'+env['PATH'])
+            subprocess.run(['node', str(action)], env=env, check=True, timeout=5)
+            self.assertEqual(evidence.read_text().splitlines(), [str(root / 'scripts/ci/github-cancel.py'), receipt])
+            self.assertFalse(Path(receipt).exists())
 
     @unittest.skipUnless(os.name == 'posix', 'Forgejo bridge runs on Linux')
     def test_real_sigint_and_sigterm_cancel_only_owned_run_and_exit_nonzero(self):
