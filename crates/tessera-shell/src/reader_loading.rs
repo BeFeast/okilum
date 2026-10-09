@@ -2337,7 +2337,7 @@ impl Reader {
                                             this.incremental_state = Some(state);
                                             this.incremental_initializing = false;
                                             #[cfg(any(unix, windows))]
-                                            { this.move_index = candidates; }
+                                            { this.move_index = candidates; this.reminder_tick(cx); }
                                             this.publish_shared_ready();
                                             #[cfg(not(any(unix, windows)))]
                                             let _ = candidates;

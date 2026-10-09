@@ -183,6 +183,7 @@ impl Reader {
         #[cfg(any(unix, windows))]
         {
             self.move_index = published.candidates;
+            self.reminder_tick(cx);
         }
         self.backlink_titles = published.titles.clone();
         self.backlinks = self.vault.backlinks(&self.current_rel);

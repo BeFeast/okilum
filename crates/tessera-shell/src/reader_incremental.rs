@@ -180,6 +180,8 @@ impl Reader {
                             candidates,
                         )) => {
                             this.tasks_index = Some(tasks);
+                            #[cfg(any(unix, windows))]
+                            this.reminder_tick(cx);
                             this.projects = projects;
                             this.vault = published;
                             this.searcher = Some(searcher.clone());

@@ -16,9 +16,11 @@
 //! rather than replaying old reminders.
 use crate::tasks::Task;
 use anyhow::{ensure, Result};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use std::sync::LazyLock;
 use time::{Date, Duration, PrimitiveDateTime, Time};
 
 const LEDGER_VERSION: u32 = 1;
@@ -66,6 +68,39 @@ impl Policy {
     }
 }
 
+/// Tasks metadata markers: the visible text ends where the first one starts.
+const METADATA: [char; 11] = [
+    '📅', '⏳', '🛫', '✅', '❌', '➕', '⏫', '🔼', '🔽', '⏬', '🔺',
+];
+static WIKI_ALIAS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[\[[^\]|]*\|([^\]]*)\]\]").unwrap());
+static WIKI: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[\[([^\]]*)\]\]").unwrap());
+static TRAILING_LINK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\s*\[\[[^\]]*\]\]\s*$").unwrap());
+
+/// What a notification says: the task's own words, without the Tasks metadata,
+/// the trailing backlink the reminder writer adds, or Markdown escapes.
+fn spoken(raw: &str) -> String {
+    let head = raw.split(METADATA).next().unwrap_or(raw);
+    let head = TRAILING_LINK.replace(head, "");
+    let head = WIKI_ALIAS.replace_all(&head, "$1");
+    let head = WIKI.replace_all(&head, "$1");
+    let mut out = String::new();
+    let mut chars = head.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => out.extend(chars.next()),
+            c => out.push(c),
+        }
+    }
+    let out = out.split_whitespace().collect::<Vec<_>>().join(" ");
+    if out.is_empty() {
+        raw.split_whitespace().collect::<Vec<_>>().join(" ")
+    } else {
+        out
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reminder {
     pub id: String,
@@ -95,7 +130,7 @@ pub fn reminders(tasks: &[Task]) -> Vec<Reminder> {
                 .collect();
             seen.insert(id.clone()).then(|| Reminder {
                 id,
-                text: task.display.clone().unwrap_or_else(|| task.text.clone()),
+                text: spoken(task.display.as_deref().unwrap_or(&task.text)),
                 due,
             })
         })
@@ -484,6 +519,30 @@ mod tests {
             Some(datetime!(2026-10-20 09:00))
         );
         assert_eq!(next_wake(&[], &ledger, now, &policy), None);
+    }
+
+    #[test]
+    fn notification_text_is_the_task_words_only() {
+        let line = crate::reminder_task::format(
+            "Review [x](evil) *a* & more",
+            "Notes/Start.md",
+            Some("Winter time"),
+            date!(2026 - 11 - 01),
+        )
+        .unwrap();
+        let task = crate::tasks::parse("Reminders.md", &line);
+        assert_eq!(reminders(&task)[0].text, "Review [x](evil) *a* & more");
+        for (raw, spoken_text) in [
+            (
+                "Call [[People/Dana|Dana]] now 📅 2026-11-02",
+                "Call Dana now",
+            ),
+            ("Pay rent [[Bills.md#May]] 📅 2026-11-02", "Pay rent"),
+            ("Plain ⏫ 📅 2026-11-02", "Plain"),
+            ("📅 2026-11-02", "📅 2026-11-02"),
+        ] {
+            assert_eq!(spoken(raw), spoken_text, "{raw}");
+        }
     }
 
     #[test]

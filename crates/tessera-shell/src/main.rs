@@ -81,6 +81,7 @@ mod reader_recent;
 #[cfg(any(unix, windows))]
 mod reader_recovery_rows;
 mod reader_reminder;
+mod reader_reminder_notify;
 #[cfg(any(unix, windows))]
 mod reader_source_history;
 mod reader_startup;
@@ -1226,6 +1227,8 @@ struct Reader {
     #[cfg(any(unix, windows))]
     reminder_undo: Option<Arc<tessera_core::reminder_append::write::Receipt>>,
     #[cfg(any(unix, windows))]
+    reminder_notifier: reader_reminder_notify::Notifier,
+    #[cfg(any(unix, windows))]
     renaming: Option<reader_move::Renaming>,
     #[cfg(any(unix, windows))]
     move_picker: reader_move_picker::PickerState,
@@ -1526,6 +1529,8 @@ impl Reader {
             creation_undo: None,
             #[cfg(any(unix, windows))]
             reminder_undo: None,
+            #[cfg(any(unix, windows))]
+            reminder_notifier: Default::default(),
             #[cfg(any(unix, windows))]
             renaming: None,
             #[cfg(any(unix, windows))]
@@ -6674,6 +6679,7 @@ fn main() {
     });
     app.run(move |cx| {
         diagnostics.event("app_run_callback", serde_json::json!({}));
+        reader_reminder_notify::install(cx);
         cx.set_global(reader_diagnostics::LaunchTrace(diagnostics.clone()));
         let recovery_phase = diagnostics.phase("recovery_and_window_state");
         if let Ok(directory) = opts

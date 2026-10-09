@@ -140,6 +140,14 @@ impl Index {
             .insert(path.to_owned(), Arc::new(IndexedNote { revision, tasks }));
         true
     }
+    /// Tasks of one indexed note, in source order. Empty when the note has none
+    /// or is not indexed; used by consumers that must not rescan the vault.
+    pub fn note_tasks(&self, path: &str) -> Vec<Task> {
+        self.notes
+            .get(path)
+            .map(|note| note.tasks.clone())
+            .unwrap_or_default()
+    }
     pub fn remove(&mut self, path: &str) -> bool {
         self.notes.remove(path).is_some()
     }
