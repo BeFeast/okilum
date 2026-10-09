@@ -6,9 +6,16 @@ use std::ops::Range;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Kind {
-    Unordered { depth: usize },
-    Quote { depth: usize },
+    Unordered {
+        depth: usize,
+    },
+    Quote {
+        depth: usize,
+    },
     ThematicBreak,
+    /// A top-level fenced or indented code block: a quiet row background only.
+    /// Its literal contents are never classified.
+    CodeBlock,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,6 +66,27 @@ pub(super) fn extract<'a>(root: &'a AstNode<'a>, context: &Context<'_>) -> Optio
                 // An unsupported quote prefix leaves that quote raw; it does not
                 // cost the rest of the note its decorations.
                 markers.extend(quote_markers(node, context).unwrap_or_default());
+            }
+            NodeValue::CodeBlock(_)
+                if node
+                    .parent()
+                    .is_some_and(|p| matches!(p.data.borrow().value, NodeValue::Document)) =>
+            {
+                let range = context.range(node)?;
+                let start = context.lines[node.data.borrow().sourcepos.start.line - 1];
+                // Indented blocks end after their newline; end both forms on content.
+                let end = start
+                    + context
+                        .source
+                        .get(start..range.end)?
+                        .trim_end_matches(['\r', '\n'])
+                        .len();
+                let range = start..end;
+                markers.push(Marker {
+                    range: range.clone(),
+                    scope: range,
+                    kind: Kind::CodeBlock,
+                });
             }
             NodeValue::ThematicBreak => {
                 let scope = context.range(node)?;
@@ -211,9 +239,14 @@ mod tests {
         let source = snapshot("---\ntitle: test\n---\n\nHeading\n---\n\n```md\n* raw\n> raw\n---\n```\n\n* actual\n\ntext\n\n***\n", 1);
         let classified = classify(&source);
         let markers = classified.decorations_for(&source).unwrap();
-        assert_eq!(markers.len(), 2, "{markers:?}");
-        assert!(matches!(markers[0].kind, Kind::Unordered { depth: 1 }));
-        assert_eq!(markers[1].kind, Kind::ThematicBreak);
+        assert_eq!(markers.len(), 3, "{markers:?}");
+        assert_eq!(markers[0].kind, Kind::CodeBlock);
+        assert_eq!(
+            &source.source()[markers[0].range.clone()],
+            "```md\n* raw\n> raw\n---\n```"
+        );
+        assert!(matches!(markers[1].kind, Kind::Unordered { depth: 1 }));
+        assert_eq!(markers[2].kind, Kind::ThematicBreak);
     }
 
     #[test]
@@ -364,6 +397,21 @@ mod tests {
                 .collect();
             assert_eq!(got, expected, "{text:?}");
         }
+    }
+
+    #[test]
+    fn top_level_code_blocks_get_a_background_and_container_code_does_not() {
+        let text = "para\n\n    indented\n    code\n\n~~~\n**x**\n~~~\n\n- item\n\n      in list\n";
+        let source = snapshot(text, 1);
+        let classified = classify(&source);
+        let blocks: Vec<_> = classified
+            .decorations_for(&source)
+            .unwrap()
+            .iter()
+            .filter(|m| m.kind == Kind::CodeBlock)
+            .map(|m| &text[m.range.clone()])
+            .collect();
+        assert_eq!(blocks, ["    indented\n    code", "~~~\n**x**\n~~~"]);
     }
 
     #[test]
