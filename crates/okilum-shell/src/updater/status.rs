@@ -1,5 +1,15 @@
 //! The latest update check's outcome, shown inline next to the check button
 //! in Settings and About (#995). Nothing to do never opens a modal.
+// Linux has no in-app updater: only the settings harness reports outcomes.
+#![cfg_attr(
+    not(any(
+        target_os = "macos",
+        windows,
+        test,
+        all(target_os = "linux", feature = "settings-ui-harness")
+    )),
+    allow(dead_code)
+)]
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 

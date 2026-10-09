@@ -896,6 +896,40 @@ impl Render for Settings {
     }
 }
 
+/// The last check's outcome, inline next to the check button (#995). A found
+/// update offers its install action here instead of a modal.
+pub(crate) fn update_status_row(id: &'static str, cx: &App) -> Option<AnyElement> {
+    let line = updater::status_line()?;
+    let p = brand::palette(cx);
+    let available = matches!(
+        updater::status::get(),
+        updater::status::CheckStatus::Available(_)
+    );
+    Some(
+        h_flex()
+            .gap_2()
+            .items_center()
+            .flex_wrap()
+            .child(
+                div()
+                    .debug_selector(move || format!("{id}-update-status"))
+                    .text_sm()
+                    .text_color(p.text_muted)
+                    .child(line),
+            )
+            .when(available, |row| {
+                row.child(
+                    Button::new(SharedString::from(format!("{id}-install-update")))
+                        .ghost()
+                        .small()
+                        .label("Install Update…")
+                        .on_click(|_, _, cx| updater::activate(cx)),
+                )
+            })
+            .into_any_element(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1278,38 +1312,4 @@ mod tests {
             assert_eq!(cx.global::<SettingsWindow>().0.unwrap().window_id(), first)
         });
     }
-}
-
-/// The last check's outcome, inline next to the check button (#995). A found
-/// update offers its install action here instead of a modal.
-pub(crate) fn update_status_row(id: &'static str, cx: &App) -> Option<AnyElement> {
-    let line = updater::status_line()?;
-    let p = brand::palette(cx);
-    let available = matches!(
-        updater::status::get(),
-        updater::status::CheckStatus::Available(_)
-    );
-    Some(
-        h_flex()
-            .gap_2()
-            .items_center()
-            .flex_wrap()
-            .child(
-                div()
-                    .debug_selector(move || format!("{id}-update-status"))
-                    .text_sm()
-                    .text_color(p.text_muted)
-                    .child(line),
-            )
-            .when(available, |row| {
-                row.child(
-                    Button::new(SharedString::from(format!("{id}-install-update")))
-                        .ghost()
-                        .small()
-                        .label("Install Update…")
-                        .on_click(|_, _, cx| updater::activate(cx)),
-                )
-            })
-            .into_any_element(),
-    )
 }
