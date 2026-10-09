@@ -121,9 +121,9 @@ impl RetainedPresentation {
             projection: self.base.clone()?,
         };
         let mut revealed = false;
-        // A heading reveals its `#` markers from a caret anywhere in it (#915).
-        // Opening markers end where heading content starts; closing ones start
-        // where it ends. Heading spans never overlap, so both orders agree.
+        // A heading reveals its `#` markers from a caret anywhere on its line
+        // (#915). Opening markers end where heading content starts; closing ones
+        // start where it ends. Heading spans never overlap, so both orders agree.
         let headings: Vec<_> = self
             .styles
             .iter()
@@ -135,8 +135,15 @@ impl RetainedPresentation {
                 .binary_search_by_key(&marker.end, |h| h.start)
                 .or_else(|_| headings.binary_search_by_key(&marker.start, |h| h.end))
                 .ok()?;
+            // An ATX heading is one line: every marker's scope is that whole line,
+            // so a caret in the closing hashes also reveals the opening ones.
             let h = &headings[heading];
-            Some(marker.start.min(h.start)..marker.end.max(h.end))
+            let source = self.snapshot.source();
+            let start = source[..h.start].rfind('\n').map_or(0, |i| i + 1);
+            let end = source[h.end..]
+                .find(['\r', '\n'])
+                .map_or(source.len(), |i| h.end + i);
+            Some(start.min(marker.start)..end.max(marker.end))
         };
         let regions = self
             .plan
