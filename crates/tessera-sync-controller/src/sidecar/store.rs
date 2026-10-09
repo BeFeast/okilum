@@ -1,71 +1,80 @@
 //! Short exclusive transactions over the revision-bound envelope (design:
-//! docs/sync-sidecar-stop-operations.md). The directory lock is held only for one
+//! docs/sync-sidecar-stop-operations.md). The instance lock is held only for one
 //! transaction and released before any IPC wait; every commit is an atomic,
 //! flushed replacement of `sidecar.json` and must be the exact next revision.
-//! Windows needs its own DACL-checked store.
+//! The platform supplies a [`StateDir`] (private directory, lock, file I/O); the
+//! transaction logic here is shared. A transaction owns its lock, so the native
+//! supervisor can hold it from `authorize_stop` through the owned-tree stop.
 use super::{
     authority::{Envelope, Stored},
-    journal::Directory,
+    update::Update,
     Journal,
 };
 use anyhow::{ensure, Context, Result};
-use std::{
-    fs::TryLockError,
-    path::Path,
-    time::{Duration, Instant},
-};
+use std::{sync::Arc, time::Instant};
 
-const NAME: &str = "sidecar.json";
+#[cfg(unix)]
+mod unix;
+#[cfg(unix)]
+pub use unix::{UnixDir, UnixStore};
+
+pub(crate) const NAME: &str = "sidecar.json";
 /// Legacy `update.json`. Read only for migration; the v2 envelope owns update
 /// state afterwards and the leftover file is kept as recovery evidence.
-const LEGACY_UPDATE: &str = "update.json";
+pub(crate) const LEGACY_UPDATE: &str = "update.json";
 
-pub struct Store {
-    dir: Directory,
+/// A verified private state directory. Implementations never create state, check
+/// owner and mode (Unix) or the protected owner-only DACL (Windows) on every
+/// access, refuse links and reparse points, and bound file sizes.
+pub trait StateDir: Sized + 'static {
+    /// Exclusive instance lock; released on drop. Re-acquiring it through any
+    /// handle in this process or another must fail or wait, never nest.
+    type Lock;
+    /// Wait for the lock until the absolute `deadline`, then fail as busy.
+    fn lock(self: &Arc<Self>, deadline: Instant) -> Result<Self::Lock>;
+    fn read(&self, name: &str) -> Result<Option<Vec<u8>>>;
+    /// Atomic replace that is flushed before returning. An error after the
+    /// replacement became visible is still an error.
+    fn write(&self, name: &str, data: &[u8]) -> Result<()>;
 }
-impl Store {
-    /// No directory, journal or lock is created. Preparation supplies a private
-    /// directory outside installation, vault and index, after explicit Enable.
-    pub fn open_existing(path: &Path) -> Result<Self> {
-        let dir = Directory::open(path)?;
-        dir.check_location()?;
-        Ok(Self { dir })
+
+pub struct Store<D: StateDir> {
+    dir: Arc<D>,
+}
+impl<D: StateDir> Clone for Store<D> {
+    fn clone(&self) -> Self {
+        Self {
+            dir: self.dir.clone(),
+        }
+    }
+}
+impl<D: StateDir> Store<D> {
+    pub fn new(dir: D) -> Self {
+        Self { dir: Arc::new(dir) }
     }
     /// Take the exclusive instance lock or fail at `deadline`. Callers pass the
     /// absolute deadline of the whole exchange; there is no retry beyond it.
-    pub fn begin(&mut self, deadline: Instant) -> Result<Transaction<'_>> {
-        loop {
-            match self.dir.handle.try_lock() {
-                Ok(()) => break,
-                Err(TryLockError::WouldBlock) => {
-                    let left = deadline.saturating_duration_since(Instant::now());
-                    ensure!(!left.is_zero(), "sidecar state is busy");
-                    std::thread::sleep(left.min(Duration::from_millis(2)));
-                }
-                Err(TryLockError::Error(e)) => return Err(e.into()),
-            }
-        }
+    pub fn begin(&self, deadline: Instant) -> Result<Transaction<D>> {
+        let lock = self.dir.lock(deadline)?;
         let mut transaction = Transaction {
-            dir: &self.dir,
+            dir: self.dir.clone(),
             state: Stored::Absent,
             failed: false,
+            _lock: lock,
         };
         transaction.state = transaction.read_state()?;
         Ok(transaction)
     }
 }
 
-pub struct Transaction<'a> {
-    dir: &'a Directory,
+pub struct Transaction<D: StateDir> {
+    dir: Arc<D>,
     state: Stored,
     failed: bool,
+    /// Last field: the lock outlives everything above and is released on drop.
+    _lock: D::Lock,
 }
-impl Drop for Transaction<'_> {
-    fn drop(&mut self) {
-        let _ = self.dir.handle.unlock();
-    }
-}
-impl Transaction<'_> {
+impl<D: StateDir> Transaction<D> {
     /// Unreadable after a failed commit: the disk may or may not hold the new
     /// revision, so nothing may act on this snapshot. Begin a new transaction.
     pub fn state(&self) -> Result<&Stored> {
@@ -80,9 +89,9 @@ impl Transaction<'_> {
     }
 
     fn read_state(&self) -> Result<Stored> {
-        let Some(data) = self.dir.read_bytes(NAME)? else {
+        let Some(data) = self.dir.read(NAME)? else {
             ensure!(
-                self.dir.read_bytes(LEGACY_UPDATE)?.is_none(),
+                self.dir.read(LEGACY_UPDATE)?.is_none(),
                 "update has no lifecycle journal"
             );
             return Ok(Stored::Absent);
@@ -94,9 +103,9 @@ impl Transaction<'_> {
         }
         let journal: Journal =
             serde_json::from_value(value).context("invalid sidecar journal; recovery required")?;
-        let update = self
+        let update: Option<Update> = self
             .dir
-            .read_bytes(LEGACY_UPDATE)?
+            .read(LEGACY_UPDATE)?
             .map(|data| serde_json::from_slice(&data))
             .transpose()
             .context("invalid update journal; recovery required")?;
@@ -112,7 +121,7 @@ impl Transaction<'_> {
         self.write(next)
     }
     fn write(&mut self, next: Envelope) -> Result<()> {
-        match self.dir.write_bytes(NAME, &next.to_vec()?) {
+        match self.dir.write(NAME, &next.to_vec()?) {
             Ok(()) => {
                 self.state = Stored::Current(next);
                 Ok(())
@@ -123,6 +132,7 @@ impl Transaction<'_> {
             }
         }
     }
+
     /// Explicit migration of a legacy journal: one flushed replacement of
     /// `sidecar.json`, no native effect, no stop fabricated. Idempotent once
     /// migrated; the caller arms a verified operation in a later revision.
@@ -150,13 +160,13 @@ impl Transaction<'_> {
     }
 }
 
-impl super::Authority for Store {
-    type Tx<'a> = Transaction<'a>;
-    fn begin(&mut self, deadline: Instant) -> Result<Transaction<'_>> {
+impl<D: StateDir> super::Authority for Store<D> {
+    type Tx<'a> = Transaction<D>;
+    fn begin(&mut self, deadline: Instant) -> Result<Transaction<D>> {
         Store::begin(self, deadline)
     }
 }
-impl super::Tx for Transaction<'_> {
+impl<D: StateDir> super::Tx for Transaction<D> {
     fn stored(&self) -> Result<&Stored> {
         self.state()
     }
@@ -168,5 +178,5 @@ impl super::Tx for Transaction<'_> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests;
