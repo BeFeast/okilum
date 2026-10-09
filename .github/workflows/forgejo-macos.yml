@@ -9,6 +9,13 @@ on:
 permissions:
   contents: read
 
+# main runs only refresh the shared native cache: keep just the newest main
+# commit and cancel older ones still queued or running. forgejo-pr/* refs are
+# unique per PR head, so PR checks are never cancelled here.
+concurrency:
+  group: forgejo-macos-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}
+
 jobs:
   macos:
     runs-on: macos-15 # GitHub's standard public-repository arm64 runner.

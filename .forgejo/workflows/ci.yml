@@ -198,6 +198,7 @@ jobs:
       vars.TESSERA_MACOS_LANE != 'local' &&
       github.event_name == 'pull_request' &&
       needs.native-scope.outputs.macos == 'true' &&
+      !github.event.pull_request.draft &&
       github.event.pull_request.head.repo.full_name == github.repository
     # Configure only after the dedicated bridge runner is registered.
     runs-on: ${{ vars.MACOS_BRIDGE_RUNNER || 'light' }}
@@ -226,6 +227,7 @@ jobs:
       vars.TESSERA_MACOS_LANE == 'local' &&
       github.event_name == 'pull_request' &&
       needs.native-scope.outputs.macos == 'true' &&
+      !github.event.pull_request.draft &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: macos
     timeout-minutes: 20
@@ -276,6 +278,7 @@ jobs:
           HOSTED_JOB: ${{ needs.macos-github.result }}
           HOSTED_RESULT: ${{ needs.macos-github.outputs.result }}
           LOCAL_RESULT: ${{ needs.macos-local.result }}
+          DRAFT: ${{ github.event.pull_request.draft }}
         run: |
           set -euo pipefail
           test "$LINUX_RESULT" = success
@@ -283,6 +286,13 @@ jobs:
           case "$MACOS_REQUIRED" in
             false) echo "Documentation-only PR: native runner not needed" ;;
             true)
+              # Draft (WIP) PRs do not occupy the scarce hosted macOS slots.
+              # Forgejo has no ready_for_review event: remove the WIP prefix,
+              # then push (an empty commit is enough) to run the native check.
+              if [ "${DRAFT:-false}" = true ]; then
+                echo "Draft PR: the macOS check runs after WIP is removed and a new commit is pushed"
+                exit 1
+              fi
               # The repository variable may change while this run is queued.
               # Judge this run's actual jobs, never the currently selected lane.
               case "$HOSTED_JOB:$LOCAL_RESULT" in
