@@ -104,7 +104,7 @@ mod root_tests {
 
     #[cfg(windows)]
     #[test]
-    fn share_roots_gain_a_root_directory_so_vault_paths_are_relative() {
+    fn windows_share_roots_gain_a_root_directory_so_vault_paths_are_relative() {
         for bare in [r"\\?\UNC\10.10.0.35\qa516w", r"\\10.10.0.35\qa516w"] {
             let root = with_root_directory(PathBuf::from(bare));
             assert_eq!(root.as_os_str(), &*format!("{bare}\\"));
