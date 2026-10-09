@@ -13,13 +13,10 @@ bundle ID (com.befeast.okilum), Windows packId (BeFeast.Okilum), repository
 What stays (legacy compatibility, see docs/rebrand-okilum.md):
 - persisted schema ids and namespaces (`tessera-…/vN`, `tessera/…/vN`): changing
   them changes readers and deterministic ids;
-- recovery/file markers (`.tessera-save-…`, `.tessera-index`, …) and URL forms
-  (`tessera://`, `tessera-asset://`): new names come from the compatibility layer
-  (#967), which reads both;
-- sync identities (launchd label, Windows task/pipe, systemd units) and the
-  Sparkle beta preference key: migrated by their own owners, not by renaming;
+- internal URL forms (`tessera://`, `tessera-asset://`);
 - any line containing `rebrand: keep` (the #967 legacy constants);
-- historical and fixture trees listed in EXCLUDED_PREFIXES.
+- historical and fixture trees listed in EXCLUDED_PREFIXES, and third-party
+  licence texts listed in EXCLUDED_FILES.
 """
 import argparse
 import collections
@@ -30,8 +27,14 @@ import sys
 
 EXCLUDED_PREFIXES = (
     "docs/archive/", "docs/research/", "docs/upstream/", "experiments/", "fixtures/",
-    "scripts/patches/", "scripts/rebrand/", "vendor/", "licenses/",
+    "scripts/patches/", "scripts/rebrand/", "vendor/",
     "docs/rebrand-okilum.md",
+)
+# Third-party licence texts stay verbatim. Our own text under licenses/
+# (README.md, the Foxit-PDFium.txt preface) is renamed like the rest.
+EXCLUDED_FILES = (
+    "licenses/Apache-2.0.txt", "licenses/Lucide.txt", "licenses/Sparkle.txt",
+    "licenses/excalifont-provenance.json",
 )
 # Brand assets are pinned by a hash manifest to the brand repository; the
 # Okilum symbol arrives as its own import (scripts/brand-assets.py), not as text edits.
@@ -66,20 +69,14 @@ def git(*args):
     return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout
 
 
-# Our own text inside excluded trees; third-party licence texts stay verbatim.
-INCLUDED_FILES = ("licenses/README.md",)
-
-
 def excluded(path):
     """Contents are left as they are (history, fixtures, vendored diffs)."""
-    if path in INCLUDED_FILES:
-        return False
-    return path.startswith(EXCLUDED_PREFIXES) or any(p in f"/{path}" for p in EXCLUDED_PARTS)
+    return path in EXCLUDED_FILES or path.startswith(EXCLUDED_PREFIXES) or any(p in f"/{path}" for p in EXCLUDED_PARTS)
 
 
 def frozen_path(path):
     """Paths kept as they are. Fixtures inside renamed crates still move with them."""
-    return path.startswith(EXCLUDED_PREFIXES)
+    return path in EXCLUDED_FILES or path.startswith(EXCLUDED_PREFIXES)
 
 
 def rename_text(text):
@@ -168,7 +165,7 @@ def main():
             if "tessera" not in line.lower():
                 continue
             if excluded(path):
-                reason = "excluded tree: " + next(p for p in EXCLUDED_PREFIXES + EXCLUDED_PARTS if p.strip("/") in f"/{path}")
+                reason = "excluded tree: " + next(p for p in EXCLUDED_FILES + EXCLUDED_PREFIXES + EXCLUDED_PARTS if p.strip("/") in f"/{path}")
             elif KEEP_MARKER in line:
                 reason = "rebrand: keep"
             elif PROTECTED_RE.search(line):

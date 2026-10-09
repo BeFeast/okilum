@@ -8,7 +8,7 @@ url='https://git.oklabs.uk/BeFeast/okilum'
 license=('MIT')
 depends=('gcc-libs' 'glibc' 'fontconfig' 'freetype2' 'libxcb' 'libxkbcommon' 'libxkbcommon-x11' 'wayland' 'vulkan-icd-loader')
 optdepends=('syncthing: sync between devices')
-makedepends=('git' 'cmake' 'pkgconf' 'clang' 'mold')
+makedepends=('git' 'cmake' 'pkgconf' 'clang' 'mold' 'librsvg')
 options=('!debug' '!lto')
 
 build() {
@@ -31,6 +31,15 @@ package() {
     cd "$OKILUM_SOURCE"
     install -Dm755 target/release/okilum "$pkgdir/usr/bin/okilum"
     install -Dm644 scripts/arch/okilum.desktop "$pkgdir/usr/share/applications/okilum.desktop"
-    install -Dm644 crates/okilum-shell/assets/brand/app-icon-light.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/okilum.svg"
+    local icon=crates/okilum-shell/assets/brand/app-icon-light.svg
+    install -Dm644 "$icon" "$pkgdir/usr/share/icons/hicolor/scalable/apps/okilum.svg"
+    # Raster sizes too: launchers that skip SVG or a stale scalable lookup still
+    # find a themed okilum icon (#985).
+    local size
+    for size in 16 22 24 32 48 64 128 256 512; do
+        install -d "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps"
+        rsvg-convert --width "$size" --height "$size" "$icon" \
+            --output "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps/okilum.png"
+    done
     python3 scripts/third-party-notices.py --stage "$pkgdir/usr/share/licenses/okilum"
 }
