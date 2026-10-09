@@ -32,11 +32,14 @@ fallback. Register fonts before constructing windows so an earlier font lookup
 cannot cache fallback.
 
 Noto Sans also ships its italic (#1009). The approved brand sources are upright,
-and no platform synthesizes an oblique for a family the app registers itself, so
-`*emphasis*` rendered upright. The italic Latin and Cyrillic WOFF2 come from the
+and on Linux (CT141) `*emphasis*` rendered upright: the text system did not
+synthesize an oblique for a family the app registers itself. The italic Latin and Cyrillic WOFF2 come from the
 same Google Fonts release as the brand's upright files (`notosans/v42`); the
 importer pins their URLs and SHA256 and records them in the manifest inputs.
 They are instantiated at the same four weights with italic style names and flags.
+`import` therefore needs network access for those two files (60 s timeout);
+`verify` only hashes the committed assets and never downloads. If the release
+URLs disappear, vendor the two pinned WOFF2 into the brand repository.
 Cascadia Code stays upright: code is not emphasised.
 
 The importer writes each source font's `head` created/modified timestamps instead

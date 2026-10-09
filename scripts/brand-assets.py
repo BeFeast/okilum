@@ -49,7 +49,8 @@ def import_assets(brand, gui):
     inputs = []
 
     def download(url, sha256):
-        with urllib.request.urlopen(url) as response:
+        # Import needs network for these two files; verify never downloads.
+        with urllib.request.urlopen(url, timeout=60) as response:
             data = response.read()
         assert digest(data) == sha256, url + ' differs from its pinned hash'
         inputs.append({'url': url, 'sha256': sha256})

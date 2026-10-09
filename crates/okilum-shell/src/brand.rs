@@ -777,11 +777,14 @@ mod tests {
             assert_eq!(fs_selection(&italic) & 1, 1, "{weight} italic bit");
             assert_eq!(fs_selection(&upright) & 1, 0, "{weight} upright control");
         }
+        // The registration list itself, not a mention elsewhere in the file.
         let source = include_str!("brand.rs");
+        let start = source.find("pub fn load_fonts").unwrap();
+        let body = &source[start..start + source[start..].find("\n}\n").unwrap()];
         for weight in [400, 500, 600, 700] {
             assert!(
-                source.contains(&format!("fonts/noto-sans-italic-{weight}.ttf\"")),
-                "{weight} italic is registered"
+                body.contains(&format!("fonts/noto-sans-italic-{weight}.ttf\"")),
+                "{weight} italic is registered in load_fonts"
             );
         }
     }
