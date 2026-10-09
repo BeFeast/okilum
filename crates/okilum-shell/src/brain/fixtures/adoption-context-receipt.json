@@ -84,7 +84,7 @@
       }
     }
   },
-  "schema": "tessera-proposal-adopt/v1",
+  "schema": "okilum-proposal-adopt/v1",
   "workspace": {
     "brain_id": "1c682895-34c3-4491-a7eb-f58d7efa5d94",
     "managed": true,

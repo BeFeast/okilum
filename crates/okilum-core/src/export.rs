@@ -12,7 +12,7 @@ use std::{
     path::Path,
 };
 
-pub const EXPORT_SCHEMA: &str = "tessera-knowledge-export/v1";
+pub const EXPORT_SCHEMA: &str = "okilum-knowledge-export/v1";
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExportFile {
     /// Original path relative to the selected root (under brain/ in the tar).

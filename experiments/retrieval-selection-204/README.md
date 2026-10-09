@@ -1,6 +1,6 @@
 # Verified experience selection experiment (#204)
 
-> **Historical document.** Written before Tessera was renamed Okilum (2026-10-09). Names, paths and links are kept as they were then.
+> **Historical experiment.** Recorded before the app was renamed Okilum on 2026-10-09; its names, paths and commands were updated to Okilum afterwards (#987), so old commands may not run as written.
 
 Repository-only diagnostic experiment inspired by the pinned OpenExecutive research
 `3c379362809016ed117e597a74f083914e83fd3e`. No product/runtime feature is enabled.
@@ -123,7 +123,7 @@ python3 -m unittest discover -s experiments/retrieval-selection-204 -p test_run.
 Run controlled transport against the existing backend binary in a new isolated root:
 
 ```sh
-python3 experiments/retrieval-selection-204/run.py --binary /path/to/tessera-cored --output /path/to/new-offline-run
+python3 experiments/retrieval-selection-204/run.py --binary /path/to/okilum-cored --output /path/to/new-offline-run
 ```
 
 The output contains `freeze.json` with the source commit, source file hashes and
@@ -135,7 +135,7 @@ manifest with the same freeze fields plus `independent_review: "PASS"` before th
 single measured run. Provider mode requires that manifest:
 
 ```sh
-python3 experiments/retrieval-selection-204/run.py --binary /path/to/tessera-cored --output /path/to/new-provider-run --saved-settings /path/to/connector-settings.json --frozen-manifest /path/to/reviewed-manifest.json
+python3 experiments/retrieval-selection-204/run.py --binary /path/to/okilum-cored --output /path/to/new-provider-run --saved-settings /path/to/connector-settings.json --frozen-manifest /path/to/reviewed-manifest.json
 ```
 
 Record paths refer only to the isolated run. Auth values are never in request

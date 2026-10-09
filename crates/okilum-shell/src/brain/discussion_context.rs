@@ -100,7 +100,7 @@ fn matching_snapshot(response: &Value, key: &TurnKey, brain: &Value) -> Result<V
     }
     let snapshot = &wrapper["snapshot"];
     if wrapper["availability"] != "available"
-        || snapshot["schema"] != "tessera-discussion-turn/v1"
+        || snapshot["schema"] != "okilum-discussion-turn/v1"
         || snapshot["conversation_id"] != key.conversation
         || snapshot["goal"]["id"] != key.goal
         || snapshot["turn_id"] != key.turn
@@ -444,7 +444,7 @@ mod tests {
                 "saved_input_count":1,"manual_input_count":0,"omission_count":1}]});
         let mut response = conversation.clone();
         response["context_snapshot"] = json!({"availability":"available","reason":null,"snapshot":{
-            "schema":"tessera-discussion-turn/v1","brain_id":"brain-a","conversation_id":"conversation-a",
+            "schema":"okilum-discussion-turn/v1","brain_id":"brain-a","conversation_id":"conversation-a",
             "turn_id":turn,"user_message_index":0,"actor_id":"Operator","created_at":"2026-09-08T00:00:00Z","model":"fixture-model",
             "goal":{"id":"goal-a","title":"Goal A","revision":"sha256:saved-goal","criteria":[{"id":"c1","description":"Observe the result","requires_human":true}]},
             "constraints":["Keep operator review"],"next_step":"Clarify the next step",

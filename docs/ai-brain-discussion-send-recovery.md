@@ -67,7 +67,7 @@ The names and field meanings below are shared by the backend and shell implement
 `request_sha256` is lowercase SHA-256 hex of the UTF-8 bytes produced by `serde_json::to_vec` on this tuple in this exact order (a JSON array, compact with no whitespace or trailing newline):
 
 ```text
-("tessera-discussion-send-request/v1", brain_id, goal_id,
+("okilum-discussion-send-request/v1", brain_id, goal_id,
  expected_actor_id, conversation_id: Option<String>, message, source_paths)
 ```
 
@@ -76,7 +76,7 @@ Null remains JSON null, paths remain an ordered array, and strings use serde_jso
 Golden digest input (the backslash escapes are literal JSON bytes, not physical CR/LF):
 
 ```json
-["tessera-discussion-send-request/v1","11111111-1111-4111-8111-111111111111","22222222-2222-4222-8222-222222222222","operator",null,"Question\r\n",["manual-reference.md"]]
+["okilum-discussion-send-request/v1","11111111-1111-4111-8111-111111111111","22222222-2222-4222-8222-222222222222","operator",null,"Question\r\n",["manual-reference.md"]]
 ```
 
 Expected SHA-256:
@@ -92,7 +92,7 @@ Backend and shell tests must consume the shared [digest fixtures](fixtures/discu
 The initial projection adds one typed `discussion_send` field adjacent to discussion_context. It describes the initial send represented by that exact SourceWrite; a later correlated send may replace the current canonical field, while the original SourceWrite journal retains its own exact bytes. It is not an ever-growing operation map.
 
 ```text
-schema: "tessera-discussion-send/v1"
+schema: "okilum-discussion-send/v1"
 operation_id: UUID
 brain_id: UUID
 goal_id: UUID
@@ -112,7 +112,7 @@ All fields are required. Validate against the exact original conversation record
 Both operations return the following strict object inside the normal matching `ok: true, data: ...` envelope:
 
 ```text
-schema: "tessera-discussion-send-result/v1"
+schema: "okilum-discussion-send-result/v1"
 operation_id: UUID
 brain_id: UUID
 goal_id: UUID
@@ -151,7 +151,7 @@ This is inside `ok: false, error: ...` with the exact matching transport envelop
 
 ### Native persistence contract
 
-Use schema `tessera-discussion-outbox/v1` in a distinct native outbox scope. Retain the exact original guarded request/key plus the original editable draft and owner before dispatch. Publish immutable accepted/rejected terminal receipts separately using the existing durable primitive; unknown/pending/conflict and unconfirmed local terminal writes retain the operation. No shared mutable entry is rebound to the currently selected goal. An existing #242 inspection acknowledgement cannot delete a durable operation or fabricate a terminal receipt. A user's separately explicit new submission receives another UUID and leaves the unresolved original inspectable.
+Use schema `okilum-discussion-outbox/v1` in a distinct native outbox scope. Retain the exact original guarded request/key plus the original editable draft and owner before dispatch. Publish immutable accepted/rejected terminal receipts separately using the existing durable primitive; unknown/pending/conflict and unconfirmed local terminal writes retain the operation. No shared mutable entry is rebound to the currently selected goal. An existing #242 inspection acknowledgement cannot delete a durable operation or fabricate a terminal receipt. A user's separately explicit new submission receives another UUID and leaves the unresolved original inspectable.
 
 ## Acceptance
 

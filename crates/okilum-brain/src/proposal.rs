@@ -7,7 +7,7 @@ use anyhow::{ensure, Context, Result};
 use okilum_core::source::SourceSnapshot;
 use serde::{Deserialize, Serialize};
 
-pub const SCHEMA: &str = "tessera-proposal/v1";
+pub const SCHEMA: &str = "okilum-proposal/v1";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GenerationIssue {
@@ -40,7 +40,7 @@ pub struct GenerationInput {
 impl GenerationInput {
     pub(crate) fn validate(&self) -> Result<()> {
         ensure!(
-            self.schema == "tessera-proposal-prompt/v1" && self.request_body.len() <= 64 * 1024,
+            self.schema == "okilum-proposal-prompt/v1" && self.request_body.len() <= 64 * 1024,
             "invalid bounded frozen prompt"
         );
         let body: serde_json::Value = serde_json::from_str(&self.request_body)?;

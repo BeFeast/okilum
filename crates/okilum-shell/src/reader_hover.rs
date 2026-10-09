@@ -624,11 +624,11 @@ mod tests {
     fn only_resolved_internal_notes_preview() {
         let mut states = std::collections::BTreeMap::new();
         for (url, status) in [
-            ("tessera://open/A.md#Heading", LinkStatus::Resolved),
+            ("okilum://open/A.md#Heading", LinkStatus::Resolved),
             ("https://example.com", LinkStatus::External),
-            ("tessera://open/Bad.md", LinkStatus::Ambiguous),
-            ("tessera://open/Missing.md", LinkStatus::MissingDocument),
-            ("tessera://attachment/a.html", LinkStatus::Resolved),
+            ("okilum://open/Bad.md", LinkStatus::Ambiguous),
+            ("okilum://open/Missing.md", LinkStatus::MissingDocument),
+            ("okilum://attachment/a.html", LinkStatus::Resolved),
         ] {
             states.insert(
                 url.into(),
@@ -651,10 +651,10 @@ mod tests {
         );
         for url in [
             "https://example.com",
-            "tessera://open/Bad.md",
-            "tessera://open/Missing.md",
-            "tessera://attachment/a.html",
-            "tessera://open/Unknown.md",
+            "okilum://open/Bad.md",
+            "okilum://open/Missing.md",
+            "okilum://attachment/a.html",
+            "okilum://open/Unknown.md",
         ] {
             assert!(resolved_target(url, &states, "Start.md").is_none());
         }
@@ -1093,7 +1093,7 @@ mod tests {
                     .size_full()
                     .child(TextView::new(&self.text).w_full().on_link_hover(
                         move |url, active, _, _, _| {
-                            assert_eq!(url.as_ref(), "tessera://open/Target.md");
+                            assert_eq!(url.as_ref(), "okilum://open/Target.md");
                             calls.lock().unwrap().push(active);
                         },
                     ))
@@ -1103,7 +1103,7 @@ mod tests {
         let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
         let observed = calls.clone();
         let (_, visual) = cx.add_window_view(|_, cx| Harness {
-            text: cx.new(|cx| TextViewState::markdown("[Preview](tessera://open/Target.md)", cx)),
+            text: cx.new(|cx| TextViewState::markdown("[Preview](okilum://open/Target.md)", cx)),
             calls,
         });
         visual.run_until_parked();

@@ -186,7 +186,7 @@ citations, pins and original guidance. Source-schema equality alone is insuffici
 ## A3 implementation boundary — issue176
 
 A3 builds on the existing A1 journal and A2 committed feed. Explicit fixture
-activation adds `required_proposal_drafts: tessera-proposal-drafts/v1` to the source
+activation adds `required_proposal_drafts: okilum-proposal-drafts/v1` to the source
 binding before extending the A1 journal. Unsupported A2 source handles reject that
 binding at fresh open and on later writes from an already-open upgraded handle.
 An unenrolled brain gains no proposal state, draft or provider call. Enrollment
@@ -242,7 +242,7 @@ checks, not production enrollment or native GUI acceptance.
 ## A4 internal context adoption — issue181
 
 The context-only coordinator extends the same A1 Store. Explicit fixture enrollment
-first adds `required_proposal_adoption: tessera-proposal-adoption/v1` to the source
+first adds `required_proposal_adoption: okilum-proposal-adoption/v1` to the source
 binding, then the optional `adoption_enabled` journal marker. Preceding A3 writers
 refuse the new binding, including already-open source handles. Startup can finish
 an interrupted enrollment. Unenrolled brains retain their previous serialized shape.
@@ -328,7 +328,7 @@ The A1 16 MiB bound reserves exact future projection bytes and serialized child
 outcome plus bounded receipt growth before accepting a parent.
 
 The additional source requirement is
-`required_proposal_inbox_adoption: tessera-proposal-inbox-adoption/v1`. It fences
+`required_proposal_inbox_adoption: okilum-proposal-inbox-adoption/v1`. It fences
 preceding context-only writers at fresh open and on an upgraded existing handle's
 cached or new write. Unenrolled optional fields remain omitted. Preserving
 maintenance with new Inbox planning disabled still finishes an accepted parent,
@@ -388,7 +388,7 @@ queue indefinitely. Original operational receipts remain outside indexes; exact
 Markdown export preserves generated drafts and dispositions, not the operational
 journal needed for uncertain recovery.
 
-The `required_proposal_generation: tessera-proposal-generation/v1` source binding
+The `required_proposal_generation: okilum-proposal-generation/v1` source binding
 precedes any retained generation extension. Preceding source writers refuse it,
 including writers opened before enrollment. Startup rejects generation inputs or
 preflight issues without this binding. Optional fields are omitted on unenrolled
@@ -430,7 +430,7 @@ that proof. Pending accepted projections recover their original source operation
 with conflicts local to their proposal.
 
 The new source requirement is
-`required_proposal_retry: tessera-proposal-retry/v1`, installed before retaining the
+`required_proposal_retry: okilum-proposal-retry/v1`, installed before retaining the
 first Retry operation. Generation-only writers refuse it, including cached source
 handles. Preserving maintenance disables `NEW_RETRIES_ENABLED` and
 `NEW_GENERATION_ENABLED`; it still recovers and replays accepted receipts and
@@ -447,7 +447,7 @@ available only in managed workspaces already enrolled for proposal drafts. Expli
 submission enables the original destination coordinator; opening a form has no
 backend mutation. No ordinary workspace is enrolled for proposal generation.
 
-The receipt schema is `tessera-proposal-adopt/v1`, binding the exact workspace and
+The receipt schema is `okilum-proposal-adopt/v1`, binding the exact workspace and
 request to `committed_context`, `committed_inbox`, or `not_applied`. Completed and
 accepted pending operations reconcile before current source/selection checks.
 Unsupported maintenance creation remains disabled through its existing posture;
@@ -459,7 +459,7 @@ including target, canonical projection and completion reserves. A positively
 observed invalid edited form or capacity limit may produce a durable `not_applied`
 receipt. Such receipts reserve the shared operation/external identity namespace,
 require the source fence `required_public_proposal_adoption:
-tessera-proposal-adopt/v1` before their first write, and survive a later change in
+okilum-proposal-adopt/v1` before their first write, and survive a later change in
 eligibility. Unknown source/storage errors and uncertain accepted operations never
 become terminal outcomes. A full journal unable to retain even a terminal receipt
 leaves the request pending for recovery.
@@ -497,15 +497,15 @@ saved Chat provider/model and credential reference; inspecting settings does not
 contact a provider. `available` describes local configuration/credential readiness,
 not network reachability. Pause remains available without provider configuration.
 
-`suggestions_get` returns `tessera-suggestions/v1`, with `mode`
+`suggestions_get` returns `okilum-suggestions/v1`, with `mode`
 (`disabled`, `enabled`, `paused`), monotonic settings `revision`, `enrolled`,
 `queued`/`running` counts, nullable `backlog`, `can_change`, and
 `provider: {available, model, message}`. Queue counts are materialized intents;
 retained source-feed overflow is indicated separately by backlog.
 
 `suggestions_set` accepts exactly `{operation_id, expected_revision, enabled}`.
-Its `tessera-suggestions-outcome/v1` response binds the full original `workspace`
-and `request`; `status: committed` carries a `tessera-suggestions-receipt/v1`
+Its `okilum-suggestions-outcome/v1` response binds the full original `workspace`
+and `request`; `status: committed` carries a `okilum-suggestions-receipt/v1`
 `receipt` and null `reason`. The receipt retains workspace, request, actor,
 resulting settings revision, enabled flag and replay flag. `status: not_applied`
 carries null receipt and a stable `reason` (`provider_unavailable`,
@@ -524,7 +524,7 @@ The recorded actor remains immutable attribution: changing the saved Review acto
 cannot turn an already-applied original request into a refusal. Changed request
 content under that ID is refused.
 
-The source binding `required_suggestions_control: tessera-suggestions-control/v1`
+The source binding `required_suggestions_control: okilum-suggestions-control/v1`
 precedes any optional Runner control state. Old opens and cached source writers
 refuse that fence. A fence-only interrupted setup is disabled until its original
 explicit command is retried. Pending activation persists before the existing

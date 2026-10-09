@@ -16,7 +16,7 @@ The normal successful response `data` contains:
 
 | Field | Meaning |
 | --- | --- |
-| `schema` | `tessera-goal-brief/v1` |
+| `schema` | `okilum-goal-brief/v1` |
 | `goal_id`, `goal_revision` | Selected canonical goal and exact source revision |
 | `generation` | Deterministic SHA-256 of the visible derived data, excluding this field |
 | `inputs` | Latest saved result first, then saved Attention replies newest first |

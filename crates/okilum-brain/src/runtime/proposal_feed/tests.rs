@@ -297,7 +297,7 @@ fn preparing_activation_recovers_at_each_checkpoint_with_same_epoch() {
         let mut r = f.open();
         capture(&mut r);
         let mut binding = RequiredProposalFeed {
-            capability: "tessera-proposal-feed/v1".into(),
+            capability: "okilum-proposal-feed/v1".into(),
             epoch: Uuid::new_v4().to_string(),
             activation_id: Uuid::new_v4().to_string(),
             policy_version: 1,
@@ -482,7 +482,7 @@ fn preparing_activation_refuses_corrupt_core_inventory_before_any_state_checkpoi
     let mut r = f.open();
     r.source
         .require_proposal_feed(RequiredProposalFeed {
-            capability: "tessera-proposal-feed/v1".into(),
+            capability: "okilum-proposal-feed/v1".into(),
             epoch: Uuid::new_v4().to_string(),
             activation_id: Uuid::new_v4().to_string(),
             policy_version: 1,

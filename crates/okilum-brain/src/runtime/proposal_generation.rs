@@ -98,7 +98,7 @@ impl Runner {
             {"role":"user","content":serde_json::to_string(&json!({"trigger":trigger,"trigger_text":trigger_text,"citations":captured.citations,"omissions":captured.omissions,"goal_text":goal_text,"goal_brief":brief}))?}
         ]}).to_string();
         let generation = api::GenerationInput {
-            schema: "tessera-proposal-prompt/v1".into(),
+            schema: "okilum-proposal-prompt/v1".into(),
             settings: settings.clone(),
             goal_brief: brief,
             goal_source,

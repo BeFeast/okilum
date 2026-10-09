@@ -29,7 +29,7 @@ fn main() {
             }
         }
         Err(_) => {
-            println!("{{\"schema\":\"tessera-t3-inventory/v1\",\"read_only\":true,\"eligible\":false,\"error\":\"invalid_or_changed_inventory\"}}");
+            println!("{{\"schema\":\"okilum-t3-inventory/v1\",\"read_only\":true,\"eligible\":false,\"error\":\"invalid_or_changed_inventory\"}}");
             std::process::exit(2);
         }
     }

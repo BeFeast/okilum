@@ -765,7 +765,7 @@ mod tests {
                 } else {
                     assert_eq!(request["op"], "chat_send");
                 }
-                let data = json!({"schema":"tessera-discussion-send-result/v1","operation_id":request["operation_id"],"brain_id":request["expected_workspace"]["brain_id"],"goal_id":request["goal_id"],"actor_id":request["expected_actor_id"],"request_sha256":request["request_sha256"],"status":"unknown","record":null,"source_receipt":null});
+                let data = json!({"schema":"okilum-discussion-send-result/v1","operation_id":request["operation_id"],"brain_id":request["expected_workspace"]["brain_id"],"goal_id":request["goal_id"],"actor_id":request["expected_actor_id"],"request_sha256":request["request_sha256"],"status":"unknown","record":null,"source_receipt":null});
                 writeln!(
                     reader.get_mut(),
                     "{}",

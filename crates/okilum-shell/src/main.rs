@@ -720,7 +720,7 @@ fn parse_callout(
 
 /// Payload for the custom "embed" block node (#49). Core expands `![[note]]`
 /// into the target's body inside a tilde fence tagged [`EMBED_LANG`], with
-/// the `tessera://open/` payload as the rest of the info string; markdown-rs
+/// the `okilum://open/` payload as the rest of the info string; markdown-rs
 /// hands the fence over as `Node::Code`, so the block parser recognises it by
 /// its language and the renderer draws a bordered box with a title row that
 /// links to the note and the body as nested Markdown.

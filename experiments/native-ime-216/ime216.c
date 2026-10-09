@@ -258,7 +258,7 @@ static void label(uint32_t *pixels, int x, int y, const char *text, uint32_t col
 }
 static bool render_popup(struct app *a) {
     if (a->frame_count >= 16) { fail(a, "popup buffer backpressure"); return false; }
-    int fd = memfd_create("tessera-ime216-popup", MFD_CLOEXEC);
+    int fd = memfd_create("okilum-ime216-popup", MFD_CLOEXEC);
     if (fd < 0) { fail(a, "memfd_create failed"); return false; }
     if (ftruncate(fd, WIDTH * HEIGHT * 4) < 0) {
         close(fd); fail(a, "ftruncate failed"); return false;

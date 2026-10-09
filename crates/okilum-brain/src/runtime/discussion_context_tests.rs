@@ -241,7 +241,7 @@ fn discussion_missing_corrupt_future_and_transcript_binding_are_never_reconstruc
                 }
                 "future" => {
                     m.get_mut(&key).unwrap()["schema"] =
-                        serde_yaml::Value::String("tessera-discussion-context/v999".into())
+                        serde_yaml::Value::String("okilum-discussion-context/v999".into())
                 }
                 "binding" => {
                     m.get_mut(&key).unwrap()["conversation_id"] =

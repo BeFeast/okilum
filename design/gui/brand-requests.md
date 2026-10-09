@@ -1,6 +1,6 @@
 # Brand integration and usability requests
 
-Adopted for layout development: `tessera-design-tokens/v1`, **1.1.0 recommended**. The brand lane superseded 0.1.0 with the Panoptikon-aligned direction; recommended 1.1.0 retains the palette from provisional 0.2.0 and changes typography to Noto Sans / Cascadia Code. Historical snapshots remain immutable under `imports/`.
+Adopted for layout development: `okilum-design-tokens/v1`, **1.1.0 recommended**. The brand lane superseded 0.1.0 with the Panoptikon-aligned direction; recommended 1.1.0 retains the palette from provisional 0.2.0 and changes typography to Noto Sans / Cascadia Code. Historical snapshots remain immutable under `imports/`.
 
 ## Verified token pairings
 
@@ -20,7 +20,7 @@ The revised interface uses a neutral sidebar, persistent master list and spaciou
 
 **Buttons:** use one consistent sizing/radius/padding system, quiet secondary buttons, and icon-plus-text toolbar controls. Remove ubiquitous dark outline boxes and competing filled actions. Show hover, visible keyboard focus, disabled/busy and destructive states without changing layout. Keep destructive choices away from the primary happy path. A screenshot review must show the toolbar, goal action row and conflict actions together; testing one isolated button is insufficient.
 
-**Request to brand lane:** provide or endorse neutral application-chrome roles (sidebar, master list, detail, separator, subtle selection) and a restrained blue interaction role. Current user authorization permits GUI-owned interface aliases to implement this immediately without changing the immutable brand tokens or waiting for a new palette. Brand 1.1.0 remains the typography/identity input. The implemented GUI override is [interface-tokens.json](interface-tokens.json), schema `tessera-gui-interface/v1`, version `2.0.0`: white detail/list, light neutral sidebar, charcoal/slate dark surfaces, and blue interaction accent. These overrides are separate from brand ownership and need their own rendered contrast receipt.
+**Request to brand lane:** provide or endorse neutral application-chrome roles (sidebar, master list, detail, separator, subtle selection) and a restrained blue interaction role. Current user authorization permits GUI-owned interface aliases to implement this immediately without changing the immutable brand tokens or waiting for a new palette. Brand 1.1.0 remains the typography/identity input. The implemented GUI override is [interface-tokens.json](interface-tokens.json), schema `okilum-gui-interface/v1`, version `2.0.0`: white detail/list, light neutral sidebar, charcoal/slate dark surfaces, and blue interaction accent. These overrides are separate from brand ownership and need their own rendered contrast receipt.
 
 The previous 54-pair contrast receipt applies only to the unchanged imported colors. It does not validate revised surface/action pairings. Recheck text, selection, focus, button label and functional boundaries against the actual interface aliases in both themes, then review the rendered full screen at laptop size. Do not report this revision as accepted until the new visual review is recorded. Any subsequent recommended brand version still requires its own immutable import and renewed audit.
 

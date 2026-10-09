@@ -16,7 +16,7 @@
 //! Comrak's URL resolution and syntax highlighting run after the parse and
 //! rewrite URLs and code markup by design, so they are left out. The reader
 //! resolves link destinations in the source, before its parse; an example
-//! whose output only differs in `href`/`src` values that became `tessera://`
+//! whose output only differs in `href`/`src` values that became `okilum://`
 //! URLs counts as passing, and is reported as such.
 //!
 //! A failure is classified, never just counted:
@@ -300,7 +300,7 @@ fn verdict(got: &str, expected: &str) -> Verdict {
     let (got, expected) = (normalize(got), normalize(expected));
     if got == expected {
         Verdict::Pass
-    } else if (got.contains("tessera://") || got.contains("tessera-asset://"))
+    } else if (got.contains("okilum://") || got.contains("okilum-asset://"))
         && mask_urls(&got) == mask_urls(&expected)
     {
         Verdict::PassResolved
@@ -700,7 +700,7 @@ fn normalization_ignores_form_but_not_content() {
 /// still part of the parse contract. Exercise both sides of that boundary.
 #[test]
 fn asset_uri_remapping_keeps_image_structure_checks() {
-    let got = r#"<p><img src="tessera-asset://unavailable" alt="foo bar" title="train &amp; tracks" /></p>"#;
+    let got = r#"<p><img src="okilum-asset://unavailable" alt="foo bar" title="train &amp; tracks" /></p>"#;
     let expected = r#"<p><img src="train.jpg" alt="foo bar" title="train &amp; tracks" /></p>"#;
     assert!(verdict(got, expected) == Verdict::PassResolved);
     for changed in [
@@ -715,7 +715,7 @@ fn asset_uri_remapping_keeps_image_structure_checks() {
     // identity mapping produced them.
     assert!(
         verdict(
-            &got.replace("tessera-asset://unavailable", "other.jpg"),
+            &got.replace("okilum-asset://unavailable", "other.jpg"),
             expected
         ) == Verdict::Fail
     );

@@ -1,5 +1,5 @@
 {
-  "schema": "tessera-gui-layout/v1",
+  "schema": "okilum-gui-layout/v1",
   "density": {
     "comfortable": {
       "rowMinHeight": 44,

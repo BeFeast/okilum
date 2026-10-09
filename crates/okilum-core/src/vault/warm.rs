@@ -1813,7 +1813,7 @@ mod tests {
             "[Local](local.md) [Suffix](suffix.md) [File](file.pdf)",
         );
         assert_eq!(rendered.links.len(), 3);
-        assert!(rendered.rendered.contains("tessera://unresolved/"));
+        assert!(rendered.rendered.contains("okilum://unresolved/"));
     }
 
     #[test]

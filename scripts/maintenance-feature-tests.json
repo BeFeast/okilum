@@ -1,5 +1,5 @@
 {
-  "schema": "tessera-maintenance-test-posture/v1",
+  "schema": "okilum-maintenance-test-posture/v1",
   "classification": "The exact 15 enabled-link setup tests classified in historical CI312; that run remains failed. These run unfiltered on enabled main. Maintenance replacements require actual binary matrix success.",
   "tests": [
     "runtime::maestro_links::tests::changed_approval_summary_updates_live_projection_without_claiming_payload_revision",

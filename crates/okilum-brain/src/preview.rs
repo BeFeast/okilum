@@ -31,7 +31,7 @@ impl PreviewAssets {
             MAX_ASSET_BYTES.min(MAX_TOTAL_ASSET_BYTES.saturating_sub(self.total_bytes)),
         )?;
         let opaque = format!(
-            "tessera-asset://{}",
+            "okilum-asset://{}",
             asset
                 .revision
                 .strip_prefix("sha256:")
@@ -82,7 +82,7 @@ pub fn source_preview(runner: &Runner, path: &str, draft: Option<&str>) -> Resul
         Some(
             loaded
                 .map(|(url, _)| url)
-                .unwrap_or_else(|| "tessera-asset://unavailable".into()),
+                .unwrap_or_else(|| "okilum-asset://unavailable".into()),
         )
     });
     let mut preparation = document_links::prepared::LinkPreparation::new(&vault, path, |target| {

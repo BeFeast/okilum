@@ -38,7 +38,7 @@ pub(super) fn handle_link(
         .as_ref()
         .filter(|s| s.status == okilum_core::document_links::prepared::LinkStatus::MissingFile)
         .and_then(|s| s.action_url.as_deref())
-        .and_then(|u| u.strip_prefix("tessera://missing-file/"))
+        .and_then(|u| u.strip_prefix("okilum://missing-file/"))
     {
         reader_toast::missing_file(okilum_core::document_links::decode(path), window, cx);
         return;
@@ -65,9 +65,9 @@ pub(super) fn handle_link(
         .as_ref()
         .and_then(|state| state.action_url.as_deref())
         .unwrap_or(url);
-    if url.starts_with("tessera://outside-file/") {
+    if url.starts_with("okilum://outside-file/") {
         let _ = entity.update(cx, |this, cx| this.outside_file_menu(url, window, cx));
-    } else if let Some(rest) = url.strip_prefix("tessera://attachment/") {
+    } else if let Some(rest) = url.strip_prefix("okilum://attachment/") {
         let _ = entity.update(cx, |this, cx| {
             this.preview_file(&okilum_core::document_links::decode(rest), window, cx)
         });
@@ -90,7 +90,7 @@ pub(super) fn handle_link(
         .strip_prefix(AMBIGUOUS_SCHEME)
         .map(|r| (r, true))
         .or_else(|| {
-            url.strip_prefix("tessera://ambiguous-markdown/")
+            url.strip_prefix("okilum://ambiguous-markdown/")
                 .map(|r| (r, false))
         })
     {
@@ -113,7 +113,7 @@ pub(super) fn handle_link(
                 cx.notify();
             });
         }
-    } else if let Some(reason) = url.strip_prefix("tessera://unsupported/") {
+    } else if let Some(reason) = url.strip_prefix("okilum://unsupported/") {
         if let Some(entity) = entity.upgrade() {
             entity.update(cx, |this, cx| {
                 this.link_notice = Some(okilum_core::document_links::decode(reason).into());

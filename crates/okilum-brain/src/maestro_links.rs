@@ -94,7 +94,7 @@ pub fn selected<'a>(
     Ok((p, issue))
 }
 pub fn choices(discovery: &Discovery) -> Value {
-    json!({"schema":"tessera-maestro-observation/v1","instance":discovery.instance,"observed_at":discovery.observed_at,"refreshed_at":discovery.refreshed_at,"unsupported_projects":discovery.unsupported_projects,"controls_enabled":false,"projects":discovery.projects.iter().map(|p|json!({"project_id":p.project_id,"name":p.name,"repo":p.repo,"paused":p.paused,"dashboard_url":p.dashboard_url,"stale":p.stale,"issues":p.issues.iter().map(|i|json!({"issue":i,"selection_guard":maestro::selection_guard(&discovery.instance,p,i)})).collect::<Vec<_>>()})).collect::<Vec<_>>()})
+    json!({"schema":"okilum-maestro-observation/v1","instance":discovery.instance,"observed_at":discovery.observed_at,"refreshed_at":discovery.refreshed_at,"unsupported_projects":discovery.unsupported_projects,"controls_enabled":false,"projects":discovery.projects.iter().map(|p|json!({"project_id":p.project_id,"name":p.name,"repo":p.repo,"paused":p.paused,"dashboard_url":p.dashboard_url,"stale":p.stale,"issues":p.issues.iter().map(|i|json!({"issue":i,"selection_guard":maestro::selection_guard(&discovery.instance,p,i)})).collect::<Vec<_>>()})).collect::<Vec<_>>()})
 }
 /// Canonical link receipts exclude polling state and transient provider prose.
 pub(crate) fn link_record(link: &Link) -> Value {

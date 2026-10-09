@@ -140,7 +140,7 @@ pub(super) fn valid_detail(detail: &Value, workspace: &Value, owner: &Value) -> 
         && (owner.is_null() || owner.as_str().is_some_and(|v| Uuid::parse_str(v).is_ok()))
         && record["brain_id"] == workspace["brain_id"]
         && source["brain_id"] == workspace["brain_id"]
-        && record["schema"] == "tessera-proposal/v1"
+        && record["schema"] == "okilum-proposal/v1"
         && record["record_type"] == "proposal"
         && record["id"]
             .as_str()
@@ -1363,7 +1363,7 @@ mod tests {
             v.proposals.pending = vec![p.clone()];
             v.proposals.journal = Some(j);
             v.capabilities["proposal_disposition_terminal"] = json!(true);
-            let mut response = json!({"schema":"tessera-proposal-terminal/v1","outcome":"not_applied","workspace":p.workspace,"request":p.request,"path":p.path,"reason":"deadline_elapsed","at":"2026-09-07T12:00:00Z","replayed":true});
+            let mut response = json!({"schema":"okilum-proposal-terminal/v1","outcome":"not_applied","workspace":p.workspace,"request":p.request,"path":p.path,"reason":"deadline_elapsed","at":"2026-09-07T12:00:00Z","replayed":true});
             response["_client_proposal_request"] = p.wire();
             v.proposal_reply("proposal_disposition", response, window, cx);
             assert!(v.proposals.notice.as_ref().unwrap().starts_with("Nothing applied:"));

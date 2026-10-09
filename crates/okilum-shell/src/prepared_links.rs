@@ -136,7 +136,7 @@ pub(crate) fn presentation(
             match state
                 .action_url
                 .as_deref()
-                .and_then(|u| u.strip_prefix("tessera://missing-file/"))
+                .and_then(|u| u.strip_prefix("okilum://missing-file/"))
             {
                 Some(path) => format!("File not found\n{}", document_links::decode(path)).into(),
                 None => state.reason.clone().into(),
@@ -544,7 +544,7 @@ mod tests {
             ));
         }
         for url in [
-            "tessera://note/a",
+            "okilum://note/a",
             "file:///tmp/a",
             "a.md",
             "#Heading",
@@ -654,7 +654,7 @@ mod tests {
             "Before Site label after.\n"
         );
         text.update(visual, |v, cx| {
-            v.set_text("[Internal](tessera://note/a)", cx)
+            v.set_text("[Internal](okilum://note/a)", cx)
         });
         visual.run_until_parked();
         assert!(
@@ -677,9 +677,9 @@ mod tests {
                 target_revision: Some("exact".into()),
                 action_url: None,
             };
-            let states = BTreeMap::from([("tessera://missing".into(), state)]);
+            let states = BTreeMap::from([("okilum://missing".into(), state)]);
             div().size_full().child(markdown_plugins(
-                TextView::markdown("prepared-fixture", "[Resolved control](tessera://control)\n\n> [!note] Nested\n> [Missing heading](tessera://missing)\n\n[Missing heading](tessera://missing)").selectable(true),
+                TextView::markdown("prepared-fixture", "[Resolved control](okilum://control)\n\n> [!note] Nested\n> [Missing heading](okilum://missing)\n\n[Missing heading](okilum://missing)").selectable(true),
                 Arc::new(move |url, _, _, _| calls.lock().unwrap().push(url.into())),
                 Arc::new(|_| None), SelectionFormat::Plain,
             ).link_presentation(move |url| {
@@ -710,7 +710,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .iter()
-                .any(|u| u == "tessera://control"),
+                .any(|u| u == "okilum://control"),
             "actual callback/hit-test positive control"
         );
         // Cover the same nested area as the existing recursive plugin regression.
@@ -722,7 +722,7 @@ mod tests {
         let seen = presentations.lock().unwrap();
         assert!(
             seen.iter()
-                .filter(|(url, inert)| url == "tessera://missing" && *inert)
+                .filter(|(url, inert)| url == "okilum://missing" && *inert)
                 .count()
                 >= 2,
             "both top-level and nested link runs received presentation"
@@ -731,7 +731,7 @@ mod tests {
             .lock()
             .unwrap()
             .iter()
-            .any(|u| u == "tessera://missing"));
+            .any(|u| u == "okilum://missing"));
         let missing = LinkState {
             status: LinkStatus::MissingDocument,
             reason: "Document not found: absent.md".into(),
@@ -928,7 +928,7 @@ mod tests {
         });
         let reader = reader.unwrap();
         visual.run_until_parked();
-        let url = "tessera://unresolved/target.md%23Landing";
+        let url = "okilum://unresolved/target.md%23Landing";
         let urls = reader.read_with(visual, |v, _| {
             v.link_identities
                 .iter()

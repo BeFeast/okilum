@@ -21,7 +21,7 @@ is an atomically replaced, non-secret JSON profile:
 
 ```json
 {
-  "schema": "tessera-workspace/v1",
+  "schema": "okilum-workspace/v1",
   "label": "Project brain",
   "endpoint": "127.0.0.1:24161",
   "identity": {

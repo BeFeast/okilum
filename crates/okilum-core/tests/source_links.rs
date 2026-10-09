@@ -45,7 +45,7 @@ fn every_link_state_rewrites_as_specified() {
         "{out}"
     );
     assert!(
-        out.contains("[no-such-note](tessera://unresolved/no-such-note)"),
+        out.contains("[no-such-note](okilum://unresolved/no-such-note)"),
         "{out}"
     );
     assert!(
@@ -91,7 +91,7 @@ fn a_relative_link_from_outside_the_vault_is_unresolved_not_guessed() {
     );
     let out = rewrite_source_links("See [[../ops/signoff]].", &v, "");
     assert!(
-        out.contains("[../ops/signoff](tessera://unresolved/../ops/signoff)"),
+        out.contains("[../ops/signoff](okilum://unresolved/../ops/signoff)"),
         "{out}"
     );
     // And from inside, the same link resolves against its own directory.
@@ -194,7 +194,7 @@ fn wikilinks_inside_code_round_trip_unchanged() {
         "\
 # A
 
-Inline `[[x]]` and [x](tessera://unresolved/x) and [b]({WIKI_SCHEME}b.md).
+Inline `[[x]]` and [x](okilum://unresolved/x) and [b]({WIKI_SCHEME}b.md).
 
 ```yaml
 related_to: \"[[x]]\"
@@ -246,7 +246,7 @@ fn a_wikilink_right_after_a_closed_inline_span_is_rewritten() {
     let out = rewrite_source_links(src, &v, "demo.md");
     assert_eq!(
         out,
-        format!("`[[x]]`[b]({WIKI_SCHEME}b.md) and `a`[x](tessera://unresolved/x)\n")
+        format!("`[[x]]`[b]({WIKI_SCHEME}b.md) and `a`[x](okilum://unresolved/x)\n")
     );
 }
 
@@ -314,7 +314,7 @@ fn block_references_open_the_note_at_the_block() {
     );
     // A caret in the note path is still not a block reference.
     let out = rewrite_source_links("[[notes/al^pha]]", &v, "demo.md");
-    assert!(out.contains("tessera://unsupported/Block%20references"));
+    assert!(out.contains("okilum://unsupported/Block%20references"));
 }
 
 #[test]

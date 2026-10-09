@@ -286,7 +286,7 @@ mod tests {
         visual.simulate_click(back.center(), Modifiers::default());
         assert_eq!(
             clicked.lock().unwrap().as_slice(),
-            ["tessera://footnote-back/1"],
+            ["okilum://footnote-back/1"],
         );
     }
 
@@ -416,7 +416,7 @@ mod tests {
         settle(visual);
         assert_eq!(top(visual), target, "[[long#^target]] lands on the block");
         let weak = view.downgrade();
-        visual.update(|window, cx| handle_link(&weak, "tessera://footnote/1", window, cx));
+        visual.update(|window, cx| handle_link(&weak, "okilum://footnote/1", window, cx));
         settle(visual);
         // The footnote is the last block: the list clamps at its end rather
         // than lifting it to the top, so it lands in view, not at the top.
@@ -426,7 +426,7 @@ mod tests {
             "a reference scrolls to its footnote ({landed})"
         );
         view.read_with(visual, |v, _| assert_eq!(v.link_notice, None));
-        visual.update(|window, cx| handle_link(&weak, "tessera://footnote-back/1", window, cx));
+        visual.update(|window, cx| handle_link(&weak, "okilum://footnote-back/1", window, cx));
         settle(visual);
         assert_eq!(top(visual), reference, "the back-link returns to the text");
         view.update_in(visual, |v, window, cx| {
@@ -445,16 +445,16 @@ mod tests {
     #[test]
     fn footnote_links_land_on_blocks() {
         let source = rendered_fixture();
-        let to_def = footnote_landing("tessera://footnote/1", &source)
+        let to_def = footnote_landing("okilum://footnote/1", &source)
             .unwrap()
             .unwrap();
-        let back = footnote_landing("tessera://footnote-back/1", &source)
+        let back = footnote_landing("okilum://footnote-back/1", &source)
             .unwrap()
             .unwrap();
         assert!(to_def > back, "definitions sit after their reference");
-        assert!(footnote_landing("tessera://footnote/nope", &source)
+        assert!(footnote_landing("okilum://footnote/nope", &source)
             .unwrap()
             .is_err());
-        assert!(footnote_landing("tessera://open/x.md", &source).is_none());
+        assert!(footnote_landing("okilum://open/x.md", &source).is_none());
     }
 }

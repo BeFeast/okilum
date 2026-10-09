@@ -21,12 +21,12 @@ def main():
     source = project / "src" / "brain"
     (source / "editor_recovery").mkdir(parents=True)
     old = subprocess.check_output(
-        ["git", "show", f"{PREDECESSOR}:crates/tessera-shell/src/brain/editor_recovery.rs"],
+        ["git", "show", f"{PREDECESSOR}:crates/okilum-shell/src/brain/editor_recovery.rs"],
         cwd=REPO,
     )
     (source / "old_recovery.rs").write_bytes(old)
     for name in ["editor_recovery.rs", "editor_recovery/auto_resolution.rs", "merge_preview.rs"]:
-        shutil.copyfile(REPO / "crates/tessera-shell/src/brain" / name, source / name)
+        shutil.copyfile(REPO / "crates/okilum-shell/src/brain" / name, source / name)
     shutil.copyfile(Path(__file__).with_name("compatibility-main.rs"), project / "src/main.rs")
     (project / "Cargo.toml").write_text('''[package]
 name = "source206-compat"

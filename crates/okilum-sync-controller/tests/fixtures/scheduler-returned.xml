@@ -2,8 +2,8 @@
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
     <SecurityDescriptor>O:S-1-5-21-3827877701-3061038111-106515639-500</SecurityDescriptor>
-    <Description>Tessera Sync 9fb1efe6-82e8-4679-a920-6eaf1f8a49d7 9e4431e7-5b21-49ec-958f-68dc89cf3ea0 native-registration-fixture</Description>
-    <URI>\Tessera-Sync-9e4431e7-5b21-49ec-958f-68dc89cf3ea0</URI>
+    <Description>Okilum Sync 9fb1efe6-82e8-4679-a920-6eaf1f8a49d7 9e4431e7-5b21-49ec-958f-68dc89cf3ea0 native-registration-fixture</Description>
+    <URI>\Okilum-Sync-9e4431e7-5b21-49ec-958f-68dc89cf3ea0</URI>
   </RegistrationInfo>
   <Principals>
     <Principal id="Owner">

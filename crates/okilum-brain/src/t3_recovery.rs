@@ -154,7 +154,7 @@ fn report(
     if facts.active {
         blockers.push("active_or_uncertain_work");
     }
-    json!({"schema":"tessera-t3-recovery/v1", "read_only":true,
+    json!({"schema":"okilum-t3-recovery/v1", "read_only":true,
         "identity":identity, "reachable":reachable,
         "observed_environment_matches_saved":environment_matches,
         "saved_project_present":project_present,
@@ -206,7 +206,14 @@ mod tests {
         state["other_goals"] = json!({"unrelated-goal":empty});
         state["application"] = json!({"conversations":{},"mutations":{},"provider_identity":identity,
             "task":{"id":"task-operation", "binding":{"provider":"todoist","instance_id":"fixture-instance","goal_id":"retained-goal","external_id":"fixture-task"},"content":"PRIVATE CONTENT","status":"completed","observation":null}});
-        std::fs::write(temp.path().join("connector-settings.json"), serde_json::to_vec(&json!({"schema":"tessera-connectors/v1","config":config,"todoist_account_id":null})).unwrap()).unwrap();
+        std::fs::write(
+            temp.path().join("connector-settings.json"),
+            serde_json::to_vec(
+                &json!({"schema":"okilum-connectors/v1","config":config,"todoist_account_id":null}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
         std::fs::write(
             temp.path().join("state.json"),
             serde_json::to_vec(&state).unwrap(),

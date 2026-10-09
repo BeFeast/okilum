@@ -1,5 +1,5 @@
 {
-  "schema": "tessera-experiment204-labels/v1",
+  "schema": "okilum-experiment204-labels/v1",
   "cases": {
     "c01": {
       "group": "applicable",

@@ -115,7 +115,7 @@ fn validate_form(r: &Value, detail: &Value) -> Result<(), String> {
     Ok(())
 }
 pub(super) fn valid_receipt(p: &Pending, receipt: &Value) -> bool {
-    if receipt["schema"] != "tessera-proposal-adopt/v1"
+    if receipt["schema"] != "okilum-proposal-adopt/v1"
         || receipt["workspace"] != p.workspace
         || receipt["request"] != p.request
         || !receipt["replayed"].is_boolean()
@@ -252,7 +252,7 @@ impl AdoptionJournal {
         fields["proposal_id"] = detail["record"]["id"].clone();
         fields["expected_revision"] = detail["source"]["revision"].clone();
         let p = Pending {
-            schema: "tessera-proposal-adoption-outbox/v1".into(),
+            schema: "okilum-proposal-adoption-outbox/v1".into(),
             workspace: self.inner.workspace.clone(),
             path: text(&detail["source"]["path"]),
             detail: detail.clone(),
@@ -269,7 +269,7 @@ impl AdoptionJournal {
         } else {
             Value::Null
         };
-        if p.schema != "tessera-proposal-adoption-outbox/v1"
+        if p.schema != "okilum-proposal-adoption-outbox/v1"
             || p.workspace != self.inner.workspace
             || !r["operation_id"].as_str().is_some_and(canonical_uuid)
             || r["source"]["instance_id"] != self.inner.instance
@@ -503,7 +503,7 @@ mod tests {
         let j = AdoptionJournal::from_inner(InboxJournal::at(dir.clone(), &p.workspace).unwrap());
         p.request["source"]["instance_id"] = json!(j.inner.instance);
         j.retain(&p).unwrap();
-        let mut terminal = json!({"schema":"tessera-proposal-adopt/v1","workspace":p.workspace,"request":p.request,"at":"2026-09-07T17:00:00Z","replayed":false,"result":{"outcome":"not_applied","reason":"invalid_form"}});
+        let mut terminal = json!({"schema":"okilum-proposal-adopt/v1","workspace":p.workspace,"request":p.request,"at":"2026-09-07T17:00:00Z","replayed":false,"result":{"outcome":"not_applied","reason":"invalid_form"}});
         for reason in ["storage_error", "unknown", "provider_failed"] {
             terminal["result"]["reason"] = json!(reason);
             assert!(j.acknowledge(&p, &terminal).is_err());

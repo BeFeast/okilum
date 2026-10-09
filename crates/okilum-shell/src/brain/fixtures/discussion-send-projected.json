@@ -14,7 +14,7 @@
       "turn_id": "45c408dd-7d9a-4375-8037-6bbfee667f22"
     },
     "request_sha256": "7be1620280b8c33f0c186b18253fc0d484e890812c45cb475790d6a31efdd454",
-    "schema": "tessera-discussion-send-result/v1",
+    "schema": "okilum-discussion-send-result/v1",
     "source_receipt": {
       "operation_id": "ed1a6bc2-df1b-46df-b791-9de8d1b68ad8",
       "outcome": "written",

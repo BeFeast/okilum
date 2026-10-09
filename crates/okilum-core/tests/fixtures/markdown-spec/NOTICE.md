@@ -1,6 +1,6 @@
 # Markdown spec test data (#650)
 
-Test input only. These files are not compiled into or shipped with Tessera.
+Test input only. These files are not compiled into or shipped with Okilum.
 
 ## commonmark-0.31.2.json
 
@@ -31,5 +31,5 @@ of that spec and is distributed under the same license.
 
 ## known-failures.txt
 
-Tessera's own list of the examples it fails and why. MIT, like the rest of
-Tessera.
+Okilum's own list of the examples it fails and why. MIT, like the rest of
+Okilum.

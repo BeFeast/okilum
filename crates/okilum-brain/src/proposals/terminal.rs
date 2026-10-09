@@ -12,7 +12,7 @@ pub(super) fn validate_fence(root: &Path, journal: &Journal) -> Result<()> {
             .join("source/binding.json"),
     )?)?;
     ensure!(
-        binding["required_proposal_terminal"] == "tessera-proposal-terminal/v1",
+        binding["required_proposal_terminal"] == "okilum-proposal-terminal/v1",
         "terminal reservations lack required source fence"
     );
     for receipt in journal.terminal_dispositions.values() {
@@ -39,7 +39,7 @@ impl Journal {
                 .context("terminal reservation proposal absent")?;
             ensure!(
                 self.drafts_enabled
-                    && r.schema == "tessera-proposal-terminal/v1"
+                    && r.schema == "okilum-proposal-terminal/v1"
                     && r.outcome == "not_applied"
                     && !r.replayed
                     && op == &r.request.operation_id
@@ -136,7 +136,7 @@ impl Store {
             "proposal changed before terminal reservation"
         );
         let receipt = api::TerminalReceipt {
-            schema: "tessera-proposal-terminal/v1".into(),
+            schema: "okilum-proposal-terminal/v1".into(),
             outcome: "not_applied".into(),
             workspace,
             request,

@@ -18,7 +18,7 @@ class FakeT3:
         self.tickets = 0
 
     def report(self):
-        return {'schema': 'tessera-319-fake-t3/v1', 'synthetic_only': True,
+        return {'schema': 'okilum-319-fake-t3/v1', 'synthetic_only': True,
                 'environment': self.environment, 'project': self.project,
                 'rpc_calls': self.calls, 'ticket_requests': self.tickets,
                 'forbidden_provider_or_unknown_calls': self.forbidden,

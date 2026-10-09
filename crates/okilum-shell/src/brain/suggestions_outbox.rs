@@ -40,7 +40,7 @@ impl SuggestionsJournal {
     }
     pub fn prepare(&self, expected_revision: u64, enabled: bool) -> Pending {
         Pending {
-            schema: "tessera-suggestions-outbox/v1".into(),
+            schema: "okilum-suggestions-outbox/v1".into(),
             workspace: self.workspace.clone(),
             request: Request {
                 operation_id: Uuid::new_v4().to_string(),
@@ -52,7 +52,7 @@ impl SuggestionsJournal {
     fn path(&self, pending: &Pending, extension: &str) -> Result<PathBuf, String> {
         let id = Uuid::parse_str(&pending.request.operation_id)
             .map_err(|_| "Invalid Suggestions change identity")?;
-        if pending.schema != "tessera-suggestions-outbox/v1"
+        if pending.schema != "okilum-suggestions-outbox/v1"
             || pending.workspace != self.workspace
             || id.to_string() != pending.request.operation_id
         {
@@ -67,7 +67,7 @@ impl SuggestionsJournal {
         )
     }
     fn valid_receipt(&self, pending: &Pending, outcome: &Value) -> bool {
-        if outcome["schema"] != "tessera-suggestions-outcome/v1"
+        if outcome["schema"] != "okilum-suggestions-outcome/v1"
             || outcome["workspace"] != pending.workspace
             || outcome["request"] != serde_json::to_value(&pending.request).unwrap()
         {
@@ -84,7 +84,7 @@ impl SuggestionsJournal {
             Some("committed") => {
                 let receipt = &outcome["receipt"];
                 outcome["reason"].is_null()
-                    && receipt["schema"] == "tessera-suggestions-receipt/v1"
+                    && receipt["schema"] == "okilum-suggestions-receipt/v1"
                     && receipt["workspace"] == pending.workspace
                     && receipt["request"] == serde_json::to_value(&pending.request).unwrap()
                     && receipt["actor"].as_str().is_some_and(|s| !s.is_empty())
@@ -168,9 +168,9 @@ mod tests {
         }
     }
     fn outcome(p: &Pending) -> Value {
-        json!({"schema":"tessera-suggestions-outcome/v1","workspace":p.workspace,"request":p.request,
+        json!({"schema":"okilum-suggestions-outcome/v1","workspace":p.workspace,"request":p.request,
         "status":"committed","reason":null,"receipt":{
-            "schema":"tessera-suggestions-receipt/v1","workspace":p.workspace,"request":p.request,
+            "schema":"okilum-suggestions-receipt/v1","workspace":p.workspace,"request":p.request,
             "actor":"local operator","revision":p.request.expected_revision+1,"enabled":p.request.enabled,"replayed":false
         }})
     }
@@ -212,7 +212,7 @@ mod tests {
         assert!(journal(&root).pending().unwrap().is_empty());
         let p = j.prepare(5, false);
         j.retain(&p).unwrap();
-        let refused = json!({"schema":"tessera-suggestions-outcome/v1","workspace":p.workspace,"request":p.request,"status":"not_applied","receipt":null,"reason":"revision_changed"});
+        let refused = json!({"schema":"okilum-suggestions-outcome/v1","workspace":p.workspace,"request":p.request,"status":"not_applied","receipt":null,"reason":"revision_changed"});
         for reason in ["unsupported", "unknown"] {
             let mut uncertain = refused.clone();
             uncertain["reason"] = json!(reason);

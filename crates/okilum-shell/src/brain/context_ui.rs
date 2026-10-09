@@ -666,7 +666,7 @@ impl BrainView {
         let state = self.context_ui.goals.get_mut(&goal).unwrap();
         match op {
             "goal_context_brief" => {
-                if data["schema"] != "tessera-goal-brief/v1" || data["goal_id"] != goal {
+                if data["schema"] != "okilum-goal-brief/v1" || data["goal_id"] != goal {
                     state.brief_error = Some(
                         "Saved inputs could not be matched to this goal. Refresh saved inputs."
                             .into(),
@@ -2111,7 +2111,7 @@ mod tests {
             let mut duplicate = citation("different-excerpt-id");
             duplicate["path"] = json!("notes/one.md");
             let fresh = citation("new-decision");
-            let brief = json!({"schema":"tessera-goal-brief/v1","goal_id":"goal","inputs":[{"citation":duplicate},{"citation":fresh}]});
+            let brief = json!({"schema":"okilum-goal-brief/v1","goal_id":"goal","inputs":[{"citation":duplicate},{"citation":fresh}]});
             view.context_reply("goal_context_brief", brief.clone(), window, cx);
             assert_eq!(view.context_ui.goals["goal"].chosen, original, "Reading a brief is not selection");
             assert!(view.context_ui.goals["goal"].reviewed(cx));
@@ -2138,7 +2138,7 @@ mod tests {
             view.snapshot = json!({"goal":{"id":"goal"}});
             view.capabilities["goal_context_brief"] = json!(true);
             let input = citation("decision");
-            let mut brief = json!({"schema":"tessera-goal-brief/v1","goal_id":"goal","inputs":[{"citation":input}]});
+            let mut brief = json!({"schema":"okilum-goal-brief/v1","goal_id":"goal","inputs":[{"citation":input}]});
             view.ensure_context(window, cx);
             brief["_client_context_goal_id"] = json!("other");
             view.context_reply("goal_context_brief", brief.clone(), window, cx);
@@ -2862,7 +2862,7 @@ mod tests {
             let chosen = view.context_ui.goals["goal"].chosen.clone();
             let pinned = view.context_ui.goals["goal"].pinned.clone();
             view.context_ui.goals["goal"].guidance.update(cx,|input,cx| input.set_value("Keep unsent guidance",window,cx));
-            let brief=json!({"schema":"tessera-goal-brief/v1","goal_id":"goal","inputs":[],"manual_only":[{"id":"decision","path":"records/decision.md","status":"manual_only"}]});
+            let brief=json!({"schema":"okilum-goal-brief/v1","goal_id":"goal","inputs":[],"manual_only":[{"id":"decision","path":"records/decision.md","status":"manual_only"}]});
             view.context_reply("goal_context_brief",brief.clone(),window,cx);
             let mut stale=packet("goal",true);stale["stale"]=json!(true);stale["text"]=json!("Saved text from server");stale["citations"]=json!([]);
             view.context_reply("context_get",json!({"packet":stale}),window,cx);
@@ -2982,8 +2982,8 @@ mod tests {
             context.chosen.insert("manual".into(),citation("manual"));context.pinned.insert("manual".into());
             let form=v.source_context_form(&goal,cx);
             v.preview_loading=false;
-            v.preview=json!({"document_links_version":1,"path":a["path"],"revision":a["revision"],"preview_revision":note_link::digest(v.source.value(cx).as_bytes()),"links":[{"url":"tessera://linked","status":"resolved","candidates":[{"path":"notes/linked.md"}]}]});
-            v.preview_link("tessera://linked",window,cx);
+            v.preview=json!({"document_links_version":1,"path":a["path"],"revision":a["revision"],"preview_revision":note_link::digest(v.source.value(cx).as_bytes()),"links":[{"url":"okilum://linked","status":"resolved","candidates":[{"path":"notes/linked.md"}]}]});
+            v.preview_link("okilum://linked",window,cx);
             form
         });
         visual.run_until_parked();
@@ -3059,7 +3059,7 @@ mod tests {
         });
         visual.run_until_parked();
         let form=view.update_in(visual,|v,_,cx| {
-            v.preview_loading=false;v.preview_error=None;v.preview=json!({"document_links_version":1,"path":a["path"],"revision":a["revision"],"preview_revision":note_link::digest(raw.as_bytes()),"links":[{"wiki":true,"target":"notes/linked.md","authored_target":"notes/linked.md","url":"tessera://open/notes/linked.md","status":"resolved","candidates":[{"path":"notes/linked.md"}]}]});
+            v.preview_loading=false;v.preview_error=None;v.preview=json!({"document_links_version":1,"path":a["path"],"revision":a["revision"],"preview_revision":note_link::digest(raw.as_bytes()),"links":[{"wiki":true,"target":"notes/linked.md","authored_target":"notes/linked.md","url":"okilum://open/notes/linked.md","status":"resolved","candidates":[{"path":"notes/linked.md"}]}]});
             v.accept_open_link_preview(v.open_link_preview_owner(cx),v.preview_generation,cx);v.apply_source_projection(cx);cx.notify();v.source_context_form(&goal,cx)
         });
         visual.run_until_parked();
@@ -3142,7 +3142,7 @@ mod tests {
             b["revision"] = json!(note_link::digest(target_raw.as_bytes()));
         }
         let disk = Arc::new(std::sync::Mutex::new(b.clone()));
-        let preview = json!({"document_links_version":1,"path":a["path"],"revision":a["revision"],"preview_revision":note_link::digest(raw.as_bytes()),"markdown":raw,"assets":[],"links":[{"wiki":!markdown,"target":if markdown { "linked" } else { "notes/linked.md" },"authored_target":if markdown { "linked.md#Decision%20C%23%20😀" } else if heading { "notes/linked.md#Decision C# 😀" } else { "notes/linked.md" },"heading":if heading { Some("Decision C# 😀") } else { None },"url":if heading { "tessera://open/notes/linked.md#Decision%20C%23%20😀" } else { "tessera://open/notes/linked.md" },"status":if heading { "resolved_heading" } else { "resolved" },"candidates":[{"path":"notes/linked.md"}]}]});
+        let preview = json!({"document_links_version":1,"path":a["path"],"revision":a["revision"],"preview_revision":note_link::digest(raw.as_bytes()),"markdown":raw,"assets":[],"links":[{"wiki":!markdown,"target":if markdown { "linked" } else { "notes/linked.md" },"authored_target":if markdown { "linked.md#Decision%20C%23%20😀" } else if heading { "notes/linked.md#Decision C# 😀" } else { "notes/linked.md" },"heading":if heading { Some("Decision C# 😀") } else { None },"url":if heading { "okilum://open/notes/linked.md#Decision%20C%23%20😀" } else { "okilum://open/notes/linked.md" },"status":if heading { "resolved_heading" } else { "resolved" },"candidates":[{"path":"notes/linked.md"}]}]});
         let (endpoint, stop, server) = source_context_server_with_preview(
             disk.clone(),
             Arc::new(std::sync::Mutex::new(packet(&goal, true))),

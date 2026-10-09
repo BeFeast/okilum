@@ -7,7 +7,7 @@ scenario: workshop-kit-v1
 
 This is synthetic acceptance input, not an already-created canonical goal. Copy
 only the two files under `sources/` into a fresh test brain. Create the actual goal
-through Tessera so the backend allocates and retains its identities and journal.
+through Okilum so the backend allocates and retains its identities and journal.
 
 ## Initial inbox thought
 

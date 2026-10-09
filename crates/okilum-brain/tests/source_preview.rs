@@ -62,10 +62,10 @@ fn draft_preview_matches_reader_links_code_boundaries_callouts_and_transports_im
     assert!(md.contains("# Unsaved"));
     assert!(!md.contains("custom: draft-only"));
     assert!(md.contains("> [!note] Reference"));
-    assert!(md.contains("> [Nested alias](tessera://open/notes/target.md)"));
-    assert!(md.contains("[Selected note](tessera://open/notes/target.md)"));
-    assert!(md.contains("[duplicate](tessera://ambiguous/duplicate)"));
-    assert!(md.contains("[missing](tessera://unresolved/missing)"));
+    assert!(md.contains("> [Nested alias](okilum://open/notes/target.md)"));
+    assert!(md.contains("[Selected note](okilum://open/notes/target.md)"));
+    assert!(md.contains("[duplicate](okilum://ambiguous/duplicate)"));
+    assert!(md.contains("[missing](okilum://unresolved/missing)"));
     assert!(md.contains("`[[target]] ![[pixel.png]]`"));
     assert!(md.contains("```md\n[[target]] ![[pixel.png]]\n```"));
     assert!(!md.contains("file://"));
@@ -134,7 +134,7 @@ fn preview_never_reads_escaped_or_symlink_sources_or_assets() {
         preview["markdown"]
             .as_str()
             .unwrap()
-            .matches("tessera-asset://unavailable")
+            .matches("okilum-asset://unavailable")
             .count(),
         5
     );
@@ -171,7 +171,7 @@ fn preview_enforces_source_and_asset_budgets_without_truncating_source() {
     assert!(preview["markdown"]
         .as_str()
         .unwrap()
-        .contains("tessera-asset://unavailable"));
+        .contains("okilum-asset://unavailable"));
     assert_eq!(
         fs::read_to_string(root.join("notes/current.md")).unwrap(),
         source
@@ -263,25 +263,25 @@ fn shared_document_links_keep_exact_metadata_urls_fragments_and_source_bytes() {
             "sibling.md",
             "notes/sibling.md",
             None,
-            "tessera://open/notes/sibling.md",
+            "okilum://open/notes/sibling.md",
         ),
         (
             "sibling.md#Landing",
             "notes/sibling.md",
             Some("Landing"),
-            "tessera://open/notes/sibling.md#Landing",
+            "okilum://open/notes/sibling.md#Landing",
         ),
         (
             "sibling#Landing",
             "sibling.md",
             Some("Landing"),
-            "tessera://open/sibling.md#Landing",
+            "okilum://open/sibling.md#Landing",
         ),
         (
             "#Origin",
             "notes/current.md",
             Some("Origin"),
-            "tessera://open/notes/current.md#Origin",
+            "okilum://open/notes/current.md#Origin",
         ),
     ] {
         let row = preview["links"]
@@ -455,7 +455,7 @@ fn literal_wiki_and_legacy_entity_keys_do_not_follow_comrak_unescaping() {
         "base16-ocean.dark",
     )
     .unwrap();
-    assert!(html.contains("tessera://open/a%26amp%3Bb.md"), "{html}");
+    assert!(html.contains("okilum://open/a%26amp%3Bb.md"), "{html}");
 }
 
 #[test]

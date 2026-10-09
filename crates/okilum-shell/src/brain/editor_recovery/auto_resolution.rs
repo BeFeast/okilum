@@ -13,7 +13,7 @@ fn canonical_id(value: &Value, key: &str) -> Result<String, String> {
 
 fn resolution_id(brain: &str, path: &str, original: &str) -> String {
     let mut hash = Sha256::new();
-    for field in ["tessera-auto-disjoint/v1", brain, path, original] {
+    for field in ["okilum-auto-disjoint/v1", brain, path, original] {
         hash.update(field.as_bytes());
         hash.update([0]);
     }

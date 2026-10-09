@@ -908,7 +908,7 @@ fn goal_brief_is_workspace_guarded_owned_and_read_only_across_restart() {
     query["goal_id"] = json!(goals[0]);
     let first = call(&server.address, query.clone());
     assert_eq!(first["ok"], true, "{first}");
-    assert_eq!(first["data"]["schema"], "tessera-goal-brief/v1");
+    assert_eq!(first["data"]["schema"], "okilum-goal-brief/v1");
     assert_eq!(first["data"]["goal_id"], goals[0]);
     assert_eq!(first["data"]["remaining_criteria"][0]["id"], "C0");
     assert_eq!(first["data"]["inputs"], json!([]));

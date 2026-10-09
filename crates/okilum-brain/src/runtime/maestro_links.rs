@@ -35,7 +35,7 @@ impl Runner {
         ensure!(self.goal_ids().iter().any(|g| g == goal), "unknown goal");
         let j = &self.state.maestro_journal;
         Ok(
-            serde_json::json!({"schema":"tessera-maestro-observation/v1","goal_id":goal,"link":j.active(goal),"history":j.links.values().filter(|l|l.goal_id==goal).collect::<Vec<_>>(),"decisions":self.maestro_decision_history(goal),"approval_sends_enabled":crate::maestro_control::NEW_DECISIONS_ENABLED,"controls_enabled":false,"recovery_required":j.recovery_required,"source_paths":{"link":j.active(goal).map(|l|self.path("maestro-link",&l.id)),"observations":j.observations.values().filter(|o|o.goal_id==goal).map(|o|(&o.id,self.path("maestro-observation",&o.id))).collect::<BTreeMap<_,_>>()}}),
+            serde_json::json!({"schema":"okilum-maestro-observation/v1","goal_id":goal,"link":j.active(goal),"history":j.links.values().filter(|l|l.goal_id==goal).collect::<Vec<_>>(),"decisions":self.maestro_decision_history(goal),"approval_sends_enabled":crate::maestro_control::NEW_DECISIONS_ENABLED,"controls_enabled":false,"recovery_required":j.recovery_required,"source_paths":{"link":j.active(goal).map(|l|self.path("maestro-link",&l.id)),"observations":j.observations.values().filter(|o|o.goal_id==goal).map(|o|(&o.id,self.path("maestro-observation",&o.id))).collect::<BTreeMap<_,_>>()}}),
         )
     }
     pub(crate) fn maestro_links_token(&self) -> String {

@@ -9,9 +9,9 @@ use okilum_core::source::{
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value};
 
-const REQUEST_SCHEMA: &str = "tessera-discussion-send-request/v1";
-const RECEIPT_SCHEMA: &str = "tessera-discussion-send/v1";
-const RESULT_SCHEMA: &str = "tessera-discussion-send-result/v1";
+const REQUEST_SCHEMA: &str = "okilum-discussion-send-request/v1";
+const RECEIPT_SCHEMA: &str = "okilum-discussion-send/v1";
+const RESULT_SCHEMA: &str = "okilum-discussion-send-result/v1";
 const MAX_PATH_BYTES: usize = 4096;
 // Actual compact RecoveryRecord serialization at both payload ceilings plus a
 // worst-escaped 4096-byte path is 268485317 bytes (49857 bytes of metadata).

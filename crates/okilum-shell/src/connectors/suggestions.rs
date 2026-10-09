@@ -44,7 +44,7 @@ impl ConnectorsView {
                 this.suggestions.busy = false;
                 match reply {
                     Ok(data)
-                        if data["schema"] == "tessera-suggestions/v1"
+                        if data["schema"] == "okilum-suggestions/v1"
                             && data["revision"].as_u64().is_some()
                             && matches!(
                                 data["mode"].as_str(),

@@ -18,15 +18,15 @@ fn markdown_sibling_and_fragment_are_exact() {
     assert_eq!(vault.notes.len(), 3, "fixture inventory positive control");
     assert_eq!(
         rewrite_source_links("[Sibling](sibling.md)", &vault, "notes/start.md"),
-        "[Sibling](tessera://open/notes/sibling.md)"
+        "[Sibling](okilum://open/notes/sibling.md)"
     );
     assert_eq!(
         rewrite_source_links("[Heading](sibling.md#Landing)", &vault, "notes/start.md"),
-        "[Heading](tessera://open/notes/sibling.md#Landing)"
+        "[Heading](okilum://open/notes/sibling.md#Landing)"
     );
     assert_eq!(
         rewrite_source_links("[[sibling]]", &vault, "notes/start.md"),
-        "[sibling](tessera://open/sibling.md)"
+        "[sibling](okilum://open/sibling.md)"
     );
 }
 
@@ -100,7 +100,7 @@ fn portable_corpus_has_exact_paths_fragments_and_scoped_outcomes() {
         let resolved = links::resolve(target, false, &vault, "notes/start.md");
         assert_eq!(resolved.status, "attachment", "{target}");
         assert_eq!(resolved.candidates, [path], "{target}");
-        assert_eq!(resolved.url, format!("tessera://attachment/{path}"));
+        assert_eq!(resolved.url, format!("okilum://attachment/{path}"));
         assert_eq!(resolved.heading, None);
     }
     assert_eq!(
@@ -164,9 +164,9 @@ fn misreported_comrak_ranges_are_repaired_or_skipped_never_spliced() {
         ["[a](b.md \"t\"\n)", "[link](   /uri\n  \"title\"  )"]
     );
     let rewritten = rewrite_source_links(source, &vault, "note.md");
-    assert!(rewritten.starts_with("text [a](tessera://"), "{rewritten}");
+    assert!(rewritten.starts_with("text [a](okilum://"), "{rewritten}");
     assert!(
-        rewritten.contains("\"t\") z\n\n[link](tessera://"),
+        rewritten.contains("\"t\") z\n\n[link](okilum://"),
         "{rewritten}"
     );
     assert!(rewritten.ends_with("\"title\") end\n"), "{rewritten}");
@@ -438,14 +438,14 @@ fn obsidian_paths_share_click_backlink_and_rename_identity() {
     assert_eq!(vault.backlinks("Life/qa target.md").len(), 6);
     let output = rewrite_source_links(&source, &vault, "Life/start.md");
     assert_eq!(
-        output.matches("tessera://open/Life/qa%20target.md").count(),
+        output.matches("okilum://open/Life/qa%20target.md").count(),
         6
     );
     assert!(!output.contains("~md~"));
     let html =
         okilum_core::render::render_html(&vault, "Life/start.md", "base16-ocean.dark").unwrap();
     assert_eq!(
-        html.matches("href=\"tessera://open/Life/qa%20target.md")
+        html.matches("href=\"okilum://open/Life/qa%20target.md")
             .count(),
         6,
         "{html}"
@@ -518,7 +518,7 @@ fn outside_absolute_file_is_explicit_and_never_a_vault_note() {
     let resolved = links::resolve(&parsed[0].target, false, &vault, "start.md");
     assert_eq!(resolved.status, "outside_file");
     assert!(resolved.candidates.is_empty());
-    assert!(resolved.url.starts_with("tessera://outside-file/"));
+    assert!(resolved.url.starts_with("okilum://outside-file/"));
     assert_eq!(
         vault.resolve_markdown(path.to_str().unwrap(), "start.md"),
         okilum_core::Resolution::Unresolved

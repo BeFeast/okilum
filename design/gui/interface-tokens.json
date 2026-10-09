@@ -1,5 +1,5 @@
 {
-  "schema": "tessera-gui-interface/v1",
+  "schema": "okilum-gui-interface/v1",
   "version": "2.0.0",
   "basis": "User-requested 1Password reference; neutral desktop surfaces override brand surface aliases without editing brand tokens",
   "themes": {

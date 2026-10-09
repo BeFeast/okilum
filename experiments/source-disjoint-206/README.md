@@ -1,6 +1,6 @@
 # Automatic disjoint Save evidence (#206)
 
-> **Historical document.** Written before Tessera was renamed Okilum (2026-10-09). Names, paths and links are kept as they were then.
+> **Historical experiment.** Recorded before the app was renamed Okilum on 2026-10-09; its names, paths and commands were updated to Okilum afterwards (#987), so old commands may not run as written.
 
 The implementation reuses the existing bounded exact-line merge helper and source
 CAS/replay API. [The contract](https://git.oklabs.uk/BeFeast/okilum/src/commit/43abc7c1040b76d3ab9608e2390bd0897c42f808/docs/archive/ai-brain-disjoint-save.md) defines the
@@ -19,7 +19,7 @@ same Save action queues work after the conflict guard is cleared.
 Run from the repository root with a new output directory:
 
 ```sh
-python3 experiments/source-disjoint-206/compatibility.py /tmp/tessera-206-compat-evidence
+python3 experiments/source-disjoint-206/compatibility.py /tmp/okilum-206-compat-evidence
 ```
 
 The harness obtains the predecessor recovery helper directly from commit

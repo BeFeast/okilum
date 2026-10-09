@@ -48,7 +48,7 @@ pub fn path(operational: &Path) -> PathBuf {
 pub(crate) fn decode_config(bytes: &[u8]) -> Result<ApplicationConfig> {
     let saved: Saved = serde_json::from_slice(bytes)?;
     ensure!(
-        saved.schema == "tessera-connectors/v1",
+        saved.schema == "okilum-connectors/v1",
         "unsupported saved connector settings"
     );
     Ok(saved.config)
@@ -59,7 +59,7 @@ pub fn load(operational: &Path) -> Result<Option<(ApplicationConfig, Option<Stri
             let saved: Saved =
                 serde_json::from_slice(&bytes).context("invalid saved connector settings")?;
             ensure!(
-                saved.schema == "tessera-connectors/v1",
+                saved.schema == "okilum-connectors/v1",
                 "unsupported saved connector settings"
             );
             Ok(Some((saved.config, saved.todoist_account_id)))
@@ -77,7 +77,7 @@ pub fn save(
     serde_json::to_writer_pretty(
         &mut temporary,
         &Saved {
-            schema: "tessera-connectors/v1".into(),
+            schema: "okilum-connectors/v1".into(),
             config: config.clone(),
             todoist_account_id: account_id,
         },

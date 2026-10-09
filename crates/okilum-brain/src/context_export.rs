@@ -16,7 +16,7 @@ use std::{
 };
 use tokio::sync::watch;
 
-pub const PACKAGE_SCHEMA: &str = "tessera-context-export/v1";
+pub const PACKAGE_SCHEMA: &str = "okilum-context-export/v1";
 const MAX_INPUT_BYTES: usize = 256 * 1024;
 const MAX_GENERATED_BYTES: usize = 96 * 1024;
 

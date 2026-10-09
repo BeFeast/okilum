@@ -20,7 +20,7 @@ fn main() {
         Err(_) => {
             // File errors can include private paths and serde errors can include
             // content. The machine-readable refusal must never echo them.
-            println!("{{\"schema\":\"tessera-t3-recovery/v1\",\"read_only\":true,\"supported_recovery_candidate\":false,\"blockers\":[\"invalid_or_unreadable_input\"],\"live_apply_authorized\":false}}");
+            println!("{{\"schema\":\"okilum-t3-recovery/v1\",\"read_only\":true,\"supported_recovery_candidate\":false,\"blockers\":[\"invalid_or_unreadable_input\"],\"live_apply_authorized\":false}}");
             std::process::exit(2);
         }
     }

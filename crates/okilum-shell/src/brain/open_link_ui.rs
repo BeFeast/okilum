@@ -410,7 +410,7 @@ mod tests {
         v.preview_loading = false;
         v.preview_error = None;
         let source = v.source_snapshot.as_ref().unwrap();
-        v.preview = json!({"document_links_version":1,"path":source["path"],"revision":source["revision"],"preview_revision":note_link::digest(v.source.value(cx).as_bytes()),"links":[{"wiki":true,"target":"shared","authored_target":"shared","url":"tessera://ambiguous/shared","status":"ambiguous","candidates":[{"path":"left/shared.md","title":"Left"},{"path":"right/shared.md","title":"Right"}]}]});
+        v.preview = json!({"document_links_version":1,"path":source["path"],"revision":source["revision"],"preview_revision":note_link::digest(v.source.value(cx).as_bytes()),"links":[{"wiki":true,"target":"shared","authored_target":"shared","url":"okilum://ambiguous/shared","status":"ambiguous","candidates":[{"path":"left/shared.md","title":"Left"},{"path":"right/shared.md","title":"Right"}]}]});
         v.accept_open_link_preview(v.open_link_preview_owner(cx), v.preview_generation, cx);
         assert!(v.open_link_ready(cx).is_ok());
         assert_eq!(v.current_source_links(cx).unwrap().len(), 1);
@@ -440,10 +440,10 @@ mod tests {
             ready(v, cx);
             let bytes = STANDARD.decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==").unwrap();
             let revision = note_link::digest(&bytes);
-            let url = format!("tessera-asset://{}", revision.strip_prefix("sha256:").unwrap());
+            let url = format!("okilum-asset://{}", revision.strip_prefix("sha256:").unwrap());
             let image = Arc::new(Image::from_bytes(ImageFormat::Png, bytes.clone()));
             v.preview_images.insert(url.clone(), image);
-            let link_url = "tessera://attachment/notes/image.png";
+            let link_url = "okilum://attachment/notes/image.png";
             let row = json!({"authored_target":"./image.png","wiki":false,"url":link_url,"status":"attachment",
                 "candidates":[{"path":"notes/image.png","title":"Picture"}],"asset_url":url,"asset_revision":revision});
             v.preview["attachment_links_version"] = json!(1);
@@ -510,7 +510,7 @@ mod tests {
             ("../space%20name.md".into(), None)
         );
         let source = json!({"path":"a.md","revision":"r1"});
-        let preview = json!({"document_links_version":1,"path":"a.md","revision":"r1","preview_revision":note_link::digest(b"raw"),"links":[{"wiki":true,"target":"x","authored_target":"x","url":"tessera://x","candidates":[]}]});
+        let preview = json!({"document_links_version":1,"path":"a.md","revision":"r1","preview_revision":note_link::digest(b"raw"),"links":[{"wiki":true,"target":"x","authored_target":"x","url":"okilum://x","candidates":[]}]});
         assert!(resolved_row(&preview, &source, "raw", "x", true).is_ok());
         for (pointer, value) in [
             ("/path", json!("b.md")),
@@ -694,8 +694,8 @@ mod tests {
             let generation = v.preview_generation;
             v.preview["prepared_links_version"] = json!(1);
             for status in ["missing_document", "missing_heading"] {
-                v.preview["links"] = json!([{"url":"tessera://known-missing", "status":"unresolved", "candidates":[], "prepared":{"status":status,"reason":"Missing destination","target_revision":null}}]);
-                v.preview_link("tessera://known-missing", window, cx);
+                v.preview["links"] = json!([{"url":"okilum://known-missing", "status":"unresolved", "candidates":[], "prepared":{"status":status,"reason":"Missing destination","target_revision":null}}]);
+                v.preview_link("okilum://known-missing", window, cx);
                 assert_eq!(v.error.as_deref(), Some("Existing notice"));
                 assert_eq!(v.source.link_selection(window, cx), selection);
                 assert_eq!(v.source.stamp(cx), stamp);
@@ -706,7 +706,7 @@ mod tests {
             // Unknown is not silently dead: the existing operation/error path
             // remains observable when authoritative evidence is unavailable.
             v.preview["links"][0]["prepared"]["status"] = json!("unknown");
-            v.preview_link("tessera://known-missing", window, cx);
+            v.preview_link("okilum://known-missing", window, cx);
             assert_ne!(v.error.as_deref(), Some("Existing notice"));
         });
         cleanup(directory);
@@ -716,22 +716,22 @@ mod tests {
     fn rendered_click_keeps_grammar_identity_and_refuses_conflicting_rows(cx: &mut TestAppContext) {
         let (view, visual, directory) = setup(cx);
         view.update_in(visual, |v, window, cx| {
-            let wiki = json!({"url":"tessera://ambiguous/same.md%23Landing","status":"ambiguous_heading","heading":"Landing","candidates":[{"path":"notes/same.md"},{"path":"notes/Same.md"},{"path":"other/same.md"}]});
-            let md = json!({"url":"tessera://ambiguous-markdown/same.md%23Landing","status":"ambiguous_heading","heading":"Landing","candidates":[{"path":"notes/Same.md"},{"path":"notes/same.md"}]});
+            let wiki = json!({"url":"okilum://ambiguous/same.md%23Landing","status":"ambiguous_heading","heading":"Landing","candidates":[{"path":"notes/same.md"},{"path":"notes/Same.md"},{"path":"other/same.md"}]});
+            let md = json!({"url":"okilum://ambiguous-markdown/same.md%23Landing","status":"ambiguous_heading","heading":"Landing","candidates":[{"path":"notes/Same.md"},{"path":"notes/same.md"}]});
             v.preview["links"] = json!([wiki, md]);
-            v.preview_link("tessera://ambiguous-markdown/same.md%23Landing", window, cx);
+            v.preview_link("okilum://ambiguous-markdown/same.md%23Landing", window, cx);
             assert_eq!(v.link_candidates.len(), 2);
             assert!(v.link_candidates.iter().all(|c| c["path"].as_str().unwrap().starts_with("notes/") && c["heading"] == "Landing"));
-            v.preview_link("tessera://ambiguous/same.md%23Landing", window, cx);
+            v.preview_link("okilum://ambiguous/same.md%23Landing", window, cx);
             assert_eq!(v.link_candidates.len(), 3, "wiki positive control");
             v.link_candidates.clear();
-            v.preview["links"][1]["url"] = json!("tessera://ambiguous/same.md%23Landing");
-            v.preview_link("tessera://ambiguous/same.md%23Landing", window, cx);
+            v.preview["links"][1]["url"] = json!("okilum://ambiguous/same.md%23Landing");
+            v.preview_link("okilum://ambiguous/same.md%23Landing", window, cx);
             assert!(v.error.as_ref().unwrap().contains("conflicting"));
             assert!(v.link_candidates.is_empty());
             assert!(!v.source_navigation_pending());
             v.preview["document_links_version"] = Value::Null;
-            v.preview_link("tessera://ambiguous/same.md%23Landing", window, cx);
+            v.preview_link("okilum://ambiguous/same.md%23Landing", window, cx);
             assert!(v.error.as_ref().unwrap().contains("backend"));
         });
         cleanup(directory);

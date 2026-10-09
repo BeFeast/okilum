@@ -42,7 +42,7 @@ Data has this shape:
 
 ```json
 {
-  "schema": "tessera-maestro-operation/v1",
+  "schema": "okilum-maestro-operation/v1",
   "operation_id": "02000000-0000-4000-8000-000000000156",
   "goal_id": "03000000-0000-4000-8000-000000000156",
   "kind": "link",

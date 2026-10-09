@@ -122,7 +122,7 @@ fn validate_segment(
     );
     let segment: Segment = serde_json::from_slice(bytes)?;
     ensure!(
-        segment.schema == "tessera-committed-feed/v1"
+        segment.schema == "okilum-committed-feed/v1"
             && segment.binding == *binding
             && segment.sequence == sequence,
         "feed segment owner/epoch/sequence mismatch"
@@ -159,7 +159,7 @@ impl Runner {
             "feed already enrolled"
         );
         let binding = RequiredProposalFeed {
-            capability: "tessera-proposal-feed/v1".into(),
+            capability: "okilum-proposal-feed/v1".into(),
             epoch: Uuid::new_v4().to_string(),
             activation_id: Uuid::new_v4().to_string(),
             policy_version,
@@ -339,7 +339,7 @@ impl Runner {
                     .checked_add(1)
                     .context("feed sequence exhausted")?;
                 let segment = Segment {
-                    schema: "tessera-committed-feed/v1".into(),
+                    schema: "okilum-committed-feed/v1".into(),
                     binding: feed.binding.clone(),
                     sequence: feed.published,
                     trigger: candidate.trigger.clone(),

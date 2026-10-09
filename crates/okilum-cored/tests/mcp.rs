@@ -189,8 +189,8 @@ fn read_note_rewrites_links_and_backlinks_mark_ambiguity() {
     let mut c = Client::spawn(&v);
     let src = c.tool("read_note", json!({"path": "demo.md"}));
     let text = src["content"][0]["text"].as_str().unwrap();
-    assert!(text.contains("tessera://ambiguous/alpha"), "{text}");
-    assert!(text.contains("tessera://open/notes/alpha.md"), "{text}");
+    assert!(text.contains("okilum://ambiguous/alpha"), "{text}");
+    assert!(text.contains("okilum://open/notes/alpha.md"), "{text}");
 
     let bl = c.tool_json("backlinks", json!({"path": "notes/alpha.md"}));
     let from_demo: Vec<&Value> = bl

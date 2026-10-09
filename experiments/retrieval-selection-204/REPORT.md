@@ -1,6 +1,6 @@
 # Verified experience selection: measured diagnostic (#204)
 
-> **Historical document.** Written before Tessera was renamed Okilum (2026-10-09). Names, paths and links are kept as they were then.
+> **Historical experiment.** Recorded before the app was renamed Okilum on 2026-10-09; its names, paths and commands were updated to Okilum afterwards (#987), so old commands may not run as written.
 
 **Decision: Keep feature disabled.** Seven applicable cases improved, but one invalid baseline response blocks advancement under the frozen contract.
 
@@ -100,9 +100,9 @@ This control pair received identical baseline/candidate messages because no inci
 
 Exact prompts, raw SSE outputs, API receipts, prepared packets, per-case scores, source hashes and cleanup receipts are retained under the isolated `measured1` directory. The evidence inventory records SHA256 for each file. Credentials are references only and auth headers are not recorded.
 
-- [Run directory](/home/example/worktrees/tessera/day-20260907/openexecutive-experiment/measured1).
-- [Pre-provider manifest](/home/example/worktrees/tessera/day-20260907/openexecutive-experiment/reviewed-manifest.json).
-- [Independent pre-provider review](/home/example/worktrees/tessera/day-20260907/openexecutive-experiment/independent-prefreeze-review.json).
-- [Independent measured review](/home/example/worktrees/tessera/day-20260907/openexecutive-experiment/independent-measured-review.json).
-- [Summary](/home/example/worktrees/tessera/day-20260907/openexecutive-experiment/measured1/summary.json).
-- [Evidence inventory](/home/example/worktrees/tessera/day-20260907/openexecutive-experiment/measured-evidence-inventory.json).
+- [Run directory](/home/example/worktrees/okilum/day-20260907/openexecutive-experiment/measured1).
+- [Pre-provider manifest](/home/example/worktrees/okilum/day-20260907/openexecutive-experiment/reviewed-manifest.json).
+- [Independent pre-provider review](/home/example/worktrees/okilum/day-20260907/openexecutive-experiment/independent-prefreeze-review.json).
+- [Independent measured review](/home/example/worktrees/okilum/day-20260907/openexecutive-experiment/independent-measured-review.json).
+- [Summary](/home/example/worktrees/okilum/day-20260907/openexecutive-experiment/measured1/summary.json).
+- [Evidence inventory](/home/example/worktrees/okilum/day-20260907/openexecutive-experiment/measured-evidence-inventory.json).

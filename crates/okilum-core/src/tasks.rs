@@ -611,7 +611,7 @@ mod tests {
         );
         let source = "- [ ] Read [[note|alias]]\n";
         let task = parse("a.md", source).remove(0);
-        let rendered = "- [ ] Read [alias](tessera://open/note.md)\n";
+        let rendered = "- [ ] Read [alias](okilum://open/note.md)\n";
         assert_eq!(
             target(&task, source, rendered).unwrap().text.as_deref(),
             Some("Read alias")

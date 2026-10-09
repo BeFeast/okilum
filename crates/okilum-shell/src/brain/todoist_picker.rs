@@ -54,7 +54,7 @@ fn nonempty(value: &Value) -> bool {
 
 fn validate_page(page: Value, goal: &str, previous: Option<&Value>) -> Result<Value, String> {
     let malformed = || "Todoist returned an invalid Inbox page. Refresh the Inbox.".to_string();
-    if page["schema"] != "tessera-todoist-inbox/v1"
+    if page["schema"] != "okilum-todoist-inbox/v1"
         || page["goal_id"] != goal
         || !nonempty(&page["session_id"])
         || !nonempty(&page["account_id"])
@@ -679,7 +679,7 @@ mod tests {
         json!({"task_id":id,"content":"Follow up","description":description,"due":{"date":"2026-09-09","is_recurring":true,"string":"every Wednesday"},"labels":["personal"],"priority":3,"url":format!("https://app.todoist.com/app/task/{id}")})
     }
     fn page() -> Value {
-        json!({"schema":"tessera-todoist-inbox/v1","session_id":"session-a","goal_id":"goal-a","account_id":"account-a","inbox_project_id":"inbox-a","items":[row("task-one","Call the clinic"),row("task-two","Check the school dates")],"complete":false,"can_load_more":true,"limit_reached":false})
+        json!({"schema":"okilum-todoist-inbox/v1","session_id":"session-a","goal_id":"goal-a","account_id":"account-a","inbox_project_id":"inbox-a","items":[row("task-one","Call the clinic"),row("task-two","Check the school dates")],"complete":false,"can_load_more":true,"limit_reached":false})
     }
     fn setup(window: &mut Window, cx: &mut Context<BrainView>) -> BrainView {
         let mut view = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);

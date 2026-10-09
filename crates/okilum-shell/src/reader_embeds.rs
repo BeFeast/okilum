@@ -191,9 +191,9 @@ mod tests {
             assert_eq!(
                 clicked.lock().unwrap().last().unwrap(),
                 if i == 0 {
-                    "tessera://open/Projects/technical-name.md#%5Eunique"
+                    "okilum://open/Projects/technical-name.md#%5Eunique"
                 } else {
-                    "tessera://open/Projects/technical-name.md"
+                    "okilum://open/Projects/technical-name.md"
                 }
             );
         }

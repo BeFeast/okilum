@@ -43,7 +43,7 @@ mod brain {
         let bytes = std::fs::read(&path).unwrap();
         assert_eq!(
             serde_json::from_slice::<Value>(&bytes).unwrap()["schema"],
-            "tessera-editor-recovery/v2"
+            "okilum-editor-recovery/v2"
         );
         let predecessor = old.list().unwrap();
         assert_eq!(predecessor.drafts.len(), 1);

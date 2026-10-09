@@ -30,12 +30,12 @@ use std::ops::Range;
 /// Info-string tag of the fence a display formula is wrapped in.
 pub const MATH_LANG: &str = "math";
 /// Info-string tag of a footnote definition fence: `footnote <n> <id>`, the id
-/// percent-encoded as in a `tessera://` URL.
+/// percent-encoded as in a `okilum://` URL.
 pub const FOOTNOTE_LANG: &str = "footnote";
 /// A footnote reference: lands on the definition.
-pub const FOOTNOTE_SCHEME: &str = "tessera://footnote/";
+pub const FOOTNOTE_SCHEME: &str = "okilum://footnote/";
 /// A footnote definition's back-link: lands on the first reference.
-pub const FOOTNOTE_BACK_SCHEME: &str = "tessera://footnote-back/";
+pub const FOOTNOTE_BACK_SCHEME: &str = "okilum://footnote-back/";
 
 /// Hide `%%comments%%`, render math as its source, number footnotes and mark
 /// block IDs. The shell's Reader runs this; the MCP `read_note` does not, so

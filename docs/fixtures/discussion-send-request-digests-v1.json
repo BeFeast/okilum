@@ -1,5 +1,5 @@
 {
-  "schema": "tessera-discussion-send-digest-fixtures/v1",
+  "schema": "okilum-discussion-send-digest-fixtures/v1",
   "cases": [
     {
       "name": "new-crlf",
@@ -13,7 +13,7 @@
           "manual-reference.md"
         ]
       },
-      "canonical_json": "[\"tessera-discussion-send-request/v1\",\"11111111-1111-4111-8111-111111111111\",\"22222222-2222-4222-8222-222222222222\",\"operator\",null,\"Question\\r\\n\",[\"manual-reference.md\"]]",
+      "canonical_json": "[\"okilum-discussion-send-request/v1\",\"11111111-1111-4111-8111-111111111111\",\"22222222-2222-4222-8222-222222222222\",\"operator\",null,\"Question\\r\\n\",[\"manual-reference.md\"]]",
       "utf8_bytes": 171,
       "request_sha256": "3765d691f98c285b8c7503373d06a5c74936c711161c83b4613fe45a7ced3152"
     },
@@ -30,7 +30,7 @@
           "é.md"
         ]
       },
-      "canonical_json": "[\"tessera-discussion-send-request/v1\",\"11111111-1111-4111-8111-111111111111\",\"22222222-2222-4222-8222-222222222222\",\"operator\",\"33333333-3333-4333-8333-333333333333\",\"Café 😀\\u0001\\r\\n\",[\"a.md\",\"é.md\"]]",
+      "canonical_json": "[\"okilum-discussion-send-request/v1\",\"11111111-1111-4111-8111-111111111111\",\"22222222-2222-4222-8222-222222222222\",\"operator\",\"33333333-3333-4333-8333-333333333333\",\"Café 😀\\u0001\\r\\n\",[\"a.md\",\"é.md\"]]",
       "utf8_bytes": 207,
       "request_sha256": "fc62a04ace5226dd50189b7dbad01a16f5b91bb51b5addd42bc753bc767ad984"
     }

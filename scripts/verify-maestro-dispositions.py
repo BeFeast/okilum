@@ -180,7 +180,7 @@ def verify(enabled, maintenance, predecessor=None):
                 assert backend.call("snapshot", goal_id=goal)["stages"] == []
                 checked.append("offline_query_abandon_and_exact_receipts_after_restart")
             assert Fixture.methods and all(m == "GET" and p == "/api/v1/fleet" for m, p in Fixture.methods)
-            return {"schema": "tessera-maestro-dispositions-verification/v1", "passed": True,
+            return {"schema": "okilum-maestro-dispositions-verification/v1", "passed": True,
                     "enabled_sha256": base.digest(enabled), "maintenance_sha256": base.digest(maintenance),
                     "predecessor_sha256": base.digest(predecessor) if predecessor else None,
                     "fixture_requests": Fixture.received, "remote_mutations": 0, "verified": checked}

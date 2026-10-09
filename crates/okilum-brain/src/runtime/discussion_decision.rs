@@ -28,9 +28,9 @@ impl Key {
     }
     pub(super) fn id(&self, brain: &str, operation: bool) -> String {
         let namespace = if operation {
-            "tessera/discussion-decision/operation/v1"
+            "okilum/discussion-decision/operation/v1"
         } else {
-            "tessera/discussion-decision/id/v1"
+            "okilum/discussion-decision/id/v1"
         };
         let mut hash = Sha256::new();
         for value in [
@@ -157,7 +157,7 @@ impl Runner {
         ensure!(
             d.verification == "unverified"
                 && !body.trim().is_empty()
-                && o.schema == "tessera-discussion-decision-origin/v1"
+                && o.schema == "okilum-discussion-decision-origin/v1"
                 && o.conversation_path == self.path("conversation", &o.conversation_id),
             "Invalid user decision provenance"
         );

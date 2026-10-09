@@ -65,7 +65,7 @@ ownership is explicit; commands never use the currently selected desktop goal.
 {"op":"maestro_discover"}
 ```
 
-Reply has `schema:"tessera-maestro-observation/v1"`, `instance`, `observed_at`,
+Reply has `schema:"okilum-maestro-observation/v1"`, `instance`, `observed_at`,
 `refreshed_at`, `unsupported_projects`, `controls_enabled:false` and `projects`.
 Each supported project has `project_id`, `name`, `repo`, `paused`, optional
 `dashboard_url`, `stale` and

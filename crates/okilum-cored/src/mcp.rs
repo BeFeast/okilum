@@ -43,7 +43,7 @@ fn tools() -> Value {
         },
         {
             "name": "read_note",
-            "description": "A note's Markdown source, with [[wikilinks]] rewritten to tessera:// links. \
+            "description": "A note's Markdown source, with [[wikilinks]] rewritten to okilum:// links. \
                             Frontmatter stripped.",
             "inputSchema": {
                 "type": "object",
