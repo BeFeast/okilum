@@ -3019,6 +3019,14 @@ impl Reader {
     /// Every top-level sidebar section is closed, including automatic folding
     /// while scrolling; the header toggle then offers «Expand all sections».
     fn sidebar_sections_closed(&self) -> bool {
+        use reader_sidebar::Section;
+        // A single file shows only Folders; hidden sections must not keep the
+        // button on «Collapse» after the visible one is closed.
+        if self.single_file {
+            return self
+                .scroll_sections
+                .closed(Section::Folders, &self.sidebar.collapsed);
+        }
         reader_sidebar::LEFT_SECTIONS.into_iter().all(|s| {
             if s == reader_sidebar::Section::Projects {
                 self.sidebar.projects_collapsed
@@ -3562,12 +3570,16 @@ impl Reader {
                 if actions == total_actions {
                     header = header.child(
                         reader_icon_button(
-                            "sidebar-collapse-all",
+                            "sidebar-sections-toggle",
                             Icon::default().path(sections_icon),
-                            sections_label,
+                            if all_closed {
+                                reader_shortcuts::hint(sections_label, &ExpandSidebarSections, cx)
+                            } else {
+                                sections_label.into()
+                            },
                             cx,
                         )
-                        .debug_selector(|| "sidebar-collapse-all".into())
+                        .debug_selector(|| "sidebar-sections-toggle".into())
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.set_sidebar_sections(sections_action(), cx)
                         })),
@@ -6043,7 +6055,7 @@ fn reader_more_menu(
             )
             .separator()
             .menu("Folders only", Box::new(CollapseSidebarSections))
-            .menu("Expand sidebar sections", Box::new(ExpandSidebarSections))
+            .menu("Expand all sections", Box::new(ExpandSidebarSections))
             .menu("Collapse all folders", Box::new(CollapseFolders))
             .separator()
             .label("Appearance")
@@ -8499,15 +8511,14 @@ mod document_link_landing_tests {
                 }
             })
         };
-        let header = visual.debug_bounds("sidebar-collapse-all").unwrap();
+        let header = visual.debug_bounds("sidebar-sections-toggle").unwrap();
         visual.simulate_click(header.center(), Modifiers::default());
         visual.run_until_parked();
         view.update(visual, |v, _| {
             v.scroll_sections.observe(-120.);
             assert_eq!(closed(v), [true; 5]);
-            assert!(v.sidebar_sections_closed());
         });
-        let header = visual.debug_bounds("sidebar-collapse-all").unwrap();
+        let header = visual.debug_bounds("sidebar-sections-toggle").unwrap();
         visual.simulate_click(header.center(), Modifiers::default());
         visual.run_until_parked();
         view.update(visual, |v, _| {
