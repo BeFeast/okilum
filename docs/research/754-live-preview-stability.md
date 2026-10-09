@@ -1,3 +1,5 @@
+> **Historical document.** Written before Tessera was renamed Okilum (2026-10-09). Names, paths and links are kept as they were then.
+
 ## P1: Live Preview changes geometry while typing, revealing and dragging
 
 Owner report: Mac beta 8326, “everything jerks / moves to different positions”. Investigated on Linux using the actual native shared Editor + production CachedProvider, main a075d27, Rust 1.99, verified vendor stack; Xvfb :127, 1240×850 window, Noto Sans/Cascadia 16 px, 24 px rows. This is an isolated native widget, not a full Reader or macOS acceptance claim. No gpui-core changes.

@@ -1,5 +1,7 @@
 # Live Preview native adapter — isolated candidate contract
 
+> **Historical document.** Written before Tessera was renamed Okilum (2026-10-09). Names, paths and links are kept as they were then.
+
 Status: bounded design review, not implemented or accepted natively. Parent: [#211](https://git.oklabs.uk/BeFeast/tessera/issues/211). Root creates the child issue after reviewing this scope. This document permits a synthetic native fixture first; it does not wire BrainView, Save, recovery or backend APIs.
 
 Reviewed source: Tessera `0748c9e32a3f996895223b37e42164d050b42617`, vendor `928c3eb776a3d733d9b771f7dea27a6a79242ced` with the current committed patch set. Foundation #212 is reviewed; classifier #214 remains a separate lane. Overall behavior remains governed by [managed-live-preview.md](/home/example/worktrees/tessera/live-preview-contract/docs/managed-live-preview.md).

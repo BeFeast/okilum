@@ -1,8 +1,8 @@
 {
   "proposal": "V2 three-pane redesign following supplied 1Password reference",
-  "date": "2026-09-06T10:46:20.485Z",
-  "sourceHash": "f587f50711ede3aede84e0dd5e7db431217abb60aa1afb95a6c5f88d8b9628e0",
-  "browser": "151.0.7922.34",
+  "date": "2026-10-09T14:34:18.294Z",
+  "sourceHash": "e248156539e1d5d66776ceb94eef45dff2c09f1c18e9c6ca2ea77a29c03079e6",
+  "browser": "145.0.7632.6",
   "captures": [
     {
       "id": "01-attention-light",

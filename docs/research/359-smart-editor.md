@@ -1,5 +1,7 @@
 # Research: Live Preview / smart editor, and what to take from Zed (#359)
 
+> **Historical document.** Written before Tessera was renamed Okilum (2026-10-09). Names, paths and links are kept as they were then.
+
 Status: research only. No product code changes. This document informs a decision
 and a slice plan for the Obsidian-style Live Preview editor requested in #359.
 

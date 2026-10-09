@@ -1,5 +1,7 @@
 # Verified experience selection: measured diagnostic (#204)
 
+> **Historical document.** Written before Tessera was renamed Okilum (2026-10-09). Names, paths and links are kept as they were then.
+
 **Decision: Keep feature disabled.** Seven applicable cases improved, but one invalid baseline response blocks advancement under the frozen contract.
 
 In c15 (obsolete callback incident), the baseline chose the ordinary `retry-submit` action but put `manual-pin` in `constraint_ids` and left `evidence_ids` empty. This is an unknown constraint and lacks supporting evidence, so it remains ambiguous/unsuccessful. The candidate response was valid. No label adjustment, retry or extra provider call was made.

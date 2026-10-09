@@ -1,5 +1,7 @@
 # Automatic independent source edits (#206)
 
+> **Historical document.** Written before Tessera was renamed Okilum (2026-10-09). Names, paths and links are kept as they were then.
+
 Status: reviewed contract; implementation and acceptance evidence tracked in #206.
 The existing managed `source_write` API and source journal remain unchanged.
 
