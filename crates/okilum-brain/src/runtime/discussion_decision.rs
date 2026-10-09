@@ -512,11 +512,11 @@ pub(super) mod tests {
         };
         assert_eq!(
             key.id("00000000-0000-4000-8000-000000000001", false),
-            "6ff223da-25be-858c-ba2c-f3b3c6c2e4e3"
+            "2fe0d2c4-dbbf-85be-a8f5-70ba2de6b6c6"
         );
         assert_eq!(
             key.id("00000000-0000-4000-8000-000000000001", true),
-            "3ad4968d-2780-8afb-8ec9-e1da3aa16263"
+            "03518838-e43e-8ca4-a85e-f8c1277f2d69"
         );
     }
     #[test]
