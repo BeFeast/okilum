@@ -1,5 +1,8 @@
 //! Lossless reminder insertion plans, checked again by the writer under its lock.
-//! This module performs no IO and cannot authorize an unguarded source write.
+//! The plan performs no IO; `write` applies it through the guarded editor.
+
+#[cfg(any(unix, windows))]
+pub mod write;
 
 #[derive(Clone, Debug)]
 pub struct Plan {
