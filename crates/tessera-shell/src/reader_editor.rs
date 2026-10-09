@@ -506,6 +506,7 @@ impl Reader {
             current_input,
             _subscriptions: vec![changed, blur, clicked, highlighting],
         });
+        self.set_live_preview(self.ui_state.live_preview, window, cx);
         self.start_editor_layout_diagnostics(input.clone(), cx);
         input.focus_handle(cx).focus(window, cx);
         cx.notify();
@@ -694,6 +695,11 @@ impl Reader {
     pub(super) fn leave_source(&mut self, cx: &mut Context<Self>) -> bool {
         if !self.save_source(cx) {
             return false;
+        }
+        // Document preparation can call leave_source again after the editor
+        // has already closed. That no-op must retain the last presentation.
+        if self.editing.is_some() {
+            self.ui_state.live_preview = self.source_live_preview();
         }
         self.editing = None;
         true

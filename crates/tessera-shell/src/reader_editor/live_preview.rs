@@ -162,6 +162,20 @@ impl Reader {
             .into_any_element()
     }
 
+    pub(crate) fn set_live_preview(
+        &mut self,
+        enabled: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(editing) = &mut self.editing {
+            editing.live_preview.restore_after_find = false;
+            if editing.live_preview.enabled != enabled {
+                self.toggle_live_preview(window, cx);
+            }
+        }
+    }
+
     pub(crate) fn toggle_live_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let colors = projection_colors(cx);
         let Some(editing) = &mut self.editing else {
@@ -337,10 +351,47 @@ mod tests {
         reader.read_with(visual, |reader, _| {
             assert!(!reader.editing.as_ref().unwrap().live_preview.enabled)
         });
+        // The pencil is Edit, never Rename, and toggles back to Reader (#871).
+        let pencil = visual.debug_bounds("reader-edit").unwrap();
+        visual.simulate_click(pencil.center(), Modifiers::default());
+        visual.run_until_parked();
+        reader.read_with(visual, |reader, _| {
+            assert!(reader.editing.is_none());
+            assert!(reader.renaming.is_none());
+        });
+        let pencil = visual.debug_bounds("reader-edit").unwrap();
+        visual.simulate_click(pencil.center(), Modifiers::default());
+        visual.run_until_parked();
+        reader.read_with(visual, |reader, _| {
+            assert!(reader.editing.is_some(), "pencil enters the editor");
+            assert!(!reader.source_live_preview());
+        });
+        reader.update_in(visual, |reader, window, cx| {
+            reader.set_live_preview(true, window, cx)
+        });
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        reader.read_with(visual, |reader, _| {
+            assert!(reader.editing.is_none());
+            assert!(
+                reader.ui_state.live_preview,
+                "Reader retains the last editor mode"
+            );
+        });
+        reader.update_in(visual, |reader, _, cx| {
+            assert!(reader.leave_source(cx), "repeated leave is a no-op");
+            assert!(reader.ui_state.live_preview);
+        });
+        let pencil = visual.debug_bounds("reader-edit").unwrap();
+        visual.simulate_click(pencil.center(), Modifiers::default());
+        visual.run_until_parked();
+        reader.read_with(visual, |reader, _| {
+            assert!(reader.editing.is_some(), "pencil re-enters the editor");
+            assert!(reader.source_live_preview());
+        });
         let read = visual.debug_bounds("reader-read").unwrap();
         visual.simulate_click(read.center(), Modifiers::default());
         visual.run_until_parked();
-        reader.read_with(visual, |reader, _| assert!(reader.editing.is_none()));
         visual.simulate_resize(size(px(480.), px(900.)));
         reader.update_in(visual, |reader, window, cx| {
             reader.toggle_source(window, cx)
@@ -355,6 +406,17 @@ mod tests {
         visual.run_until_parked();
         reader.read_with(visual, |reader, _| {
             assert!(reader.renaming.as_ref().unwrap().in_header)
+        });
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        let title = visual.debug_bounds("reader-document-root").unwrap();
+        visual.simulate_click(title.center(), Modifiers::default());
+        visual.run_until_parked();
+        reader.read_with(visual, |reader, _| {
+            assert!(
+                reader.renaming.as_ref().unwrap().in_header,
+                "title click renames"
+            );
         });
         visual.simulate_keystrokes("escape");
         visual.run_until_parked();
@@ -745,7 +807,11 @@ mod tests {
         visual.run_until_parked();
         reader.update_in(visual, |r, window, cx| {
             r.toggle_source(window, cx);
-            r.toggle_live_preview(window, cx);
+            r.set_live_preview(true, window, cx);
+            assert!(
+                r.source_live_preview(),
+                "classify the next note in Live Preview"
+            );
         });
         visual.run_until_parked();
         reader.read_with(visual, |r, cx| {
