@@ -391,7 +391,13 @@ fn update(
     }
     if !batch.affected.is_empty() {
         if !published.searcher.is_session() {
-            published.searcher = Arc::new(published.searcher.fork_session()?);
+            // Under the cache, not the system temp folder (#933).
+            let forked = match index {
+                Some(index) => published.searcher.fork_session_in(&index.join("sessions")),
+                None => published.searcher.fork_session(),
+            };
+            published.searcher =
+                Arc::new(forked.map_err(|error| error.context("Fork the search session"))?);
         }
         published
             .searcher

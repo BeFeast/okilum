@@ -99,6 +99,33 @@ impl Fields {
     }
 }
 
+const SESSION_PREFIX: &str = "tessera-search-session-";
+const SESSION_LOCK: &str = ".in-use";
+
+/// A private copy of a committed index for one Reader session. On Unix the
+/// directory holds an advisory lock for its owner's whole lifetime, so a later
+/// launch can tell an abandoned copy from one still in use.
+struct SessionDir {
+    #[allow(dead_code)] // Owned for its Drop, which removes the directory.
+    dir: tempfile::TempDir,
+    _lock: Option<std::fs::File>,
+}
+
+#[cfg(unix)]
+fn hold_session(dir: &Path) -> Result<Option<std::fs::File>> {
+    let path = dir.join(SESSION_LOCK);
+    let file = std::fs::File::create(&path)
+        .with_context(|| format!("Create search session lock {}", path.display()))?;
+    rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive)
+        .with_context(|| format!("Lock search session {}", path.display()))?;
+    Ok(Some(file))
+}
+
+#[cfg(not(unix))]
+fn hold_session(_dir: &Path) -> Result<Option<std::fs::File>> {
+    Ok(None)
+}
+
 pub struct Searcher {
     index: Index,
     f: Fields,
@@ -106,7 +133,7 @@ pub struct Searcher {
     /// takes an exclusive lock on the index directory.
     writer: std::sync::Mutex<Option<tantivy::IndexWriter>>,
     /// Drops after index and writer so Windows handles close before cleanup.
-    session: Option<tempfile::TempDir>,
+    session: Option<SessionDir>,
     /// Caller-owned liveness pin for the directory this index was opened from.
     /// Drops last, after every index handle, so a collector never sees the
     /// directory unpinned while this searcher can still read it.
@@ -439,14 +466,86 @@ impl Searcher {
 
     /// Copy search bytes once per Reader session, never canonical sources or a
     /// completed generation. Call only on a worker with no concurrent writer.
+    /// The copy lives in the system temp folder; prefer `fork_session_in`.
     pub fn fork_session(&self) -> Result<Self> {
-        let directory = tempfile::Builder::new()
-            .prefix("tessera-search-session-")
-            .tempdir()?;
+        self.fork_session_with(None)
+    }
+
+    /// Like `fork_session`, but the copy lives under `parent` (the app cache).
+    /// The system temp folder is often a RAM-backed tmpfs with a per-user quota
+    /// that `df` does not show (#933), and a full copy of the index is too large
+    /// to put there on every update.
+    pub fn fork_session_in(&self, parent: &Path) -> Result<Self> {
+        self.fork_session_with(Some(parent))
+    }
+
+    fn fork_session_with(&self, parent: Option<&Path>) -> Result<Self> {
+        let mut builder = tempfile::Builder::new();
+        builder.prefix(SESSION_PREFIX);
+        let directory = match parent {
+            Some(parent) => {
+                std::fs::create_dir_all(parent).with_context(|| {
+                    format!("Create search session folder {}", parent.display())
+                })?;
+                builder
+                    .tempdir_in(parent)
+                    .with_context(|| format!("Create search session in {}", parent.display()))?
+            }
+            None => builder
+                .tempdir()
+                .context("Create search session in the system temp folder")?,
+        };
+        let lock = hold_session(directory.path())?;
         self.copy_committed_to(directory.path())?;
         let mut fork = Self::open(directory.path())?;
-        fork.session = Some(directory);
+        fork.session = Some(SessionDir {
+            dir: directory,
+            _lock: lock,
+        });
         Ok(fork)
+    }
+
+    /// Remove session copies left behind by Readers that no longer run (crash,
+    /// kill, power loss). A copy is reclaimed only when its lock can be taken,
+    /// so one in use by another Reader is never touched. Copies without a lock
+    /// file (made by older versions) are left alone. Returns how many were
+    /// removed. Unix only; a no-op elsewhere.
+    pub fn reclaim_abandoned_sessions(parent: &Path) -> usize {
+        #[cfg(unix)]
+        {
+            let Ok(entries) = std::fs::read_dir(parent) else {
+                return 0;
+            };
+            let mut removed = 0;
+            for entry in entries.flatten() {
+                let named = entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with(SESSION_PREFIX));
+                // `DirEntry::file_type` does not follow symlinks.
+                if !named || !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                    continue;
+                }
+                let path = entry.path();
+                let Ok(lock) = std::fs::File::open(path.join(SESSION_LOCK)) else {
+                    continue;
+                };
+                if rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive)
+                    .is_err()
+                {
+                    continue;
+                }
+                if std::fs::remove_dir_all(&path).is_ok() {
+                    removed += 1;
+                }
+            }
+            removed
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = parent;
+            0
+        }
     }
 
     /// Copy committed search files to a caller-owned fresh directory. No parsing
@@ -474,16 +573,16 @@ impl Searcher {
                 continue;
             }
             // atomic_read preserves the segment footer; open_read strips it.
-            std::fs::write(destination.join(path), managed.atomic_read(path)?)?;
+            let target = destination.join(path);
+            std::fs::write(&target, managed.atomic_read(path)?)
+                .with_context(|| format!("Write search file {}", target.display()))?;
         }
-        std::fs::write(
-            destination.join("meta.json"),
-            managed.atomic_read(Path::new("meta.json"))?,
-        )?;
-        std::fs::write(
-            destination.join(".managed.json"),
-            serde_json::to_vec(&paths)?,
-        )?;
+        let meta = destination.join("meta.json");
+        std::fs::write(&meta, managed.atomic_read(Path::new("meta.json"))?)
+            .with_context(|| format!("Write search file {}", meta.display()))?;
+        let managed_list = destination.join(".managed.json");
+        std::fs::write(&managed_list, serde_json::to_vec(&paths)?)
+            .with_context(|| format!("Write search file {}", managed_list.display()))?;
         Ok(())
     }
 
@@ -974,6 +1073,83 @@ fn source_confirmed_snippet_html(mut html: String, fragment: &str, window: &str)
         }
     }
     html
+}
+
+#[cfg(all(test, unix))]
+mod session_copy_tests {
+    use super::*;
+
+    fn searcher(index: &Path) -> Result<Searcher> {
+        Searcher::build_documents(
+            &[SearchDocument {
+                path: "a.md".into(),
+                title: "A".into(),
+                text: "# A\n\nsessionprobe body".into(),
+            }],
+            index,
+        )
+    }
+
+    /// #933: the session copy of the index lives under the caller's folder (the
+    /// app cache), not the system temp folder, and a Reader that is still running
+    /// is never reclaimed while an abandoned copy is.
+    #[test]
+    fn session_copy_lives_under_the_given_folder_and_only_abandoned_ones_are_reclaimed(
+    ) -> Result<()> {
+        let index = tempfile::tempdir()?;
+        let parent = tempfile::tempdir()?;
+        let sessions = parent.path().join("sessions");
+        let live = searcher(index.path())?.fork_session_in(&sessions)?;
+        assert!(live.is_session());
+        assert_eq!(live.search("sessionprobe", 5)?.len(), 1);
+        let ours: Vec<_> = std::fs::read_dir(&sessions)?
+            .flatten()
+            .map(|entry| entry.path())
+            .collect();
+        assert_eq!(ours.len(), 1, "exactly one copy, under the given folder");
+
+        // An abandoned copy (lock file present, no owner) and two lookalikes.
+        let abandoned = sessions.join(format!("{SESSION_PREFIX}abandoned"));
+        std::fs::create_dir_all(&abandoned)?;
+        std::fs::write(abandoned.join(SESSION_LOCK), b"")?;
+        std::fs::write(abandoned.join("segment"), vec![0u8; 4096])?;
+        let legacy = sessions.join(format!("{SESSION_PREFIX}legacy"));
+        std::fs::create_dir_all(&legacy)?;
+        std::fs::write(legacy.join("segment"), b"x")?;
+        let unrelated = sessions.join("unrelated");
+        std::fs::create_dir_all(&unrelated)?;
+
+        assert_eq!(Searcher::reclaim_abandoned_sessions(&sessions), 1);
+        assert!(!abandoned.exists(), "the abandoned copy is removed");
+        assert!(ours[0].exists(), "a copy in use is never touched");
+        assert!(legacy.exists(), "a copy without a lock file is left alone");
+        assert!(unrelated.exists());
+        assert_eq!(live.search("sessionprobe", 5)?.len(), 1);
+
+        // Dropping the owner removes its copy, then there is nothing to reclaim.
+        drop(live);
+        assert!(!ours[0].exists());
+        assert_eq!(Searcher::reclaim_abandoned_sessions(&sessions), 0);
+        Ok(())
+    }
+
+    /// The failing step is named, so a log line is no longer just "os error 122".
+    #[test]
+    fn a_failed_session_copy_names_the_folder() -> Result<()> {
+        let index = tempfile::tempdir()?;
+        let blocker = tempfile::tempdir()?;
+        let file = blocker.path().join("file");
+        std::fs::write(&file, b"x")?;
+        let error = searcher(index.path())?
+            .fork_session_in(&file.join("sessions"))
+            .err()
+            .expect("a folder under a regular file cannot be created");
+        assert!(
+            format!("{error:#}").contains("Create search session folder"),
+            "{error:#}"
+        );
+        Ok(())
+    }
 }
 
 #[cfg(test)]

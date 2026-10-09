@@ -100,6 +100,8 @@ impl Reader {
         let requested = std::time::Instant::now();
         let publish_trace = trace.clone();
         let cache = self.index_dir.clone();
+        // Session copies of the index go under the cache, not the system temp folder (#933).
+        let session_dir = self.index_dir.as_ref().map(|dir| dir.join("sessions"));
         let cache_lease = self.cache_lease.clone();
         let worker_cancel = cancel.clone();
         let worker_trace = trace.clone();
@@ -126,7 +128,13 @@ impl Reader {
             }
             if tasks_changed { tasks = Arc::new(next_tasks); }
             let source_ms = start.elapsed().as_secs_f64() * 1000.;
-            let searcher = if batch.affected.is_empty() || old_searcher.is_session() { old_searcher } else { Arc::new(old_searcher.fork_session()?) };
+            let searcher = if batch.affected.is_empty() || old_searcher.is_session() { old_searcher } else {
+                let forked = match &session_dir {
+                    Some(dir) => old_searcher.fork_session_in(dir),
+                    None => old_searcher.fork_session(),
+                };
+                Arc::new(forked.map_err(|error| error.context("Fork the search session"))?)
+            };
             let mut sources = std::collections::HashMap::new();
             let mut titles = std::collections::HashMap::new();
             let mut documents = Vec::new();
@@ -140,7 +148,10 @@ impl Reader {
                 } else { removed.push(path.clone()); }
             }
             worker_cancel.check()?;
-            if !batch.affected.is_empty() { searcher.update_snapshot_batch(&state.vault, &documents, &removed)?; }
+            if !batch.affected.is_empty() {
+                searcher.update_snapshot_batch(&state.vault, &documents, &removed)
+                    .map_err(|error| error.context("Update the search index"))?;
+            }
             worker_cancel.check()?;
             working.store(false, std::sync::atomic::Ordering::Release);
             let published = Arc::new(state.vault.clone());
