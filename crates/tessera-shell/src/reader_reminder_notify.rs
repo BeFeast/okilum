@@ -24,7 +24,16 @@ pub(super) struct Notifier {
     busy: bool,
     /// An evaluation was requested while a read or write was in flight.
     again: bool,
+    /// The watched note changed: re-import silently on the next evaluation.
+    rebaseline: bool,
     generation: u64,
+}
+
+impl Notifier {
+    /// The watched note changed: the next evaluation re-imports silently.
+    pub(super) fn note_changed(&mut self) {
+        self.rebaseline = true;
+    }
 }
 
 /// Vault root to the window that delivers its notifications.
@@ -47,7 +56,7 @@ fn local_now() -> time::PrimitiveDateTime {
     time::PrimitiveDateTime::new(now.date(), now.time())
 }
 
-fn key(root: &Path) -> String {
+pub(super) fn key(root: &Path) -> String {
     let keyed = reader_sidebar::State::path(Path::new(""), root);
     keyed
         .file_stem()
@@ -79,7 +88,7 @@ fn load(path: &Path) -> Ledger {
     }
 }
 
-fn store(path: &Path, json: &str) -> std::io::Result<()> {
+pub(super) fn store(path: &Path, json: &str) -> std::io::Result<()> {
     use std::io::Write as _;
     let directory = path.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(directory)?;
@@ -120,7 +129,8 @@ pub(super) fn install(cx: &mut App) {
         let _ = window.update(cx, |_, window, cx| {
             window.activate_window();
             owner.update(cx, |reader, cx| {
-                reader.open_note(reader_reminder::NOTE, None, window, cx)
+                let note = reader.reminder_prefs.note.clone();
+                reader.open_note(&note, None, window, cx)
             });
         });
     });
@@ -167,9 +177,16 @@ impl Reader {
             .detach();
             return;
         };
-        let reminders = schedule::reminders(&index.note_tasks(reader_reminder::NOTE));
-        let (policy, now) = (Policy::default(), local_now());
+        let reminders = schedule::reminders(&index.note_tasks(&self.reminder_prefs.note));
+        let policy = Policy {
+            notify_at: self.reminder_prefs.notify_at,
+            ..Policy::default()
+        };
+        let now = local_now();
         let mut next = ledger.clone();
+        if std::mem::take(&mut self.reminder_notifier.rebaseline) {
+            next.rebaseline();
+        }
         let notice = schedule::evaluate(&reminders, &mut next, now, &policy);
         let wake = schedule::next_wake(&reminders, &next, now, &policy);
         if next == ledger {
@@ -424,6 +441,94 @@ mod tests {
         assert_eq!(
             reader.read_with(visual, |r, _| r.current_rel.clone()),
             reader_reminder::NOTE
+        );
+        TEST_NOW.with(|cell| cell.set(None));
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[gpui::test]
+    fn configured_time_and_note_are_used_and_switching_notes_is_silent(cx: &mut TestAppContext) {
+        use reader_reminder_settings::{load as load_prefs, Preferences};
+        let temp = std::env::temp_dir().join(format!("tessera-notify-{}", uuid::Uuid::new_v4()));
+        let (root, state) = (temp.join("vault"), temp.join("state"));
+        std::fs::create_dir_all(root.join("Inbox")).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(root.join("start.md"), "# Start\n").unwrap();
+        // A note that already holds an overdue task, to be chosen later.
+        std::fs::write(
+            root.join("Old.md"),
+            "- [ ] Ancient [[start.md]] 📅 2026-09-01\n",
+        )
+        .unwrap();
+        at(datetime!(2026-10-01 12:00));
+        let (reader, visual) = mount(cx, &root, &state);
+        tick(&reader, visual);
+
+        let chosen = Preferences {
+            note: "Inbox/Remind.md".into(),
+            notify_at: time::Time::from_hms(17, 30, 0).unwrap(),
+        };
+        reader.update(visual, |r, cx| r.set_reminder_prefs(chosen.clone(), cx));
+        visual.run_until_parked();
+        assert_eq!(load_prefs(&state, &root), chosen, "persisted per vault");
+
+        let drafts = state.join("editor-drafts");
+        write::add(
+            &root,
+            &drafts,
+            &chosen.note,
+            "- [ ] Call Dana [[start.md]] 📅 2026-11-02\n",
+        )
+        .unwrap();
+        assert!(
+            !root.join(reader_reminder::NOTE).exists(),
+            "default note untouched"
+        );
+        reader.update_in(visual, |r, window, cx| {
+            let mut changes = tessera_core::Changes::default();
+            changes.changed.insert(chosen.note.clone());
+            r.apply_vault_changes(changes, window, cx);
+        });
+        visual.run_until_parked();
+        at(datetime!(2026-11-02 09:00));
+        tick(&reader, visual);
+        assert!(
+            visual.shown_system_notifications().is_empty(),
+            "09:00 is no longer the time"
+        );
+        at(datetime!(2026-11-02 17:29));
+        tick(&reader, visual);
+        assert!(visual.shown_system_notifications().is_empty());
+        at(datetime!(2026-11-02 17:30));
+        tick(&reader, visual);
+        let shown = visual.shown_system_notifications();
+        assert_eq!(
+            shown.len(),
+            1,
+            "positive control: the chosen note and time fire"
+        );
+        assert_eq!(shown[0].title.as_ref(), "Call Dana");
+
+        // Choosing a note full of old tasks must not sound like news.
+        at(datetime!(2026-11-02 18:00));
+        let switched = Preferences {
+            note: "Old.md".into(),
+            ..chosen
+        };
+        reader.update(visual, |r, cx| r.set_reminder_prefs(switched, cx));
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            let mut changes = tessera_core::Changes::default();
+            changes.changed.insert("Old.md".into());
+            r.apply_vault_changes(changes, window, cx);
+        });
+        visual.run_until_parked();
+        at(datetime!(2026-11-03 09:00));
+        tick(&reader, visual);
+        assert_eq!(
+            visual.shown_system_notifications().len(),
+            1,
+            "no overdue summary appeared"
         );
         TEST_NOW.with(|cell| cell.set(None));
         std::fs::remove_dir_all(temp).unwrap();
