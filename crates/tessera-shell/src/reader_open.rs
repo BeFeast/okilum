@@ -65,18 +65,20 @@ impl OpenIntent {
             });
         }
         let log = tessera_core::log::is_log_path(&path);
+        let plain = super::reader_delimited::editable(&path.to_string_lossy());
         if !path.is_file()
             || !(log
+                || plain
                 || path
                     .extension()
                     .is_some_and(|ext| ext.eq_ignore_ascii_case("md")))
         {
-            bail!("Choose a local Markdown or log file, or a folder");
+            bail!("Choose a local Markdown, CSV, TSV, text or log file, or a folder");
         }
         // Fail before constructing a Reader rather than falling back to its first note.
         // A log is bytes, not UTF-8 text: only readability is required.
-        if read_primary && log {
-            std::fs::File::open(&path).context("The log file cannot be read")?;
+        if read_primary && (log || plain) {
+            std::fs::File::open(&path).context("The file cannot be read")?;
         } else if read_primary {
             std::fs::read_to_string(&path).context("The Markdown file cannot be read as UTF-8")?;
         }
@@ -180,7 +182,9 @@ mod tests {
         );
         assert!(OpenIntent::validate(&f.0.join("absent.md"), None, None).is_err());
         std::fs::write(f.0.join("other.txt"), "text").unwrap();
-        assert!(OpenIntent::validate(&f.0.join("other.txt"), None, None).is_err());
+        assert!(OpenIntent::validate(&f.0.join("other.txt"), None, None).is_ok());
+        std::fs::write(f.0.join("other.bin"), "text").unwrap();
+        assert!(OpenIntent::validate(&f.0.join("other.bin"), None, None).is_err());
         assert!(OpenIntent::validate(&f.0.join("notes space"), Some(&f.0), None).is_err());
         assert_eq!(OpenIntent::validate(&f.0, None, None).unwrap().root, f.0);
     }
@@ -454,7 +458,7 @@ pub(crate) fn file_menu() -> Menu {
         name: "File".into(),
         disabled: false,
         items: vec![
-            MenuItem::action("Open Markdown File…", OpenFile),
+            MenuItem::action("Open File…", OpenFile),
             MenuItem::action("Open Folder…", OpenFolder),
             MenuItem::action("New Window", NewWindow),
         ],
@@ -505,7 +509,7 @@ fn pick(folder: bool, cx: &mut App) {
             if folder {
                 "Open read-only folder"
             } else {
-                "Open Markdown or log file"
+                "Open Markdown, CSV, TSV, text or log file"
             }
             .into(),
         ),
@@ -547,7 +551,7 @@ pub(crate) fn picker_path(
             if folder {
                 "a directory"
             } else {
-                "a Markdown or log file"
+                "a Markdown, CSV, TSV, text or log file"
             }
         );
     }

@@ -81,6 +81,7 @@ fn catalog() -> Vec<Entry> {
         entry::<RevealFile>(Os::CURRENT.reveal(), Notes),
         entry::<CopyVaultPath>("Copy vault path", Notes),
         entry::<reader_log::CopyRawLine>("Copy raw log line", Notes),
+        entry::<reader_delimited::CopyCells>("Copy selected table cells", Notes),
         entry::<QuickLookFile>("Quick Look", Notes),
         entry::<reader_open::OpenFile>("Open file", Notes),
         entry::<reader_open::OpenFolder>("Open folder", Notes),

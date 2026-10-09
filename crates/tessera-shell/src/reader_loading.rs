@@ -169,6 +169,37 @@ fn prepare_log(path: &Path, root: Option<&Path>, cancel: &Cancellation) -> Resul
     })
 }
 
+/// Plain attachments have no Markdown projection or search index. Their preview
+/// owns the background read after the containing quick folder is published.
+fn prepare_plain_file(path: &Path, root: Option<&Path>, cancel: &Cancellation) -> Result<Event> {
+    let mut intent = reader_open::OpenIntent::validate(path, root, None)?;
+    intent.single_file = true;
+    cancel.check()?;
+    let mut vault = Vault::from_note_paths(std::iter::empty::<String>());
+    vault.root = intent.root.clone();
+    vault.single_file = true;
+    Ok(Event::First {
+        intent,
+        vault,
+        cache_lease: None,
+        searcher: None,
+        snapshot: None,
+        document: Some((
+            String::new(),
+            prepared_links::PreparedDocument {
+                canonical_source: None,
+                source: String::new(),
+                original: Some(String::new()),
+                identities: Vec::new(),
+                frontmatter: None,
+            },
+        )),
+        published: None,
+        recovery_notice: None,
+        log: None,
+    })
+}
+
 fn prepare_first_with_last_document(
     opts: &Opts,
     cancel: &Cancellation,
@@ -203,6 +234,9 @@ fn prepare_first_with_last_document(
     // the vault path would render it as Markdown.
     if canonical_path.is_file() && tessera_core::log::is_log_path(&canonical_path) {
         return prepare_log(&canonical_path, root, cancel);
+    }
+    if canonical_path.is_file() && reader_delimited::editable(&canonical_path.to_string_lossy()) {
+        return prepare_plain_file(&canonical_path, root, cancel);
     }
     if opts.single_file || (canonical_path.is_file() && root.is_none() && reusable.is_none()) {
         let mut intent = reader_open::OpenIntent::validate_cached(&canonical_path, root, None)?;
@@ -328,6 +362,7 @@ fn prepare_first_with_last_document(
                 .filter(|hint| !hint.is_empty())
                 // Logs are only remembered by the quick viewer.
                 .filter(|hint| !tessera_core::log::is_log_path(Path::new(hint)))
+                .filter(|hint| !reader_delimited::editable(hint))
                 .and_then(|hint| {
                     let path = intent.root.join(&hint);
                     let validated = if snapshot.as_ref().and_then(|s| s.source(&hint)).is_some() {
@@ -1506,6 +1541,11 @@ impl Reader {
             self.navigation.history_ix = 0;
         }
         self.loading.as_mut().unwrap().published = true;
+        let plain_file = pending
+            .intent
+            .note
+            .clone()
+            .filter(|rel| reader_delimited::editable(rel));
         reader_open::register(cx.entity().downgrade(), pending.intent.root, cx);
         if preserve_document {
             self.link_notice = None;
@@ -1531,6 +1571,8 @@ impl Reader {
             self.open_note(&note, None, window, cx);
         } else if let Some(log) = pending.log {
             self.mount_log(log, window, cx);
+        } else if let Some(rel) = plain_file {
+            self.preview_file(&rel, window, cx);
         }
         self.refresh_quick_open(cx);
         if let Some(trace) = &self.loading.as_ref().unwrap().opts.diagnostics {
@@ -1822,7 +1864,9 @@ impl Reader {
         }
         // A log in the quick viewer is the document to restore (#602).
         let document = match &self.file_preview {
-            Some(preview) if preview.log.is_some() => preview.rel.clone(),
+            Some(preview) if preview.log.is_some() || reader_delimited::editable(&preview.rel) => {
+                preview.rel.clone()
+            }
             _ => self.current_rel.clone(),
         };
         let identity = (
@@ -2517,6 +2561,109 @@ impl Reader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delimited_quick_open_has_no_markdown_projection_or_recursive_index() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("folder");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("unrelated.md"), "# Not a CSV header\n").unwrap();
+        let source = b"\xef\xbb\xbfname,value\r\nhello,42\r\n";
+        for name in ["sheet.csv", "sheet.TSV", "sheet.txt"] {
+            let path = root.join(name);
+            std::fs::write(&path, source).unwrap();
+            let Event::First {
+                intent,
+                vault,
+                document,
+                searcher,
+                snapshot,
+                cache_lease,
+                ..
+            } = prepare_first(
+                &Opts {
+                    open_path: Some(path.clone()),
+                    ..Default::default()
+                },
+                &Cancellation::default(),
+            )
+            .unwrap()
+            else {
+                panic!("first publication")
+            };
+            assert!(intent.single_file && vault.single_file);
+            assert_eq!(intent.note.as_deref(), Some(name));
+            assert!(vault.notes.is_empty());
+            let (_, document) = document.unwrap();
+            assert!(document.source.is_empty() && document.canonical_source.is_none());
+            assert!(searcher.is_none() && snapshot.is_none() && cache_lease.is_none());
+            assert_eq!(std::fs::read(&path).unwrap(), source);
+        }
+        let Event::First { document, .. } = prepare_first(
+            &Opts {
+                open_path: Some(root.join("unrelated.md")),
+                ..Default::default()
+            },
+            &Cancellation::default(),
+        )
+        .unwrap() else {
+            panic!("Markdown positive control")
+        };
+        assert!(document.unwrap().1.source.contains("Not a CSV header"));
+        assert!(!root.join(".tessera-index").exists());
+    }
+
+    #[gpui::test]
+    fn delimited_quick_file_mounts_table_and_exact_editor(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().join("sheet.tsv");
+        let source = "name\tvalue\r\nשלום\t42\r\n";
+        std::fs::write(&path, source).unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let entity = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        open_path: Some(path.clone()),
+                        session_directory: Some(fixture.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(entity.clone());
+            Root::new(entity, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("delimited-cell-1-0").is_some());
+        reader.update_in(visual, |r, window, cx| {
+            assert!(r.single_file);
+            assert_eq!(r.selected_file(), "sheet.tsv");
+            assert!(r.searcher.is_none() && r.watcher.is_none());
+            assert!(r.file_preview.as_ref().unwrap().table.is_some());
+            r.toggle_source(window, cx);
+            assert_eq!(
+                r.editing
+                    .as_ref()
+                    .unwrap()
+                    .test_input()
+                    .read(cx)
+                    .value()
+                    .as_ref(),
+                source
+            );
+            assert!(r.save_source(cx));
+            r.toggle_source(window, cx);
+            assert!(r.file_preview.as_ref().unwrap().table.is_some());
+        });
+        assert_eq!(std::fs::read(path).unwrap(), source.as_bytes());
+    }
     use ::core::prelude::v1::test;
 
     struct TestDirectory(PathBuf);

@@ -220,7 +220,7 @@ impl Reader {
             cx.notify();
             return;
         };
-        let path = self.vault_root.join(&self.current_rel);
+        let path = self.vault_root.join(self.selected_file());
         let generation = self.navigation.preparation_generation;
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -291,19 +291,28 @@ impl Reader {
             self.toggle_timeline_source(window, cx);
             return;
         }
-        if self.file_preview.is_some() {
+        let plain_file = self
+            .file_preview
+            .as_ref()
+            .is_some_and(|p| reader_delimited::editable(&p.rel));
+        if self.file_preview.is_some() && !plain_file {
             return;
         }
         if self.editing.is_some() {
             if !self.leave_source(cx) {
                 return;
             }
-            let rel = self.current_rel.clone();
-            self.prepare_document(&rel, None, None, window, cx);
+            if plain_file {
+                let rel = self.selected_file().to_owned();
+                self.preview_file(&rel, window, cx);
+            } else {
+                let rel = self.current_rel.clone();
+                self.prepare_document(&rel, None, None, window, cx);
+            }
             self.focus_handle.focus(window, cx);
             return;
         }
-        if self.current_rel.is_empty()
+        if (self.current_rel.is_empty() && !plain_file)
             || self
                 .loading
                 .as_ref()
@@ -317,7 +326,7 @@ impl Reader {
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("No recovery directory is available"))?;
             FileEditor::open(
-                &self.vault_root.join(&self.current_rel),
+                &self.vault_root.join(self.selected_file()),
                 &state.join("editor-drafts"),
             )
         })();
@@ -339,7 +348,7 @@ impl Reader {
         let input = cx.new(|cx| {
             let mut input = EditorState::new(window, cx)
                 .document_newlines(true)
-                .language("markdown")
+                .language(if plain_file { "text" } else { "markdown" })
                 .line_number(false)
                 .folding(false)
                 .searchable(true)
@@ -358,7 +367,7 @@ impl Reader {
         });
         let current_input = cx.new(|cx| {
             let mut input = EditorState::new(window, cx)
-                .language("markdown")
+                .language(if plain_file { "text" } else { "markdown" })
                 .line_number(false)
                 .soft_wrap(true);
             input.set_readonly(true, cx);
@@ -433,11 +442,12 @@ impl Reader {
         let clicked = cx.subscribe_in(
             &input,
             window,
-            |this, input, click: &SourceClick, window, cx| {
-                if this
-                    .editing
-                    .as_ref()
-                    .is_none_or(|editing| editing.input.entity_id() != input.entity_id())
+            move |this, input, click: &SourceClick, window, cx| {
+                if plain_file
+                    || this
+                        .editing
+                        .as_ref()
+                        .is_none_or(|editing| editing.input.entity_id() != input.entity_id())
                     || input.read(cx).source_stamp() != click.stamp
                     || click.event.button != MouseButton::Left
                     || !click.event.modifiers.platform
@@ -561,8 +571,16 @@ impl Reader {
             return div().into_any_element();
         };
         let tooltip = match editing.saved_at {
-            Some(at) => format!("Last saved at {:02}:{:02}:{:02}. Changes also save when you leave the editor or switch apps.", at.hour(), at.minute(), at.second()),
-            None => format!("Changes save with {}, when you leave the editor, or when you switch apps.", Os::CURRENT.shortcut("secondary-s")),
+            Some(at) => format!(
+                "Last saved at {:02}:{:02}:{:02}. Changes also save when you leave the editor or switch apps.",
+                at.hour(),
+                at.minute(),
+                at.second()
+            ),
+            None => format!(
+                "Changes save with {}, when you leave the editor, or when you switch apps.",
+                Os::CURRENT.shortcut("secondary-s")
+            ),
         };
         let tooltip = format!("{} · {}", editing.status(), tooltip);
         div()
@@ -674,7 +692,7 @@ impl Reader {
                 editing.conflict_detected = false;
                 editing.save_failed = false;
                 editing.protecting = false;
-                if source_changed {
+                if source_changed && self.file_preview.is_none() {
                     self.queue_saved_source(cx);
                 }
                 cx.notify();

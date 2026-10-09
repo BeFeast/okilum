@@ -9,6 +9,7 @@ pub mod analyzer;
 pub mod callout;
 #[cfg(all(unix, feature = "brain"))]
 pub mod decision_reuse;
+pub mod delimited;
 pub mod document_links;
 pub mod excalidraw;
 #[cfg(all(unix, feature = "brain"))]
