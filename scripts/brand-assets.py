@@ -14,7 +14,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 ASSETS = ROOT / 'crates/okilum-shell/assets/brand'
-BRAND_REV = '7bf512a0041b51b90b88652aae12bef6ead17b83'
+BRAND_REV = '32f1427e3c766541b3ad8de042f21f3cd0dccd73'
 GUI_REV = '3ba23948adbabb4288bb3bc6fa0d3e4e074861e2'
 LOGOS = ('symbol-primary.svg', 'symbol-reversed.svg', 'app-icon-light.svg', 'app-icon-dark.svg')
 WEIGHTS = {400: 'Regular', 500: 'Medium', 600: 'SemiBold', 700: 'Bold'}
