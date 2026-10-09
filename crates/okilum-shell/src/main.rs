@@ -4817,6 +4817,18 @@ impl Reader {
                             .flex_1()
                             .min_h_0()
                             .w_full()
+                            // The TextView drops link clicks while text is
+                            // selected, so a right-click on a link would open
+                            // nothing; open the link's menu here (#943).
+                            .on_mouse_down(
+                                MouseButton::Right,
+                                cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                                    let Some(url) = this.hovered_link_with_selection(cx) else {
+                                        return;
+                                    };
+                                    this.file_link_menu(&url, event.position, window, cx);
+                                }),
+                            )
                             .context_menu(move |menu, _, cx| {
                                 reader_reminder::menu(menu, &menu_entity, cx)
                             })

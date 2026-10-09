@@ -252,6 +252,15 @@ impl Reader {
             .is_some_and(|(_, generation)| *generation == self.navigation.preparation_generation)
     }
 
+    /// The hovered link when text is selected: the only case where the
+    /// TextView's own link click does not run (#943).
+    pub(super) fn hovered_link_with_selection(&self, cx: &App) -> Option<String> {
+        if !self.pointer_on_link() || self.content.read(cx).selected_text().is_empty() {
+            return None;
+        }
+        self.pointer_link.as_ref().map(|(url, _)| url.clone())
+    }
+
     pub(super) fn reminder_for_selection(&self, cx: &App) -> Option<(String, time::Date)> {
         // A right-click on a link belongs to the link's own menu (#943).
         if self.single_file
