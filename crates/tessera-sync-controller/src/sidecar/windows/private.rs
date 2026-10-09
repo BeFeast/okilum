@@ -9,7 +9,7 @@ use std::{
 use windows::{
     core::{BOOL, PCWSTR},
     Win32::{
-        Foundation::{LocalFree, ERROR_ALREADY_EXISTS, HANDLE, HLOCAL},
+        Foundation::{LocalFree, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, HANDLE, HLOCAL},
         Security::{
             AclSizeInformation,
             Authorization::{
@@ -23,9 +23,11 @@ use windows::{
         },
         Storage::FileSystem::{
             CreateDirectoryW, CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
-            FILE_ALL_ACCESS, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
-            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_LIST_DIRECTORY,
-            FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, READ_CONTROL,
+            CREATE_NEW, FILE_ALL_ACCESS, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
+            FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+            FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
+            FILE_SHARE_DELETE, FILE_SHARE_MODE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+            READ_CONTROL,
         },
     },
 };
@@ -51,6 +53,9 @@ fn parse(sddl: &str) -> Result<Descriptor> {
     Ok(Descriptor(raw))
 }
 fn validate(descriptor: &Descriptor, sid: &str) -> Result<()> {
+    validate_grant(descriptor, sid, 3) // OBJECT_INHERIT | CONTAINER_INHERIT
+}
+fn validate_grant(descriptor: &Descriptor, sid: &str, flags: u8) -> Result<()> {
     let mut owner = PSID::default();
     let mut defaulted = BOOL::default();
     let mut control = 0;
@@ -87,9 +92,11 @@ fn validate(descriptor: &Descriptor, sid: &str) -> Result<()> {
         );
         let ace = &*ptr.cast::<ACCESS_ALLOWED_ACE>();
         ensure!(
-            ace.Header.AceType == 0 && ace.Header.AceFlags == 3 && ace.Mask == FILE_ALL_ACCESS.0,
-            "unexpected private-directory access rule"
-        ); // ALLOW, OBJECT_INHERIT | CONTAINER_INHERIT
+            ace.Header.AceType == 0
+                && ace.Header.AceFlags == flags
+                && ace.Mask == FILE_ALL_ACCESS.0,
+            "unexpected private access rule"
+        ); // ALLOW
         let ace_sid = PSID(
             ptr.cast::<u8>()
                 .add(offset_of!(ACCESS_ALLOWED_ACE, SidStart))
@@ -129,27 +136,67 @@ impl PrivateDirectory {
     }
     /// Read-only ownership validation; never repairs a foreign/shared DACL.
     pub fn open_existing(path: &str) -> Result<Self> {
+        // Metadata-only access does not participate in Windows sharing checks.
+        // Request directory read access so omitting FILE_SHARE_DELETE
+        // actually prevents rename/replacement while this handle lives.
+        Self::open_with(
+            path,
+            FILE_LIST_DIRECTORY.0 | FILE_READ_ATTRIBUTES.0 | READ_CONTROL.0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+        )
+    }
+    /// The instance lock of the state store. Shares only write access: any other
+    /// open that reads or lists the directory, including `open_existing` and
+    /// another lock, fails with a sharing violation while this handle lives, in
+    /// this process or another, and the directory cannot be renamed or deleted.
+    /// Write sharing stays on because renaming a file into the directory opens it
+    /// for write; with share mode none that rename fails with a sharing violation.
+    pub fn lock_exclusive(path: &str) -> Result<Self> {
+        Self::open_with(
+            path,
+            FILE_LIST_DIRECTORY.0 | FILE_READ_ATTRIBUTES.0 | READ_CONTROL.0,
+            FILE_SHARE_WRITE,
+        )
+    }
+    /// Validation and identity only. Neither blocks nor is blocked by a holder of
+    /// the exclusive lock, and it does not prevent replacement of the directory.
+    pub fn inspect(path: &str) -> Result<Self> {
+        Self::open_with(
+            path,
+            FILE_READ_ATTRIBUTES.0 | READ_CONTROL.0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        )
+    }
+    fn open_with(path: &str, access: u32, share: FILE_SHARE_MODE) -> Result<Self> {
         super::path(path)?;
         let text: Vec<_> = path.encode_utf16().chain(Some(0)).collect();
         let raw = unsafe {
             CreateFileW(
                 PCWSTR(text.as_ptr()),
-                // Metadata-only access does not participate in Windows sharing checks.
-                // Request directory read access so omitting FILE_SHARE_DELETE
-                // actually prevents rename/replacement while this handle lives.
-                FILE_LIST_DIRECTORY.0 | FILE_READ_ATTRIBUTES.0 | READ_CONTROL.0,
-                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                access,
+                share,
                 None,
                 OPEN_EXISTING,
                 FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
                 None,
             )?
-        }; // READ_CONTROL
+        };
         let directory = Self {
             handle: unsafe { OwnedHandle::from_raw_handle(raw.0) },
         };
         directory.verify()?;
         Ok(directory)
+    }
+    /// Volume serial and file index: the same directory, not merely the same path.
+    pub fn identity(&self) -> Result<(u32, u64)> {
+        let mut info = BY_HANDLE_FILE_INFORMATION::default();
+        unsafe {
+            GetFileInformationByHandle(HANDLE(self.handle.as_raw_handle()), &mut info)?;
+        }
+        Ok((
+            info.dwVolumeSerialNumber,
+            (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+        ))
     }
     pub fn verify(&self) -> Result<()> {
         let raw = HANDLE(self.handle.as_raw_handle());
@@ -179,6 +226,85 @@ impl PrivateDirectory {
         validate(&Descriptor(descriptor), &current_sid()?)
     }
 }
+/// A new journal file, created exclusively with an explicit owner and a protected
+/// single-grant DACL instead of whatever the token's default owner and the parent
+/// would inherit (an elevated token's default owner is Administrators).
+pub(crate) fn create_private_file(path: &str) -> Result<std::fs::File> {
+    super::path(path)?;
+    let sid = current_sid()?;
+    let descriptor = parse(&format!("O:{sid}D:P(A;;FA;;;{sid})"))?;
+    let attrs = SECURITY_ATTRIBUTES {
+        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor.0 .0,
+        bInheritHandle: BOOL(0),
+    };
+    let text: Vec<_> = path.encode_utf16().chain(Some(0)).collect();
+    let raw = unsafe {
+        CreateFileW(
+            PCWSTR(text.as_ptr()),
+            FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0,
+            FILE_SHARE_MODE(0),
+            Some(&attrs),
+            CREATE_NEW,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+            None,
+        )?
+    };
+    Ok(unsafe { std::fs::File::from_raw_handle(raw.0) })
+}
+/// Open an existing journal file read-only without following a reparse point.
+/// None when it does not exist.
+pub(crate) fn open_private_file(path: &str) -> Result<Option<std::fs::File>> {
+    super::path(path)?;
+    let text: Vec<_> = path.encode_utf16().chain(Some(0)).collect();
+    match unsafe {
+        CreateFileW(
+            PCWSTR(text.as_ptr()),
+            FILE_GENERIC_READ.0,
+            FILE_SHARE_READ,
+            None,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+            None,
+        )
+    } {
+        Ok(raw) => Ok(Some(unsafe { std::fs::File::from_raw_handle(raw.0) })),
+        Err(e) if e.code() == windows::core::HRESULT::from_win32(ERROR_FILE_NOT_FOUND.0) => {
+            Ok(None)
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+/// Owner, protected single-grant DACL, one hard link, no reparse point.
+pub(crate) fn verify_private_file(file: &std::fs::File) -> Result<()> {
+    let raw = HANDLE(file.as_raw_handle());
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    unsafe {
+        GetFileInformationByHandle(raw, &mut info)?;
+    }
+    ensure!(
+        info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY.0 | FILE_ATTRIBUTE_REPARSE_POINT.0) == 0
+            && info.nNumberOfLinks == 1,
+        "private regular journal required"
+    );
+    let mut descriptor = PSECURITY_DESCRIPTOR::default();
+    unsafe {
+        GetSecurityInfo(
+            raw,
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            None,
+            None,
+            None,
+            None,
+            Some(&mut descriptor),
+        )
+        .ok()?;
+    }
+    validate_grant(&Descriptor(descriptor), &current_sid()?, 0)
+        .map_err(|e| e.context("private regular journal required"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
