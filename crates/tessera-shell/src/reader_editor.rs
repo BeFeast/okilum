@@ -1741,10 +1741,11 @@ mod tests {
                 .count(),
             0
         );
-        assert!(
-            FileEditor::has_unsaved_draft(&root.join("first.md"), &state.join("editor-drafts"))
-                .unwrap()
-        );
+        assert!(FileEditor::has_unsaved_draft(
+            &root.join("first.md"),
+            &state.join("editor-drafts")
+        )
+        .unwrap());
         drop(readers);
     }
 
@@ -1858,10 +1859,9 @@ mod tests {
         });
         visual.run_until_parked();
         reader.update_in(visual, |r, window, cx| {
-            assert!(
-                r.restore_source_version(original, "bad", window, cx)
-                    .is_err()
-            );
+            assert!(r
+                .restore_source_version(original, "bad", window, cx)
+                .is_err());
             assert!(r.save_source(cx));
         });
         let edited = format!("edit{original}");
@@ -1891,10 +1891,9 @@ mod tests {
         assert!(versions.versions.iter().any(|v| v.text == edited));
         std::fs::write(root.join("note.md"), "external").unwrap();
         reader.update_in(visual, |r, window, cx| {
-            assert!(
-                r.restore_source_version(original, &edited, window, cx)
-                    .is_err()
-            );
+            assert!(r
+                .restore_source_version(original, &edited, window, cx)
+                .is_err());
         });
         assert_eq!(
             std::fs::read_to_string(root.join("note.md")).unwrap(),
@@ -2581,17 +2580,15 @@ mod tests {
                 "failed canonical save can exit with durable recovery"
             );
         });
-        assert!(
-            std::fs::read_dir(directory.join("state/editor-drafts"))
-                .unwrap()
-                .flatten()
-                .any(|entry| {
-                    entry.path().extension().is_some_and(|ext| ext == "json")
-                        && std::fs::read_to_string(entry.path())
-                            .unwrap()
-                            .contains("recover meSecond")
-                })
-        );
+        assert!(std::fs::read_dir(directory.join("state/editor-drafts"))
+            .unwrap()
+            .flatten()
+            .any(|entry| {
+                entry.path().extension().is_some_and(|ext| ext == "json")
+                    && std::fs::read_to_string(entry.path())
+                        .unwrap()
+                        .contains("recover meSecond")
+            }));
         std::fs::remove_dir_all(directory).unwrap();
     }
     #[gpui::test]
@@ -2661,13 +2658,12 @@ mod tests {
             tessera_core::link_rewrite::Preview::prepare(&root, "start.md", "New/renamed.md")
                 .unwrap();
         source.update_in(source_visual, |r, window, cx| {
-            assert!(
-                r.apply_link_move(&preview, window, cx)
-                    .err()
-                    .unwrap()
-                    .to_string()
-                    .contains("unsaved edits")
-            )
+            assert!(r
+                .apply_link_move(&preview, window, cx)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("unsaved edits"))
         });
         assert!(root.join("start.md").exists());
         assert!(!root.join("New/renamed.md").exists());
@@ -2721,18 +2717,16 @@ mod tests {
             assert_eq!(editing.input.read(cx).value().as_ref(), "edited [[start]]");
             assert!(!editing.store.dirty());
             assert_eq!(r.sidebar.pinned, ["start.md"]);
-            assert!(
-                r.sidebar
-                    .recent
-                    .iter()
-                    .any(|(path, time)| path == "start.md" && *time == 123)
-            );
-            assert!(
-                !r.sidebar
-                    .recent
-                    .iter()
-                    .any(|(path, _)| path == "New/renamed.md")
-            );
+            assert!(r
+                .sidebar
+                .recent
+                .iter()
+                .any(|(path, time)| path == "start.md" && *time == 123));
+            assert!(!r
+                .sidebar
+                .recent
+                .iter()
+                .any(|(path, _)| path == "New/renamed.md"));
             assert_eq!(
                 r.tree_revealed, "ref.md",
                 "reloaded current note is revealed"
