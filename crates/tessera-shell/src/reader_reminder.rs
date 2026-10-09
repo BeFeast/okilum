@@ -146,6 +146,9 @@ thread_local! {
 /// the document.
 const MAX_DATE_BYTES: usize = 96;
 
+/// Plain `Copy` data on purpose: the builder reads it with `Cell::get` and holds
+/// no borrow. Keep it that way; a `RefCell` borrow held across the menu's
+/// construction is the kind of re-entrancy that caused #955.
 #[derive(Clone, Copy, Default)]
 struct Facts {
     capabilities: gpui_base::input::InputContextMenuCapabilities,
