@@ -73,6 +73,12 @@ jobs:
           curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
+      # Cargo resolves the whole workspace, and tessera-shell points at vendor.
+      - name: Resolve pinned workspace path dependencies
+        run: |
+          scripts/vendor-setup.sh
+          scripts/vendor-setup.sh --verify
+
       - name: Enable sccache
         run: |
           set -euo pipefail
