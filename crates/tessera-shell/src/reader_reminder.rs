@@ -142,15 +142,64 @@ thread_local! {
     pub(super) static MENU_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-pub(super) fn editor_menu(menu: NativeMenu, state: &Entity<EditorState>, cx: &App) -> NativeMenu {
+/// A selection longer than this cannot be a date, so it is never read out of
+/// the document.
+const MAX_DATE_BYTES: usize = 96;
+
+#[derive(Clone, Copy, Default)]
+struct Facts {
+    capabilities: gpui_base::input::InputContextMenuCapabilities,
+    date: Option<time::Date>,
+}
+
+/// What the source editor's menu needs to know about the editor, kept current
+/// outside the editor's own updates. `Editor::context_menu` runs its builder
+/// while the editor state is being updated (the vendor defers it with
+/// `defer_in`), where reading that state panics (#955). Observers run after an
+/// update, when reading is allowed, so the builder only reads this snapshot.
+#[derive(Clone, Default)]
+pub(super) struct MenuFacts(std::rc::Rc<std::cell::Cell<Facts>>);
+
+impl MenuFacts {
+    #[cfg(test)]
+    pub(super) fn date(&self) -> Option<time::Date> {
+        self.0.get().date
+    }
+
+    pub(super) fn watch(
+        input: &Entity<EditorState>,
+        cx: &mut Context<Reader>,
+    ) -> (Self, Subscription) {
+        let facts = Self::default();
+        facts.refresh(input, cx);
+        let mirror = facts.clone();
+        let subscription = cx.observe(input, move |_, input, cx| mirror.refresh(&input, cx));
+        (facts, subscription)
+    }
+
+    fn refresh(&self, input: &Entity<EditorState>, cx: &App) {
+        let state = input.read(cx);
+        #[cfg(any(unix, windows))]
+        let date = {
+            let range = state.selected_range();
+            (!range.is_empty() && range.len() <= MAX_DATE_BYTES)
+                .then(|| reminder_dates::parse(&state.selected_text().to_string(), today()))
+                .flatten()
+        };
+        #[cfg(not(any(unix, windows)))]
+        let date = None;
+        self.0.set(Facts {
+            capabilities: state.context_menu_capabilities(),
+            date,
+        });
+    }
+}
+
+pub(super) fn editor_menu(menu: NativeMenu, facts: &MenuFacts, cx: &App) -> NativeMenu {
     use gpui_base::input::{Copy, Cut, GoToDefinition, Paste, SelectAll, ToggleCodeActions};
     #[cfg(test)]
     MENU_BUILDS.with(|builds| builds.set(builds.get() + 1));
-    #[cfg(any(unix, windows))]
-    let date = selected_date(state, cx).map(|(_, date)| date);
-    #[cfg(not(any(unix, windows)))]
-    let date = None;
-    let capabilities = state.read(cx).context_menu_capabilities();
+    let Facts { capabilities, date } = facts.0.get();
     editor_entries(&capabilities, cx.read_from_clipboard().is_some(), date)
         .into_iter()
         .fold(menu, |menu, entry| match entry {
@@ -558,10 +607,19 @@ mod visual_tests {
             "the editor is laid out: {bounds:?}"
         );
         let before = MENU_BUILDS.with(|builds| builds.get());
+        let mirrored = |visual: &mut VisualTestContext| {
+            reader.read_with(visual, |v, _| {
+                v.editing.as_ref().unwrap().menu_facts().date()
+            })
+        };
         // Right-click twice: once with a selection (a date), once without.
-        for range in [7..17, 0..0] {
+        for (range, date) in [
+            (7..17, Some(time::macros::date!(2026 - 11 - 01))),
+            (0..0, None),
+        ] {
             input.update(visual, |i, cx| i.set_selected_range(range, cx));
             visual.run_until_parked();
+            assert_eq!(mirrored(visual), date, "the snapshot follows the selection");
             let at = bounds.origin + point(px(40.), px(12.));
             visual.simulate_mouse_down(at, MouseButton::Right, Modifiers::default());
             visual.simulate_mouse_up(at, MouseButton::Right, Modifiers::default());

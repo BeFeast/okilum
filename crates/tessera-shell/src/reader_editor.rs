@@ -39,6 +39,8 @@ pub(super) struct Editing {
     save_pending: bool,
     saved_at: Option<time::OffsetDateTime>,
     current_input: Entity<EditorState>,
+    /// Snapshot for the editor's context menu, which cannot read the editor.
+    menu_facts: reader_reminder::MenuFacts,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -123,6 +125,11 @@ impl Editing {
     }
 
     #[cfg(test)]
+    pub(super) fn menu_facts(&self) -> &reader_reminder::MenuFacts {
+        &self.menu_facts
+    }
+
+    #[cfg(test)]
     pub(super) fn test_input(&self) -> Entity<EditorState> {
         self.input.clone()
     }
@@ -153,6 +160,7 @@ impl Editing {
             save_pending,
             saved_at,
             current_input,
+            menu_facts,
             _subscriptions,
         } = self;
         (store, move |store| Self {
@@ -168,6 +176,7 @@ impl Editing {
             save_pending,
             saved_at,
             current_input,
+            menu_facts,
             _subscriptions,
         })
     }
@@ -516,6 +525,7 @@ impl Reader {
         if store.dirty() {
             reader_toast::transient("Unsaved changes restored", window, cx);
         }
+        let (menu_facts, menu_watch) = reader_reminder::MenuFacts::watch(&input, cx);
         self.editing = Some(Editing {
             store,
             live_preview: live_preview::LivePreview::default(),
@@ -529,7 +539,8 @@ impl Reader {
             save_pending: false,
             saved_at: None,
             current_input,
-            _subscriptions: vec![changed, blur, clicked, highlighting],
+            menu_facts,
+            _subscriptions: vec![changed, blur, clicked, highlighting, menu_watch],
         });
         self.set_live_preview(self.ui_state.live_preview, window, cx);
         self.start_editor_layout_diagnostics(input.clone(), cx);
@@ -963,8 +974,8 @@ impl Reader {
                 Editor::new(&editing.input)
                     .appearance(false)
                     .context_menu({
-                        let input = editing.input.clone();
-                        move |menu, _, cx| reader_reminder::editor_menu(menu, &input, cx)
+                        let facts = editing.menu_facts.clone();
+                        move |menu, _, cx| reader_reminder::editor_menu(menu, &facts, cx)
                     })
                     .font_family(if editing.live_preview.enabled {
                         crate::source_presentation::BODY_FONT
