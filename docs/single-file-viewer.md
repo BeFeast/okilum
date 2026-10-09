@@ -40,3 +40,12 @@ fallback with an external-open action. These previews never edit or index the fi
 The structured log viewer (#602) opens `.log`, `.jsonl`, `.ndjson` and `.logfmt`
 in both vault and quick-file mode, including vault Quick Open and tree selection.
 Find/filter within a log is a separate #602 S3 slice.
+
+PDF and image previews subscribe to native changes in the selected file's parent
+folder, without a recursive watcher or sibling indexing. A quiet-window debounce
+coalesces writes and replacement renames. Refresh retains the selected document
+and PDF reading position, discards old image pixels, and recovers from a corrupt
+or temporarily missing source. Each refresh checks vault containment again; a
+redirected outside-vault target is not opened. Leaving the preview releases its
+subscription. File metadata uses decimal size units and local calendar/time labels.
+PDF text selection/copy remains #477 slice 3, as specified in the inline-PDF plan.

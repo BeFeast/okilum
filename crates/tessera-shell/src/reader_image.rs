@@ -3,10 +3,39 @@ use gpui::*;
 
 pub(crate) struct ReaderImage {
     source: ImageSource,
+    error_message: Option<SharedString>,
+    cache: Option<Entity<RetainAllImageCache>>,
 }
 impl ReaderImage {
     pub(crate) fn new(source: ImageSource) -> Self {
-        Self { source }
+        Self {
+            source,
+            error_message: None,
+            cache: None,
+        }
+    }
+
+    pub(crate) fn with_error_message(mut self, message: &'static str) -> Self {
+        self.error_message = Some(message.into());
+        self
+    }
+
+    pub(crate) fn with_cache(mut self, cache: Entity<RetainAllImageCache>) -> Self {
+        self.cache = Some(cache);
+        self
+    }
+
+    fn image(&self) -> Img {
+        let mut image = img(self.source.clone());
+        if let Some(message) = self.error_message.clone() {
+            image = image.with_fallback(move || {
+                div()
+                    .debug_selector(|| "reader-image-unreadable".into())
+                    .child(message.clone())
+                    .into_any_element()
+            });
+        }
+        image
     }
 }
 
@@ -44,11 +73,13 @@ impl Element for ReaderImage {
     ) -> (LayoutId, ()) {
         // Reuse GPUI's asynchronous loader/cache to discover intrinsic geometry.
         // Until it is available, reserve no fictitious full-size image height.
-        let intrinsic = img(self.source.clone()).into_any_element().layout_as_root(
-            size(AvailableSpace::MaxContent, AvailableSpace::MaxContent),
-            window,
-            cx,
-        );
+        let intrinsic = window.with_image_cache(self.cache.clone().map(Into::into), |window| {
+            self.image().into_any_element().layout_as_root(
+                size(AvailableSpace::MaxContent, AvailableSpace::MaxContent),
+                window,
+                cx,
+            )
+        });
         let mut style = Style::default();
         style.max_size.width = intrinsic.width.into();
         let id = window.request_measured_layout(style, move |known, available, _, _| {
@@ -73,21 +104,25 @@ impl Element for ReaderImage {
         window: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
-        let mut image = img(self.source.clone())
+        let mut image = self
+            .image()
             .id("reader-block-image")
+            .debug_selector(|| "reader-block-image".into())
             .w(bounds.size.width)
             .h(bounds.size.height)
             .object_fit(ObjectFit::Contain)
             .into_any_element();
-        image.prepaint_as_root(
-            bounds.origin,
-            size(
-                AvailableSpace::Definite(bounds.size.width),
-                AvailableSpace::Definite(bounds.size.height),
-            ),
-            window,
-            cx,
-        );
+        window.with_image_cache(self.cache.clone().map(Into::into), |window| {
+            image.prepaint_as_root(
+                bounds.origin,
+                size(
+                    AvailableSpace::Definite(bounds.size.width),
+                    AvailableSpace::Definite(bounds.size.height),
+                ),
+                window,
+                cx,
+            )
+        });
         image
     }
 
@@ -101,7 +136,9 @@ impl Element for ReaderImage {
         window: &mut Window,
         cx: &mut App,
     ) {
-        image.paint(window, cx);
+        window.with_image_cache(self.cache.clone().map(Into::into), |window| {
+            image.paint(window, cx)
+        });
     }
 }
 
