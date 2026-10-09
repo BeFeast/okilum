@@ -979,11 +979,11 @@ fn reader_plugins(
     .on_link_hover(move |url, active, position, window, cx| {
         let _ = hover_entity.update(cx, |this, cx| {
             if active {
-                this.pointer_link = Some((url.to_owned(), this.navigation.preparation_generation));
+                this.pointer_link = Some((url.to_string(), this.navigation.preparation_generation));
             } else if this
                 .pointer_link
                 .as_ref()
-                .is_some_and(|(link, _)| link == url)
+                .is_some_and(|(link, _)| link.as_str() == url.as_ref())
             {
                 this.pointer_link = None;
             }
