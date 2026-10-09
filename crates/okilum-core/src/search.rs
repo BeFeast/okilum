@@ -111,13 +111,25 @@ struct SessionDir {
     _lock: Option<std::fs::File>,
 }
 
+/// A copy younger than this is never reclaimed: between creating its lock file
+/// and locking it, another Reader could otherwise take the lock and delete a
+/// copy that is just being made.
+#[cfg(unix)]
+const SESSION_GRACE: std::time::Duration = std::time::Duration::from_secs(60);
+
 #[cfg(unix)]
 fn hold_session(dir: &Path) -> Result<Option<std::fs::File>> {
     let path = dir.join(SESSION_LOCK);
     let file = std::fs::File::create(&path)
         .with_context(|| format!("Create search session lock {}", path.display()))?;
-    rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive)
-        .with_context(|| format!("Lock search session {}", path.display()))?;
+    if rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive).is_err() {
+        // The lock only protects the copy from a later reclaim. Where locks are
+        // unavailable (some FUSE or network folders), work without that
+        // protection rather than failing the update. Never leave an unlocked
+        // marker behind: a reclaimer would take it for an abandoned copy.
+        let _ = std::fs::remove_file(&path);
+        return Ok(None);
+    }
     Ok(Some(file))
 }
 
@@ -507,9 +519,10 @@ impl Searcher {
 
     /// Remove session copies left behind by Readers that no longer run (crash,
     /// kill, power loss). A copy is reclaimed only when its lock can be taken,
-    /// so one in use by another Reader is never touched. Copies without a lock
-    /// file (made by older versions) are left alone. Returns how many were
-    /// removed. Unix only; a no-op elsewhere.
+    /// so one in use by another Reader is never touched, and only once its lock
+    /// file is a minute old, so a copy still being made is not mistaken for an
+    /// abandoned one. Copies without a lock file (made by older versions) are
+    /// left alone. Returns how many were removed. Unix only; a no-op elsewhere.
     pub fn reclaim_abandoned_sessions(parent: &Path) -> usize {
         #[cfg(unix)]
         {
@@ -530,6 +543,15 @@ impl Searcher {
                 let Ok(lock) = std::fs::File::open(path.join(SESSION_LOCK)) else {
                     continue;
                 };
+                let settled = lock
+                    .metadata()
+                    .and_then(|meta| meta.modified())
+                    .ok()
+                    .and_then(|made| made.elapsed().ok())
+                    .is_some_and(|age| age >= SESSION_GRACE);
+                if !settled {
+                    continue;
+                }
                 if rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive)
                     .is_err()
                 {
@@ -1107,12 +1129,32 @@ mod session_copy_tests {
             .map(|entry| entry.path())
             .collect();
         assert_eq!(ours.len(), 1, "exactly one copy, under the given folder");
+        // Age the live copy's lock file past the grace period, so that only its
+        // held lock, not its age, keeps the reclaim away from it.
+        std::fs::File::options()
+            .write(true)
+            .open(ours[0].join(SESSION_LOCK))?
+            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(120))?;
 
-        // An abandoned copy (lock file present, no owner) and two lookalikes.
+        // An abandoned copy (lock file present and old, no owner), a copy whose
+        // lock file is fresh (one being made right now), and two lookalikes.
+        let with_lock = |dir: &Path, seconds_old: u64| -> Result<()> {
+            std::fs::create_dir_all(dir)?;
+            let lock = dir.join(SESSION_LOCK);
+            std::fs::write(&lock, b"")?;
+            std::fs::File::options()
+                .write(true)
+                .open(&lock)?
+                .set_modified(
+                    std::time::SystemTime::now() - std::time::Duration::from_secs(seconds_old),
+                )?;
+            Ok(())
+        };
         let abandoned = sessions.join(format!("{SESSION_PREFIX}abandoned"));
-        std::fs::create_dir_all(&abandoned)?;
-        std::fs::write(abandoned.join(SESSION_LOCK), b"")?;
+        with_lock(&abandoned, 120)?;
         std::fs::write(abandoned.join("segment"), vec![0u8; 4096])?;
+        let being_made = sessions.join(format!("{SESSION_PREFIX}being-made"));
+        with_lock(&being_made, 5)?;
         let legacy = sessions.join(format!("{SESSION_PREFIX}legacy"));
         std::fs::create_dir_all(&legacy)?;
         std::fs::write(legacy.join("segment"), b"x")?;
@@ -1122,6 +1164,7 @@ mod session_copy_tests {
         assert_eq!(Searcher::reclaim_abandoned_sessions(&sessions), 1);
         assert!(!abandoned.exists(), "the abandoned copy is removed");
         assert!(ours[0].exists(), "a copy in use is never touched");
+        assert!(being_made.exists(), "a copy still being made is left alone");
         assert!(legacy.exists(), "a copy without a lock file is left alone");
         assert!(unrelated.exists());
         assert_eq!(live.search("sessionprobe", 5)?.len(), 1);
