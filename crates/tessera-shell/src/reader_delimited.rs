@@ -633,37 +633,55 @@ mod tests {
                     .width,
             )
         };
-        let rows = tooltip_rows(&paragraph, 300., measure);
-        assert!(rows.len() > 10 && rows.iter().all(|row| row.rtl));
-        for row in &rows {
-            let line = text_system.layout_line(&row.text, size, &[run(row.text.len())], None);
-            assert!(
-                f32::from(line.width) <= 300.5,
-                "{row:?} is {:?}",
-                line.width
-            );
-            let drawn: usize = line.runs.iter().map(|run| run.glyphs.len()).sum();
-            assert!(
-                drawn + 1 >= row.text.chars().count(),
-                "every character of {row:?} is shaped"
-            );
+        // Pure Hebrew, Hebrew-first mixed, Latin-first mixed (the passing
+        // native control) and a long multiline Hebrew + English value.
+        let cases = [
+            ("שלום עולם ".repeat(40), vec![true]),
+            (paragraph.clone(), vec![true]),
+            ("abc שלום 123 עולם ".repeat(30), vec![false]),
+            (
+                format!(
+                    "{}\n{}\r\n\n{}",
+                    "שורה ראשונה בעברית ".repeat(80),
+                    "English line with שלום inside ".repeat(40),
+                    "סוף ".repeat(400)
+                ),
+                vec![true, false, false, true],
+            ),
+        ];
+        for (value, directions) in cases {
+            let rows = tooltip_rows(&value, 300., measure);
+            assert!(rows.len() > 3, "{} rows", rows.len());
+            for row in &rows {
+                let line = text_system.layout_line(&row.text, size, &[run(row.text.len())], None);
+                assert!(
+                    f32::from(line.width) <= 300.5,
+                    "{row:?} is {:?}",
+                    line.width
+                );
+                let drawn: usize = line.runs.iter().map(|run| run.glyphs.len()).sum();
+                let visible = row.text.chars().filter(|ch| !ch.is_whitespace()).count();
+                assert!(drawn >= visible, "every character of {row:?} is shaped");
+            }
+            // Paragraph directions, in order; the blank line counts as LTR.
+            let mut seen: Vec<bool> = Vec::new();
+            let mut previous_blank = true;
+            for row in &rows {
+                if row.text.is_empty() {
+                    seen.push(false);
+                    previous_blank = true;
+                } else if previous_blank || seen.last() != Some(&row.rtl) {
+                    seen.push(row.rtl);
+                    previous_blank = false;
+                }
+            }
+            assert_eq!(seen, directions);
+            let words: Vec<&str> = rows
+                .iter()
+                .flat_map(|row| row.text.split_whitespace())
+                .collect();
+            assert_eq!(words, value.split_whitespace().collect::<Vec<_>>());
         }
-        let joined: Vec<String> = rows
-            .iter()
-            .flat_map(|row| {
-                row.text
-                    .split_whitespace()
-                    .map(str::to_owned)
-                    .collect::<Vec<_>>()
-            })
-            .collect();
-        assert_eq!(
-            joined,
-            paragraph
-                .split_whitespace()
-                .map(str::to_owned)
-                .collect::<Vec<_>>()
-        );
     }
 
     #[gpui::test]
