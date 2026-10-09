@@ -35,6 +35,7 @@ for live in [False, True]:
                 found = subprocess.run(['xdotool', 'search', '--onlyvisible', '--pid', str(proc.pid), '--name', 'Tessera'], env=env, text=True, capture_output=True).stdout.split()
                 if found:
                     break
+            assert found, f'{name}: window was not mapped within 20 s'
             win = found[-1]
             xd('windowmove', win, '0', '0')
             xd('windowfocus', '--sync', win)
