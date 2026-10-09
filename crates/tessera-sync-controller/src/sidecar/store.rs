@@ -17,6 +17,10 @@ use std::{sync::Arc, time::Instant};
 mod unix;
 #[cfg(unix)]
 pub use unix::{UnixDir, UnixStore};
+#[cfg(target_os = "windows")]
+mod windows_dir;
+#[cfg(target_os = "windows")]
+pub use windows_dir::{WindowsDir, WindowsStore};
 
 pub(crate) const NAME: &str = "sidecar.json";
 /// Legacy `update.json`. Read only for migration; the v2 envelope owns update
@@ -180,3 +184,5 @@ impl<D: StateDir> super::Tx for Transaction<D> {
 
 #[cfg(all(test, unix))]
 mod tests;
+#[cfg(all(test, target_os = "windows"))]
+mod windows_tests;
