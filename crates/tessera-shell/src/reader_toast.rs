@@ -72,7 +72,7 @@ pub(super) fn bottom_space(window: &Window, cx: &App) -> Pixels {
 }
 
 pub(super) fn transient(message: impl Into<SharedString>, window: &mut Window, cx: &mut App) {
-    push(
+    let _ = push(
         Notification::new().message(message),
         Some(Duration::from_secs(4)),
         window,
@@ -81,7 +81,7 @@ pub(super) fn transient(message: impl Into<SharedString>, window: &mut Window, c
 }
 
 pub(super) fn missing_file(path: String, window: &mut Window, cx: &mut App) {
-    push(
+    let _ = push(
         Notification::new()
             .message("File not found")
             .action(move |_, _, cx| {
@@ -118,12 +118,18 @@ pub(super) fn error(message: impl Into<SharedString>, window: &mut Window, cx: &
     );
 }
 
+pub(super) type ToastKey = (&'static str, u64);
+
+pub(super) fn remove(key: ToastKey, window: &mut Window, cx: &mut App) {
+    window.remove_notification1::<Toast>(key, cx);
+}
+
 pub(super) fn push(
     notification: Notification,
     lifetime: Option<Duration>,
     window: &mut Window,
     cx: &mut App,
-) {
+) -> ToastKey {
     let key = ("reader-toast", NEXT_TOAST.fetch_add(1, Ordering::Relaxed));
     window.push_notification(
         notification
@@ -143,6 +149,7 @@ pub(super) fn push(
         })
         .detach();
     }
+    key
 }
 
 pub(super) fn dismiss(window: &mut Window, cx: &mut App) -> bool {
@@ -166,6 +173,13 @@ impl Reader {
             });
         if recovery != self.displayed_recovery {
             self.displayed_recovery = recovery.clone();
+            // Editing with the restored draft (or another note) makes the
+            // offer moot: it must not outlive «Unsaved changes restored».
+            if let Some(key) = self.recovery_toast.take() {
+                remove(key, window, cx);
+            }
+            self.recovery_toast_generation = self.recovery_toast_generation.wrapping_add(1);
+            let queued = self.recovery_toast_generation;
             if let Some((path, generation)) = recovery {
                 let reader = cx.weak_entity();
                 let message = if self.recovery_startup {
@@ -173,14 +187,29 @@ impl Reader {
                 } else {
                     "Unsaved edits are available."
                 };
+                let current = reader.clone();
+                let offered = (path.clone(), generation);
                 window.defer(cx, move |window, cx| {
-                    push(
+                    // Startup can enter editing between this render and the
+                    // deferred push; only show the offer if it still applies.
+                    let still_offered = current
+                        .read_with(cx, |this, _| {
+                            this.recovery_toast_generation == queued
+                                && this.displayed_recovery.as_ref() == Some(&offered)
+                                && this.editing.is_none()
+                        })
+                        .unwrap_or(false);
+                    if !still_offered {
+                        return;
+                    }
+                    let key = push(
                         Notification::new()
                             .message(message)
                             .content(move |_, _, _| {
                                 let reader = reader.clone();
                                 let path = path.clone();
                                 Button::new("restore-unsaved-edits")
+                                    .debug_selector(|| "restore-unsaved-edits".into())
                                     .small()
                                     .label("Restore unsaved edits")
                                     .on_click(move |_, window, cx| {
@@ -201,6 +230,7 @@ impl Reader {
                         window,
                         cx,
                     );
+                    let _ = current.update(cx, |this, _| this.recovery_toast = Some(key));
                 });
             }
         }
@@ -424,6 +454,109 @@ mod tests {
         visual.executor().advance_clock(Duration::from_secs(5));
         visual.run_until_parked();
         visual.update(|window, cx| assert!(window.notifications(cx).is_empty()));
+    }
+
+    /// #930: the «Restore unsaved edits» offer disappears as soon as the
+    /// note is being edited (startup restores the draft into the editor), and
+    /// a push deferred past that moment never shows up.
+    #[gpui::test]
+    fn recovery_offer_goes_away_when_editing_starts(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_reduce_motion(true);
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        std::fs::write(root.join("start.md"), "# Stable document\nBody").unwrap();
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        open_path: Some(root.join("start.md")),
+                        index_dir: Some(temp.path().join("index")),
+                        session_directory: Some(temp.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        let restore_shown = |visual: &mut VisualTestContext| {
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            visual.debug_bounds("restore-unsaved-edits").is_some()
+        };
+        let offer = |visual: &mut VisualTestContext| {
+            reader.update_in(visual, |r, _, cx| {
+                r.recovery_startup = true;
+                r.recovery_checked = true;
+                r.recovery_dismissed = false;
+                r.recovery_offer = true;
+                cx.notify();
+            });
+        };
+        // Shown, then editing starts: the offer is removed at once, long
+        // before its 4 s lifetime.
+        offer(visual);
+        visual.run_until_parked();
+        assert!(
+            restore_shown(visual),
+            "positive control: the offer is shown"
+        );
+        reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| assert!(r.editing.is_some()));
+        // Let the removed notice finish its exit transition; still far
+        // below the offer's own 4 s lifetime.
+        visual.executor().advance_clock(Duration::from_secs(1));
+        visual.run_until_parked();
+        assert!(!restore_shown(visual), "offer removed when editing starts");
+        // Back to Reader with a fresh offer whose push is deferred, and
+        // editing starts in the same update: it must never appear.
+        reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
+        visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_secs(5));
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            r.recovery_offer = true;
+            r.recovery_dismissed = false;
+            r.sync_notice_toast(window, cx);
+            r.toggle_source(window, cx);
+        });
+        visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_secs(1));
+        visual.run_until_parked();
+        assert!(
+            !restore_shown(visual),
+            "a deferred offer is dropped once editing"
+        );
+        // A → B → A before the deferred push: only the last one may show.
+        reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
+        visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_secs(5));
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            r.recovery_offer = true;
+            r.sync_notice_toast(window, cx);
+            r.recovery_offer = false;
+            r.sync_notice_toast(window, cx);
+            r.recovery_offer = true;
+            r.sync_notice_toast(window, cx);
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            assert_eq!(window.notifications(cx).len(), 1, "one offer, tracked")
+        });
+        reader.read_with(visual, |r, _| assert!(r.recovery_toast.is_some()));
     }
 
     #[gpui::test]

@@ -1305,6 +1305,12 @@ struct Reader {
     displayed_notice: Option<reader_toast::Notice>,
     displayed_choices: Vec<(String, Option<String>)>,
     displayed_recovery: Option<(String, u64)>,
+    /// The «Restore unsaved edits» notice on screen, removed as soon as the
+    /// offer no longer applies (#930).
+    recovery_toast: Option<reader_toast::ToastKey>,
+    /// Bumped on every offer change; a deferred push only shows the offer it
+    /// was queued for (A → B → A cannot push A twice).
+    recovery_toast_generation: u64,
     displayed_history_notice: Option<(uuid::Uuid, uuid::Uuid, String)>,
     history_notice_generation: u64,
     notice_generation: u64,
@@ -1577,6 +1583,8 @@ impl Reader {
             displayed_notice: None,
             displayed_choices: Vec::new(),
             displayed_recovery: None,
+            recovery_toast: None,
+            recovery_toast_generation: 0,
             displayed_history_notice: None,
             history_notice_generation: 0,
             notice_generation: 0,
