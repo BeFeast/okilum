@@ -1,0 +1,226 @@
+//! Guarded insertion into an existing reminders note. Run on a worker.
+use super::Plan;
+use crate::file_editor::{FileEditor, Save};
+use anyhow::{bail, ensure, Context, Result};
+use std::path::{Component, Path, PathBuf};
+
+/// Issued only after FileEditor has saved the complete insertion. Source history
+/// remains in durable editor state; this in-process capability is not a journal.
+#[derive(Clone, Debug)]
+pub struct Receipt {
+    root: PathBuf,
+    relative: String,
+    plan: Plan,
+}
+
+impl Receipt {
+    pub fn path(&self) -> &str {
+        &self.relative
+    }
+
+    pub fn undo(&self, root: &Path, drafts: &Path) -> Result<()> {
+        ensure!(
+            root.canonicalize()? == self.root,
+            "Undo belongs to a different vault"
+        );
+        let path = bound_path(&self.root, &self.relative)?;
+        let mut editor = open_clean(&path, drafts)?;
+        let before = self
+            .plan
+            .undo_source(editor.text())
+            .map_err(anyhow::Error::msg)?;
+        editor.set_text(before.to_owned())?;
+        save(&mut editor)
+    }
+}
+
+/// Apply a previously captured plan, comparing its entire preimage under the
+/// editor lock. `drafts` is durable editor state outside the disposable index.
+/// Missing destinations refuse: exclusive creation is a separate operation.
+pub fn apply(root: &Path, drafts: &Path, relative: &str, plan: &Plan) -> Result<Receipt> {
+    let root = root.canonicalize()?;
+    let path = bound_path(&root, relative)?;
+    let mut editor = open_clean(&path, drafts)?;
+    let after = plan
+        .apply_source(editor.text())
+        .map_err(anyhow::Error::msg)?;
+    editor.set_text(after.to_owned())?;
+    save(&mut editor)?;
+    Ok(Receipt {
+        root,
+        relative: relative.into(),
+        plan: plan.clone(),
+    })
+}
+
+fn bound_path(root: &Path, relative: &str) -> Result<PathBuf> {
+    let rel = Path::new(relative);
+    ensure!(
+        !relative.is_empty()
+            && rel.components().all(|c| matches!(c, Component::Normal(_)))
+            && rel
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("md")),
+        "Expected a vault-relative Markdown reminders path"
+    );
+    let mut path = root.to_owned();
+    for component in rel.components() {
+        path.push(component);
+        let metadata =
+            std::fs::symlink_metadata(&path).context("The reminders note is unavailable")?;
+        ensure!(
+            !metadata.file_type().is_symlink(),
+            "Reminders paths cannot traverse symlinks"
+        );
+    }
+    ensure!(
+        path.canonicalize()? == path,
+        "The reminders location changed"
+    );
+    Ok(path)
+}
+
+fn open_clean(path: &Path, drafts: &Path) -> Result<FileEditor> {
+    let editor = FileEditor::open(path, drafts)?;
+    ensure!(
+        editor.path() == path,
+        "The reminders location changed while opening it"
+    );
+    ensure!(
+        !editor.dirty(),
+        "The reminders note has unsaved edits. Open it before adding a reminder."
+    );
+    Ok(editor)
+}
+
+fn save(editor: &mut FileEditor) -> Result<()> {
+    match editor.save()? {
+        Save::Saved => Ok(()),
+        Save::Conflict => {
+            bail!("The reminders note changed. The edit was not saved; its draft is retained.")
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    const TASK: &str = "- [ ] Review [[Source.md]] 📅 2026-11-01\n";
+
+    fn fixture(source: &str) -> (tempfile::TempDir, PathBuf, PathBuf, Plan) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("Reminders.md"), source).unwrap();
+        let drafts = temp.path().join("state/editor-drafts");
+        let plan = Plan::new(source, TASK).unwrap();
+        (temp, root, drafts, plan)
+    }
+
+    #[test]
+    fn append_and_undo_preserve_bytes_and_archive_preimage() {
+        for source in ["", "# Reminders", "\u{feff}# תזכורות\r\n", TASK] {
+            let (_temp, root, drafts, plan) = fixture(source);
+            let receipt = apply(&root, &drafts, "Reminders.md", &plan).unwrap();
+            assert_eq!(receipt.path(), "Reminders.md");
+            let saved = std::fs::read_to_string(root.join(receipt.path())).unwrap();
+            assert_eq!(saved, plan.apply_source(source).unwrap());
+            assert!(drafts
+                .join("source-history")
+                .read_dir()
+                .unwrap()
+                .next()
+                .is_some());
+            receipt.undo(&root, &drafts).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(root.join(receipt.path())).unwrap(),
+                source
+            );
+            assert!(receipt.undo(&root, &drafts).is_err());
+        }
+    }
+
+    #[test]
+    fn stale_apply_and_undo_preserve_external_content() {
+        let (_temp, root, drafts, plan) = fixture("# Reminders\n");
+        let path = root.join("Reminders.md");
+        std::fs::write(&path, "External\n").unwrap();
+        assert!(apply(&root, &drafts, "Reminders.md", &plan).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "External\n");
+        let fresh = Plan::new("External\n", TASK).unwrap();
+        let receipt = apply(&root, &drafts, "Reminders.md", &fresh).unwrap();
+        assert!(receipt.undo(root.parent().unwrap(), &drafts).is_err());
+        let later = format!("{}Later\n", std::fs::read_to_string(&path).unwrap());
+        std::fs::write(&path, &later).unwrap();
+        assert!(receipt.undo(&root, &drafts).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), later);
+    }
+
+    #[test]
+    fn active_editor_and_recovered_draft_block_apply_and_undo() {
+        let (_temp, root, drafts, plan) = fixture("Original\n");
+        let path = root.join("Reminders.md");
+        let mut editor = FileEditor::open(&path, &drafts).unwrap();
+        assert!(apply(&root, &drafts, "Reminders.md", &plan).is_err());
+        editor.set_text("Unsaved\n".into()).unwrap();
+        drop(editor);
+        assert!(apply(&root, &drafts, "Reminders.md", &plan).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "Original\n");
+        let mut editor = FileEditor::open(&path, &drafts).unwrap();
+        assert_eq!(editor.text(), "Unsaved\n");
+        editor.reload().unwrap();
+        drop(editor);
+        let receipt = apply(&root, &drafts, "Reminders.md", &plan).unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        let mut editor = FileEditor::open(&path, &drafts).unwrap();
+        assert!(receipt.undo(&root, &drafts).is_err());
+        editor.set_text("New draft\n".into()).unwrap();
+        drop(editor);
+        assert!(receipt.undo(&root, &drafts).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+        let mut editor = FileEditor::open(&path, &drafts).unwrap();
+        assert_eq!(editor.text(), "New draft\n");
+        editor.reload().unwrap();
+        drop(editor);
+        receipt.undo(&root, &drafts).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "Original\n");
+    }
+
+    #[test]
+    fn refuses_missing_and_non_markdown_destinations_and_traversal() {
+        let (_temp, root, drafts, plan) = fixture("");
+        for relative in ["missing.md", "../Reminders.md", "/Reminders.md", ""] {
+            assert!(
+                apply(&root, &drafts, relative, &plan).is_err(),
+                "{relative}"
+            );
+        }
+        std::fs::write(root.join("data.txt"), "").unwrap();
+        assert!(apply(&root, &drafts, "data.txt", &plan).is_err());
+        assert!(!root.join("missing.md").exists());
+        assert_eq!(std::fs::read_to_string(root.join("data.txt")).unwrap(), "");
+        // An existing empty Markdown file is distinct from a missing destination.
+        apply(&root, &drafts, "Reminders.md", &plan).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_symlink_destinations_parents_and_undo_replacement() {
+        let (_temp, root, drafts, plan) = fixture("Original\n");
+        let receipt = apply(&root, &drafts, "Reminders.md", &plan).unwrap();
+        let path = root.join("Reminders.md");
+        let other = root.join("Other.md");
+        std::fs::rename(&path, &other).unwrap();
+        std::os::unix::fs::symlink(&other, &path).unwrap();
+        assert!(receipt.undo(&root, &drafts).is_err());
+        assert!(apply(&root, &drafts, "Reminders.md", &plan).is_err());
+        let alias = root.join("alias");
+        std::os::unix::fs::symlink(&root, &alias).unwrap();
+        assert!(apply(&root, &drafts, "alias/Other.md", &plan).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&other).unwrap(),
+            plan.apply_source("Original\n").unwrap()
+        );
+    }
+}

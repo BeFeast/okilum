@@ -72,3 +72,15 @@ The plan itself does not write or constitute an Undo receipt. A later writer mus
 open FileEditor, recheck the source while holding its lock, save through its
 existing conflict/recovery path, and only then expose Undo. Safe create uses the
 separate exclusive destination path, not an assumed empty existing file.
+
+## Existing-destination writer slice
+
+`reminder_append::write::apply` opens an existing vault-relative Markdown file
+with FileEditor, refuses active editors and recovered dirty drafts, and compares
+the plan preimage under the lock. Only a successful normal save issues a
+vault-bound in-process receipt. Undo reopens cleanly, verifies the exact saved
+postimage and restores the preimage through the same writer/history path.
+Missing files refuse; exclusive creation and creation Undo remain a separate
+slice. This API does not yet activate a menu or notifications. Callers must use
+the Reader's durable editor-state directory and a destination distinct from the
+source note, as required by the reminder contract.
