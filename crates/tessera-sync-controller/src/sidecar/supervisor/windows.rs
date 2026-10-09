@@ -13,15 +13,17 @@ use windows::{
         Foundation::{HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
         System::{
             JobObjects::{
-                AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicAccountingInformation,
+                AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob,
+                JobObjectBasicAccountingInformation, JobObjectBasicProcessIdList,
                 JobObjectExtendedLimitInformation, QueryInformationJobObject,
                 SetInformationJobObject, TerminateJobObject,
                 JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
                 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
             },
             Threading::{
-                CreateProcessW, ResumeThread, TerminateProcess, WaitForSingleObject,
-                CREATE_NO_WINDOW, CREATE_SUSPENDED, PROCESS_INFORMATION, STARTUPINFOW,
+                CreateProcessW, GetProcessId, OpenProcess, ResumeThread, TerminateProcess,
+                WaitForSingleObject, CREATE_NO_WINDOW, CREATE_SUSPENDED, PROCESS_INFORMATION,
+                PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, STARTUPINFOW,
             },
         },
     },
@@ -54,6 +56,17 @@ pub struct JobChild {
     // Closing the unnamed, non-inherited job kills every process still attached.
     job: OwnedHandle,
     process: OwnedHandle,
+    // Keep process objects alive so their IDs cannot be reused between capture
+    // and terminal completion. Never use these IDs as termination targets.
+    descendants: Vec<OwnedHandle>,
+}
+
+const MAX_JOB_PROCESSES: usize = 256;
+#[repr(C)]
+struct ProcessList {
+    assigned: u32,
+    listed: u32,
+    ids: [usize; MAX_JOB_PROCESSES],
 }
 impl JobChild {
     /// The caller must first verify the immutable staged payload signature/hash
@@ -106,12 +119,31 @@ impl JobChild {
         Ok(Self {
             job,
             process: suspended.process.take().unwrap(),
+            descendants: Vec::new(),
         })
     }
     /// A live descendant keeps the runtime running even after its root exits.
-    /// Only an empty job AND a signaled captured root establish complete exit.
+    /// Complete exit also requires signaled captured descendants. If a process
+    /// disappeared before capture, status fails instead of certifying exit.
     pub fn running(&self) -> Result<bool> {
-        Ok(self.active_processes()? != 0 || self.root_running()?)
+        let account = self.accounting()?;
+        if account.ActiveProcesses != 0 || self.root_running()? {
+            return Ok(true);
+        }
+        // Accounting can reach zero before process handles become signaled.
+        // A vanished, uncaptured descendant cannot be certified after the fact.
+        ensure!(
+            account.TotalProcesses as usize == self.descendants.len() + 1,
+            "owned job completion has uncaptured processes"
+        );
+        for process in &self.descendants {
+            match unsafe { WaitForSingleObject(raw(process), 0) } {
+                WAIT_OBJECT_0 => (),
+                WAIT_TIMEOUT => return Ok(true),
+                _ => return Err(windows::core::Error::from_win32().into()),
+            }
+        }
+        Ok(false)
     }
     fn root_running(&self) -> Result<bool> {
         match unsafe { WaitForSingleObject(raw(&self.process), 0) } {
@@ -120,7 +152,7 @@ impl JobChild {
             _ => Err(windows::core::Error::from_win32().into()),
         }
     }
-    fn active_processes(&self) -> Result<u32> {
+    fn accounting(&self) -> Result<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION> {
         let mut account = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
         unsafe {
             QueryInformationJobObject(
@@ -131,11 +163,75 @@ impl JobChild {
                 None,
             )?;
         }
-        Ok(account.ActiveProcesses)
+        Ok(account)
+    }
+    fn capture_descendants(&mut self, deadline: Instant) -> Result<()> {
+        let mut list = ProcessList {
+            assigned: 0,
+            listed: 0,
+            ids: [0; MAX_JOB_PROCESSES],
+        };
+        unsafe {
+            QueryInformationJobObject(
+                Some(raw(&self.job)),
+                JobObjectBasicProcessIdList,
+                &mut list as *mut _ as _,
+                size_of::<ProcessList>() as u32,
+                None,
+            )?;
+        }
+        ensure!(
+            list.assigned == list.listed && list.listed as usize <= MAX_JOB_PROCESSES,
+            "owned job process inventory incomplete"
+        );
+        let root = unsafe { GetProcessId(raw(&self.process)) } as usize;
+        for id in &list.ids[..list.listed as usize] {
+            ensure!(
+                Instant::now() < deadline,
+                "owned process stop deadline expired"
+            );
+            if *id == root
+                || self
+                    .descendants
+                    .iter()
+                    .any(|p| unsafe { GetProcessId(raw(p)) } as usize == *id)
+            {
+                continue;
+            }
+            ensure!(
+                self.descendants.len() + 1 < MAX_JOB_PROCESSES,
+                "owned job process limit exceeded"
+            );
+            let pid = u32::try_from(*id)?;
+            let process = unsafe {
+                OwnedHandle::from_raw_handle(
+                    OpenProcess(
+                        PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+                        false,
+                        pid,
+                    )?
+                    .0,
+                )
+            };
+            // The enumerated PID is not authority. Verify the captured process
+            // object belongs to this unnamed, non-inherited job before retaining
+            // it. An exit/reuse race fails, never adopts an unrelated process.
+            let mut belongs = Default::default();
+            unsafe {
+                IsProcessInJob(raw(&process), Some(raw(&self.job)), &mut belongs)?;
+            }
+            ensure!(belongs.as_bool(), "captured process is not in owned job");
+            self.descendants.push(process);
+        }
+        ensure!(
+            self.accounting()?.TotalProcesses as usize == self.descendants.len() + 1,
+            "owned job completion has uncaptured processes"
+        );
+        Ok(())
     }
     /// Convenience for callers without an existing operation budget. IPC/hook
     /// integration must use stop_until with its original absolute deadline.
-    pub fn stop(&self, timeout: Duration) -> Result<()> {
+    pub fn stop(&mut self, timeout: Duration) -> Result<()> {
         let deadline = Instant::now()
             .checked_add(timeout)
             .ok_or_else(|| anyhow::anyhow!("invalid owned process stop timeout"))?;
@@ -146,7 +242,12 @@ impl JobChild {
     /// evidence of exit; retain pending intent and ownership for reconciliation.
     /// Native queries/termination are synchronous; this bounds polling, not an
     /// OS call that stalls. Drop still closes the kill-on-close job.
-    pub fn stop_until(&self, deadline: Instant) -> Result<()> {
+    pub fn stop_until(&mut self, deadline: Instant) -> Result<()> {
+        ensure!(
+            Instant::now() < deadline,
+            "owned process stop deadline expired"
+        );
+        self.capture_descendants(deadline)?;
         ensure!(
             Instant::now() < deadline,
             "owned process stop deadline expired"
@@ -184,12 +285,16 @@ mod tests {
         fn main() {
             let args: Vec<_> = std::env::args().collect();
             if args.get(1).map(String::as_str) == Some("child") {
-                std::thread::sleep(std::time::Duration::from_secs(60));
+                let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
+                while std::time::Instant::now() < until {
+                    if std::path::Path::new(&args[2]).join("release-child").exists() { break; }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
                 return;
             }
             let data = args.windows(2).find(|a| a[0] == "--data").unwrap()[1].clone();
             let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-                .arg("child").spawn().unwrap();
+                .arg("child").arg(&data).spawn().unwrap();
             std::fs::write(std::path::Path::new(&data).join("child.pid"), child.id().to_string()).unwrap();
             if std::path::Path::new(&data).join("exit-parent").exists() {
                 return;
@@ -231,7 +336,7 @@ mod tests {
             });
             fs::create_dir(&data)?;
             fs::create_dir(&config)?;
-            let job = JobChild::spawn(&Launch {
+            let mut job = JobChild::spawn(&Launch {
                 executable: executable.to_string_lossy().into_owned(),
                 config: config.to_string_lossy().into_owned(),
                 data: data.to_string_lossy().into_owned(),
@@ -322,14 +427,14 @@ mod tests {
     #[test]
     fn native_job_reports_live_descendant_after_root_exit() -> Result<()> {
         let root = tempfile::tempdir()?;
-        let (job, descendant) = live_fixture(root.path(), true)?;
+        let (mut job, descendant) = live_fixture(root.path(), true)?;
         ensure!(
             unsafe { WaitForSingleObject(raw(&job.process), 10000) } == WAIT_OBJECT_0,
             "fixture root did not exit"
         );
         ensure!(!job.root_running()?, "root must be exited");
         ensure!(
-            job.active_processes()? >= 1,
+            job.accounting()?.ActiveProcesses >= 1,
             "descendant missing from owned job"
         );
         ensure!(job.running()?, "root exit must not hide a live descendant");
@@ -346,12 +451,12 @@ mod tests {
     #[test]
     fn native_job_expired_deadline_refuses_termination_with_stop_positive_control() -> Result<()> {
         let root = tempfile::tempdir()?;
-        let (job, descendant) = live_fixture(root.path(), false)?;
+        let (mut job, descendant) = live_fixture(root.path(), false)?;
         let error = job.stop_until(Instant::now()).unwrap_err();
         ensure!(error.to_string().contains("deadline expired"), "{error:#}");
         ensure!(job.root_running()?, "expired stop terminated root");
         ensure!(
-            job.active_processes()? >= 2,
+            job.accounting()?.ActiveProcesses >= 2,
             "expired stop changed owned tree"
         );
         ensure!(
@@ -367,6 +472,40 @@ mod tests {
             "positive stop did not reap descendant"
         );
         eprintln!("owned job: expired budget preserved live tree; valid budget reaped same tree");
+        Ok(())
+    }
+
+    #[test]
+    fn native_job_uncaptured_exit_cannot_authorize_stopped() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let (mut job, descendant) = live_fixture(root.path(), false)?;
+        ensure!(
+            job.running()?,
+            "positive control: initial tree must be running"
+        );
+        fs::write(root.path().join("data/release-child"), b"")?;
+        ensure!(
+            unsafe { WaitForSingleObject(raw(&descendant), 10000) } == WAIT_OBJECT_0,
+            "fixture descendant did not exit"
+        );
+        ensure!(
+            unsafe { WaitForSingleObject(raw(&job.process), 10000) } == WAIT_OBJECT_0,
+            "fixture root did not exit"
+        );
+        // Only the fixture owns the descendant handle. Production cannot use
+        // an empty job to manufacture a terminal witness for an uncaptured exit.
+        ensure!(
+            job.accounting()?.ActiveProcesses == 0,
+            "fixture job not empty"
+        );
+        let error = job.running().unwrap_err();
+        ensure!(error.to_string().contains("uncaptured"), "{error:#}");
+        ensure!(
+            job.stop_until(Instant::now() + Duration::from_secs(10))
+                .is_err(),
+            "uncaptured historical process must not authorize successful stop"
+        );
+        eprintln!("owned job: uncaptured completed descendant refused; empty accounting is not terminal proof");
         Ok(())
     }
 }
