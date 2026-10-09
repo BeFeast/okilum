@@ -807,7 +807,11 @@ mod tests {
         visual.run_until_parked();
         reader.update_in(visual, |r, window, cx| {
             r.toggle_source(window, cx);
-            r.toggle_live_preview(window, cx);
+            r.set_live_preview(true, window, cx);
+            assert!(
+                r.source_live_preview(),
+                "classify the next note in Live Preview"
+            );
         });
         visual.run_until_parked();
         reader.read_with(visual, |r, cx| {
