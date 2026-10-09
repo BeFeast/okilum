@@ -1,10 +1,11 @@
-//! macOS updates through stock Sparkle 2: its standard UI does the checking,
-//! downloading, installing and relaunching. The app only adds menu items and
-//! the beta channel preference.
+//! macOS updates through stock Sparkle 2: its standard UI downloads, installs
+//! and relaunches. A manual check only probes and reports inline (#995). The
+//! app adds menu items and the beta channel preference.
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(any(windows, test))]
 mod ready;
+pub(crate) mod status;
 #[cfg(windows)]
 mod windows;
 #[cfg(any(windows, test))]
@@ -52,19 +53,36 @@ pub(crate) fn install(_cx: &mut App) {
         windows::start();
         _cx.spawn(async move |cx| {
             let mut previous = None;
+            let mut checked = status::generation();
             loop {
                 cx.background_executor()
                     .timer(std::time::Duration::from_secs(1))
                     .await;
                 let current = windows::ready_package();
-                if current != previous {
+                if current != previous || status::generation() != checked {
                     previous = current;
+                    checked = status::generation();
                     cx.update(|cx| cx.refresh_windows());
                 }
             }
         })
         .detach();
     }
+    #[cfg(target_os = "macos")]
+    _cx.spawn(async move |cx| {
+        // Sparkle reports on the main thread, outside GPUI; redraw the line.
+        let mut checked = status::generation();
+        loop {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(300))
+                .await;
+            if status::generation() != checked {
+                checked = status::generation();
+                cx.update(|cx| cx.refresh_windows());
+            }
+        }
+    })
+    .detach();
     #[cfg(target_os = "macos")]
     {
         macos::start();
@@ -144,6 +162,10 @@ pub(crate) fn action_label() -> &'static str {
     if windows::ready() {
         return "Restart to update";
     }
+    #[cfg(target_os = "macos")]
+    if matches!(status::get(), status::CheckStatus::Available(_)) {
+        return "Install Update…";
+    }
     "Check for Updates…"
 }
 pub(crate) fn activate(cx: &mut App) {
@@ -152,8 +174,19 @@ pub(crate) fn activate(cx: &mut App) {
         windows::restart(None, cx);
         return;
     }
+    // A found update installs through Sparkle's own window.
+    #[cfg(target_os = "macos")]
+    if matches!(status::get(), status::CheckStatus::Available(_)) {
+        macos::install();
+        return;
+    }
     let _ = cx;
     check();
+}
+
+/// The inline result line for About and Settings, if a check has run.
+pub(crate) fn status_line() -> Option<String> {
+    status::text(&status::get(), std::time::SystemTime::now())
 }
 
 pub(crate) fn ready_notice(window: &mut gpui::Window, cx: &mut App) {
