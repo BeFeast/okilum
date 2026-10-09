@@ -167,13 +167,32 @@ journal durability and supervisor exit remain required, not inferred from fakes.
 ## Implementation status
 
 Landed as library code, not yet wired into Reader, installers or a native supervisor:
-`sidecar::authority` (envelope, tokens, transitions, migration; #888), the Unix
-`sidecar::store` (per-transaction lock with an absolute deadline, exact-next-revision
-commits, explicit idempotent migration, operator epoch repair; #894), IPC v2 with
-the token in Stop and an exact echo (#897), `Controller` on transactions (#901) and
-`update` Stop/Rollback/phases on the same envelope (this slice; `update.json` is now
-read only by migration). Platforms without an authenticated IPC channel (both native
-adapters today) stop natively and unregister under the same lock instead of sending
-a token. Still open: a native `OwnedRuntime` that takes the lock in `authorize_stop`,
-authenticated generation discovery, a Windows store with DACL-checked file
-replacement, and real native crash/durability and supervisor-exit acceptance.
+`sidecar::authority` (envelope, tokens, transitions, migration; #888), the
+transactional `sidecar::store` (portable transaction logic with owned locks over a
+platform `StateDir`: per-transaction lock with an absolute deadline, exact-next-revision
+commits, explicit idempotent migration, operator epoch repair; #894, #917), the Unix
+`StateDir` and the Windows one (#924: the lock is a read-denying open of the protected
+private directory, journal files carry an explicit owner and a protected single-grant
+DACL, replacement is `MoveFileExW` with write-through), IPC v2 with the token in Stop
+and an exact echo (#897), `Controller` on transactions (#901), `update`
+Stop/Rollback/phases on the same envelope (#906; `update.json` is read only by
+migration) and `supervisor::runtime::StoreRuntime`, the portable `OwnedRuntime` that
+takes the transaction in `authorize_stop` (binding, epoch, current revision, stored
+token, reason and generation via `Envelope::authorize`), keeps it through the
+owned-tree stop and drops it before the reply. The native piece it needs is only an
+`OwnedTree` (captured handles, bounded stop and reap); the listener passes the
+exchange's deadline with `begin_exchange` before each `serve_one`.
+
+Platforms without an authenticated IPC channel (both native adapters today) stop
+natively and unregister under the same lock instead of sending a token.
+
+Residual: `write` validates the current journal and then replaces it inside one
+transaction, so no cooperating process can interleave and other users are excluded by
+the owner-only permissions. A hostile process running as the same user (or an
+administrator) could still swap the file in that window; neither permission model is a
+boundary against the owner, and peer identity and signature checks are the ownership
+gate. A second validation would narrow the window without closing it.
+
+Still open: authenticated generation discovery and the native `OwnedTree` (Job Object
+on Windows, a process group on macOS), and real native crash/durability and
+supervisor-exit acceptance.
