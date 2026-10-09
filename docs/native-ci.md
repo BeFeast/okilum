@@ -10,8 +10,8 @@ requests still use the public `.github/workflows/ci.yml` workflow.
 
 After Linux succeeds, the Forgejo `macos-github` job checks out the exact PR head
 and pushes only that commit to
-`forgejo-pr/<number>/<head-sha>-<forgejo-run-id>-<attempt>-<invocation-uuid>` on `BeFeast/tessera`.
-The `TESSERA_GITHUB_MIRROR` secret needs Contents and Workflows read/write and
+`forgejo-pr/<number>/<head-sha>-<forgejo-run-id>-<attempt>-<invocation-uuid>` on `BeFeast/okilum`.
+The `OKILUM_GITHUB_MIRROR` secret needs Contents and Workflows read/write and
 permission to read Actions run/job results. The token stays in the Forgejo job;
 GitHub receives neither a Forgejo token nor signing secrets. This is the explicit
 exception to the main-and-release-tag mirror policy: trusted PR source is public.
@@ -62,7 +62,7 @@ as operational. A green local run does not prove the GitHub integration.
 
 ### Temporary owner-approved local lane
 
-`TESSERA_MACOS_LANE=local` selects the trusted M4 native job directly after Linux.
+`OKILUM_MACOS_LANE=local` selects the trusted M4 native job directly after Linux.
 The GitHub bridge is skipped, so it occupies no `light` runner while that lane is
 selected. Unset the variable or set `hosted` to restore hosted-only checks; remote
 unavailability never silently falls back to M4. Both lanes retain the same native

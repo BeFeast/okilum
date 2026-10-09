@@ -6,7 +6,7 @@ It uses a separate target cache and concurrency group. The single macOS runner
 still serializes jobs; a running QA build occupies its slot until completion.
 The hourly arm64 release workflow and publisher are unchanged.
 
-The artifact contains a Developer ID signed `Tessera Intel QA.app`, its ZIP and
+The artifact contains a Developer ID signed `Okilum Intel QA.app`, its ZIP and
 build time/executable size metrics. It is not notarized. Its separate bundle ID
 and absence of `SUFeedURL` prevent the QA app from consuming the arm64 appcast.
 It is never handed to the public release publisher.

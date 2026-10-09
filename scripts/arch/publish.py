@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'updater'))
 from release import R2  # noqa: E402
 import catalog
 
-PREFIX = 'tessera/arch'
+PREFIX = 'okilum/arch'
 
 
 def run(*args, **kwargs):
@@ -28,7 +28,7 @@ def encode(value):
 def package_name(build):
     if not re.fullmatch(r'[1-9][0-9]*', str(build)):
         raise ValueError('Build must be a positive integer')
-    return f'tessera-0.1.{build}-1-x86_64.pkg.tar.zst'
+    return f'okilum-0.1.{build}-1-x86_64.pkg.tar.zst'
 
 
 class SigningKey:
@@ -66,7 +66,7 @@ class SigningKey:
 def validate_package(path, build):
     info = run('bsdtar', '-xOf', str(path), '.PKGINFO').decode()
     fields = dict(line.split(' = ', 1) for line in info.splitlines() if ' = ' in line)
-    for key, expected in [('pkgname', 'tessera'), ('pkgver', f'0.1.{build}-1'), ('arch', 'x86_64')]:
+    for key, expected in [('pkgname', 'okilum'), ('pkgver', f'0.1.{build}-1'), ('arch', 'x86_64')]:
         if fields.get(key) != expected:
             raise ValueError(f'Unexpected package {key}: {fields.get(key)}')
 
@@ -81,7 +81,7 @@ def publish_channel(r2, key, tmp, channel, manifest, package, signature):
     path.with_suffix(path.suffix + '.sig').write_bytes(signature)
     key.verify(path)
     validate_package(path, manifest['build'])
-    db = tmp / f'tessera-{channel}.db.tar.gz'
+    db = tmp / f'okilum-{channel}.db.tar.gz'
     run('repo-add', '--sign', '--key', key.fingerprint, str(db), str(path),
         env={**os.environ, 'GNUPGHOME': str(key.home)})
     key.verify(db)
@@ -90,8 +90,8 @@ def publish_channel(r2, key, tmp, channel, manifest, package, signature):
         r2.put(f'{prefix}/{name}', data, 'application/octet-stream', 'public, max-age=31536000, immutable')
     # R2 cannot atomically replace DB + detached signature. Serialized publication
     # keeps the window short; pacman fails closed if a client crosses that window.
-    r2.put(f'{prefix}/tessera-{channel}.db.sig', Path(str(db) + '.sig').read_bytes(), 'application/octet-stream', 'no-cache')
-    r2.put(f'{prefix}/tessera-{channel}.db', db.read_bytes(), 'application/octet-stream', 'no-cache')
+    r2.put(f'{prefix}/okilum-{channel}.db.sig', Path(str(db) + '.sig').read_bytes(), 'application/octet-stream', 'no-cache')
+    r2.put(f'{prefix}/okilum-{channel}.db', db.read_bytes(), 'application/octet-stream', 'no-cache')
     r2.put(f'{prefix}/latest.json', encode(manifest), 'application/json', 'no-cache')
 
 
@@ -128,7 +128,7 @@ def execute(args, r2, key, tmp):
         if hashlib.sha256(package).hexdigest() != manifest['sha256']:
             raise ValueError('Archived package checksum mismatch')
         channel = 'stable'
-    r2.put(f'{PREFIX}/tessera-signing-key.asc', key.public(), 'application/pgp-keys', 'no-cache')
+    r2.put(f'{PREFIX}/okilum-signing-key.asc', key.public(), 'application/pgp-keys', 'no-cache')
     publish_channel(r2, key, tmp, channel, manifest, package, signature)
     if args.command == 'publish':
         catalog.record(r2, 'linux', args.build, args.source, [

@@ -18,7 +18,7 @@ import urllib.parse
 import urllib.request
 import uuid
 
-REPOSITORY = "BeFeast/tessera"
+REPOSITORY = "BeFeast/okilum"
 WORKFLOW = ".github/workflows/forgejo-macos.yml"
 BUILD_STEP = "Compile Reader and run quick native regressions"
 
@@ -66,7 +66,7 @@ def push_head(branch, sha, token):
     actual = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     if actual != sha:
         raise ValueError("Checkout is not the requested PR head")
-    with tempfile.TemporaryDirectory(prefix="tessera-github-") as directory:
+    with tempfile.TemporaryDirectory(prefix="okilum-github-") as directory:
         askpass = Path(directory) / "askpass"
         askpass.write_text('#!/usr/bin/env python3\nimport os,sys\n'
                            'print("x-access-token" if "Username" in sys.argv[1] '

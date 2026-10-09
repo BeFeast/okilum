@@ -196,13 +196,13 @@ backend restart and goal selection changes cannot erase captures or receipts.
 
 ## Parallel ownership and acceptance
 
-Backend owner: new `crates/tessera-brain/src/inbox.rs` for public types/validation,
+Backend owner: new `crates/okilum-brain/src/inbox.rs` for public types/validation,
 `runtime/inbox.rs` for workspace transaction methods (or a bounded runtime section),
 `runtime.rs` State/recovery hooks, `service.rs` operation routing before goal routing,
 `application.rs` capability advertisement, `retrieval.rs` explicit classification,
 and backend integration tests. Update the application API from this frozen contract.
 
-Native UI owner: new `crates/tessera-shell/src/brain/inbox_ui.rs`, minimal `brain.rs`
+Native UI owner: new `crates/okilum-shell/src/brain/inbox_ui.rs`, minimal `brain.rs`
 state/dispatch integration, inbox/attention navigation and UI tests. Keep source,
 conversation and goal drafts intact. Do not edit backend types/service/runtime;
 consume the JSON interface above through the existing request batching mechanism.
@@ -211,7 +211,7 @@ Native retains an outbound capture request before sending it in per-client,
 per-brain durable state, clearing it only after a matching committed receipt. A
 restart/lost reply must reuse the exact operation/source key. Inbox pagination,
 selection and delayed response guards use capture/workspace identity, not goal
-selection. A new capture must appear/read from Tessera without changing the active
+selection. A new capture must appear/read from Okilum without changing the active
 goal; existing explicit goal creation keeps its observable-criteria requirement.
 
 Backend tests cover every transaction crash boundary, concurrent duplicates,

@@ -35,7 +35,7 @@ with tempfile.TemporaryDirectory(prefix='reader-profile-', dir=os.environ.get('R
         else:
             text = text.replace('// API_FIRST: production prepares first document after the full scan/index.',
                 'let mut first = Vault::from_note_paths(["note0000.md".to_owned()]); first.root = root.clone(); prepare(&first); let first_ms = total.elapsed().as_secs_f64() * 1000.;')
-        test = source / 'crates/tessera-core/tests/reader_open_profile.rs'
+        test = source / 'crates/okilum-core/tests/reader_open_profile.rs'
         test.write_text(text)
         env = dict(os.environ, READER_PROFILE_PIN=pin, CARGO_TARGET_DIR=str(repo / 'target'))
-        subprocess.run(['cargo', 'test', '--locked', '-p', 'tessera-core', '--test', 'reader_open_profile', '--', '--nocapture'], cwd=source, env=env, check=True)
+        subprocess.run(['cargo', 'test', '--locked', '-p', 'okilum-core', '--test', 'reader_open_profile', '--', '--nocapture'], cwd=source, env=env, check=True)

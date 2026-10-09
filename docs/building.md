@@ -1,4 +1,4 @@
-# Building and opening Tessera
+# Building and opening Okilum
 
 Build the platform-native executable from an identified checkout. These commands
 stage development binaries; they do not install launchers, services or providers.
@@ -12,8 +12,8 @@ exact source commit from that candidate's provenance before building. Otherwise
 this starts from the repository's default branch:
 
 ```sh
-git clone https://git.oklabs.uk/BeFeast/tessera.git
-cd tessera
+git clone https://git.oklabs.uk/BeFeast/okilum.git
+cd okilum
 git rev-parse HEAD
 ```
 
@@ -55,10 +55,10 @@ and FreeType are still platform libraries.
 
 ```sh
 CC=/usr/bin/cc CXX=/usr/bin/c++ \
-cargo +1.96.1 build --release --locked -p tessera-shell -p tessera-cored
+cargo +1.96.1 build --release --locked -p okilum-shell -p okilum-cored
 ```
 
-The executables are `target/release/tessera` and `target/release/tessera-cored`.
+The executables are `target/release/okilum` and `target/release/okilum-cored`.
 Run them in the appropriate role; opening the GUI does not start or replace an
 existing Brain backend.
 
@@ -87,11 +87,11 @@ CXX=/usr/bin/clang++ \
 SDKROOT="$(xcrun --sdk macosx --show-sdk-path)" \
 CARGO_TARGET_DIR="$PWD/target-macos" \
 cargo +1.96.1 build --release --locked \
-  --target aarch64-apple-darwin -p tessera-shell
+  --target aarch64-apple-darwin -p okilum-shell
 ```
 
 This builds the GUI client; an existing remote Brain backend remains separate.
-The executable is `target-macos/aarch64-apple-darwin/release/tessera`; run it with
+The executable is `target-macos/aarch64-apple-darwin/release/okilum`; run it with
 `DYLD_FRAMEWORK_PATH="$PWD/vendor/sparkle"` because it sits outside an app bundle. No Linux
 libraries or separate font installation are needed. If a dependency is missing,
 check the platform prerequisites and retain the exact build error.
@@ -103,13 +103,13 @@ That is source inspection, not a verified Metal launch on M4.
 For a first read-only smoke, use disposable files and a separate index:
 
 ```sh
-TESSERA_SMOKE_DIR="$(mktemp -d)"
-mkdir "$TESSERA_SMOKE_DIR/vault"
-printf '# Tessera on M4\n\nMarkdown and typography.\n' \
-  > "$TESSERA_SMOKE_DIR/vault/README.md"
-./target-macos/aarch64-apple-darwin/release/tessera \
-  --vault "$TESSERA_SMOKE_DIR/vault" \
-  --index-dir "$TESSERA_SMOKE_DIR/index"
+OKILUM_SMOKE_DIR="$(mktemp -d)"
+mkdir "$OKILUM_SMOKE_DIR/vault"
+printf '# Okilum on M4\n\nMarkdown and typography.\n' \
+  > "$OKILUM_SMOKE_DIR/vault/README.md"
+./target-macos/aarch64-apple-darwin/release/okilum \
+  --vault "$OKILUM_SMOKE_DIR/vault" \
+  --index-dir "$OKILUM_SMOKE_DIR/index"
 ```
 
 Inspect rendering, search, selection/copy and Appearance. Record the actual source
@@ -128,7 +128,7 @@ Reader preview, not a supported installer or an auto-update channel.
 ## Release configuration (maintainers)
 
 Forgejo remains the only CI/publisher. Configure repository or organization vars:
-`TESSERA_SIGNING_IDENTITY`, `TESSERA_NOTARY_PROFILE`, `R2_ENDPOINT`, and optionally
+`OKILUM_SIGNING_IDENTITY`, `OKILUM_NOTARY_PROFILE`, `R2_ENDPOINT`, and optionally
 `FORGEJO_CHECKOUT_URL` for runner-specific network routing. The default checkout
 and API URL is the public Forgejo server. Never put private keys in these vars;
 signing/upload credentials remain in Forgejo secrets or the macOS keychain.

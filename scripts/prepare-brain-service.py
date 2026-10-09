@@ -25,11 +25,11 @@ args = [str(a.binary), 'brain', '--brain-id', brain_id, '--vault', str(a.brain),
 def quote(value):
     return '"' + value.replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%') + '"'
 a.output.mkdir(parents=True, exist_ok=True)
-unit = '[Unit]\nDescription=Tessera project brain backend\nAfter=network-online.target\n\n[Service]\nType=simple\nExecStart=' + ' '.join(map(quote, args)) + '\nRestart=on-failure\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n'
-(a.output / 'tessera-brain.service').write_text(unit)
+unit = '[Unit]\nDescription=Okilum project brain backend\nAfter=network-online.target\n\n[Service]\nType=simple\nExecStart=' + ' '.join(map(quote, args)) + '\nRestart=on-failure\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n'
+(a.output / 'okilum-brain.service').write_text(unit)
 (a.output / 'backend.json').write_text(json.dumps({'brain_id': brain_id, 'brain': str(a.brain),
     'operational': str(a.operational), 'listen': a.listen, 'argv': args}, indent=2) + '\n')
-(a.output / 'plan.md').write_text(f'''# Prepared ordinary Tessera backend
+(a.output / 'plan.md').write_text(f'''# Prepared ordinary Okilum backend
 
 Preparation only: no directory migration, installation or running service change.
 
@@ -43,7 +43,7 @@ Before an approved installation, review these exact paths and preserve an existi
 brain identity/state instead of replacing it. Create the brain/records and separate
 operational directories if this is a new workspace. Install the reviewed binary
 and this unit under the intended user's systemd configuration, then enable/start
-only this unit. Reopening ordinary Tessera selects its saved profile. A remote
+only this unit. Reopening ordinary Okilum selects its saved profile. A remote
 desktop needs reviewed persistent loopback forwarding for backend and T3 browser
 addresses; it must not use a one-off test launcher. Enabling user lingering, if
 required for logout independence, belongs to that explicit installation plan.

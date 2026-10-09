@@ -29,7 +29,7 @@ Current provider connectivity and a newer active link do not replace the saved
 historical identity. These historical fields are not fabricated inside the
 canonical Observation or written back to the file.
 
-The shell and backend share exactly four pure DTOs from `tessera-core`:
+The shell and backend share exactly four pure DTOs from `okilum-core`:
 `Observation`, `Issue`, `Attempt` and `Approval`. Existing backend import paths,
 derives and serde behavior remain intact; the later `Approval.dashboard_url`
 still accepts its historical omission. Unknown authored metadata remains in the
@@ -53,5 +53,5 @@ unchanged Markdown. Focused shell checks exercise inactive-history staging,
 hydration, duplicate no-op and late history/provenance changes without write RPCs.
 
 Native evidence and independent source/package/CI reviews are tracked in
-[issue267](https://git.oklabs.uk/BeFeast/tessera/issues/267). Frontmatter rendering
-presentation is a separate [issue268](https://git.oklabs.uk/BeFeast/tessera/issues/268).
+[issue267](https://git.oklabs.uk/BeFeast/okilum/issues/267). Frontmatter rendering
+presentation is a separate [issue268](https://git.oklabs.uk/BeFeast/okilum/issues/268).

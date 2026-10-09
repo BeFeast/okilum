@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Native #914 regression: Live Preview scrolls to the end of a long note by wheel
-and by keyboard. Run on an exclusive X11 display (e.g. tessera-dev, never maestro).
-Usage: DISPLAY=:914 python3 scripts/check-lp-scroll-native.py TESSERA_BINARY WORK_DIR
+and by keyboard. Run on an exclusive X11 display (e.g. okilum-dev, never maestro).
+Usage: DISPLAY=:914 python3 scripts/check-lp-scroll-native.py OKILUM_BINARY WORK_DIR
 The readout is the clipboard: after scrolling, visible rows are triple-clicked and
 copied from the top down until the end marker is found.
 """

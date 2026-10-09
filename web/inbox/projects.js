@@ -16,7 +16,7 @@ export function validateResult(r){
  if(!bounded(r.what_to_check,8192))throw new Error('What to check: enter 1–8192 UTF-8 bytes.');
  if(!safeResultURL(r.url)||new TextEncoder().encode(r.url).length>2048)throw new Error('Enter an HTTPS result link up to 2048 bytes.');
 }
-export function projectJournal(storage,owner,project,kind){const key=`tessera-project-${kind}-v1:${owner}:${project}`;return{get:()=>JSON.parse(storage.getItem(key)||'null'),put:v=>storage.setItem(key,JSON.stringify(v)),clear:()=>storage.removeItem(key)};}
+export function projectJournal(storage,owner,project,kind){const key=`okilum-project-${kind}-v1:${owner}:${project}`;return{get:()=>JSON.parse(storage.getItem(key)||'null'),put:v=>storage.setItem(key,JSON.stringify(v)),clear:()=>storage.removeItem(key)};}
 export function mountProjects({api,post,owner,online,openQuestion,storage=localStorage}){
  const $=id=>document.getElementById(id),el=(tag,text)=>{const n=document.createElement(tag);n.textContent=text;return n;};
  let who=null,epoch=0,busy=false,refreshAgain=false,writing=false,project=null,launches=[],drafts=new Map(),notice='';

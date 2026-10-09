@@ -1,8 +1,8 @@
 # Reader design spec — direction A «Calm»
 
-Tracking: [#348](https://git.oklabs.uk/BeFeast/tessera/issues/348). Approved by Oleg on
+Tracking: [#348](https://git.oklabs.uk/BeFeast/okilum/issues/348). Approved by Oleg on
 2026-10-04 from the interactive mockup (direction A):
-[html.me.uk/t/tessera-reader-348/reader.html](https://html.me.uk/t/tessera-reader-348/reader.html?dir=A).
+[html.me.uk/t/okilum-reader-348/reader.html](https://html.me.uk/t/okilum-reader-348/reader.html?dir=A).
 The mockup is the visual reference; this file is the contract. Where they
 disagree, this file wins.
 
@@ -18,7 +18,7 @@ breadcrumbs, a folder tree, well-set Markdown in a readable column.
 | R3 — right panel | Table of contents above «Linked from» (#337) |
 
 User-selectable themes beyond Light/Dark/System and a theme picker are
-[#349](https://git.oklabs.uk/BeFeast/tessera/issues/349); see §Themes.
+[#349](https://git.oklabs.uk/BeFeast/okilum/issues/349); see §Themes.
 
 UI strings stay in English. The mockup's Russian strings show content, not
 localisation.
@@ -220,13 +220,13 @@ too. Status colors may fall back to the brand tokens; no other role inherits.
 
 | Theme | Key | Character |
 | --- | --- | --- |
-| Tessera (default) | `tessera` | `interface-tokens.json` + `reader-tokens.json`, the tables above |
+| Okilum (default) | `okilum` | `interface-tokens.json` + `reader-tokens.json`, the tables above |
 | Graphite | `graphite` | neutral greys, slate accent, no hue in surfaces |
 | Paper | `paper` | warm off-white, ink-blue links, rust accent; sepia dark |
 | High contrast | `high-contrast` | black/white surfaces, AAA (7:1) reading text |
 | Nord | `nord` | cool arctic blues after the Nord palette |
 
-Token files live in `crates/tessera-shell/assets/themes/<key>.json`
+Token files live in `crates/okilum-shell/assets/themes/<key>.json`
 (`tessera-theme/v1`). A unit test checks every theme in both variants: `text`
 and `text-muted` on `surface`, `canvas` and `sidebar`; `link` and `missing-link`
 on `surface` and `canvas`; `text` on `code-bg`, `surface-raised`, `selected` and
@@ -265,7 +265,7 @@ tinted rows.
 
 Lucide outline icons at 16 px, stroke 1.75, `text-muted` at rest and `text` on
 hover. Toolkit names come from `gpui-component`'s `IconName`; the four missing
-glyphs are added as Tessera assets under `icons/` and loaded with `Icon::path`.
+glyphs are added as Okilum assets under `icons/` and loaded with `Icon::path`.
 
 | Action | Icon | Shortcut / tooltip |
 | --- | --- | --- |
@@ -328,7 +328,7 @@ double-click, its disclosure glyph, or ⌘↓ (Ctrl↓ on Linux) toggles it.
 
 ### Sections (#369, variant A «Sections», chosen by Oleg 2026-10-04)
 
-Mockup: [sidebar.html](https://html.me.uk/t/tessera-reader-348/sidebar.html?v=A).
+Mockup: [sidebar.html](https://html.me.uk/t/okilum-reader-348/sidebar.html?v=A).
 Under the panel header, top to bottom, each section collapsible (state remembered):
 
 - **Recent** — the last opened notes, 5 shown, «N more» up to 10, with a
@@ -366,7 +366,7 @@ backlinks content under the title «Backlinks» with a quiet «N notes · M link
   `text-muted`. Rows retain their natural text height; long outlines scroll
   within the section's height limit instead of compressing their rows (#417).
 - **Linked from · N notes · M places** (#394, variant A «Source and quotes»,
-  chosen by Oleg 2026-10-04; [mockup](https://html.me.uk/t/tessera-reader-348/linked-from.html?v=A)).
+  chosen by Oleg 2026-10-04; [mockup](https://html.me.uk/t/okilum-reader-348/linked-from.html?v=A)).
   The card header is the *source* note: file icon, bold title, its folder
   right beside it (two notes with one name stay distinguishable), relation
   field pill for frontmatter links, place count, ↗ on hover; clicking it
@@ -384,7 +384,7 @@ backlinks content under the title «Backlinks» with a quiet «N notes · M link
 
 ## Properties (#386, approved by Oleg 2026-10-04)
 
-Mockup: [properties.html](https://html.me.uk/t/tessera-reader-348/properties.html).
+Mockup: [properties.html](https://html.me.uk/t/okilum-reader-348/properties.html).
 Read-only view of the note's leading YAML frontmatter; nothing is edited or
 normalized.
 
@@ -439,7 +439,7 @@ cues. There is no separate Expand button below the table.
 
 ## Onboarding / empty
 
-No root selected: centred card, 440 px wide. It holds the Tessera mark (52 px), the title «Open your
+No root selected: centred card, 440 px wide. It holds the Okilum mark (52 px), the title «Open your
 notes», one sentence saying files are read-only, a primary **Open folder…** and a
 secondary **Open file…** button, and recent folders below a divider.
 
@@ -501,12 +501,12 @@ Escape, an outside click, background scroll, navigation or a changed quick-open
 query dismisses it. Preview links can be opened, but do not spawn nested previews.
 Target preparation runs off the UI thread; stale results are discarded.
 
-### About Tessera (#464)
+### About Okilum (#464)
 
 All desktop platforms share the same About dialog: app icon, name, tagline,
 short product introduction, four capabilities, version/build/update channel,
 and repository, release notes, MIT License and third-party notices links.
-macOS opens it from Tessera → About Tessera, replacing the standard system panel;
+macOS opens it from Okilum → About Okilum, replacing the standard system panel;
 All platforms also expose About in the app More menu (#484). Check for Updates appears only when
 Sparkle is available. Linux identifies system-managed updates; Windows identifies
 its diagnostic channel and read-only scope. The repository URL has one source of
@@ -620,7 +620,7 @@ the current note or file using the same action as the sidebar crosshair.
 
 ### UI state and new windows (#592)
 
-Tessera restores the last reading environment without an inheritance setting.
+Okilum restores the last reading environment without an inheritance setting.
 Appearance (System/Light/Dark), reading text size (12–24, default 15.5) and reading
 width (560–1200 logical pixels, default 740) are global. Their model and persistence
 live in `reader_ui_state`; Settings presentation is owned by the separate #623
@@ -637,7 +637,7 @@ display, maximized and fullscreen state are vault-specific and still clamped to
 an available display. Native window managers/compositors retain control of placement
 (e.g. Wayland tiling and X11 automatic placement). Linux requests native maximize
 after mapping the window; a tiling compositor may retain the geometry without
-acknowledging the maximized flag (observed in Hyprland). Tessera records the
+acknowledging the maximized flag (observed in Hyprland). Okilum records the
 compositor's actual state rather than claiming a rejected request succeeded.
 Source restoration keeps the document hidden until its source viewport is ready;
 the preview and the source's initial top position must not flash on startup.
@@ -666,8 +666,8 @@ flush pending state. Invalid/future stores are preserved rather than overwritten
 Legacy appearance, panel-width and window-frame files remain migration inputs;
 existing pinned/recent/Inbox metadata and source/draft recovery keep their
 respective storage contracts. Source contents never enter the UI state file.
-On Linux the default store is `~/.local/state/tessera/reader-ui.json` (or
-`$XDG_STATE_HOME/tessera/reader-ui.json`), beside `reader-diagnostic.log`.
+On Linux the default store is `~/.local/state/okilum/reader-ui.json` (or
+`$XDG_STATE_HOME/okilum/reader-ui.json`), beside `reader-diagnostic.log`.
 ### About in Settings (#750)
 
 About opens the shared Settings window at About from both the app menu and the
@@ -680,7 +680,7 @@ technical channel label. Windows describes the full reader/editor client.
 
 The non-publishing Linux branch-dispatch artifact includes the explicit
 `settings-ui-harness` feature. Run its extracted binary with
-`TESSERA_DEBUG_UPDATER_UI=sparkle` (or `velopack`) and open Settings → Updates.
+`OKILUM_DEBUG_UPDATER_UI=sparkle` (or `velopack`) and open Settings → Updates.
 Both platform modes use the same production control tree: Stable/Beta segments
 and the refresh glyph. Channel selection stays in memory; refresh does not
 contact an updater. Normal builds omit this feature and ignore the variable.

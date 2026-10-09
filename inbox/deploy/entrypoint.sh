@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 if [ "$#" -gt 0 ]; then exec "$@"; fi
-set -- tessera-inboxd serve --data-dir /data --origin "$INBOX_ORIGIN" \
+set -- okilum-inboxd serve --data-dir /data --origin "$INBOX_ORIGIN" \
   --fixture-vault /fixture-vault \
   --vault-folder Projects --vault-folder Areas --vault-folder Resources --vault-folder Archives
 if [ -n "${AI_ENDPOINT:-}" ]; then

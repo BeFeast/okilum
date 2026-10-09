@@ -2,7 +2,7 @@
 
 Status: **reviewed within the synthetic browser scope**, 2026-09-06. [Current 22-screen gallery](screens/index.html). This receipt and all current PNGs replace the rejected first visual proposal.
 
-The review uses the user's supplied 1Password screenshot as the visual reference: a neutral sidebar, contextual item list and detail pane; quiet separators; a clear selected item; restrained controls and a distinct blue primary action. It does not claim the user has accepted this redesign or that native Tessera has changed.
+The review uses the user's supplied 1Password screenshot as the visual reference: a neutral sidebar, contextual item list and detail pane; quiet separators; a clear selected item; restrained controls and a distinct blue primary action. It does not claim the user has accepted this redesign or that native Okilum has changed.
 
 ## Visual result
 
@@ -16,7 +16,7 @@ Current screenshots include light/dark discussion, running execution, blocker, o
 
 ## Reproducible evidence
 
-- Worktree: `/home/example/worktrees/tessera/app-gui`, branch `design/tessera-app-gui`.
+- Worktree: `/home/example/worktrees/okilum/app-gui`, branch `design/okilum-app-gui`.
 - Existing Node Playwright and cached headless Chromium **151.0.7922.34**, local `file://` prototype; no package/browser installation, native desktop automation or service changes.
 - [Screenshot provenance](screens/captures.json): V2 identity, viewport, theme/density, platform fonts and source SHA-256 **f587f50711ede3aede84e0dd5e7db431217abb60aa1afb95a6c5f88d8b9628e0**. All 22 current images use this final redesign.
 - [Interaction checks](screens/checks.json): **7/7 grouped scenarios passed**, no page errors. Initial script attempts used obsolete duplicate-nav or hidden-controls selectors; those harness failures were corrected to follow the new visible navigation and Prototype tools. They are not reported as product failures.

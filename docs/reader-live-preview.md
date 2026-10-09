@@ -84,10 +84,10 @@ These are input-dispatch-to-observed-Xvfb-framebuffer measurements, including
 xdotool and screenshot sampling overhead. They are not compositor presentation
 latencies or evidence that Live Preview is faster. The small fixture and sequential
 mode order do not establish large-note performance. Scripts and raw logs are
-`~/.cache/tessera-qa/359/tessera359-ui/native-geometry.py`,
-`~/.cache/tessera-qa/359/tessera359-ui/native-timing.py`,
-`~/.cache/tessera-qa/359/tessera359-native-geometry.log` and
-`~/.cache/tessera-qa/359/tessera359-native-timing.log` in the development environment.
+`~/.cache/okilum-qa/359/okilum359-ui/native-geometry.py`,
+`~/.cache/okilum-qa/359/okilum359-ui/native-timing.py`,
+`~/.cache/okilum-qa/359/okilum359-native-geometry.log` and
+`~/.cache/okilum-qa/359/okilum359-native-timing.log` in the development environment.
 
 The available environment has Xvfb but no installed IBus/Fcitx or Wayland
 compositor. Real IME preedit/update/commit/cancel and candidate-window geometry
@@ -97,8 +97,8 @@ real X11 probe passed Left over combining Cyrillic, an emoji ZWJ sequence and a
 flag, Home/End on the same line, and forward/reversed cross-block drags. Each
 selection was verified against canonical source through an externally reset
 clipboard. The fixture file remained unchanged. Evidence:
-`~/.cache/tessera-qa/359/tessera359-ui/native-movement.py` and
-`~/.cache/tessera-qa/359/tessera359-native-movement.log`. These specific cases do not imply that
+`~/.cache/okilum-qa/359/okilum359-ui/native-movement.py` and
+`~/.cache/okilum-qa/359/okilum359-native-movement.log`. These specific cases do not imply that
 all cases in the larger managed matrix have passed.
 
 ## Muninn pre-merge acceptance plan
@@ -138,9 +138,9 @@ focused screenshot/video where geometry matters. A successfully committed input
 and visible candidate list are positive controls for IME; an absent popup alone
 is not evidence. A failure in either mode must identify whether it predates S1.
 All required rows must pass before merge; API-level tests alone do not close them.
-Linux diagnostics: `~/.local/state/tessera/reader-diagnostic.log` (or the same
+Linux diagnostics: `~/.local/state/okilum/reader-diagnostic.log` (or the same
 path under `XDG_STATE_HOME`). Store captures/packages in
-`~/.cache/tessera-qa/359/`, never `/tmp`; remove scratch after merge.
+`~/.cache/okilum-qa/359/`, never `/tmp`; remove scratch after merge.
 
 ### Integration with directory-bound saves (#699)
 
@@ -152,7 +152,7 @@ Undo/redo across presentation toggles, explicit Save, external-conflict refusal,
 durable journal observed before SIGKILL, restart into Reader and exact draft
 restoration all passed. The external canonical hash and recovered-draft hash
 match the earlier evidence above. Logs and the probe live under
-`~/.cache/tessera-qa/359/integrated-*`. This closes the local integration check;
+`~/.cache/okilum-qa/359/integrated-*`. This closes the local integration check;
 it does not replace muninn's pending Wayland/IME acceptance or imply release.
 
 ## S2: themed link and heading styles
@@ -191,7 +191,7 @@ Linux/X11 native light/dark captures show actual concealed Markdown, bold
 headings and link foreground across wrapped rows. The exact clipboard,
 BOM/CRLF/Unicode input, Undo/redo across toggles, explicit Save, external-conflict
 refusal, durable journal and crash recovery probe passed again. Evidence and
-scripts are in `~/.cache/tessera-qa/359-s2/`; before captures are historical S1
+scripts are in `~/.cache/okilum-qa/359-s2/`; before captures are historical S1
 captures on the same host, and the after fixture adds a wrapped link. They are
 visual references, not a timing comparison or a substitute for Wayland IME QA.
 

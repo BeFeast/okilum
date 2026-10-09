@@ -24,7 +24,7 @@ def files(root):
 def verify(writer, reader, negative=False, citation_provider=None):
     if negative:
         assert base.digest(reader) == OLD5B_SHA256, "negative control requires the retained old5b artifact"
-    with tempfile.TemporaryDirectory(prefix="tessera-packet-matrix-") as directory:
+    with tempfile.TemporaryDirectory(prefix="okilum-packet-matrix-") as directory:
         root = pathlib.Path(directory)
         (root / "brain/records").mkdir(parents=True)
         (root / "runtime").mkdir()

@@ -1,7 +1,7 @@
 # Opening local Markdown (#327)
 
-`tessera '/path/space/Note.md'` opens that exact document in a read-only Reader.
-`tessera '/path/folder'` opens a local Reader folder. Existing `--vault ROOT
+`okilum '/path/space/Note.md'` opens that exact document in a read-only Reader.
+`okilum '/path/folder'` opens a local Reader folder. Existing `--vault ROOT
 --note REL`, `--query`, `--copy-source`, `--html` and explicit `--index-dir` remain
 available. A positional target cannot be combined with `--note` or `--jump`;
 contradictory Reader and explicit managed inputs are rejected.
@@ -32,14 +32,14 @@ On macOS, an ordinary no-argument launch retains the saved workspace identity bu
 **does not automatically connect**. Use its explicit Open/Retry action to connect
 to that saved identity. This prevents late Finder delivery from first contacting a
 Brain. Explicit `--brain-endpoint IP:PORT` still opens the managed client; inherited
-`TESSERA_VAULT` does not override that explicit managed intent. Existing managed
+`OKILUM_VAULT` does not override that explicit managed intent. Existing managed
 windows are not replaced by document delivery. This startup change needs its own
 qualification and supersedes implicit-connect expectations in the old #317 matrix.
 
 ## Canonical files and cache
 
-Reader defaults to `~/Library/Caches/tessera/reader/<root-hash>` on macOS and
-`$XDG_CACHE_HOME/tessera/reader/<root-hash>` (or `~/.cache/...`) elsewhere.
+Reader defaults to `~/Library/Caches/okilum/reader/<root-hash>` on macOS and
+`$XDG_CACHE_HOME/okilum/reader/<root-hash>` (or `~/.cache/...`) elsewhere.
 The chosen cache must be outside the canonical root, including existing symlink
 ancestors; otherwise supply an explicit external `--index-dir`. An explicit index
 override is honored. Watcher bulk rebuilds retain the same index path.

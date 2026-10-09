@@ -72,7 +72,7 @@ verified through app-owned workspace operations. No generic shell workaround.
 
 ## Isolated live probe, 2026-10-05
 
-An empty, separately registered Inbox pilot project was used; no Tessera development
+An empty, separately registered Inbox pilot project was used; no Okilum development
 thread or real project was controlled. The probe inherited the current Codex model,
 used plan/approval-required mode and instructed the executor to perform no file,
 shell or external-service work. The only question was a choice between Blue/Green.

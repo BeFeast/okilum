@@ -29,13 +29,13 @@ jobs:
       run: |
         chown -R builder:builder "$GITHUB_WORKSPACE" /home/builder
         # Unsigned release checks use the production package, without the QA harness.
-        runuser -u builder -- env TESSERA_SETTINGS_UI_HARNESS=0 TESSERA_BUILD_VERSION="$((5000 + GITHUB_RUN_NUMBER))" bash scripts/arch/build.sh
+        runuser -u builder -- env OKILUM_SETTINGS_UI_HARNESS=0 OKILUM_BUILD_VERSION="$((5000 + GITHUB_RUN_NUMBER))" bash scripts/arch/build.sh
     - name: Validate Arch package
       run: |
-        desktop-file-validate scripts/arch/tessera.desktop
-        pacman -U --noconfirm dist/arch/tessera-*.pkg.tar.zst
-        tessera --help
-        if ldd /usr/bin/tessera | grep 'not found'; then exit 1; fi
+        desktop-file-validate scripts/arch/okilum.desktop
+        pacman -U --noconfirm dist/arch/okilum-*.pkg.tar.zst
+        okilum --help
+        if ldd /usr/bin/okilum | grep 'not found'; then exit 1; fi
         python -m unittest discover -s scripts/arch -p 'test_*.py'
         xvfb-run -a -s '-screen 0 1280x800x24' dbus-run-session -- bash scripts/arch/smoke-x11.sh
     - uses: actions/upload-artifact@v4

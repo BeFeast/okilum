@@ -16,8 +16,8 @@ out.mkdir(parents=True, exist_ok=True)
 TEXT = '﻿Name,Count,Description\r\n"שלום, world",12,"change-me"\r\n"line\r\nnext",42,"x"\r\n'
 LINE = TEXT.encode().index('"שלום'.encode())
 Y = '57'  # second row at Cascadia Code 13
-env = dict(os.environ, WAYLAND_DISPLAY='', TESSERA_BIDI_TEXT=TEXT, TESSERA_BIDI_APP='1',
-           TESSERA_BIDI_FONT='Cascadia Code', TESSERA_BIDI_SIZE='13',
+env = dict(os.environ, WAYLAND_DISPLAY='', OKILUM_BIDI_TEXT=TEXT, OKILUM_BIDI_APP='1',
+           OKILUM_BIDI_FONT='Cascadia Code', OKILUM_BIDI_SIZE='13',
            __EGL_VENDOR_LIBRARY_FILENAMES='/usr/share/glvnd/egl_vendor.d/50_mesa.json')
 
 
@@ -28,7 +28,7 @@ def xd(*args):
 
 for theme in ['light', 'dark']:
     log = out / f'{theme}.jsonl'
-    run_env = dict(env, **({'TESSERA_BIDI_DARK': '1'} if theme == 'dark' else {}))
+    run_env = dict(env, **({'OKILUM_BIDI_DARK': '1'} if theme == 'dark' else {}))
     with log.open('w') as stream:
         proc = subprocess.Popen(['target/debug/examples/native_bidi737'], env=run_env,
                                 stdout=stream, stderr=subprocess.STDOUT)
@@ -36,7 +36,7 @@ for theme in ['light', 'dark']:
         for _ in range(40):
             time.sleep(.25)
             found = subprocess.run(['xdotool', 'search', '--onlyvisible', '--pid', str(proc.pid),
-                                    '--name', 'Tessera'], env=env, capture_output=True, text=True)
+                                    '--name', 'Okilum'], env=env, capture_output=True, text=True)
             if found.stdout.strip():
                 break
         win = found.stdout.split()[-1]

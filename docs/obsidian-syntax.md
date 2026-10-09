@@ -1,7 +1,7 @@
 # Obsidian syntax in the Reader
 
 Issue #651. The Reader shows Obsidian-specific Markdown the way Obsidian does,
-without writing to the note. Core (`tessera_core::obsidian`) rewrites the
+without writing to the note. Core (`okilum_core::obsidian`) rewrites the
 Reader's derived source into Markdown the stock renderer understands; the
 shell (`reader_obsidian.rs`) gives the tagged blocks their look. The MCP
 `read_note` source is unchanged: an agent still reads the note as written.
@@ -23,7 +23,7 @@ of using it. The corpus note is `fixtures/reader/obsidian-syntax.md`.
 ## Decisions
 
 - **An unpaired `%%` is text.** Obsidian hides everything after a stray marker;
-  Tessera does not, because a `100%%` typo would hide the rest of a note and
+  Okilum does not, because a `100%%` typo would hide the rest of a note and
   the reader could not tell anything was there.
 - **Unreferenced footnote definitions are not shown**, as in Obsidian and GFM.
   A reference whose label nothing defines stays literal (`[^x]`), which is

@@ -1,16 +1,16 @@
 # Native Maestro worker Inbox pilot (#728)
 
 Status: design and acceptance runbook, before implementation or live provisioning.
-The accepted [#601](https://git.oklabs.uk/BeFeast/tessera/issues/601) pilot used a
+The accepted [#601](https://git.oklabs.uk/BeFeast/okilum/issues/601) pilot used a
 dedicated durable consumer. This follow-up must show an answer reaching an actual
 contained native harness worker. A successful bridge POST, a mailbox read by a
 host script, or the existing consumer's acknowledgement cannot establish that.
 
 The pilot uses one isolated project, one admitted worker attempt and one
 question. The worker produces only a disposable, local result from the answer.
-It receives no approval, merge, launch or deployment authority. Tessera's Reader
+It receives no approval, merge, launch or deployment authority. Okilum's Reader
 and real vaults do not participate. Maestro remains the execution owner; the
-Tessera repository contains the design and Inbox-side evidence, not a substitute
+Okilum repository contains the design and Inbox-side evidence, not a substitute
 native launcher.
 
 ## Audited source and implementation boundary
@@ -28,8 +28,8 @@ The source audit used Maestro main
 - [`containedNativeEnvironment`](https://git.oklabs.uk/BeFeast/maestro/src/commit/0812fd6159cf19b84fa84719aaafe84341c44f45/internal/aiexecution/containment.go):
   the generated child environment does not inject a question credential or
   endpoint. Ambient host variables are not a provisioning mechanism.
-- [Tessera bridge](../inbox/bridge/README.md) and
-  [`Bridge::from_config`](../inbox/crates/tessera-inboxd/src/bridge.rs): the Inbox
+- [Okilum bridge](../inbox/bridge/README.md) and
+  [`Bridge::from_config`](../inbox/crates/okilum-inboxd/src/bridge.rs): the Inbox
   deployment supports a T3 scope and one independent Maestro scope. It is not a
   general collection of arbitrary new Maestro scopes.
 

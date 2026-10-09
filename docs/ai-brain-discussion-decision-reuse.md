@@ -1,6 +1,6 @@
 # Discussion decision reuse settings
 
-[#261](https://git.oklabs.uk/BeFeast/tessera/issues/261) adds one explicit automatic → manual-only transition. Implementation evidence and native acceptance are tracked in the issue; this document does not authorize installation. It does not add reactivation, semantic supersession, general search exclusion or Attention reply disposition.
+[#261](https://git.oklabs.uk/BeFeast/okilum/issues/261) adds one explicit automatic → manual-only transition. Implementation evidence and native acceptance are tracked in the issue; this document does not authorize installation. It does not add reactivation, semantic supersession, general search exclusion or Attention reply disposition.
 
 Context → saved Discussion decision → Reuse settings shows the exact read-only user text. Stop adding automatically confirms the transition; Cancel leaves canonical bytes unchanged. Manual selection only remains discoverable through Inspect/Open original. Explicit Include in context is still available. Historical conversation text, reviewed packets, stages and results remain exact. A pin to the previous source revision becomes stale and needs explicit ordinary re-review; it is never silently deleted/refreshed.
 

@@ -1,6 +1,6 @@
 # Native Markdown editor recovery
 
-Approved scope: [issue145](https://git.oklabs.uk/BeFeast/tessera/issues/145).
+Approved scope: [issue145](https://git.oklabs.uk/BeFeast/okilum/issues/145).
 This contract describes implementation boundaries, not native acceptance or rollout.
 
 Local drafts are separate from canonical Markdown, backend operational state and
@@ -19,7 +19,7 @@ owns scheduling, source RPC and user actions. Run durability work off the render
 path and show protection only after the matching generation is acknowledged.
 
 `EditorRecovery::open(workspace)` uses the desktop configuration directory under
-`tessera/editor-recovery/<brain UUID>`. Every record also binds the entire workspace
+`okilum/editor-recovery/<brain UUID>`. Every record also binds the entire workspace
 identity (root, records directory, managed flag and brain ID). `at(base,workspace)`
 provides the same behavior with an isolated fixture directory.
 

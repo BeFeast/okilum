@@ -1,6 +1,6 @@
 # Linux releases (Arch / Omarchy / CachyOS)
 
-Tessera is distributed as the `tessera` x86_64 Arch package. Updates use
+Okilum is distributed as the `okilum` x86_64 Arch package. Updates use
 `pacman -Syu`; the Linux app has no **Check for Updates** menu. A desktop entry
 and icon are included. The Markdown MIME association is available through
 **Open With**, but installation does not replace your default application.
@@ -11,9 +11,9 @@ Download the public signing key and verify its full fingerprint against the
 value below **before** trusting it:
 
 ```sh
-curl -fsSLo /tmp/tessera-signing-key.asc \
-  https://updates.befeast.com/tessera/arch/tessera-signing-key.asc
-gpg --show-keys --with-fingerprint /tmp/tessera-signing-key.asc
+curl -fsSLo /tmp/okilum-signing-key.asc \
+  https://updates.befeast.com/okilum/arch/okilum-signing-key.asc
+gpg --show-keys --with-fingerprint /tmp/okilum-signing-key.asc
 ```
 
 Expected fingerprint:
@@ -25,38 +25,38 @@ Expected fingerprint:
 Then import and locally trust that specific key:
 
 ```sh
-sudo pacman-key --add /tmp/tessera-signing-key.asc
+sudo pacman-key --add /tmp/okilum-signing-key.asc
 sudo pacman-key --lsign-key 7FFE9F27ECC8E253E45BAEA08AACBFB2C9E47882
 ```
 
 Append to `/etc/pacman.conf`:
 
 ```ini
-[tessera-beta]
+[okilum-beta]
 SigLevel = Required DatabaseRequired
-Server = https://updates.befeast.com/tessera/arch/beta/$arch
+Server = https://updates.befeast.com/okilum/arch/beta/$arch
 ```
 
 Install with a full system upgrade (Arch partial upgrades are unsupported):
 
 ```sh
-sudo pacman -Syu tessera
-pacman -Q tessera
-tessera
+sudo pacman -Syu okilum
+pacman -Q okilum
+okilum
 ```
 
 Subsequent builds arrive through `sudo pacman -Syu`. A compatible Vulkan driver
 is required by GPUI; Omarchy normally already has one. Open a vault using the
-app's folder picker, or `tessera /path/to/vault`.
+app's folder picker, or `okilum /path/to/vault`.
 
 ## Stable channel
 
 After a build is promoted, use this **instead of** the beta stanza:
 
 ```ini
-[tessera-stable]
+[okilum-stable]
 SigLevel = Required DatabaseRequired
-Server = https://updates.befeast.com/tessera/arch/stable/$arch
+Server = https://updates.befeast.com/okilum/arch/stable/$arch
 ```
 
 Stable becomes available with its first promotion. Do not enable both channels.
@@ -84,17 +84,17 @@ The live signed DB contains the latest package. DB and signature use `no-cache`.
 R2 cannot replace the pair atomically: a refresh crossing publication can fail
 signature verification; retry `pacman -Syyu` after publication, never disable checks.
 
-Secrets: Infisical `services/prod/tessera`, mirrored to Forgejo Actions:
+Secrets: Infisical `services/prod/okilum`, mirrored to Forgejo Actions:
 `ARCH_GPG_PRIVATE_KEY` (dedicated signing-only Ed25519 key), existing
 `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY`; `ARCH_GPG_FINGERPRINT` is an Actions
-variable. The public key is also committed at `scripts/arch/tessera-signing-key.asc`.
+variable. The public key is also committed at `scripts/arch/okilum-signing-key.asc`.
 The key expires in three years; renew/export it before expiry and update both
 secret stores and the published public key. Key rotation requires communicating
 and verifying the new fingerprint before changing the configured signer.
 
 ## Owner acceptance
 
-On Omarchy, install beta N and confirm `pacman -Q tessera`, application launch,
+On Omarchy, install beta N and confirm `pacman -Q okilum`, application launch,
 and opening your vault. After the next merge publishes N+1, run `sudo pacman -Syu`,
 confirm the higher version, relaunch and reopen the vault. CI package installation
 and signature tests do not replace this desktop acceptance step.

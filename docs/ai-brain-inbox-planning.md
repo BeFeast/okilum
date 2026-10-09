@@ -1,6 +1,6 @@
 # Explicit Inbox planning — issue #140
 
-P1 contract for [#140](https://git.oklabs.uk/BeFeast/tessera/issues/140).
+P1 contract for [#140](https://git.oklabs.uk/BeFeast/okilum/issues/140).
 A saved thought can become a planned goal without copying its context. The
 original Inbox record remains unchanged. Native UI and backend use this contract;
 the trusted Telegram connector does not gain planning authority.

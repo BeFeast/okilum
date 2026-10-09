@@ -1,7 +1,7 @@
 # AI Brain indexed retrieval and reviewed context
 
-Parent [#113](https://git.oklabs.uk/BeFeast/tessera/issues/113), contract
-[#114](https://git.oklabs.uk/BeFeast/tessera/issues/114). This is an additive
+Parent [#113](https://git.oklabs.uk/BeFeast/okilum/issues/113), contract
+[#114](https://git.oklabs.uk/BeFeast/okilum/issues/114). This is an additive
 milestone after the accepted alpha, not a change to the v0 read-only contract.
 Development and acceptance remain externally controlled in T3.
 
@@ -83,7 +83,7 @@ is an operator concern; users do not type model digests into their task flow.
 
 ## Lexical readiness before semantic enrichment
 
-[#300](https://git.oklabs.uk/BeFeast/tessera/issues/300) publishes two immutable
+[#300](https://git.oklabs.uk/BeFeast/okilum/issues/300) publishes two immutable
 phases on the existing index worker. After complete source inventory, source
 revision revalidation and lexical/incoming-graph construction, main index status
 is `ready`. Missing document embeddings report `semantic_status=indexing` while
@@ -172,9 +172,9 @@ unperformed build, install, physical-device or health integration checks.
 
 ## Acceptance and evidence
 
-[#115](https://git.oklabs.uk/BeFeast/tessera/issues/115) owns backend indexing and
-retrieval; [#116](https://git.oklabs.uk/BeFeast/tessera/issues/116) owns native review
-and AI export; [#117](https://git.oklabs.uk/BeFeast/tessera/issues/117) joins evidence
+[#115](https://git.oklabs.uk/BeFeast/okilum/issues/115) owns backend indexing and
+retrieval; [#116](https://git.oklabs.uk/BeFeast/okilum/issues/116) owns native review
+and AI export; [#117](https://git.oklabs.uk/BeFeast/okilum/issues/117) joins evidence
 and delivery. Reviews are bounded to two substantive rounds; unrelated findings
 become follow-ups.
 

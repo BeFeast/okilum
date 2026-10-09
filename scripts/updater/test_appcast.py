@@ -12,8 +12,8 @@ def add_args(build, channel='beta'):
     return ['add', '--build', str(build), '--short-version', f'0.1.{build}',
             '--channel', channel, '--length', '10', '--signature', 'c2ln',
             '--source', SOURCE, '--tree', 'b' * 40, '--url',
-            f'https://git.oklabs.uk/BeFeast/tessera/releases/download/macos-stable-{build}/'
-            f'tessera-macos-arm64-{SOURCE}-notarized.zip']
+            f'https://git.oklabs.uk/BeFeast/okilum/releases/download/macos-stable-{build}/'
+            f'okilum-macos-arm64-{SOURCE}-notarized.zip']
 
 
 class AppcastTest(unittest.TestCase):

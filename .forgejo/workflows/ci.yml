@@ -55,8 +55,8 @@ jobs:
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name != github.repository ||
-      (vars.TESSERA_LINUX_LANE != 'hosted' &&
-       vars.TESSERA_LINUX_LANE != format('pr-{0}', github.event.pull_request.number))
+      (vars.OKILUM_LINUX_LANE != 'hosted' &&
+       vars.OKILUM_LINUX_LANE != format('pr-{0}', github.event.pull_request.number))
     runs-on: ubuntu-latest
     timeout-minutes: 45
     # Shared sccache on the LAN S3 backend (private runner operations runbook,
@@ -138,7 +138,7 @@ jobs:
           path: |
             ~/.cargo/registry/
             ~/.cargo/git/
-          key: tessera-cargo-v2-${{ runner.os }}-${{ steps.cargo-cache-key.outputs.compatibility }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff', '.cargo/**', '.forgejo/workflows/ci.yml') }}
+          key: okilum-cargo-v2-${{ runner.os }}-${{ steps.cargo-cache-key.outputs.compatibility }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff', '.cargo/**', '.forgejo/workflows/ci.yml') }}
 
       - name: Run full Linux gate
         run: bash scripts/ci/check-linux.sh
@@ -150,8 +150,8 @@ jobs:
   linux-github:
     if: >-
       github.event_name == 'pull_request' &&
-      (vars.TESSERA_LINUX_LANE == 'hosted' ||
-       vars.TESSERA_LINUX_LANE == format('pr-{0}', github.event.pull_request.number)) &&
+      (vars.OKILUM_LINUX_LANE == 'hosted' ||
+       vars.OKILUM_LINUX_LANE == format('pr-{0}', github.event.pull_request.number)) &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: bridge
     timeout-minutes: 80
@@ -166,7 +166,7 @@ jobs:
       - name: Run exact PR head on GitHub Linux
         id: remote
         env:
-          MIRROR_TOKEN: ${{ secrets.TESSERA_GITHUB_MIRROR }}
+          MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: python3 scripts/ci/github-linux.py
@@ -195,7 +195,7 @@ jobs:
   macos-github:
     needs: native-scope
     if: >-
-      vars.TESSERA_MACOS_LANE != 'local' &&
+      vars.OKILUM_MACOS_LANE != 'local' &&
       github.event_name == 'pull_request' &&
       needs.native-scope.outputs.macos == 'true' &&
       !github.event.pull_request.draft &&
@@ -216,7 +216,7 @@ jobs:
       - name: Run the exact PR head on GitHub macOS
         id: remote
         env:
-          MIRROR_TOKEN: ${{ secrets.TESSERA_GITHUB_MIRROR }}
+          MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: python3 scripts/ci/github-macos.py run
@@ -226,7 +226,7 @@ jobs:
     # The host runner has a signing keychain. Fork code must first be reviewed
     # and moved to a trusted same-repository branch; the final gate fails closed.
     if: >-
-      vars.TESSERA_MACOS_LANE == 'local' &&
+      vars.OKILUM_MACOS_LANE == 'local' &&
       github.event_name == 'pull_request' &&
       needs.native-scope.outputs.macos == 'true' &&
       !github.event.pull_request.draft &&

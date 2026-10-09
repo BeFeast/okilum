@@ -1,6 +1,6 @@
 # Discussion context retained per turn
 
-Draft contract for [#227](https://git.oklabs.uk/BeFeast/tessera/issues/227), based on
+Draft contract for [#227](https://git.oklabs.uk/BeFeast/okilum/issues/227), based on
 `8dacfa57b162b0f39951971322c223086b5ae48f`. Contract review precedes implementation.
 This extends the existing [application conversation](ai-brain-application-api.md)
 using the [goal context brief](ai-brain-goal-context-brief.md). It does not prepare
@@ -291,7 +291,7 @@ Without the capability, the composer must not promise automatic saved context.
 - Backend owner: `application.rs`, new `discussion_context.rs` and tests;
   narrow typed/internal reuse in `runtime/goal_brief.rs`; `chat.rs` body preparation;
   service/protocol wiring, crate module registration and API docs. No shell edits.
-- Shell owner: `crates/tessera-shell/src/brain.rs` and new
+- Shell owner: `crates/okilum-shell/src/brain.rs` and new
   `brain/discussion_context.rs`; isolated native fixture and provider capture.
 - Reviewer/root approve this contract and API before functional edits.
 
@@ -353,7 +353,7 @@ their prior send/error behavior; this change does not retrofit a durable or
 idempotent dispatch protocol onto those paths.
 
 The approved [durable send recovery contract](ai-brain-discussion-send-recovery.md)
-tracks the next bounded API/outbox extension in [#244](https://git.oklabs.uk/BeFeast/tessera/issues/244).
+tracks the next bounded API/outbox extension in [#244](https://git.oklabs.uk/BeFeast/okilum/issues/244).
 It is specified but not implemented; the session-only behavior above remains the current behavior.
 
 ## Explicit user decisions

@@ -45,7 +45,7 @@ jobs:
 
   release:
     needs: select
-    if: needs.select.outputs.build == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || vars.TESSERA_PR_LANE == 'local')
+    if: needs.select.outputs.build == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || vars.OKILUM_PR_LANE == 'local')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -86,7 +86,7 @@ jobs:
             ~/.cargo/registry/
             ~/.cargo/git/
             vendor/gpui-component/
-          key: tessera-windows-downloads-v1-${{ hashFiles('Cargo.lock', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff', '.forgejo/workflows/windows-diagnostic.yml') }}
+          key: okilum-windows-downloads-v1-${{ hashFiles('Cargo.lock', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff', '.forgejo/workflows/windows-diagnostic.yml') }}
       - name: Identify Microsoft SDK manifest
         id: xwin-key
         run: python3 scripts/ci/xwin-cache.py key
@@ -110,8 +110,8 @@ jobs:
           scripts/vendor-setup.sh --verify
       - name: Cross-compile Reader and install packager
         run: |
-          export TESSERA_BUILD_VERSION="$((5000 + GITHUB_RUN_NUMBER))"
-          export TESSERA_RELEASE_VERSION="0.1.$TESSERA_BUILD_VERSION"
+          export OKILUM_BUILD_VERSION="$((5000 + GITHUB_RUN_NUMBER))"
+          export OKILUM_RELEASE_VERSION="0.1.$OKILUM_BUILD_VERSION"
           bash scripts/build-windows-ci.sh
           bash scripts/windows/install-vpk.sh "$RUNNER_TEMP/velopack"
 
@@ -125,14 +125,14 @@ jobs:
 
       - name: Package Windows installer and update feed on Linux
         run: |
-          export TESSERA_RELEASE_VERSION="0.1.$((5000 + GITHUB_RUN_NUMBER))"
+          export OKILUM_RELEASE_VERSION="0.1.$((5000 + GITHUB_RUN_NUMBER))"
           bash scripts/windows/pack.sh "$RUNNER_TEMP/velopack" target/windows-dist target/windows-release
           python3 -m unittest discover -s scripts/windows -p 'test_*.py'
 
       - name: Upload unsigned installer for Windows QA
         uses: https://code.forgejo.org/actions/upload-artifact@v3
         with:
-          name: tessera-windows-velopack
+          name: okilum-windows-velopack
           path: target/windows-release/*
           retention-days: 30
 
@@ -141,7 +141,7 @@ jobs:
         uses: https://code.forgejo.org/actions/upload-artifact@v3
         with:
           name: windows-portable
-          path: target/windows-dist/tessera-*-x86_64.zip
+          path: target/windows-dist/okilum-*-x86_64.zip
           retention-days: 7
 
       - name: Dispatch protected publication
@@ -153,7 +153,7 @@ jobs:
 
   windows-release-github:
     if: >-
-      github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.TESSERA_PR_LANE != 'local'
+      github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.OKILUM_PR_LANE != 'local'
     runs-on: bridge
     timeout-minutes: 125
     steps:
@@ -164,7 +164,7 @@ jobs:
           persist-credentials: false
       - name: Wait for exact-head hosted windows-release
         env:
-          MIRROR_TOKEN: ${{ secrets.TESSERA_GITHUB_MIRROR }}
+          MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CI_LANE: windows-release

@@ -12,8 +12,8 @@ CT119; the real vault is not used. Nothing starts automatically on merge.
 Install Python 3.11+ and the pinned dependency in a dedicated environment:
 
 ```sh
-python3 -m venv /opt/tessera-bridge/venv
-/opt/tessera-bridge/venv/bin/pip install --require-hashes --only-binary=:all: -r inbox/bridge/requirements.txt
+python3 -m venv /opt/okilum-bridge/venv
+/opt/okilum-bridge/venv/bin/pip install --require-hashes --only-binary=:all: -r inbox/bridge/requirements.txt
 ```
 
 Create a mode-0700 state/config directory, mode-0600 config and two separate
@@ -43,7 +43,7 @@ are absent from output and durable operation payloads. Config/SQLite must be
 included in an app-consistent private backup, separately from derived caches.
 
 ```sh
-/opt/tessera-bridge/venv/bin/python inbox/bridge/t3_questions.py --config /private/config.json
+/opt/okilum-bridge/venv/bin/python inbox/bridge/t3_questions.py --config /private/config.json
 ```
 
 `--once` performs observation/recovery only. A process lock prevents two instances

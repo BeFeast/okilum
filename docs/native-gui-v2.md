@@ -1,6 +1,6 @@
 # Native GUI V2 and brand adoption
 
-Tracking: [implementation #101](https://git.oklabs.uk/BeFeast/tessera/issues/101).
+Tracking: [implementation #101](https://git.oklabs.uk/BeFeast/okilum/issues/101).
 The implementation applies the approved design to the Rust/GPUI application.
 The browser prototype remains a design reference, not the application runtime.
 
@@ -11,7 +11,7 @@ The browser prototype remains a design reference, not the application runtime.
 | Canonical logo | Open join B, brand asset release **1.2.0**, brand source commit `7bf512a` |
 | Brand typography and semantic foundations | Immutable tokens **1.1.0**; Noto Sans and Cascadia Code |
 | Application chrome | GUI interface aliases **2.0.0**, neutral light/dark surfaces and blue actions |
-| Layout and interaction reference | [Design PR #100](https://git.oklabs.uk/BeFeast/tessera/pulls/100), exact source `3ba23948adbabb4288bb3bc6fa0d3e4e074861e2` |
+| Layout and interaction reference | [Design PR #100](https://git.oklabs.uk/BeFeast/okilum/pulls/100), exact source `3ba23948adbabb4288bb3bc6fa0d3e4e074861e2` |
 | Product baseline | `a68a7d15fa435a06445641d4aabb6d96994fc112` |
 
 The GUI aliases explicitly supersede the earlier navy application surfaces.
@@ -19,9 +19,9 @@ The outlined wordmark is artwork, separate from the runtime font stack.
 
 Downloaded source archives were independently verified on 2026-09-06:
 
-- [Brand 1.2.0](https://pomoi.co/f/3b1f7e6d-1a7a-4031-b92f-06c1474770b7/tessera-brand-identity-1.2.0.zip):
+- [Brand 1.2.0](https://pomoi.co/f/3b1f7e6d-1a7a-4031-b92f-06c1474770b7/okilum-brand-identity-1.2.0.zip):
   SHA256 `98778c01dc99387c01d2bf45a0374d6ea6aa15d4dcf8c4ffebfb9e1f8935ba58`.
-- [GUI V2](https://pomoi.co/f/64d42448-7195-4c22-bf73-04d018494497/tessera-gui-v2.zip):
+- [GUI V2](https://pomoi.co/f/64d42448-7195-4c22-bf73-04d018494497/okilum-gui-v2.zip):
   SHA256 `1acc4fa83d8e7b86389383983b74fc94461a9ee718f8a1a51b1e27cbecf4be6e`.
 
 ## Integration contract
@@ -60,7 +60,7 @@ recovering a change. Legacy backends keep their prior Start behavior.
 
 Unsent revision drafts belong to the selected goal and survive navigation in the
 current desktop session. Once submitted, the exact operation UUID, request and
-workspace identity are saved under `tessera/prepared-operations/<brain-id>` in the
+workspace identity are saved under `okilum/prepared-operations/<brain-id>` in the
 local configuration directory before any request is sent. Reopening that saved
 workspace restores pending recovery. These operational records are separate from
 canonical Markdown and the disposable index; they are not exported as knowledge.

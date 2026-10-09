@@ -7,10 +7,10 @@ decisions slice 1 made.
 
 ## Shape
 
-- `crates/tessera-shell/src/pdf_engine.rs` is the only module that knows hayro.
+- `crates/okilum-shell/src/pdf_engine.rs` is the only module that knows hayro.
   It opens a document, reports page sizes and renders one page to a BGRA bitmap.
   A panic inside the engine becomes "unreadable" or a failed page, never a crash.
-- `crates/tessera-shell/src/reader_pdf.rs` is the GPUI viewer:
+- `crates/okilum-shell/src/reader_pdf.rs` is the GPUI viewer:
   - every page slot is sized from the page dimensions as soon as the document
     opens, so the scrollbar is right before any bitmap exists;
   - one worker thread per open document renders the visible pages first, then

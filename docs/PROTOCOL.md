@@ -1,18 +1,18 @@
-# tessera-cored JSON-lines protocol — v0.3
+# okilum-cored JSON-lines protocol — v0.3
 
 One JSON object per line on stdin; one JSON object per line on stdout. On start
 the daemon prints `{"ready":true,"notes":N}` once, then answers requests in
 order. Every response echoes `id` and carries `ok`.
 
-The vault comes from `--vault` or `TESSERA_VAULT`, the index from `--index-dir`
-or `TESSERA_INDEX_DIR` (default `<vault>/.tessera-index`). There is no default
+The vault comes from `--vault` or `OKILUM_VAULT`, the index from `--index-dir`
+or `OKILUM_INDEX_DIR` (default `<vault>/.tessera-index`). There is no default
 vault: guessing one is a good way to index the wrong directory.
 
-`tessera-cored index --vault <path>` rebuilds the persistent tantivy index and
+`okilum-cored index --vault <path>` rebuilds the persistent tantivy index and
 exits. The index is derived data — deleting it is always safe.
 
 These are invocation details, not part of the frozen wire contract below. The
-spike named them `TESSERA_CORPUS`/`TESSERA_INDEX` and defaulted to a path inside
+spike named them `OKILUM_CORPUS`/`OKILUM_INDEX` and defaulted to a path inside
 the sandbox.
 
 ## Ops
@@ -21,7 +21,7 @@ the sandbox.
 |---|---|
 | `{"id":1,"op":"list"}` | `notes: [{path, title}]` |
 | `{"id":2,"op":"render","path":"Dev/x.md"}` | `html` (full document body HTML), `title` |
-| `{"id":3,"op":"doc","path":"Dev/x.md"}` | `doc` (block IR, see `crates/tessera-core/src/ir.rs`) |
+| `{"id":3,"op":"doc","path":"Dev/x.md"}` | `doc` (block IR, see `crates/okilum-core/src/ir.rs`) |
 | `{"id":4,"op":"backlinks","path":"Dev/x.md"}` | `backlinks: [{path, title, context}]` |
 | `{"id":5,"op":"search","q":"maestro proxy"}` | `hits: [{path, title, score, snippet_html}]` |
 | `{"id":6,"op":"resolve","target":"Some Note"}` | `path` (or `null`) and `candidates: [path]` |
@@ -45,7 +45,7 @@ Plus: backlinks panel, search with snippets + jump-to-match.
 **v0.3 (2026-09-04).** Adds `explain` — purely additive, nothing existing changes shape. A v0.2 client that never sends `explain` sees no difference.
 
 **v0.2 (2026-09-02).** v0.1 was frozen on 2026-08-31; the protocol outlives the
-spike by design, so the MCP adapter around `tessera-cored` and any future shell
+spike by design, so the MCP adapter around `okilum-cored` and any future shell
 or client consume it as-is, and changes require a version bump. This is that
 bump, and the only one so far.
 
@@ -78,7 +78,7 @@ and has already changed once, at the port out of the spike.
 
 ## MCP — the same core, a second wire
 
-`tessera-cored mcp` serves the Model Context Protocol (JSON-RPC 2.0 over
+`okilum-cored mcp` serves the Model Context Protocol (JSON-RPC 2.0 over
 stdio, protocol revision `2025-06-18`) instead of JSON-lines. Every tool maps
 one-to-one onto an op above, through the same functions — the point is that
 agent tooling and the JSON-lines client cannot disagree about the vault.

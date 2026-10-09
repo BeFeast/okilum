@@ -48,7 +48,7 @@ class PublicationBoundary(unittest.TestCase):
         from unittest.mock import Mock
         data = io.BytesIO()
         with zipfile.ZipFile(data, 'w') as archive:
-            archive.writestr('tessera.pkg.tar.zst', b'package')
+            archive.writestr('okilum.pkg.tar.zst', b'package')
         run = {'workflow_id': 'linux-release.yml', 'prettyref': 'main',
                'is_fork_pull_request': False, 'trigger_event': 'push',
                'status': 'success', 'commit_sha': 'source', 'index_in_repo': 42}

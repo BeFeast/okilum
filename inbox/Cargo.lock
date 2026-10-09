@@ -1627,7 +1627,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tessera-inbox-domain"
+name = "okilum-inbox-domain"
 version = "0.1.0"
 dependencies = [
  "serde",
@@ -1637,7 +1637,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tessera-inboxd"
+name = "okilum-inboxd"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -1651,8 +1651,8 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
- "tessera-inbox-domain",
- "tessera-sync",
+ "okilum-inbox-domain",
+ "okilum-sync",
  "thiserror 2.0.21",
  "tokio",
  "tower",
@@ -1663,7 +1663,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tessera-sync"
+name = "okilum-sync"
 version = "0.1.0"
 dependencies = [
  "anyhow",

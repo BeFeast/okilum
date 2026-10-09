@@ -91,10 +91,10 @@ conservative answer.
 Verification is an injected policy, never a default no-op, and no signing identity is
 written into code or tests. Inputs, as decided for the release pipeline:
 
-- macOS: the Team ID is the release-signing value (`TESSERA_SIGNING_TEAM_ID`, see
+- macOS: the Team ID is the release-signing value (`OKILUM_SIGNING_TEAM_ID`, see
   [macOS auto-update](macos-auto-update.md)), read at release build time. The helper's
   bundle identifier is derived from the same build configuration as the app's, not
-  pinned as a string: it is `uk.oklabs.tessera` today, and a rebrand will change it.
+  pinned as a string: it is `com.befeast.okilum` today, and a rebrand will change it.
 - Windows: the Authenticode policy is built on the certificate **subject plus the
   issuer chain** of the code-signing authority, never on a thumbprint, because the
   thumbprint changes at every yearly renewal. The certificate is not issued yet; its

@@ -38,7 +38,7 @@ def current_schedule(event, source, platform):
 
 
 def descriptor(source, platform):
-    url = f'https://updates.befeast.com/tessera/releases/{source}/{platform}.json'
+    url = f'https://updates.befeast.com/okilum/releases/{source}/{platform}.json'
     # curl uses the same public endpoint and transport as installed update clients.
     result = subprocess.run(['curl', '--silent', '--show-error', '--location',
                              '--max-time', '30', '--write-out', '\n%{http_code}', url],

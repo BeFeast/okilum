@@ -35,7 +35,7 @@ review or capability remains observation-only; no unguarded POST fallback.
   remain pending; there is no automatic POST retry and no remote abandonment.
 - `runtime/maestro_links.rs`: additive decision receipts in existing goal-owned
   Maestro history/source projection. Execution status is observation, never a
-  Tessera ResultRecord, criterion acceptance or stage completion.
+  Okilum ResultRecord, criterion acceptance or stage completion.
 - Native `maestro_ui.rs` and `native_outbox.rs`: explicit exact review (repo,
   issue, PR, full head, summary/risk/evidence), retained request before send,
   exact matching receipt and explicit retry/GET reconciliation. Goal/workspace

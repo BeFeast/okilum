@@ -40,22 +40,22 @@ jobs:
           python3 scripts/brand-assets.py verify
       - name: Build and package Linux QA binary
         run: |
-          export TESSERA_SOURCE_COMMIT="$GITHUB_SHA"
-          export TESSERA_BUILD_VERSION="$((5000 + GITHUB_RUN_NUMBER))"
-          export TESSERA_RELEASE_VERSION="0.1.$TESSERA_BUILD_VERSION"
+          export OKILUM_SOURCE_COMMIT="$GITHUB_SHA"
+          export OKILUM_BUILD_VERSION="$((5000 + GITHUB_RUN_NUMBER))"
+          export OKILUM_RELEASE_VERSION="0.1.$OKILUM_BUILD_VERSION"
           # Match scripts/arch/PKGBUILD beta profile and default features.
-          cargo build --release --locked -p tessera-shell
-          target/release/tessera --help
-          if ldd target/release/tessera | grep 'not found'; then exit 1; fi
-          python3 scripts/ci/package-linux-binary.py --binary target/release/tessera \
+          cargo build --release --locked -p okilum-shell
+          target/release/okilum --help
+          if ldd target/release/okilum | grep 'not found'; then exit 1; fi
+          python3 scripts/ci/package-linux-binary.py --binary target/release/okilum \
             --output dist/linux-qa --source-sha "$GITHUB_SHA"
           cd dist/linux-qa
           sha256sum -c *.tar.zst.sha256
           tar --zstd -xf *.tar.zst
-          cd "tessera-linux-x86_64-$GITHUB_SHA"
+          cd "okilum-linux-x86_64-$GITHUB_SHA"
           sha256sum -c SHA256SUMS
           test "$(cat SOURCE_SHA)" = "$GITHUB_SHA"
-          ./tessera --help
+          ./okilum --help
       - uses: actions/upload-artifact@v4
         with:
           name: linux-binary-${{ steps.source.outputs.sha }}

@@ -61,7 +61,7 @@ or change to record admission or API schemas.
 Focused GPUI checks cover hydration and retained draft state, duplicate no-op,
 late goal/workspace/source/Context changes and changed disk reads with recorded
 read-only RPCs. Native and CI evidence are tracked separately in
-[issue265](https://git.oklabs.uk/BeFeast/tessera/issues/265).
+[issue265](https://git.oklabs.uk/BeFeast/okilum/issues/265).
 
 ## Use selected lines from a longer saved note
 

@@ -6,12 +6,12 @@ the [native source filesystem](windows-source-filesystem.md). The Reader/MCP
 protocol remains read-only.
 
 This portable Windows 11 x64 build is a read-only Reader diagnostic. Extract the
-entire ZIP (including `gpui-shaders`), then open `tessera.exe`. Use Open Folder to select your vault, or drag a file
+entire ZIP (including `gpui-shaders`), then open `okilum.exe`. Use Open Folder to select your vault, or drag a file
 or folder onto the executable. Command-line examples:
 
 ```powershell
-.\tessera.exe "C:\Users\Oleg\Obsidian Vault"
-.\tessera.exe --vault "C:\Users\Oleg\Obsidian Vault" --note "Dev/Example.md"
+.\okilum.exe "C:\Users\Oleg\Obsidian Vault"
+.\okilum.exe --vault "C:\Users\Oleg\Obsidian Vault" --note "Dev/Example.md"
 ```
 
 Brain, managed workspace, export, note creation, rename/move and source editing are unavailable. Ctrl+E
@@ -32,7 +32,7 @@ readable part of the vault. The header shows "N items unreadable"; click it for
 paths and errors, Copy details, and Retry after correcting access. Partial counts
 are marked explicitly. Link verification stays uncertain while inventory is
 incomplete; unreadable known note identities are retained to avoid false uniqueness.
-The latest warning/failure report is `%LOCALAPPDATA%\tessera\reader-diagnostic.log`,
+The latest warning/failure report is `%LOCALAPPDATA%\okilum\reader-diagnostic.log`,
 outside the vault. A missing or unreadable vault root still fails the open.
 
 Preparation now reports the operation and full cause chain for cache validation,

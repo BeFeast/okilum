@@ -1,6 +1,6 @@
 # Maintenance capability and release compatibility matrix
 
-Issue [162](https://git.oklabs.uk/BeFeast/tessera/issues/162), P3 test infrastructure.
+Issue [162](https://git.oklabs.uk/BeFeast/okilum/issues/162), P3 test infrastructure.
 No product capability or hash schema changes. Historical generic maintenance CI312
 remains failed: 117 passed, 15 enabled-link fixture assumptions failed. Its status
 must never be rewritten from a newer, differently scoped matrix result.
@@ -25,7 +25,7 @@ then runs actual frozen-binary posture, operation-disposition, source-recovery a
 reviewed-packet compatibility gates. Missing artifacts, changed hashes, missing
 provenance or an unsupported feature graph refuse the run. The maintenance source
 commit must match the checkout exactly. CI can supply a reviewed local manifest
-via `TESSERA_MAINTENANCE_ARTIFACTS`; this change creates no runners, artifact download
+via `OKILUM_MAINTENANCE_ARTIFACTS`; this change creates no runners, artifact download
 service or automatic release enrollment. A maintenance CI job without that input
 fails deliberately instead of passing on exclusions alone.
 
@@ -40,7 +40,7 @@ binary to satisfy enabled-feature tests.
 ```bash
 scripts/vendor-setup.sh
 scripts/vendor-setup.sh --verify
-CC=/usr/bin/cc CXX=/usr/bin/c++ cargo build --release -p tessera-shell -p tessera-cored --message-format=json
+CC=/usr/bin/cc CXX=/usr/bin/c++ cargo build --release -p okilum-shell -p okilum-cored --message-format=json
 ```
 
 Freeze the actual emitted GUI and cored executables together, their SHA256 values,
@@ -56,7 +56,7 @@ three required artifact entries, `enabled`, `maintenance` and `old5b`. Each uses
 
 ```json
 {
-  "binary": "../release/tessera-cored",
+  "binary": "../release/okilum-cored",
   "sha256": "<64 lowercase hex>",
   "source": "<40 lowercase hex>",
   "freeze": "../release/freeze.json",
@@ -66,7 +66,7 @@ three required artifact entries, `enabled`, `maintenance` and `old5b`. Each uses
 ```
 
 Paths resolve relative to the manifest. The freeze receipt has `commit`, `files`
-(`tessera-cored`, and `tessera` for full builds), and the actual `compiler_artifacts`
+(`okilum-cored`, and `okilum` for full builds), and the actual `compiler_artifacts`
 entries. GUI is the frozen cored's sibling. The `old5b` entry instead uses
 `historical-cored-only`; its binary must match the specifically retained SHA256
 `5b129b192156585bd3fbf3aa48f4bc5c8f5c726a8df782edfbad1b78e7c47bd9`.

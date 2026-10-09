@@ -5,8 +5,8 @@ provider request or successful acceptance receipt. The product requirements rema
 [the POC scope](ai-brain-poc.md) and [ai-brain/v1](ai-brain-contracts.md).
 
 Development, review and recovery stay in external T3 Code. This fixture does not
-make Tessera responsible for its own development or migrate daily work. Executing
-this isolated synthetic task through the actual Tessera UI, Todoist and T3 can
+make Okilum responsible for its own development or migrate daily work. Executing
+this isolated synthetic task through the actual Okilum UI, Todoist and T3 can
 satisfy the POC's functional acceptance. A mocked or backend-only scripted run
 cannot. No additional personal-project run is required by this procedure.
 
@@ -84,25 +84,25 @@ label; when the UI generates its ID, retain and use that actual ID in observatio
 
 ## Observable interactive run
 
-1. Capture the template's thought in the actual Tessera inbox. In the native
+1. Capture the template's thought in the actual Okilum inbox. In the native
    conversation, establish the planning-only constraint and criterion `C1`.
    Starting the thought is user input; carrying source context/results by hand
-   between Tessera and T3 is a failed context-continuity check.
-2. Select both source notes through Tessera. Inspect the source view and preview;
+   between Okilum and T3 is a failed context-continuity check.
+2. Select both source notes through Okilum. Inspect the source view and preview;
    confirm the raw source retains frontmatter and wikilinks. Retain the actual
    selected revisions and resulting context packet revision.
 3. Through the connector, create or associate the selected test task. Record its
    real account-scoped ID and observed status. A local Markdown task reference
    or successful HTTP fixture is insufficient.
-4. Dispatch from Tessera to the dedicated real T3 stage. Open its real thread from
-   Tessera. Using external T3 for observation, verify the received context contains
+4. Dispatch from Okilum to the dedicated real T3 stage. Open its real thread from
+   Okilum. Using external T3 for observation, verify the received context contains
    the goal, criterion, constraint, both source references/revisions and the facts
    needed for the plan. Both source markers must be traceable in the prepared
    source context. Do not paste missing context into the thread.
-5. During the stage, close/reopen only the Tessera UI. The same backend goal,
+5. During the stage, close/reopen only the Okilum UI. The same backend goal,
    operation and T3 thread/turn must continue. Record evidence of that identity
    before and after reconnect, not merely that the window reopened.
-6. Inspect the automatically returned result in Tessera and its saved Markdown.
+6. Inspect the automatically returned result in Okilum and its saved Markdown.
    It must identify the same goal/stage/operation and both sources. Do not manually
    ingest a manufactured outcome or copy the T3 reply into a source file.
 7. Before review, `C1` must remain unmet and the result must retain its actual

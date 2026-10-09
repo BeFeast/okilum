@@ -12,7 +12,7 @@ import tempfile
 import tomllib
 import uuid
 
-REPOSITORY = "registry.oklabs.uk/tessera-ci-reader"
+REPOSITORY = "registry.oklabs.uk/okilum-ci-reader"
 RECIPE = Path(__file__).resolve().parent
 ROOT = RECIPE.parents[2]
 

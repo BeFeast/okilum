@@ -16,17 +16,17 @@ class ScopeTests(unittest.TestCase):
 
     def test_other_platform_and_web_changes_do_not_occupy_mac(self):
         self.assertFalse(scope.needs_macos([
-            'web/inbox/app.js', 'inbox/crates/tessera-inboxd/src/web.rs',
+            'web/inbox/app.js', 'inbox/crates/okilum-inboxd/src/web.rs',
             'scripts/windows/pack.sh', 'scripts/arch/PKGBUILD',
             'docs/images/reader.png', '.forgejo/workflows/linux-release.yml']))
-        for path in ['crates/tessera-core/src/file_editor.rs',
-                     'crates/tessera-core/src/vault.rs',
-                     'crates/tessera-shell/src/reader_replay.rs',
+        for path in ['crates/okilum-core/src/file_editor.rs',
+                     'crates/okilum-core/src/vault.rs',
+                     'crates/okilum-shell/src/reader_replay.rs',
                      'scripts/ci/release-cache.sh', 'scripts/build-macos-ci.sh']:
             self.assertTrue(scope.needs_macos(['web/inbox/app.js', path]))
 
     def test_native_inputs_and_unknown_paths(self):
-        for path in ['crates/tessera-shell/src/main.rs', 'crates/tessera-core/tests/vault.md',
+        for path in ['crates/okilum-shell/src/main.rs', 'crates/okilum-core/tests/vault.md',
                      'Cargo.lock', 'Cargo.toml', '.cargo/config.toml',
                      'rust-toolchain.toml', 'scripts/patches/change.diff',
                      '.forgejo/workflows/ci.yml', 'assets/font.ttf',

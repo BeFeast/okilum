@@ -24,7 +24,7 @@ The same Reader rendering, source editor, safe-save checks, and navigation histo
 are used in both modes. The upgrade saves or refuses a dirty document through the
 existing source transition before starting vault preparation.
 
-Linux advertises `text/markdown` with `tessera %f`; macOS advertises both Markdown
+Linux advertises `text/markdown` with `okilum %f`; macOS advertises both Markdown
 UTIs. Windows Velopack install/update registers a per-user Open With ProgID, and
 uninstall removes it. These registrations do not change the user's default app.
 

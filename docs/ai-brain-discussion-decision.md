@@ -1,6 +1,6 @@
 # Keep Discussion decisions as reusable goal input
 
-Approved implementation contract for [#253](https://git.oklabs.uk/BeFeast/tessera/issues/253). Implementation and validation status follow the issue; this document is not an acceptance receipt. Source seams inspected at 40faa92fe4c7db631bf30e35d534bc1742808612 and reconfirmed after the shell-only #250 correction at 6ecf5720eb144d08894f2f24102e3f1b7de16720. Recovery direction incorporates the independent bounded SourceStore recovery audit and root's pending-receipt/readback distinction. The bounded implementation follows this contract; source/unit evidence does not substitute for native or compatibility acceptance.
+Approved implementation contract for [#253](https://git.oklabs.uk/BeFeast/okilum/issues/253). Implementation and validation status follow the issue; this document is not an acceptance receipt. Source seams inspected at 40faa92fe4c7db631bf30e35d534bc1742808612 and reconfirmed after the shell-only #250 correction at 6ecf5720eb144d08894f2f24102e3f1b7de16720. Recovery direction incorporates the independent bounded SourceStore recovery audit and root's pending-receipt/readback distinction. The bounded implementation follows this contract; source/unit evidence does not substitute for native or compatibility acceptance.
 
 ## User interaction
 
@@ -56,11 +56,11 @@ One implementation owner owns precisely these product files:
 
 | Files | Responsibility |
 | --- | --- |
-| New `crates/tessera-brain/src/runtime/discussion_decision.rs`; `runtime.rs` | Canonical serializer/parser, deterministic ID helpers, typed admission, bounded lookup states and guarded Save; register the module and focused backend tests. |
-| `crates/tessera-brain/src/service.rs`; `application.rs` | Strict workspace command routing and capability. No provider/task dispatch path is called. |
-| `crates/tessera-brain/src/discussion_context.rs` | Narrow selected-turn origin helper using its private full Envelope validation; add actor/time checks; automatic same-origin suppression and manual-merge kind enrichment. |
-| `crates/tessera-brain/src/runtime/goal_brief.rs` | Bounded discovery/receipt-owner admission, distinct kind/title and shared limits. |
-| New `crates/tessera-shell/src/brain/discussion_decision_ui.rs`; `brain.rs`; two guard delegations in `brain/discussion_note_ui.rs` | Saved-user-row action, exact read-only review, original owner/request state, explicit Save/lookup/readback display and existing navigation/close hooks. Shell consumes the backend proposal and checks exact identity/bytes; it does not implement an independent canonical admission policy. |
+| New `crates/okilum-brain/src/runtime/discussion_decision.rs`; `runtime.rs` | Canonical serializer/parser, deterministic ID helpers, typed admission, bounded lookup states and guarded Save; register the module and focused backend tests. |
+| `crates/okilum-brain/src/service.rs`; `application.rs` | Strict workspace command routing and capability. No provider/task dispatch path is called. |
+| `crates/okilum-brain/src/discussion_context.rs` | Narrow selected-turn origin helper using its private full Envelope validation; add actor/time checks; automatic same-origin suppression and manual-merge kind enrichment. |
+| `crates/okilum-brain/src/runtime/goal_brief.rs` | Bounded discovery/receipt-owner admission, distinct kind/title and shared limits. |
+| New `crates/okilum-shell/src/brain/discussion_decision_ui.rs`; `brain.rs`; two guard delegations in `brain/discussion_note_ui.rs` | Saved-user-row action, exact read-only review, original owner/request state, explicit Save/lookup/readback display and existing navigation/close hooks. Shell consumes the backend proposal and checks exact identity/bytes; it does not implement an independent canonical admission policy. |
 | New `docs/ai-brain-discussion-decision.md`; `docs/ai-brain-goal-context-brief.md`; `docs/ai-brain-discussion-context.md` | Final implemented contract, limits, compatibility and distinct original-user input behavior. |
 
 No core/SourceStore schema changes, new recovery store, Attention/proposal changes, auto-merge, connector/provider behavior or frozen schemas. Any implementation discovery requiring additional product files returns a narrow ownership amendment for root review; it is not pre-authorized by an optional “if needed” file list.
@@ -75,7 +75,7 @@ Reviewer owns independent source/contract review and focused compatibility evide
 4. Existing Attention/result admission and assistant notes remain unchanged. Original conversation source, reviewed packet and active stage envelope hashes remain unchanged by Save. Instrument provider/task/engine/Attention absence with an independent positive control.
 5. Native exact-text review/Save/Cancel/reopen, same-goal brief and New conversation navigation; pure backend preparation tests prove new-turn inclusion without sending to a provider. Do not invent an unsent-context preview UI for this slice. Old-client capability refusal and old-writer preservation on copies, with source/binary pins and honest limitations.
 
-Track implementation and acceptance in [#253](https://git.oklabs.uk/BeFeast/tessera/issues/253). No live deployment is authorized by this contract.
+Track implementation and acceptance in [#253](https://git.oklabs.uk/BeFeast/okilum/issues/253). No live deployment is authorized by this contract.
 
 ## Manual-only reuse
 

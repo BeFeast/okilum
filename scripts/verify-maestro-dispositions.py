@@ -68,7 +68,7 @@ def verify(enabled, maintenance, predecessor=None):
     try:
         base.positive_control(server, Fixture)
         checked.append("non_get_detection_positive_control")
-        with tempfile.TemporaryDirectory(prefix="tessera-maestro-dispositions-") as temporary:
+        with tempfile.TemporaryDirectory(prefix="okilum-maestro-dispositions-") as temporary:
             root = pathlib.Path(temporary)
             (root / "brain/records").mkdir(parents=True)
             (root / "runtime").mkdir()

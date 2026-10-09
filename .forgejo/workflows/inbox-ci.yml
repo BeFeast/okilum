@@ -5,7 +5,7 @@ on:
     paths:
       - 'inbox/**'
       - 'web/inbox/**'
-      - 'crates/tessera-sync/**'
+      - 'crates/okilum-sync/**'
       - '.forgejo/workflows/inbox-ci.yml'
       - '.github/workflows/forgejo-inbox.yml'
       - 'scripts/ci/github-pr.py'
@@ -14,7 +14,7 @@ on:
     paths:
       - 'inbox/**'
       - 'web/inbox/**'
-      - 'crates/tessera-sync/**'
+      - 'crates/okilum-sync/**'
       - '.forgejo/workflows/inbox-ci.yml'
       - '.github/workflows/forgejo-inbox.yml'
       - 'scripts/ci/github-pr.py'
@@ -30,7 +30,7 @@ permissions:
 jobs:
   inbox-tests:
     if: >-
-      github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || vars.TESSERA_PR_LANE == 'local'
+      github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || vars.OKILUM_PR_LANE == 'local'
     # Existing baldr Docker label: keep long builds off light/bridge waiters.
     runs-on: docker
     container:
@@ -56,7 +56,7 @@ jobs:
           # --all follows path dependencies into the Reader workspace, whose
           # GPUI vendor is intentionally absent from this isolated Inbox job.
           cargo fmt --check
-          cargo fmt --manifest-path ../crates/tessera-sync/Cargo.toml -p tessera-sync --check
+          cargo fmt --manifest-path ../crates/okilum-sync/Cargo.toml -p okilum-sync --check
           cargo clippy --locked --workspace --all-targets -- -D warnings
           cargo test --locked --workspace
       - name: Consistent SQLite backup and restore
@@ -68,15 +68,15 @@ jobs:
           npm test
       - name: T3 bridge projection, transport and recovery tests
         run: |
-          python3 -m venv /tmp/tessera-bridge-tests
-          /tmp/tessera-bridge-tests/bin/pip install --require-hashes --only-binary=:all: -r inbox/bridge/requirements.txt
-          /tmp/tessera-bridge-tests/bin/python -m unittest discover -s inbox/bridge -p 'test_*.py' -v
+          python3 -m venv /tmp/okilum-bridge-tests
+          /tmp/okilum-bridge-tests/bin/pip install --require-hashes --only-binary=:all: -r inbox/bridge/requirements.txt
+          /tmp/okilum-bridge-tests/bin/python -m unittest discover -s inbox/bridge -p 'test_*.py' -v
       - name: Read-only Forgejo collector pagination and failure tests
         run: python3 -m unittest discover -s inbox/forgejo -p 'test_*.py' -v
 
   inbox-github:
     if: >-
-      github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.TESSERA_PR_LANE != 'local'
+      github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.OKILUM_PR_LANE != 'local'
     runs-on: bridge
     timeout-minutes: 125
     steps:
@@ -87,7 +87,7 @@ jobs:
           persist-credentials: false
       - name: Wait for exact-head hosted inbox
         env:
-          MIRROR_TOKEN: ${{ secrets.TESSERA_GITHUB_MIRROR }}
+          MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CI_LANE: inbox

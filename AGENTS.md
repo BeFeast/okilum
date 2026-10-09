@@ -1,14 +1,14 @@
-# AGENTS.md — Tessera
+# AGENTS.md — Okilum
 
 Canonical agent instructions for this repository. Read `docs/PRD.md` before any
 product-shaping change; it is the approved product contract.
 
 ## What this repo is
 
-The Tessera product code. It is **not** the spike sandbox and not the project brain.
+The Okilum product code. It is **not** the spike sandbox and not the project brain.
 
 - **Project brain** (PM tracking, design decisions, handovers) lives in Oleg's vault at
-  `Dev/Areas/tessera/`. Design *decisions* go there or into `docs/`, never buried in a
+  `Dev/Areas/okilum/`. Design *decisions* go there or into `docs/`, never buried in a
   commit message.
 - **Spike sandbox** — the four-candidate framework experiment — is evidence only. Do
   not copy it wholesale into this repo. Porting anything out of it is a reviewed,
@@ -24,14 +24,14 @@ The Tessera product code. It is **not** the spike sandbox and not the project br
 - **Derived data must be rebuildable** from canonical files. Durable operational
   state (dispatch intents, external identities, acknowledgements, replay cursors)
   is not a disposable cache and must not live under the deletable index directory.
-- **Develop Tessera externally in T3 Code.** Planning, execution control, review,
+- **Develop Okilum externally in T3 Code.** Planning, execution control, review,
   debugging and recovery stay outside the product under test. The POC may drive
   an isolated test goal; it must not take over its own development or daily work.
 - **Quality gates do not move.** A library that fails an acceptance gate is replaced,
   or the component is written from scratch. Development cost is a tiebreaker between
   passing options — never a reason to lower a bar.
 - **Ambiguity is surfaced, not guessed.** This is the rule behind the note-identity
-  model and it generalises: when Tessera cannot resolve something, it says so rather
+  model and it generalises: when Okilum cannot resolve something, it says so rather
   than picking a winner the user cannot see.
 
 ## Vendored `gpui-kit`

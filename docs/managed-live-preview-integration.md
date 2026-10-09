@@ -62,7 +62,7 @@ separate receipts.
 
 The combined candidate reuses #221's reviewed bounded recorder and actual component
 spans. Default runs do not enable the recorder, bind the dump key, or produce trace
-output. On Linux 64-bit, setting `TESSERA_MANAGED220_TRACE=1` enables tracing and an
+output. On Linux 64-bit, setting `OKILUM_MANAGED220_TRACE=1` enables tracing and an
 F8 evidence action in the managed view. This action dumps the selected source's
 entity/document/path/workspace, exact hash/size, selection, mode and queue state,
 then the recorded scalar events and clock samples. Hashing, formatting, stdout and

@@ -3,8 +3,8 @@
 Source baseline: `bb566fde` (Properties #831 merged), 2026-10-08.
 This is a source inventory, not native visual acceptance. It does not change UI
 behaviour or close #621. Rule numbers refer to the approved project-brain note
-`Dev/Areas/tessera/design/ui-rules.md`. Source paths below are relative to
-`crates/tessera-shell/src/`. Sizes are relative follow-up scope: S = one surface,
+`Dev/Areas/okilum/design/ui-rules.md`. Source paths below are relative to
+`crates/okilum-shell/src/`. Sizes are relative follow-up scope: S = one surface,
 M = shared presentation or several states; they are not delivery estimates.
 
 ## Confirmed remaining source findings

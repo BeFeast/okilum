@@ -35,7 +35,7 @@ jobs:
           path: |
             ~/.cargo/registry/
             ~/.cargo/git/
-            ~/.cache/tessera-macos/reader-arm64/
+            ~/.cache/okilum-macos/reader-arm64/
           key: forgejo-native-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'scripts/ci/check-macos.sh', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff') }}
       - name: Compile Reader and run quick native regressions
         id: native
@@ -49,7 +49,7 @@ jobs:
           path: |
             ~/.cargo/registry/
             ~/.cargo/git/
-            ~/.cache/tessera-macos/reader-arm64/
+            ~/.cache/okilum-macos/reader-arm64/
           key: ${{ steps.native-cache.outputs.cache-primary-key }}
       - name: Save native thumbnail evidence
         if: always() && steps.native.outcome != 'skipped'

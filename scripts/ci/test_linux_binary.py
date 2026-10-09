@@ -21,14 +21,14 @@ class LinuxBinaryTests(unittest.TestCase):
             subprocess.run(['sha256sum', '-c', archive.name + '.sha256'], cwd=archive.parent,
                            check=True, capture_output=True)
             subprocess.run(['tar', '--zstd', '-xf', str(archive), '-C', str(root)], check=True)
-            payload = root / f'tessera-linux-x86_64-{sha}'
+            payload = root / f'okilum-linux-x86_64-{sha}'
             self.assertEqual((payload / 'SOURCE_SHA').read_text(), sha + '\n')
-            self.assertEqual(subprocess.check_output([str(payload / 'tessera')], text=True), 'reader-control\n')
+            self.assertEqual(subprocess.check_output([str(payload / 'okilum')], text=True), 'reader-control\n')
             subprocess.run(['sha256sum', '-c', 'SHA256SUMS'], cwd=payload, check=True, capture_output=True)
-            (payload / 'tessera').write_bytes(b'corrupted')
+            (payload / 'okilum').write_bytes(b'corrupted')
             result = subprocess.run(['sha256sum', '-c', 'SHA256SUMS'], cwd=payload, capture_output=True)
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn(b'tessera: FAILED', result.stdout)
+            self.assertIn(b'okilum: FAILED', result.stdout)
 
     def test_invalid_source_sha_is_rejected(self):
         with self.assertRaises(ValueError):

@@ -12,7 +12,7 @@ import urllib.request
 
 VERSION = '0.23.1'
 CHANNEL = 'https://aka.ms/vs/17/release/channel'
-RECEIPT = '.tessera-integrity.json'
+RECEIPT = '.okilum-integrity.json'
 
 
 def manifest_hash():

@@ -1,17 +1,17 @@
 # Third-party notices
 
-Tessera is MIT. The following components retain their own licenses.
+Okilum is MIT. The following components retain their own licenses.
 
 # Third-party license sources
 
-Tessera's own code is MIT, not dual-licensed. Third-party code and assets retain
+Okilum's own code is MIT, not dual-licensed. Third-party code and assets retain
 their licenses. `THIRD_PARTY_NOTICES.md` is the distributable combined notice.
 Regenerate it with cargo-about 0.9.2 and `python3 scripts/third-party-notices.py`.
 The generator uses all workspace features and platforms, including build-time
 components; this is a conservative superset of any individual release.
 
 - GPUI and gpui-kit: Apache-2.0; pinned by Cargo.lock and scripts/vendor-setup.sh.
-  Tessera's changes are recorded in scripts/patches; retain those modification
+  Okilum's changes are recorded in scripts/patches; retain those modification
   records with redistributed sources. No separate NOTICE exists in the pinned
   gpui-kit tree. Apache-2.0.txt is its complete license.
 - Excalifont: SIL OFL 1.1. The pinned upstream index.ts contains the original font
@@ -21,10 +21,10 @@ components; this is a conservative superset of any individual release.
 - Virgil and Nunito: SIL OFL 1.1, from Excalidraw font subsets. Nunito's complete
   license and copyright: https://github.com/google/fonts/blob/main/ofl/nunito/OFL.txt
 - Liberation Sans: bundled TTF is byte-identical to Excalidraw's
-  scripts/woff2/assets/LiberationSans-Regular.ttf; no Tessera font modification.
+  scripts/woff2/assets/LiberationSans-Regular.ttf; no Okilum font modification.
   Copyright and OFL declaration are in its name table, reproduced with full OFL.
 - Noto Sans and Cascadia Code: SIL OFL 1.1; notices and conversion provenance are
-  in crates/tessera-shell/assets/brand/fonts and its manifest. The supplied
+  in crates/okilum-shell/assets/brand/fonts and its manifest. The supplied
   Excalifont/Virgil/Nunito/Noto/Cascadia copyright declarations do not designate
   Reserved Font Names; format conversion/merging is documented, not relicensed.
   Font family names and trademarks are not an endorsement by their authors.
@@ -244,7 +244,7 @@ END OF TERMS AND CONDITIONS
 
 ```text
 Standard PDF fonts embedded by hayro-interpret (Foxit Sans, Serif, Fixed,
-Symbol and Dingbats). hayro extracted them from PDFium; Tessera ships them
+Symbol and Dingbats). hayro extracted them from PDFium; Okilum ships them
 unmodified inside the hayro-interpret crate to draw PDFs whose standard fonts
 are not embedded.
 Source: https://github.com/LaurenzV/hayro/tree/main/hayro-interpret/assets
@@ -471,7 +471,7 @@ IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 POSSIBILITY OF SUCH DAMAGE.
 ```
 
-## crates/tessera-shell/assets/drawings/fonts/Excalifont-LICENSE.txt
+## crates/okilum-shell/assets/drawings/fonts/Excalifont-LICENSE.txt
 
 ```text
 Copyright (c) 2024 by Excalidraw. All rights reserved.
@@ -569,7 +569,7 @@ FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
 ```
 
-## crates/tessera-shell/assets/drawings/fonts/LiberationSans-LICENSE.txt
+## crates/okilum-shell/assets/drawings/fonts/LiberationSans-LICENSE.txt
 
 ```text
 Digitized data `2007 Ascender Corporation. All rights reserved. & Copyright 2013 Google LLC
@@ -667,7 +667,7 @@ FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
 ```
 
-## crates/tessera-shell/assets/drawings/fonts/Nunito-LICENSE.txt
+## crates/okilum-shell/assets/drawings/fonts/Nunito-LICENSE.txt
 
 ```text
 Copyright 2014 The Nunito Project Authors (https://github.com/googlefonts/nunito)
@@ -765,7 +765,7 @@ FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
 ```
 
-## crates/tessera-shell/assets/drawings/fonts/Virgil-LICENSE.txt
+## crates/okilum-shell/assets/drawings/fonts/Virgil-LICENSE.txt
 
 ```text
 Copyright (c) 2011 by Your Own Font Foundry. All rights reserved.
@@ -868,7 +868,7 @@ Source: https://github.com/excalidraw/excalidraw/tree/master/packages/excalidraw
 Lossless WOFF2-to-SFNT conversion for the native font parser.
 ```
 
-## crates/tessera-shell/assets/brand/fonts/cascadiacode-OFL.txt
+## crates/okilum-shell/assets/brand/fonts/cascadiacode-OFL.txt
 
 ```text
 Copyright (c) 2019 - Present, Microsoft Corporation,
@@ -967,7 +967,7 @@ FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
 ```
 
-## crates/tessera-shell/assets/brand/fonts/notosans-OFL.txt
+## crates/okilum-shell/assets/brand/fonts/notosans-OFL.txt
 
 ```text
 Copyright 2022 The Noto Project Authors (https://github.com/notofonts/latin-greek-cyrillic)
@@ -12570,7 +12570,7 @@ SOFTWARE.
 
 ### MIT License (MIT)
 
-Applies to: accesskit 0.24.1, accesskit_atspi_common 0.19.1, accesskit_consumer 0.38.0, accesskit_macos 0.26.3, accesskit_unix 0.22.1, accesskit_windows 0.34.0, block 0.1.6, block2 0.6.2, brotli-decompressor 5.0.3, chrono 0.4.45, dispatch2 0.3.1, gpu-descriptor 0.3.2, gpu-descriptor-types 0.2.0, granit-parser 0.0.7, harfrust 0.5.2, htmlescape 0.3.1, i_key_sort 0.11.0, i_overlay 9.0.0, jni-sys-macros 0.4.1, leak 0.1.2, leaky-cow 0.1.1, libm 0.2.16, lyon 1.0.19, lyon_algorithms 1.0.21, lyon_geom 1.0.19, lyon_path 1.0.19, lyon_tessellation 1.0.21, mac 0.1.1, mac-notification-sys 0.6.15, malloc_buf 0.0.6, ndk-sys 0.6.0+11769913, objc-sys 0.3.5, objc2 0.5.2, objc2 0.6.4, objc2-app-kit 0.2.2, objc2-app-kit 0.3.2, objc2-cloud-kit 0.3.2, objc2-core-data 0.3.2, objc2-core-foundation 0.3.2, objc2-core-graphics 0.3.2, objc2-core-image 0.3.2, objc2-core-location 0.3.2, objc2-core-text 0.3.2, objc2-core-video 0.3.2, objc2-encode 4.1.0, objc2-foundation 0.2.2, objc2-foundation 0.3.2, objc2-metal 0.3.2, objc2-quartz-core 0.3.2, objc2-user-notifications 0.3.2, ownedbytes 0.9.0, palette_math 0.7.7, pathfinder_geometry 0.5.1, pathfinder_simd 0.5.6, profiling 1.0.18, profiling-procmacros 1.0.18, pulp-wasm-simd-flag 0.1.1, r-efi 5.3.0, r-efi 6.0.0, roughr 0.14.0, rust-i18n-macro 4.2.1, rust-i18n-support 4.2.1, seahash 4.1.0, siphasher 1.0.3, svg_fmt 0.4.5, taffy 0.13.0, tantivy-bitpacker 0.10.0, tantivy-columnar 0.7.0, tantivy-common 0.11.0, tantivy-query-grammar 0.26.0, tantivy-sstable 0.7.0, tantivy-stacker 0.7.0, tantivy-tokenizer-api 0.7.0, tauri-winrt-notification 0.7.3, tessera-brain 0.1.0, tessera-core 0.1.0, tessera-cored 0.1.0, tessera-shell 0.1.0, tessera-sync 0.1.0, tessera-sync-controller 0.1.0, tree-sitter-astro-next 0.1.1, tree-sitter-bash 0.23.3, tree-sitter-cpp 0.23.4, tree-sitter-css 0.23.2, tree-sitter-diff 0.1.0, tree-sitter-embedded-template 0.23.2, tree-sitter-go 0.23.4, tree-sitter-html 0.23.2, tree-sitter-java 0.23.5, tree-sitter-javascript 0.23.1, tree-sitter-jsdoc 0.23.2, tree-sitter-json 0.24.8, tree-sitter-lua 0.4.1, tree-sitter-make 1.1.1, tree-sitter-md 0.5.3, tree-sitter-proto 0.2.0, tree-sitter-python 0.23.6, tree-sitter-ruby 0.23.1, tree-sitter-scala 0.23.4, tree-sitter-sequel 0.3.11, tree-sitter-toml-ng 0.7.0, tree-sitter-typescript 0.23.2, tree-sitter-zig 1.1.2, velopack 1.2.161, winapi-i686-pc-windows-gnu 0.4.0, winapi-x86_64-pc-windows-gnu 0.4.0, windows 0.58.0, windows 0.61.3, windows 0.62.2, windows-collections 0.2.0, windows-collections 0.3.2, windows-core 0.58.0, windows-core 0.61.2, windows-core 0.62.2, windows-future 0.2.1, windows-future 0.3.2, windows-implement 0.58.0, windows-implement 0.60.2, windows-interface 0.58.0, windows-interface 0.59.3, windows-link 0.1.3, windows-link 0.2.1, windows-numerics 0.2.0, windows-numerics 0.3.1, windows-registry 0.4.0, windows-registry 0.6.1, windows-result 0.2.0, windows-result 0.3.4, windows-result 0.4.1, windows-strings 0.1.0, windows-strings 0.3.1, windows-strings 0.4.2, windows-strings 0.5.1, windows-sys 0.48.0, windows-sys 0.52.0, windows-sys 0.59.0, windows-sys 0.61.2, windows-targets 0.48.5, windows-targets 0.52.6, windows-targets 0.53.5, windows-threading 0.1.0, windows-threading 0.2.1, windows-version 0.1.7, windows_aarch64_gnullvm 0.48.5, windows_aarch64_gnullvm 0.52.6, windows_aarch64_gnullvm 0.53.1, windows_aarch64_msvc 0.48.5, windows_aarch64_msvc 0.52.6, windows_aarch64_msvc 0.53.1, windows_i686_gnu 0.48.5, windows_i686_gnu 0.52.6, windows_i686_gnu 0.53.1, windows_i686_gnullvm 0.52.6, windows_i686_gnullvm 0.53.1, windows_i686_msvc 0.48.5, windows_i686_msvc 0.52.6, windows_i686_msvc 0.53.1, windows_x86_64_gnu 0.48.5, windows_x86_64_gnu 0.52.6, windows_x86_64_gnu 0.53.1, windows_x86_64_gnullvm 0.48.5, windows_x86_64_gnullvm 0.52.6, windows_x86_64_gnullvm 0.53.1, windows_x86_64_msvc 0.48.5, windows_x86_64_msvc 0.52.6, windows_x86_64_msvc 0.53.1, xim-ctext 0.3.0, xim-parser 0.2.2, zune-core 0.4.12, zune-inflate 0.2.54, zune-jpeg 0.4.21
+Applies to: accesskit 0.24.1, accesskit_atspi_common 0.19.1, accesskit_consumer 0.38.0, accesskit_macos 0.26.3, accesskit_unix 0.22.1, accesskit_windows 0.34.0, block 0.1.6, block2 0.6.2, brotli-decompressor 5.0.3, chrono 0.4.45, dispatch2 0.3.1, gpu-descriptor 0.3.2, gpu-descriptor-types 0.2.0, granit-parser 0.0.7, harfrust 0.5.2, htmlescape 0.3.1, i_key_sort 0.11.0, i_overlay 9.0.0, jni-sys-macros 0.4.1, leak 0.1.2, leaky-cow 0.1.1, libm 0.2.16, lyon 1.0.19, lyon_algorithms 1.0.21, lyon_geom 1.0.19, lyon_path 1.0.19, lyon_tessellation 1.0.21, mac 0.1.1, mac-notification-sys 0.6.15, malloc_buf 0.0.6, ndk-sys 0.6.0+11769913, objc-sys 0.3.5, objc2 0.5.2, objc2 0.6.4, objc2-app-kit 0.2.2, objc2-app-kit 0.3.2, objc2-cloud-kit 0.3.2, objc2-core-data 0.3.2, objc2-core-foundation 0.3.2, objc2-core-graphics 0.3.2, objc2-core-image 0.3.2, objc2-core-location 0.3.2, objc2-core-text 0.3.2, objc2-core-video 0.3.2, objc2-encode 4.1.0, objc2-foundation 0.2.2, objc2-foundation 0.3.2, objc2-metal 0.3.2, objc2-quartz-core 0.3.2, objc2-user-notifications 0.3.2, ownedbytes 0.9.0, palette_math 0.7.7, pathfinder_geometry 0.5.1, pathfinder_simd 0.5.6, profiling 1.0.18, profiling-procmacros 1.0.18, pulp-wasm-simd-flag 0.1.1, r-efi 5.3.0, r-efi 6.0.0, roughr 0.14.0, rust-i18n-macro 4.2.1, rust-i18n-support 4.2.1, seahash 4.1.0, siphasher 1.0.3, svg_fmt 0.4.5, taffy 0.13.0, tantivy-bitpacker 0.10.0, tantivy-columnar 0.7.0, tantivy-common 0.11.0, tantivy-query-grammar 0.26.0, tantivy-sstable 0.7.0, tantivy-stacker 0.7.0, tantivy-tokenizer-api 0.7.0, tauri-winrt-notification 0.7.3, okilum-brain 0.1.0, okilum-core 0.1.0, okilum-cored 0.1.0, okilum-shell 0.1.0, okilum-sync 0.1.0, okilum-sync-controller 0.1.0, tree-sitter-astro-next 0.1.1, tree-sitter-bash 0.23.3, tree-sitter-cpp 0.23.4, tree-sitter-css 0.23.2, tree-sitter-diff 0.1.0, tree-sitter-embedded-template 0.23.2, tree-sitter-go 0.23.4, tree-sitter-html 0.23.2, tree-sitter-java 0.23.5, tree-sitter-javascript 0.23.1, tree-sitter-jsdoc 0.23.2, tree-sitter-json 0.24.8, tree-sitter-lua 0.4.1, tree-sitter-make 1.1.1, tree-sitter-md 0.5.3, tree-sitter-proto 0.2.0, tree-sitter-python 0.23.6, tree-sitter-ruby 0.23.1, tree-sitter-scala 0.23.4, tree-sitter-sequel 0.3.11, tree-sitter-toml-ng 0.7.0, tree-sitter-typescript 0.23.2, tree-sitter-zig 1.1.2, velopack 1.2.161, winapi-i686-pc-windows-gnu 0.4.0, winapi-x86_64-pc-windows-gnu 0.4.0, windows 0.58.0, windows 0.61.3, windows 0.62.2, windows-collections 0.2.0, windows-collections 0.3.2, windows-core 0.58.0, windows-core 0.61.2, windows-core 0.62.2, windows-future 0.2.1, windows-future 0.3.2, windows-implement 0.58.0, windows-implement 0.60.2, windows-interface 0.58.0, windows-interface 0.59.3, windows-link 0.1.3, windows-link 0.2.1, windows-numerics 0.2.0, windows-numerics 0.3.1, windows-registry 0.4.0, windows-registry 0.6.1, windows-result 0.2.0, windows-result 0.3.4, windows-result 0.4.1, windows-strings 0.1.0, windows-strings 0.3.1, windows-strings 0.4.2, windows-strings 0.5.1, windows-sys 0.48.0, windows-sys 0.52.0, windows-sys 0.59.0, windows-sys 0.61.2, windows-targets 0.48.5, windows-targets 0.52.6, windows-targets 0.53.5, windows-threading 0.1.0, windows-threading 0.2.1, windows-version 0.1.7, windows_aarch64_gnullvm 0.48.5, windows_aarch64_gnullvm 0.52.6, windows_aarch64_gnullvm 0.53.1, windows_aarch64_msvc 0.48.5, windows_aarch64_msvc 0.52.6, windows_aarch64_msvc 0.53.1, windows_i686_gnu 0.48.5, windows_i686_gnu 0.52.6, windows_i686_gnu 0.53.1, windows_i686_gnullvm 0.52.6, windows_i686_gnullvm 0.53.1, windows_i686_msvc 0.48.5, windows_i686_msvc 0.52.6, windows_i686_msvc 0.53.1, windows_x86_64_gnu 0.48.5, windows_x86_64_gnu 0.52.6, windows_x86_64_gnu 0.53.1, windows_x86_64_gnullvm 0.48.5, windows_x86_64_gnullvm 0.52.6, windows_x86_64_gnullvm 0.53.1, windows_x86_64_msvc 0.48.5, windows_x86_64_msvc 0.52.6, windows_x86_64_msvc 0.53.1, xim-ctext 0.3.0, xim-parser 0.2.2, zune-core 0.4.12, zune-inflate 0.2.54, zune-jpeg 0.4.21
 
 ```text
 MIT License

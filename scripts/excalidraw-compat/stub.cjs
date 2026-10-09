@@ -1,5 +1,5 @@
 // Test-only oracle for #478: AGPL code is fetched at test time and not distributed.
-// This file is Tessera's own (MIT): a recursive stand-in for the Obsidian API and
+// This file is Okilum's own (MIT): a recursive stand-in for the Obsidian API and
 // every plugin module the oracle does not exercise. Upstream:
 // https://github.com/zsviczian/obsidian-excalidraw-plugin
 //

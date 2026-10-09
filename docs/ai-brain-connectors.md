@@ -1,6 +1,6 @@
 # Saved alpha connectors and recovery
 
-Ordinary Tessera exposes **Workspace → Connections** for CLIProxyAPI, Todoist and
+Ordinary Okilum exposes **Workspace → Connections** for CLIProxyAPI, Todoist and
 T3. Enable the desired connector, enter its address and credential reference,
 then **Check connections and fetch choices**. CLIProxyAPI returns its model
 catalog; T3 returns existing projects and provider model choices. Selecting a
@@ -91,7 +91,7 @@ Build it in the source checkout; use a cache outside `/tmp`:
 ```sh
 scripts/vendor-setup.sh
 scripts/vendor-setup.sh --verify
-CARGO_TARGET_DIR="$HOME/.cache/tessera-recovery" cargo build --locked -p tessera-brain --example t3-recovery-preflight
+CARGO_TARGET_DIR="$HOME/.cache/okilum-recovery" cargo build --locked -p okilum-brain --example t3-recovery-preflight
 ```
 
 Create a private candidate JSON containing the existing T3 settings, with only the
@@ -111,7 +111,7 @@ intended recovery fields changed. Synthetic shape (credential **reference** only
 ```
 
 ```sh
-"$HOME/.cache/tessera-recovery/debug/examples/t3-recovery-preflight" \
+"$HOME/.cache/okilum-recovery/debug/examples/t3-recovery-preflight" \
   --operational /private/brain-state \
   --candidate /private/recovery/candidate.json
 ```

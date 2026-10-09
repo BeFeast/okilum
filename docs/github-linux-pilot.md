@@ -6,7 +6,7 @@
 
 Scope: full Linux PR gate only. Windows packaging stays local for this pilot;
 main, release, publish and signing routes stay local. Existing public GitHub CI
-on mirror main is unchanged. `TESSERA_LINUX_LANE=hosted` opts Forgejo PR heads into
+on mirror main is unchanged. `OKILUM_LINUX_LANE=hosted` opts Forgejo PR heads into
 GitHub ubuntu-24.04; `pr-<number>` selects exactly one canary PR; unset/local selects the current local compiler job. Only
 trusted same-repository PR heads can use the mirror credential. Fork Linux jobs
 keep the existing local path; native fork policy is unchanged.
@@ -48,7 +48,7 @@ Enablement after explicit owner OK: merge the reviewed patch, rebase participati
 PRs (workflows/scripts come from their head), start with one exact-head canary,
 set the variable to `pr-<number>` for that canary. After its success, record UTC
 start/end (24 hours), then set the variable to hosted. Rollback: set
-TESSERA_LINUX_LANE=local; newly evaluated lanes go local, in-flight exact-head
+OKILUM_LINUX_LANE=local; newly evaluated lanes go local, in-flight exact-head
 aggregates retain their actual lane results. No active main publication is cancelled.
 Old PR heads without this patch cannot participate and must be reported separately.
 
@@ -62,5 +62,5 @@ pending/running jobs separately to avoid survivor bias. Report moved job count a
 avoided local compiler demand, not a claim that the physical pool gained runners.
 
 Pre-pilot successful-completion baseline from the saved 08 October dataset is in
-~/.cache/tessera-qa/github-linux-pilot/baseline.json. No hosted pilot run or lane
+~/.cache/okilum-qa/github-linux-pilot/baseline.json. No hosted pilot run or lane
 variable change has been performed. Cache/runner speed benefits remain hypotheses.

@@ -1,7 +1,7 @@
 # Run a commit in CI
 
 Heavy PR checks run on standard GitHub-hosted runners in the public
-`BeFeast/tessera` mirror. Executors do not need to compile on maestro. Source
+`BeFeast/okilum` mirror. Executors do not need to compile on maestro. Source
 and logs must be suitable for that public repository; no signing or private
 cache credentials go to GitHub.
 
@@ -17,7 +17,7 @@ cache credentials go to GitHub.
    `--nocapture --test-threads=1` on Windows 2022. For a different package/filter,
    owners use exact-source `windows-native.yml` dispatch; CI owner handles lane failures.
 
-For a runnable Linux QA build, dispatch `commit-ci` with `lane=linux-binary` (`baseline=true` also builds a pinned main snapshot); on muninn download its `linux-binary-<sha>` artifact with `gh run download <run> -R BeFeast/tessera -n linux-binary-<sha>`, verify `sha256sum -c *.tar.zst.sha256`, unpack with `tar --zstd -xf <archive>`, enter the payload directory, verify `sha256sum -c SHA256SUMS` and `SOURCE_SHA`, then run `(flock -w 2700 9 && xvfb-run -a ./tessera --vault /path/to/qa-vault 9>&-) 9>/tmp/tessera-gui-qa.lock` (omit `xvfb-run -a` for a visible session); artifacts expire after three days and require compatible Linux x86_64 runtime libraries.
+For a runnable Linux QA build, dispatch `commit-ci` with `lane=linux-binary` (`baseline=true` also builds a pinned main snapshot); on muninn download its `linux-binary-<sha>` artifact with `gh run download <run> -R BeFeast/okilum -n linux-binary-<sha>`, verify `sha256sum -c *.tar.zst.sha256`, unpack with `tar --zstd -xf <archive>`, enter the payload directory, verify `sha256sum -c SHA256SUMS` and `SOURCE_SHA`, then run `(flock -w 2700 9 && xvfb-run -a ./okilum --vault /path/to/qa-vault 9>&-) 9>/tmp/okilum-gui-qa.lock` (omit `xvfb-run -a` for a visible session); artifacts expire after three days and require compatible Linux x86_64 runtime libraries.
 
 4. Read the linked GitHub run in the Forgejo job log. Check the run SHA and
    named tests; a green job with zero matches is not acceptance evidence.
@@ -32,8 +32,8 @@ when the bridge finishes; an interrupted coordinator can leave a ref for CI
 owner cleanup. There is no automatic dispatch retry. Branch CI is evidence,
 not a replacement for the unchanged required `ci/check` PR aggregate.
 
-Linux PRs use `TESSERA_LINUX_LANE=hosted` permanently. To explicitly fall back,
-set that variable to `local`; set `TESSERA_PR_LANE=local` for the supplemental
+Linux PRs use `OKILUM_LINUX_LANE=hosted` permanently. To explicitly fall back,
+set that variable to `local`; set `OKILUM_PR_LANE=local` for the supplemental
 Brain/Inbox/Arch/Windows PR jobs. Neither changes running jobs. Same-repository
 PRs use hosted bridges; untrusted forks keep the isolated local fallback and
 never execute on the bridge host with a mirror token. Existing local main,

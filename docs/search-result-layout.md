@@ -30,7 +30,7 @@ The body, alias and hidden-target fixtures reproduce the narrow selection and
 the Mac defect is absent. Verify the reported query and corpus on Mac after
 publication.
 
-Evidence is kept in `~/.cache/tessera-qa/772/`; before/after light and dark captures
+Evidence is kept in `~/.cache/okilum-qa/772/`; before/after light and dark captures
 use the same synthetic vault and machine. Do not publish private vault notes.
 
 ## Acceptance checks

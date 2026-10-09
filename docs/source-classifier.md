@@ -1,6 +1,6 @@
 # Raw Markdown classifier (#214)
 
-`tessera_core::source_classifier` is a pure child of [managed Live Preview](managed-live-preview.md), built on the reviewed [mapping foundation](source-projection.md). It does not implement a native editor or complete Live Preview. The shell calls it through the application-owned `brain::source_projection::CachedProvider` on a background executor; backend and persistence remain independent.
+`okilum_core::source_classifier` is a pure child of [managed Live Preview](managed-live-preview.md), built on the reviewed [mapping foundation](source-projection.md). It does not implement a native editor or complete Live Preview. The shell calls it through the application-owned `brain::source_projection::CachedProvider` on a background executor; backend and persistence remain independent.
 
 `classify(&Snapshot)` parses the complete authored source directly with comrak 0.47.0. It returns a `Classification` holding that exact snapshot, a projection `Plan`, semantic `StyleSpan` values in canonical UTF-8 byte coordinates, and bounded diagnostic reasons. `styles_for(current)` rejects document, generation or exact-byte mismatch. Projection independently rejects a stale plan. Styles may nest; approved conceal spans must remain disjoint. Diagnostics are metadata for callers, not document text.
 

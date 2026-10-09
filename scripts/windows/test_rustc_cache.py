@@ -26,6 +26,6 @@ class RustcCacheTests(unittest.TestCase):
                                          ('x86_64-unknown-linux-gnu', 'original')]:
                     args = ['--crate-name', 'gpui_windows', '--target', target]
                     result = subprocess.run(['python3', str(WRAPPER), str(compiler), *args],
-                        env={**os.environ, 'CARGO_MANIFEST_DIR': 'original', 'TESSERA_SCCACHE': cached},
+                        env={**os.environ, 'CARGO_MANIFEST_DIR': 'original', 'OKILUM_SCCACHE': cached},
                         check=True, capture_output=True, text=True)
                     self.assertEqual(json.loads(result.stdout), [expected, args])

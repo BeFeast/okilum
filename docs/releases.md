@@ -30,7 +30,7 @@ build numbers. All three must name the same source commit. Nothing is rebuilt or
 renumbered, so native updater versions remain monotonic.
 
 Each successful publisher writes an artifact descriptor under
-`tessera/releases/<source>/<platform>.json`. Windows also archives its portable
+`okilum/releases/<source>/<platform>.json`. Windows also archives its portable
 ZIP. The coordinator verifies every downloaded asset's size and SHA-256 before
 publication. Missing artifacts or mismatched source commits fail closed.
 
@@ -64,12 +64,12 @@ platform-specific manual promotion inputs are removed.
 
 The action validates all artifacts and Arch signatures, mirrors the release tag
 with public main, then promotes the signed Arch repository, Windows stable feed,
-and macOS appcast. It publishes GitHub **Tessera 0.1.<build>**, marked Latest, with
+and macOS appcast. It publishes GitHub **Okilum 0.1.<build>**, marked Latest, with
 the original files and merged PR titles since the previous stable source.
 
 Stable URLs stay fixed:
-- `https://updates.befeast.com/tessera/macos/latest.zip`
-- `https://updates.befeast.com/tessera/windows/stable/Setup.exe`
+- `https://updates.befeast.com/okilum/macos/latest.zip`
+- `https://updates.befeast.com/okilum/windows/stable/Setup.exe`
 - [Arch stable repository](linux-releases.md)
 
 Channels on separate systems cannot change atomically. A saved promotion manifest
@@ -78,12 +78,12 @@ publication, rerun the **same build**; do not select a different one until it
 finishes. If that build is irrecoverable, the owner may select a **newer** build
 and explicitly enable `supersede_pending`. All artifact and channel rollback
 checks still run before replacing the saved selection; this never rolls back a
-partially promoted channel. The final `tessera/releases/stable.json` is written only after all feeds
+partially promoted channel. The final `okilum/releases/stable.json` is written only after all feeds
 and GitHub assets succeed. Completed retries are no-ops; rollback is refused.
 
 The `github-mirror` job only pushes `main` and the selected reachable `v0.1.*` or
 `beta` tag. It never mirrors other branches, internal tags, or archived history.
-Secrets are the existing R2, Arch signing and `TESSERA_GITHUB_MIRROR` credentials;
+Secrets are the existing R2, Arch signing and `OKILUM_GITHUB_MIRROR` credentials;
 `FORGEJO_TOKEN` comes from the Actions token. Stable promotion shares the macOS
 appcast publication lock; scheduled Beta does not block the macOS release queue.
 

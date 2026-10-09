@@ -28,9 +28,9 @@ for (fixture, paragraph), live, dark in [(f, l, d) for f in fixtures.items() for
         text = paragraph + '\n\n**projected**'
         source = text.encode()
         name = f'{fixture}-{"live" if live else "source"}-{"dark" if dark else "light"}'
-        env = dict(os.environ, WAYLAND_DISPLAY='', TESSERA_BIDI_TEXT=text,
+        env = dict(os.environ, WAYLAND_DISPLAY='', OKILUM_BIDI_TEXT=text,
                    __EGL_VENDOR_LIBRARY_FILENAMES='/usr/share/glvnd/egl_vendor.d/50_mesa.json')
-        for key, enabled in [('TESSERA_BIDI_LIVE', live), ('TESSERA_BIDI_DARK', dark)]:
+        for key, enabled in [('OKILUM_BIDI_LIVE', live), ('OKILUM_BIDI_DARK', dark)]:
             env.pop(key, None)
             if enabled:
                 env[key] = '1'
@@ -60,7 +60,7 @@ for (fixture, paragraph), live, dark in [(f, l, d) for f in fixtures.items() for
             found = ''
             for _ in range(40):
                 time.sleep(.5)
-                found = subprocess.run(['xdotool', 'search', '--onlyvisible', '--pid', str(proc.pid), '--name', 'Tessera'],
+                found = subprocess.run(['xdotool', 'search', '--onlyvisible', '--pid', str(proc.pid), '--name', 'Okilum'],
                                        env=env, text=True, capture_output=True).stdout.split()
                 if found:
                     break

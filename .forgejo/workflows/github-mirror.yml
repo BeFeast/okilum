@@ -23,6 +23,6 @@ jobs:
           persist-credentials: false
       - name: Push main and the selected release tag to GitHub
         env:
-          MIRROR_TOKEN: ${{ secrets.TESSERA_GITHUB_MIRROR }}
+          MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
           RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
         run: bash scripts/releases/mirror.sh

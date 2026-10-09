@@ -7,7 +7,7 @@ export function launchLabel(op) {
   return ({queued:'Queued for T3',uncertain:'Launch unconfirmed — checking the original thread; no automatic relaunch',accepted:'Accepted by T3; waiting for preparation',preparing:'T3 is preparing the worktree',running:'Executor running',completed:'Executor completed',failed:'Executor failed or was interrupted'})[op.state] || 'Unknown launch status';
 }
 export function launchStorage(storage, owner) {
-  const key = `tessera-launch-v1:${owner}`;
+  const key = `okilum-launch-v1:${owner}`;
   return { get:()=>JSON.parse(storage.getItem(key)||'null'), put:value=>storage.setItem(key,JSON.stringify(value)), clear:()=>storage.removeItem(key) };
 }
 export function mountLaunches({api,post,owner,online,storage=localStorage}) {

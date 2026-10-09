@@ -1,8 +1,8 @@
 // Test-only oracle for #478: AGPL code is fetched at test time and not distributed.
-// Loads every file the Tessera writer tests produced (TESSERA_EXCALIDRAW_DUMP)
+// Loads every file the Okilum writer tests produced (OKILUM_EXCALIDRAW_DUMP)
 // with the Obsidian Excalidraw plugin's own ExcalidrawData.loadData
 // (https://github.com/zsviczian/obsidian-excalidraw-plugin, bundled by build.mjs)
-// and checks that the plugin sees exactly the text and links Tessera wrote.
+// and checks that the plugin sees exactly the text and links Okilum wrote.
 // The plugin treats `## Text Elements` as authoritative over the JSON, so a stale
 // entry would silently revert an edit; this is the check that catches it.
 // Usage: node check.cjs ORACLE_BUNDLE DUMP_DIR
@@ -43,7 +43,7 @@ const sorted = (entries) => JSON.stringify(Object.fromEntries([...entries].sort(
 
 (async () => {
   if (!fs.existsSync(dir)) {
-    console.log(`FAIL dump directory ${dir} does not exist: did the writer tests run with TESSERA_EXCALIDRAW_DUMP set?`);
+    console.log(`FAIL dump directory ${dir} does not exist: did the writer tests run with OKILUM_EXCALIDRAW_DUMP set?`);
     process.exit(1);
   }
   const files = fs.readdirSync(dir).filter((f) => f.endsWith(".excalidraw.md")).sort();
@@ -67,7 +67,7 @@ const sorted = (entries) => JSON.stringify(Object.fromEntries([...entries].sort(
     try {
       if (!(await loaded.loadData(data, file, "raw"))) throw new Error("loadData returned false");
       // Entries under the file's own element ids come from its Markdown sections
-      // and override the JSON: they must equal what Tessera wrote. Entries under
+      // and override the JSON: they must equal what Okilum wrote. Entries under
       // ids the plugin minted ("~…", see nanoid-shim.cjs) are indexed from the
       // JSON itself after load and cannot revert an edit; they are only counted.
       const own = new Set(expected.ids);

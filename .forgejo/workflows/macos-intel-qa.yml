@@ -5,7 +5,7 @@ on:
     - cron: "30 1 * * *"
 
 concurrency:
-  group: tessera-macos-intel-qa
+  group: okilum-macos-intel-qa
   cancel-in-progress: false
 
 jobs:
@@ -19,9 +19,9 @@ jobs:
           github-server-url: ${{ vars.FORGEJO_CHECKOUT_URL || github.server_url }}
       - name: Cross-compile and Developer ID sign Intel QA bundle
         env:
-          TESSERA_SIGNING_IDENTITY: ${{ vars.TESSERA_SIGNING_IDENTITY }}
+          OKILUM_SIGNING_IDENTITY: ${{ vars.OKILUM_SIGNING_IDENTITY }}
         run: |
-          export TESSERA_BUILD_VERSION=$((5000 + ${GITHUB_RUN_NUMBER:?}))
+          export OKILUM_BUILD_VERSION=$((5000 + ${GITHUB_RUN_NUMBER:?}))
           bash scripts/build-macos-intel-qa.sh "$RUNNER_TEMP/intel-qa-$GITHUB_RUN_NUMBER"
       - uses: https://code.forgejo.org/actions/upload-artifact@v3
         if: always()

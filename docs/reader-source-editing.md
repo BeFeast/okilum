@@ -28,7 +28,7 @@ recover an unsaved draft. A clean journal never supersedes newer disk content.
 If the file was deleted, moved or became unwritable, use **Copy draft** or
 **Leave, keeping draft**. The latter exits only after protecting the current
 buffer; restore a moved/deleted note at its original path to reopen its draft.
-A second Tessera editor for the same canonical path is refused while it is open.
+A second Okilum editor for the same canonical path is refused while it is open.
 
 Saves write and sync a temporary file in the same directory, then atomically
 exchange it with the note (Linux/macOS). The displaced inode is retained as a
@@ -77,10 +77,10 @@ shutdown clears the marker only after Reader drafts have been saved successfully
 
 ### macOS state locations and crash-loop recovery
 
-- `~/Library/Application Support/uk.oklabs.tessera/`: Reader last-document history
+- `~/Library/Application Support/com.befeast.okilum/`: Reader last-document history
   (`update-session.json`), durable `editor-drafts/`, and `reader-runs/` markers.
-- `~/Library/Application Support/tessera/` (`config_base/tessera`, or
-  `$XDG_CONFIG_HOME/tessera` when explicitly configured): `appearance.json`,
+- `~/Library/Application Support/okilum/` (`config_base/okilum`, or
+  `$XDG_CONFIG_HOME/okilum` when explicitly configured): `appearance.json`,
   `reader-layout.json`, and a second `reader-runs/` marker. Moving only the
   bundle-id directory aside did **not** break the reported loop; moving this
   config directory did. This identifies configuration-dependent reproduction,
@@ -125,14 +125,14 @@ with p.open('ab') as f:
 PY
 ```
 
-Immediately return to Tessera, open that COPY in source mode (Cmd+E), type a
+Immediately return to Okilum, open that COPY in source mode (Cmd+E), type a
 recognizable line and confirm **Edited**. Stay in the editor; do not save, click
 another control, or switch apps. After 20 seconds plus watcher latency, expect
 **Conflict** with your line intact. Compare must show the external marker; Cmd+S
 must not overwrite it. If the header became Saved before the command fired, the
 prerequisite failed: repeat without leaving the editor.
 
-For recovery, schedule `sleep 20; pkill -9 -x tessera` in Terminal in the background,
+For recovery, schedule `sleep 20; pkill -9 -x okilum` in Terminal in the background,
 then immediately return and edit the COPY. Wait for recovery-copy protection to
 finish while remaining focused and Edited. Relaunch should offer Restore unsaved
 edits. Switching apps to issue the kill after editing instead tests an autosaved
@@ -258,7 +258,7 @@ separate remaining UI work.
 `reader-diagnostic.log` records `MOVE_PREVIEW` with plan, inventory, candidate
 revision checking, reading, rewrite and total milliseconds, plus `indexed` and
 `files_read`. On macOS the default location is
-`~/Library/Application Support/uk.oklabs.tessera/reader-diagnostic.log`.
+`~/Library/Application Support/com.befeast.okilum/reader-diagnostic.log`.
 
 Same-session Linux fixture comparison (5,001 notes, four referrers; debug build,
 local disk, OS cache warm): full scan 2,580–3,086 ms / 5,001 source reads, indexed
@@ -267,7 +267,7 @@ iCloud latency; use the phase log from the actual Mac to verify the <1 s target.
 The reproducible focused profile is `link_rewrite::tests::profile_preview_5000_notes`
 (run explicitly with `--ignored --exact --nocapture`).
 
-The #502 gate profile also supports `TESSERA_PREVIEW_READ_DELAY_MS=1` (one
+The #502 gate profile also supports `OKILUM_PREVIEW_READ_DELAY_MS=1` (one
 artificial millisecond per source read, not a model of all iCloud behavior).
 On the same 5,001-note Linux fixture, paired previews took 8,827–9,803 ms with
 full reads versus 101–142 ms indexed, with identical edits and 5,001 versus 5
@@ -500,7 +500,7 @@ intended path from a new open.
 After native publication, the checked replacement must also retain the displaced
 source's exact DACL ACE bytes/order and protected/unprotected inheritance policy
 (#845). `ReplaceFileW` can insert an explicit Administrators grant when ownership
-falls back to the current user. Tessera compares the published DACL, restores only
+falls back to the current user. Okilum compares the published DACL, restores only
 that DACL through a checked native handle when needed, and verifies it before
 acknowledging the save. Owner/group fallback remains unchanged. A raced published
 inode is never a permission-repair target; an unsuccessful repair retains the

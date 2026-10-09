@@ -149,7 +149,7 @@ def verify(enabled, maintenance):
     thread.start()
     try:
         positive_control(server, Fixture)
-        with tempfile.TemporaryDirectory(prefix="tessera-maestro-maintenance-") as temporary:
+        with tempfile.TemporaryDirectory(prefix="okilum-maestro-maintenance-") as temporary:
             root = pathlib.Path(temporary)
             (root / "brain/records").mkdir(parents=True)
             (root / "runtime").mkdir()

@@ -66,7 +66,7 @@ class LinuxBridgeTests(unittest.TestCase):
             for hosted in ['success', 'skipped', 'failure', 'cancelled']:
                 for result in ['success', 'failure', 'unavailable', '']:
                     env = dict(os.environ, LOCAL_RESULT=local, HOSTED_JOB=hosted, HOSTED_RESULT=result,
-                               TESSERA_LINUX_LANE='changed-mid-flight')
+                               OKILUM_LINUX_LANE='changed-mid-flight')
                     code = subprocess.run(['bash', '-c', script], env=env, capture_output=True).returncode
                     expected = (local == 'success' and hosted == 'skipped') or (
                         local == 'skipped' and hosted == 'success' and result == 'success')
@@ -83,9 +83,9 @@ class LinuxBridgeTests(unittest.TestCase):
     def test_full_gate_retains_all_existing_command_families(self):
         script = (ROOT / 'scripts/ci/check-linux.sh').read_text()
         for command in ['cargo fmt --check', 'cargo clippy --workspace --all-targets -- -D warnings',
-                        'cargo test -p tessera-core -p tessera-shell -p tessera-sync',
-                        'cargo check -p tessera-shell --no-default-features',
-                        'cargo test -p tessera-core --no-default-features --test portable_reader',
+                        'cargo test -p okilum-core -p okilum-shell -p okilum-sync',
+                        'cargo check -p okilum-shell --no-default-features',
+                        'cargo test -p okilum-core --no-default-features --test portable_reader',
                         'python3 scripts/test-maintenance-matrix.py', 'python3 scripts/brand-assets.py verify',
                         'python3 scripts/test-third-party-notices.py']:
             self.assertIn(command, script)
@@ -100,11 +100,11 @@ class CanaryRoutingTests(unittest.TestCase):
             block = re.search(rf'^  {job}:\n(.*?)(?=^  [\w-]+:)', workflow, re.M | re.S)[1]
             expression = re.search(r'    if: >-\n(.*?)(?=^    [a-z])', block, re.M | re.S)[1]
             replacements = {
-                'github.event.pull_request.head.repo.full_name': 'fork/repo' if fork else 'BeFeast/tessera',
+                'github.event.pull_request.head.repo.full_name': 'fork/repo' if fork else 'BeFeast/okilum',
                 'github.event.pull_request.number': number,
                 'github.event_name': event,
-                'github.repository': 'BeFeast/tessera',
-                'vars.TESSERA_LINUX_LANE': value,
+                'github.repository': 'BeFeast/okilum',
+                'vars.OKILUM_LINUX_LANE': value,
             }
             for key, item in replacements.items():
                 expression = expression.replace(key, repr(item))

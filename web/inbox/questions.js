@@ -40,7 +40,7 @@ export function buildReply(question, values, operationId) {
 // Save exact consent BEFORE fetch. A reload checks this operation, never makes a
 // new one. Explicit retry uses this exact payload only if lookup still says 404.
 export function replyJournal(storage, owner) {
-  const prefix = `tessera-replies-v1:${owner}:`;
+  const prefix = `okilum-replies-v1:${owner}:`;
   return {
     get(id) { const raw = storage.getItem(prefix + id); return raw ? JSON.parse(raw) : null; },
     put(body) {

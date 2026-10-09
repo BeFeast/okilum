@@ -13,7 +13,7 @@ inventing a goal, task or result criteria. The phone can display current blocker
 required decisions and final results, then save a reply against the exact item
 shown. These controls work while the LLM provider is unavailable. Closing either
 desktop does not lose the capture, notification intent or reply association. A
-newly captured thought is visible and readable through Tessera's native inbox /
+newly captured thought is visible and readable through Okilum's native inbox /
 attention entrypoint; an API response or a file alone is not native acceptance.
 
 P1 does not replace Todoist, add general scheduling or mobile editing, dispatch an
@@ -114,7 +114,7 @@ an unresolved workflow blocker or mutate the existing effective-attention histor
 
 ## Connector and transport
 
-Implement a typed `internal/tessera` client in ok-gobot and use it from both tool
+Implement a typed `internal/okilum` client in ok-gobot and use it from both tool
 registry entries and deterministic slash/ForceReply handlers. Source inspection of
 ok-gobot HEAD `696fd9491bd30bad371a75fe2ef0b982692415b6` found `ToolSchema`,
 `ExecuteJSON`, `ChatScoped`, typed native service integrations and durable outbox
@@ -138,7 +138,7 @@ in summaries. Retry visible delivery failures, with retained terminal failure.
 
 Do not promise exactly-once Telegram delivery: a successful send with a lost
 acknowledgement may be uncertain. Retain the attempt, report uncertainty, and never
-lose or duplicate the underlying Tessera capture/decision. Delivery deduplication
+lose or duplicate the underlying Okilum capture/decision. Delivery deduplication
 and mutation idempotency are distinct guarantees.
 
 ## Decomposition and acceptance
@@ -149,7 +149,7 @@ and mutation idempotency are distinct guarantees.
    captures. Acceptance: concurrent duplicates, lost response, restart after
    each persistence boundary, and reused key/different payload. Positive control:
    a genuinely new update creates a second capture without creating any goal.
-   Native acceptance shows that captured item in Tessera and opens its exact text;
+   Native acceptance shows that captured item in Okilum and opens its exact text;
    it does not require implicit promotion into a goal.
 2. **Bound attention replies and delivery identities.** Add deterministic item
    revisions, save-decision receipts, explicit seen acknowledgements and durable
@@ -176,12 +176,12 @@ retrieval acceptance and its preserving fallback take priority over this milesto
 
 ## Tracking
 
-[Milestone #123](https://git.oklabs.uk/BeFeast/tessera/issues/123) owns this scope:
+[Milestone #123](https://git.oklabs.uk/BeFeast/okilum/issues/123) owns this scope:
 
-- [Canonical inbox and idempotency #124](https://git.oklabs.uk/BeFeast/tessera/issues/124).
-- [Bound replies and delivery identities #125](https://git.oklabs.uk/BeFeast/tessera/issues/125).
-- [Typed ok-gobot integration #126](https://git.oklabs.uk/BeFeast/tessera/issues/126).
-- [Isolated mobile acceptance and packaging #127](https://git.oklabs.uk/BeFeast/tessera/issues/127).
+- [Canonical inbox and idempotency #124](https://git.oklabs.uk/BeFeast/okilum/issues/124).
+- [Bound replies and delivery identities #125](https://git.oklabs.uk/BeFeast/okilum/issues/125).
+- [Typed ok-gobot integration #126](https://git.oklabs.uk/BeFeast/okilum/issues/126).
+- [Isolated mobile acceptance and packaging #127](https://git.oklabs.uk/BeFeast/okilum/issues/127).
 
 The [issue #124 implementation plan](ai-brain-inbox-implementation.md) freezes the
 backend/native interface, create-only transaction and parallel file ownership.

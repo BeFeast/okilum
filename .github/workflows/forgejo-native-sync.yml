@@ -33,7 +33,7 @@ jobs:
     - run: bash scripts/vendor-setup.sh
     - shell: pwsh
       env:
-        PKG: tessera-sync-controller
+        PKG: okilum-sync-controller
         FEATURES: ''
         FILTER: 'sidecar::'
       run: |

@@ -31,7 +31,7 @@ def verify(app):
         for version in versions:
             assert tuple((list(map(int, version.split('.'))) + [0, 0])[:3]) <= (12, 0, 0), (path, version)
         print(f'Intel macOS minimum {versions}: {path.name}')
-    assert (app / 'Contents/MacOS/tessera').resolve() in inspected
+    assert (app / 'Contents/MacOS/okilum').resolve() in inspected
 
 
 if __name__ == '__main__':

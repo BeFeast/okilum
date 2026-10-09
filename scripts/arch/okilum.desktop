@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Okilum
+Comment=Read and search your Markdown vault
+Exec=okilum %f
+Icon=okilum
+Terminal=false
+Categories=Office;Utility;
+MimeType=text/markdown;
+StartupNotify=true

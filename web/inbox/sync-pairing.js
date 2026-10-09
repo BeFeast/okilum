@@ -1,7 +1,7 @@
 import { requestOptions, credentialJSON } from './webauthn.js';
 
 export const formatMatchingCode = code => code.match(/.{1,4}/g)?.join(' ') || '';
-export const syncState = state => ({provisioning:'Connecting to the vault',hub_ready:'Hub connected · finish setup in Tessera',removal_pending:'Removal pending · hub may still sync',revoked:'Removed from this hub'}[state] || 'Checking connection');
+export const syncState = state => ({provisioning:'Connecting to the vault',hub_ready:'Hub connected · finish setup in Okilum',removal_pending:'Removal pending · hub may still sync',revoked:'Removed from this hub'}[state] || 'Checking connection');
 export function mountSyncPairing({api,post,owner,requestId,signIn}) {
  const $=id=>document.getElementById(id), node=(tag,text)=>{const e=document.createElement(tag);e.textContent=text;return e;};
  let busy=false,epoch=0,current=null,dismissed=false,loadedOwner=null,view=requestId?'approval':'devices';
@@ -36,7 +36,7 @@ export function mountSyncPairing({api,post,owner,requestId,signIn}) {
    let p;
    try{p=await api(`/sync/requests/${encodeURIComponent(requestId)}`);}catch(error){
     if(error.status!==404)throw error;
-    requestId=null;current=null;$('sync-pairing-computers').hidden=false;$('sync-pairing-details').hidden=true;$('sync-pairing-status').textContent='This request expired or was cancelled. Start again in Tessera.';
+    requestId=null;current=null;$('sync-pairing-computers').hidden=false;$('sync-pairing-details').hidden=true;$('sync-pairing-status').textContent='This request expired or was cancelled. Start again in Okilum.';
    }
    if(e!==epoch||who!==owner())return;
    if(p){
@@ -45,13 +45,13 @@ export function mountSyncPairing({api,post,owner,requestId,signIn}) {
    if(p.vault)$('sync-pairing-vault').value=p.vault;
    $('sync-pairing-vault').disabled=p.state!=='requested';$('sync-pairing-match').disabled=p.state!=='requested';
    $('sync-pairing-approve').disabled=p.state!=='requested';$('sync-pairing-reject').disabled=!['requested','approved'].includes(p.state);
-   $('sync-pairing-status').textContent=p.state==='requested'?`Request expires ${new Date(p.expires*1000).toLocaleTimeString()}.`:p.state==='cancelled'?'Request cancelled.':'Approved. Return to Tessera to finish setup.';
+   $('sync-pairing-status').textContent=p.state==='requested'?`Request expires ${new Date(p.expires*1000).toLocaleTimeString()}.`:p.state==='cancelled'?'Request cancelled.':'Approved. Return to Okilum to finish setup.';
    current=p;
    }
   }
   const list=await api('/sync/registrations');if(e!==epoch||who!==owner())return;
   $('sync-pairing-pending').replaceChildren(...(list.pending||[]).map(p=>{
-   const row=node('li',''),info=node('div','');info.append(node('strong',p.name),node('small',p.state==='approved'?'Approved · waiting for Tessera':'Waiting for approval'),node('small',p.device_id));row.append(info);
+   const row=node('li',''),info=node('div','');info.append(node('strong',p.name),node('small',p.state==='approved'?'Approved · waiting for Okilum':'Waiting for approval'),node('small',p.device_id));row.append(info);
    const review=node('button','Review');review.className='quiet';review.onclick=()=>action(async()=>{requestId=p.id;current=null;present('approval');await refresh();});row.append(review);return row;
   }));
   $('sync-pairing-pending-empty').hidden=!!list.pending?.length;
@@ -71,7 +71,7 @@ export function mountSyncPairing({api,post,owner,requestId,signIn}) {
  $('sync-pairing-dialog').addEventListener('cancel',e=>{if(busy)e.preventDefault();else dismissed=true;});
  $('sync-pairing-login').onclick=()=>action(async()=>{await signIn();await refresh();});
  $('sync-pairing-approve').onclick=()=>action(async()=>{
-  if(!current||!$('sync-pairing-match').checked){$('sync-pairing-status').textContent='Check that the code matches Tessera on your computer.';return;}
+  if(!current||!$('sync-pairing-match').checked){$('sync-pairing-status').textContent='Check that the code matches Okilum on your computer.';return;}
   const id=current.id,code=current.code,vault_id=$('sync-pairing-vault').value;
   await freshPasskey();await post('/sync/approve',{id,code,vault_id});await refresh();
  });

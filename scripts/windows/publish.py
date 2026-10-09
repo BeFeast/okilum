@@ -22,9 +22,9 @@ def validate_feed(feed, read):
         raise ValueError('Empty release feed')
     for asset in assets:
         name = asset['FileName']
-        if not re.fullmatch(r'BeFeast\.Tessera-[0-9][A-Za-z0-9.+-]*-beta-(full|delta)\.nupkg', name):
+        if not re.fullmatch(r'BeFeast\.Okilum-[0-9][A-Za-z0-9.+-]*-beta-(full|delta)\.nupkg', name):
             raise ValueError('Invalid package name')
-        if asset['PackageId'] != 'BeFeast.Tessera':
+        if asset['PackageId'] != 'BeFeast.Okilum':
             raise ValueError('Unexpected package identity')
         data = read(name)
         if data is None or len(data) != asset['Size'] or hashlib.sha256(data).hexdigest().upper() != asset['SHA256'].upper():
@@ -54,7 +54,7 @@ def publish(root, build, source, store, portable=None):
         raise ValueError('Refusing to roll back the beta feed')
     for asset in assets:
         store.put(f"{base}/{asset['FileName']}", (root / asset['FileName']).read_bytes(), 'application/octet-stream')
-    setup = (root / 'BeFeast.Tessera-beta-Setup.exe').read_bytes()
+    setup = (root / 'BeFeast.Okilum-beta-Setup.exe').read_bytes()
     if not setup.startswith(b'MZ'):
         raise ValueError('Setup is not a PE executable')
     metadata = {'build': build, 'version': version, 'source': source,
@@ -68,10 +68,10 @@ def publish(root, build, source, store, portable=None):
 
     if portable_data is not None:
         archive = f'{PREFIX}/builds/{build}'
-        store.put(f'{archive}/Tessera-windows-portable.zip', portable_data, 'application/zip')
+        store.put(f'{archive}/Okilum-windows-portable.zip', portable_data, 'application/zip')
         catalog.record(store, 'windows', build, source, [
             catalog.asset(f'{archive}/Setup.exe', 'Setup.exe', setup),
-            catalog.asset(f'{archive}/Tessera-windows-portable.zip', 'Tessera-windows-portable.zip', portable_data)])
+            catalog.asset(f'{archive}/Okilum-windows-portable.zip', 'Okilum-windows-portable.zip', portable_data)])
 
 
 def prepare(root, store):

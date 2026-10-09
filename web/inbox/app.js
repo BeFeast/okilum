@@ -47,7 +47,7 @@ async function api(path, options = {}) {
     if (response.status === 401) { sessionOwner = null; clearRemote(); }
     const errors = {
       sync_not_configured: 'Folder sync is not configured on this service.',
-      sync_request_unavailable: 'This sync request expired or was cancelled. Start again in Tessera.',
+      sync_request_unavailable: 'This sync request expired or was cancelled. Start again in Okilum.',
       invalid_sync_request: 'The sync request does not match this computer or vault.',
       sync_identity_conflict: 'This computer already has a registration or the request changed. Wait for pending removal to finish before starting a fresh approval.',
       sync_rate_limited: 'Too many pairing requests. Try again later.',
@@ -180,9 +180,9 @@ async function signIn(register) {
 async function exportUnsent() {
   const records = await outbox.forOwner(rememberedOwner);
   if (!records.length) return;
-  const blob = new Blob([JSON.stringify({ format: 'tessera-unsent-captures-v1', captures: records }, null, 2)], { type: 'application/json' });
+  const blob = new Blob([JSON.stringify({ format: 'okilum-unsent-captures-v1', captures: records }, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob), link = document.createElement('a');
-  link.href = url; link.download = 'tessera-unsent-thoughts.json'; document.body.append(link); link.click(); link.remove();
+  link.href = url; link.download = 'okilum-unsent-thoughts.json'; document.body.append(link); link.click(); link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 async function signOut() {

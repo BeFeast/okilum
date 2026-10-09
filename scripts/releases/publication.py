@@ -21,7 +21,7 @@ WORKFLOWS = {'macos': 'macos-release.yml', 'linux': 'linux-release.yml',
              'windows': 'windows-diagnostic.yml'}
 ARTIFACTS = {'macos': {'macos-publication': 'macos'},
              'linux': {'arch-publication': 'arch'},
-             'windows': {'tessera-windows-velopack': 'windows', 'windows-portable': 'portable'}}
+             'windows': {'okilum-windows-velopack': 'windows', 'windows-portable': 'portable'}}
 
 
 def eligible(run, platform, head):
@@ -36,9 +36,9 @@ def snapshot_run(run, platform):
 
 
 def published_build(store, platform):
-    keys = {'linux': 'tessera/arch/beta/x86_64/latest.json',
-            'windows': 'tessera/windows/beta/releases.beta.json',
-            'macos': 'tessera/appcast.xml'}
+    keys = {'linux': 'okilum/arch/beta/x86_64/latest.json',
+            'windows': 'okilum/windows/beta/releases.beta.json',
+            'macos': 'okilum/appcast.xml'}
     current = store.call('GET', keys[platform])
     if current is None:
         return 0
