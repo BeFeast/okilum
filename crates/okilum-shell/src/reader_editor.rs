@@ -316,7 +316,8 @@ impl Reader {
             .file_preview
             .as_ref()
             .is_some_and(|p| reader_delimited::editable(&p.rel));
-        if self.file_preview.is_some() && !plain_file {
+        // A code file over the size cap stays in its read-only note (#998).
+        if self.file_preview.is_some() && (!plain_file || !self.code_file_editable(cx)) {
             return;
         }
         if self.editing.is_some() {

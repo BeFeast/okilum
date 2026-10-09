@@ -5,8 +5,11 @@ use super::*;
 use gpui_component::input::{Editor, EditorState, WrappingIndent};
 use std::time::Instant;
 
-/// Above this a code file opens without highlighting, with a quiet note.
+/// Above this a code file opens without highlighting or editing, with a note.
 pub(crate) const MAX_BYTES: u64 = 4 * 1024 * 1024;
+
+/// Key context of code views and code editors; ⌥Z / Alt+Z binds only here.
+pub(crate) const KEY_CONTEXT: &str = "ReaderCode";
 
 /// The tree-sitter grammar for a source file, from its name or extension.
 /// `text` means a known code file without a compiled grammar. Content is
@@ -17,7 +20,7 @@ pub(crate) fn language(rel: &str) -> Option<&'static str> {
     match name.as_str() {
         "makefile" | "gnumakefile" => return Some("make"),
         "cmakelists.txt" => return Some("cmake"),
-        "dockerfile" | "containerfile" | "justfile" => return Some("text"),
+        "dockerfile" | "containerfile" | "justfile" | ".env" => return Some("text"),
         _ => {}
     }
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
@@ -104,7 +107,7 @@ impl CodePreview {
             let _ = this.update_in(cx, |this, window, cx| {
                 this.state = match result {
                     Ok(Loaded::Text(text)) => {
-                        let input = cx.new(|cx| editor(language, &text, true, window, cx));
+                        let input = cx.new(|cx| editor(language, &text, window, cx));
                         timing(&input, started, cx);
                         State::Content(input)
                     }
@@ -125,6 +128,11 @@ impl CodePreview {
         }
     }
 
+    /// Edit mode is offered once the text loaded within the size cap.
+    pub(crate) fn editable(&self) -> bool {
+        matches!(self.state, State::Content(_))
+    }
+
     pub(crate) fn input(&self) -> Option<Entity<EditorState>> {
         match &self.state {
             State::Content(input) => Some(input.clone()),
@@ -133,12 +141,11 @@ impl CodePreview {
     }
 }
 
-/// The code view and the code editor share one configuration; only `readonly`
-/// differs. Line numbers on, folding off, wrap from the global preference.
-pub(crate) fn editor(
+/// The read-only code view: line numbers on, folding off, wrap from the global
+/// preference. `toggle_source` configures the writable editor the same way.
+fn editor(
     language: &'static str,
     text: &str,
-    readonly: bool,
     window: &mut Window,
     cx: &mut Context<EditorState>,
 ) -> EditorState {
@@ -153,7 +160,7 @@ pub(crate) fn editor(
     input.set_value(text.to_owned(), window, cx);
     input.ensure_highlighter_factory(gpui_component::highlighter::input_highlighter_factory());
     input.prepare_highlighting(window, cx);
-    input.set_readonly(readonly, cx);
+    input.set_readonly(true, cx);
     input
 }
 
@@ -188,6 +195,7 @@ impl Render for CodePreview {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let view = v_flex()
             .id("reader-code-file")
+            .key_context(KEY_CONTEXT)
             .debug_selector(|| "reader-code-file".into())
             .w_full()
             .flex_1()
@@ -243,6 +251,19 @@ impl Render for CodePreview {
 }
 
 impl Reader {
+    /// The read-only code view's editor, when a code file is shown.
+    pub(crate) fn code_view_input(&self, cx: &App) -> Option<Entity<EditorState>> {
+        self.file_preview.as_ref()?.code.as_ref()?.read(cx).input()
+    }
+
+    /// Code files open in the editor only within the size cap.
+    pub(crate) fn code_file_editable(&self, cx: &App) -> bool {
+        self.file_preview
+            .as_ref()
+            .and_then(|preview| preview.code.as_ref())
+            .is_none_or(|code| code.read(cx).editable())
+    }
+
     /// ⌥Z / Alt+Z (#998): remembered for every code file and window.
     pub(crate) fn toggle_code_soft_wrap(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let wrap = !reader_ui_state::code_soft_wrap(cx);
@@ -281,6 +302,7 @@ mod tests {
             ("Makefile", Some("make")),
             ("build/CMakeLists.txt", Some("cmake")),
             ("Dockerfile", Some("text")),
+            (".env", Some("text")),
             ("notes/Plan.md", None),
             ("data.csv", None),
             ("notes.txt", None),

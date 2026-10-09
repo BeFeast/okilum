@@ -1043,6 +1043,7 @@ pub(crate) fn set_code_soft_wrap(value: bool, cx: &mut App) {
     state.saved.code_soft_wrap = value;
     state.code_soft_wrap_changed = true;
     schedule(cx);
+    cx.refresh_windows();
 }
 
 pub(crate) fn delimited_header(path: &Path, cx: &App) -> bool {

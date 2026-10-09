@@ -427,9 +427,9 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new(HIDDEN_FILES_KEY_MAC, ToggleHiddenFiles, ctx),
         KeyBinding::new("ctrl-home", ScrollTop, ctx),
         KeyBinding::new("ctrl-end", ScrollBottom, ctx),
-        // #998: VS Code's ⌥Z / Alt+Z, also while the code editor has focus.
-        KeyBinding::new("alt-z", ToggleSoftWrap, ctx),
-        KeyBinding::new("alt-z", ToggleSoftWrap, Some("Reader > Input")),
+        // #998: VS Code's ⌥Z / Alt+Z, only in code views and code editors:
+        // elsewhere ⌥Z types a character (Ω, ż).
+        KeyBinding::new("alt-z", ToggleSoftWrap, Some(reader_code_file::KEY_CONTEXT)),
     ]);
 }
 
@@ -2073,6 +2073,16 @@ impl Reader {
 
     fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.file_preview.is_some() && self.editing.is_none() {
+            // The read-only code view searches in its own editor (#998).
+            if let Some(input) = self.code_view_input(cx) {
+                let sensitive = reader_ui_state::find_case_sensitive(cx);
+                input.update(cx, |input, cx| {
+                    let query = input.search_session().query.clone();
+                    input.set_search_query(query, !sensitive, cx);
+                    input.open_search(false, cx);
+                    input.focus(window, cx);
+                });
+            }
             return;
         }
         self.quick_open.open = false;
