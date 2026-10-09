@@ -26,6 +26,11 @@ window during changes, and open a different vault. Repeat native handler/shortcu
 checks on macOS and Windows. Linux diagnostics:
 `~/.local/state/tessera/reader-diagnostic.log` (or absolute `$XDG_STATE_HOME`).
 
+For QA beside a user's running Reader, set an absolute `TESSERA_STATE_DIR` (and
+`--index-dir`): that instance then owns its own state, instance lock, drafts,
+diagnostics and presentation config (`<dir>/config`) instead of forwarding to the
+running Reader. This is the only per-user override on Windows.
+
 ## Window state integration (#592)
 
 New Window snapshots the initiating Reader before attaching the shared vault.

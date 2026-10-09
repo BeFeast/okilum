@@ -205,6 +205,9 @@ pub fn settings_path(vault: &std::path::Path) -> Option<std::path::PathBuf> {
 
 /// Per-user application config directory; `None` when it cannot be absolute.
 pub fn config_base() -> Option<std::path::PathBuf> {
+    if let Some(state) = crate::reader_history::isolated_state_directory() {
+        return Some(state.join("config"));
+    }
     #[cfg(unix)]
     use std::path::PathBuf;
     #[cfg(unix)]
