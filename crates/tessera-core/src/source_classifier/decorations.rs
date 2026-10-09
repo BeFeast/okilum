@@ -56,59 +56,9 @@ pub(super) fn extract<'a>(root: &'a AstNode<'a>, context: &Context<'_>) -> Optio
                 });
             }
             NodeValue::BlockQuote => {
-                let scope = context.range(node)?;
-                if context.source.as_bytes().get(scope.start) != Some(&b'>') {
-                    return None;
-                }
-                let depth = node
-                    .ancestors()
-                    .filter(|ancestor| {
-                        matches!(ancestor.data.borrow().value, NodeValue::BlockQuote)
-                    })
-                    .count();
-                let pos = node.data.borrow().sourcepos;
-                for line in pos.start.line..=pos.end.line {
-                    let start = *context.lines.get(line - 1)?;
-                    let end = context
-                        .lines
-                        .get(line)
-                        .copied()
-                        .unwrap_or(context.source.len());
-                    let raw = context.source.get(start..end)?.as_bytes();
-                    let mut cursor = 0;
-                    let mut delimiter = None;
-                    for level in 0..depth {
-                        let spaces = raw[cursor..].iter().take_while(|&&b| b == b' ').count();
-                        // More indentation may be literal code in a lazy continuation.
-                        if spaces > 3 {
-                            break;
-                        }
-                        cursor += spaces;
-                        if raw.get(cursor) != Some(&b'>') {
-                            break;
-                        }
-                        if level + 1 == depth {
-                            delimiter = Some(start + cursor);
-                        }
-                        cursor += 1;
-                        if raw.get(cursor) == Some(&b' ') {
-                            cursor += 1;
-                        }
-                    }
-                    if let Some(offset) = delimiter {
-                        if offset < scope.start || offset >= scope.end {
-                            return None;
-                        }
-                        markers.push(Marker {
-                            range: offset..offset + 1,
-                            scope: scope.clone(),
-                            kind: Kind::Quote { depth },
-                        });
-                    } else if line == pos.start.line {
-                        // Unsupported prefix (e.g. quote nested after a list marker).
-                        return None;
-                    }
-                }
+                // An unsupported quote prefix leaves that quote raw; it does not
+                // cost the rest of the note its decorations.
+                markers.extend(quote_markers(node, context).unwrap_or_default());
             }
             NodeValue::ThematicBreak => {
                 let scope = context.range(node)?;
@@ -147,6 +97,60 @@ pub(super) fn extract<'a>(root: &'a AstNode<'a>, context: &Context<'_>) -> Optio
         .any(|pair| pair[0].range.end > pair[1].range.start)
     {
         return None;
+    }
+    Some(markers)
+}
+
+/// One `>` marker per quote line. The first line's AST column fixes where this
+/// quote's delimiter sits; later lines carry it at that column after only spaces
+/// and parent delimiters, or are lazy continuations without one. Each marker
+/// reveals as its own `> ` element, not the whole quote (#868).
+fn quote_markers<'a>(node: &'a AstNode<'a>, context: &Context<'_>) -> Option<Vec<Marker>> {
+    let scope = context.range(node)?;
+    let source = context.source.as_bytes();
+    if source.get(scope.start) != Some(&b'>') {
+        return None;
+    }
+    let depth = node
+        .ancestors()
+        .filter(|ancestor| matches!(ancestor.data.borrow().value, NodeValue::BlockQuote))
+        .count();
+    let pos = node.data.borrow().sourcepos;
+    let column = scope.start - *context.lines.get(pos.start.line - 1)?;
+    let mut markers = Vec::new();
+    for line in pos.start.line..=pos.end.line {
+        let start = *context.lines.get(line - 1)?;
+        // The first line's offset is AST-proven (its prefix may hold a list
+        // marker). Later lines: this quote's delimiter is the depth-th `>`
+        // after only spaces and parent delimiters, near the first column.
+        let offset = if line == pos.start.line {
+            Some(scope.start)
+        } else {
+            let prefix_end = source[start..]
+                .iter()
+                .position(|&b| b != b' ' && b != b'>')
+                .map_or(source.len(), |i| start + i);
+            (start..prefix_end)
+                .filter(|&i| source[i] == b'>')
+                .nth(depth - 1)
+                .filter(|&i| (i - start).abs_diff(column) <= 3)
+        };
+        let Some(offset) = offset.filter(|&offset| offset < scope.end) else {
+            continue;
+        };
+        let end = offset + 1 + usize::from(source.get(offset + 1) == Some(&b' '));
+        // A delimiter joined to a combining mark cannot be replaced alone.
+        if ![offset, offset + 1, end]
+            .into_iter()
+            .all(|i| context.boundary(i))
+        {
+            return None;
+        }
+        markers.push(Marker {
+            range: offset..offset + 1,
+            scope: offset..end.min(scope.end),
+            kind: Kind::Quote { depth },
+        });
     }
     Some(markers)
 }
@@ -290,7 +294,7 @@ mod tests {
 
     #[test]
     fn ambiguity_and_existing_guards_return_empty_metadata() {
-        for text in ["- > quote\n", "- x\0\n", "---\nunterminated\n- x\n"] {
+        for text in ["- x\0\n", "---\nunterminated\n- x\n"] {
             let source = snapshot(text, 1);
             assert!(classify(&source)
                 .decorations_for(&source)
@@ -304,6 +308,64 @@ mod tests {
             .unwrap()
             .is_empty());
     }
+    #[test]
+    fn quotes_in_list_items_reveal_per_marker_and_unsupported_quotes_stay_raw() {
+        let text = "- > quote\n- a\n  - b\n    > deep **q**\n    > more\n    lazy\n\n- >\u{301}joined\n\n> top\n>\n";
+        let source = snapshot(text, 1);
+        let classified = classify(&source);
+        let markers = classified.decorations_for(&source).unwrap();
+        let quotes: Vec<_> = markers
+            .iter()
+            .filter(|m| matches!(m.kind, Kind::Quote { .. }))
+            .map(|m| (&text[..m.range.start], &text[m.scope.clone()]))
+            .map(|(before, scope)| (before.rsplit('\n').next().unwrap(), scope))
+            .collect();
+        // The quote joined to a combining mark is skipped alone; its bullet and
+        // the other quotes keep their decorations.
+        assert_eq!(
+            quotes,
+            [
+                ("- ", "> "),
+                ("    ", "> "),
+                ("    ", "> "),
+                ("", "> "),
+                ("", ">")
+            ]
+        );
+        let bullets = markers
+            .iter()
+            .filter(|m| matches!(m.kind, Kind::Unordered { .. }))
+            .count();
+        assert_eq!(bullets, 4);
+    }
+
+    #[test]
+    fn quote_continuations_find_their_own_delimiter_near_the_first_column() {
+        // (text, expected (offset, depth) per quote marker)
+        for (text, expected) in [
+            ("> a\n > b\n", vec![(0, 1), (5, 1)]),
+            (" > a\n> b\n", vec![(1, 1), (5, 1)]),
+            (">  > a\n> > b\n", vec![(0, 1), (3, 2), (7, 1), (9, 2)]),
+            ("> > a\n>  > b\n", vec![(0, 1), (2, 2), (6, 1), (9, 2)]),
+            // Line 2's only `>` belongs to the outer quote.
+            ("> > a\n  > c\n", vec![(0, 1), (2, 2), (8, 1)]),
+            (">>a\n", vec![(0, 1), (1, 2)]),
+        ] {
+            let source = snapshot(text, 1);
+            let classified = classify(&source);
+            let got: Vec<_> = classified
+                .decorations_for(&source)
+                .unwrap()
+                .iter()
+                .filter_map(|m| match m.kind {
+                    Kind::Quote { depth } => Some((m.range.start, depth)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(got, expected, "{text:?}");
+        }
+    }
+
     #[test]
     fn nested_quote_delimiters_use_ast_scopes_and_keep_lazy_content() {
         let source = snapshot(
@@ -379,6 +441,7 @@ mod tests {
         let valid = snapshot("> quote\n", 1);
         assert_eq!(classify(&valid).decorations_for(&valid).unwrap().len(), 1);
         let joined = snapshot(">\u{301}quote\n", 1);
+        // Only the joined quote stays raw.
         assert!(classify(&joined)
             .decorations_for(&joined)
             .unwrap()

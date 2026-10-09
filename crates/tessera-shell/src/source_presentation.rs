@@ -366,6 +366,41 @@ mod tests {
     }
 
     #[test]
+    fn quote_markers_reveal_as_their_own_element_not_the_whole_quote() {
+        use gpui_component::input::projection::{LayoutStamp, MarkerKind, PinnedProjection};
+        let source = source("> first **line**\n> second line\n");
+        let provider = CachedProvider::classify(source.clone());
+        let stamp = LayoutStamp {
+            source: source.stamp,
+            presentation: 1,
+        };
+        let raw_quotes = |caret: usize| {
+            let active = ActiveSource {
+                anchor: SourceByte(caret),
+                head: SourceByte(caret),
+                ..ActiveSource::default()
+            };
+            let pin = PinnedProjection {
+                stamp,
+                projection: provider.compose(&source, &active).unwrap(),
+            };
+            pin.projection
+                .markers()
+                .iter()
+                .filter(|m| matches!(m.kind, MarkerKind::Quote { .. }))
+                .map(|m| pin.marker_scope_is_raw(stamp, &source, &m.scope, &active))
+                .collect::<Vec<_>>()
+        };
+        let second = source.text.find("> second").unwrap();
+        // A caret inside quote text reveals no delimiter, even in a long quote.
+        assert_eq!(raw_quotes(second + 6), [false, false]);
+        // At its own `> ` element only that delimiter is revealed.
+        assert_eq!(raw_quotes(second), [false, true]);
+        assert_eq!(raw_quotes(second + 2), [false, true]);
+        assert_eq!(raw_quotes(0), [true, false]);
+    }
+
+    #[test]
     fn pinned_marker_policy_uses_its_projection_and_only_allows_raw_safety_override() {
         use gpui_component::input::projection::{LayoutStamp, PinnedProjection};
         let source = source("[label](destination) tail e\u{301}");
