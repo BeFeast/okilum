@@ -10,13 +10,10 @@ What changes: crate/package/module/binary names, paths, imports, display name,
 bundle ID (com.befeast.okilum), Windows packId (BeFeast.Okilum), repository
 (BeFeast/okilum), env var names (OKILUM_*), workflows, scripts and current docs.
 
-What stays (legacy compatibility, see docs/rebrand-okilum.md):
-- persisted schema ids and namespaces (`tessera-…/vN`, `tessera/…/vN`): changing
-  them changes readers and deterministic ids;
-- internal URL forms (`tessera://`, `tessera-asset://`);
-- any line containing `rebrand: keep` (the #967 legacy constants);
-- historical and fixture trees listed in EXCLUDED_PREFIXES, and third-party
-  licence texts listed in EXCLUDED_FILES.
+Since #987 nothing stays for compatibility: schema ids, hash namespaces,
+internal URLs, fixtures and experiments are renamed too (Okilum started from
+clean folders; its own early state resets once). Only this detector directory,
+vendor/ and the verbatim third-party licence texts are left as they are.
 """
 import argparse
 import collections
@@ -25,11 +22,7 @@ import re
 import subprocess
 import sys
 
-EXCLUDED_PREFIXES = (
-    "docs/archive/", "docs/research/", "docs/upstream/", "experiments/", "fixtures/",
-    "scripts/patches/", "scripts/rebrand/", "vendor/",
-    "docs/rebrand-okilum.md",
-)
+EXCLUDED_PREFIXES = ("scripts/rebrand/", "vendor/")
 # Third-party licence texts stay verbatim. Our own text under licenses/
 # (README.md, the Foxit-PDFium.txt preface) is renamed like the rest.
 EXCLUDED_FILES = (
@@ -38,19 +31,8 @@ EXCLUDED_FILES = (
 )
 # Brand assets are pinned by a hash manifest to the brand repository; the
 # Okilum symbol arrives as its own import (scripts/brand-assets.py), not as text edits.
-EXCLUDED_PARTS = ("/tests/fixtures/", "/testdata/", "/assets/brand/")
+EXCLUDED_PARTS = ("/assets/brand/",)
 BINARY_SUFFIXES = (".png", ".ico", ".icns", ".ttf", ".woff", ".woff2", ".zip", ".gz", ".pdf", ".jpg")
-
-# Kept verbatim. Order does not matter; each match is shielded before replacing.
-PROTECTED = [
-    r"tessera-[a-z0-9-]+/v[0-9]+",                 # persisted schema ids
-    r"tessera/[a-z0-9-]+(?:/[a-z0-9-]+)*/v[0-9]+",  # deterministic namespaces
-    r"tessera(?:-asset)?://",                      # internal reader URL forms
-]
-# Owner decision 2026-10-09: Okilum starts clean, so file/recovery markers,
-# `.tessera-index`, sync identities (task, pipe, unit, launchd) and the Sparkle
-# beta key are renamed like everything else (#980).
-PROTECTED_RE = re.compile("|".join(f"(?:{p})" for p in PROTECTED))
 
 # Ordered: specific identities first, generic case forms last.
 REPLACEMENTS = [
@@ -61,7 +43,6 @@ REPLACEMENTS = [
     ("Tessera", "Okilum"),
     ("tessera", "okilum"),
 ]
-KEEP_MARKER = "rebrand: keep"
 RUNTIME_ENV_RE = re.compile(r"""env::var(?:_os)?\(\s*"(OKILUM_[A-Z0-9_]+)"\s*\)""")
 
 
@@ -82,22 +63,9 @@ def frozen_path(path):
 def rename_text(text):
     out = []
     for line in text.splitlines(keepends=True):
-        if KEEP_MARKER in line:
-            out.append(line)
-            continue
-        pieces, last = [], 0
-        for m in PROTECTED_RE.finditer(line):
-            pieces.append(("edit", line[last:m.start()]))
-            pieces.append(("keep", m.group(0)))
-            last = m.end()
-        pieces.append(("edit", line[last:]))
-        rebuilt = []
-        for kind, chunk in pieces:
-            if kind == "edit":
-                for old, new in REPLACEMENTS:
-                    chunk = chunk.replace(old, new)
-            rebuilt.append(chunk)
-        out.append("".join(rebuilt))
+        for old, new in REPLACEMENTS:
+            line = line.replace(old, new)
+        out.append(line)
     return "".join(out)
 
 
@@ -141,7 +109,8 @@ def main():
                 git("mv", "-k", path, target)
     # `use okilum_…` sorts differently from `use tessera_…`; keep rustfmt clean.
     # rustfmt follows `#[path]` modules into vendor/: run scripts/vendor-setup.sh first.
-    rust = [rename_path(f) for f in changed if f.endswith(".rs")]
+    # Only workspace crates are formatted; experiments keep snapshots that do not build alone.
+    rust = [rename_path(f) for f in changed if f.endswith(".rs") and f.startswith("crates/")]
     unformatted = []
     if not args.dry_run:
         for path in rust:
@@ -166,11 +135,6 @@ def main():
                 continue
             if excluded(path):
                 reason = "excluded tree: " + next(p for p in EXCLUDED_FILES + EXCLUDED_PREFIXES + EXCLUDED_PARTS if p.strip("/") in f"/{path}")
-            elif KEEP_MARKER in line:
-                reason = "rebrand: keep"
-            elif PROTECTED_RE.search(line):
-                reason = "protected: " + PROTECTED_RE.search(line).group(0)
-                reason = re.sub(r"[0-9a-f]{6,}|/v[0-9]+$", "", reason)[:60]
             else:
                 reason = "UNEXPECTED"
             residual[reason] += 1

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Fail when a shipped asset still carries the Tessera mark (#977, #980).
+"""Fail when the tree still carries the Tessera name or mark (#977, #980, #987).
 
-Three checks over the tracked tree:
+Four checks over the tracked tree:
 1. The app and Inbox icons are byte-identical to the approved Okilum
    "O / Kontur" masters (hashes below). Every platform icon is derived from them:
    in-app symbol, Windows .ico, macOS .icns, Linux hicolor icon, Inbox web icon.
@@ -11,6 +11,8 @@ Three checks over the tracked tree:
    Tessera image (tessera-images.sha256) or carries the name in its bytes
    (PNG text chunks, ICO/ICNS/PDF metadata). Pixels are not read, so a newly
    drawn Tessera image must be added to the hash list by whoever finds it.
+4. No tracked file outside vendor/ and this detector directory contains the
+   name "tessera" in any case, as text or bytes, or in its path (#987).
 
     python3 scripts/rebrand/check_brand.py
 """
@@ -34,6 +36,8 @@ NOT_SHIPPED = ("design/", "docs/", "experiments/", "fixtures/", "scripts/rebrand
 BINARY_HISTORY = ("docs/archive/", "docs/research/", "docs/upstream/", "experiments/", "fixtures/", "vendor/", "scripts/rebrand/")
 BINARY_SUFFIXES = (".png", ".ico", ".icns", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".pdf")
 OLD_IMAGES = "scripts/rebrand/tessera-images.sha256"
+# Only the detector may name the old brand; vendor/ is third-party code.
+NAME_ALLOWED = ("scripts/rebrand/", "vendor/")
 TEXT_SUFFIXES = (".svg", ".html", ".css", ".js", ".json", ".webmanifest", ".rs", ".desktop", ".plist", ".xml", ".rc")
 
 
@@ -74,12 +78,26 @@ def main():
         for mark in OLD_MARK:
             if mark in text:
                 problems.append(f"{path}: contains the Tessera mark ({mark!r})")
+    named = 0
+    for path in files:
+        if not path or path.startswith(NAME_ALLOWED):
+            continue
+        if "tessera" in path.lower():
+            problems.append(f"{path}: the path names Tessera")
+        try:
+            data = open(path, "rb").read()
+        except (FileNotFoundError, IsADirectoryError):
+            continue
+        named += 1
+        if b"tessera" in data.lower():
+            line = next((n for n, text in enumerate(data.split(b"\n"), 1) if b"tessera" in text.lower()), 0)
+            problems.append(f"{path}:{line}: names Tessera")
     if problems:
         print("Tessera brand assets remain:\n  " + "\n  ".join(problems))
         return 1
     print(
         f"Okilum brand check: {len(OKILUM)} icons match the approved masters; no Tessera mark in shipped assets; "
-        f"{binaries} images and binary assets clean"
+        f"{binaries} images and binary assets clean; no Tessera name in {named} tracked files"
     )
     return 0
 
