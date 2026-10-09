@@ -398,7 +398,28 @@ fn copy_fresh(
     })
 }
 
+/// A merge writes into the live new root, so a hard kill between creating a
+/// temporary file and renaming it leaves that file behind. Remove such
+/// leftovers (only our own `.okilum-copy-*` / `.okilum-marker-*`) first.
+fn discard_stale_temporaries(directory: &Path) -> Result<(), ImportError> {
+    for entry in walkdir::WalkDir::new(directory).follow_links(false) {
+        let entry = entry.map_err(|error| ImportError::Io {
+            path: directory.to_path_buf(),
+            error: error.into(),
+        })?;
+        let name = entry.file_name().to_string_lossy();
+        if entry.file_type().is_file()
+            && (name.starts_with(".okilum-copy-") || name.starts_with(".okilum-marker-"))
+            && name.ends_with(".tmp")
+        {
+            fs::remove_file(entry.path()).map_err(io_at(entry.path()))?;
+        }
+    }
+    Ok(())
+}
+
 fn merge(root: &Root, budget: &mut Option<usize>) -> Result<Outcome, ImportError> {
+    discard_stale_temporaries(&root.new)?;
     let mut files = Vec::new();
     let mut conflicts = Vec::new();
     let mut skipped = Vec::new();
@@ -523,27 +544,37 @@ fn copy_verified(
     })?;
     fs::create_dir_all(parent).map_err(io_at(parent))?;
     let temporary = parent.join(format!(".okilum-copy-{}.tmp", uuid::Uuid::new_v4()));
-    let metadata = fs::metadata(source).map_err(io_at(source))?;
-    let mut reader = File::open(source).map_err(io_at(source))?;
-    let mut writer = File::create_new(&temporary).map_err(io_at(&temporary))?;
-    let bytes = io::copy(&mut reader, &mut writer).map_err(io_at(&temporary))?;
-    if let Ok(modified) = metadata.modified() {
-        let _ = writer.set_modified(modified);
-    }
-    writer.sync_all().map_err(io_at(&temporary))?;
-    drop(writer);
-    fs::set_permissions(&temporary, metadata.permissions()).map_err(io_at(&temporary))?;
-    let expected = sha256_of(source)?;
-    if sha256_of(&temporary)? != expected {
+    let result = write_verified(source, &temporary);
+    if result.is_err() {
         let _ = fs::remove_file(&temporary);
-        return Err(ImportError::Verification(source.to_path_buf()));
     }
+    let (bytes, expected) = result?;
     fs::rename(&temporary, target).map_err(io_at(target))?;
     Ok(ImportedFile {
         path: relative.to_path_buf(),
         bytes,
         sha256: expected,
     })
+}
+
+/// Write `source` to `temporary` (created new), sync, apply the source's
+/// modified time and permissions, and verify it reads back identically.
+fn write_verified(source: &Path, temporary: &Path) -> Result<(u64, String), ImportError> {
+    let metadata = fs::metadata(source).map_err(io_at(source))?;
+    let mut reader = File::open(source).map_err(io_at(source))?;
+    let mut writer = File::create_new(temporary).map_err(io_at(temporary))?;
+    let bytes = io::copy(&mut reader, &mut writer).map_err(io_at(temporary))?;
+    if let Ok(modified) = metadata.modified() {
+        let _ = writer.set_modified(modified);
+    }
+    writer.sync_all().map_err(io_at(temporary))?;
+    drop(writer);
+    fs::set_permissions(temporary, metadata.permissions()).map_err(io_at(temporary))?;
+    let expected = sha256_of(source)?;
+    if sha256_of(temporary)? != expected {
+        return Err(ImportError::Verification(source.to_path_buf()));
+    }
+    Ok((bytes, expected))
 }
 
 fn write_marker(

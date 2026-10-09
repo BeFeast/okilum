@@ -333,6 +333,11 @@ fn populated_old_and_new_roots_merge_without_overwriting() {
     );
     let lock = home.path().join("import.lock");
 
+    // A hard kill mid-copy in an earlier merge left our temporary behind.
+    write(
+        &config.new.join("editor-recovery/.okilum-copy-dead.tmp"),
+        b"half",
+    );
     // Interrupt the merge once, then let it finish: nothing doubles.
     assert!(import(
         &roots,
@@ -371,6 +376,13 @@ fn populated_old_and_new_roots_merge_without_overwriting() {
     assert_eq!(
         fs::read(config.new.join("editor-recovery/b/draft.md")).unwrap(),
         DRAFT
+    );
+    assert!(
+        !config
+            .new
+            .join("editor-recovery/.okilum-copy-dead.tmp")
+            .exists(),
+        "stale temporaries from a killed merge are removed"
     );
     let sealed = config.new.join("editor-recovery/b/sealed.json");
     assert_eq!(fs::read(&sealed).unwrap(), b"{}");
