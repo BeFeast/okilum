@@ -699,6 +699,8 @@ mod tests {
                 std::fs::read_to_string(root.join(name)).unwrap(),
                 "external change"
             );
+            // Release the editor's real writer lock before simulating restart.
+            reader.update(visual, |r, _| r.editing = None);
             let store = tessera_core::file_editor::FileEditor::open(
                 &root.join(name),
                 &state.join("editor-drafts"),
@@ -706,8 +708,8 @@ mod tests {
             .unwrap();
             assert_eq!(store.text(), "recoverable local draft");
             assert!(store.dirty());
+            drop(store);
             reader.update_in(visual, |r, window, cx| {
-                r.editing = None;
                 r.preview_file("note.md", window, cx);
             });
         }
