@@ -162,13 +162,28 @@ existing scope. The operator must choose explicitly: a separate disposable Inbox
 deployment with legitimate owner enrollment, or an approved pause/scope switch
 and subsequent restoration of the existing pilot. Retain original configuration
 bytes, credentials and journals. No automatic rebind of #601's journal and no
-expanded project allowlist to bypass this decision. A switch that requires CT119
-restart uses the established deploy invocation and the #729 ordered ingress
-procedure once accepted; otherwise arrange it with that owner.
+expanded project allowlist to bypass this decision.
+
+#729's `restart.py` only orders ingress stop, Inbox restart, healthy check and
+ingress start. Its pre-mutation guard checks the old environment, command,
+mounts and IP; it does not compare file contents at the same configuration
+path, so it neither detects nor authorizes a scope change. A scope switch and
+its restoration are a separate Inbox-owner procedure: record before/after
+configuration digests and the exact rollback, and never bypass the guard. A
+CT119 restart inside that procedure still uses the established deploy
+invocation and the #729 ordering.
+
+Restoring the #601 pilot means its original configuration, credentials and
+binding running against the *current* journals. Never copy an older DB,
+mailbox, bridge journal or operation-store snapshot over newer consume/ack/
+receipt records: that loses them and can re-deliver answered work. Backups are evidence and recovery input for a damaged
+store, not a rollback mechanism. #729 rollback covers only nginx configuration
+and container images.
 
 1. Back up source images/configuration, source mailbox, bridge journal and native
    operation store consistently; verify integrity and original bindings. Record
-   which operator owns each mutation and its exact rollback command.
+   which operator owns each mutation and its exact rollback command. These
+   backups are evidence, not restore targets for steps 7 and later.
 2. Verify Inbox public HTTPS root and WebAuthn challenge with `publicKey`, plus
    source readiness. Owner uses the normal passkey flow; fixture/API replies are
    not a substitute for the required Inbox UI answer.
@@ -185,7 +200,8 @@ procedure once accepted; otherwise arrange it with that owner.
 7. Stop the isolated attempt and verify its cgroup/service termination. Revoke
    its grant using the approved source restart, then demonstrate old-token denial
    while the independent bridge/control scope still works. Restore any paused
-   pilot configuration and verify public readiness and its exact binding.
+   pilot configuration, credentials and binding over the current journals and
+   verify public readiness and its exact binding.
 
 Revocation does not delete operational receipts or erase an uncertain question.
 Reconcile/withdraw unresolved records only through their original authority.
@@ -206,7 +222,7 @@ reconciliation. A new native attempt cannot inherit the revoked grant.
 | Repeated read/ack | Same operation/payload retains identical receipt/result; changed payload is refused; no replacement reply ID |
 | New generation | Old identity/token cannot access the new attempt; explicitly issued new grant can access only its exact new tuple |
 | Revocation | Actual old token returns authorization failure after removal; an independent current control grant still works, excluding listener outage |
-| Rollback | Profiles/config restored exactly, no wider fleet access, source and public Inbox readiness verified; durable journals retained |
+| Rollback | Profiles/config/credentials/binding restored exactly with matching before/after digests, no wider fleet access, source and public Inbox readiness verified; current journals retained and no older store snapshot applied |
 
 Fault injection belongs to the isolated test path. A positive drop-response
 control records upstream acceptance without exposing tokens; it never adds a
