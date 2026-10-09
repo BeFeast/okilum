@@ -5,7 +5,6 @@
     not(any(
         target_os = "macos",
         windows,
-        test,
         all(target_os = "linux", feature = "settings-ui-harness")
     )),
     allow(dead_code)
