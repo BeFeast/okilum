@@ -178,6 +178,8 @@ impl Reader {
             if let Some(key) = self.recovery_toast.take() {
                 remove(key, window, cx);
             }
+            self.recovery_toast_generation = self.recovery_toast_generation.wrapping_add(1);
+            let queued = self.recovery_toast_generation;
             if let Some((path, generation)) = recovery {
                 let reader = cx.weak_entity();
                 let message = if self.recovery_startup {
@@ -192,7 +194,8 @@ impl Reader {
                     // deferred push; only show the offer if it still applies.
                     let still_offered = current
                         .read_with(cx, |this, _| {
-                            this.displayed_recovery.as_ref() == Some(&offered)
+                            this.recovery_toast_generation == queued
+                                && this.displayed_recovery.as_ref() == Some(&offered)
                                 && this.editing.is_none()
                         })
                         .unwrap_or(false);
@@ -512,6 +515,10 @@ mod tests {
         reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
         visual.run_until_parked();
         reader.read_with(visual, |r, _| assert!(r.editing.is_some()));
+        // Let the removed notice finish its exit transition; still far
+        // below the offer's own 4 s lifetime.
+        visual.executor().advance_clock(Duration::from_secs(1));
+        visual.run_until_parked();
         assert!(!restore_shown(visual), "offer removed when editing starts");
         // Back to Reader with a fresh offer whose push is deferred, and
         // editing starts in the same update: it must never appear.
@@ -526,10 +533,30 @@ mod tests {
             r.toggle_source(window, cx);
         });
         visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_secs(1));
+        visual.run_until_parked();
         assert!(
             !restore_shown(visual),
             "a deferred offer is dropped once editing"
         );
+        // A → B → A before the deferred push: only the last one may show.
+        reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
+        visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_secs(5));
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            r.recovery_offer = true;
+            r.sync_notice_toast(window, cx);
+            r.recovery_offer = false;
+            r.sync_notice_toast(window, cx);
+            r.recovery_offer = true;
+            r.sync_notice_toast(window, cx);
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            assert_eq!(window.notifications(cx).len(), 1, "one offer, tracked")
+        });
+        reader.read_with(visual, |r, _| assert!(r.recovery_toast.is_some()));
     }
 
     #[gpui::test]
