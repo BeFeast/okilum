@@ -324,6 +324,15 @@ mod tests {
     use ::core::prelude::v1::test;
     use gpui_component::ThemeMode;
 
+    // Match FilePreview's bounded flex column. Root itself is a block surface,
+    // so placing a flex-sized child directly in Root gives the list no height.
+    struct TableSurface(Entity<TablePreview>);
+    impl Render for TableSurface {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            v_flex().size_full().min_h_0().child(self.0.clone())
+        }
+    }
+
     #[test]
     fn delimited_alignment_and_display_keep_full_values() {
         assert_eq!(alignment("-123.45"), TextAlign::Right);
@@ -356,7 +365,8 @@ mod tests {
         let (_, visual) = cx.add_window_view(|window, cx| {
             let entity = cx.new(|cx| TablePreview::new(path.clone(), cx));
             preview = Some(entity.clone());
-            Root::new(entity, window, cx)
+            let surface = cx.new(|_| TableSurface(entity));
+            Root::new(surface, window, cx)
         });
         let preview = preview.unwrap();
         visual.simulate_resize(size(px(650.), px(500.)));
@@ -430,7 +440,8 @@ mod tests {
         });
         let (_, visual) = cx.add_window_view(|window, cx| {
             let entity = cx.new(|cx| TablePreview::new(path.clone(), cx));
-            Root::new(entity, window, cx)
+            let surface = cx.new(|_| TableSurface(entity));
+            Root::new(surface, window, cx)
         });
         visual.run_until_parked();
         let first = visual.debug_bounds("delimited-cell-1-0").unwrap();
