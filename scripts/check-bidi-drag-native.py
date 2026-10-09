@@ -59,6 +59,9 @@ for theme in ['light', 'dark']:
             state = record()
             r = state['selection']
             selected = TEXT.encode()[r['start']:r['end']].decode()
+            # A copy that silently fails must not compare against an older one.
+            subprocess.run(['xclip', '-i', '-selection', 'clipboard'], env=env, check=True,
+                           input='<stale>', text=True)
             xd('key', 'ctrl+c')
             copied = subprocess.run(['xclip', '-o', '-selection', 'clipboard'], env=env,
                                     capture_output=True, text=True).stdout
@@ -80,6 +83,15 @@ for theme in ['light', 'dark']:
         # Positive control: a plain click there owns the RTL cell (offset 11, before
         # `world`), so a drag that ignored its anchor would copy `world",12,"`.
         assert click(boundary)['cursor'] - LINE == 11, (theme, 'positive control')
+
+        # Pointer jitter after a press on that edge, on either side, selects nothing.
+        time.sleep(.6)
+        xd('mousemove', str(boundary), Y, 'mousedown', '1')
+        for jitter in [boundary + 1, math.floor(x_at(31))]:
+            xd('mousemove', str(jitter), Y)
+            r = record()['selection']
+            assert r['start'] == r['end'], (theme, 'jitter', jitter, r)
+        xd('mouseup', '1')
 
         assert drag(start, boundary) == 'change-me', theme
         subprocess.run(['import', '-window', 'root', str(out / f'{theme}-forward.png')], env=env, check=True)

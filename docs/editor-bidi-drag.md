@@ -14,8 +14,10 @@ Rule: when the edge nearest the pointer carries more than one offset, the moving
 end of a selection takes the offset whose own cell lies between it and the fixed
 end, nearest that end. The highlight then reaches the pointer. A press on such an
 edge has no direction yet, so its candidates (source offsets with their cells) are
-kept until the drag moves, and the same rule picks the anchor. Shift-click uses
-the moving-end rule. Plain clicks, double/triple clicks, keyboard movement and
+kept until the drag leaves that edge, and the same rule then picks the anchor.
+While the pointer is still on the pressed edge (or on the anchor's own edge) the
+selection stays collapsed, so click jitter selects nothing. Shift-click uses the
+moving-end rule. Plain clicks, double/triple clicks, keyboard movement and
 `Geometry::selection` are unchanged.
 
 Selection stays logical. Dragging from inside `change-me` into the Hebrew run
@@ -32,10 +34,13 @@ in light and dark. Positions come from caret readouts, not fixed pixels.
 - Positive control: a plain click one pixel inside the RTL space reports offset 11,
   so the pointer is on the ambiguous edge. Without the fix the forward drag
   copies `world",12,"` and the script fails there.
+- A press on that edge followed by 1 px jitter to either side selects nothing.
+  The first version of this fix selected the whole Latin run here.
 - Forward and reverse drags over `change-me` copy `change-me`.
 - A drag from that edge into the Hebrew run copies only Hebrew and `, `.
 - A drag across the whole Latin run copies `world",12,"change-me"`.
-- Every drag checks the X11 clipboard against the selected source bytes.
+- Every drag checks the X11 clipboard against the selected source bytes; the
+  clipboard is reset to a sentinel first, so a failed copy cannot pass.
 
 The isolated example passed on both main and the QA baseline when its drags ended
 inside the `e` cell; only the boundary pixel reproduces the Reader failure.

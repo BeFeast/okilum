@@ -1,3 +1,13 @@
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -456,6 +456,7 @@ impl<M: InputModeKind> TextElement<M> {
+                 // Stop auto-scroll when mouse up, and also stop selecting.
+                 state.update(cx, |state, cx| {
+                     state.auto_scroll.stop();
++                    state.drag_anchors.clear();
+                     if state.selecting {
+                         state.selecting = false;
+                         state.projection.presentation_changed();
 --- a/crates/base/src/input/base/state.rs
 +++ b/crates/base/src/input/base/state.rs
 @@ -21,7 +21,7 @@ use super::projection::{
@@ -15,7 +25,7 @@
      pub(super) selecting: bool,
 +    /// Source carets sharing the pressed X at a bidi run boundary, with their
 +    /// cells; the drag direction picks the anchor (#879).
-+    drag_anchors: Vec<(usize, Range<usize>)>,
++    pub(super) drag_anchors: Vec<(usize, Range<usize>)>,
      pub(crate) disabled: bool,
      pub(crate) readonly: bool,
      pub(crate) text_align: TextAlign,
@@ -27,9 +37,11 @@
              disabled: false,
              readonly: false,
              text_align: TextAlign::Left,
-@@ -2048,11 +2052,20 @@ impl<M: InputModeKind> InputBaseState<M> {
+@@ -2047,12 +2051,22 @@ impl<M: InputModeKind> InputBaseState<M> {
+         }
  
          self.selecting = true;
++        self.drag_anchors.clear();
          self.projection_mouse_hold = self.projection.enabled;
 -        let Some((offset, line_end_affinity, bidi_affinity)) = self.index_for_mouse_position(event.position)
 -        else {
@@ -50,7 +62,7 @@
  
          if self.projection.enabled {
              cx.emit(crate::input::projection::SourceClick {
-@@ -2122,6 +2135,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+@@ -2122,6 +2136,7 @@ impl<M: InputModeKind> InputBaseState<M> {
          self.finish_projection_mouse_gesture();
          cx.notify();
          self.selected_word_range = None;
@@ -58,7 +70,7 @@
          self.auto_scroll.stop();
      }
  
-@@ -2610,6 +2624,93 @@ impl<M: InputModeKind> InputBaseState<M> {
+@@ -2610,6 +2625,101 @@ impl<M: InputModeKind> InputBaseState<M> {
      pub(crate) fn index_for_mouse_position(
          &self,
          position: Point<Pixels>,
@@ -89,6 +101,10 @@
 +        let mut pos = position
 +            - bounds.origin
 +            - point(last_layout.line_number_width, last_layout.visible_top);
++        // As in `index_for_mouse_hit`, a single line ignores the pointer's Y.
++        if self.is_single_line() {
++            pos.y = px(0.);
++        }
 +        for (vi, line) in last_layout.lines.iter().enumerate() {
 +            let height = line.size(last_layout.line_height).height;
 +            if pos.y < px(0.) {
@@ -134,6 +150,10 @@
 +        let Some((head, _, _)) = self.index_for_mouse_position(position) else {
 +            return;
 +        };
++        // Still on the pressed edge: the drag has no direction yet.
++        if self.drag_anchors.iter().any(|(index, _)| *index == head) {
++            return;
++        }
 +        let candidates = self
 +            .drag_anchors
 +            .iter()
@@ -152,7 +172,7 @@
      ) -> Option<(usize, bool, Affinity)> {
          if self.projection.enabled
              && self
-@@ -2632,6 +2733,16 @@ impl<M: InputModeKind> InputBaseState<M> {
+@@ -2632,6 +2742,16 @@ impl<M: InputModeKind> InputBaseState<M> {
  
          let line_height = last_layout.line_height;
          let line_number_width = last_layout.line_number_width;
@@ -169,7 +189,7 @@
  
          // TIP: About the IBeam cursor
          //
-@@ -2655,6 +2766,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+@@ -2655,6 +2775,7 @@ impl<M: InputModeKind> InputBaseState<M> {
              .enumerate()
          {
              let line_start_offset = last_layout.visible_line_byte_offsets[vi];
@@ -177,7 +197,7 @@
  
              // Calculate line origin for this display row
              let line_origin = point(px(0.), y_offset);
-@@ -2662,7 +2774,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+@@ -2662,7 +2783,7 @@ impl<M: InputModeKind> InputBaseState<M> {
  
              // Return offset by use closest_index_for_x if is single line mode.
              if self.is_single_line() {
@@ -186,7 +206,7 @@
                  // A single line never wraps, so there is no boundary to disambiguate.
                  return Some((
                      last_layout.source(
-@@ -2676,7 +2788,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+@@ -2676,7 +2797,7 @@ impl<M: InputModeKind> InputBaseState<M> {
  
              // Check if mouse is in this line's bounds
              if let Some((local_index, line_end_affinity, affinity)) =
@@ -195,7 +215,7 @@
              {
                  return Some((
                      last_layout.source(
-@@ -2991,7 +3103,8 @@ impl<M: InputModeKind> InputBaseState<M> {
+@@ -2991,7 +3112,8 @@ impl<M: InputModeKind> InputBaseState<M> {
          }
  
          self.auto_scroll.last_drag_position = Some(event.position);
@@ -205,7 +225,7 @@
          else {
              cx.notify();
              return;
-@@ -3007,7 +3120,8 @@ impl<M: InputModeKind> InputBaseState<M> {
+@@ -3007,7 +3129,8 @@ impl<M: InputModeKind> InputBaseState<M> {
                  let current = state.scroll_handle.offset();
                  state.update_scroll_offset(Some(point(current.x, current.y + delta)), cx);
                  if let Some(pos) = state.auto_scroll.last_drag_position {
@@ -217,7 +237,7 @@
                          return;
 --- a/crates/base/src/input/bidi_geometry.rs
 +++ b/crates/base/src/input/bidi_geometry.rs
-@@ -137,6 +137,51 @@ impl Geometry {
+@@ -137,6 +137,60 @@ impl Geometry {
          }
      }
  
@@ -250,13 +270,22 @@
 +    }
 +
 +    /// Hit-test the moving end of a selection whose fixed end is `anchor`,
-+    /// so the highlight reaches the pointer at a run boundary (#879).
-+    pub(crate) fn hit_extending(&self, x: Pixels, anchor: usize) -> Option<Caret> {
++    /// so the highlight reaches the pointer at a run boundary (#879). The
++    /// anchor is relative to this row and may lie before or after it.
++    pub(crate) fn hit_extending(&self, x: Pixels, anchor: isize) -> Option<Caret> {
 +        let hit = self.hit(x)?;
 +        let carets = self.edge_carets(x);
 +        if carets.iter().all(|(caret, _)| caret.index == hit.index) {
 +            return Some(hit);
 +        }
++        // The pointer is still on the anchor's own edge: nothing is covered yet.
++        if let Some((caret, _)) = carets
++            .iter()
++            .find(|(caret, _)| caret.index as isize == anchor)
++        {
++            return Some(*caret);
++        }
++        let anchor = anchor.max(0) as usize;
 +        covering(
 +            carets
 +                .into_iter()
@@ -269,7 +298,7 @@
      /// Move in visual X order, retaining the selected edge's logical ownership.
      /// At row limits the caller decides paragraph/wrap traversal.
      pub(crate) fn step(&self, caret: Caret, right: bool) -> Option<Caret> {
-@@ -187,6 +232,21 @@ impl Geometry {
+@@ -187,6 +241,21 @@ impl Geometry {
      }
  }
  
@@ -291,7 +320,7 @@
  #[cfg(test)]
  mod tests {
      use super::*;
-@@ -271,6 +331,63 @@ mod tests {
+@@ -271,6 +340,69 @@ mod tests {
  #[cfg(test)]
  mod boundary_extension_tests {
      use super::*;
@@ -349,6 +378,12 @@
 +                (rtl_trailing, 1..2),
 +            ]
 +        );
++        // Jitter after a press on that edge, on either side of it, stays
++        // collapsed on the anchor instead of covering the LTR run.
++        assert_eq!(map.hit_extending(gpui::px(40.6), 2), Some(rtl_trailing));
++        assert_eq!(map.hit_extending(gpui::px(39.6), 2), Some(rtl_trailing));
++        // An anchor on an earlier row is not on this edge.
++        assert_eq!(map.hit_extending(x, -3), Some(rtl_trailing));
 +        // An edge inside one run has a single offset; keep the plain hit.
 +        assert_eq!(map.hit_extending(gpui::px(25.), 0), map.hit(gpui::px(25.)));
 +    }
@@ -357,7 +392,7 @@
          let map = Geometry {
 --- a/crates/base/src/input/editor/display_map/text_wrapper.rs
 +++ b/crates/base/src/input/editor/display_map/text_wrapper.rs
-@@ -801,15 +801,43 @@ impl LineLayout {
+@@ -801,15 +801,40 @@ impl LineLayout {
  
      pub(crate) fn closest_caret_for_position(&self, pos: Point<Pixels>, last_layout: &LastLayout)
          -> Option<(usize, bool, Affinity)> {
@@ -372,10 +407,7 @@
          let line = &self.wrapped_lines[i];
 -        let hit = self.bidi[i].as_ref().and_then(|map| map.hit(x));
 +        let hit = self.bidi[i].as_ref().and_then(|map| match anchor {
-+            Some(anchor) => {
-+                let local = (anchor - offset as isize).clamp(0, line.len as isize) as usize;
-+                map.hit_extending(x, local)
-+            }
++            Some(anchor) => map.hit_extending(x, anchor - offset as isize),
 +            None => map.hit(x),
 +        });
          let ix = hit.map_or_else(|| line.closest_index_for_x(x), |caret| caret.index);
