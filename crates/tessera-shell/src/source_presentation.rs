@@ -188,6 +188,7 @@ impl CachedProvider {
                             MarkerKind::Quote { depth }
                         }
                         source_classifier::decorations::Kind::ThematicBreak => MarkerKind::Rule,
+                        source_classifier::decorations::Kind::CodeBlock => MarkerKind::CodeBlock,
                     },
                 })
                 .collect(),

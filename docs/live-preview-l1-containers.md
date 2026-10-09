@@ -84,4 +84,24 @@ advance, so source bytes, wrap breaks, rows and hit-testing do not change.
 - A quote whose delimiter is joined to a combining mark stays raw alone. Other
   quotes, bullets and rules keep their decorations.
 
-Bars on wrapped continuation rows need reserved indentation and are PR 3.
+Bars on soft-wrapped continuation rows need a hanging indent: in the Reader a
+wrapped row starts at x = 0, under the bar. See PR 3.
+
+# PR 3: paint-only line decorations
+
+- **Code blocks.** Top-level fenced and indented code blocks get a quiet row
+  background (vendor patch 0049). It is a `CodeBlock` marker that replaces no
+  glyphs: the same prepaint pin and validated source as glyph markers select its
+  rows, the block must map unconcealed, and a stale source paints nothing. It is
+  painted in the glyph-background pass, before selection and text, so selection
+  stays visible. There is no caret reveal, so typing inside the block keeps the
+  background steady. Contents stay literal; nothing inside is classified. Code
+  inside containers gets no background yet.
+- **Rules (#727).** Thematic breaks already paint a rule at the existing row
+  height; setext underlines, front matter and fenced text stay raw.
+- **Quote bars.** One bar per `>` on every line that carries a delimiter (PR 2).
+  Soft-wrapped continuation rows get no bar: without a hanging indent it would
+  cover glyphs, and a hanging indent is per-line metrics (S6b).
+
+Switching decorations on or off changes no source bytes, advances, wrap breaks,
+rows or hit targets.

@@ -1,0 +1,148 @@
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -1648,6 +1648,7 @@ impl<M: InputModeKind> TextElement<M> {
+ pub(super) struct PrepaintState {
+     marker_source: Option<std::sync::Arc<super::marker_paint::MarkerSource>>,
+     marker_rows: Vec<Vec<Option<super::marker_paint::RowPaint>>>,
++    code_rows: Vec<Vec<bool>>,
+     /// The lines of entire lines.
+     last_layout: LastLayout,
+     /// The lines only contains the visible lines in the viewport, based on `visible_range`.
+@@ -2301,9 +2302,13 @@ impl<M: InputModeKind> Element for TextElement<M> {
+         let marker_rows = marker_source.as_ref().map(|source|
+             super::marker_paint::prepare(&last_layout, source, &state.projection.active)
+         ).unwrap_or_default();
++        let code_rows = marker_source.as_ref().map(|source|
++            super::marker_paint::code_rows(&last_layout, source)
++        ).unwrap_or_default();
+         PrepaintState {
+             marker_source,
+             marker_rows,
++            code_rows,
+             bounds,
+             last_layout,
+             scroll_size,
+@@ -2423,17 +2428,32 @@ impl<M: InputModeKind> Element for TextElement<M> {
+         // backgrounds need their own pass. It runs ahead of the indent guides, selections,
+         // and text so a highlighted range sits under them instead of covering them.
+         let mut offset_y = invisible_top_padding;
+-        for (line, &buffer_line) in prepaint
++        for (line_index, (line, &buffer_line)) in prepaint
+             .last_layout
+             .lines
+             .iter()
+             .zip(prepaint.last_layout.visible_buffer_lines.iter())
++            .enumerate()
+         {
+             let p = point(
+                 origin.x + prepaint.last_layout.line_number_width + scroll_offset,
+                 origin.y + offset_y,
+             );
+ 
++            // Code block rows (#868): a quiet background under selection and text.
++            if let Some(rows) = prepaint.code_rows.get(line_index).filter(|_| marker_source_matches) {
++                for (row_index, inside) in rows.iter().enumerate() {
++                    if *inside {
++                        window.paint_quad(fill(
++                            Bounds::new(
++                                p + point(px(0.), line_height * row_index as f32),
++                                size(prepaint.last_layout.content_width, line_height),
++                            ),
++                            editor_style.foreground.opacity(0.05),
++                        ));
++                    }
++                }
++            }
+             line.paint_background(
+                 p,
+                 line_height,
+--- a/crates/base/src/input/base/marker_paint.rs
++++ b/crates/base/src/input/base/marker_paint.rs
+@@ -90,6 +90,10 @@ pub(super) fn prepare(
+     let boundaries = &validated.boundaries;
+     let mut markers = Vec::new();
+     for marker in pin.projection.markers() {
++        // Backgrounds replace no glyphs; `code_rows` handles them.
++        if matches!(marker.kind, MarkerKind::CodeBlock) {
++            continue;
++        }
+         if marker.range.start.0 >= marker.range.end.0
+             || marker.scope.start.0 > marker.range.start.0
+             || marker.range.end.0 > marker.scope.end.0
+@@ -196,6 +200,56 @@ pub(super) fn prepare(
+         .collect()
+ }
+ 
++/// Visual rows inside a code block, painted as a background before selection
++/// and text. Same prepaint pin and source as glyph markers; the block must map
++/// unconcealed, and a stale or unsafe block paints nothing. No caret reveal:
++/// typing inside the block keeps its background steady.
++pub(super) fn code_rows(layout: &LastLayout, validated: &MarkerSource) -> Vec<Vec<bool>> {
++    let Some(pin) = &layout.projection else {
++        return vec![];
++    };
++    let boundaries = &validated.boundaries;
++    let blocks: Vec<_> = pin
++        .projection
++        .markers()
++        .iter()
++        .filter(|marker| matches!(marker.kind, MarkerKind::CodeBlock))
++        .filter_map(|marker| {
++            let (start, end) = (marker.range.start, marker.range.end);
++            if start.0 >= end.0
++                || boundaries.binary_search(&start.0).is_err()
++                || boundaries.binary_search(&end.0).is_err()
++            {
++                return None;
++            }
++            let projected = pin.projection.to_projected(start, ConcealBias::Left)?.0
++                ..pin.projection.to_projected(end, ConcealBias::Right)?.0;
++            (projected.len() == end.0 - start.0).then_some(projected)
++        })
++        .collect();
++    if blocks.is_empty() {
++        return vec![];
++    }
++    layout
++        .lines
++        .iter()
++        .enumerate()
++        .map(|(li, line)| {
++            let mut offset = layout.visible_line_byte_offsets[li];
++            line.wrapped_lines
++                .iter()
++                .map(|row| {
++                    let start = offset;
++                    offset += row.len();
++                    blocks
++                        .iter()
++                        .any(|block| block.start <= start && start < block.end)
++                })
++                .collect()
++        })
++        .collect()
++}
++
+ impl RowPaint {
+     pub(super) fn paint(
+         &self,
+@@ -257,7 +311,7 @@ impl RowPaint {
+                         ),
+                         color.opacity(0.45),
+                     )),
+-                    MarkerKind::Rule => {}
++                    MarkerKind::Rule | MarkerKind::CodeBlock => {}
+                 }
+             });
+             if matches!(shape.kind, MarkerKind::Rule) {
+--- a/crates/base/src/input/projection.rs
++++ b/crates/base/src/input/projection.rs
+@@ -93,7 +93,7 @@ pub struct ProjectionStyle {
+ 
+ /// Source-anchored, revision-bound paint metadata. Never changes text layout.
+ #[derive(Clone, Debug)]
+-pub enum MarkerKind { Bullet { depth: usize }, Quote { depth: usize }, Rule }
++pub enum MarkerKind { Bullet { depth: usize }, Quote { depth: usize }, Rule, CodeBlock }
+ #[derive(Clone, Debug)]
+ pub struct ProjectionMarker {
+     pub range: Range<SourceByte>,
