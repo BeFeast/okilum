@@ -202,7 +202,9 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     # Configure only after the dedicated bridge runner is registered.
     runs-on: ${{ vars.MACOS_BRIDGE_RUNNER || 'light' }}
-    timeout-minutes: 80
+    # Must exceed github-macos.py QUEUE_TIMEOUT + RUN_TIMEOUT (180 + 40 min):
+    # a queued GitHub runner is waiting, not a failure.
+    timeout-minutes: 230
     outputs:
       result: ${{ steps.remote.outputs.result }}
     steps:
