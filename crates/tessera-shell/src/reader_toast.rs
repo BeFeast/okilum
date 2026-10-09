@@ -72,7 +72,7 @@ pub(super) fn bottom_space(window: &Window, cx: &App) -> Pixels {
 }
 
 pub(super) fn transient(message: impl Into<SharedString>, window: &mut Window, cx: &mut App) {
-    push(
+    let _ = push(
         Notification::new().message(message),
         Some(Duration::from_secs(4)),
         window,
@@ -81,7 +81,7 @@ pub(super) fn transient(message: impl Into<SharedString>, window: &mut Window, c
 }
 
 pub(super) fn missing_file(path: String, window: &mut Window, cx: &mut App) {
-    push(
+    let _ = push(
         Notification::new()
             .message("File not found")
             .action(move |_, _, cx| {
@@ -118,12 +118,18 @@ pub(super) fn error(message: impl Into<SharedString>, window: &mut Window, cx: &
     );
 }
 
+pub(super) type ToastKey = (&'static str, u64);
+
+pub(super) fn remove(key: ToastKey, window: &mut Window, cx: &mut App) {
+    window.remove_notification1::<Toast>(key, cx);
+}
+
 pub(super) fn push(
     notification: Notification,
     lifetime: Option<Duration>,
     window: &mut Window,
     cx: &mut App,
-) {
+) -> ToastKey {
     let key = ("reader-toast", NEXT_TOAST.fetch_add(1, Ordering::Relaxed));
     window.push_notification(
         notification
@@ -166,6 +172,11 @@ impl Reader {
             });
         if recovery != self.displayed_recovery {
             self.displayed_recovery = recovery.clone();
+            // Editing with the restored draft (or another note) makes the
+            // offer moot: it must not outlive «Unsaved changes restored».
+            if let Some(key) = self.recovery_toast.take() {
+                remove(key, window, cx);
+            }
             if let Some((path, generation)) = recovery {
                 let reader = cx.weak_entity();
                 let message = if self.recovery_startup {
@@ -173,14 +184,28 @@ impl Reader {
                 } else {
                     "Unsaved edits are available."
                 };
+                let current = reader.clone();
+                let offered = (path.clone(), generation);
                 window.defer(cx, move |window, cx| {
-                    push(
+                    // Startup can enter editing between this render and the
+                    // deferred push; only show the offer if it still applies.
+                    let still_offered = current
+                        .read_with(cx, |this, _| {
+                            this.displayed_recovery.as_ref() == Some(&offered)
+                                && this.editing.is_none()
+                        })
+                        .unwrap_or(false);
+                    if !still_offered {
+                        return;
+                    }
+                    let key = push(
                         Notification::new()
                             .message(message)
                             .content(move |_, _, _| {
                                 let reader = reader.clone();
                                 let path = path.clone();
                                 Button::new("restore-unsaved-edits")
+                                    .debug_selector(|| "restore-unsaved-edits".into())
                                     .small()
                                     .label("Restore unsaved edits")
                                     .on_click(move |_, window, cx| {
@@ -201,6 +226,7 @@ impl Reader {
                         window,
                         cx,
                     );
+                    let _ = current.update(cx, |this, _| this.recovery_toast = Some(key));
                 });
             }
         }

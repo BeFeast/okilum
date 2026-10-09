@@ -1660,8 +1660,16 @@ mod tests {
                 assert!(
                     !window.notifications(cx).is_empty(),
                     "positive control: restored draft announces itself"
-                )
+                );
+                // #930: the draft is already applied, so the offer to
+                // restore it must not appear and push the notice away.
+                assert_eq!(window.notifications(cx).len(), 1, "one recovery notice");
+                window.draw(cx).clear(cx);
             });
+            assert!(
+                visual.debug_bounds("restore-unsaved-edits").is_none(),
+                "no «Restore unsaved edits» for an already restored draft"
+            );
             visual.executor().advance_clock(Duration::from_secs(5));
             visual.run_until_parked();
             visual.update(|window, cx| {
