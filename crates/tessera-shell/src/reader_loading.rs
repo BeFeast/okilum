@@ -1568,10 +1568,9 @@ impl Reader {
         // displayed snapshot cancels an older, different in-flight snapshot.
         self.navigation.reconciliation_generation =
             self.navigation.reconciliation_generation.wrapping_add(1);
-        let pending_embed = self.note_source.contains(&format!(
-            "{EMBED_LANG} {} ",
-            tessera_core::render::EMBED_PENDING
-        ));
+        // Note and block embeds both wait for the inventory; an unchanged
+        // source must still be rendered again to resolve them (#932).
+        let pending_embed = tessera_core::render::has_pending_embeds(&self.note_source);
         if !pending_embed && self.note_canonical_source.as_deref() == Some(raw.as_ref()) {
             self.refresh_link_preparation(cx);
             return;
@@ -4293,6 +4292,61 @@ mod tests {
                 .is_some_and(|notice| notice.contains("no longer available")));
             assert_eq!(v.current_rel, "start.md");
             assert_eq!(v.navigation.history, history);
+        });
+    }
+
+    /// #932: an unchanged note whose only pending embed is a block embed must
+    /// still be rendered again once the inventory is complete.
+    #[gpui::test]
+    fn unchanged_note_resolves_pending_block_embeds_without_reopening(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = TestDirectory::new();
+        let root = temp.path().join("source");
+        std::fs::create_dir(&root).unwrap();
+        let source = format!(
+            "# Start\n\n![[target#^blk932]]\n\n{}",
+            "Paragraph filler for asynchronous parsing.\n\n".repeat(180)
+        );
+        std::fs::write(root.join("start.md"), &source).unwrap();
+        std::fs::write(root.join("target.md"), "# Target\n\nBlockBody932 ^blk932\n").unwrap();
+        let (release, hold) = async_channel::bounded(1);
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("start.md".into()),
+                        index_dir: Some(temp.path().join("cache")),
+                        preparation_hold: Some(hold),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        visual.run_until_parked();
+        reader.read_with(visual, |v, _| {
+            assert!(v.document_ready());
+            // Positive control: the first render really is waiting on the inventory.
+            assert!(tessera_core::render::has_pending_embeds(&v.note_source));
+            assert!(!v.note_source.contains("BlockBody932"));
+        });
+        release.try_send(()).unwrap();
+        visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_millis(300));
+        visual.run_until_parked();
+        reader.read_with(visual, |v, _| {
+            assert_eq!(v.current_rel, "start.md");
+            assert!(!tessera_core::render::has_pending_embeds(&v.note_source));
+            assert!(v.note_source.contains("BlockBody932"));
         });
     }
 
