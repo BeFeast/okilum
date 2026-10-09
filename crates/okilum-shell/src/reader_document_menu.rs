@@ -87,8 +87,8 @@ impl Reader {
         let dirty = self.source_is_dirty(cx);
         #[cfg(not(any(unix, windows)))]
         let dirty = false;
-        // Reserve padding, gaps, navigation, Read/Edit, menu and the dirty dot.
-        // Optional controls yield before either the parent path or note title.
+        // Reserve padding, gaps, navigation, the Read or Edit button, menu and
+        // the dirty dot. Optional controls yield before the parent path or title.
         let parent_width = self
             .selected_file()
             .rsplit_once('/')
@@ -98,11 +98,12 @@ impl Reader {
                     .sum::<f32>()
             });
         let compact_parent = if parent_width > 0. { 32. } else { 0. };
-        let fixed_width = 208. + if dirty { 32. } else { 0. };
+        let fixed_width = 176. + if dirty { 32. } else { 0. };
         let mut spare = document_width - fixed_width - title_width - compact_parent;
-        let show_presentation = !is_file && self.editing.is_some() && spare >= 64.;
+        // One toggle to the other editor mode (#992).
+        let show_presentation = !is_file && self.editing.is_some() && spare >= 32.;
         if show_presentation {
-            spare -= 64.;
+            spare -= 32.;
         }
         let show_save = dirty && spare >= 32.;
         if show_save {
@@ -112,14 +113,14 @@ impl Reader {
         if show_find {
             spare -= 32.;
         }
+        // What the page shows now; Find from Live Preview shows Source until it
+        // closes, and the mode toggle offers Live Preview meanwhile.
         #[cfg(any(unix, windows))]
-        let labels_width = ["Read", "Edit"]
+        let live = self.live_preview_shown();
+        #[cfg(any(unix, windows))]
+        let labels_width = [if editing { "Read" } else { "Edit" }]
             .into_iter()
-            .chain(if show_presentation {
-                vec!["Live Preview", "Source"]
-            } else {
-                vec![]
-            })
+            .chain(show_presentation.then_some(if live { "Source" } else { "Live Preview" }))
             .map(|label| toolbar_text_width(label, FontWeight::MEDIUM, window) + 12.)
             .sum::<f32>();
         #[cfg(any(unix, windows))]
@@ -168,40 +169,31 @@ impl Reader {
         }
         #[cfg(any(unix, windows))]
         if !is_file || file_editable {
-            use gpui_component::button::ButtonGroup;
+            // Only the action that leaves the current mode is offered (#992):
+            // Reader shows Edit (pencil, #871), the editor shows Read.
+            let (id, label, icon): (&'static str, &'static str, Icon) = if editing {
+                ("reader-read", "Read", Icon::new(IconName::BookOpen))
+            } else {
+                (
+                    "reader-edit",
+                    "Edit",
+                    Icon::default().path("icons/pencil.svg"),
+                )
+            };
             row = row.child(
-                ButtonGroup::new("note-mode").children([
-                    Button::new("reader-read")
-                        .ghost()
-                        .small()
-                        .icon(IconName::BookOpen)
-                        .h(px(28.))
-                        .when(!labels, |b| b.w(px(28.)))
-                        .when(labels, |button| button.label("Read"))
-                        .selected(!editing)
-                        .accessibility_label("Read")
-                        .tooltip(reader_shortcuts::hint("Read", &ToggleSource, cx))
-                        .debug_selector(|| "reader-read".into())
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            if this.editing.is_some() {
-                                this.toggle_source(window, cx);
-                            }
-                        })),
-                    Button::new("reader-edit")
-                        .ghost()
-                        .small()
-                        .icon(Icon::default().path("icons/pencil.svg"))
-                        .h(px(28.))
-                        .when(!labels, |b| b.w(px(28.)))
-                        .when(labels, |button| button.label("Edit"))
-                        .selected(editing)
-                        .accessibility_label("Edit")
-                        .tooltip(reader_shortcuts::hint("Edit", &ToggleSource, cx))
-                        .debug_selector(|| "reader-edit".into())
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.toggle_source(window, cx);
-                        })),
-                ]),
+                Button::new(id)
+                    .ghost()
+                    .small()
+                    .icon(icon)
+                    .h(px(28.))
+                    .when(!labels, |b| b.w(px(28.)))
+                    .when(labels, |button| button.label(label))
+                    .accessibility_label(label)
+                    .tooltip(reader_shortcuts::hint(label, &ToggleSource, cx))
+                    .debug_selector(move || id.into())
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.toggle_source(window, cx);
+                    })),
             );
             if editing {
                 if show_presentation && !is_file {
@@ -319,20 +311,25 @@ impl Reader {
                             Box::new(FocusCurrentFolder),
                         )
                         .separator();
-                    if !is_file {
+                    // The ⋯ menu holds what the toolbar does not show right now (#992).
+                    if (!is_file || editing) && !show_find {
                         menu = menu.menu_with_icon(
                             "Find in note",
                             Icon::default().path("icons/text-search.svg"),
                             Box::new(FindInNote),
                         );
+                    }
+                    if !is_file {
                         #[cfg(any(unix, windows))]
                         {
-                            if editing && dirty {
+                            if editing && dirty && !show_save {
                                 menu = menu.menu("Save", Box::new(SaveSource));
                             }
                             // Shows ⌘⇧E / Ctrl+Shift+E and works from Reader too (#916).
-                            menu = menu.menu("Live Preview", Box::new(OpenLivePreview));
-                            if editing {
+                            if !editing || (!live && !show_presentation) {
+                                menu = menu.menu("Live Preview", Box::new(OpenLivePreview));
+                            }
+                            if editing && live && !show_presentation {
                                 let reader = reader.clone();
                                 menu = menu.item(PopupMenuItem::new("Source").on_click(
                                     move |_, window, cx| {
@@ -343,10 +340,6 @@ impl Reader {
                                 ));
                             }
                             menu = menu
-                                .menu(
-                                    if editing { "Preview" } else { "Edit source" },
-                                    Box::new(ToggleSource),
-                                )
                                 .item(
                                     PopupMenuItem::new("Rename")
                                         .action(Box::new(RenameNote))
@@ -376,13 +369,6 @@ impl Reader {
                             ));
                         }
                     } else {
-                        #[cfg(any(unix, windows))]
-                        if file_editable {
-                            menu = menu.menu(
-                                if editing { "Read" } else { "Edit source" },
-                                Box::new(ToggleSource),
-                            );
-                        }
                         for (label, action) in [
                             ("Copy vault path", reader_files::FileAction::Relative),
                             ("Copy wikilink", reader_files::FileAction::Wiki),
@@ -636,11 +622,11 @@ mod tests {
                 "dirty editor retains title space: {title:?}"
             );
             assert!(title.size.width > px(180.), "positive title-space control");
+            assert!(visual.debug_bounds("reader-edit").is_none());
             for id in [
                 "reader-history-back",
                 "reader-history-forward",
                 "reader-read",
-                "reader-edit",
                 "document-more",
             ] {
                 let bounds = visual.debug_bounds(id).unwrap();
@@ -653,8 +639,15 @@ mod tests {
                     "{id} overlaps title"
                 );
             }
-            assert!(visual.debug_bounds("reader-live-preview").is_none());
-            assert!(visual.debug_bounds("source-save").is_none());
+            // Optional controls appear only where they fit beside the title.
+            for id in ["reader-live-preview", "source-save"] {
+                if let Some(bounds) = visual.debug_bounds(id) {
+                    assert!(
+                        bounds.right() <= title.left() || bounds.left() >= title.right(),
+                        "{id} overlaps title"
+                    );
+                }
+            }
             reader.read_with(visual, |this, cx| assert!(this.source_is_dirty(cx)));
         }
     }

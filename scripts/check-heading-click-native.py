@@ -58,9 +58,8 @@ try:
     win = found[-1]
     xd(env, 'windowmove', win, '0', '0', 'windowsize', win, '1366', '768', 'windowfocus', win)
     time.sleep(3)
-    xd(env, 'mousemove', '996', '70', 'click', '1')  # Edit
-    time.sleep(1.5)
-    xd(env, 'mousemove', '968', '70', 'click', '1')  # Live Preview
+    # Shortcuts, not toolbar coordinates: the note toolbar is contextual (#992).
+    xd(env, 'key', 'ctrl+shift+e')  # Live Preview, from Reader too (#916)
     time.sleep(1.5)
     if not HY:
         shot(env, 'calibrate')

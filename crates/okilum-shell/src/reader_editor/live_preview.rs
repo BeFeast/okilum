@@ -116,50 +116,47 @@ impl Reader {
                 .accepted
                 .as_ref()
                 .is_some_and(|p| p.limited());
-        use gpui_component::button::ButtonGroup;
         let live = editing.live_preview.enabled;
-        ButtonGroup::new("edit-presentation")
-            .children([
-                Button::new("reader-live-preview")
-                    .ghost()
-                    .small()
-                    .icon(IconName::Eye)
-                    .h(px(28.))
-                    .when(!labels, |b| b.w(px(28.)))
-                    .when(labels, |button| button.label("Live Preview"))
-                    .accessibility_label("Live Preview")
-                    .tooltip(if limited {
-                        SharedString::from("Live Preview uses Source for this note")
+        // One control switches to the other editor mode (#992); the current
+        // mode is what the page shows, so it needs no selected segment.
+        let button = if live {
+            Button::new("reader-source")
+                .icon(Icon::default().path("icons/code-xml.svg"))
+                .when(labels, |button| button.label("Source"))
+                .accessibility_label("Source")
+                .tooltip(if limited {
+                    "Live Preview uses Source for this note. Switch to Source"
+                } else {
+                    "Switch to Source"
+                })
+                .debug_selector(|| "reader-source".into())
+                .on_click(
+                    cx.listener(|this, _, window, cx| this.set_live_preview(false, window, cx)),
+                )
+        } else {
+            Button::new("reader-live-preview")
+                .icon(IconName::Eye)
+                .when(labels, |button| button.label("Live Preview"))
+                .accessibility_label("Live Preview")
+                .tooltip(reader_shortcuts::hint(
+                    if limited {
+                        "Live Preview uses Source for this note"
                     } else {
-                        reader_shortcuts::hint("Live Preview", &OpenLivePreview, cx)
-                    })
-                    .debug_selector(|| "reader-live-preview".into())
-                    .selected(live)
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        if !live {
-                            this.toggle_live_preview(window, cx);
-                        }
-                    })),
-                Button::new("reader-source")
-                    .ghost()
-                    .small()
-                    .icon(Icon::default().path("icons/code-xml.svg"))
-                    .h(px(28.))
-                    .when(!labels, |b| b.w(px(28.)))
-                    .when(labels, |button| button.label("Source"))
-                    .accessibility_label("Source")
-                    .tooltip("Markdown source")
-                    .debug_selector(|| "reader-source".into())
-                    .selected(!live)
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        if let Some(editing) = &mut this.editing {
-                            editing.live_preview.restore_after_find = false;
-                        }
-                        if live {
-                            this.toggle_live_preview(window, cx);
-                        }
-                    })),
-            ])
+                        "Live Preview"
+                    },
+                    &OpenLivePreview,
+                    cx,
+                ))
+                .debug_selector(|| "reader-live-preview".into())
+                .on_click(
+                    cx.listener(|this, _, window, cx| this.set_live_preview(true, window, cx)),
+                )
+        };
+        button
+            .ghost()
+            .small()
+            .h(px(28.))
+            .when(!labels, |b| b.w(px(28.)))
             .into_any_element()
     }
 
@@ -355,14 +352,17 @@ mod tests {
         reader.read_with(visual, |reader, _| {
             assert!(!reader.editing.as_ref().unwrap().live_preview.enabled)
         });
-        // The pencil is Edit, never Rename, and toggles back to Reader (#871).
-        let pencil = visual.debug_bounds("reader-edit").unwrap();
-        visual.simulate_click(pencil.center(), Modifiers::default());
+        // The editor offers only Read, never a second, selected Edit (#992).
+        assert!(visual.debug_bounds("reader-edit").is_none());
+        let read = visual.debug_bounds("reader-read").unwrap();
+        visual.simulate_click(read.center(), Modifiers::default());
         visual.run_until_parked();
         reader.read_with(visual, |reader, _| {
             assert!(reader.editing.is_none());
             assert!(reader.renaming.is_none());
         });
+        // Reader offers only Edit: the pencil, never Rename (#871).
+        assert!(visual.debug_bounds("reader-read").is_none());
         let pencil = visual.debug_bounds("reader-edit").unwrap();
         visual.simulate_click(pencil.center(), Modifiers::default());
         visual.run_until_parked();
@@ -396,13 +396,14 @@ mod tests {
         let read = visual.debug_bounds("reader-read").unwrap();
         visual.simulate_click(read.center(), Modifiers::default());
         visual.run_until_parked();
-        visual.simulate_resize(size(px(480.), px(900.)));
+        // One mode button and one mode toggle leave room for labels at 480px (#992).
+        visual.simulate_resize(size(px(360.), px(900.)));
         reader.update_in(visual, |reader, window, cx| {
             reader.toggle_source(window, cx)
         });
         visual.run_until_parked();
         assert_eq!(
-            visual.debug_bounds("reader-edit").unwrap().size.width,
+            visual.debug_bounds("reader-read").unwrap().size.width,
             icon_width,
             "optional labels yield to glyphs in a narrow editor"
         );
@@ -425,12 +426,12 @@ mod tests {
         visual.simulate_keystrokes("escape");
         visual.run_until_parked();
         let header = visual.debug_bounds("document-header").unwrap();
+        assert!(visual.debug_bounds("reader-edit").is_none());
+        assert!(visual.debug_bounds("reader-live-preview").is_none());
         for control in [
             "reader-history-back",
             "reader-history-forward",
             "reader-read",
-            "reader-edit",
-            "reader-live-preview",
             "reader-source",
             "document-more",
         ] {
@@ -894,12 +895,23 @@ mod tests {
             })
         });
         visual.run_until_parked();
-        // Actual toolbar clicks must not save on focus loss or create history transactions.
-        for _ in 0..2 {
-            let toggle = visual.debug_bounds("reader-live-preview").unwrap().center();
+        // Actual toolbar clicks must not save on focus loss or create history
+        // transactions. The single mode toggle offers the other mode (#992).
+        for id in ["reader-source", "reader-live-preview"] {
+            assert!(visual
+                .debug_bounds(if id == "reader-source" {
+                    "reader-live-preview"
+                } else {
+                    "reader-source"
+                })
+                .is_none());
+            let toggle = visual.debug_bounds(id).unwrap().center();
             visual.simulate_click(toggle, Modifiers::default());
             visual.run_until_parked();
         }
+        reader.read_with(visual, |r, _| {
+            assert!(r.editing.as_ref().unwrap().live_preview.enabled)
+        });
         assert_eq!(
             std::fs::read_to_string(directory.path().join("vault/note.md")).unwrap(),
             ORIGINAL
