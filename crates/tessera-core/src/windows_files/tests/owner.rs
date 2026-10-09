@@ -57,6 +57,39 @@ fn descriptor(sddl: &str) -> Descriptor {
     );
     Descriptor(raw)
 }
+fn set_named_security(path: &Path, sddl: &str, protection: u32) {
+    use windows_sys::Win32::Security::{
+        Authorization::SetNamedSecurityInfoW, GetSecurityDescriptorOwner,
+    };
+    let sd = descriptor(sddl);
+    let mut owner = std::ptr::null_mut();
+    let mut dacl = std::ptr::null_mut();
+    let mut present = 0;
+    let mut defaulted = 0;
+    assert_ne!(
+        unsafe { GetSecurityDescriptorOwner(sd.0, &mut owner, &mut defaulted) },
+        0
+    );
+    assert_ne!(
+        unsafe { GetSecurityDescriptorDacl(sd.0, &mut present, &mut dacl, &mut defaulted) },
+        0
+    );
+    assert_ne!(present, 0);
+    assert!(!owner.is_null() && !dacl.is_null());
+    let status = unsafe {
+        SetNamedSecurityInfoW(
+            wide(path).unwrap().as_ptr(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION | protection,
+            owner,
+            std::ptr::null_mut(),
+            dacl,
+            std::ptr::null(),
+        )
+    };
+    assert_eq!(status, 0, "fixture named security: {status}");
+}
+
 fn apply_security(path: &Path, sddl: &str) {
     let descriptor = descriptor(sddl);
     assert_ne!(
@@ -262,6 +295,211 @@ fn assert_access_and_dacl(path: &Path, before: &Permissions) {
         .write(true)
         .open(path)
         .expect("effective read/write access");
+}
+
+fn inherited_admin_source(fixture: &Fixture, name: &str, text: &str, explicit: bool) -> PathBuf {
+    use windows_sys::Win32::Security::{INHERITED_ACE, UNPROTECTED_DACL_SECURITY_INFORMATION};
+    let path = fixture.root.join(name);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    set_named_security(
+        path.parent().unwrap(),
+        &format!(
+            "O:{}D:P(A;OICI;FA;;;BA)(A;OICI;FA;;;{})(A;OICI;FR;;;SY)",
+            fixture.sid_text, fixture.sid_text
+        ),
+        PROTECTED_DACL_SECURITY_INFORMATION,
+    );
+    fs::write(&path, text).unwrap();
+    set_named_security(
+        &path,
+        if explicit {
+            "O:BAD:(A;;FR;;;BU)"
+        } else {
+            "O:BAD:"
+        },
+        UNPROTECTED_DACL_SECURITY_INFORMATION,
+    );
+    let before = permissions(&path);
+    assert_eq!(before.owner, fixture.admin);
+    assert!(!before.dacl_protected);
+    let aces = before.aces.as_ref().unwrap();
+    assert!(
+        aces.iter().any(|ace| ace[1] & INHERITED_ACE as u8 != 0),
+        "inherited grant positive control"
+    );
+    assert_eq!(
+        aces.iter().any(|ace| ace[1] & INHERITED_ACE as u8 == 0),
+        explicit
+    );
+    assert!(
+        aces.iter()
+            .any(|ace| ace[1] & INHERITED_ACE as u8 != 0 && ace.ends_with(&fixture.admin)),
+        "inherited Administrators grant positive control"
+    );
+    path
+}
+
+#[test]
+fn windows_save_dacl_repair_refuses_a_different_inode_without_changing_its_permissions() {
+    let fixture = Fixture::new();
+    let source = fixture.source("source.md", "source");
+    let target = fixture.root.join("target.md");
+    let unrelated = fixture.root.join("unrelated.md");
+    fs::write(&target, "published").unwrap();
+    fs::write(&unrelated, "external").unwrap();
+    let _limited = fixture.impersonate();
+    let source_security = Descriptor::from_file(&open_regular(&source).unwrap().0).unwrap();
+    let before_target = permissions(&target);
+    let before_unrelated = permissions(&unrelated);
+    let committed = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(&target)
+        .unwrap();
+    assert!(
+        source_security.dacl().unwrap()
+            != Descriptor::from_file(&committed).unwrap().dacl().unwrap(),
+        "fixture must need a real DACL repair"
+    );
+    let error = source_security
+        .restore_dacl(&unrelated, &committed)
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("changed before permission repair"));
+    assert_eq!(permissions(&unrelated), before_unrelated);
+    assert_eq!(permissions(&target), before_target);
+    assert_eq!(fs::read_to_string(&unrelated).unwrap(), "external");
+    source_security.restore_dacl(&target, &committed).unwrap();
+    drop(committed);
+    assert_access_and_dacl(&target, &permissions(&source));
+    assert_eq!(
+        fs::read_to_string(&target).unwrap(),
+        "published",
+        "checked target repair positive control"
+    );
+}
+
+#[test]
+fn windows_save_owner_fallback_repairs_replacefile_administrators_acl_drift() {
+    let fixture = Fixture::new();
+    for explicit in [false, true] {
+        let path = inherited_admin_source(
+            &fixture,
+            if explicit {
+                "explicit/note.md"
+            } else {
+                "inherited/note.md"
+            },
+            "base\r\n",
+            explicit,
+        );
+        let before = permissions(&path);
+        let _limited = fixture.impersonate();
+        assert_access_and_dacl(&path, &before);
+        let directory = Directory::open(path.parent().unwrap()).unwrap();
+        // Mandatory positive control: prove the OS itself injects the explicit
+        // BA grant. An elevated/non-reproducing fixture must not pass this test.
+        let prepared = directory
+            .prepared(
+                b"raw replacement\r\n",
+                Some(&open_regular(&path).unwrap().0),
+            )
+            .unwrap();
+        assert_access_and_dacl(&prepared, &before);
+        let backup = path.parent().unwrap().join("raw-control.previous");
+        replace(&path, &prepared, &backup).unwrap();
+        let raw_acl = permissions(&path);
+        assert_ne!(
+            raw_acl.aces, before.aces,
+            "raw ReplaceFileW must reproduce ACL drift"
+        );
+        assert!(
+            raw_acl
+                .aces
+                .as_ref()
+                .unwrap()
+                .iter()
+                .any(|ace| ace[1] == 0 && ace.ends_with(&fixture.admin)),
+            "raw ReplaceFileW must add the explicit Administrators ACE"
+        );
+        println!("Windows DACL fixture: raw ReplaceFileW added explicit Administrators grant; restricted-token positive control");
+        // Put the original source back; the raw-control replacement is our
+        // fixture, not a product save or any user's note.
+        fs::remove_file(&path).unwrap();
+        fs::rename(&backup, &path).unwrap();
+        assert_eq!(permissions(&path), before);
+        for proposed in ["saved LF\n", "saved CRLF שלום\r\n"] {
+            let expected = fs::read(&path).unwrap();
+            let plan = directory
+                .prepare_replace(path.file_name().unwrap(), &expected, proposed.as_bytes())
+                .unwrap()
+                .unwrap();
+            assert_access_and_dacl(plan.prepared_path(), &before);
+            let Replacement::Saved { preimage } = plan.commit().unwrap() else {
+                panic!("native save");
+            };
+            assert_eq!(fs::read(&path).unwrap(), proposed.as_bytes());
+            assert_eq!(permissions(&path).owner, fixture.user);
+            assert_access_and_dacl(&path, &before);
+            // The second save preimage already has current-user ownership;
+            // every retained version must keep the exact original ACL.
+            assert_access_and_dacl(&preimage, &before);
+        }
+    }
+}
+
+#[test]
+fn windows_editor_inherited_administrators_dacl_survives_link_rewrite_and_rollback() {
+    use crate::link_rewrite::Preview;
+    let fixture = Fixture::new();
+    let source = inherited_admin_source(&fixture, "source.md", "Source\r\n", false);
+    let refs = inherited_admin_source(&fixture, "refs.md", "[[source]] [t](./source.md)\r\n", true);
+    let source_acl = permissions(&source);
+    let refs_acl = permissions(&refs);
+    let _limited = fixture.impersonate();
+    let lock = OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .open(&source)
+        .unwrap();
+    let result = Preview::prepare(&fixture.root, "source.md", "target.md")
+        .unwrap()
+        .apply(
+            &fixture.root,
+            &fixture.state,
+            &mut std::collections::BTreeMap::new(),
+        )
+        .unwrap();
+    assert!(
+        !result.moved,
+        "source DELETE lock exercises real referrer-save rollback"
+    );
+    assert_eq!(
+        fs::read_to_string(&refs).unwrap(),
+        "[[source]] [t](./source.md)\r\n"
+    );
+    assert_access_and_dacl(&refs, &refs_acl);
+    assert_access_and_dacl(&source, &source_acl);
+    drop(lock);
+    assert!(
+        Preview::prepare(&fixture.root, "source.md", "target.md")
+            .unwrap()
+            .apply(
+                &fixture.root,
+                &fixture.state,
+                &mut std::collections::BTreeMap::new()
+            )
+            .unwrap()
+            .moved
+    );
+    assert_eq!(
+        fs::read_to_string(&refs).unwrap(),
+        "[[target]] [t](./target.md)\r\n"
+    );
+    assert_access_and_dacl(&refs, &refs_acl);
+    assert_access_and_dacl(&fixture.root.join("target.md"), &source_acl);
 }
 #[test]
 fn windows_save_administrators_owner_with_restricted_token() {
@@ -560,38 +798,9 @@ fn windows_save_owner_fallback_refuses_effective_access_loss_before_publication(
 #[test]
 fn windows_save_administrators_owner_preserves_inherited_and_explicit_dacl() {
     use windows_sys::Win32::Security::{
-        Authorization::SetNamedSecurityInfoW, GetSecurityDescriptorOwner, CONTAINER_INHERIT_ACE,
-        INHERITED_ACE, OBJECT_INHERIT_ACE, UNPROTECTED_DACL_SECURITY_INFORMATION,
+        CONTAINER_INHERIT_ACE, INHERITED_ACE, OBJECT_INHERIT_ACE,
+        UNPROTECTED_DACL_SECURITY_INFORMATION,
     };
-    fn set_named_security(path: &Path, sddl: &str, protection: u32) {
-        let sd = descriptor(sddl);
-        let mut owner = std::ptr::null_mut();
-        let mut dacl = std::ptr::null_mut();
-        let mut present = 0;
-        let mut defaulted = 0;
-        assert_ne!(
-            unsafe { GetSecurityDescriptorOwner(sd.0, &mut owner, &mut defaulted) },
-            0
-        );
-        assert_ne!(
-            unsafe { GetSecurityDescriptorDacl(sd.0, &mut present, &mut dacl, &mut defaulted) },
-            0
-        );
-        assert_ne!(present, 0);
-        assert!(!owner.is_null() && !dacl.is_null());
-        let status = unsafe {
-            SetNamedSecurityInfoW(
-                wide(path).unwrap().as_ptr(),
-                SE_FILE_OBJECT,
-                OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION | protection,
-                owner,
-                std::ptr::null_mut(),
-                dacl,
-                std::ptr::null(),
-            )
-        };
-        assert_eq!(status, 0, "fixture named security: {status}");
-    }
     let fixture = Fixture::new();
     let parent = fixture.root.join("inheriting");
     fs::create_dir(&parent).unwrap();

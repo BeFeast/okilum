@@ -22,12 +22,13 @@ use windows_sys::Win32::{
         GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE,
     },
     Security::{
-        Authorization::{GetSecurityInfo, SE_FILE_OBJECT},
-        GetSecurityDescriptorControl, GetSecurityDescriptorDacl, InitializeSecurityDescriptor,
-        SetSecurityDescriptorControl, SetSecurityDescriptorDacl, DACL_SECURITY_INFORMATION,
-        GROUP_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+        Authorization::{GetSecurityInfo, SetSecurityInfo, SE_FILE_OBJECT},
+        GetAce, GetSecurityDescriptorControl, GetSecurityDescriptorDacl,
+        InitializeSecurityDescriptor, SetSecurityDescriptorControl, SetSecurityDescriptorDacl,
+        ACE_HEADER, DACL_SECURITY_INFORMATION, GROUP_SECURITY_INFORMATION,
+        OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
         SECURITY_ATTRIBUTES, SECURITY_DESCRIPTOR, SE_DACL_AUTO_INHERITED, SE_DACL_AUTO_INHERIT_REQ,
-        SE_DACL_PROTECTED,
+        SE_DACL_PROTECTED, UNPROTECTED_DACL_SECURITY_INFORMATION,
     },
     Storage::FileSystem::*,
     System::{
@@ -514,10 +515,14 @@ impl PreparedReplacement<'_> {
             !backup.try_exists()?,
             "A recovery destination already exists"
         );
+        // The published permission repair must never target a concurrent
+        // replacement, even one with exactly the same proposed text.
+        let prepared_identity = identity(&open_regular(&prepared)?.1);
         before();
         replace(&path, &prepared, &backup)?;
-        let (_, displaced, displaced_info) = read_file(&backup)?;
+        let (displaced_guard, displaced, displaced_info) = read_file(&backup)?;
         if displaced != expected || identity(&displaced_info) != identity(&info) {
+            drop(displaced_guard);
             // Reversal also keeps the displaced proposed/late-racing source.
             // Never delete either version, including a writer racing reversal.
             let recovery = directory
@@ -526,6 +531,8 @@ impl PreparedReplacement<'_> {
             replace(&path, &backup, &recovery).context("Save raced with another replacement; all surviving recovery files have been retained")?;
             return Ok(Replacement::Conflict);
         }
+        let source_security = Descriptor::from_file(&displaced_guard)?;
+        drop(displaced_guard);
         drop(guard);
         // REPLACEFILE_WRITE_THROUGH is unsupported by Windows. Flush the file
         // before and after replacement instead of claiming that flag works.
@@ -537,20 +544,134 @@ impl PreparedReplacement<'_> {
                 .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
                 .open(&path)
         })?;
-        plain(&information(&committed)?, false, &committed)?;
+        let committed_info = information(&committed)?;
+        plain(&committed_info, false, &committed)?;
+        if identity(&committed_info) != prepared_identity {
+            return Ok(Replacement::Conflict);
+        }
         committed.seek(SeekFrom::Start(0))?;
         let mut actual = Vec::new();
         committed.read_to_end(&mut actual)?;
         if actual != proposed {
             return Ok(Replacement::Conflict);
         }
+        // ReplaceFileW can add an explicit grant for the displaced owner when
+        // fallback ownership differs. Restore only the DACL, through a handle
+        // checked against this publication; never change owner or group here.
+        source_security.restore_dacl(&path, &committed).context(
+            "The replacement completed but exact source permissions could not be confirmed; retain draft and recovery files",
+        )?;
         committed.sync_all().context("The replacement completed but durability could not be confirmed; retain draft and recovery files")?;
         Ok(Replacement::Saved { preimage: backup })
     }
 }
 
 struct Descriptor(PSECURITY_DESCRIPTOR);
+#[derive(PartialEq, Eq)]
+struct Dacl {
+    present: bool,
+    protected: bool,
+    aces: Option<Vec<Vec<u8>>>,
+}
 impl Descriptor {
+    fn dacl(&self) -> Result<Dacl> {
+        let mut present = 0;
+        let mut defaulted = 0;
+        let mut acl = std::ptr::null_mut();
+        let mut control = 0;
+        let mut revision = 0;
+        ensure!(
+            unsafe {
+                GetSecurityDescriptorDacl(self.0, &mut present, &mut acl, &mut defaulted) != 0
+                    && GetSecurityDescriptorControl(self.0, &mut control, &mut revision) != 0
+            },
+            "Read source DACL: {}",
+            std::io::Error::last_os_error()
+        );
+        let aces = if acl.is_null() {
+            None
+        } else {
+            let mut aces = Vec::new();
+            for index in 0..u32::from(unsafe { (*acl).AceCount }) {
+                let mut ace = std::ptr::null_mut();
+                ensure!(
+                    unsafe { GetAce(acl, index, &mut ace) } != 0,
+                    "Read source ACE: {}",
+                    std::io::Error::last_os_error()
+                );
+                let size = usize::from(unsafe { (*ace.cast::<ACE_HEADER>()).AceSize });
+                ensure!(
+                    size >= std::mem::size_of::<ACE_HEADER>(),
+                    "Invalid source ACE"
+                );
+                aces.push(unsafe { std::slice::from_raw_parts(ace.cast::<u8>(), size) }.to_vec());
+            }
+            Some(aces)
+        };
+        Ok(Dacl {
+            present: present != 0,
+            protected: control & SE_DACL_PROTECTED != 0,
+            aces,
+        })
+    }
+    fn restore_dacl(&self, path: &Path, committed: &File) -> Result<()> {
+        let expected = self.dacl()?;
+        if Descriptor::from_file(committed)?.dacl()? == expected {
+            return Ok(());
+        }
+        // committed excludes writers and DELETE sharing. The additional
+        // security-only handle cannot redirect to another publication.
+        let security = OpenOptions::new()
+            .access_mode(READ_CONTROL | WRITE_DAC | FILE_READ_ATTRIBUTES)
+            .share_mode(FILE_SHARE_READ)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)?;
+        let info = information(&security)?;
+        plain(&info, false, &security)?;
+        ensure!(
+            identity(&info) == identity(&information(committed)?),
+            "Published file changed before permission repair"
+        );
+        let mut present = 0;
+        let mut defaulted = 0;
+        let mut acl = std::ptr::null_mut();
+        ensure!(
+            unsafe { GetSecurityDescriptorDacl(self.0, &mut present, &mut acl, &mut defaulted) }
+                != 0,
+            "Read source DACL for repair: {}",
+            std::io::Error::last_os_error()
+        );
+        ensure!(
+            present != 0,
+            "An absent source DACL cannot be restored safely"
+        );
+        let protection = if expected.protected {
+            PROTECTED_DACL_SECURITY_INFORMATION
+        } else {
+            UNPROTECTED_DACL_SECURITY_INFORMATION
+        };
+        let status = unsafe {
+            SetSecurityInfo(
+                security.as_raw_handle(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | protection,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                acl,
+                std::ptr::null_mut(),
+            )
+        };
+        ensure!(
+            status == 0,
+            "Restore source DACL: {}",
+            std::io::Error::from_raw_os_error(status as i32)
+        );
+        ensure!(
+            Descriptor::from_file(committed)?.dacl()? == expected,
+            "Published DACL differs from the source; recovery is protected"
+        );
+        Ok(())
+    }
     /// The ACL points into self's allocation, which must outlive CreateFileW.
     fn dacl_only(&self) -> Result<SECURITY_DESCRIPTOR> {
         let mut descriptor = SECURITY_DESCRIPTOR::default();
