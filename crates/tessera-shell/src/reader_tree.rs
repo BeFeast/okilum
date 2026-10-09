@@ -113,8 +113,15 @@ impl Tree {
         self.kinds.clear();
         // Hidden items are kept and filtered at flatten time, so a reveal or
         // the Show hidden toggle can bring them back without a rescan.
+        let mut rejected = Vec::new();
         for entry in entries {
             if tessera_core::vault::service_path(Path::new(&entry.path)) {
+                continue;
+            }
+            // The root itself, a leading slash or an empty segment would make
+            // "" its own child and the traversal endless (#922).
+            if !tree_path(&entry.path) {
+                rejected.push(entry.path.as_str());
                 continue;
             }
             self.kinds.insert(entry.path.clone(), entry.kind);
@@ -124,10 +131,13 @@ impl Tree {
                 .or_default()
                 .push(entry.clone());
         }
+        if !rejected.is_empty() {
+            eprintln!("File tree ignored entries with invalid vault paths: {rejected:?}");
+        }
         // A progressive inventory can contain only one known note. Its path
         // supplies ancestry, but never implies that unknown siblings are absent.
         let mut ancestors = BTreeSet::new();
-        for entry in entries {
+        for entry in entries.iter().filter(|entry| tree_path(&entry.path)) {
             let mut next = parent(&entry.path);
             while let Some(path) = next {
                 if !self.kinds.contains_key(path) {
@@ -167,9 +177,14 @@ impl Tree {
     fn flatten(&mut self) {
         let mut rows = Vec::new();
         let mut stack = vec![("".to_string(), 0)];
+        // Each path is visited once even if an inventory ever lists it twice.
+        let mut visited = BTreeSet::new();
         // Stack items identify a directory to visit, or a row. Iterative traversal
         // avoids dependence on call stack depth for arbitrary nested vaults.
         while let Some((path, depth)) = stack.pop() {
+            if !visited.insert(path.clone()) {
+                continue;
+            }
             if !path.is_empty() {
                 let kind = self.kinds[&path];
                 rows.push(Row {
@@ -408,6 +423,14 @@ impl Tree {
     }
 }
 
+/// A vault-relative tree path: non-empty, `/`-separated, no empty or dot segments.
+fn tree_path(path: &str) -> bool {
+    !path.is_empty()
+        && path
+            .split('/')
+            .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
+}
+
 fn parent(path: &str) -> Option<&str> {
     path.rsplit_once('/').map(|(p, _)| p)
 }
@@ -421,6 +444,47 @@ mod tests {
             kind,
         }
     }
+    #[test]
+    fn invalid_entry_paths_cannot_make_the_root_its_own_child() {
+        let valid = [
+            entry("notes", EntryKind::Directory),
+            entry("notes/a.md", EntryKind::Markdown),
+        ];
+        let mut tree = Tree::default();
+        // Each of these made "" an ancestor or child of itself (#922).
+        for bad in ["", "/x.md", "notes//b.md", "./c.md", "notes/../d.md"] {
+            let mut entries = valid.to_vec();
+            entries.push(entry(bad, EntryKind::Markdown));
+            tree.refresh(Path::new("/vault"), &entries);
+            assert!(!tree.kinds.contains_key(""), "{bad:?}");
+            assert!(
+                tree.children
+                    .values()
+                    .flatten()
+                    .all(|child| !child.path.is_empty()),
+                "{bad:?}"
+            );
+            tree.expanded.insert("notes".into());
+            tree.flatten();
+            let paths: Vec<_> = tree.rows.iter().map(|row| row.path.as_str()).collect();
+            assert_eq!(paths, ["notes", "notes/a.md"], "{bad:?}");
+        }
+        // Positive control: the same shape without the bad entry is shown.
+        tree.refresh(Path::new("/vault"), &valid);
+        tree.expanded.insert("notes".into());
+        tree.flatten();
+        assert_eq!(tree.rows.len(), 2);
+    }
+
+    #[test]
+    fn flatten_visits_a_repeated_path_once() {
+        let mut tree = Tree::default();
+        let note = entry("a.md", EntryKind::Markdown);
+        tree.refresh(Path::new("/vault"), &[note.clone(), note]);
+        let paths: Vec<_> = tree.rows.iter().map(|row| row.path.as_str()).collect();
+        assert_eq!(paths, ["a.md"]);
+    }
+
     #[test]
     fn windows_vault_paths_tree_creation_publishes_canonical_ancestry() {
         let mut tree = Tree::default();
