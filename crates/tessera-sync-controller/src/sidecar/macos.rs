@@ -1,7 +1,9 @@
 //! SMAppService adapter for macOS 13+. No legacy LaunchAgent installation.
 //! The native bridge must bind this handle to one signed installed .app and
 //! verify its bundled plist/helper before reporting ownership.
-use super::{safe_text, xml, Binding, Platform, Registration};
+use super::{
+    authority::StopToken, safe_text, supervisor::ipc::Scope, xml, Binding, Platform, Registration,
+};
 use anyhow::{ensure, Result};
 pub const PLIST: &str = "uk.oklabs.tessera.sync.plist";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -103,6 +105,14 @@ impl<A: SmApi> Platform for SmAppService<A> {
             self.0.stop_owned(binding)?;
         }
         Ok(())
+    }
+    /// No authenticated supervisor endpoint is wired on this adapter yet, so the
+    /// controller stops natively under its lock instead of sending a token.
+    fn supervisor_scope(&mut self, _: &Binding) -> Result<Option<Scope>> {
+        Ok(None)
+    }
+    fn stop_supervisor(&mut self, _: &Binding, _: &StopToken) -> Result<()> {
+        anyhow::bail!("supervisor IPC is not wired on this adapter")
     }
     fn unregister(&mut self, binding: &Binding) -> Result<()> {
         let state = self.inspect(binding)?;

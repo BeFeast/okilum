@@ -1,6 +1,8 @@
 //! Task Scheduler policy and adapter. The native port must use the current
 //! interactive token (no password/elevation) and conditional ownership checks.
-use super::{safe_text, xml, Binding, Platform, Registration};
+use super::{
+    authority::StopToken, safe_text, supervisor::ipc::Scope, xml, Binding, Platform, Registration,
+};
 use anyhow::{ensure, Result};
 
 pub struct Task {
@@ -272,6 +274,14 @@ impl<A: TaskApi> Platform for TaskScheduler<A> {
         }
         let xml = self.expected(binding)?;
         self.0.stop_owned(&task_name(binding), &xml, &binding.owner)
+    }
+    /// No authenticated supervisor endpoint is wired on this adapter yet, so the
+    /// controller stops natively under its lock instead of sending a token.
+    fn supervisor_scope(&mut self, _: &Binding) -> Result<Option<Scope>> {
+        Ok(None)
+    }
+    fn stop_supervisor(&mut self, _: &Binding, _: &StopToken) -> Result<()> {
+        anyhow::bail!("supervisor IPC is not wired on this adapter")
     }
     fn unregister(&mut self, binding: &Binding) -> Result<()> {
         let state = self.inspect(binding)?;

@@ -14,6 +14,18 @@ use uuid::Uuid;
 pub const SCHEMA: u32 = 2;
 const EXHAUSTED: &str = "revision exhausted; explicit operator repair required";
 
+/// What a store holds for one instance.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Stored {
+    Absent,
+    /// Pre-v2 `{binding, intent}` plus optional `update.json`; inert until migrated.
+    Legacy {
+        journal: Journal,
+        update: Option<Update>,
+    },
+    Current(Envelope),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Reason {
     Disable,
@@ -177,6 +189,16 @@ impl Envelope {
         next.intent = Intent::Enabled;
         Ok(next)
     }
+    /// New revision with the intent recorded but no stop armed, for when no
+    /// authenticated supervisor generation exists. Removed stays Removed.
+    pub fn set_intent(&self, intent: Intent) -> Result<Self> {
+        ensure!(intent != Intent::Enabled, "use enable");
+        let mut next = self.next()?;
+        if self.intent != Intent::Removed {
+            next.intent = intent;
+        }
+        Ok(next)
+    }
     /// A new action: always a new revision and operation, even when the intent
     /// repeats. On a Removed instance this arms Remove, never un-removes.
     pub fn disable(&self, scope: Scope) -> Result<(Self, StopToken)> {
@@ -255,6 +277,44 @@ impl Envelope {
             update.phase = Phase::Select;
         }
         Ok(next)
+    }
+
+    /// A store accepts only the exact successor of what it holds: a fresh Enable
+    /// when absent, the migration shape for a legacy journal, otherwise the next
+    /// revision of the same epoch and binding.
+    pub fn check_successor(stored: &Stored, next: &Envelope) -> Result<()> {
+        match stored {
+            Stored::Absent => ensure!(
+                next.revision == 1
+                    && next.intent == Intent::Enabled
+                    && next.update.is_none()
+                    && next.stop.is_none(),
+                "first journal must be a fresh Enable"
+            ),
+            Stored::Legacy { journal, update } => ensure!(
+                next.revision == 1
+                    && next.binding == journal.binding
+                    && next.intent == journal.intent
+                    && next.stop.is_none()
+                    && match (update, &next.update) {
+                        (None, None) => true,
+                        (Some(u), Some(n)) =>
+                            u.previous == n.previous
+                                && u.candidate == n.candidate
+                                && u.phase == n.phase
+                                && u.rolled_back == n.rolled_back,
+                        _ => false,
+                    },
+                "legacy journal may only be migrated"
+            ),
+            Stored::Current(current) => ensure!(
+                next.journal_epoch == current.journal_epoch
+                    && current.revision.checked_add(1) == Some(next.revision)
+                    && next.binding == current.binding,
+                "stale or non-sequential journal revision"
+            ),
+        }
+        Ok(())
     }
 
     /// Legacy `{binding, intent}` plus optional `update.json` into one envelope.

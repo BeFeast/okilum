@@ -3,8 +3,8 @@ use crate::sidecar::{
     authority::Reason,
     journal::{Fault, UnixJournal},
     supervisor::ipc::Scope,
-    update::{Phase, Runtime},
-    Binding, LockedJournal,
+    update::{Phase, Runtime, Update},
+    Binding, Intent, LockedJournal,
 };
 use std::{
     fs,
@@ -87,7 +87,7 @@ fn started() -> (tempfile::TempDir, Store) {
         .unwrap();
     (dir, store)
 }
-fn load(store: &mut Store) -> State {
+fn load(store: &mut Store) -> Stored {
     store.begin(soon()).unwrap().state().unwrap().clone()
 }
 
@@ -95,13 +95,13 @@ fn load(store: &mut Store) -> State {
 fn absent_is_inert_and_first_commit_survives_reopen_with_private_mode() {
     let dir = directory();
     let mut store = Store::open_existing(dir.path()).unwrap();
-    assert_eq!(load(&mut store), State::Absent);
+    assert_eq!(load(&mut store), Stored::Absent);
     assert!(files(dir.path()).is_empty());
     let first = Envelope::first(binding());
     store.begin(soon()).unwrap().commit(first.clone()).unwrap();
     drop(store);
     let mut store = Store::open_existing(dir.path()).unwrap();
-    assert_eq!(load(&mut store), State::Current(first));
+    assert_eq!(load(&mut store), Stored::Current(first));
     assert_eq!(files(dir.path()).len(), 1);
     assert_eq!(
         fs::metadata(dir.path().join(NAME)).unwrap().mode() & 0o777,
@@ -130,7 +130,7 @@ fn lock_is_per_transaction_and_contention_is_bounded() {
 #[test]
 fn commit_requires_exact_next_revision_same_epoch_and_binding() {
     let (_dir, mut store) = started();
-    let State::Current(first) = load(&mut store) else {
+    let Stored::Current(first) = load(&mut store) else {
         panic!()
     };
     let (second, _) = first.disable(scope()).unwrap();
@@ -147,7 +147,7 @@ fn commit_requires_exact_next_revision_same_epoch_and_binding() {
         tx.commit(second.clone()).unwrap();
         assert!(tx.commit(second.clone()).is_err()); // replay of a committed step
     }
-    assert_eq!(load(&mut store), State::Current(second));
+    assert_eq!(load(&mut store), Stored::Current(second));
 }
 
 #[test]
@@ -162,7 +162,7 @@ fn absent_accepts_only_a_fresh_enable() {
 #[test]
 fn failed_flush_leaves_old_state_and_denies_any_further_use() {
     let (dir, mut store) = started();
-    let State::Current(first) = load(&mut store) else {
+    let Stored::Current(first) = load(&mut store) else {
         panic!()
     };
     let (second, _) = first.disable(scope()).unwrap();
@@ -174,17 +174,17 @@ fn failed_flush_leaves_old_state_and_denies_any_further_use() {
         assert!(tx.commit(second.clone()).is_err());
     }
     store.dir.fault.set(None);
-    assert_eq!(load(&mut store), State::Current(first));
+    assert_eq!(load(&mut store), Stored::Current(first));
     assert_eq!(files(dir.path()).len(), 1, "temporary file was cleaned up");
     // Positive control: the identical commit succeeds without the fault.
     store.begin(soon()).unwrap().commit(second.clone()).unwrap();
-    assert_eq!(load(&mut store), State::Current(second));
+    assert_eq!(load(&mut store), Stored::Current(second));
 }
 
 #[test]
 fn directory_flush_failure_may_expose_the_new_revision_but_reports_failure() {
     let (_dir, mut store) = started();
-    let State::Current(first) = load(&mut store) else {
+    let Stored::Current(first) = load(&mut store) else {
         panic!()
     };
     let (second, _) = first.disable(scope()).unwrap();
@@ -197,7 +197,7 @@ fn directory_flush_failure_may_expose_the_new_revision_but_reports_failure() {
     store.dir.fault.set(None);
     // The caller took no effect; a reload sees the committed revision, so a
     // token held for the old one is stale and recovery must re-arm.
-    assert_eq!(load(&mut store), State::Current(second));
+    assert_eq!(load(&mut store), Stored::Current(second));
 }
 
 #[test]
@@ -213,7 +213,7 @@ fn legacy_state_only_accepts_the_exact_migration_shape() {
         let before = fs::read(dir.path().join(NAME)).unwrap();
         let mut store = Store::open_existing(dir.path()).unwrap();
         let mut tx = store.begin(soon()).unwrap();
-        assert!(matches!(tx.state().unwrap(), State::Legacy { .. }));
+        assert!(matches!(tx.state().unwrap(), Stored::Legacy { .. }));
         assert!(tx.current().unwrap().is_none());
         let mut other = binding();
         other.device_identity = "other-device".into();
@@ -254,13 +254,13 @@ fn migration_preserves_intent_and_update_and_keeps_legacy_update_as_evidence() {
             assert!(migrated.stop().is_none() && !migrated.journal_epoch().is_nil());
             assert_eq!(migrated.update().map(|u| u.phase), update.map(|u| u.0));
             assert_eq!(fs::read(dir.path().join(LEGACY_UPDATE)).ok(), evidence);
-            assert_eq!(load(&mut store), State::Current(migrated.clone()));
+            assert_eq!(load(&mut store), Stored::Current(migrated.clone()));
             // Idempotent, and never a second epoch.
             assert_eq!(store.begin(soon()).unwrap().migrate().unwrap(), migrated);
             // The v2 envelope is sole authority: later damage to update.json is ignored.
             if with_update {
                 put(dir.path(), LEGACY_UPDATE, b"garbage");
-                assert_eq!(load(&mut store), State::Current(migrated));
+                assert_eq!(load(&mut store), Stored::Current(migrated));
             }
         }
     }
@@ -343,7 +343,7 @@ fn flush_failure_during_migration_keeps_legacy_authority() {
     assert!(store.begin(soon()).unwrap().migrate().is_err());
     store.dir.fault.set(None);
     assert_eq!(fs::read(dir.path().join(NAME)).unwrap(), before);
-    assert!(matches!(load(&mut store), State::Legacy { .. }));
+    assert!(matches!(load(&mut store), Stored::Legacy { .. }));
     assert!(store.begin(soon()).unwrap().migrate().is_ok());
 }
 
@@ -366,7 +366,7 @@ fn older_binary_strict_parser_rejects_the_v2_envelope() {
 #[test]
 fn corrupt_unknown_schema_and_replaced_directory_fail_closed() {
     let (dir, mut store) = started();
-    let State::Current(good) = load(&mut store) else {
+    let Stored::Current(good) = load(&mut store) else {
         panic!()
     };
     let value = serde_json::to_value(&good).unwrap();
@@ -395,7 +395,7 @@ fn corrupt_unknown_schema_and_replaced_directory_fail_closed() {
 #[test]
 fn repair_after_exhaustion_is_persisted_with_a_new_epoch() {
     let (dir, mut store) = started();
-    let State::Current(good) = load(&mut store) else {
+    let Stored::Current(good) = load(&mut store) else {
         panic!()
     };
     let mut v = serde_json::to_value(&good).unwrap();
@@ -416,7 +416,7 @@ fn repair_after_exhaustion_is_persisted_with_a_new_epoch() {
     );
     assert_ne!(repaired.journal_epoch(), spent.journal_epoch());
     drop(tx);
-    assert_eq!(load(&mut store), State::Current(repaired));
+    assert_eq!(load(&mut store), Stored::Current(repaired));
     let dir2 = directory();
     let mut empty = Store::open_existing(dir2.path()).unwrap();
     assert!(empty.begin(soon()).unwrap().repair().is_err());

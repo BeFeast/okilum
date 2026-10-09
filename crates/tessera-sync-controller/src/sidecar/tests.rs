@@ -1,4 +1,5 @@
 use super::*;
+use crate::sidecar::authority::Reason;
 use std::{cell::RefCell, rc::Rc};
 fn binding() -> Binding {
     Binding {
@@ -18,26 +19,81 @@ fn mac_binding() -> Binding {
         ..binding()
     }
 }
-#[derive(Default)]
 struct Memory {
-    saved: Option<Journal>,
+    stored: Stored,
     writes: usize,
     fail: bool,
+    locked: bool,
+}
+impl Default for Memory {
+    fn default() -> Self {
+        Self {
+            stored: Stored::Absent,
+            writes: 0,
+            fail: false,
+            locked: false,
+        }
+    }
 }
 #[derive(Clone, Default)]
 struct Store(Rc<RefCell<Memory>>);
-impl LockedJournal for Store {
-    fn load(&self) -> Result<Option<Journal>> {
-        Ok(self.0.borrow().saved.clone())
-    }
-    fn save(&mut self, value: &Journal) -> Result<()> {
+struct FakeTx {
+    memory: Rc<RefCell<Memory>>,
+    stored: Stored,
+}
+impl Authority for Store {
+    type Tx<'a> = FakeTx;
+    fn begin(&mut self, _: Instant) -> Result<FakeTx> {
         let mut memory = self.0.borrow_mut();
-        ensure!(!memory.fail, "simulated flush failure");
-        memory.saved = Some(value.clone());
-        memory.writes += 1;
-        Ok(())
+        ensure!(!memory.locked, "sidecar state is busy");
+        memory.locked = true;
+        Ok(FakeTx {
+            memory: self.0.clone(),
+            stored: memory.stored.clone(),
+        })
     }
 }
+impl Drop for FakeTx {
+    fn drop(&mut self) {
+        self.memory.borrow_mut().locked = false;
+    }
+}
+impl Tx for FakeTx {
+    fn stored(&self) -> Result<&Stored> {
+        Ok(&self.stored)
+    }
+    fn commit(&mut self, next: Envelope) -> Result<()> {
+        let mut memory = self.memory.borrow_mut();
+        ensure!(!memory.fail, "simulated flush failure");
+        Envelope::check_successor(&self.stored, &next)?;
+        memory.stored = Stored::Current(next.clone());
+        memory.writes += 1;
+        self.stored = Stored::Current(next);
+        Ok(())
+    }
+    fn migrate(&mut self) -> Result<Envelope> {
+        match self.stored.clone() {
+            Stored::Legacy { journal, update } => {
+                let envelope = Envelope::migrate(journal, update)?;
+                self.commit(envelope.clone())?;
+                Ok(envelope)
+            }
+            Stored::Current(envelope) => Ok(envelope),
+            Stored::Absent => anyhow::bail!("no journal to migrate"),
+        }
+    }
+}
+fn envelope(store: &Store) -> Envelope {
+    match &store.0.borrow().stored {
+        Stored::Current(envelope) => envelope.clone(),
+        other => panic!("expected a current journal, found {other:?}"),
+    }
+}
+fn writes(store: &Store) -> usize {
+    store.0.borrow().writes
+}
+
+type Hook = Box<dyn FnMut(&StopToken)>;
 struct Os {
     registration: Registration,
     mutations: Vec<&'static str>,
@@ -45,6 +101,12 @@ struct Os {
     fail_register_after_effect: bool,
     foreign: bool,
     invalid_payload: bool,
+    /// Advertise an authenticated supervisor generation while Running.
+    ipc: bool,
+    generation: u128,
+    tokens: Vec<StopToken>,
+    /// Runs inside the IPC Stop, i.e. while the controller must hold no lock.
+    on_stop: Option<Hook>,
 }
 impl Default for Os {
     fn default() -> Self {
@@ -55,6 +117,10 @@ impl Default for Os {
             fail_register_after_effect: false,
             foreign: false,
             invalid_payload: false,
+            ipc: false,
+            generation: 7,
+            tokens: vec![],
+            on_stop: None,
         }
     }
 }
@@ -89,6 +155,32 @@ impl Platform for Fake {
         os.registration = Registration::Stopped;
         Ok(())
     }
+    fn supervisor_scope(&mut self, _: &Binding) -> Result<Option<Scope>> {
+        let os = self.0.borrow();
+        Ok(
+            (os.ipc && os.registration == Registration::Running).then(|| Scope {
+                installation: binding().installation,
+                instance: binding().instance,
+                generation: Uuid::from_u128(os.generation),
+            }),
+        )
+    }
+    fn stop_supervisor(&mut self, _: &Binding, token: &StopToken) -> Result<()> {
+        {
+            let mut os = self.0.borrow_mut();
+            os.mutations.push("stop_ipc");
+            os.tokens.push(token.clone());
+        }
+        let hook = self.0.borrow_mut().on_stop.take();
+        if let Some(mut hook) = hook {
+            hook(token);
+            self.0.borrow_mut().on_stop = Some(hook);
+        }
+        let mut os = self.0.borrow_mut();
+        ensure!(!os.fail_stop, "child still alive");
+        os.registration = Registration::Stopped;
+        Ok(())
+    }
     fn unregister(&mut self, _: &Binding) -> Result<()> {
         let mut os = self.0.borrow_mut();
         os.mutations.push("unregister");
@@ -96,33 +188,35 @@ impl Platform for Fake {
         Ok(())
     }
 }
+fn ipc_os() -> Fake {
+    let os = Fake::default();
+    os.0.borrow_mut().ipc = true;
+    os
+}
+fn mutations(os: &Fake) -> Vec<&'static str> {
+    os.0.borrow().mutations.clone()
+}
+
 #[test]
 fn install_and_unopened_reader_are_inert_with_enable_positive_control() {
     let store = Store::default();
     let os = Fake::default();
     let mut c = Controller::new(store.clone(), os.clone());
-    assert!(c.snapshot().unwrap().is_none());
+    assert_eq!(c.snapshot().unwrap(), Stored::Absent);
     assert_eq!(c.reconcile().unwrap(), State::Disabled);
     c.disable().unwrap();
     c.remove().unwrap();
-    assert!(os.0.borrow().mutations.is_empty());
-    assert_eq!(store.0.borrow().writes, 0);
+    assert!(mutations(&os).is_empty());
+    assert_eq!(writes(&store), 0);
     assert_eq!(c.enable(binding()).unwrap(), State::Running);
-    assert_eq!(os.0.borrow().mutations, ["register", "start"]);
+    assert_eq!(mutations(&os), ["register", "start"]);
     c.disable().unwrap();
     let mut changed = binding();
     changed.device_identity = "replacement".into();
     assert!(c.enable(changed).is_err());
     c.enable(binding()).unwrap();
     assert_eq!(
-        store
-            .0
-            .borrow()
-            .saved
-            .as_ref()
-            .unwrap()
-            .binding
-            .device_identity,
+        envelope(&store).binding().device_identity,
         binding().device_identity
     );
 }
@@ -131,9 +225,20 @@ fn failed_durable_write_prevents_os_effects() {
     let store = Store::default();
     store.0.borrow_mut().fail = true;
     let os = Fake::default();
-    let mut c = Controller::new(store, os.clone());
+    let mut c = Controller::new(store.clone(), os.clone());
     assert!(c.enable(binding()).is_err());
-    assert!(os.0.borrow().mutations.is_empty());
+    assert!(mutations(&os).is_empty());
+    // A failed prepare also blocks Disable's stop and unregister. Positive
+    // control: the same call performs them once the write succeeds.
+    store.0.borrow_mut().fail = false;
+    c.enable(binding()).unwrap();
+    store.0.borrow_mut().fail = true;
+    os.0.borrow_mut().mutations.clear();
+    assert!(c.disable().is_err());
+    assert!(mutations(&os).is_empty());
+    store.0.borrow_mut().fail = false;
+    c.disable().unwrap();
+    assert_eq!(mutations(&os), ["stop", "unregister"]);
 }
 #[test]
 fn lost_registration_reply_recovers_without_replacing_identity_or_registering_twice() {
@@ -142,13 +247,10 @@ fn lost_registration_reply_recovers_without_replacing_identity_or_registering_tw
     os.0.borrow_mut().fail_register_after_effect = true;
     let mut c = Controller::new(store.clone(), os.clone());
     assert!(c.enable(binding()).is_err());
-    assert_eq!(
-        store.0.borrow().saved.as_ref().unwrap().intent,
-        Intent::Enabled
-    );
+    assert_eq!(envelope(&store).intent(), Intent::Enabled);
     let mut resumed = Controller::new(store, os.clone());
     assert_eq!(resumed.reconcile().unwrap(), State::Running);
-    assert_eq!(os.0.borrow().mutations, ["register", "start"]);
+    assert_eq!(mutations(&os), ["register", "start"]);
 }
 #[test]
 fn interrupted_stop_stays_disabled_and_never_unregisters_live_child() {
@@ -158,16 +260,13 @@ fn interrupted_stop_stays_disabled_and_never_unregisters_live_child() {
     c.enable(binding()).unwrap();
     os.0.borrow_mut().fail_stop = true;
     assert!(c.disable().is_err());
-    assert_eq!(
-        store.0.borrow().saved.as_ref().unwrap().intent,
-        Intent::Disabled
-    );
-    assert!(!os.0.borrow().mutations.contains(&"unregister"));
+    assert_eq!(envelope(&store).intent(), Intent::Disabled);
+    assert!(!mutations(&os).contains(&"unregister"));
     os.0.borrow_mut().fail_stop = false;
     let mut resumed = Controller::new(store, os.clone());
     assert_eq!(resumed.reconcile().unwrap(), State::Disabled);
     assert_eq!(
-        os.0.borrow().mutations,
+        mutations(&os),
         ["register", "start", "stop", "stop", "unregister"]
     );
 }
@@ -190,18 +289,191 @@ fn terminal_removal_and_tampered_payload_cannot_restart() {
     os.0.borrow_mut().invalid_payload = true;
     os.0.borrow_mut().mutations.clear();
     assert!(c.reconcile().is_err());
-    assert!(os.0.borrow().mutations.is_empty());
+    assert!(mutations(&os).is_empty());
 }
 #[test]
-fn foreign_service_is_never_stopped_or_adopted() {
+fn foreign_service_is_never_stopped_or_adopted_but_the_intent_is_kept() {
     let store = Store::default();
     let os = Fake::default();
-    let mut c = Controller::new(store, os.clone());
+    let mut c = Controller::new(store.clone(), os.clone());
     c.enable(binding()).unwrap();
     os.0.borrow_mut().foreign = true;
     os.0.borrow_mut().mutations.clear();
     assert!(c.remove().is_err());
-    assert!(os.0.borrow().mutations.is_empty());
+    assert!(mutations(&os).is_empty());
+    assert_eq!(envelope(&store).intent(), Intent::Removed);
+    assert!(envelope(&store).stop().is_none());
+}
+
+#[test]
+fn ipc_stop_carries_the_stored_token_without_holding_the_lock() {
+    let store = Store::default();
+    let os = ipc_os();
+    let mut c = Controller::new(store.clone(), os.clone());
+    c.enable(binding()).unwrap();
+    let seen = Rc::new(RefCell::new(vec![]));
+    let (probe, log) = (store.clone(), seen.clone());
+    os.0.borrow_mut().on_stop = Some(Box::new(move |token| {
+        let held = probe.0.borrow().locked;
+        let stored = match &probe.0.borrow().stored {
+            Stored::Current(e) => e.stop().cloned(),
+            _ => None,
+        };
+        log.borrow_mut()
+            .push((held, stored == Some(token.operation.clone())));
+    }));
+    assert_eq!(c.disable().unwrap(), State::Disabled);
+    // Not locked during IPC, and the token was already durable (prepare first).
+    assert_eq!(*seen.borrow(), [(false, true)]);
+    assert_eq!(
+        mutations(&os),
+        ["register", "start", "stop_ipc", "unregister"]
+    );
+    let done = envelope(&store);
+    assert_eq!((done.revision(), done.intent()), (3, Intent::Disabled));
+    assert!(
+        done.stop().is_none(),
+        "operation consumed in a new revision"
+    );
+    let token = os.0.borrow().tokens[0].clone();
+    assert_eq!(token.operation.reason, Reason::Disable);
+    assert_eq!(token.operation.authorized_revision, 2);
+    assert!(done.authorize(&token, &token.operation.scope).is_err());
+}
+#[test]
+fn aba_stale_controller_cannot_unregister_after_enable_and_disable_again() {
+    let store = Store::default();
+    let os = ipc_os();
+    let mut a = Controller::new(store.clone(), os.clone());
+    a.enable(binding()).unwrap();
+    // While A waits on IPC, B (same instance) Enables and Disables again, and
+    // its own stop is still pending: same Intent and Binding, different operation.
+    let (store_b, os_b) = (store.clone(), os.clone());
+    os.0.borrow_mut().on_stop = Some(Box::new(move |_| {
+        let mut b = Controller::new(store_b.clone(), os_b.clone());
+        b.enable(binding()).unwrap();
+        os_b.0.borrow_mut().fail_stop = true;
+        assert!(b.disable().is_err());
+        os_b.0.borrow_mut().fail_stop = false;
+    }));
+    assert!(a.disable().is_err());
+    assert!(!mutations(&os).contains(&"unregister"));
+    let pending = envelope(&store);
+    assert_eq!(
+        (pending.revision(), pending.intent()),
+        (4, Intent::Disabled)
+    );
+    let stale = os.0.borrow().tokens[0].clone();
+    let fresh = os.0.borrow().tokens[1].clone();
+    assert_eq!(stale.operation.authorized_revision, 2);
+    assert_eq!(fresh.operation.authorized_revision, 4);
+    assert_ne!(stale.operation.operation_id, fresh.operation.operation_id);
+    assert!(pending.authorize(&stale, &stale.operation.scope).is_err());
+    pending.authorize(&fresh, &fresh.operation.scope).unwrap();
+}
+#[test]
+fn retry_reuses_the_stored_token_and_a_new_generation_arms_a_new_one() {
+    let store = Store::default();
+    let os = ipc_os();
+    let mut c = Controller::new(store.clone(), os.clone());
+    c.enable(binding()).unwrap();
+    os.0.borrow_mut().fail_stop = true;
+    assert!(c.disable().is_err());
+    assert_eq!(envelope(&store).revision(), 2);
+    os.0.borrow_mut().fail_stop = false;
+    assert_eq!(c.reconcile().unwrap(), State::Disabled);
+    let tokens = os.0.borrow().tokens.clone();
+    assert_eq!(tokens.len(), 2);
+    assert_eq!(
+        tokens[0], tokens[1],
+        "retry sends the stored token unchanged"
+    );
+    // A supervisor restart between attempts: the old operation names a dead
+    // generation, so recovery arms a fresh one in a new revision.
+    let store = Store::default();
+    let os = ipc_os();
+    let mut c = Controller::new(store.clone(), os.clone());
+    c.enable(binding()).unwrap();
+    os.0.borrow_mut().fail_stop = true;
+    assert!(c.disable().is_err());
+    {
+        let mut inner = os.0.borrow_mut();
+        inner.fail_stop = false;
+        inner.generation = 8;
+    }
+    assert_eq!(c.reconcile().unwrap(), State::Disabled);
+    let tokens = os.0.borrow().tokens.clone();
+    assert_ne!(
+        tokens[0].operation.operation_id,
+        tokens[1].operation.operation_id
+    );
+    assert_eq!(tokens[1].operation.scope.generation, Uuid::from_u128(8));
+    assert_eq!(tokens[1].operation.authorized_revision, 3);
+}
+#[test]
+fn enable_invalidates_a_pending_stop() {
+    let store = Store::default();
+    let os = ipc_os();
+    let mut c = Controller::new(store.clone(), os.clone());
+    c.enable(binding()).unwrap();
+    os.0.borrow_mut().fail_stop = true;
+    assert!(c.disable().is_err());
+    os.0.borrow_mut().fail_stop = false;
+    let old = os.0.borrow().tokens[0].clone();
+    let pending = envelope(&store);
+    // Positive control: the token is valid until the Enable commits.
+    pending.authorize(&old, &old.operation.scope).unwrap();
+    assert_eq!(c.enable(binding()).unwrap(), State::Running);
+    let now = envelope(&store);
+    assert!(now.stop().is_none() && now.intent() == Intent::Enabled);
+    assert!(now.revision() > pending.revision());
+    assert!(now.authorize(&old, &old.operation.scope).is_err());
+}
+#[test]
+fn lock_contention_leaves_the_work_pending_without_effects() {
+    let store = Store::default();
+    let os = Fake::default();
+    let mut c = Controller::new(store.clone(), os.clone());
+    c.enable(binding()).unwrap();
+    os.0.borrow_mut().mutations.clear();
+    store.0.borrow_mut().locked = true; // another holder
+    for result in [c.disable(), c.reconcile(), c.enable(binding())] {
+        assert!(result.unwrap_err().to_string().contains("busy"));
+    }
+    assert!(mutations(&os).is_empty());
+    store.0.borrow_mut().locked = false;
+    assert_eq!(c.disable().unwrap(), State::Disabled);
+    assert_eq!(mutations(&os), ["stop", "unregister"]);
+}
+#[test]
+fn legacy_journal_is_read_only_until_the_first_mutating_reconcile_migrates_it() {
+    for intent in [Intent::Enabled, Intent::Disabled, Intent::Removed] {
+        let store = Store::default();
+        let legacy = Journal {
+            binding: binding(),
+            intent,
+        };
+        store.0.borrow_mut().stored = Stored::Legacy {
+            journal: legacy.clone(),
+            update: None,
+        };
+        let os = Fake::default();
+        let mut c = Controller::new(store.clone(), os.clone());
+        assert!(matches!(c.snapshot().unwrap(), Stored::Legacy { .. }));
+        assert_eq!(writes(&store), 0, "snapshot never mints a revision");
+        let state = c.reconcile().unwrap();
+        let migrated = envelope(&store);
+        assert_eq!((migrated.revision(), migrated.intent()), (1, intent));
+        assert!(migrated.stop().is_none(), "migration fabricates no stop");
+        assert_eq!(writes(&store), 1);
+        match intent {
+            Intent::Enabled => {
+                assert_eq!(state, State::Running);
+                assert_eq!(mutations(&os), ["register", "start"]);
+            }
+            _ => assert!(mutations(&os).is_empty()),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -412,10 +684,7 @@ fn controller_persists_enabled_while_waiting_for_macos_system_approval() {
         controller.enable(mac_binding()).unwrap(),
         State::ApprovalRequired
     );
-    assert_eq!(
-        store.0.borrow().saved.as_ref().unwrap().intent,
-        Intent::Enabled
-    );
+    assert_eq!(envelope(&store).intent(), Intent::Enabled);
     assert_eq!(controller.platform.0.mutations, ["register"]);
     controller.platform.0.status = macos::Status::Enabled;
     assert_eq!(controller.reconcile().unwrap(), State::Running);

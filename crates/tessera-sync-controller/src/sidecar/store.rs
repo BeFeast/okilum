@@ -2,8 +2,12 @@
 //! docs/sync-sidecar-stop-operations.md). The directory lock is held only for one
 //! transaction and released before any IPC wait; every commit is an atomic,
 //! flushed replacement of `sidecar.json` and must be the exact next revision.
-//! Not wired into `Controller` yet. Windows needs its own DACL-checked store.
-use super::{authority::Envelope, journal::Directory, update::Update, Intent, Journal};
+//! Windows needs its own DACL-checked store.
+use super::{
+    authority::{Envelope, Stored},
+    journal::Directory,
+    Journal,
+};
 use anyhow::{ensure, Context, Result};
 use std::{
     fs::TryLockError,
@@ -15,17 +19,6 @@ const NAME: &str = "sidecar.json";
 /// Legacy `update.json`. Read only for migration; the v2 envelope owns update
 /// state afterwards and the leftover file is kept as recovery evidence.
 const LEGACY_UPDATE: &str = "update.json";
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum State {
-    Absent,
-    /// Pre-v2 `{binding, intent}` plus optional `update.json`; inert until migrated.
-    Legacy {
-        journal: Journal,
-        update: Option<Update>,
-    },
-    Current(Envelope),
-}
 
 pub struct Store {
     dir: Directory,
@@ -54,7 +47,7 @@ impl Store {
         }
         let mut transaction = Transaction {
             dir: &self.dir,
-            state: State::Absent,
+            state: Stored::Absent,
             failed: false,
         };
         transaction.state = transaction.read_state()?;
@@ -64,7 +57,7 @@ impl Store {
 
 pub struct Transaction<'a> {
     dir: &'a Directory,
-    state: State,
+    state: Stored,
     failed: bool,
 }
 impl Drop for Transaction<'_> {
@@ -75,29 +68,29 @@ impl Drop for Transaction<'_> {
 impl Transaction<'_> {
     /// Unreadable after a failed commit: the disk may or may not hold the new
     /// revision, so nothing may act on this snapshot. Begin a new transaction.
-    pub fn state(&self) -> Result<&State> {
+    pub fn state(&self) -> Result<&Stored> {
         ensure!(!self.failed, "journal commit failed; reload required");
         Ok(&self.state)
     }
     pub fn current(&self) -> Result<Option<&Envelope>> {
         Ok(match self.state()? {
-            State::Current(envelope) => Some(envelope),
+            Stored::Current(envelope) => Some(envelope),
             _ => None,
         })
     }
 
-    fn read_state(&self) -> Result<State> {
+    fn read_state(&self) -> Result<Stored> {
         let Some(data) = self.dir.read_bytes(NAME)? else {
             ensure!(
                 self.dir.read_bytes(LEGACY_UPDATE)?.is_none(),
                 "update has no lifecycle journal"
             );
-            return Ok(State::Absent);
+            return Ok(Stored::Absent);
         };
         let value: serde_json::Value =
             serde_json::from_slice(&data).context("invalid sidecar journal; recovery required")?;
         if value.get("schema").is_some() {
-            return Ok(State::Current(Envelope::from_slice(&data)?));
+            return Ok(Stored::Current(Envelope::from_slice(&data)?));
         }
         let journal: Journal =
             serde_json::from_value(value).context("invalid sidecar journal; recovery required")?;
@@ -107,7 +100,7 @@ impl Transaction<'_> {
             .map(|data| serde_json::from_slice(&data))
             .transpose()
             .context("invalid update journal; recovery required")?;
-        Ok(State::Legacy { journal, update })
+        Ok(Stored::Legacy { journal, update })
     }
 
     /// Replace the journal with `next`, which must be the exact successor of the
@@ -115,13 +108,13 @@ impl Transaction<'_> {
     /// the replacement may even be visible if only the directory flush failed.
     pub fn commit(&mut self, next: Envelope) -> Result<()> {
         ensure!(!self.failed, "journal commit failed; reload required");
-        Self::check_successor(&self.state, &next)?;
+        Envelope::check_successor(&self.state, &next)?;
         self.write(next)
     }
     fn write(&mut self, next: Envelope) -> Result<()> {
         match self.dir.write_bytes(NAME, &next.to_vec()?) {
             Ok(()) => {
-                self.state = State::Current(next);
+                self.state = Stored::Current(next);
                 Ok(())
             }
             Err(e) => {
@@ -130,41 +123,14 @@ impl Transaction<'_> {
             }
         }
     }
-    fn check_successor(state: &State, next: &Envelope) -> Result<()> {
-        match state {
-            State::Absent => ensure!(
-                next.revision() == 1
-                    && next.intent() == Intent::Enabled
-                    && next.update().is_none()
-                    && next.stop().is_none(),
-                "first journal must be a fresh Enable"
-            ),
-            State::Legacy { journal, update } => ensure!(
-                next.revision() == 1
-                    && *next.binding() == journal.binding
-                    && next.intent() == journal.intent
-                    && next.stop().is_none()
-                    && same_update(update.as_ref(), next),
-                "legacy journal may only be migrated"
-            ),
-            State::Current(current) => ensure!(
-                next.journal_epoch() == current.journal_epoch()
-                    && current.revision().checked_add(1) == Some(next.revision())
-                    && next.binding() == current.binding(),
-                "stale or non-sequential journal revision"
-            ),
-        }
-        Ok(())
-    }
-
     /// Explicit migration of a legacy journal: one flushed replacement of
     /// `sidecar.json`, no native effect, no stop fabricated. Idempotent once
     /// migrated; the caller arms a verified operation in a later revision.
     pub fn migrate(&mut self) -> Result<Envelope> {
         match self.state()?.clone() {
-            State::Absent => anyhow::bail!("no journal to migrate"),
-            State::Current(envelope) => Ok(envelope),
-            State::Legacy { journal, update } => {
+            Stored::Absent => anyhow::bail!("no journal to migrate"),
+            Stored::Current(envelope) => Ok(envelope),
+            Stored::Legacy { journal, update } => {
                 let envelope = Envelope::migrate(journal, update)?;
                 self.commit(envelope.clone())?;
                 Ok(envelope)
@@ -175,7 +141,7 @@ impl Transaction<'_> {
     /// verified the supervisor stopped. The new epoch revokes every old token.
     pub fn repair(&mut self) -> Result<Envelope> {
         ensure!(!self.failed, "journal commit failed; reload required");
-        let State::Current(current) = &self.state else {
+        let Stored::Current(current) = &self.state else {
             anyhow::bail!("only a current journal can be repaired");
         };
         let repaired = current.repair_epoch();
@@ -184,16 +150,21 @@ impl Transaction<'_> {
     }
 }
 
-fn same_update(legacy: Option<&Update>, next: &Envelope) -> bool {
-    match (legacy, next.update()) {
-        (None, None) => true,
-        (Some(u), Some(n)) => {
-            u.previous == n.previous
-                && u.candidate == n.candidate
-                && u.phase == n.phase
-                && u.rolled_back == n.rolled_back
-        }
-        _ => false,
+impl super::Authority for Store {
+    type Tx<'a> = Transaction<'a>;
+    fn begin(&mut self, deadline: Instant) -> Result<Transaction<'_>> {
+        Store::begin(self, deadline)
+    }
+}
+impl super::Tx for Transaction<'_> {
+    fn stored(&self) -> Result<&Stored> {
+        self.state()
+    }
+    fn commit(&mut self, next: Envelope) -> Result<()> {
+        Transaction::commit(self, next)
+    }
+    fn migrate(&mut self) -> Result<Envelope> {
+        Transaction::migrate(self)
     }
 }
 
