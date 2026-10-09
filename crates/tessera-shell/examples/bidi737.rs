@@ -6,13 +6,13 @@ mod geometry;
 fn main() {
     gpui_platform::application().run(|cx| {
         cx.open_window(WindowOptions::default(), |window, cx| {
-            for text in ["abcd", "שלום", "abc שלום xyz", "שלום abc עולם", "a שָׁלוֹם z", "abc אבג 123 דהו", "office", "Привет שלום"] {
+            for text in ["\"שלום, world\",12,\"change-me\"", "abcd", "שלום", "abc שלום xyz", "שלום abc עולם", "a שָׁלוֹם z", "abc אבג 123 דהו", "office", "Привет שלום"] {
                 let line = window.text_system().shape_line(
                     text.into(),
-                    px(16.),
+                    px(std::env::var("TESSERA_BIDI_SIZE").ok().and_then(|s| s.parse().ok()).unwrap_or(16.)),
                     &[TextRun {
                         len: text.len(),
-                        font: font("Noto Sans"),
+                        font: font(std::env::var("TESSERA_BIDI_FONT").unwrap_or_else(|_| "Noto Sans".into())),
                         color: rgb(0).into(),
                         background_color: None,
                         underline: None,
@@ -23,7 +23,8 @@ fn main() {
                 println!("TEXT {text:?} width={:?}", line.width);
                 for run in &line.runs {
                     println!(
-                        "GLYPHS {:?}",
+                        "GLYPHS font={:?} {:?}",
+                        run.font_id,
                         run.glyphs
                             .iter()
                             .map(|g| (g.index, g.position.x))

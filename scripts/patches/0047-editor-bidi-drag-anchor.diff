@@ -1,0 +1,404 @@
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -21,7 +21,7 @@ use super::projection::{
+     SourceMutationReason, SourceStamp, WrapAffinity,
+ };
+ use super::projection::{ConcealBias, SourceUtf16, source_utf16_to_byte};
+-use super::bidi_geometry::Affinity;
++use super::bidi_geometry::{covering, Affinity};
+ use gpui::TextAlign;
+ use gpui::{
+     Action, App, AppContext, Bounds, ClipboardItem, Context, Edges, Entity, EntityInputHandler,
+@@ -359,6 +359,9 @@ pub struct InputBaseState<M: InputModeKind> {
+     pub(super) last_bounds: Option<Bounds<Pixels>>,
+     pub(super) last_selected_range: Option<Selection>,
+     pub(super) selecting: bool,
++    /// Source carets sharing the pressed X at a bidi run boundary, with their
++    /// cells; the drag direction picks the anchor (#879).
++    drag_anchors: Vec<(usize, Range<usize>)>,
+     pub(crate) disabled: bool,
+     pub(crate) readonly: bool,
+     pub(crate) text_align: TextAlign,
+@@ -691,6 +694,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+             ime_marked_range: None,
+             input_bounds: Bounds::default(),
+             selecting: false,
++            drag_anchors: Vec::new(),
+             disabled: false,
+             readonly: false,
+             text_align: TextAlign::Left,
+@@ -2048,11 +2052,20 @@ impl<M: InputModeKind> InputBaseState<M> {
+ 
+         self.selecting = true;
+         self.projection_mouse_hold = self.projection.enabled;
+-        let Some((offset, line_end_affinity, bidi_affinity)) = self.index_for_mouse_position(event.position)
+-        else {
++        let hit = if event.modifiers.shift && event.click_count == 1 {
++            self.index_for_mouse_extension(event.position)
++        } else {
++            self.index_for_mouse_position(event.position)
++        };
++        let Some((offset, line_end_affinity, bidi_affinity)) = hit else {
+             cx.notify();
+             return;
+         };
++        self.drag_anchors = if event.click_count == 1 && !event.modifiers.shift {
++            self.mouse_edge_carets(event.position)
++        } else {
++            Vec::new()
++        };
+ 
+         if self.projection.enabled {
+             cx.emit(crate::input::projection::SourceClick {
+@@ -2122,6 +2135,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+         self.finish_projection_mouse_gesture();
+         cx.notify();
+         self.selected_word_range = None;
++        self.drag_anchors.clear();
+         self.auto_scroll.stop();
+     }
+ 
+@@ -2610,6 +2624,93 @@ impl<M: InputModeKind> InputBaseState<M> {
+     pub(crate) fn index_for_mouse_position(
+         &self,
+         position: Point<Pixels>,
++    ) -> Option<(usize, bool, Affinity)> {
++        self.index_for_mouse_hit(position, false)
++    }
++
++    /// Like [`Self::index_for_mouse_position`], for the moving end of a selection: at a
++    /// bidi run boundary it keeps the offset whose cell the selection covers (#879).
++    pub(crate) fn index_for_mouse_extension(
++        &self,
++        position: Point<Pixels>,
++    ) -> Option<(usize, bool, Affinity)> {
++        self.index_for_mouse_hit(position, true)
++    }
++
++    /// Source carets sharing the edge under `position` on a bidi row, each with
++    /// its owning cell. Only a run boundary yields more than one distinct offset.
++    fn mouse_edge_carets(&self, position: Point<Pixels>) -> Vec<(usize, Range<usize>)> {
++        let (Some(bounds), Some(last_layout)) =
++            (self.last_bounds.as_ref(), self.last_layout.as_ref())
++        else {
++            return Vec::new();
++        };
++        if self.masked {
++            return Vec::new();
++        }
++        let mut pos = position
++            - bounds.origin
++            - point(last_layout.line_number_width, last_layout.visible_top);
++        for (vi, line) in last_layout.lines.iter().enumerate() {
++            let height = line.size(last_layout.line_height).height;
++            if pos.y < px(0.) {
++                break;
++            }
++            if pos.y < height {
++                let start = last_layout.visible_line_byte_offsets[vi];
++                let source = |index, bias| last_layout.source(start + index, bias);
++                let carets: Vec<_> = line
++                    .edge_carets_at(pos, last_layout)
++                    .into_iter()
++                    .filter_map(|(index, cell)| {
++                        Some((
++                            source(index, ConcealBias::Right)?,
++                            source(cell.start, ConcealBias::Left)?
++                                ..source(cell.end, ConcealBias::Right)?,
++                        ))
++                    })
++                    .collect();
++                let ambiguous = carets.iter().any(|(index, _)| *index != carets[0].0);
++                return if ambiguous { carets } else { Vec::new() };
++            }
++            pos.y -= height;
++        }
++        Vec::new()
++    }
++
++    /// A press on a bidi run boundary leaves two candidate anchors at one X.
++    /// Once the drag has a direction, keep the one whose cell it covers (#879).
++    fn resolve_drag_anchor(&mut self, position: Point<Pixels>) {
++        if self.drag_anchors.is_empty() {
++            return;
++        }
++        let anchor = if self.selection_reversed {
++            self.selected_range.end
++        } else {
++            self.selected_range.start
++        };
++        // Something other than this drag moved the anchor; leave it alone.
++        if !self.drag_anchors.iter().any(|(index, _)| *index == anchor) {
++            return;
++        }
++        let Some((head, _, _)) = self.index_for_mouse_position(position) else {
++            return;
++        };
++        let candidates = self
++            .drag_anchors
++            .iter()
++            .map(|(index, cell)| (*index, *index, cell.clone()));
++        if let Some(chosen) = covering(candidates, head).filter(|&chosen| chosen != anchor) {
++            // The caller extends to the head from this collapsed anchor.
++            self.selected_range = (chosen..chosen).into();
++            self.selection_reversed = false;
++        }
++    }
++
++    fn index_for_mouse_hit(
++        &self,
++        position: Point<Pixels>,
++        extending: bool,
+     ) -> Option<(usize, bool, Affinity)> {
+         if self.projection.enabled
+             && self
+@@ -2632,6 +2733,16 @@ impl<M: InputModeKind> InputBaseState<M> {
+ 
+         let line_height = last_layout.line_height;
+         let line_number_width = last_layout.line_number_width;
++        // Masked display offsets are not source offsets; they have no bidi runs anyway.
++        let anchor = (extending && !self.masked)
++            .then(|| {
++                if self.selection_reversed {
++                    self.selected_range.end
++                } else {
++                    self.selected_range.start
++                }
++            })
++            .and_then(|anchor| last_layout.project(anchor, ConcealBias::Left));
+ 
+         // TIP: About the IBeam cursor
+         //
+@@ -2655,6 +2766,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+             .enumerate()
+         {
+             let line_start_offset = last_layout.visible_line_byte_offsets[vi];
++            let line_anchor = anchor.map(|anchor| anchor as isize - line_start_offset as isize);
+ 
+             // Calculate line origin for this display row
+             let line_origin = point(px(0.), y_offset);
+@@ -2662,7 +2774,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+ 
+             // Return offset by use closest_index_for_x if is single line mode.
+             if self.is_single_line() {
+-                let (local_index, _, bidi_affinity) = line_layout.closest_caret_for_position(point(pos.x, px(0.)), last_layout)?;
++                let (local_index, _, bidi_affinity) = line_layout.closest_caret_extending(point(pos.x, px(0.)), last_layout, line_anchor)?;
+                 // A single line never wraps, so there is no boundary to disambiguate.
+                 return Some((
+                     last_layout.source(
+@@ -2676,7 +2788,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+ 
+             // Check if mouse is in this line's bounds
+             if let Some((local_index, line_end_affinity, affinity)) =
+-                line_layout.closest_caret_for_position(pos, last_layout)
++                line_layout.closest_caret_extending(pos, last_layout, line_anchor)
+             {
+                 return Some((
+                     last_layout.source(
+@@ -2991,7 +3103,8 @@ impl<M: InputModeKind> InputBaseState<M> {
+         }
+ 
+         self.auto_scroll.last_drag_position = Some(event.position);
+-        let Some((offset, line_end_affinity, bidi_affinity)) = self.index_for_mouse_position(event.position)
++        self.resolve_drag_anchor(event.position);
++        let Some((offset, line_end_affinity, bidi_affinity)) = self.index_for_mouse_extension(event.position)
+         else {
+             cx.notify();
+             return;
+@@ -3007,7 +3120,8 @@ impl<M: InputModeKind> InputBaseState<M> {
+                 let current = state.scroll_handle.offset();
+                 state.update_scroll_offset(Some(point(current.x, current.y + delta)), cx);
+                 if let Some(pos) = state.auto_scroll.last_drag_position {
+-                    let Some((offset, line_end_affinity, bidi_affinity)) = state.index_for_mouse_position(pos)
++                    state.resolve_drag_anchor(pos);
++                    let Some((offset, line_end_affinity, bidi_affinity)) = state.index_for_mouse_extension(pos)
+                     else {
+                         cx.notify();
+                         return;
+--- a/crates/base/src/input/bidi_geometry.rs
++++ b/crates/base/src/input/bidi_geometry.rs
+@@ -137,6 +137,51 @@ impl Geometry {
+         }
+     }
+ 
++    /// Every caret at the edge nearest `x`, with the cell that owns it. Where
++    /// two directional runs meet, one X is the edge of two cells with
++    /// different offsets.
++    pub(crate) fn edge_carets(&self, x: Pixels) -> Vec<(Caret, Range<usize>)> {
++        let Some(edge) = self.hit(x).and_then(|hit| self.position(hit)) else {
++            return Vec::new();
++        };
++        self.cells
++            .iter()
++            .filter_map(|cell| {
++                let caret = if cell.leading() == edge {
++                    Caret {
++                        index: cell.source.start,
++                        affinity: Affinity::Before,
++                    }
++                } else if cell.trailing() == edge {
++                    Caret {
++                        index: cell.source.end,
++                        affinity: Affinity::After,
++                    }
++                } else {
++                    return None;
++                };
++                Some((caret, cell.source.clone()))
++            })
++            .collect()
++    }
++
++    /// Hit-test the moving end of a selection whose fixed end is `anchor`,
++    /// so the highlight reaches the pointer at a run boundary (#879).
++    pub(crate) fn hit_extending(&self, x: Pixels, anchor: usize) -> Option<Caret> {
++        let hit = self.hit(x)?;
++        let carets = self.edge_carets(x);
++        if carets.iter().all(|(caret, _)| caret.index == hit.index) {
++            return Some(hit);
++        }
++        covering(
++            carets
++                .into_iter()
++                .map(|(caret, cell)| (caret, caret.index, cell)),
++            anchor,
++        )
++        .or(Some(hit))
++    }
++
+     /// Move in visual X order, retaining the selected edge's logical ownership.
+     /// At row limits the caller decides paragraph/wrap traversal.
+     pub(crate) fn step(&self, caret: Caret, right: bool) -> Option<Caret> {
+@@ -187,6 +232,21 @@ impl Geometry {
+     }
+ }
+ 
++/// Of the carets at one X, the one whose own cell lies between it and the
++/// other selection end, nearest that end. `None` when no cell would be covered.
++pub(crate) fn covering<T>(
++    candidates: impl IntoIterator<Item = (T, usize, Range<usize>)>,
++    other_end: usize,
++) -> Option<T> {
++    candidates
++        .into_iter()
++        .filter(|(_, index, cell)| {
++            other_end.min(*index) <= cell.start && cell.end <= other_end.max(*index)
++        })
++        .min_by_key(|(_, index, _)| index.abs_diff(other_end))
++        .map(|(candidate, _, _)| candidate)
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+@@ -271,6 +331,63 @@ mod tests {
+ #[cfg(test)]
+ mod boundary_extension_tests {
+     use super::*;
++
++    #[test]
++    fn drag_end_at_a_run_boundary_keeps_the_cell_on_the_anchor_side() {
++        // RTL paragraph with an embedded LTR run, as in `"אב, ab",1,"cd"`:
++        // the LTR run's right edge and the RTL space's trailing edge share X 40.
++        let map = Geometry {
++            cells: [
++                (5..6, true),
++                (2..3, false),
++                (3..4, false),
++                (4..5, false),
++                (1..2, true),
++                (0..1, true),
++            ]
++            .into_iter()
++            .enumerate()
++            .map(|(i, (source, rtl))| Cell {
++                source,
++                rtl,
++                left: gpui::px(i as f32 * 10.),
++                right: gpui::px((i + 1) as f32 * 10.),
++            })
++            .collect(),
++        };
++        let x = gpui::px(40.5);
++        let rtl_trailing = Caret {
++            index: 2,
++            affinity: Affinity::After,
++        };
++        // Positive control: the plain hit owns the RTL cell under the pointer,
++        // which would select the LTR prefix 2..3 from an anchor at 3.
++        assert_eq!(map.hit(x), Some(rtl_trailing));
++        assert_eq!(
++            map.hit_extending(x, 3),
++            Some(Caret {
++                index: 5,
++                affinity: Affinity::After,
++            })
++        );
++        assert_eq!(map.hit_extending(x, 0), Some(rtl_trailing));
++        // A press on that X keeps both carets until the drag picks a side.
++        assert_eq!(
++            map.edge_carets(x),
++            vec![
++                (
++                    Caret {
++                        index: 5,
++                        affinity: Affinity::After,
++                    },
++                    4..5
++                ),
++                (rtl_trailing, 1..2),
++            ]
++        );
++        // An edge inside one run has a single offset; keep the plain hit.
++        assert_eq!(map.hit_extending(gpui::px(25.), 0), map.hit(gpui::px(25.)));
++    }
+     #[test]
+     fn shift_entry_anchors_to_the_crossed_cluster() {
+         let map = Geometry {
+--- a/crates/base/src/input/editor/display_map/text_wrapper.rs
++++ b/crates/base/src/input/editor/display_map/text_wrapper.rs
+@@ -801,15 +801,43 @@ impl LineLayout {
+ 
+     pub(crate) fn closest_caret_for_position(&self, pos: Point<Pixels>, last_layout: &LastLayout)
+         -> Option<(usize, bool, Affinity)> {
++        self.closest_caret_extending(pos, last_layout, None)
++    }
++
++    /// `anchor` is the fixed selection end, relative to this buffer line's
++    /// start; it may lie outside the line when a selection spans rows.
++    pub(crate) fn closest_caret_extending(&self, pos: Point<Pixels>, last_layout: &LastLayout,
++        anchor: Option<isize>) -> Option<(usize, bool, Affinity)> {
+         let (i, offset, x) = self.wrapped_line_at(pos, last_layout)?;
+         let line = &self.wrapped_lines[i];
+-        let hit = self.bidi[i].as_ref().and_then(|map| map.hit(x));
++        let hit = self.bidi[i].as_ref().and_then(|map| match anchor {
++            Some(anchor) => {
++                let local = (anchor - offset as isize).clamp(0, line.len as isize) as usize;
++                map.hit_extending(x, local)
++            }
++            None => map.hit(x),
++        });
+         let ix = hit.map_or_else(|| line.closest_index_for_x(x), |caret| caret.index);
+         let line_end_affinity = i + 1 < self.wrapped_lines.len() && ix == line.len;
+ 
+         Some((offset + ix, line_end_affinity, hit.map_or(Affinity::Before, |caret| caret.affinity)))
+     }
+ 
++    /// Carets sharing the edge nearest `pos`, each with its owning cell, relative
++    /// to this buffer line. Empty unless the row has bidi geometry.
++    pub(crate) fn edge_carets_at(&self, pos: Point<Pixels>, last_layout: &LastLayout)
++        -> Vec<(usize, Range<usize>)> {
++        let Some((i, offset, x)) = self.wrapped_line_at(pos, last_layout) else {
++            return Vec::new();
++        };
++        self.bidi[i].as_ref().map_or_else(Vec::new, |map| {
++            map.edge_carets(x)
++                .into_iter()
++                .map(|(caret, cell)| (offset + caret.index, offset + cell.start..offset + cell.end))
++                .collect()
++        })
++    }
++
+     pub(crate) fn visual_step(&self, offset: usize, affinity: Affinity, wrap_end: bool, right: bool)
+         -> Option<Option<(usize, bool, Affinity)>> {
+         if !self.has_bidi() { return None; }
