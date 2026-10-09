@@ -291,11 +291,13 @@ fn open(editor: &'static Editor, root: &Path, rel: &str, window: &mut Window, cx
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()?;
-        cx.background_executor()
-            .spawn(async move {
+        // Reap on its own thread: some launchers (Flatpak, `open -a`) stay
+        // as long as the editor, which must not hold an executor thread.
+        std::thread::Builder::new()
+            .name("open-in-reaper".into())
+            .spawn(move || {
                 let _ = child.wait();
-            })
-            .detach();
+            })?;
         *LAST_USED.lock().unwrap() = Some(editor.id);
         Ok(())
     })();
