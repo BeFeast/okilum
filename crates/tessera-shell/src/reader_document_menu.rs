@@ -54,6 +54,18 @@ impl Reader {
     ) -> Stateful<Div> {
         use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
         let is_file = self.file_preview.is_some();
+        let file_editable = self
+            .file_preview
+            .as_ref()
+            .is_some_and(|p| reader_delimited::editable(&p.rel));
+        let table_path = self
+            .file_preview
+            .as_ref()
+            .filter(|p| p.table.is_some())
+            .map(|p| p.path.clone());
+        let table_no_header = table_path
+            .as_ref()
+            .is_some_and(|path| !reader_ui_state::delimited_header(path, cx));
         #[cfg(any(unix, windows))]
         let editing = self.editing.is_some();
         #[cfg(any(unix, windows))]
@@ -88,7 +100,7 @@ impl Reader {
         let compact_parent = if parent_width > 0. { 32. } else { 0. };
         let fixed_width = 208. + if dirty { 32. } else { 0. };
         let mut spare = document_width - fixed_width - title_width - compact_parent;
-        let show_presentation = self.editing.is_some() && spare >= 64.;
+        let show_presentation = !is_file && self.editing.is_some() && spare >= 64.;
         if show_presentation {
             spare -= 64.;
         }
@@ -155,7 +167,7 @@ impl Reader {
             return row;
         }
         #[cfg(any(unix, windows))]
-        if !is_file {
+        if !is_file || file_editable {
             use gpui_component::button::ButtonGroup;
             row = row.child(
                 ButtonGroup::new("note-mode").children([
@@ -192,7 +204,7 @@ impl Reader {
                 ]),
             );
             if editing {
-                if show_presentation {
+                if show_presentation && !is_file {
                     row = row.child(self.render_live_preview_control(labels, cx));
                 }
                 if self.source_is_dirty(cx) {
@@ -212,7 +224,7 @@ impl Reader {
                 }
             }
         }
-        if !is_file && show_find {
+        if (!is_file || editing) && show_find {
             row = row.child(
                 reader_icon_button(
                     "note-find",
@@ -285,6 +297,21 @@ impl Reader {
             reader_icon_button("document-more", IconName::Ellipsis, "Document actions", cx)
                 .debug_selector(|| "document-more".into())
                 .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, _| {
+                    if let Some(path) = table_path.clone() {
+                        menu = menu
+                            .item(
+                                PopupMenuItem::new("No header row")
+                                    .checked(table_no_header)
+                                    .on_click(move |_, _, cx| {
+                                        reader_ui_state::set_delimited_header(
+                                            path.clone(),
+                                            table_no_header,
+                                            cx,
+                                        )
+                                    }),
+                            )
+                            .separator();
+                    }
                     menu = menu
                         .menu_with_icon(
                             "Reveal in sidebar",
@@ -350,6 +377,13 @@ impl Reader {
                             ));
                         }
                     } else {
+                        #[cfg(any(unix, windows))]
+                        if file_editable {
+                            menu = menu.menu(
+                                if editing { "Read" } else { "Edit source" },
+                                Box::new(ToggleSource),
+                            );
+                        }
                         for (label, action) in [
                             ("Copy vault path", reader_files::FileAction::Relative),
                             ("Copy wikilink", reader_files::FileAction::Wiki),

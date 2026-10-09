@@ -160,7 +160,7 @@ impl Reader {
         let recovery = (self.recovery_offer && !self.recovery_dismissed && self.editing.is_none())
             .then(|| {
                 (
-                    self.current_rel.clone(),
+                    self.selected_file().to_owned(),
                     self.navigation.preparation_generation,
                 )
             });
@@ -185,7 +185,7 @@ impl Reader {
                                     .label("Restore unsaved edits")
                                     .on_click(move |_, window, cx| {
                                         let _ = reader.update(cx, |this, cx| {
-                                            if this.current_rel == path
+                                            if this.selected_file() == path
                                                 && this.navigation.preparation_generation
                                                     == generation
                                                 && this.recovery_offer

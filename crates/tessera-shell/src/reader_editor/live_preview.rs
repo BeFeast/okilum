@@ -177,6 +177,9 @@ impl Reader {
     }
 
     pub(crate) fn toggle_live_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.file_preview.is_some() {
+            return;
+        }
         let colors = projection_colors(cx);
         let Some(editing) = &mut self.editing else {
             return;
