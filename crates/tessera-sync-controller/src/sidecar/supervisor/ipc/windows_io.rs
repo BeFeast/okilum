@@ -3,7 +3,7 @@
 use super::{
     windows_endpoint::{PrivateClient, PrivatePipe},
     windows_peer::{PeerEnd, ProcessPeer},
-    MAX_FRAME,
+    Scope, MAX_FRAME,
 };
 use std::{
     io::{self, Read, Write},
@@ -65,6 +65,7 @@ fn native(api: &str, error: windows::core::Error) -> io::Error {
 }
 
 enum Operation {
+    Verify,
     Accept,
     Read(usize),
     Write(Vec<u8>),
@@ -147,7 +148,28 @@ impl ClientIo {
     pub fn new(client: PrivateClient, deadline: Instant) -> io::Result<Self> {
         Self::start(Endpoint::Client(client), deadline)
     }
+    /// Open and verify on the admitted worker. The caller's wait shares the I/O
+    /// deadline; a stalled synchronous open retains its worker admission slot.
+    /// Thread creation itself is still synchronous and outside this guarantee.
+    pub fn connect(scope: Scope, peer: ProcessPeer, deadline: Instant) -> io::Result<Self> {
+        let mut io = Self::start_with(
+            move || {
+                PrivateClient::connect(&scope, peer)
+                    .map(Endpoint::Client)
+                    .map_err(io::Error::other)
+            },
+            deadline,
+        )?;
+        io.request(Operation::Verify)?;
+        Ok(io)
+    }
     fn start(endpoint: Endpoint, deadline: Instant) -> io::Result<Self> {
+        Self::start_with(move || Ok(endpoint), deadline)
+    }
+    fn start_with(
+        factory: impl FnOnce() -> io::Result<Endpoint> + Send + 'static,
+        deadline: Instant,
+    ) -> io::Result<Self> {
         let budget = remaining(deadline)?;
         if budget > Duration::from_secs(30) {
             return Err(io::Error::new(
@@ -167,6 +189,7 @@ impl ClientIo {
             .name("sync-pipe-io".into())
             .spawn(move || {
                 let _permit = permit;
+                let endpoint = remaining(deadline).and_then(|_| factory());
                 while let Ok(wait) = remaining(deadline) {
                     let Ok(request) = receiver.recv_timeout(wait) else {
                         break;
@@ -174,22 +197,37 @@ impl ClientIo {
                     // Queries are synchronous; caller waiting remains bounded even
                     // if a query stalls. Admission includes such retained workers.
                     let accepting = matches!(request.operation, Operation::Accept);
-                    let result = endpoint.verify(accepting).and_then(|()| {
-                        perform_inner(
-                            endpoint.handle(),
-                            request.operation,
-                            deadline,
-                            #[cfg(test)]
-                            Some(&worker_evidence),
-                        )
-                        .and_then(|reply| {
-                            if accepting {
-                                endpoint.verify(false)?;
-                            }
+                    let verifying = matches!(request.operation, Operation::Verify);
+                    let result = endpoint
+                        .as_ref()
+                        .map_err(|error| io::Error::new(error.kind(), error.to_string()))
+                        .and_then(|endpoint| {
+                            endpoint.verify(accepting)?;
                             remaining(deadline)?;
-                            Ok(reply)
+                            Ok(endpoint)
                         })
-                    });
+                        .and_then(|endpoint| {
+                            if verifying {
+                                return Ok(Reply {
+                                    bytes: Vec::new(),
+                                    count: 0,
+                                });
+                            }
+                            perform_inner(
+                                endpoint.handle(),
+                                request.operation,
+                                deadline,
+                                #[cfg(test)]
+                                Some(&worker_evidence),
+                            )
+                            .and_then(|reply| {
+                                if accepting {
+                                    endpoint.verify(false)?;
+                                }
+                                remaining(deadline)?;
+                                Ok(reply)
+                            })
+                        });
                     let stop = result.is_err();
                     let _ = request.reply.send(result);
                     if stop {
@@ -298,6 +336,7 @@ fn perform_inner(
     let accepting = matches!(operation, Operation::Accept);
     let read = matches!(operation, Operation::Read(_));
     let mut bytes = match operation {
+        Operation::Verify => return Err(io::Error::other("verification is not a wire operation")),
         Operation::Accept => Vec::new(),
         Operation::Read(n) => vec![0; n],
         Operation::Write(bytes) => bytes,

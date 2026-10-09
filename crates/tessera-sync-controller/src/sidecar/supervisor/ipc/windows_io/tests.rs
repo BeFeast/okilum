@@ -342,3 +342,92 @@ fn native_server_accept_rejects_wrong_captured_client() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn native_client_worker_open_verifies_and_exchanges() -> Result<()> {
+    let scope = fresh_scope();
+    let pipe = PrivatePipe::create(&scope)?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut client = ClientIo::connect(scope, self_peer()?, deadline)?;
+    let mut server = ServerIo::accept(pipe, self_peer()?, deadline)?;
+    client.write_all(b"c")?;
+    let mut byte = [0];
+    server.read_exact(&mut byte)?;
+    ensure!(byte == [b'c'], "client write failed");
+    server.write_all(b"s")?;
+    client.read_exact(&mut byte)?;
+    ensure!(byte == [b's'], "server write failed");
+    ensure!(
+        ClientIo::connect(fresh_scope(), self_peer()?, deadline).is_err(),
+        "missing endpoint accepted"
+    );
+    ensure!(
+        ClientIo::connect(fresh_scope(), self_peer()?, Instant::now()).is_err(),
+        "expired open admitted"
+    );
+    eprintln!("worker open: actual private client exchange, missing and expired refusal passed");
+    Ok(())
+}
+
+#[test]
+fn native_client_worker_open_wait_is_bounded_and_late_result_discarded() -> Result<()> {
+    let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
+    let start = Instant::now();
+    let mut io = ClientIo::start_with(
+        move || {
+            let _ = entered_tx.send(());
+            // Controlled synchronous setup stall, not a claim of cancelling CreateFileW.
+            let _ = release_rx.recv_timeout(Duration::from_secs(3));
+            Err(io::Error::other("late setup failure"))
+        },
+        start + Duration::from_millis(500),
+    )?;
+    entered_rx.recv_timeout(Duration::from_secs(1))?;
+    let error = io
+        .request(Operation::Verify)
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("late setup accepted"))?;
+    ensure!(
+        error.kind() == io::ErrorKind::TimedOut,
+        "wrong error: {error}"
+    );
+    ensure!(
+        start.elapsed() < Duration::from_secs(2),
+        "caller waited for setup cleanup"
+    );
+    ensure!(
+        io.completed.try_recv().is_err(),
+        "worker released before setup completed"
+    );
+    release_tx.send(())?;
+    io.completed.recv_timeout(Duration::from_secs(2))?;
+    ensure!(
+        io.read(&mut [0]).unwrap_err().kind() == io::ErrorKind::BrokenPipe,
+        "late setup revived connection"
+    );
+    eprintln!("worker open: injected synchronous stall bounded caller; late result discarded, worker released after return");
+    Ok(())
+}
+
+#[test]
+fn native_client_worker_open_and_read_share_deadline() -> Result<()> {
+    let scope = fresh_scope();
+    let _server = PrivatePipe::create(&scope)?;
+    let start = Instant::now();
+    let deadline = start + Duration::from_secs(1);
+    let mut io = ClientIo::connect(scope, self_peer()?, deadline)?;
+    std::thread::sleep(Duration::from_millis(600));
+    let error = io.read(&mut [0]).unwrap_err();
+    ensure!(
+        error.kind() == io::ErrorKind::TimedOut,
+        "wrong read error: {error}"
+    );
+    ensure!(
+        start.elapsed() < Duration::from_millis(1300),
+        "open reset the exchange deadline"
+    );
+    io.completed.recv_timeout(Duration::from_secs(2))?;
+    eprintln!("worker open: subsequent silent read used original absolute deadline");
+    Ok(())
+}
