@@ -1,11 +1,15 @@
 //! Remind me on <date>: a selected date becomes a Tasks line in the reminders
 //! note (#724). The note is plain Markdown; nothing here is a private database.
 use super::*;
+use gpui_component::input::EditorState;
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
+use gpui_component::native_menu::NativeMenu;
 use gpui_component::{notification::Notification, WindowExt};
 #[cfg(any(unix, windows))]
 use tessera_core::reminder_append::write::{self, Receipt};
 use tessera_core::{reminder_context, reminder_dates, reminder_task};
+
+gpui::actions!(reader_reminder, [RemindOnSelection]);
 
 /// Vault-relative reminders note. Settings will make this configurable.
 pub(super) const NOTE: &str = "Reminders.md";
@@ -54,10 +58,118 @@ pub(super) fn menu(menu: PopupMenu, reader: &WeakEntity<Reader>, cx: &App) -> Po
         .on_click(move |_, window, cx| {
             let selection = selection.clone();
             let _ = reader.update(cx, |this, cx| {
-                this.add_reminder(selection, date, window, cx)
+                this.add_reminder(selection, date, None, window, cx)
             });
         }),
     )
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Command {
+    GoToDefinition,
+    ShowCodeActions,
+    Cut,
+    Copy,
+    Paste,
+    SelectAll,
+    Remind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Entry {
+    Item {
+        label: String,
+        disabled: bool,
+        command: Command,
+    },
+    Separator,
+}
+
+/// The source editor's context menu as plain data. `Editor::context_menu`
+/// replaces the built-in menu, so its items are reproduced from the same
+/// capabilities; the reminder entry follows when the selection is a whole date.
+fn editor_entries(
+    capabilities: &gpui_base::input::InputContextMenuCapabilities,
+    clipboard: bool,
+    date: Option<time::Date>,
+) -> Vec<Entry> {
+    let item = |label: &str, disabled, command| Entry::Item {
+        label: label.into(),
+        disabled,
+        command,
+    };
+    let enabled = !capabilities.is_disabled();
+    let editable = enabled && !capabilities.is_readonly();
+    let mut entries = Vec::new();
+    if capabilities.is_code_editor() {
+        entries.push(item(
+            "Go to Definition",
+            !(enabled && capabilities.has_definition()),
+            Command::GoToDefinition,
+        ));
+        entries.push(item(
+            "Show Code Actions",
+            !(editable && capabilities.has_code_actions()),
+            Command::ShowCodeActions,
+        ));
+        entries.push(Entry::Separator);
+    }
+    entries.push(item(
+        "Cut",
+        !(editable && capabilities.is_copyable()),
+        Command::Cut,
+    ));
+    entries.push(item("Copy", !capabilities.is_copyable(), Command::Copy));
+    entries.push(item("Paste", !(editable && clipboard), Command::Paste));
+    entries.push(Entry::Separator);
+    entries.push(item("Select All", false, Command::SelectAll));
+    if let Some(date) = date {
+        entries.push(Entry::Separator);
+        entries.push(item(
+            &format!("Remind me on {}", date_label(date)),
+            false,
+            Command::Remind,
+        ));
+    }
+    entries
+}
+
+pub(super) fn editor_menu(menu: NativeMenu, state: &Entity<EditorState>, cx: &App) -> NativeMenu {
+    use gpui_base::input::{Copy, Cut, GoToDefinition, Paste, SelectAll, ToggleCodeActions};
+    #[cfg(any(unix, windows))]
+    let date = selected_date(state, cx).map(|(_, date)| date);
+    #[cfg(not(any(unix, windows)))]
+    let date = None;
+    let capabilities = state.read(cx).context_menu_capabilities();
+    editor_entries(&capabilities, cx.read_from_clipboard().is_some(), date)
+        .into_iter()
+        .fold(menu, |menu, entry| match entry {
+            Entry::Separator => menu.separator(),
+            Entry::Item {
+                label,
+                disabled,
+                command,
+            } => {
+                let action: Box<dyn gpui::Action> = match command {
+                    Command::GoToDefinition => Box::new(GoToDefinition),
+                    Command::ShowCodeActions => Box::new(ToggleCodeActions),
+                    Command::Cut => Box::new(Cut),
+                    Command::Copy => Box::new(Copy),
+                    Command::Paste => Box::new(Paste),
+                    Command::SelectAll => Box::new(SelectAll),
+                    Command::Remind => Box::new(RemindOnSelection),
+                };
+                menu.menu_with_disabled(label, disabled, action)
+            }
+        })
+}
+
+/// The editor's selection and its date, when the whole selection is one.
+#[cfg(any(unix, windows))]
+fn selected_date(state: &Entity<EditorState>, cx: &App) -> Option<(String, time::Date)> {
+    let selection = state.read(cx).selected_text().to_string();
+    let date = reminder_dates::parse(&selection, today())?;
+    Some((selection, date))
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -79,10 +191,32 @@ impl Reader {
         Some((selection, date))
     }
 
+    /// The `RemindOnSelection` action from the source editor's menu.
+    pub(super) fn remind_on_editor_selection(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.single_file || self.current_rel.is_empty() {
+            return;
+        }
+        let Some(editing) = self.editing.as_ref() else {
+            return;
+        };
+        let Some((selection, date)) = selected_date(editing.input(), cx) else {
+            return;
+        };
+        let text = editing.input().read(cx).value().to_string();
+        self.add_reminder(selection, date, Some(text), window, cx);
+    }
+
+    /// `source` is the text the selection was made in when it differs from the
+    /// saved note (the source editor holds unsaved edits).
     pub(super) fn add_reminder(
         &mut self,
         selection: String,
         date: time::Date,
+        source: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -94,10 +228,11 @@ impl Reader {
             reader_toast::transient("Reminders need Tessera's app storage", window, cx);
             return;
         };
-        let source = self
-            .note_canonical_source
-            .as_deref()
-            .unwrap_or(&self.note_source);
+        let source = source.as_deref().unwrap_or_else(|| {
+            self.note_canonical_source
+                .as_deref()
+                .unwrap_or(&self.note_source)
+        });
         let found = reminder_context::locate(source, &selection);
         // Without a verified sentence the reminder names the note, not a guess.
         let sentence = found.sentence.unwrap_or_else(|| {
@@ -322,7 +457,7 @@ mod visual_tests {
         assert_eq!(date, time::macros::date!(2026 - 11 - 01));
 
         reader.update_in(visual, |v, window, cx| {
-            v.add_reminder(selection, date, window, cx)
+            v.add_reminder(selection, date, None, window, cx)
         });
         visual.run_until_parked();
         let note = root.join(NOTE);
@@ -355,5 +490,132 @@ mod visual_tests {
             .read_with(visual, |v, cx| v.reminder_for_selection(cx))
             .is_none());
         std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[gpui::test]
+    fn source_editor_action_writes_the_selected_date_and_leaves_the_note_alone(
+        cx: &mut TestAppContext,
+    ) {
+        let temp = std::env::temp_dir().join(format!("tessera-remind-{}", uuid::Uuid::new_v4()));
+        let (root, state) = (temp.join("vault"), temp.join("state"));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        let note = "Winter time starts 2026-11-01 in Israel.\n";
+        std::fs::write(root.join("start.md"), note).unwrap();
+        let (reader, visual) = mount(cx, &root, &state);
+        reader.update_in(visual, |v, window, cx| v.toggle_source(window, cx));
+        visual.run_until_parked();
+        let input = reader.read_with(visual, |v, _| v.editing.as_ref().unwrap().input().clone());
+
+        // The menu builder sees the same selection the action will use.
+        let offered = |visual: &mut VisualTestContext, range: std::ops::Range<usize>| {
+            input.update(visual, |i, cx| i.set_selected_range(range, cx));
+            visual.update(|_, cx| selected_date(&input, cx))
+        };
+        assert!(offered(visual, 0..6).is_none(), "plain words offer nothing");
+        let (selection, date) = offered(visual, 19..29).expect("a whole date is offered");
+        assert_eq!(
+            (selection.as_str(), date),
+            ("2026-11-01", time::macros::date!(2026 - 11 - 01))
+        );
+
+        // Dispatching the menu's action writes one task and touches nothing else.
+        input.update_in(visual, |i, window, cx| i.focus(window, cx));
+        visual.dispatch_action(RemindOnSelection);
+        visual.run_until_parked();
+        assert_eq!(
+            std::fs::read_to_string(root.join(NOTE)).unwrap(),
+            "- [ ] Winter time starts 2026-11-01 in Israel. [[start.md]] 📅 2026-11-01\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("start.md")).unwrap(),
+            note
+        );
+        assert!(reader.read_with(visual, |v, cx| !v.source_is_dirty(cx)));
+
+        // Without a date selection the same action does nothing.
+        std::fs::remove_file(root.join(NOTE)).unwrap();
+        input.update(visual, |i, cx| i.set_selected_range(0..6, cx));
+        visual.dispatch_action(RemindOnSelection);
+        visual.run_until_parked();
+        assert!(!root.join(NOTE).exists());
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod menu_tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+    use gpui_base::input::InputContextMenuCapabilities as Capabilities;
+
+    fn labels(entries: &[Entry]) -> Vec<(String, bool)> {
+        entries
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Item {
+                    label, disabled, ..
+                } => Some((label.clone(), *disabled)),
+                Entry::Separator => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn builtin_items_follow_the_editor_capabilities() {
+        let editor = Capabilities::new().code_editor(true).selection(true);
+        let plain = labels(&editor_entries(&editor, true, None));
+        let names: Vec<_> = plain.iter().map(|(label, _)| label.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "Go to Definition",
+                "Show Code Actions",
+                "Cut",
+                "Copy",
+                "Paste",
+                "Select All"
+            ]
+        );
+        assert!(plain.contains(&("Copy".into(), false)));
+        assert!(plain.contains(&("Cut".into(), false)));
+        assert!(plain.contains(&("Paste".into(), false)));
+
+        // No selection or clipboard disables the matching items; read-only
+        // rejects what would change the text.
+        let idle = labels(&editor_entries(
+            &Capabilities::new().code_editor(true),
+            false,
+            None,
+        ));
+        for name in ["Cut", "Copy", "Paste"] {
+            assert!(idle.contains(&(name.into(), true)), "{name} disabled");
+        }
+        let readonly = Capabilities::new().selection(true).readonly(true);
+        let readonly = labels(&editor_entries(&readonly, true, None));
+        assert!(readonly.contains(&("Cut".into(), true)));
+        assert!(readonly.contains(&("Paste".into(), true)));
+        assert!(readonly.contains(&("Copy".into(), false)));
+        assert!(!readonly
+            .iter()
+            .any(|(label, _)| label == "Go to Definition"));
+    }
+
+    #[test]
+    fn a_date_adds_exactly_one_reminder_entry_at_the_end() {
+        let editor = Capabilities::new().code_editor(true).selection(true);
+        let without = editor_entries(&editor, true, None);
+        let with = editor_entries(&editor, true, Some(time::macros::date!(2026 - 11 - 01)));
+        assert_eq!(with[..without.len()], without[..]);
+        assert_eq!(with.len(), without.len() + 2);
+        assert_eq!(with[with.len() - 2], Entry::Separator);
+        assert_eq!(
+            with.last(),
+            Some(&Entry::Item {
+                label: "Remind me on Sun, 1 Nov 2026".into(),
+                disabled: false,
+                command: Command::Remind,
+            })
+        );
     }
 }
