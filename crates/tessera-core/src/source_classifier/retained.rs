@@ -1226,8 +1226,9 @@ mod tests {
                 .display()
                 .to_owned()
         };
-        // Positive control: outside the heading every marker is concealed.
-        assert_eq!(shown(text.len()), "Title b l\n\nplain e");
+        // Positive control: on the blank line every marker is concealed.
+        let blank = text.find("\n\n").unwrap() + 1;
+        assert_eq!(shown(blank), "Title b l\n\nplain e");
         let title = text.find("itle").unwrap();
         // Mid-heading caret: `##` markers show; inline syntax elsewhere stays.
         assert_eq!(shown(title), "## Title b l ##\n\nplain e");
