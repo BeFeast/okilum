@@ -1,0 +1,22 @@
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -490,6 +490,11 @@ impl<M: InputModeKind> TextElement<M> {
+         let line_number_width = last_layout.line_number_width;
+ 
+         let mut selected_range = state.selected_range;
++        // Paint records the raw source selection; compare in the same space.
++        // The projected/masked range below differs whenever markers before the
++        // caret are concealed, which made every frame look like a caret move and
++        // cursor-follow undo each scroll step in Live Preview (#914).
++        let selection_changed = state.last_selected_range != Some(state.selected_range);
+ 
+         if let Some(ime_marked_range) = &state.ime_marked_range {
+             selected_range = (ime_marked_range.end..ime_marked_range.end).into();
+@@ -556,7 +561,6 @@ impl<M: InputModeKind> TextElement<M> {
+         let cursor_end = caret_for(sel_end_row, selected_range.end, false);
+ 
+         let cursor_bounds = {
+-            let selection_changed = state.last_selected_range != Some(selected_range);
+             let auto_scrolling = state.auto_scroll.is_active();
+             if selection_changed && !is_selected_all {
+                 // For Right alignment use 0 margin: cursor is clamped to bounds separately,
