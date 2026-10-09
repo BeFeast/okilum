@@ -265,6 +265,7 @@ impl Reader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ::core::prelude::v1::test;
 
     #[test]
     fn languages_follow_names_and_extensions_only() {
