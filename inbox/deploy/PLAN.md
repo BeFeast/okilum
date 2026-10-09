@@ -92,7 +92,9 @@ with an explicit backwards-compatible rollback plan. Do not overwrite the live
 Compose/nginx files before invoking the helper: it must see the previous config.
 
 Before mutation, the tool runs the existing online SQLite backup, copies the
-completed DB, saves both current Docker images, archives the host source, and
+completed DB through a binary stream into an operator-owned private file,
+restores that snapshot into a temporary DB and checks integrity/table counts,
+saves both current Docker images, archives the host source, and
 saves nginx configuration into a new private
 `/opt/tessera-inbox/deployment-state/rollback-*/` directory. `.env`, secrets and
 build caches are excluded from the source archive; credential references remain
@@ -130,3 +132,12 @@ Live acceptance is a separately approved same-image restart; failure injection
 on CT119 is not authorized by isolated test results or by this document.
 Record receipts and public status only; do not put DB contents, challenge bodies,
 cookies or credentials into evidence.
+
+
+The whole ordered-start attempt has a 90-second alarm, including Docker and
+HTTP waits. Expiry initiates rollback with a fresh 90-second recovery budget;
+this is not a guarantee of total outage below two minutes on a failed host.
+The hosted `inbox-restart` acceptance asserts a conservative outage bound under
+120 seconds for each tested case, including automatic rollback. It uploads only
+sanitized `summary.json`; no DB, test passkey or TLS key is published. See
+`LIVE-ACCEPTANCE.md` for the separate, manager-approved live procedure.
