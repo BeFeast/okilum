@@ -469,7 +469,8 @@ mod tests {
     /// add it to docs/uninstall.md and `roots()` (or the OS-specific removal),
     /// then update this list.
     const BASE_DIRECTORY_SITES: &[(&str, usize)] = &[
-        ("crates/okilum-shell/src/app_footprint.rs", 5),
+        // Roots, crash dumps and the Velopack log folder (all in the inventory).
+        ("crates/okilum-shell/src/app_footprint.rs", 6),
         // Suggests ~/Downloads in the export dialog: the user picks the target.
         ("crates/okilum-shell/src/brain/context_ui.rs", 1),
         // Brain outboxes and profile: all under the `~/.config/okilum` root.
