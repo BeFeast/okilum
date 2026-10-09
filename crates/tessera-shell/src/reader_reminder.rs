@@ -135,13 +135,74 @@ fn editor_entries(
     entries
 }
 
-pub(super) fn editor_menu(menu: NativeMenu, state: &Entity<EditorState>, cx: &App) -> NativeMenu {
+#[cfg(test)]
+thread_local! {
+    /// How many times the real builder ran: a right-click test must prove the
+    /// callback was reached, or "no panic" would prove nothing.
+    pub(super) static MENU_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// A selection longer than this cannot be a date, so it is never read out of
+/// the document.
+const MAX_DATE_BYTES: usize = 96;
+
+/// Plain `Copy` data on purpose: the builder reads it with `Cell::get` and holds
+/// no borrow. Keep it that way; a `RefCell` borrow held across the menu's
+/// construction is the kind of re-entrancy that caused #955.
+#[derive(Clone, Copy, Default)]
+struct Facts {
+    capabilities: gpui_base::input::InputContextMenuCapabilities,
+    date: Option<time::Date>,
+}
+
+/// What the source editor's menu needs to know about the editor, kept current
+/// outside the editor's own updates. `Editor::context_menu` runs its builder
+/// while the editor state is being updated (the vendor defers it with
+/// `defer_in`), where reading that state panics (#955). Observers run after an
+/// update, when reading is allowed, so the builder only reads this snapshot.
+#[derive(Clone, Default)]
+pub(super) struct MenuFacts(std::rc::Rc<std::cell::Cell<Facts>>);
+
+impl MenuFacts {
+    #[cfg(test)]
+    pub(super) fn date(&self) -> Option<time::Date> {
+        self.0.get().date
+    }
+
+    pub(super) fn watch(
+        input: &Entity<EditorState>,
+        cx: &mut Context<Reader>,
+    ) -> (Self, Subscription) {
+        let facts = Self::default();
+        facts.refresh(input, cx);
+        let mirror = facts.clone();
+        let subscription = cx.observe(input, move |_, input, cx| mirror.refresh(&input, cx));
+        (facts, subscription)
+    }
+
+    fn refresh(&self, input: &Entity<EditorState>, cx: &App) {
+        let state = input.read(cx);
+        #[cfg(any(unix, windows))]
+        let date = {
+            let range = state.selected_range();
+            (!range.is_empty() && range.len() <= MAX_DATE_BYTES)
+                .then(|| reminder_dates::parse(&state.selected_text().to_string(), today()))
+                .flatten()
+        };
+        #[cfg(not(any(unix, windows)))]
+        let date = None;
+        self.0.set(Facts {
+            capabilities: state.context_menu_capabilities(),
+            date,
+        });
+    }
+}
+
+pub(super) fn editor_menu(menu: NativeMenu, facts: &MenuFacts, cx: &App) -> NativeMenu {
     use gpui_base::input::{Copy, Cut, GoToDefinition, Paste, SelectAll, ToggleCodeActions};
-    #[cfg(any(unix, windows))]
-    let date = selected_date(state, cx).map(|(_, date)| date);
-    #[cfg(not(any(unix, windows)))]
-    let date = None;
-    let capabilities = state.read(cx).context_menu_capabilities();
+    #[cfg(test)]
+    MENU_BUILDS.with(|builds| builds.set(builds.get() + 1));
+    let Facts { capabilities, date } = facts.0.get();
     editor_entries(&capabilities, cx.read_from_clipboard().is_some(), date)
         .into_iter()
         .fold(menu, |menu, entry| match entry {
@@ -524,6 +585,63 @@ mod visual_tests {
         );
         assert!(!root.join(NOTE).exists(), "the default note is not created");
         std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    /// #955: Editor::context_menu runs its builder while the editor's own state
+    /// is being updated (the vendor defers it with `defer_in`), so the builder
+    /// must not read that state. Right-click it for real, once per app: the menu
+    /// stays open afterwards and would swallow a second click.
+    fn right_click_in_the_source_editor(
+        cx: &mut TestAppContext,
+        range: std::ops::Range<usize>,
+        date: Option<time::Date>,
+    ) {
+        let temp = std::env::temp_dir().join(format!("tessera-remind-{}", uuid::Uuid::new_v4()));
+        let (root, state) = (temp.join("vault"), temp.join("state"));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(root.join("start.md"), "Winter 2026-11-01 time\n").unwrap();
+        let (reader, visual) = mount(cx, &root, &state);
+        visual.simulate_resize(size(px(1400.), px(960.)));
+        reader.update_in(visual, |v, window, cx| v.toggle_source(window, cx));
+        visual.run_until_parked();
+        let input = reader.read_with(visual, |v, _| v.editing.as_ref().unwrap().input().clone());
+        let bounds = input.read_with(visual, |i, _| i.input_bounds());
+        assert!(
+            bounds.size.width > px(100.),
+            "the editor is laid out: {bounds:?}"
+        );
+        input.update(visual, |i, cx| i.set_selected_range(range, cx));
+        visual.run_until_parked();
+        let mirrored = reader.read_with(visual, |v, _| {
+            v.editing.as_ref().unwrap().menu_facts().date()
+        });
+        assert_eq!(mirrored, date, "the snapshot follows the selection");
+        let before = MENU_BUILDS.with(|builds| builds.get());
+        let at = bounds.origin + point(px(40.), px(12.));
+        visual.simulate_mouse_down(at, MouseButton::Right, Modifiers::default());
+        visual.simulate_mouse_up(at, MouseButton::Right, Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(
+            MENU_BUILDS.with(|builds| builds.get()) - before,
+            1,
+            "positive control: the real builder ran for the right-click"
+        );
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[gpui::test]
+    fn right_click_on_a_selected_date_reaches_the_menu_builder_without_panicking(
+        cx: &mut TestAppContext,
+    ) {
+        right_click_in_the_source_editor(cx, 7..17, Some(time::macros::date!(2026 - 11 - 01)));
+    }
+
+    #[gpui::test]
+    fn right_click_with_nothing_selected_reaches_the_menu_builder_without_panicking(
+        cx: &mut TestAppContext,
+    ) {
+        right_click_in_the_source_editor(cx, 0..0, None);
     }
 
     #[gpui::test]
