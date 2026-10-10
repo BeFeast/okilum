@@ -1286,6 +1286,8 @@ struct Reader {
     usable_document: bool,
     /// When the current note was requested, for the `note_open_*` phases (#1003).
     open_started: Option<std::time::Instant>,
+    /// Watches the current note's parse for `note_open_parsed`; replaced per open.
+    note_body_trace: Option<Subscription>,
     session_directory: Option<PathBuf>,
     session_records: Option<async_channel::Sender<reader_loading::SessionRecord>>,
     last_recorded_document: Option<(PathBuf, String, u64)>,
@@ -1535,6 +1537,7 @@ impl Reader {
             shared_version: 0,
             usable_document: false,
             open_started: None,
+            note_body_trace: None,
             session_directory: opts.session_directory.clone(),
             session_records: None,
             last_recorded_document: None,

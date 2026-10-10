@@ -1,5 +1,5 @@
 diff --git a/crates/base/src/text/state.rs b/crates/base/src/text/state.rs
-index 1b124b32..df73281b 100644
+index 1b124b32..8da7a5c1 100644
 --- a/crates/base/src/text/state.rs
 +++ b/crates/base/src/text/state.rs
 @@ -34,6 +34,11 @@ const MAX_COALESCED_UPDATES_PER_PARSE: usize = 64;
@@ -14,16 +14,21 @@ index 1b124b32..df73281b 100644
  pub(crate) fn init(cx: &mut App) {
      cx.bind_keys(vec![
          #[cfg(target_os = "macos")]
-@@ -93,6 +98,8 @@ struct SearchGeometry {
+@@ -93,6 +98,13 @@ struct SearchGeometry {
  pub struct TextViewState {
      pub(super) focus_handle: FocusHandle,
      pub(super) list_state: ListState,
 +    /// The list measures only visible blocks; see [`MEASURE_ALL_MAX_BLOCKS`].
 +    list_visible_only: bool,
++    /// The estimated height of unmeasured blocks while `list_visible_only`.
++    list_hint: Option<Pixels>,
++    /// The view width the estimate was last applied at. The list forgets
++    /// unmeasured heights whenever its width changes, including its first layout.
++    list_hinted_width: Option<Pixels>,
  
      /// The bounds of the text view
      bounds: Bounds<Pixels>,
-@@ -185,6 +192,7 @@ impl TextViewState {
+@@ -185,6 +197,7 @@ impl TextViewState {
                          match parsed_update.result {
                              Ok(content) => {
                                  state.parsed_content = content;
@@ -31,18 +36,20 @@ index 1b124b32..df73281b 100644
                                  state.displayed_source_copy = state.pending_source_copy.clone();
                                  state.refresh_search();
                                  state.parsed_error = None;
-@@ -228,6 +236,7 @@ impl TextViewState {
+@@ -228,6 +241,9 @@ impl TextViewState {
              // as zero height until scrolled into view, which makes the
              // scrollbar jitter as more blocks get measured during scrolling.
              list_state: ListState::new(0, gpui::ListAlignment::Top, px(1000.)).measure_all(),
 +            list_visible_only: false,
++            list_hint: None,
++            list_hinted_width: None,
              text_view_style: TextViewStyle::default(),
              code_block_actions: None,
              code_block_language: None,
-@@ -716,6 +725,25 @@ impl TextViewState {
-     /// `remeasure_items` re-arms the latch and marks the items unmeasured
-     /// while keeping their old sizes as hints, so the scrollbar does not
-     /// collapse in the frame before the next layout measures the real heights.
+@@ -701,6 +717,46 @@ impl TextViewState {
+         self.parsed_content.document.selected_text(format, blocks)
+     }
+ 
 +    /// Choose how the list measures this document. Small documents measure
 +    /// every block so the scrollbar is exact. Large ones measure what becomes
 +    /// visible; the rest carry an estimated height that real heights replace
@@ -56,16 +63,37 @@ index 1b124b32..df73281b 100644
 +            let list = ListState::new(0, gpui::ListAlignment::Top, px(1000.));
 +            self.list_state = if visible_only { list } else { list.measure_all() };
 +        }
-+        if visible_only && self.list_state.item_count() != count {
-+            self.list_state
-+                .reset_with_uniform_height(count, estimated_block_height(document.source.len(), count));
++        self.list_hint = visible_only.then(|| estimated_block_height(document.source.len(), count));
++        if let Some(hint) = self.list_hint
++            && self.list_state.item_count() != count
++        {
++            self.list_state.reset_with_uniform_height(count, hint);
++        }
++        self.list_hinted_width = None;
++    }
++
++    /// The list forgets unmeasured heights when its width changes, and a new
++    /// list does so on its first layout. Restore the estimate in the frame
++    /// after, keeping measured heights and the scroll position.
++    pub(super) fn restore_list_hint(&mut self, width: Pixels) -> bool {
++        if self.list_hint.is_none() || self.list_hinted_width == Some(width) {
++            return false;
++        }
++        self.list_hinted_width = Some(width);
++        true
++    }
++
++    pub(super) fn apply_list_hint(&mut self, cx: &mut Context<Self>) {
++        if let Some(hint) = self.list_hint {
++            let _ = self.list_state.clone().with_uniform_item_height(hint);
++            cx.notify();
 +        }
 +    }
 +
-     fn invalidate_measured_heights(&self) {
-         let count = self.list_state.item_count();
-         if count > 0 {
-@@ -751,6 +779,7 @@ impl TextViewState {
+     /// Force a full re-measure of the block list after the document has been
+     /// replaced.
+     ///
+@@ -751,6 +807,7 @@ impl TextViewState {
                  Ok(content) => {
                      self.prepared_revision = self.revision;
                      self.parsed_content = content;
@@ -73,7 +101,31 @@ index 1b124b32..df73281b 100644
                      self.displayed_source_copy = self.pending_source_copy.clone();
                      self.refresh_search();
                      self.parsed_error = None;
-@@ -1060,6 +1089,13 @@ impl Render for TextViewState {
+@@ -1039,14 +1096,23 @@ impl Render for TextViewState {
+                     )
+                 };
+                 let mut revision_changed = false;
++                let mut restore_hint = false;
+                 state.update(cx, |state, cx| {
+                     revision_changed = state
+                         .selection_adapter
+                         .update_layout_revision(state.selection_revision, state.is_selecting);
+                     state.update_bounds(bounds, cx);
++                    restore_hint = state.restore_list_hint(bounds.size.width);
+                     state.apply_search_geometry(cx);
+                     state.compatible_layout_update = false;
+                 });
++                if restore_hint {
++                    // The list clears unmeasured heights in this frame's layout.
++                    let state = state.clone();
++                    window.on_next_frame(move |_, cx| {
++                        state.update(cx, |state, cx| state.apply_list_hint(cx));
++                    });
++                }
+                 if !is_selecting
+                     && ((size_changed
+                         && selection_involves_view
+@@ -1060,6 +1126,13 @@ impl Render for TextViewState {
      }
  }
  
@@ -87,7 +139,7 @@ index 1b124b32..df73281b 100644
  #[derive(Clone, PartialEq, Default)]
  pub(crate) struct ParsedContent {
      pub(crate) document: ParsedDocument,
-@@ -1244,6 +1280,40 @@ mod tests {
+@@ -1244,6 +1317,40 @@ mod tests {
      use crate::text::MarkdownNode;
      use gpui::TestAppContext;
  
@@ -128,3 +180,70 @@ index 1b124b32..df73281b 100644
      #[gpui::test]
      fn exact_source_tracks_displayed_async_revision_and_discards_late_results(
          cx: &mut TestAppContext,
+diff --git a/crates/base/src/text/text_view.rs b/crates/base/src/text/text_view.rs
+index e5f2c999..c91ab23b 100644
+--- a/crates/base/src/text/text_view.rs
++++ b/crates/base/src/text/text_view.rs
+@@ -961,6 +961,62 @@ mod tests {
+         );
+     }
+ 
++    /// #1003: a large document measures only visible blocks. Its unmeasured
++    /// blocks keep an estimated height through the list's first layout and
++    /// through width changes, or the scroll extent covers only what was seen.
++    struct FullWidthTestRoot {
++        text_view: Entity<TextViewState>,
++    }
++
++    impl Render for FullWidthTestRoot {
++        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
++            div()
++                .size_full()
++                .overflow_hidden()
++                .child(TextView::new(&self.text_view).scrollable(true))
++        }
++    }
++
++    #[gpui::test]
++    fn large_document_keeps_estimated_extent_after_layout_and_resize(cx: &mut TestAppContext) {
++        cx.update(crate::init);
++        const BLOCKS: usize = 600;
++        let (root, cx) = cx.add_window_view(|_, cx| FullWidthTestRoot {
++            text_view: cx.new(|cx| TextViewState::markdown(&document_of(3, 1), cx)),
++        });
++        let cx: &mut VisualTestContext = cx;
++        let settle = |cx: &mut VisualTestContext| {
++            for _ in 0..3 {
++                cx.run_until_parked();
++                cx.update(|window, cx| window.draw(cx).clear(cx));
++            }
++            cx.run_until_parked();
++        };
++        settle(cx);
++        root.update(cx, |root, cx| {
++            root.text_view
++                .update(cx, |state, cx| state.set_text(&document_of(BLOCKS, 1), cx));
++        });
++        settle(cx);
++        let extent = |cx: &mut VisualTestContext| {
++            root.read_with(cx, |root, cx| {
++                let state = root.text_view.read(cx);
++                assert_eq!(state.list_state().item_count(), BLOCKS, "positive control");
++                assert!(state.list_visible_only);
++                f32::from(state.list_state().max_offset_for_scrollbar().y)
++            })
++        };
++        // Every block counts for at least its estimate; measured-only would be
++        // about one viewport.
++        let floor = BLOCKS as f32 * 36. * 0.8;
++        let opened = extent(cx);
++        assert!(opened > floor, "extent after first layout: {opened} <= {floor}");
++        cx.simulate_resize(gpui::size(px(640.), px(480.)));
++        settle(cx);
++        let resized = extent(cx);
++        assert!(resized > floor, "extent after a width change: {resized} <= {floor}");
++    }
++
+     struct StatelessMarkdownRoot {
+         renders: Arc<AtomicUsize>,
+     }
