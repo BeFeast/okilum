@@ -1857,6 +1857,61 @@ impl Reader {
         .detach();
     }
 
+    /// #1003: when the note body's parse lands, and how long the frame that
+    /// first lays it out takes. Diagnostics only; nothing waits on it. One
+    /// watcher per open: a newer note replaces it, so none outlive their note.
+    pub(crate) fn trace_note_body(
+        &mut self,
+        bytes: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.note_body_trace = None;
+        let (Some(trace), Some(started)) = (reader_diagnostics::trace(cx), self.open_started)
+        else {
+            return;
+        };
+        let report = move |window: &mut Window, trace: reader_diagnostics::Trace| {
+            let ms = move |t: std::time::Instant| t.duration_since(started).as_secs_f64() * 1000.;
+            trace.event(
+                "note_open_parsed",
+                serde_json::json!({ "since_open_ms": ms(std::time::Instant::now()), "bytes": bytes }),
+            );
+            // The frame after the parse lays the body out; the next frame starts
+            // when that layout is done.
+            window.on_next_frame(move |window, _| {
+                let frame = std::time::Instant::now();
+                window.on_next_frame(move |_, _| {
+                    let done = std::time::Instant::now();
+                    trace.event(
+                        "note_open_body_painted",
+                        serde_json::json!({
+                            "since_open_ms": ms(done),
+                            "layout_frame_ms": done.duration_since(frame).as_secs_f64() * 1000.,
+                        }),
+                    );
+                });
+            });
+        };
+        // Small notes parse synchronously: they are ready already.
+        if self.content.read(cx).preparation_status().is_some() {
+            report(window, trace);
+            return;
+        }
+        // Reports once; the watcher itself lives until the next open replaces it.
+        let reported = std::rc::Rc::new(std::cell::Cell::new(false));
+        self.note_body_trace =
+            Some(
+                cx.observe_in(&self.content, window, move |_, content, window, cx| {
+                    if reported.get() || content.read(cx).preparation_status().is_none() {
+                        return;
+                    }
+                    reported.set(true);
+                    report(window, trace.clone());
+                }),
+            );
+    }
+
     pub(crate) fn record_usable_document(&mut self, cx: &Context<Self>) {
         if !self.document_ready()
             || !matches!(self.content.read(cx).preparation_status(), Some(Ok(())))

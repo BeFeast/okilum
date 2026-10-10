@@ -1284,6 +1284,10 @@ struct Reader {
     shared_session: Option<reader_session::Shared>,
     shared_version: u64,
     usable_document: bool,
+    /// When the current note was requested, for the `note_open_*` phases (#1003).
+    open_started: Option<std::time::Instant>,
+    /// Watches the current note's parse for `note_open_parsed`; replaced per open.
+    note_body_trace: Option<Subscription>,
     session_directory: Option<PathBuf>,
     session_records: Option<async_channel::Sender<reader_loading::SessionRecord>>,
     last_recorded_document: Option<(PathBuf, String, u64)>,
@@ -1532,6 +1536,8 @@ impl Reader {
             shared_session: None,
             shared_version: 0,
             usable_document: false,
+            open_started: None,
+            note_body_trace: None,
             session_directory: opts.session_directory.clone(),
             session_records: None,
             last_recorded_document: None,
@@ -1974,17 +1980,22 @@ impl Reader {
             self.link_presentations.clone(),
             &self.link_identities,
         );
-        self.content.update(cx, |s, cx| {
-            configured.prepare_state(s, cx);
-            s.set_search_query("", cx);
-            s.set_text_with_source(&source, original_body.map(SharedString::from), cx);
-            if let Some(term) = jump_term {
-                s.set_search_query(term, cx);
-            }
-        });
+        {
+            let _phase = reader_diagnostics::phase(cx, "note_open_set_text");
+            self.content.update(cx, |s, cx| {
+                configured.prepare_state(s, cx);
+                s.set_search_query("", cx);
+                s.set_text_with_source(&source, original_body.map(SharedString::from), cx);
+                if let Some(term) = jump_term {
+                    s.set_search_query(term, cx);
+                }
+            });
+        }
+        self.trace_note_body(source.len(), window, cx);
         self.outline = if self.use_html {
             Vec::new()
         } else {
+            let _phase = reader_diagnostics::phase(cx, "note_open_heading_inventory");
             okilum_core::document_links::HeadingInventory::new(&source)
                 .entries
                 .into_iter()
