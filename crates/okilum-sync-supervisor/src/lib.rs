@@ -6,5 +6,4 @@
 pub mod args;
 pub mod startup;
 
-#[cfg(unix)]
 pub mod serve;

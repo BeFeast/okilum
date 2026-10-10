@@ -453,3 +453,112 @@ fn native_accept_discovering_identifies_the_client_after_it_connects_and_refuses
     eprintln!("transport: server identified the client after connect (same user, policy); untrusted client refused before any I/O; Status passed");
     Ok(())
 }
+
+#[test]
+fn native_idle_waiting_does_not_shorten_the_exchange_budget_of_a_late_client() -> Result<()> {
+    use crate::sidecar::{
+        store::Hint,
+        supervisor::ipc::windows_discovery::{image_path, own_start_time, ImagePolicy},
+    };
+    struct Trust;
+    impl ImagePolicy for Trust {
+        fn verify_image(&self, _: &std::path::Path) -> Result<()> {
+            Ok(())
+        }
+    }
+    let mut b = binding()?;
+    b.supervisor = image_path(unsafe { windows::Win32::System::Threading::GetCurrentProcess() })?;
+    let (accept_wait, exchange) = (Duration::from_millis(1500), Duration::from_secs(4));
+    let serve_once = |b: &Binding| {
+        let probes = Arc::new(AtomicUsize::new(0));
+        let mut server = Server::new(
+            b.clone(),
+            Runtime {
+                probes: probes.clone(),
+                stops: Arc::new(AtomicUsize::new(0)),
+                intents: Arc::new(AtomicUsize::new(0)),
+            },
+        );
+        let s = server.scope().clone();
+        let pipe = PrivatePipe::create(&s)?;
+        let sb = b.clone();
+        let ss = s.clone();
+        let worker = std::thread::spawn(move || -> Result<Duration> {
+            let started = Instant::now();
+            let mut transport = WindowsTransport::accept_discovering_within(
+                sb,
+                ss,
+                pipe,
+                Arc::new(Trust),
+                accept_wait,
+                exchange,
+            )?;
+            server.serve_one(&mut transport)?;
+            Ok(started.elapsed())
+        });
+        Ok::<_, anyhow::Error>((s, worker, probes))
+    };
+    let connect = |b: &Binding, s: &Scope| {
+        let hint = Hint::new(s.generation, own_start_time()?)?;
+        WindowsTransport::connect_discovering(
+            b.clone(),
+            s.clone(),
+            hint,
+            Arc::new(Trust),
+            Instant::now() + Duration::from_secs(10),
+        )
+    };
+
+    // No client within the window: the wait ends at the window, not at the ceiling.
+    let (_s, worker, _probes) = serve_once(&b)?;
+    let waited = Instant::now();
+    ensure!(
+        worker.join().expect("server fixture panicked").is_err(),
+        "no client, yet accepted"
+    );
+    ensure!(
+        waited.elapsed() < accept_wait + Duration::from_secs(2),
+        "the idle wait outlived its window: {:?}",
+        waited.elapsed()
+    );
+
+    // A client in the last moment of the window, then a slow request: the whole exchange
+    // finishes after the accept window has long expired, because its budget began at
+    // connect.
+    let (s, worker, probes) = serve_once(&b)?;
+    std::thread::sleep(accept_wait - Duration::from_millis(400));
+    let mut transport = connect(&b, &s)?;
+    std::thread::sleep(Duration::from_millis(1800)); // beyond accept_wait, within exchange
+    ensure!(
+        exchange_status(&mut transport, &b, &s)? == Status::Running,
+        "status mismatch"
+    );
+    let total = worker.join().expect("server fixture panicked")?;
+    ensure!(
+        total > accept_wait,
+        "the exchange did not outlive the accept window: {total:?}"
+    );
+    ensure!(
+        probes.load(Ordering::SeqCst) == 1,
+        "status did not reach the runtime"
+    );
+
+    // The exchange budget is still real: a client that connects and then stalls past it
+    // is cut off.
+    let (s, worker, probes) = serve_once(&b)?;
+    let _stalled = connect(&b, &s)?;
+    let outcome = worker.join().expect("server fixture panicked");
+    ensure!(
+        outcome.is_err(),
+        "a stalled client held the supervisor forever"
+    );
+    ensure!(
+        probes.load(Ordering::SeqCst) == 0,
+        "the runtime was reached"
+    );
+    eprintln!("transport: accept window ends on time; late client keeps its full exchange budget; stalled client cut off");
+    Ok(())
+}
+fn exchange_status(transport: &mut WindowsTransport, b: &Binding, s: &Scope) -> Result<Status> {
+    exchange(transport, b, &Request::new(s.clone(), Command::Status))
+}

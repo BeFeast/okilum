@@ -40,3 +40,8 @@ jobs:
         Get-Content rust-toolchain.toml; rustup show active-toolchain; if ($LASTEXITCODE) { exit $LASTEXITCODE }; rustc -Vv; if ($LASTEXITCODE) { exit $LASTEXITCODE }
         $a = @('test', '--locked', '-p', $env:PKG); if ($env:FEATURES) { $a += @('--features', $env:FEATURES) }; if ($env:FILTER) { $a += $env:FILTER }; $a += @('--', '--nocapture', '--test-threads=1'); & cargo @a; exit $LASTEXITCODE
       name: Run native tests
+    # #1013: the supervisor's run loop against a real Job Object tree and named pipe.
+    - shell: pwsh
+      run: |
+        cargo test --locked -p okilum-sync-supervisor -- --nocapture --test-threads=1; exit $LASTEXITCODE
+      name: Run native supervisor tests
