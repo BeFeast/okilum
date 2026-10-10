@@ -1,7 +1,8 @@
 # Linux releases (Arch / Omarchy / CachyOS)
 
-Okilum is distributed as the `okilum` x86_64 Arch package. Updates use
-`pacman -Syu`; the Linux app has no **Check for Updates** menu. A desktop entry
+Okilum is distributed as the `okilum` x86_64 Arch package. Updates arrive with
+your normal system upgrade (`sudo pacman -Syu`, or `omarchy update` on Omarchy);
+the Linux app has no **Check for Updates** menu. A desktop entry
 and icon are included. The Markdown MIME association is available through
 **Open With**, but installation does not replace your default application.
 
@@ -37,7 +38,10 @@ SigLevel = Required DatabaseRequired
 Server = https://updates.befeast.com/okilum/arch/beta/$arch
 ```
 
-Install with a full system upgrade (Arch partial upgrades are unsupported):
+Then install. The command depends on the distribution.
+
+**Arch Linux, CachyOS:** install with a full system upgrade (Arch partial upgrades
+are unsupported):
 
 ```sh
 sudo pacman -Syu okilum
@@ -45,9 +49,26 @@ pacman -Q okilum
 okilum
 ```
 
-Subsequent builds arrive through `sudo pacman -Syu`. A compatible Vulkan driver
-is required by GPUI; Omarchy normally already has one. Open a vault using the
-app's folder picker, or `okilum /path/to/vault`.
+Subsequent builds arrive through `sudo pacman -Syu`.
+
+**Omarchy:** Omarchy blocks direct `pacman -Syu` with its update guard and asks
+for `omarchy update`, which also takes a snapshot and runs its migrations. Upgrade
+the system the Omarchy way first (this also reads the new repository), then
+install the package on its own:
+
+```sh
+omarchy update
+sudo pacman -S okilum
+pacman -Q okilum
+okilum
+```
+
+`pacman -S` without `-u` installs only Okilum, and the guard allows it. Subsequent
+builds arrive through `omarchy update`. Do not bypass the guard
+(`OMARCHY_ALLOW_DIRECT_PACMAN=1`) to install Okilum.
+
+A compatible Vulkan driver is required by GPUI; Omarchy normally already has one.
+Open a vault using the app's folder picker, or `okilum /path/to/vault`.
 
 ## Stable channel
 
@@ -94,7 +115,8 @@ and verifying the new fingerprint before changing the configured signer.
 
 ## Owner acceptance
 
-On Omarchy, install beta N and confirm `pacman -Q okilum`, application launch,
-and opening your vault. After the next merge publishes N+1, run `sudo pacman -Syu`,
-confirm the higher version, relaunch and reopen the vault. CI package installation
+On Omarchy, install beta N as above (`omarchy update`, then `sudo pacman -S okilum`)
+and confirm `pacman -Q okilum`, application launch, and opening your vault. After
+the next merge publishes N+1, run `omarchy update`, confirm the higher version,
+relaunch and reopen the vault. CI package installation
 and signature tests do not replace this desktop acceptance step.
