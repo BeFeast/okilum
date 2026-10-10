@@ -7917,6 +7917,7 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "comrak",
+ "crc32fast",
  "euclid",
  "markdown",
  "memchr",
@@ -7941,6 +7942,7 @@ dependencies = [
  "uuid",
  "walkdir",
  "windows-sys 0.61.2",
+ "zip",
 ]
 
 [[package]]

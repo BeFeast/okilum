@@ -40,6 +40,9 @@ sha2 = "0.10"
 base64 = "0.22"
 uuid = { version = "1", features = ["v4"] }
 tempfile = "3"
+# ZIP archives in the Reader (#996). Already in Cargo.lock through velopack; only
+# the zlib-rs deflate backend that flate2 already builds here.
+zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 
 # Portable, independently extractable exact brain archives.
@@ -51,6 +54,8 @@ url = "2"
 # (vendored). The spec harness (#650) measures that parse too. Keep the
 # requirement identical to the vendor's so both resolve to one locked build.
 markdown = "1.0.0"
+# Hand-written ZIP fixtures in archive.rs; already in Cargo.lock.
+crc32fast = "1"
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1", features = ["fs"] }
