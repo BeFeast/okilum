@@ -1,0 +1,12 @@
+[Unit]
+Description=Okilum signer noVNC on 127.0.0.1:6080 (browser view of display :1, reached through SSH)
+Requires=okilum-signer-vnc.service
+After=okilum-signer-vnc.service
+
+[Service]
+User=okilum-signer
+ExecStart=/usr/bin/websockify --web /usr/share/novnc 127.0.0.1:6080 127.0.0.1:5901
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

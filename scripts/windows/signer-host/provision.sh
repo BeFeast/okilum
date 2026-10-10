@@ -24,14 +24,15 @@ HOME_DIR=/home/okilum-signer
 
 echo "$SIMPLYSIGN_SHA256  $installer" | sha256sum -c - >/dev/null
 
-# 1. Packages: signing tools, then a minimal X session for the Qt desktop app.
+# 1. Packages: signing tools, a minimal X session for the Qt desktop app, and node for the
+#    JavaScript actions (checkout, upload-artifact) that host-mode jobs run.
 bash "$here/../install-signer-tools.sh" >/dev/null
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
     tigervnc-standalone-server openbox stalonetray dbus-x11 xauth x11-utils \
     fonts-dejavu-core libgl1 libegl1 libfontconfig1 libxkbcommon-x11-0 libxcb-icccm4 \
     libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-xinerama0 libxcb-xkb1 \
     libxcb-shape0 libxcb-randr0 libxcb-cursor0 libdbus-1-3 libpulse0 libpulse-mainloop-glib0 libxslt1.1 libpcsclite1 \
-    git jq python3 xz-utils >/dev/null
+    novnc python3-websockify git jq python3 xz-utils nodejs >/dev/null
 
 # 2. One unprivileged user owns the desktop, the SimplySign session and the runner, so
 #    the PKCS#11 library reaches the logged-in desktop.
@@ -64,6 +65,7 @@ EOF
 # 4. Desktop on display :1, reachable only from inside the container (SSH tunnel).
 install -m 644 "$here/okilum-signer-vnc.service" /etc/systemd/system/
 install -m 644 "$here/okilum-signer-desktop.service" /etc/systemd/system/
+install -m 644 "$here/okilum-signer-novnc.service" /etc/systemd/system/
 install -m 755 "$here/desktop-session.sh" /usr/local/lib/okilum-signer-desktop-session
 
 # 5. forgejo-runner, pinned. Registration is a separate, repo-scoped step.
@@ -82,5 +84,5 @@ OKILUM_WINDOWS_SIGN_PKCS11_CFG=/etc/okilum-signer/simplysign-pkcs11.cfg
 EOF
 
 systemctl daemon-reload
-systemctl enable --now okilum-signer-vnc.service okilum-signer-desktop.service >/dev/null
+systemctl enable --now okilum-signer-vnc.service okilum-signer-desktop.service okilum-signer-novnc.service >/dev/null
 echo "provisioned $(hostname) ($(cat /etc/machine-id)): $(jsign --version 2>&1 | head -1); $(osslsigncode --version 2>&1 | head -1); runner $(forgejo-runner --version | awk '{print $3}'); SimplySign $(basename "$library")"
