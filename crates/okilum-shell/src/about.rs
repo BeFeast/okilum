@@ -24,9 +24,24 @@ pub(crate) fn show_about(_window: &mut Window, cx: &mut App) {
 /// the product stage (#995).
 fn about_channel() -> String {
     match updater::channel() {
-        _ if cfg!(target_os = "linux") => String::new(),
         channel @ ("Beta" | "Stable") => format!("{channel} channel"),
+        // Linux: a package from an unidentified source says so below.
+        _ if cfg!(target_os = "linux") => String::new(),
         other => other.into(),
+    }
+}
+
+/// Where Linux updates come from (#1036): the pacman repository by name.
+#[cfg(target_os = "linux")]
+fn linux_update_source() -> &'static str {
+    use updater::linux_repo::{current, Source};
+    match current() {
+        Source::Beta => "Updates come from the okilum-beta pacman repository.",
+        Source::Stable => "Updates come from the okilum-stable pacman repository.",
+        Source::Both => {
+            "Both okilum-beta and okilum-stable are enabled in pacman.conf; enable only one."
+        }
+        Source::Unknown => "Updates come from your package manager.",
     }
 }
 
@@ -119,7 +134,16 @@ pub(crate) fn content(cx: &mut App) -> impl IntoElement {
                 div()
                     .text_size(px(12.))
                     .text_color(palette.text_muted)
-                    .child("Updates come from your package manager."),
+                    .child({
+                        #[cfg(target_os = "linux")]
+                        {
+                            linux_update_source()
+                        }
+                        #[cfg(not(target_os = "linux"))]
+                        {
+                            ""
+                        }
+                    }),
             )
         })
         .when(cfg!(windows) && !updater::available(), |view| {
