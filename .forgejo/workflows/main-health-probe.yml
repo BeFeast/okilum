@@ -1,0 +1,25 @@
+# TEMPORARY positive control for #1100: proves the job token can comment with the
+# main-health permissions. Removed before merge.
+name: main-health-probe
+on:
+  push:
+    branches: [ci/main-red-alarm]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: bridge
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Comment on the PR with the job token
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          URL: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}/issues/1100/comments
+        run: |
+          curl -fsS -X POST -H "Authorization: token $TOKEN" -H 'Content-Type: application/json' \
+            -d '{"body":"main-health probe: the job token can comment (run ${{ github.run_number }})."}' "$URL" >/dev/null
+          echo PROBE-OK
