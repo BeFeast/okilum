@@ -275,7 +275,7 @@ fn table_marker<'a>(node: &'a AstNode<'a>, context: &Context<'_>) -> Option<Mark
         }
         offset += line.len();
     }
-    (end > start).then(|| Marker {
+    (end > start).then_some(Marker {
         range: start..end,
         scope: start..end,
         kind: Kind::Table,
