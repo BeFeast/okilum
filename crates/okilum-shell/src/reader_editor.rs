@@ -390,11 +390,15 @@ impl Reader {
                 .searchable(true)
                 .replaceable(false)
                 .soft_wrap(wrap)
-                .wrapping_indent(WrappingIndent::None);
+                .wrapping_indent(WrappingIndent::None)
+                // Hebrew paragraphs align right in notes; code and data files
+                // keep one alignment (S6c, #1034).
+                .paragraph_direction(!plain_file);
             input.set_search_query("", !reader_ui_state::find_case_sensitive(cx), cx);
             input.set_projection_provider(Some(Arc::new(ExactSource)), cx);
             input.set_exact_clipboard_provider(clipboard, cx);
             input.set_value(store.text().to_owned(), window, cx);
+            input.set_direction_exempt_lines(direction_exempt_lines(store.text()));
             input.ensure_highlighter_factory(
                 gpui_component::highlighter::input_highlighter_factory(),
             );
@@ -438,6 +442,11 @@ impl Reader {
             }
         });
         let changed = cx.subscribe(&input, |this, input, _: &SourceMutation, cx| {
+            // Code blocks and tables keep one alignment as they change (S6c).
+            input.update(cx, |state, _| {
+                let lines = direction_exempt_lines(&state.value());
+                state.set_direction_exempt_lines(lines);
+            });
             let Some(editing) = &mut this.editing else {
                 return;
             };
@@ -1048,6 +1057,47 @@ impl Reader {
     }
 }
 
+/// Lines that keep one alignment when paragraphs take their own direction:
+/// fenced code blocks, fences included, and table rows (S6c, #1034). A
+/// right-to-left comment in code or a Hebrew table cell must not move its line.
+fn direction_exempt_lines(source: &str) -> Vec<std::ops::Range<usize>> {
+    let mut lines: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut push = |line: std::ops::Range<usize>| match lines.last_mut() {
+        Some(last) if last.end >= line.start => last.end = last.end.max(line.end),
+        _ => lines.push(line),
+    };
+    let mut fence: Option<(char, usize, usize)> = None;
+    let mut count = 0;
+    for (ix, line) in source.split('\n').enumerate() {
+        count = ix + 1;
+        let indent = line.len() - line.trim_start_matches(' ').len();
+        let body = line
+            .trim_start_matches(' ')
+            .trim_end_matches(['\r', ' ', '\t']);
+        let run = |ch: char| body.chars().take_while(|&c| c == ch).count();
+        if let Some((ch, len, start)) = fence {
+            if indent < 4 && run(ch) >= len && body.chars().all(|c| c == ch) {
+                push(start..ix + 1);
+                fence = None;
+            }
+            continue;
+        }
+        if indent < 4 {
+            if let Some(ch) = ['`', '~'].into_iter().find(|&ch| run(ch) >= 3) {
+                fence = Some((ch, run(ch), ix));
+                continue;
+            }
+            if body.starts_with('|') {
+                push(ix..ix + 1);
+            }
+        }
+    }
+    if let Some((_, _, start)) = fence {
+        push(start..count);
+    }
+    lines
+}
+
 /// The edit that toggles the task checkbox whose marker (`- [ ]`) is at
 /// `marker`: the byte between the brackets becomes `x` or a space.
 fn task_toggle(
@@ -1478,6 +1528,25 @@ impl Reader {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn code_blocks_and_tables_keep_one_alignment() {
+        let source = "שלום\n```\n# הערה\n```\n| שם | Name |\n|---|---|\nטקסט\n~~~~\nopen";
+        assert_eq!(
+            super::direction_exempt_lines(source),
+            [1..6, 7..9],
+            "adjacent ranges merge"
+        );
+        assert!(
+            super::direction_exempt_lines("a\n    ```\nb").is_empty(),
+            "indented: not a fence"
+        );
+        assert_eq!(
+            super::direction_exempt_lines("```\nx\n`````\ny"),
+            vec![std::ops::Range { start: 0, end: 3 }],
+            "longer close fence"
+        );
+    }
+
     #[test]
     fn task_toggle_flips_only_the_box_byte() {
         let source = "- [ ] open\n* [x] done\n+\t[X] tab\n- [y] odd\n";
