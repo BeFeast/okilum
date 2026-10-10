@@ -84,6 +84,13 @@ enum View {
     Fallback(String),
 }
 
+/// The chips of a native Tasks view, by the value `Cached::filter` holds. The
+/// missed-reminders view opens on `FILTER_OVERDUE`, so it names the chip instead
+/// of repeating a position.
+const FILTER_ALL: usize = 0;
+const FILTER_OPEN: usize = 1;
+const FILTER_OVERDUE: usize = 2;
+
 struct Cached {
     source: Arc<str>,
     preferences: Preferences,
@@ -107,7 +114,7 @@ impl Cached {
             preferences,
             today,
             view,
-            filter: 0,
+            filter: FILTER_ALL,
             grouping: None,
         }
     }
@@ -148,7 +155,7 @@ pub(super) fn render(
         (cached.view.clone(), changed)
     });
     if changed && on_overdue {
-        cache.update(cx, |cached, _| cached.filter = 2);
+        cache.update(cx, |cached, _| cached.filter = FILTER_OVERDUE);
     }
     let dashboard = match view {
         View::Markdown => return None,
@@ -192,7 +199,12 @@ pub(super) fn render(
         grouping,
     };
     let filters = ButtonGroup::new("dashboard-filter").children(
-        [(0, "All"), (1, "Open"), (2, "Overdue")].map(|(value, label)| {
+        [
+            (FILTER_ALL, "All"),
+            (FILTER_OPEN, "Open"),
+            (FILTER_OVERDUE, "Overdue"),
+        ]
+        .map(|(value, label)| {
             let cache = cache.clone();
             let reader = weak.clone();
             Button::new(("dashboard-filter", value))
@@ -256,8 +268,8 @@ pub(super) fn render(
                     reader_tasks::dashboard_section(
                         section.title.clone(),
                         match filter {
-                            1 => format!("{}\nnot done", section.query_source),
-                            2 => {
+                            FILTER_OPEN => format!("{}\nnot done", section.query_source),
+                            FILTER_OVERDUE => {
                                 format!("{}\nnot done\ndue before today", section.query_source)
                             }
                             _ => section.query_source.clone(),
