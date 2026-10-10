@@ -8,6 +8,32 @@ fn fixture() -> (tempfile::TempDir, Directory) {
 }
 
 #[test]
+fn windows_network_vault_refusal_explains_read_only_and_what_works() {
+    // Positive control: a local NTFS temp directory still opens for editing.
+    let (_temp, _directory) = fixture();
+    for share in [r"\\server\share\vault", r"\\?\UNC\server\share\vault"] {
+        let Err(error) = Directory::open(Path::new(share)) else {
+            panic!("{share} must be refused");
+        };
+        assert_eq!(
+            error.downcast_ref::<UnsupportedLocation>(),
+            Some(&UnsupportedLocation::Network),
+            "{share}"
+        );
+        let text = error.to_string();
+        assert!(
+            text.contains("network drive") && text.contains("read-only"),
+            "{text}"
+        );
+        assert!(text.contains("Open with default app"), "{text}");
+        assert!(
+            !text.contains("NTFS editing backend") && !text.contains("os error"),
+            "{text}"
+        );
+    }
+}
+
+#[test]
 fn windows_save_lossless_utf8_and_retained_preimage() {
     let (temp, directory) = fixture();
     for (n, source) in [
