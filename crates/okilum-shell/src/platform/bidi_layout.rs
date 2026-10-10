@@ -8,7 +8,7 @@
 //! working from the same logical indices. gpui core stays unpatched: on Windows
 //! the platform is wrapped and only `layout_line` goes through here.
 use gpui::{px, LineLayout};
-use unicode_bidi::{bidi_class, BidiClass, BidiInfo, Level};
+use unicode_bidi::{bidi_class, BidiClass, BidiInfo};
 
 /// Whether `text` has right-to-left characters; other lines are left alone.
 fn has_rtl(text: &str) -> bool {
@@ -25,8 +25,9 @@ struct Cluster {
     glyphs: Vec<(usize, usize, f32)>,
 }
 
-/// Place glyphs in Unicode bidi visual order for a left-to-right line, the
-/// reading direction GPUI asks DirectWrite for.
+/// Place glyphs in Unicode bidi visual order. The paragraph direction comes
+/// from the first strong character, as cosmic-text (Linux) and CoreText do, so
+/// a line that starts in Hebrew reads right to left on every platform.
 pub(crate) fn repair(text: &str, mut layout: LineLayout) -> LineLayout {
     if !has_rtl(text) {
         return layout;
@@ -60,7 +61,7 @@ pub(crate) fn repair(text: &str, mut layout: LineLayout) -> LineLayout {
         clusters[i].width = (end - clusters[i].start).max(0.);
     }
 
-    let bidi = BidiInfo::new(text, Some(Level::ltr()));
+    let bidi = BidiInfo::new(text, None);
     let mut order: Vec<usize> = Vec::with_capacity(clusters.len());
     let mut placed = vec![false; clusters.len()];
     for paragraph in &bidi.paragraphs {
@@ -157,12 +158,29 @@ mod tests {
     }
 
     #[test]
-    fn the_issue_sample_keeps_latin_and_cyrillic_in_order() {
+    fn a_line_that_starts_in_hebrew_reads_right_to_left() {
+        // The #1121 sample: a right-to-left paragraph, like the browser
+        // reference and the Linux and macOS shapers.
         let text = "שלום חברים. Hello friends. Привет друзья.";
         let fixed = repair(text, direct_write(text, 10.));
         let shown = painted(text, &fixed);
-        assert!(shown.starts_with("םירבח םולש"), "{shown}");
-        assert!(shown.contains("Hello friends. Привет друзья."), "{shown}");
+        assert!(
+            shown.starts_with('.'),
+            "the final period goes left: {shown}"
+        );
+        assert!(
+            shown.ends_with('ש'),
+            "the first word starts at the right: {shown}"
+        );
+        assert!(shown.contains("םירבח םולש"), "{shown}");
+        assert!(shown.contains("Hello friends. Привет друзья"), "{shown}");
+    }
+
+    #[test]
+    fn a_markdown_heading_keeps_its_hash_at_the_start_of_the_line() {
+        let text = "# שלום עולם";
+        let fixed = repair(text, direct_write(text, 10.));
+        assert_eq!(painted(text, &fixed), "םלוע םולש #");
     }
 
     #[test]
