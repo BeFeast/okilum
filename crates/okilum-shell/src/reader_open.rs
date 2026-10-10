@@ -660,7 +660,7 @@ pub(crate) fn open_deep_link(link: &str, cx: &mut App) {
             position,
         } => {
             let opts = super::Opts {
-                vault: Some(root),
+                vault: Some(root.clone()),
                 note: Some(rel),
                 landing: Some(position),
                 reusable_roots: reusable_roots(cx),
