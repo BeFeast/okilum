@@ -6803,6 +6803,7 @@ OPTIONS:
     --jump               Open the first search hit, scrolled to the match
     --copy-source        Copy selections as Markdown source instead of plain text
     --html               Render the content pane as HTML instead of Markdown
+    --uninstall-data     Remove this user's Okilum data, keeping your notes (Linux)
     -h, --help           Print this help
 ";
 
@@ -6840,6 +6841,19 @@ fn main() {
             return;
         }
         Ok(reader_open::Command::Launch(opts)) => *opts,
+        Ok(reader_open::Command::UninstallData { assume_yes }) => {
+            #[cfg(target_os = "linux")]
+            std::process::exit(app_footprint::uninstall_data(assume_yes));
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = assume_yes;
+                eprintln!(
+                    "--uninstall-data is for Linux. On Windows use Settings → Apps; on macOS \
+                     use Okilum → Settings → Uninstall Okilum…"
+                );
+                std::process::exit(2);
+            }
+        }
         Err(error) => {
             eprintln!("{error:#}\n\n{USAGE}");
             std::process::exit(2);

@@ -2,9 +2,9 @@
 //! removal on uninstall (#974). The inventory is docs/uninstall.md; the source
 //! gate test below fails when code computes a new base directory that the
 //! inventory and `roots()` do not know about.
-// Only the Windows uninstall hook calls the purge today; the Linux
-// `--uninstall-data` command and the macOS Settings action follow in #974.
-#![cfg_attr(not(windows), allow(dead_code))]
+// Windows runs the purge from the Velopack hook, Linux from
+// `okilum --uninstall-data`; the macOS Settings action follows in #974.
+#![cfg_attr(target_os = "macos", allow(dead_code))]
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -281,6 +281,133 @@ fn base64_encode(bytes: &[u8]) -> String {
     out
 }
 
+/// Why the per-user purge must not run now; nothing is removed.
+#[cfg(target_os = "linux")]
+fn blocked(state: Option<&Path>, units: Option<&Path>) -> Option<String> {
+    if let Some(state) = state {
+        // Another Okilum holds the instance lock while it runs.
+        if let Ok(file) = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(state.join("reader-instance.lock"))
+        {
+            if file.try_lock().is_err() {
+                return Some("Quit Okilum first, then run this again.".into());
+            }
+        }
+        // Sync must be removed through the controller so the hub forgets this
+        // computer and the user service is stopped, never by deleting files.
+        let sync = state.join("sync/setup.json");
+        let active = read_json(&sync).is_some_and(|record| record["retired"] != true);
+        if active {
+            return Some(
+                "Sync is still set up on this computer. Open Okilum → Settings → Sync → \
+                 Remove this computer first, then run this again."
+                    .into(),
+            );
+        }
+    }
+    let unit = units.and_then(|dir| {
+        std::fs::read_dir(dir).ok()?.flatten().find(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            name.starts_with("okilum-syncthing-") && name.ends_with(".service")
+        })
+    });
+    unit.map(|unit| {
+        format!(
+            "The sync service {} is still installed. Open Okilum → Settings → Sync → \
+             Remove this computer first, then run this again.",
+            unit.file_name().to_string_lossy()
+        )
+    })
+}
+
+/// `okilum --uninstall-data [--yes]`: remove this user's Okilum data after
+/// `pacman -Rns okilum` (or before), keeping vaults. Returns the exit code.
+#[cfg(target_os = "linux")]
+pub(crate) fn uninstall_data(assume_yes: bool) -> i32 {
+    use std::io::{BufRead, Write};
+    let state = crate::reader_history::state_directory().ok();
+    let units = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+        .map(|config| config.join("systemd/user"));
+    if let Some(reason) = blocked(state.as_deref(), units.as_deref()) {
+        eprintln!("{reason}\nNothing was removed.");
+        return 2;
+    }
+    let temp = std::env::temp_dir();
+    let mut targets: Vec<PathBuf> = roots().into_iter().filter(|p| p.exists()).collect();
+    targets.extend(search_sessions(&temp));
+    let enrollment = enrollment_lock();
+    targets.extend(enrollment.iter().filter(|p| p.exists()).cloned());
+    let vaults = state.as_deref().map(recorded_vaults).unwrap_or_default();
+    if targets.is_empty() {
+        println!("No Okilum data was found for this user. Nothing to remove.");
+        return 0;
+    }
+    println!("This removes Okilum's settings, history, caches and search index for this user:");
+    for target in &targets {
+        println!("  {}", target.display());
+    }
+    println!("Your notes stay where they are. Unsaved drafts are saved to Documents first.");
+    if !vaults.is_empty() {
+        println!("Vaults Okilum knew about (not touched):");
+        for vault in &vaults {
+            println!("  {}", vault.display());
+        }
+    }
+    if !assume_yes {
+        print!("Remove? [y/N] ");
+        let _ = std::io::stdout().flush();
+        let mut answer = String::new();
+        let _ = std::io::stdin().lock().read_line(&mut answer);
+        if !matches!(answer.trim(), "y" | "Y" | "yes" | "Yes") {
+            println!("Nothing was removed.");
+            return 1;
+        }
+    }
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| temp.clone());
+    let documents = std::env::var_os("XDG_DOCUMENTS_DIR")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| home.join("Documents"));
+    let mut report = purge(&roots(), state.as_deref(), &temp, &documents);
+    for lock in enrollment.into_iter().filter(|p| p.exists()) {
+        match std::fs::remove_file(&lock) {
+            Ok(()) => report.removed.push(lock),
+            Err(error) => report.failed.push((lock, error.to_string())),
+        }
+    }
+    for path in &report.removed {
+        println!("Removed {}", path.display());
+    }
+    for path in &report.exported_drafts {
+        println!("Saved unsaved draft to {}", path.display());
+    }
+    for path in &report.kept_holding_vault {
+        println!("Kept {} because it contains notes", path.display());
+    }
+    for (path, error) in &report.failed {
+        eprintln!("Could not remove {}: {error}", path.display());
+    }
+    if report.failed.is_empty() {
+        0
+    } else {
+        1
+    }
+}
+
+/// Sync enrollment serialises through a lock in `/tmp` (see the sync controller).
+#[cfg(target_os = "linux")]
+fn enrollment_lock() -> Option<PathBuf> {
+    let uid = rustix::process::geteuid().as_raw();
+    Some(PathBuf::from(format!("/tmp/okilum-sync-enrollment-{uid}")))
+}
+
 #[cfg(windows)]
 mod windows {
     use std::process::Command;
@@ -458,6 +585,43 @@ mod tests {
         );
         assert_eq!(again.kept_holding_vault, vec![base.join("cache/okilum")]);
         assert!(inner_vault.join("note.md").exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn uninstall_data_refuses_while_running_or_while_sync_is_set_up() {
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let units = fixture.path().join("systemd/user");
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::create_dir_all(&units).unwrap();
+        assert_eq!(
+            blocked(Some(&state), Some(&units)),
+            None,
+            "positive control: idle and no sync"
+        );
+        // A running Okilum holds the instance lock.
+        let lock = std::fs::File::create(state.join("reader-instance.lock")).unwrap();
+        lock.lock().unwrap();
+        assert!(blocked(Some(&state), Some(&units))
+            .unwrap()
+            .contains("Quit Okilum"));
+        lock.unlock().unwrap();
+        assert_eq!(blocked(Some(&state), Some(&units)), None);
+        write(&state.join("sync/setup.json"), r#"{"retired":false}"#);
+        assert!(blocked(Some(&state), Some(&units))
+            .unwrap()
+            .contains("Sync is still set up"));
+        write(&state.join("sync/setup.json"), r#"{"retired":true}"#);
+        assert_eq!(
+            blocked(Some(&state), Some(&units)),
+            None,
+            "a removed sync no longer blocks"
+        );
+        write(&units.join("okilum-syncthing-abc.service"), "[Unit]");
+        assert!(blocked(Some(&state), Some(&units))
+            .unwrap()
+            .contains("okilum-syncthing-abc.service"));
     }
 
     #[test]

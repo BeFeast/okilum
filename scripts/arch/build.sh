@@ -16,6 +16,7 @@ rustc --version
 source scripts/ci/release-cache.sh
 mkdir -p dist/arch
 cp scripts/arch/PKGBUILD dist/arch/PKGBUILD
+cp scripts/arch/okilum.install dist/arch/okilum.install
 sed -i "s/^pkgver=.*/pkgver=0.1.$OKILUM_BUILD_VERSION/" dist/arch/PKGBUILD
 cd dist/arch
 makepkg --cleanbuild --noconfirm

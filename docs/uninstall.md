@@ -65,20 +65,34 @@ Known residue owned by Windows or Velopack, not by Okilum: Velopack's shared log
 `%LOCALAPPDATA%\velopack\velopack.log` (only written by `Setup.exe`), Explorer's `MuiCache` and `Recent`
 entries. The acceptance snapshot lists them separately.
 
-## Linux (Arch package `okilum`) — next PR
+## Linux (Arch package `okilum`)
 
-- Package files, removed by `pacman -Rns okilum`: `/usr/bin/okilum`,
+Remove in this order, as yourself:
+
+```sh
+okilum --uninstall-data     # per-user data; asks once, keeps your notes
+sudo pacman -Rns okilum     # the package
+```
+
+- **Package files**, removed by pacman: `/usr/bin/okilum`,
   `/usr/share/applications/okilum.desktop`,
   `/usr/share/icons/hicolor/*/apps/okilum.*`, `/usr/share/licenses/okilum/`.
-- Per user: `${XDG_STATE_HOME:-~/.local/state}/okilum/` (including `sync/`),
-  `${XDG_CONFIG_HOME:-~/.config}/okilum/`, `${XDG_CACHE_HOME:-~/.cache}/okilum/`,
-  `/tmp/okilum-search-session-*`, `/tmp/okilum-sync-enrollment-<uid>`, the
-  `okilum-syncthing-<id>.service` user unit (removed through the sync
-  controller, never with `rm`), and `okilum.desktop` in `mimeapps.list` if the
-  user chose it.
-- Planned: `okilum --uninstall-data` removes the per-user part with the same
-  rules, and the package's post-remove message points to it. pacman cannot reach
-  each user's home.
+  The package's `okilum.install` prints the same order on `pre_remove` and the
+  remaining folders on `post_remove`. pacman runs as root and cannot reach each
+  user's home, so it does not delete per-user data itself.
+- **Per user**, removed by `okilum --uninstall-data` (`--yes` skips the one
+  confirmation):
+  - `${XDG_STATE_HOME:-~/.local/state}/okilum/`, `${XDG_CONFIG_HOME:-~/.config}/okilum/`
+    (Brain profile and outboxes too), `${XDG_CACHE_HOME:-~/.cache}/okilum/`;
+  - `/tmp/okilum-search-session-*` and `/tmp/okilum-sync-enrollment-<uid>`.
+- **Refuses, removing nothing,** while Okilum runs (instance lock held) or while
+  Sync is set up: an active `sync/setup.json` or an `okilum-syncthing-*.service`
+  user unit. Sync must be removed in Okilum → Settings → Sync, so the hub forgets
+  this computer and the service is stopped by the controller, never by deleting
+  files.
+- `okilum.desktop` in `~/.config/mimeapps.list`, if the user chose Okilum as the
+  default for Markdown, is the user's own choice and stays. It is harmless once
+  the package is gone.
 
 ## macOS (`com.befeast.okilum`) — last PR
 

@@ -10,6 +10,7 @@ depends=('gcc-libs' 'glibc' 'fontconfig' 'freetype2' 'libxcb' 'libxkbcommon' 'li
 optdepends=('syncthing: sync between devices')
 makedepends=('git' 'cmake' 'pkgconf' 'clang' 'mold' 'librsvg')
 options=('!debug' '!lto')
+install=okilum.install
 
 build() {
     cd "$OKILUM_SOURCE"

@@ -219,6 +219,10 @@ mod tests {
 pub(crate) enum Command {
     Help,
     Launch(Box<super::Opts>),
+    /// Remove this user's Okilum data, keeping vaults (#974).
+    UninstallData {
+        assume_yes: bool,
+    },
 }
 
 pub(crate) fn parse_args(
@@ -236,6 +240,20 @@ pub(crate) fn parse_args(
         }
         if !literal && (arg == "--help" || arg == "-h") {
             return Ok(Command::Help);
+        }
+        if !literal && arg == "--uninstall-data" {
+            // Standalone: never combined with a document or vault launch.
+            let rest: Vec<_> = args.by_ref().collect();
+            return match rest
+                .iter()
+                .map(|a| a.to_str())
+                .collect::<Vec<_>>()
+                .as_slice()
+            {
+                [] => Ok(Command::UninstallData { assume_yes: false }),
+                [Some("--yes")] => Ok(Command::UninstallData { assume_yes: true }),
+                _ => bail!("--uninstall-data accepts only --yes"),
+            };
         }
         let mut value = || {
             args.next()
@@ -920,7 +938,31 @@ mod entry_tests {
         )? {
             Command::Launch(opts) => Ok(*opts),
             Command::Help => bail!("Unexpected help"),
+            Command::UninstallData { .. } => bail!("Unexpected uninstall"),
         }
+    }
+    #[test]
+    fn uninstall_data_is_a_standalone_command() {
+        let command = |args: &[&str]| {
+            parse_args(
+                args.iter().map(std::ffi::OsString::from),
+                super::super::Opts::default(),
+            )
+        };
+        assert!(matches!(
+            command(&["--uninstall-data"]),
+            Ok(Command::UninstallData { assume_yes: false })
+        ));
+        assert!(matches!(
+            command(&["--uninstall-data", "--yes"]),
+            Ok(Command::UninstallData { assume_yes: true })
+        ));
+        assert!(command(&["--uninstall-data", "--vault", "/notes"]).is_err());
+        // After `--` it is an ordinary file name, not the command.
+        assert!(matches!(
+            command(&["--", "--uninstall-data"]),
+            Ok(Command::Launch(_))
+        ));
     }
     #[gpui::test]
     fn ordinary_startup_restores_local_document_and_first_run_opens_entry(cx: &mut TestAppContext) {
