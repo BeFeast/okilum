@@ -31,7 +31,7 @@ index 6ce418e1..0c599ca7 100644
 +            element.prepaint_at(origin, window, cx);
 +            // Clip vertically only: a wide block may scroll sideways.
 +            let far = px(1.0e5);
-+            let clip = Bounds::new(point(origin.x - far, origin.y), size(far * 2., used));
++            let clip = Bounds::new(point(origin.x - far, origin.y), gpui::size(far * 2., used));
              lines.push(block.lines.clone());
 -            elements.push(element);
 +            elements.push((element, clip));
