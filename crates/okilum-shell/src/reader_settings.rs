@@ -911,6 +911,9 @@ impl Render for Settings {
                     .p_6()
                     .child(body),
             )
+            // Confirmations (Uninstall Okilum…) open as dialogs on this window;
+            // without the dialog layer they exist but are never drawn (#1085).
+            .children(Root::render_dialog_layer(window, cx))
             .children(Root::render_notification_layer(window, cx))
     }
 }
@@ -1160,6 +1163,51 @@ mod tests {
             assert!(reader.reminder_prefs_error.is_none());
         });
         std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[gpui::test]
+    fn confirmations_opened_from_settings_are_drawn(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_reduce_motion(true);
+            gpui_component::init(cx);
+            cx.set_global(AppearancePreference(None));
+        });
+        let (root, visual) = cx.add_window_view(|window, cx| {
+            let settings = cx.new(|cx| Settings::new(None, cx));
+            Root::new(settings, window, cx)
+        });
+        visual.run_until_parked();
+        let settings = root.read_with(visual, |root, _| {
+            root.view().clone().downcast::<Settings>().unwrap()
+        });
+        let answer = settings.update_in(visual, |_, window, cx| {
+            crate::reader_confirm::confirm(
+                window,
+                cx,
+                "Uninstall Okilum?",
+                crate::reader_confirm::Body {
+                    intro: vec!["Okilum and its data will be removed.".into()],
+                    items: vec![],
+                    outro: vec![],
+                },
+                "Uninstall",
+            )
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(visual.update(|window, cx| window.has_active_dialog(cx)));
+        assert!(
+            visual.debug_bounds("confirm-action").is_some(),
+            "the Settings window must draw its confirmation"
+        );
+        // Positive control: the drawn dialog answers and closes.
+        let cancel = visual
+            .debug_bounds("cancel-confirm")
+            .expect("cancel button");
+        visual.simulate_click(cancel.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(!visual.update(|window, cx| window.has_active_dialog(cx)));
+        assert_eq!(answer.try_recv(), Ok(false));
     }
 
     #[gpui::test]
