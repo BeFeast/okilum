@@ -27,6 +27,7 @@ mod prepared_links;
 mod quick_open;
 #[cfg(not(all(unix, feature = "brain")))]
 mod reader_app_menu;
+mod reader_archive;
 mod reader_cache;
 mod reader_code;
 mod reader_code_file;
