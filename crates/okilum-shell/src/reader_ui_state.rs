@@ -808,6 +808,18 @@ impl Reader {
         }
     }
 
+    /// A window about to restore its editor opens it for a link instead: at
+    /// the top, not at the last session's scroll (#1049). False when the
+    /// window is not restoring an editor.
+    pub(crate) fn retarget_restored_editor(&mut self) -> bool {
+        if self.ui_state.source.is_none() {
+            return false;
+        }
+        self.ui_state.source = Some([0.; 2]);
+        self.ui_state.source_reader_position = None;
+        true
+    }
+
     pub(crate) fn restoring_source(&self) -> bool {
         self.ui_state.source.is_some()
             || self.ui_state.source_position_pending

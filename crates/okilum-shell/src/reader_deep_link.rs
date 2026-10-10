@@ -101,13 +101,10 @@ impl Reader {
             return;
         }
         let rel = self.current_rel.clone();
-        if self.ui_state.source.is_none() {
+        if !self.retarget_restored_editor() {
             self.open_link(&rel, position, window, cx);
             return;
         }
-        // The saved editor scroll belonged to the last session, not the link.
-        self.ui_state.source = Some([0.; 2]);
-        self.ui_state.source_reader_position = None;
         self.pending_link_edit = Some(EditLanding {
             generation: None,
             fragment: position.heading.is_some() || position.block.is_some(),
@@ -180,7 +177,6 @@ impl Reader {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
-    use gpui_component::input::RopeExt as _;
     use std::time::Duration;
 
     fn at(line: u32, column: Option<u32>) -> Position {
