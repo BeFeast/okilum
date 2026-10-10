@@ -11,6 +11,8 @@ def verify(app):
     info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
     assert info['LSMinimumSystemVersion'] == '12.0'
     assert 'SUFeedURL' not in info, 'QA bundle must not use the arm64 feed'
+    schemes = [s for t in info.get('CFBundleURLTypes', []) for s in t.get('CFBundleURLSchemes', [])]
+    assert schemes == ['okilum'], f'okilum: links are not registered: {schemes}'
     inspected = set()
     for path in (app / 'Contents').rglob('*'):
         if not path.is_file() or path.is_symlink():
