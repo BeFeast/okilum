@@ -48,8 +48,11 @@ Checked { dotnet "$tools/tools/net8.0/any/vpk.dll" pack --packId BeFeast.Okilum 
 if (!(Get-ChildItem target/windows-release -Filter '*.nupkg')) { throw 'Packager produced no package' }
 # What Velopack actually packed, not what was meant to go in.
 Add-Type -AssemblyName System.IO.Compression.FileSystem
-$full = Get-ChildItem target/windows-release -Filter '*-full.nupkg' | Select-Object -First 1
-if (!$full) { throw 'Packager produced no full package' }
+# Exactly this build's package: a stale one from an earlier run in the same workspace
+# must not stand in for it.
+$full = @(Get-ChildItem target/windows-release -Filter "BeFeast.Okilum-$($env:OKILUM_RELEASE_VERSION)-$channel-full.nupkg")
+if ($full.Count -ne 1) { throw "Expected one full package for $($env:OKILUM_RELEASE_VERSION), found $($full.Count)" }
+$full = $full[0]
 $zip = [System.IO.Compression.ZipFile]::OpenRead($full.FullName)
 try {
     if (!($zip.Entries | Where-Object { $_.FullName -eq 'lib/app/okilum-sync-supervisor.exe' })) {
