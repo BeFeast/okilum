@@ -354,10 +354,18 @@ impl Palette {
         }
     }
 
+    /// Drops the rows with the query that produced them: the palette closed, was
+    /// reopened, or the vault changed underneath it.
     pub fn invalidate(&mut self) {
-        self.generation = self.generation.wrapping_add(1);
+        self.supersede();
         self.rows.clear();
         self.snippets.clear();
+    }
+
+    /// A newer query replaces the running one. Its rows stay on screen until the
+    /// answer arrives, so a keystroke never flashes an empty list (#1006).
+    fn supersede(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
         self.selected = 0;
         self.pending = false;
     }
@@ -397,6 +405,8 @@ impl Reader {
             input.set_value("", window, cx);
             input.focus(window, cx);
         });
+        // An explicit open starts clean, also when it switches the mode.
+        self.quick_open.invalidate();
         self.refresh_quick_open(cx);
     }
 
@@ -424,10 +434,11 @@ impl Reader {
 
     pub(super) fn refresh_quick_open(&mut self, cx: &mut Context<Self>) {
         self.clear_hover(cx);
-        self.quick_open.invalidate();
         if !self.quick_open.open {
+            self.quick_open.invalidate();
             return;
         }
+        self.quick_open.supersede();
         self.quick_open.pending = true;
         self.quick_open.message = "Searching…".into();
         self.start_quick_open_query(cx);
@@ -546,8 +557,14 @@ impl Reader {
                             this.quick_open.rows = rows;
                             this.quick_open.snippets = snippets;
                         }
-                        Err(error) => this.quick_open.message = error,
+                        Err(error) => {
+                            this.quick_open.rows.clear();
+                            this.quick_open.snippets.clear();
+                            this.quick_open.message = error;
+                        }
                     }
+                    // The arrows may have moved over the previous rows meanwhile.
+                    this.quick_open.selected = 0;
                     this.quick_open.scroll.scroll_to_top_of_item(0);
                     cx.notify();
                 }
@@ -600,8 +617,14 @@ impl Reader {
             });
             return;
         }
+        self.open_quick_open_row(self.quick_open.selected, window, cx);
+    }
+
+    /// Opens the row as shown, which during a query may still belong to the
+    /// previous text: clicking what is on screen opens it (#1006).
+    fn open_quick_open_row(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.quick_open.accept_when_ready = None;
-        let Some(hit) = self.quick_open.rows.get(self.quick_open.selected).cloned() else {
+        let Some(hit) = self.quick_open.rows.get(ix).cloned() else {
             return;
         };
         let jump = if self.quick_open.full_text {
@@ -698,7 +721,7 @@ impl Reader {
                                         && this.watcher_generation == inventory
                                     {
                                         this.quick_open.selected = ix;
-                                        this.accept_quick_open(window, cx);
+                                        this.open_quick_open_row(ix, window, cx);
                                     }
                                 });
                             })
@@ -1161,7 +1184,10 @@ mod tests {
                 .update(cx, |input, cx| input.set_value("reading", window, cx));
             v.refresh_quick_open(cx);
             assert!(v.quick_open.running, "the final query is still in flight");
-            assert!(v.quick_open.rows.is_empty());
+            assert!(
+                !v.quick_open.rows.is_empty(),
+                "the previous rows stay while the query runs"
+            );
         });
         visual.simulate_keystrokes("enter");
         reader.update(visual, |v, _| {
@@ -1220,6 +1246,137 @@ mod tests {
             });
             reader.update_in(visual, |v, window, cx| v.close_quick_open(window, cx));
         }
+    }
+
+    #[gpui::test]
+    fn content_results_stay_on_screen_until_the_next_query_answers(cx: &mut TestAppContext) {
+        // #1006: a keystroke on a frequent word blanked the list for ~0.3 s.
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        for ix in 0..6 {
+            std::fs::write(
+                root.join(format!("Common {ix}.md")),
+                "# Common\n\nmeridia text\n",
+            )
+            .unwrap();
+        }
+        std::fs::write(root.join("Rare.md"), "# Rare\n\nmeridian only here\n").unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("Common 0.md".into()),
+                        index_dir: Some(fixture.path().join("index")),
+                        session_directory: Some(fixture.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        reader.update_in(visual, |v, window, cx| {
+            assert!(v.searcher.is_some(), "index must publish before searching");
+            v.open_quick_open(true, window, cx);
+            v.quick_open
+                .input
+                .update(cx, |input, cx| input.set_value("meridia", window, cx));
+            v.refresh_quick_open(cx);
+        });
+        visual.run_until_parked();
+        let before: Vec<String> = reader.update(visual, |v, _| {
+            let paths: Vec<_> = v
+                .quick_open
+                .rows
+                .iter()
+                .map(|hit| hit.path.clone())
+                .collect();
+            assert_eq!(paths.len(), 6, "the frequent word finds the common notes");
+            paths
+        });
+
+        let (release, hold) = async_channel::bounded(1);
+        reader.update_in(visual, |v, window, cx| {
+            v.quick_open.hold_query = Some(hold);
+            v.quick_open.selected = 3;
+            v.quick_open
+                .input
+                .update(cx, |input, cx| input.set_value("meridian", window, cx));
+            v.refresh_quick_open(cx);
+        });
+        visual.run_until_parked();
+        reader.update(visual, |v, _| {
+            assert!(v.quick_open.running, "the new query is still in flight");
+            let paths: Vec<_> = v
+                .quick_open
+                .rows
+                .iter()
+                .map(|hit| hit.path.clone())
+                .collect();
+            assert_eq!(paths, before, "the previous results stay while it runs");
+            assert_eq!(v.quick_open.snippets.len(), before.len());
+            assert_eq!(
+                v.quick_open.selected, 0,
+                "a new query restarts the selection"
+            );
+        });
+        // A row on screen can be clicked even though it answers the previous text.
+        reader.update_in(visual, |v, window, cx| v.open_quick_open_row(1, window, cx));
+        visual.run_until_parked();
+        reader.update(visual, |v, _| {
+            assert!(!v.quick_open.open);
+            assert_eq!(v.current_rel, before[1]);
+        });
+        release.try_send(()).unwrap();
+        visual.run_until_parked();
+
+        // Positive control: once the answer arrives the rows are replaced, so the
+        // check above could have failed.
+        let (release, hold) = async_channel::bounded(1);
+        reader.update_in(visual, |v, window, cx| {
+            v.open_quick_open(true, window, cx);
+            v.quick_open
+                .input
+                .update(cx, |input, cx| input.set_value("meridia", window, cx));
+            v.refresh_quick_open(cx);
+        });
+        visual.run_until_parked();
+        reader.update_in(visual, |v, window, cx| {
+            assert_eq!(v.quick_open.rows.len(), 6);
+            v.quick_open.hold_query = Some(hold);
+            v.quick_open
+                .input
+                .update(cx, |input, cx| input.set_value("meridian", window, cx));
+            v.refresh_quick_open(cx);
+            v.quick_open.selected = 2;
+        });
+        visual.run_until_parked();
+        release.try_send(()).unwrap();
+        visual.run_until_parked();
+        reader.update_in(visual, |v, window, cx| {
+            let paths: Vec<_> = v
+                .quick_open
+                .rows
+                .iter()
+                .map(|hit| hit.path.clone())
+                .collect();
+            assert_eq!(paths, ["Rare.md"], "the answer replaces the previous rows");
+            assert_eq!(v.quick_open.selected, 0);
+            // Reopening, like closing, never shows rows of an earlier session.
+            v.open_quick_open(true, window, cx);
+            assert!(v.quick_open.rows.is_empty());
+        });
     }
 
     #[gpui::test]
@@ -1318,27 +1475,39 @@ mod tests {
         reader.update(visual, |v, cx| {
             assert_eq!(v.quick_open.input.read(cx).value().to_string(), "Note 4998");
             assert!(v.quick_open.running);
-            assert!(v.quick_open.rows.is_empty());
+            assert_eq!(
+                v.quick_open.rows[0].path, "area/Note 4999.md",
+                "the previous rows stay until the final query answers"
+            );
         });
         release.try_send(()).unwrap();
         visual.run_until_parked();
-        reader.update_in(visual, |v, _, cx| {
+        reader.update_in(visual, |v, window, cx| {
             assert_eq!(v.quick_open.rows[0].path, "area/Note 4998.md");
+            v.quick_open
+                .input
+                .update(cx, |input, cx| input.set_value("Note 25", window, cx));
             v.refresh_quick_open(cx);
             v.watcher_generation += 1;
         });
         visual.run_until_parked();
-        reader.update(visual, |v, cx| {
-            assert!(
-                v.quick_open.rows.is_empty(),
+        reader.update_in(visual, |v, window, cx| {
+            assert_eq!(
+                v.quick_open.rows[0].path, "area/Note 4998.md",
                 "old inventory result rejected"
             );
+            v.quick_open
+                .input
+                .update(cx, |input, cx| input.set_value("Note 1", window, cx));
             v.refresh_quick_open(cx);
             v.vault_root = PathBuf::from("replacement-root");
         });
         visual.run_until_parked();
         reader.update_in(visual, |v, window, cx| {
-            assert!(v.quick_open.rows.is_empty(), "old root result rejected");
+            assert_eq!(
+                v.quick_open.rows[0].path, "area/Note 4998.md",
+                "old root result rejected"
+            );
             v.refresh_quick_open(cx);
             v.close_quick_open(window, cx);
         });
