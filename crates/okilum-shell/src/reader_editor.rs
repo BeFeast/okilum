@@ -3,7 +3,8 @@ mod live_preview;
 use super::*;
 use crate::platform::labels::Os;
 use gpui_component::input::projection::{
-    ActiveSource, ProjectionProvider, SourceClick, SourceMutation, SourceProjection, SourceSnapshot,
+    ActiveSource, MarkerClick, MarkerKind, ProjectionProvider, SourceClick, SourceMutation,
+    SourceProjection, SourceSnapshot,
 };
 use gpui_component::input::{Editor, EditorState, WrappingIndent};
 
@@ -551,6 +552,27 @@ impl Reader {
         if store.dirty() {
             reader_toast::transient("Unsaved changes restored", window, cx);
         }
+        // A click on a Live Preview task checkbox is one source edit and one
+        // undo step; the caret stays where it was (S5, #1034).
+        let toggled = cx.subscribe_in(
+            &input,
+            window,
+            move |_, input, click: &MarkerClick, window, cx| {
+                if !matches!(click.kind, MarkerKind::Task { .. })
+                    || input.read(cx).source_stamp() != click.stamp
+                {
+                    return;
+                }
+                input.update(cx, |state, cx| {
+                    let source = state.value().to_string();
+                    if let Some((range, text)) =
+                        task_toggle(&source, click.range.start.0..click.range.end.0)
+                    {
+                        state.replace_source_range(range, text, window, cx);
+                    }
+                });
+            },
+        );
         let (menu_facts, menu_watch) = reader_reminder::MenuFacts::watch(&input, cx);
         self.editing = Some(Editing {
             store,
@@ -566,7 +588,7 @@ impl Reader {
             saved_at: None,
             current_input,
             menu_facts,
-            _subscriptions: vec![changed, blur, clicked, highlighting, menu_watch],
+            _subscriptions: vec![changed, blur, clicked, toggled, highlighting, menu_watch],
         });
         self.set_live_preview(self.ui_state.live_preview, window, cx);
         self.start_editor_layout_diagnostics(input.clone(), cx);
@@ -1026,6 +1048,25 @@ impl Reader {
     }
 }
 
+/// The edit that toggles the task checkbox whose marker (`- [ ]`) is at
+/// `marker`: the byte between the brackets becomes `x` or a space.
+fn task_toggle(
+    source: &str,
+    marker: std::ops::Range<usize>,
+) -> Option<(std::ops::Range<usize>, &'static str)> {
+    let text = source.get(marker.clone())?;
+    let open = text.find('[')?;
+    let at = marker.start + open + 1;
+    if source.as_bytes().get(at + 1) != Some(&b']') {
+        return None;
+    }
+    match source.as_bytes()[at] {
+        b' ' => Some((at..at + 1, "x")),
+        b'x' | b'X' => Some((at..at + 1, " ")),
+        _ => None,
+    }
+}
+
 fn same_move_root(a: &Path, b: &Path) -> bool {
     a == b
         || a.canonicalize()
@@ -1437,6 +1478,15 @@ impl Reader {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn task_toggle_flips_only_the_box_byte() {
+        let source = "- [ ] open\n* [x] done\n+\t[X] tab\n- [y] odd\n";
+        assert_eq!(super::task_toggle(source, 0..5), Some((3..4, "x")));
+        assert_eq!(super::task_toggle(source, 11..16), Some((14..15, " ")));
+        assert_eq!(super::task_toggle(source, 22..27), Some((25..26, " ")));
+        assert_eq!(super::task_toggle(source, 32..37), None, "not a task box");
+        assert_eq!(super::task_toggle(source, 0..99), None, "stale range");
+    }
 
     /// #873: «Open in ▸» never hands an editor a stale file — a dirty draft
     /// is saved first — and passes the caret line; other notes are left alone.

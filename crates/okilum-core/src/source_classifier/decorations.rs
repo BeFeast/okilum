@@ -16,6 +16,12 @@ pub enum Kind {
     /// A top-level fenced or indented code block: a quiet row background only.
     /// Its literal contents are never classified.
     CodeBlock,
+    /// A bullet task item's `- [ ]` / `- [x]`, painted as a checkbox (S5, #1034).
+    /// Its scope is the marker alone: the checkbox stays while the caret is in
+    /// the task text and reveals only with the caret inside the marker.
+    Task {
+        checked: bool,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -61,6 +67,13 @@ pub(super) fn extract<'a>(root: &'a AstNode<'a>, context: &Context<'_>) -> Optio
                     scope,
                     kind: Kind::Unordered { depth },
                 });
+            }
+            NodeValue::TaskItem(symbol) => {
+                // An unexpected shape leaves this task raw; it does not cost the
+                // note its other decorations.
+                if let Some(marker) = task_marker(node, context, symbol.is_some()) {
+                    markers.push(marker);
+                }
             }
             NodeValue::BlockQuote => {
                 // An unsupported quote prefix leaves that quote raw; it does not
@@ -235,6 +248,41 @@ fn validate_ranges(markers: &[Marker], context: &Context<'_>) -> Option<()> {
     Some(())
 }
 
+/// `- [ ]` of a bullet task item, exactly as written: bullet, whitespace,
+/// `[`, one of ` xX`, `]`, then whitespace or the end of the line.
+fn task_marker<'a>(node: &'a AstNode<'a>, context: &Context<'_>, checked: bool) -> Option<Marker> {
+    let scope = context.range(node)?;
+    let raw = context.source.get(scope.clone())?;
+    let bytes = raw.as_bytes();
+    if !matches!(bytes.first(), Some(b'-' | b'+' | b'*')) {
+        return None;
+    }
+    let gap = bytes[1..]
+        .iter()
+        .take_while(|b| matches!(b, b' ' | b'\t'))
+        .count();
+    let open = 1 + gap;
+    if gap == 0 || bytes.get(open) != Some(&b'[') || bytes.get(open + 2) != Some(&b']') {
+        return None;
+    }
+    let mark = *bytes.get(open + 1)?;
+    if !matches!(mark, b' ' | b'x' | b'X') || (mark != b' ') != checked {
+        return None;
+    }
+    if bytes
+        .get(open + 3)
+        .is_some_and(|b| !matches!(b, b' ' | b'\t' | b'\r' | b'\n'))
+    {
+        return None;
+    }
+    let range = scope.start..scope.start + open + 3;
+    Some(Marker {
+        range: range.clone(),
+        scope: range,
+        kind: Kind::Task { checked },
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,11 +326,39 @@ mod tests {
                 Kind::Unordered { depth: 3 },
                 Kind::Quote { depth: 1 },
                 Kind::Quote { depth: 1 },
+                Kind::Task { checked: false },
             ]
         );
         for marker in markers {
             assert!(source.source().get(marker.range.clone()).is_some());
         }
+    }
+
+    #[test]
+    fn task_markers_cover_bullet_and_box_and_reveal_only_inside() {
+        let text = "- [ ] open\n* [x] done\n+\t[X] tab\n- [ ]\n1. [ ] ordered\n- [y] not a task\n";
+        let source = snapshot(text, 1);
+        let classified = classify(&source);
+        let tasks: Vec<_> = classified
+            .decorations_for(&source)
+            .unwrap()
+            .iter()
+            .filter_map(|m| match m.kind {
+                Kind::Task { checked } => {
+                    Some((&text[m.range.clone()], checked, m.scope == m.range))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            tasks,
+            [
+                ("- [ ]", false, true),
+                ("* [x]", true, true),
+                ("+\t[X]", true, true),
+                ("- [ ]", false, true)
+            ]
+        );
     }
 
     #[test]

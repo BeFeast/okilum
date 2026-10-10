@@ -190,6 +190,9 @@ impl CachedProvider {
                         }
                         source_classifier::decorations::Kind::ThematicBreak => MarkerKind::Rule,
                         source_classifier::decorations::Kind::CodeBlock => MarkerKind::CodeBlock,
+                        source_classifier::decorations::Kind::Task { checked } => {
+                            MarkerKind::Task { checked }
+                        }
                     },
                 })
                 .collect(),
