@@ -48,8 +48,9 @@ pub struct CachedProvider {
     classified: Classification,
     retained: Mutex<RetainedPresentation>,
     links: Vec<source_classifier::NoteLink>,
-    /// Tables of the classified revision, with their exact bytes, so a
-    /// later revision can find them before it is classified (S7, #936).
+    /// Rendered blocks (tables, images) of the classified revision, with their
+    /// exact bytes, so a later revision can find them before it is classified
+    /// (S7, #936).
     tables: Vec<(Range<usize>, String)>,
 }
 
@@ -84,7 +85,7 @@ impl CachedProvider {
             .decorations_for(&snapshot)
             .unwrap_or_default()
             .iter()
-            .filter(|m| m.kind == source_classifier::decorations::Kind::Table)
+            .filter(|m| is_block(&m.kind))
             .filter_map(|m| {
                 Some((
                     m.range.clone(),
@@ -202,7 +203,7 @@ impl CachedProvider {
                 .decorations_for(&current)
                 .unwrap_or_default()
                 .iter()
-                .filter(|m| m.kind != source_classifier::decorations::Kind::Table)
+                .filter(|m| !is_block(&m.kind))
                 .map(|m| ProjectionMarker {
                     range: SourceByte(m.range.start)..SourceByte(m.range.end),
                     scope: SourceByte(m.scope.start)..SourceByte(m.scope.end),
@@ -218,7 +219,8 @@ impl CachedProvider {
                         source_classifier::decorations::Kind::Task { checked } => {
                             MarkerKind::Task { checked }
                         }
-                        source_classifier::decorations::Kind::Table => unreachable!("filtered"),
+                        source_classifier::decorations::Kind::Table
+                        | source_classifier::decorations::Kind::Image => unreachable!("filtered"),
                     },
                 })
                 .collect(),
@@ -230,8 +232,16 @@ impl CachedProvider {
     }
 }
 
+/// Decorations Live Preview draws as rendered blocks: tables and images.
+fn is_block(kind: &source_classifier::decorations::Kind) -> bool {
+    matches!(
+        kind,
+        source_classifier::decorations::Kind::Table | source_classifier::decorations::Kind::Image
+    )
+}
+
 impl CachedProvider {
-    /// Table ranges in `text`, the current revision. The classified revision
+    /// Rendered block ranges (tables, images) in `text`, the current revision. The classified revision
     /// gives them exactly; a newer one, not yet classified, finds each table
     /// by its exact bytes nearest its old place, so tables stay rendered while
     /// typing elsewhere. A table that changed is not found and shows raw.
@@ -239,7 +249,7 @@ impl CachedProvider {
         if let Ok(markers) = self.classified.decorations_for(current) {
             return markers
                 .iter()
-                .filter(|m| m.kind == source_classifier::decorations::Kind::Table)
+                .filter(|m| is_block(&m.kind))
                 .map(|m| m.range.clone())
                 .collect();
         }
@@ -261,7 +271,7 @@ impl CachedProvider {
     }
 }
 
-/// Rendered table blocks: every table not touched by the caret, selection,
+/// Rendered blocks: every table or image not touched by the caret, selection,
 /// composition or replacement (edges included), by whole projected lines.
 fn table_blocks(
     text: &str,

@@ -402,6 +402,13 @@ impl Reader {
             .flatten();
         let language = code.unwrap_or(if plain_file { "text" } else { "markdown" });
         let wrap = code.is_none() || reader_ui_state::code_soft_wrap(cx);
+        let block_renderer = (!plain_file).then(|| {
+            live_blocks(
+                self.vault_root.clone(),
+                self.current_rel.clone(),
+                cx.entity().downgrade(),
+            )
+        });
         let input = cx.new(|cx| {
             let mut input = EditorState::new(window, cx)
                 .document_newlines(true)
@@ -420,9 +427,7 @@ impl Reader {
             input.set_exact_clipboard_provider(clipboard, cx);
             input.set_value(store.text().to_owned(), window, cx);
             input.set_direction_exempt_lines(direction_exempt_lines(store.text()));
-            if !plain_file {
-                input.set_block_renderer(Some(Rc::new(live_table)));
-            }
+            input.set_block_renderer(block_renderer);
             input.ensure_highlighter_factory(
                 gpui_component::highlighter::input_highlighter_factory(),
             );
@@ -1081,29 +1086,89 @@ impl Reader {
     }
 }
 
-/// A Live Preview table, drawn like the Reader draws it (S7, #936). The
-/// element is display only: a click lands on the editor, which puts the caret
-/// in the table and reveals its source.
-fn live_table(
-    block: &gpui_component::input::projection::ProjectionBlock,
-    source: &str,
-    _width: Pixels,
-    _window: &mut Window,
-    cx: &mut App,
-) -> AnyElement {
-    let mut style = reader_text_style(cx.theme());
-    style.heading_base_font_size = px(reader_ui_state::font_size(cx));
-    // The first line keeps two identical tables apart.
-    let id = SharedString::from(format!("live-table-{}-{}", block.key, block.lines.start));
-    TextView::markdown(id, source.to_owned())
-        .selectable(false)
-        // A click reveals the table's source; links open from there, never
-        // straight to the system handler.
-        .on_link_click(|_, _, _, _| {})
-        .style(style)
-        .text_size(px(reader_ui_state::font_size(cx)))
-        .w_full()
-        .into_any_element()
+/// Live Preview's rendered blocks (tables, images; S7, #936), drawn the way
+/// Reader draws them: the block's Markdown is prepared like a Reader document
+/// (embeds and relative images resolved against the vault), once per block
+/// content, and shown through the Reader's plugins. Display only: a click
+/// lands on the editor, which puts the caret in the block and reveals its
+/// source; links do not open from here.
+fn live_blocks(
+    root: PathBuf,
+    rel: String,
+    reader: WeakEntity<Reader>,
+) -> gpui_component::input::projection::BlockRenderer {
+    // Prepared Markdown per block content, for the vault it was prepared
+    // against: a rescanned vault (a new image) prepares again.
+    let prepared = Rc::new(std::cell::RefCell::new((
+        None::<Arc<okilum_core::vault::Vault>>,
+        std::collections::HashMap::<u64, SharedString>::new(),
+    )));
+    Rc::new(move |block, source, _width, window, cx| {
+        let Some(this) = reader.upgrade() else {
+            return div().into_any_element();
+        };
+        let (vault, states, identities) = {
+            let this = this.read(cx);
+            (
+                this.vault.clone(),
+                this.link_presentations.clone(),
+                this.link_identities.clone(),
+            )
+        };
+        let markdown = {
+            let mut prepared = prepared.borrow_mut();
+            if !prepared
+                .0
+                .as_ref()
+                .is_some_and(|known| Arc::ptr_eq(known, &vault))
+            {
+                *prepared = (Some(vault.clone()), Default::default());
+            }
+            prepared
+                .1
+                .entry(block.key)
+                .or_insert_with(|| {
+                    okilum_core::render::reader_document_from_source(&vault, &rel, source)
+                        .rendered
+                        .into()
+                })
+                .clone()
+        };
+        let font_size = px(reader_ui_state::font_size(cx));
+        // A missing image must not hide its source behind a blank row.
+        if markdown.contains("okilum-asset://unavailable") {
+            return div()
+                .text_size(font_size)
+                .text_color(cx.theme().muted_foreground)
+                .child(format!("Image unavailable \u{b7} {source}"))
+                .into_any_element();
+        }
+        let mut style = reader_text_style(cx.theme());
+        style.heading_base_font_size = font_size;
+        // The first line keeps two identical blocks apart.
+        let id = SharedString::from(format!("live-block-{}-{}", block.key, block.lines.start));
+        div()
+            // At least one line while an image loads: one height change, not
+            // a shrink to padding and a grow.
+            .min_h(window.line_height())
+            .w_full()
+            .child(
+                reader_plugins(
+                    root.clone(),
+                    TextView::markdown(id, markdown),
+                    reader.clone(),
+                    SelectionFormat::default(),
+                    states,
+                    &identities,
+                )
+                .selectable(false)
+                .on_link_click(|_, _, _, _| {})
+                .style(style)
+                .text_size(font_size)
+                .w_full(),
+            )
+            .into_any_element()
+    })
 }
 
 /// Lines that keep one alignment when paragraphs take their own direction:
