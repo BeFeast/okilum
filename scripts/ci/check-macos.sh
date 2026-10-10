@@ -52,10 +52,12 @@ done
 run_tests okilum-shell --bins platform::exact_macos_clipboard::native_tests
 run_tests okilum-shell --bins reader_replay::
 # #1110 (AGENTS 9a): first run → choose a vault → a window always exists; this
-# replaces the manual first-launch check on every PR.
+# replaces the manual first-launch check on every PR. #1137: a reopen with no
+# window restores the last vault or the start screen.
 for name in \
     first_run_choosing_a_vault_folder_keeps_a_window_until_it_opens \
-    explicit_delivery_replaces_first_run_entry; do
+    explicit_delivery_replaces_first_run_entry \
+    reopen_without_windows_restores_the_last_vault_or_the_start_screen; do
     run_tests okilum-shell --bins "reader_open::entry_tests::$name" --exact
 done
 

@@ -6956,6 +6956,7 @@ fn main() {
     app.on_open_urls(move |urls| {
         let _ = open_tx.try_send(urls);
     });
+    app.on_reopen(reader_startup::reopen);
     app.run(move |cx| {
         diagnostics.event("app_run_callback", serde_json::json!({}));
         reader_reminder_notify::install(cx);
@@ -7017,6 +7018,14 @@ fn main() {
         cx.activate(true);
         drop(appearance_phase);
 
+        // A macOS reopen with no window starts like a plain launch,
+        // whatever this launch opened (#1137).
+        cx.set_global(reader_startup::ReopenBase(Opts {
+            session_directory: opts.session_directory.clone(),
+            index_dir: opts.index_dir.clone(),
+            diagnostics: opts.diagnostics.clone(),
+            ..Opts::default()
+        }));
         if let Some(link) = &opts.link {
             reader_open::open_deep_link(link, cx);
             return;
