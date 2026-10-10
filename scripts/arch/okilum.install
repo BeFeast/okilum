@@ -1,0 +1,15 @@
+# pacman install scriptlet (#974). pacman runs this as root and cannot reach
+# each user's home, so per-user data is removed by the user, not by pacman.
+# The message only appears once the package is going: by then `okilum
+# --uninstall-data` is gone too, so it lists the folders instead.
+
+post_remove() {
+    cat <<'MSG'
+==> Okilum was removed. Your notes were not touched.
+    If you did not run `okilum --uninstall-data` before, your per-user
+    Okilum data is still in (default locations):
+        ~/.local/state/okilum   ~/.config/okilum   ~/.cache/okilum
+    Remove those folders to finish. If Sync was set up, remove this computer
+    from Sync in Okilum first; its user service is okilum-syncthing-*.service.
+MSG
+}
