@@ -1,0 +1,130 @@
+diff --git a/crates/base/src/text/state.rs b/crates/base/src/text/state.rs
+index 1b124b32..e96c527c 100644
+--- a/crates/base/src/text/state.rs
++++ b/crates/base/src/text/state.rs
+@@ -34,6 +34,11 @@ const MAX_COALESCED_UPDATES_PER_PARSE: usize = 64;
+ // amount of source parsed synchronously on the UI thread.
+ const MAX_SYNC_FULL_REPLACE_BYTES: usize = 4 * 1024;
+ 
++/// Documents with more top-level blocks measure only what is visible (#1003).
++/// Measuring every block lays the whole document out in one UI-thread frame:
++/// about 0.9 s for a 10,000-line note on a fast machine, 3 s on a slow one.
++const MEASURE_ALL_MAX_BLOCKS: usize = 400;
++
+ pub(crate) fn init(cx: &mut App) {
+     cx.bind_keys(vec![
+         #[cfg(target_os = "macos")]
+@@ -93,6 +98,8 @@ struct SearchGeometry {
+ pub struct TextViewState {
+     pub(super) focus_handle: FocusHandle,
+     pub(super) list_state: ListState,
++    /// The list measures only visible blocks; see [`MEASURE_ALL_MAX_BLOCKS`].
++    list_visible_only: bool,
+ 
+     /// The bounds of the text view
+     bounds: Bounds<Pixels>,
+@@ -185,6 +192,7 @@ impl TextViewState {
+                         match parsed_update.result {
+                             Ok(content) => {
+                                 state.parsed_content = content;
++                                state.prepare_list_for_document();
+                                 state.displayed_source_copy = state.pending_source_copy.clone();
+                                 state.refresh_search();
+                                 state.parsed_error = None;
+@@ -228,6 +236,7 @@ impl TextViewState {
+             // as zero height until scrolled into view, which makes the
+             // scrollbar jitter as more blocks get measured during scrolling.
+             list_state: ListState::new(0, gpui::ListAlignment::Top, px(1000.)).measure_all(),
++            list_visible_only: false,
+             text_view_style: TextViewStyle::default(),
+             code_block_actions: None,
+             code_block_language: None,
+@@ -716,6 +725,25 @@ impl TextViewState {
+     /// `remeasure_items` re-arms the latch and marks the items unmeasured
+     /// while keeping their old sizes as hints, so the scrollbar does not
+     /// collapse in the frame before the next layout measures the real heights.
++    /// Choose how the list measures this document. Small documents measure
++    /// every block so the scrollbar is exact. Large ones measure what becomes
++    /// visible; the rest carry an estimated height that real heights replace
++    /// while scrolling, so the first screen never waits for the whole document.
++    fn prepare_list_for_document(&mut self) {
++        let document = &self.parsed_content.document;
++        let count = document.blocks.len();
++        let visible_only = count > MEASURE_ALL_MAX_BLOCKS;
++        if visible_only != self.list_visible_only {
++            self.list_visible_only = visible_only;
++            let list = ListState::new(0, gpui::ListAlignment::Top, px(1000.));
++            self.list_state = if visible_only { list } else { list.measure_all() };
++        }
++        if visible_only && self.list_state.item_count() != count {
++            self.list_state
++                .reset_with_uniform_height(count, estimated_block_height(document.source.len(), count));
++        }
++    }
++
+     fn invalidate_measured_heights(&self) {
+         let count = self.list_state.item_count();
+         if count > 0 {
+@@ -751,6 +779,7 @@ impl TextViewState {
+                 Ok(content) => {
+                     self.prepared_revision = self.revision;
+                     self.parsed_content = content;
++                    self.prepare_list_for_document();
+                     self.displayed_source_copy = self.pending_source_copy.clone();
+                     self.refresh_search();
+                     self.parsed_error = None;
+@@ -1061,6 +1090,13 @@ impl Render for TextViewState {
+ }
+ 
+ #[derive(Clone, PartialEq, Default)]
++/// A block's height before it is measured: its share of the source as wrapped
++/// lines at about 80 characters, 24 px each, plus the gap between blocks.
++fn estimated_block_height(source_bytes: usize, blocks: usize) -> Pixels {
++    let bytes_per_block = source_bytes as f32 / blocks.max(1) as f32;
++    px((bytes_per_block / 80.).ceil().max(1.) * 24. + 12.)
++}
++
+ pub(crate) struct ParsedContent {
+     pub(crate) document: ParsedDocument,
+     pub(crate) node_cx: node::NodeContext,
+@@ -1244,6 +1280,40 @@ mod tests {
+     use crate::text::MarkdownNode;
+     use gpui::TestAppContext;
+ 
++    #[gpui::test]
++    fn large_documents_measure_visible_blocks_and_small_ones_measure_all(
++        cx: &mut TestAppContext,
++    ) {
++        // #1003: measuring every block of a large note blocks the first frame.
++        cx.update(crate::init);
++        let state = cx.update(|cx| cx.new(|cx| TextViewState::markdown("", cx)));
++        let large: String = (0..MEASURE_ALL_MAX_BLOCKS + 100)
++            .map(|i| format!("Paragraph {i} with a few words.\n\n"))
++            .collect();
++        state.update(cx, |state, cx| state.set_text(&large, cx));
++        cx.run_until_parked();
++        state.update(cx, |state, cx| {
++            let blocks = state.parsed_content.document.blocks.len();
++            assert!(blocks > MEASURE_ALL_MAX_BLOCKS, "positive control: {blocks} blocks");
++            assert!(state.list_visible_only);
++            assert_eq!(state.list_state.item_count(), blocks);
++            // Unmeasured blocks still have height, so the end stays reachable.
++            assert!(state.list_state.max_offset_for_scrollbar().y > px(0.));
++            state.set_text("small\n\nnote", cx);
++        });
++        cx.run_until_parked();
++        state.update(cx, |state, _| {
++            assert!(!state.list_visible_only, "a small note measures every block again");
++        });
++    }
++
++    #[test]
++    fn block_estimate_grows_with_text_per_block() {
++        assert_eq!(estimated_block_height(0, 0), px(36.));
++        assert_eq!(estimated_block_height(80 * 10, 10), px(36.));
++        assert_eq!(estimated_block_height(400 * 10, 10), px(132.));
++    }
++
+     #[gpui::test]
+     fn exact_source_tracks_displayed_async_revision_and_discards_late_results(
+         cx: &mut TestAppContext,
