@@ -1277,6 +1277,9 @@ struct Reader {
     tree_preview: reader_tree_preview::Session,
     file_menu: Option<(Entity<gpui_component::menu::PopupMenu>, Point<Pixels>)>,
     editing: Option<reader_editor::Editing>,
+    /// Undo history and selection of the editor last left for the Reader, by
+    /// file: Edit resumes it when the file's text is unchanged (#1095).
+    retained_edit: Option<(String, gpui_component::input::EditHistory)>,
     #[cfg(any(unix, windows))]
     creation: Option<reader_create::Creation>,
     #[cfg(any(unix, windows))]
@@ -1610,6 +1613,7 @@ impl Reader {
             shortcut_sheet,
             content,
             editing: None,
+            retained_edit: None,
             #[cfg(any(unix, windows))]
             creation: None,
             #[cfg(any(unix, windows))]

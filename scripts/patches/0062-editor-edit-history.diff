@@ -1,0 +1,67 @@
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+index efdf8446..fc4cc255 100644
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -552,6 +552,15 @@ impl<M: InputModeKind> EventEmitter<crate::input::projection::SourceClick> for I
+ impl<M: InputModeKind> EventEmitter<crate::input::projection::MarkerClick> for InputBaseState<M> {}
+ impl<M: InputModeKind> EventEmitter<ClipboardPasteEvent> for InputBaseState<M> {}
+ 
++/// An editor's edit history, tied to the exact text it was recorded on:
++/// undo and redo transactions and the selection. Opaque.
++pub struct EditHistory {
++    text: SharedString,
++    undo: UndoManager,
++    selected: Range<usize>,
++    reversed: bool,
++}
++
+ impl<M: InputModeKind> InputBaseState<M> {
+     #[doc(hidden)]
+     pub fn cursor_layout(&self) -> Option<(Bounds<Pixels>, Pixels)> {
+@@ -1188,6 +1197,34 @@ impl<M: InputModeKind> InputBaseState<M> {
+         cx.notify();
+     }
+ 
++    /// Move this editor's edit history out: its undo and redo transactions and
++    /// selection, tied to the current text. The editor keeps its text and
++    /// starts a new, empty history. See [`Self::restore_edit_history`].
++    pub fn take_edit_history(&mut self) -> EditHistory {
++        self.undo_manager.commit_transaction();
++        self.undo_manager.break_transaction_coalescing();
++        EditHistory {
++            text: self.value(),
++            undo: std::mem::replace(&mut self.undo_manager, UndoManager::new()),
++            selected: self.selected_range.into(),
++            reversed: self.selection_reversed,
++        }
++    }
++
++    /// Adopt `history` taken from an editor that showed exactly this text:
++    /// Undo then continues with the edits made before, and the selection is
++    /// back. Returns false, and changes nothing, when the text differs (#1095).
++    pub fn restore_edit_history(&mut self, history: EditHistory, cx: &mut Context<Self>) -> bool {
++        if self.value() != history.text {
++            return false;
++        }
++        self.undo_manager = history.undo;
++        self.set_selected_range(history.selected, cx);
++        self.selection_reversed = history.reversed;
++        cx.notify();
++        true
++    }
++
+     /// Replace the entire text content while preserving undo history.
+     ///
+     /// Unlike [`set_value`](Self::set_value), this method records the
+diff --git a/crates/component/src/input/mod.rs b/crates/component/src/input/mod.rs
+index 6d52b185..bc907306 100644
+--- a/crates/component/src/input/mod.rs
++++ b/crates/component/src/input/mod.rs
+@@ -19,6 +19,7 @@ pub use gpui_base::input::{
+     Backspace, BufferPoint, CodeActionItem, CodeActionProvider, CompletionMenuOptions,
+     CompletionProvider, Copy, Cut, DefinitionProvider, Delete, DeleteToBeginningOfLine,
+     DeleteToEndOfLine, DeleteToNextWordEnd, DeleteToPreviousWordStart, DisplayMap, DisplayPoint,
++    EditHistory,
+     DocumentColorProvider, DocumentRangeSemanticTokensProvider, EditorState, Enter, Escape,
+     FoldRange, GoToDefinition, HighlightStyleResolver, HoverPopoverState, HoverProvider, Indent,
+     IndentInline, InputEdit, InputEvent, InputHighlighter, InputHighlighterFactory, InputState,
