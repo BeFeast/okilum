@@ -56,14 +56,15 @@ class MainHealthTests(unittest.TestCase):
                    ('c2', 'chore: direct push'),
                    ('c1', "Merge pull request 'b' (#1) from y into main"),
                    ('c0', "Merge pull request 'c' (#9) from z into main")]
-        original = health.first_parents
+        original = health.first_parents, health.tip
         health.first_parents = lambda sha, limit: history
+        health.tip = lambda: 'c3'
         try:
             api = FakeApi(green={'c0'}, authors={3: 'ana', 1: 'bo'})
             health.red(api, 'c3', 'run/1')
             health.red(api, 'c3', 'run/2')
         finally:
-            health.first_parents = original
+            health.first_parents, health.tip = original
         pr_comments = [w for w in api.writes if w[1] in ('/issues/3/comments', '/issues/1/comments')]
         self.assertEqual(len(pr_comments), 2, 'one comment per suspect PR per red episode')
         self.assertIn('@ana', api.comments[3][0]['body'])
@@ -71,6 +72,36 @@ class MainHealthTests(unittest.TestCase):
         issue = next(w for w in api.writes if w[1] == '/issues')
         self.assertIn('c2 chore: direct push (direct push)', issue[2]['body'])
         self.assertIn('20 minutes', issue[2]['body'])
+
+    def test_older_green_does_not_close_a_newer_red(self):
+        api = FakeApi(green=set(), authors={})
+        issue = {'number': 7, 'body': 'The Linux gate failed on main at c5c5c5c5: run'}
+        api.open_issue = lambda: issue
+        original = health.is_ancestor
+        health.is_ancestor = lambda old, new: (old, new) == ('c5c5c5c5', 'c6')
+        try:
+            health.green(api, 'c4', 'run/older')
+            self.assertEqual(api.writes, [], 'c4 does not contain the red c5')
+            health.green(api, 'c6', 'run/newer')
+        finally:
+            health.is_ancestor = original
+        self.assertIn(('PATCH', '/issues/7', {'state': 'closed'}), api.writes)
+
+    def test_red_already_fixed_by_a_newer_green_commit_is_not_reported(self):
+        history = [('c6', 'm6'), ('c5', 'm5'), ('c4', 'm4')]
+        saved = health.first_parents, health.tip, health.is_ancestor
+        health.first_parents = lambda sha, limit: history[[c for c, _ in history].index(sha):]
+        health.tip = lambda: 'c6'
+        health.is_ancestor = lambda old, new: True
+        try:
+            api = FakeApi(green={'c6'}, authors={})
+            health.red(api, 'c5', 'run/late')
+            self.assertEqual(api.writes, [], 'c6 contains c5 and is green')
+            api = FakeApi(green={'c4'}, authors={})
+            health.red(api, 'c5', 'run/real')
+            self.assertTrue(any(w[1] == '/issues' for w in api.writes), 'a live red is reported')
+        finally:
+            health.first_parents, health.tip, health.is_ancestor = saved
 
 
 if __name__ == '__main__':

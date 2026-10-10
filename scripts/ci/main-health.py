@@ -26,6 +26,7 @@ ISSUE_TITLE = 'main is red'
 RULE = ('Rule: whoever merged the commit that turned main red reverts it or lands a fix '
         'within 20 minutes (AGENTS.md, "Red main").')
 MAX_SUSPECTS = 20
+RED_SHA = re.compile(r'failed on main at ([0-9a-f]{7,40})')
 PR_SUBJECT = re.compile(r"^Merge pull request '.*' \(#(\d+)\) from ")
 
 
@@ -75,6 +76,15 @@ def first_parents(sha, limit):
     return commits
 
 
+def is_ancestor(old, new):
+    return subprocess.run(['git', 'merge-base', '--is-ancestor', old, new], capture_output=True).returncode == 0
+
+
+def tip():
+    # The job checks out main as it is now, which may be ahead of the commit tested.
+    return subprocess.run(['git', 'rev-parse', 'HEAD'], check=True, capture_output=True, text=True).stdout.strip()
+
+
 def pull_number(subject):
     match = PR_SUBJECT.match(subject)
     return int(match.group(1)) if match else None
@@ -90,7 +100,24 @@ def suspects(api, sha):
     return found[:MAX_SUSPECTS], None
 
 
+def superseded(api, sha):
+    """A newer main commit that contains `sha` already passed: this red is history."""
+    head = tip()
+    if head == sha or not is_ancestor(sha, head):
+        return False
+    for commit, _ in first_parents(head, MAX_SUSPECTS):
+        if commit == sha:
+            return False
+        if api.green(commit):
+            return True
+    return False
+
+
 def red(api, sha, run_url):
+    # Each main commit runs on its own, so runs can finish out of order.
+    if superseded(api, sha):
+        print(f'{sha[:8]} is red, but a newer main commit containing it is green')
+        return
     commits, green = suspects(api, sha)
     episode = green or 'unknown'
     marker = f'<!-- main-red {episode[:12]} -->'
@@ -119,9 +146,21 @@ def red(api, sha, run_url):
         api.call('POST', f"/issues/{issue['number']}/comments", {'body': body})
 
 
+def reported_red(api, issue):
+    reports = [issue.get('body', '')] + [c.get('body', '') for c in
+                                         api.call('GET', f"/issues/{issue['number']}/comments?limit=50")]
+    found = [m.group(1) for m in (RED_SHA.search(r) for r in reports) if m]
+    return found[-1] if found else None
+
+
 def green(api, sha, run_url):
     issue = api.open_issue()
     if issue is None:
+        return
+    red_sha = reported_red(api, issue)
+    # An older commit finishing green late says nothing about the newer red one.
+    if red_sha and not is_ancestor(red_sha, sha):
+        print(f'{sha[:8]} is green but does not contain the reported red {red_sha}')
         return
     api.call('POST', f"/issues/{issue['number']}/comments", {'body': f'main is green again at {sha[:8]}: {run_url}'})
     api.call('PATCH', f"/issues/{issue['number']}", {'state': 'closed'})

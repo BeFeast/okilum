@@ -17,10 +17,12 @@ on:
   push:
     branches: [main]
 
-# Supersede stale checks independently for each PR and for main.
+# A PR supersedes its own stale checks. Every main commit gets its own full run, so a
+# red main names the merge that broke it (main-health); merges land about every 11
+# minutes and a Linux run takes about 11, so cancelling hid most results.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -186,10 +188,12 @@ jobs:
       issues: write
       pull-requests: write
     steps:
+      # Main as it is now: a newer commit may already be green (runs finish out of order).
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
           persist-credentials: false
-          fetch-depth: 40
+          ref: main
+          fetch-depth: 60
       - name: Report main health
         env:
           FORGEJO_URL: ${{ github.server_url }}
