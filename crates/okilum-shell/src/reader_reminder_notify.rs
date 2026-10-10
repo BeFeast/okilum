@@ -214,7 +214,9 @@ impl Reader {
     /// Post the reminder to the system notification centre through the window
     /// that owns the vault's reminders. Clicking it brings that window forward
     /// and opens the reminders note (#961); gpui-component dispatches the click
-    /// back to this window, so the click needs no handler of ours.
+    /// back to this window, so the click needs no handler of ours. Only the owner
+    /// window gets here: `reminder_tick` returns before delivering unless
+    /// `claim_reminders` made this window the owner.
     fn deliver(
         &self,
         key: SharedString,
