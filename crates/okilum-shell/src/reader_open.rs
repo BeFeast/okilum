@@ -704,7 +704,14 @@ fn create_window(
     let duplicate = duplicate_options.is_some();
     let options = duplicate_options.unwrap_or(restored_options);
     drop(_key_phase);
-    cx.open_window(options, |window, cx| {
+    // `open_window` creates the platform window and its renderer, then runs the
+    // closure, then draws once. Each step reports its own phase, so the first
+    // launch's cost (#1008) is attributed to one of them.
+    let platform = super::reader_diagnostics::phase(cx, "window_platform_create");
+    let mut first_draw = None;
+    let opened = cx.open_window(options, |window, cx| {
+        drop(platform);
+        let _build = super::reader_diagnostics::phase(cx, "window_view_build");
         super::sync_appearance(window, cx);
         window
             .observe_window_appearance(|window, cx| {
@@ -742,8 +749,11 @@ fn create_window(
         });
         let root = cx.new(|cx| Root::new(reader, window, cx));
         super::window_state::track_with_restore(&root, frame_key, !duplicate, window, cx);
+        first_draw = super::reader_diagnostics::phase(cx, "window_first_draw");
         root
-    })?;
+    });
+    drop(first_draw);
+    opened?;
     super::reader_startup::supersede(cx);
     cx.activate(true);
     Ok(())
@@ -954,6 +964,70 @@ mod entry_tests {
             assert_eq!(reader.read(cx).vault_root, root);
             assert!(reader.read(cx).document_ready());
         });
+        std::fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[gpui::test]
+    fn window_open_reports_platform_view_and_first_draw_inside_native_window_open(
+        cx: &mut TestAppContext,
+    ) {
+        // #1008: the first launch's window cost must be attributable to a step.
+        use super::super::{reader_diagnostics, reader_startup, Opts};
+        let fixture =
+            std::env::temp_dir().join(format!("okilum-window-phases-{}", uuid::Uuid::new_v4()));
+        let state = fixture.join("state");
+        std::fs::create_dir_all(&state).unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            install(cx);
+            cx.set_global(reader_diagnostics::LaunchTrace(
+                reader_diagnostics::Trace::new(Some(state.clone()), None),
+            ));
+            reader_startup::launch(
+                Opts {
+                    session_directory: Some(state.clone()),
+                    ..Default::default()
+                },
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        let wanted = [
+            "window_platform_create",
+            "window_view_build",
+            "window_first_draw",
+            "native_window_open",
+        ];
+        let mut seen: Vec<(String, f64)> = Vec::new();
+        for _ in 0..200 {
+            let text =
+                std::fs::read_to_string(state.join("reader-diagnostic.log")).unwrap_or_default();
+            seen = text
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .filter_map(|event| {
+                    let phase = event["phase"].as_str()?.to_string();
+                    wanted.contains(&phase.as_str()).then(|| {
+                        (
+                            phase,
+                            event["details"]["duration_ms"].as_f64().unwrap_or(-1.),
+                        )
+                    })
+                })
+                .collect();
+            if seen.len() >= wanted.len() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let names: Vec<&str> = seen.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, wanted, "each step reports once, the whole last");
+        assert!(seen.iter().all(|(_, ms)| *ms >= 0.), "{seen:?}");
+        let steps: f64 = seen[..3].iter().map(|(_, ms)| ms).sum();
+        assert!(
+            steps <= seen[3].1 + 1.,
+            "the steps are parts of native_window_open: {seen:?}"
+        );
         std::fs::remove_dir_all(fixture).unwrap();
     }
 

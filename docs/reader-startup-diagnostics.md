@@ -23,6 +23,11 @@ does not measure LaunchServices before `main`, or final GPU presentation.
   `recovery_and_window_state`, `appearance_load`: before Reader creation.
 - `startup_history_and_root_validation`, `window_key_and_geometry`,
   `native_window_open`, `reader_constructor`: history and window startup.
+- `window_platform_create`, `window_view_build`, `window_first_draw`: the three
+  steps inside `native_window_open`, in order. The first is the platform window
+  and its renderer, which on macOS builds the Metal library from source
+  (`runtime_shaders`); the second is the Reader and Root construction; the third is
+  the first frame `open_window` draws before it returns (#1008).
 - `requested_path_resolve`, `startup_snapshot_load`, `warm_cache`: cache size,
   presence, or rejection reason. A missing cache means the launch is cold.
 - `history_and_primary_discovery`, `primary_selection`,
