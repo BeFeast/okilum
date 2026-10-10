@@ -406,7 +406,10 @@ impl Reader {
                     self.focus_handle.focus(window, cx);
                 }
             }
-            Err(error) => reader_toast::error(format!("Cannot preview file: {error}"), window, cx),
+            Err(error) => {
+                eprintln!("Cannot preview file {rel}: {error:#}");
+                reader_toast::error(preview_error_text(&error), window, cx)
+            }
         }
         cx.notify();
     }
@@ -651,6 +654,54 @@ impl Asset for HeicImage {
             })();
             result.map_err(Into::into)
         })
+    }
+}
+
+/// What a failed preview tells the reader: the authored reason, or plain
+/// words for an OS error with no authored context. The chain goes to stderr.
+pub(crate) fn preview_error_text(error: &anyhow::Error) -> String {
+    use std::io::ErrorKind;
+    // `downcast_ref` looks through context, so inspect only the outermost layer.
+    let outermost = error.chain().next();
+    let Some(io) = outermost.and_then(|e| e.downcast_ref::<std::io::Error>()) else {
+        return format!("Cannot preview file: {error}");
+    };
+    match io.kind() {
+        ErrorKind::NotFound => "This file no longer exists. It may have been moved or deleted.",
+        ErrorKind::PermissionDenied => "Okilum doesn’t have permission to read this file.",
+        _ => "This file couldn’t be opened.",
+    }
+    .into()
+}
+
+#[cfg(test)]
+mod preview_error_tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+
+    #[test]
+    fn preview_failures_show_plain_words_without_os_errors() {
+        use std::io::{Error as Io, ErrorKind};
+        for (kind, expected) in [
+            (ErrorKind::NotFound, "This file no longer exists"),
+            (
+                ErrorKind::PermissionDenied,
+                "Okilum doesn’t have permission",
+            ),
+            (ErrorKind::Other, "This file couldn’t be opened."),
+        ] {
+            let raw = anyhow::Error::from(Io::new(kind, "No such file or directory (os error 2)"));
+            let text = preview_error_text(&raw);
+            assert!(text.starts_with(expected), "{text}");
+            assert!(!text.contains("os error"), "{text}");
+            // Positive control: stderr keeps the OS detail.
+            assert!(format!("{raw:#}").contains("os error 2"));
+        }
+        let authored = anyhow::anyhow!("Choose a file to preview");
+        assert_eq!(
+            preview_error_text(&authored),
+            "Cannot preview file: Choose a file to preview"
+        );
     }
 }
 

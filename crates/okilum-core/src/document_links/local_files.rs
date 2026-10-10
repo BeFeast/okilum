@@ -157,7 +157,7 @@ pub(super) fn prepare(
             }
             let url = format!(
                 "okilum://missing-file/{}",
-                encode(&direct.to_string_lossy())
+                encode(&lexical(crate::vault::display_path(&direct)).to_string_lossy())
             );
             Some(result(
                 "unresolved",
@@ -168,6 +168,24 @@ pub(super) fn prepare(
         }
         _ => Some(unavailable(target, "File unavailable.")),
     }
+}
+
+/// The path a person would type: `.` and `..` folded away. Only used for the
+/// copied "File not found" path, never for filesystem access. Runs after the
+/// Windows verbatim prefix is gone, where `/` is not a separator.
+fn lexical(path: impl AsRef<Path>) -> PathBuf {
+    let path = path.as_ref();
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 fn result(

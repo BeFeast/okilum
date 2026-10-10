@@ -71,7 +71,8 @@ impl Reader {
             .and_then(|path| self.tree_preview.show(&path));
         if let Err(error) = result {
             self.tree_preview.close();
-            reader_toast::error(format!("Cannot preview file: {error}"), window, cx);
+            eprintln!("Cannot preview file {}: {error:#}", row.path);
+            reader_toast::error(reader_files::preview_error_text(&error), window, cx);
             return;
         }
         #[cfg(any(not(target_os = "macos"), test))]
