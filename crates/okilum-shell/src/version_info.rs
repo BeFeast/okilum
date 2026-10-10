@@ -29,7 +29,7 @@ pub(crate) fn report() -> String {
         "Okilum {} (build {}, {}) — {} {} — {} — source {}",
         env!("OKILUM_RELEASE_VERSION"),
         env!("OKILUM_BUILD_VERSION"),
-        channel(&crate::updater::channel()),
+        channel(crate::updater::channel()),
         os(),
         arch(),
         install_kind(),

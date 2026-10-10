@@ -80,7 +80,7 @@ fn copy_version_button() -> Button {
                     .compare_exchange(generation, 0, Ordering::Relaxed, Ordering::Relaxed)
                     .is_ok()
                 {
-                    let _ = cx.update(|cx| cx.refresh_windows());
+                    cx.update(|cx| cx.refresh_windows());
                 }
             })
             .detach();
