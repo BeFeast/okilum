@@ -173,12 +173,13 @@ fn resolved_references_and_wrapped_labels_project_and_definitions_stay_quiet() {
     let source = "[full][Id] [Id][] [Id] [raw][nope]\n[wrapped\nlabel](dest)\n\n[Id]: /x \"t\"\n   [two]: y\n";
     let current = snapshot(source);
     let result = classify(&current);
-    // The unresolved reference keeps its whole paragraph raw.
+    // The unresolved reference stays as written; its resolved neighbours
+    // render (#1092).
     assert_eq!(
         project(&current, result.plan(), &Active::default())
             .unwrap()
             .display(),
-        source
+        "full Id Id [raw][nope]\nwrapped\nlabel\n\n[Id]: /x \"t\"\n   [two]: y\n"
     );
     let source =
         "[full][Id] [Id][] [Id]\n[wrapped\r\nlabel](dest)\r\n\r\n[Id]: /x \"t\"\r\n   [two]: y\r\n";
@@ -205,6 +206,37 @@ fn resolved_references_and_wrapped_labels_project_and_definitions_stay_quiet() {
     // A wrapped label must not style the next quote prefix.
     assert_eq!(display("> [a\n> b](d)"), "> [a\n> b](d)");
     assert_eq!(display("- [a\n  b](d)"), "- a\n  b");
+}
+
+#[test]
+fn an_unresolved_reference_does_not_keep_its_resolved_neighbours_raw() {
+    // The #1092 minimal note: every resolved use renders, the unresolved one
+    // stays as written, before or after the definition.
+    let source = "[docs][Id], [Id][], [Id], [docs][ID]\n[nothing][Missing]\n\n[Id]: https://example.com/after\n\n[again][Id]\n\nControl **bold**\n";
+    let current = snapshot(source);
+    let result = classify(&current);
+    assert_eq!(
+        project(&current, result.plan(), &Active::default())
+            .unwrap()
+            .display(),
+        "docs, Id, Id, docs\n[nothing][Missing]\n\n[Id]: https://example.com/after\n\nagain\n\nControl bold\n"
+    );
+    let targets: Vec<_> = result
+        .links_for(&current)
+        .unwrap()
+        .iter()
+        .map(|link| link.target.clone())
+        .collect();
+    assert_eq!(targets, ["https://example.com/after"; 5]);
+    // Control: a malformed inline link still keeps its whole block Source,
+    // valid formatting next to it included.
+    for raw in [
+        "[docs](http://x **bold**\n",
+        "see [a](b c) **bold**\n",
+        "[^1] **bold**\n",
+    ] {
+        assert_eq!(display(raw), raw, "{raw:?}");
+    }
 }
 
 #[test]

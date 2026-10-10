@@ -513,6 +513,19 @@ impl<'s> Context<'s> {
         for child in node.children() {
             self.inline(child, candidate)?;
         }
+        // Brackets left as text are an unresolved reference (`[a][missing]`)
+        // and stay visible as written. A malformed inline link or a footnote
+        // still keeps the block Source; the parser may split its brackets
+        // across text nodes, so look at the block's text as a whole (#1092).
+        let mut text = String::new();
+        for child in node.descendants() {
+            if matches!(child.data.borrow().value, NodeValue::Text(_)) {
+                text.push_str(self.source.get(self.range(child)?)?);
+            }
+        }
+        if text.contains("](") || text.contains("[^") {
+            return None;
+        }
         Some(())
     }
     fn inline<'a>(&self, node: &'a AstNode<'a>, candidate: &mut Candidate) -> Option<()> {
@@ -713,6 +726,8 @@ impl<'s> Context<'s> {
 
 /// Keep authored escapes/entities. Unclassified markup-looking text makes the
 /// containing block Source, including valid formatting next to a malformed link.
+/// Brackets are text here: the block decides (an unresolved reference is
+/// fine, a malformed link is not; see `Context::block`).
 fn plain(raw: &str) -> Option<()> {
     let mut bytes = raw.bytes();
     while let Some(byte) = bytes.next() {
@@ -721,7 +736,7 @@ fn plain(raw: &str) -> Option<()> {
             if !next.is_ascii_punctuation() {
                 return None;
             }
-        } else if b"*_[]~`=$".contains(&byte) {
+        } else if b"*_~`=$".contains(&byte) {
             return None;
         }
     }
