@@ -193,9 +193,9 @@ mod tests {
             gpui_component::init(cx);
             bind_keys(cx);
         });
-        let root =
-            std::env::temp_dir().join(format!("okilum-link-landing-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&root).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
         // Paragraph i is block i-1 at file line 2i+2 (three frontmatter lines).
         let body: String = (1..=60).map(|i| format!("Paragraph {i}.\n\n")).collect();
         let target = format!("---\ntitle: Target\n---\n{body}");
@@ -208,6 +208,9 @@ mod tests {
                     Opts {
                         vault: Some(root.clone()),
                         note: Some("start.md".into()),
+                        index_dir: Some(temp.path().join("cache")),
+                        // Editing needs a draft-recovery directory.
+                        session_directory: Some(temp.path().join("state")),
                         ..Default::default()
                     },
                     window,
@@ -299,6 +302,5 @@ mod tests {
         assert!(std::fs::read_to_string(root.join("target.md"))
             .unwrap()
             .contains("Paragraph one."));
-        std::fs::remove_dir_all(root).unwrap();
     }
 }
