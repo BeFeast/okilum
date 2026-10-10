@@ -45,6 +45,8 @@ jobs:
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FORGEJO_URL: ${{ github.server_url }}
           MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
+          # '1' once Windows signing is live: an unsigned Windows build never reaches stable (#1104).
+          OKILUM_WINDOWS_STABLE_REQUIRE_SIGNED: ${{ vars.OKILUM_WINDOWS_STABLE_REQUIRE_SIGNED }}
           R2_ENDPOINT: ${{ vars.R2_ENDPOINT }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}

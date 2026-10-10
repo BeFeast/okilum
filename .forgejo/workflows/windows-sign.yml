@@ -1,8 +1,7 @@
 # Signing rehearsal on the Windows signer runner (#1104). Manual only; never publishes.
 #
-# Runs the production signing chain on a published beta payload, without a cross-build:
-# sign okilum.exe and the sync supervisor, rebuild the portable ZIP, `vpk pack` with the
-# sign template (Update.exe, the execution stub, Setup.exe), then check every shipped PE.
+# Runs the production signing script (scripts/windows/package-release.sh) on a published
+# beta payload, without a cross-build.
 #   backend pkcs12-test   throwaway self-signed identity made inside the job
 #   backend certum-pkcs11 the real certificate; needs an open SimplySign session
 name: windows-sign
@@ -58,19 +57,12 @@ jobs:
         run: |
           printf 'OKILUM_WINDOWS_SIGN_ALIAS=%s\nOKILUM_WINDOWS_SIGN_CERT_SHA256=%s\nOKILUM_WINDOWS_SIGN_SUBJECT=%s\n' \
             "$ALIAS" "$SHA256" "$SUBJECT" >> "$GITHUB_ENV"
-      - name: Probe the signing key
-        run: bash scripts/windows/sign.sh --probe
-      - name: Sign the programs the portable ZIP and the package share, then rebuild the ZIP
-        run: |
-          bash scripts/windows/sign.sh target/windows-dist/okilum.exe target/windows-dist/okilum-sync-supervisor.exe
-          python3 scripts/windows/portable-zip.py target/windows-dist "$OKILUM_RELEASE_VERSION"
-      - name: Pack with the sign template (Update.exe, execution stub, Setup.exe)
+      # The production script (#1104): probe, sign, rebuild the ZIP, pack with the
+      # template, verify every shipped program; a missing key fails the rehearsal.
+      - name: Sign, package and verify (scripts/windows/package-release.sh)
         env:
-          OKILUM_WINDOWS_SIGN_TEMPLATE: ${{ github.workspace }}/scripts/windows/sign.sh {{file...}}
-          OKILUM_WINDOWS_SIGN_EXCLUDE: '[\\/](okilum|okilum-sync-supervisor)\.exe$'
-        run: bash scripts/windows/pack.sh "$RUNNER_TEMP/velopack" target/windows-dist target/windows-release
-      - name: Verify every shipped program
-        run: python3 scripts/windows/verify-signatures.py target/windows-release target/windows-dist/okilum-*-x86_64.zip
+          OKILUM_WINDOWS_UNSIGNED_POLICY: fail
+        run: bash scripts/windows/package-release.sh "$RUNNER_TEMP/velopack" target/windows-dist target/windows-release
       - name: Keep the rehearsal output (not published)
         if: always()
         uses: https://code.forgejo.org/actions/upload-artifact@v3
@@ -80,4 +72,5 @@ jobs:
             target/windows-release/*Setup.exe
             target/windows-release/*-full.nupkg
             target/windows-dist/okilum-*-x86_64.zip
+            target/windows-release/signing.json
           retention-days: 3
