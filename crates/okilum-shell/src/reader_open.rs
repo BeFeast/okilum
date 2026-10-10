@@ -409,6 +409,13 @@ use gpui_component::{
 pub(crate) struct Readers(Vec<(WeakEntity<super::Reader>, PathBuf)>);
 impl Global for Readers {}
 
+/// Live Readers of this process, any window.
+pub(crate) fn readers(cx: &App) -> Vec<Entity<super::Reader>> {
+    cx.try_global::<Readers>()
+        .map(|readers| readers.0.iter().filter_map(|(r, _)| r.upgrade()).collect())
+        .unwrap_or_default()
+}
+
 pub(crate) fn register(reader: WeakEntity<super::Reader>, root: PathBuf, cx: &mut App) {
     if cx.try_global::<Readers>().is_some() {
         let readers = &mut cx.global_mut::<Readers>().0;

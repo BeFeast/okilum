@@ -91,7 +91,15 @@ pub(crate) fn reveal(path: &Path, window: &mut Window, cx: &mut App) {
         .detach();
 }
 
-pub(crate) fn menu(mut menu: PopupMenu, root: PathBuf, rel: String) -> PopupMenu {
+pub(crate) fn menu(
+    mut menu: PopupMenu,
+    root: PathBuf,
+    rel: String,
+    window: &mut Window,
+    cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
+    // Installed editors first, next to «Open with default app» (#873).
+    menu = super::open_in::submenu(menu, root.clone(), rel.clone(), window, cx);
     let actions = [
         (Os::CURRENT.reveal(), FileAction::Reveal),
         ("Copy absolute path", FileAction::Absolute),
@@ -256,8 +264,8 @@ impl Reader {
             return;
         };
         let root = self.vault_root.clone();
-        let popup = PopupMenu::build(window, cx, move |m, _, _| {
-            menu(m, root.clone(), rel.clone())
+        let popup = PopupMenu::build(window, cx, move |m, window, cx| {
+            menu(m, root.clone(), rel.clone(), window, cx)
         });
         cx.subscribe(&popup, |this, _, _: &DismissEvent, cx| {
             this.file_menu = None;
