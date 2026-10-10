@@ -1,0 +1,83 @@
+# Signing rehearsal on the Windows signer runner (#1104). Manual only; never publishes.
+#
+# Runs the production signing chain on a published beta payload, without a cross-build:
+# sign okilum.exe and the sync supervisor, rebuild the portable ZIP, `vpk pack` with the
+# sign template (Update.exe, the execution stub, Setup.exe), then check every shipped PE.
+#   backend pkcs12-test   throwaway self-signed identity made inside the job
+#   backend certum-pkcs11 the real certificate; needs an open SimplySign session
+name: windows-sign
+
+on:
+  workflow_dispatch:
+    inputs:
+      backend:
+        description: 'pkcs12-test (no secrets) or certum-pkcs11 (needs a SimplySign session)'
+        type: choice
+        options: [pkcs12-test, certum-pkcs11]
+        default: pkcs12-test
+      version:
+        description: 'Beta version to re-sign, e.g. 0.1.10993; empty = current beta'
+        required: false
+        default: ''
+
+concurrency:
+  group: windows-signer
+  cancel-in-progress: false
+
+jobs:
+  rehearse:
+    runs-on: windows-signer
+    timeout-minutes: 30
+    env:
+      OKILUM_WINDOWS_SIGN_BACKEND: ${{ inputs.backend }}
+      OKILUM_WINDOWS_SIGN_PKCS11_CFG: /etc/okilum-signer/simplysign-pkcs11.cfg
+      DOTNET_SYSTEM_GLOBALIZATION_INVARIANT: "1"
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Stage the unsigned payload and the packager
+        run: |
+          echo "OKILUM_RELEASE_VERSION=$(python3 scripts/windows/payload-from-release.py target/windows-dist ${{ inputs.version }})" >> "$GITHUB_ENV"
+          bash scripts/windows/install-vpk.sh "$RUNNER_TEMP/velopack" >/dev/null
+          # Trust anchors for verification: the system roots plus Certum's public intermediate.
+          cat /etc/ssl/certs/ca-certificates.crt scripts/windows/certs/certum-code-signing-2021-ca.pem > "$RUNNER_TEMP/ca.pem"
+          echo "OKILUM_WINDOWS_SIGN_CA_FILE=$RUNNER_TEMP/ca.pem" >> "$GITHUB_ENV"
+      - name: Throwaway identity (pkcs12-test)
+        if: inputs.backend == 'pkcs12-test'
+        run: |
+          bash scripts/windows/make-test-signer.sh "$RUNNER_TEMP/test-signer" \
+            | sed -n "s/^export \([A-Z_0-9]*\)='\{0,1\}\([^']*\)'\{0,1\}$/\1=\2/p" >> "$GITHUB_ENV"
+      # Pins come from one step per backend, never from both (job env would shadow GITHUB_ENV).
+      - name: Real identity (certum-pkcs11)
+        if: inputs.backend == 'certum-pkcs11'
+        env:
+          ALIAS: ${{ vars.OKILUM_WINDOWS_SIGN_ALIAS }}
+          SHA256: ${{ vars.OKILUM_WINDOWS_SIGN_CERT_SHA256 }}
+          SUBJECT: ${{ vars.OKILUM_WINDOWS_SIGN_SUBJECT }}
+        run: |
+          printf 'OKILUM_WINDOWS_SIGN_ALIAS=%s\nOKILUM_WINDOWS_SIGN_CERT_SHA256=%s\nOKILUM_WINDOWS_SIGN_SUBJECT=%s\n' \
+            "$ALIAS" "$SHA256" "$SUBJECT" >> "$GITHUB_ENV"
+      - name: Probe the signing key
+        run: bash scripts/windows/sign.sh --probe
+      - name: Sign the programs the portable ZIP and the package share, then rebuild the ZIP
+        run: |
+          bash scripts/windows/sign.sh target/windows-dist/okilum.exe target/windows-dist/okilum-sync-supervisor.exe
+          python3 scripts/windows/portable-zip.py target/windows-dist "$OKILUM_RELEASE_VERSION"
+      - name: Pack with the sign template (Update.exe, execution stub, Setup.exe)
+        env:
+          OKILUM_WINDOWS_SIGN_TEMPLATE: ${{ github.workspace }}/scripts/windows/sign.sh {{file...}}
+          OKILUM_WINDOWS_SIGN_EXCLUDE: '[\\/](okilum|okilum-sync-supervisor)\.exe$'
+        run: bash scripts/windows/pack.sh "$RUNNER_TEMP/velopack" target/windows-dist target/windows-release
+      - name: Verify every shipped program
+        run: python3 scripts/windows/verify-signatures.py target/windows-release target/windows-dist/okilum-*-x86_64.zip
+      - name: Keep the rehearsal output (not published)
+        if: always()
+        uses: https://code.forgejo.org/actions/upload-artifact@v3
+        with:
+          name: windows-sign-${{ inputs.backend }}
+          path: |
+            target/windows-release/*Setup.exe
+            target/windows-release/*-full.nupkg
+            target/windows-dist/okilum-*-x86_64.zip
+          retention-days: 3

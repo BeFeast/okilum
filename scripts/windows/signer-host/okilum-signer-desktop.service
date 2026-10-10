@@ -1,0 +1,14 @@
+[Unit]
+Description=Okilum signer desktop with SimplySign Desktop on :1
+Requires=okilum-signer-vnc.service
+After=okilum-signer-vnc.service
+
+[Service]
+User=okilum-signer
+ExecStartPre=/bin/sh -c 'for i in $(seq 30); do [ -S /tmp/.X11-unix/X1 ] && exit 0; sleep 1; done; exit 1'
+ExecStart=/usr/local/lib/okilum-signer-desktop-session
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

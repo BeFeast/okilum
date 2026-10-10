@@ -1,0 +1,17 @@
+[Unit]
+Description=Forgejo runner for BeFeast/okilum Windows signing (label windows-signer)
+After=network-online.target okilum-signer-desktop.service
+Wants=network-online.target
+
+[Service]
+User=okilum-signer
+WorkingDirectory=/home/okilum-signer/runner
+EnvironmentFile=/etc/okilum-signer/sign.env
+# Jobs reach the desktop's SimplySign session through the PKCS#11 library.
+Environment=DISPLAY=:1
+ExecStart=/usr/local/bin/forgejo-runner daemon --config /home/okilum-signer/runner/config.yaml
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -32,11 +32,10 @@ python3 scripts/windows/pe.py gui "$output/okilum-sync-supervisor.exe"
 python3 scripts/third-party-notices.py --stage "$output"
 cp docs/windows-diagnostic.md "$output/README.md"
 cargo metadata --locked --format-version 1 > "$output/metadata.json"
-python3 - "$output" "$OKILUM_RELEASE_VERSION" <<'PY'
+python3 - "$output" <<'PY'
 from pathlib import Path
-import hashlib, sys, zipfile
+import json, shutil, sys
 output = Path(sys.argv[1])
-import json, shutil
 packages = json.loads((output / 'metadata.json').read_text())['packages']
 package = next(p for p in packages if p['name'] == 'gpui-pre-windows')
 assert package['version'] == '0.3.3', 'Recheck the runtime HLSL packaging on GPUI upgrades'
@@ -46,20 +45,8 @@ shaders.mkdir(parents=True, exist_ok=True)
 for name in ('shaders.hlsl', 'color_text_raster.hlsl', 'alpha_correction.hlsl'):
     shutil.copyfile(source / 'src' / name, shaders / name)
 shutil.copyfile(source / 'LICENSE-APACHE', shaders.parent / 'LICENSE-APACHE')
-archive = output / f'okilum-{sys.argv[2]}-x86_64.zip'
-with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as bundle:
-    # Portable is «run and leave no trace»: no background helper, no login
-    # task, so the sync helper stays out of the ZIP (#1037; Sync UI #1029).
-    for name in ('okilum.exe', 'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md'):
-        bundle.write(output / name, name)
-    for path in sorted((output / 'gpui-shaders').rglob('*')):
-        if path.is_file():
-            bundle.write(path, path.relative_to(output))
-if any(n.endswith('okilum-sync-supervisor.exe') for n in zipfile.ZipFile(archive).namelist()):
-    sys.exit('build-windows-ci.sh: the portable ZIP must not contain the sync helper')
-(output / (archive.name + '.sha256')).write_text(
-    hashlib.sha256(archive.read_bytes()).hexdigest() + '  ' + archive.name + '\n')
-print(archive)
 PY
+# Built again after signing on the signer runner (#1104), so it is one script.
+python3 scripts/windows/portable-zip.py "$output" "$OKILUM_RELEASE_VERSION"
 
 release_cache_stats

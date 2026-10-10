@@ -14,9 +14,14 @@ python3 "$(dirname "$0")/pe.py" gui "$helper"
 cp docs/windows-delivery.md "$payload/README.md"
 channel=$(python3 -c 'import json; print(json.load(open("scripts/windows/channel.json"))["default_channel"])')
 args=()
-# Future signing service hook; no certificate or signing secret is required today.
+# Signing (#1104): Velopack calls the template for every PE it packs, then for Setup.exe.
+# On Linux it re-signs files that are already signed, so files signed earlier (okilum.exe
+# and the sync supervisor, signed before the portable ZIP is built) are excluded by regex.
 if [ -n "${OKILUM_WINDOWS_SIGN_TEMPLATE:-}" ]; then
     args+=(--signTemplate "$OKILUM_WINDOWS_SIGN_TEMPLATE")
+    if [ -n "${OKILUM_WINDOWS_SIGN_EXCLUDE:-}" ]; then
+        args+=(--signExclude "$OKILUM_WINDOWS_SIGN_EXCLUDE")
+    fi
 fi
 "$tools/dotnet/dotnet" "$tools/vpk/tools/net8.0/any/vpk.dll" '[win]' pack \
     --packId BeFeast.Okilum --packTitle Okilum --packAuthors BeFeast \
