@@ -351,3 +351,105 @@ fn native_discovering_connect_verifies_the_server_then_exchanges_and_refuses_wro
     eprintln!("transport: discovering connect verified server image, owner and start time, then Status passed; wrong start time and wrong generation refused");
     Ok(())
 }
+
+#[test]
+fn native_accept_discovering_identifies_the_client_after_it_connects_and_refuses_an_untrusted_one(
+) -> Result<()> {
+    use crate::sidecar::{
+        store::Hint,
+        supervisor::ipc::windows_discovery::{image_path, start_time, ImagePolicy},
+    };
+    use windows::Win32::System::Threading::GetCurrentProcess;
+    struct Policy(bool);
+    impl ImagePolicy for Policy {
+        fn verify_image(&self, _: &std::path::Path) -> Result<()> {
+            ensure!(self.0, "untrusted signer");
+            Ok(())
+        }
+    }
+    let me = unsafe { GetCurrentProcess() };
+    let mut b = binding()?;
+    b.supervisor = image_path(me)?; // this process plays both programs
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let new_server = || {
+        let probes = Arc::new(AtomicUsize::new(0));
+        let server = Server::new(
+            b.clone(),
+            Runtime {
+                probes: probes.clone(),
+                stops: Arc::new(AtomicUsize::new(0)),
+                intents: Arc::new(AtomicUsize::new(0)),
+            },
+        );
+        (server, probes)
+    };
+    let serve =
+        |trusted: bool| -> Result<(Scope, std::thread::JoinHandle<Result<()>>, Arc<AtomicUsize>)> {
+            let (mut server, probes) = new_server();
+            let s = server.scope().clone();
+            let pipe = PrivatePipe::create(&s)?;
+            let (sb, ss) = (b.clone(), s.clone());
+            let worker = std::thread::spawn(move || -> Result<()> {
+                let mut transport = WindowsTransport::accept_discovering(
+                    sb,
+                    ss,
+                    pipe,
+                    Arc::new(Policy(trusted)),
+                    deadline,
+                )?;
+                server.serve_one(&mut transport)
+            });
+            Ok((s, worker, probes))
+        };
+    let client = |s: &Scope| {
+        let hint = Hint::new(s.generation, start_time(me)?)?;
+        WindowsTransport::connect_discovering(
+            b.clone(),
+            s.clone(),
+            hint,
+            Arc::new(Policy(true)),
+            deadline,
+        )
+    };
+
+    // An untrusted client: the server refuses it after the connect, the runtime is never
+    // touched, and the client's exchange fails.
+    let (s, worker, probes) = serve(false)?;
+    let outcome = client(&s).and_then(|mut transport| {
+        exchange(
+            &mut transport,
+            &b,
+            &Request::new(s.clone(), Command::Status),
+        )
+    });
+    let refused = worker.join().expect("server fixture panicked");
+    ensure!(refused.is_err(), "an untrusted client was accepted");
+    ensure!(
+        format!("{:#}", refused.unwrap_err()).contains("signature policy"),
+        "refused for another reason"
+    );
+    ensure!(outcome.is_err(), "the refused client got a reply");
+    ensure!(
+        probes.load(Ordering::SeqCst) == 0,
+        "the runtime was reached"
+    );
+
+    // Positive control on the same construction: the trusted client is identified and served.
+    let (s, worker, probes) = serve(true)?;
+    let mut transport = client(&s)?;
+    ensure!(
+        exchange(
+            &mut transport,
+            &b,
+            &Request::new(s.clone(), Command::Status)
+        )? == Status::Running,
+        "status mismatch"
+    );
+    worker.join().expect("server fixture panicked")?;
+    ensure!(
+        probes.load(Ordering::SeqCst) == 1,
+        "status did not reach the runtime"
+    );
+    eprintln!("transport: server identified the client after connect (same user, policy); untrusted client refused before any I/O; Status passed");
+    Ok(())
+}

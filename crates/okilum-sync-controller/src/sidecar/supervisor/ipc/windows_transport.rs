@@ -1,7 +1,7 @@
 //! Binding/scope-checked adapter over owned native I/O. The caller still supplies
 //! trusted discovery and signature/installation verification of captured peers.
 use super::{
-    windows_discovery::{identify_server, ImagePolicy},
+    windows_discovery::{identify_client, identify_server, ImagePolicy},
     windows_endpoint::PrivatePipe,
     windows_io::{ClientIo, ServerIo},
     windows_peer::ProcessPeer,
@@ -90,6 +90,35 @@ impl WindowsTransport {
         let wire = Wire::Client(ClientIo::connect_discovering(
             scope.clone(),
             move |pipe| identify_server(pipe, &expected, &hint, &*policy),
+            deadline,
+        )?);
+        Ok(Self {
+            binding,
+            scope,
+            wire,
+            verified: false,
+            failed: false,
+        })
+    }
+    /// The supervisor's accept when the client is the app: it connects, and only then is
+    /// its process identified (same user, then the signature policy). Nothing is read
+    /// or written before that and the retained peer is rechecked on the live pipe.
+    pub fn accept_discovering(
+        binding: Binding,
+        scope: Scope,
+        pipe: PrivatePipe,
+        policy: Arc<dyn ImagePolicy + Send + Sync>,
+        deadline: Instant,
+    ) -> Result<Self> {
+        Self::validate_scope(&binding, &scope)?;
+        ensure!(
+            pipe.scope() == &scope,
+            "server endpoint belongs to another scope"
+        );
+        let owner = binding.owner.clone();
+        let wire = Wire::Server(ServerIo::accept_discovering(
+            pipe,
+            move |pipe| identify_client(pipe, &owner, &*policy),
             deadline,
         )?);
         Ok(Self {
