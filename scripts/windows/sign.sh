@@ -52,19 +52,19 @@ case "$backend" in
 esac
 
 # The certificate the configured key presents, as a lower-case SHA-256 of its DER.
-# The probe reads it by PKCS#11 label while jsign signs by alias; the pilot confirms the
-# two name the same object on SimplySign, and verify-signatures.py pins the certificate
-# that actually signed every output, so a mismatch cannot reach publication.
+# For PKCS#11 it is read through the same SunPKCS11 keystore and alias jsign signs with:
+# SimplySign shows its objects only after a login (no PIN), which pkcs11-tool does not do.
 certificate_sha256() {
     local der
     der=$(mktemp)
     trap 'rm -f "$der"' RETURN
     case "$backend" in
         certum-pkcs11)
-            local library
-            library=$(sed -n 's/^[[:space:]]*library[[:space:]]*=[[:space:]]*//p' "$cfg" | head -1)
-            pkcs11-tool --module "$library" --read-object --type cert --label "$OKILUM_WINDOWS_SIGN_ALIAS" \
-                --output-file "$der" >/dev/null 2>&1 || return 1
+            local pass=""
+            [ -z "${OKILUM_WINDOWS_SIGN_PIN_FILE:-}" ] || pass=$(cat "$OKILUM_WINDOWS_SIGN_PIN_FILE")
+            PASS="$pass" keytool -exportcert -alias "$OKILUM_WINDOWS_SIGN_ALIAS" -keystore NONE \
+                -storetype PKCS11 -providerClass sun.security.pkcs11.SunPKCS11 -providerArg "$cfg" \
+                -storepass:env PASS -file "$der" >/dev/null 2>&1 || return 1
             ;;
         pkcs12-test)
             openssl pkcs12 -in "$OKILUM_WINDOWS_SIGN_TEST_P12" -nokeys -clcerts \
