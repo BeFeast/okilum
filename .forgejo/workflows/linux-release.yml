@@ -13,6 +13,11 @@ on:
       - 'scripts/ci/github-pr.py'
   # Build any PR branch manually when shared dependencies need release validation.
   workflow_dispatch:
+    inputs:
+      source:
+        description: 'Older main commit to build for the archive (#1040); empty builds the branch tip'
+        required: false
+        default: ''
 
 concurrency:
   group: okilum-arch-build-${{ github.ref }}
@@ -25,12 +30,16 @@ jobs:
     timeout-minutes: 3
     outputs:
       build: ${{ steps.select.outputs.build }}
+      source: ${{ steps.select.outputs.source }}
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
+          fetch-depth: ${{ inputs.source != '' && '0' || '1' }}
           persist-credentials: false
       - name: Select half-hourly or manual build
         id: select
+        env:
+          OKILUM_SOURCE: ${{ inputs.source }}
         run: python3 scripts/releases/coalesce.py linux
 
   release:
@@ -56,6 +65,9 @@ jobs:
             vulkan-icd-loader librsvg desktop-file-utils xorg-server-xvfb xorg-xauth xdotool vulkan-swrast dbus
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
+          # Only an explicit older main commit (#1040) changes the checkout; every other
+          # run keeps the default ref (including pull-request merge refs).
+          ref: ${{ inputs.source != '' && needs.select.outputs.source || '' }}
           persist-credentials: false
       - name: Prepare build user
         run: useradd -m builder
@@ -76,6 +88,8 @@ jobs:
             harness=1
           fi
           runuser -u builder -- env OKILUM_SETTINGS_UI_HARNESS="$harness" OKILUM_BUILD_VERSION="$((5000 + GITHUB_RUN_NUMBER))" bash scripts/arch/build.sh
+          # Publication reads the built commit from here, not from the run (#1040).
+          runuser -u builder -- git -C "$GITHUB_WORKSPACE" rev-parse HEAD > dist/arch/release-source.txt
       - name: Validate package and install without changing MIME defaults
         run: |
           desktop-file-validate scripts/arch/okilum.desktop
@@ -88,7 +102,9 @@ jobs:
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         with:
           name: arch-publication
-          path: dist/arch/*.pkg.tar.zst
+          path: |
+            dist/arch/*.pkg.tar.zst
+            dist/arch/release-source.txt
           retention-days: 7
 
       # Preview artifacts let native QA inspect UI before merge. They never

@@ -24,6 +24,10 @@ on:
         description: 'Measure cold/warm SDK setup on this runner before building'
         type: boolean
         default: false
+      source:
+        description: 'Older main commit to build for the archive (#1040); empty builds the branch tip'
+        required: false
+        default: ''
 
 concurrency:
   group: windows-build-${{ github.ref }}
@@ -35,12 +39,16 @@ jobs:
     timeout-minutes: 3
     outputs:
       build: ${{ steps.select.outputs.build }}
+      source: ${{ steps.select.outputs.source }}
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
+          fetch-depth: ${{ inputs.source != '' && '0' || '1' }}
           persist-credentials: false
       - name: Select hourly or manual build
         id: select
+        env:
+          OKILUM_SOURCE: ${{ inputs.source }}
         run: python3 scripts/releases/coalesce.py windows
 
   release:
@@ -65,6 +73,9 @@ jobs:
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
+          # Only an explicit older main commit (#1040) changes the checkout; every other
+          # run keeps the default ref (including pull-request merge refs).
+          ref: ${{ inputs.source != '' && needs.select.outputs.source || '' }}
           persist-credentials: false
       - name: Install cross-build tools
         run: |
@@ -116,7 +127,8 @@ jobs:
           bash scripts/windows/install-vpk.sh "$RUNNER_TEMP/velopack"
 
       - name: Restore previous beta package for delta
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        # An explicit older commit is archived, not appended to the beta delta chain.
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && inputs.source == ''
         env:
           R2_ENDPOINT: ${{ vars.R2_ENDPOINT }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
@@ -127,6 +139,8 @@ jobs:
         run: |
           export OKILUM_RELEASE_VERSION="0.1.$((5000 + GITHUB_RUN_NUMBER))"
           bash scripts/windows/pack.sh "$RUNNER_TEMP/velopack" target/windows-dist target/windows-release
+          # Publication reads the built commit from here, not from the run (#1040).
+          git rev-parse HEAD > target/windows-release/release-source.txt
           python3 -m unittest discover -s scripts/windows -p 'test_*.py'
 
       - name: Upload unsigned installer for Windows QA

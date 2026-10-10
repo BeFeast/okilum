@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 
 
@@ -51,16 +52,48 @@ def descriptor(source, platform):
     return json.loads(body)
 
 
+def explicit_source(value, platform, ref, event):
+    """A requested older main commit (#1040): built once, published to the archive only.
+
+    Returns None when no source was requested. Refuses anything that is not a full
+    SHA on main's history: the checkout is main with full history, so a commit that
+    only exists on a branch is unknown here or not an ancestor of HEAD.
+    """
+    value = (value or '').strip()
+    if not value:
+        return None
+    if platform == 'macos':
+        raise ValueError('An explicit source is not available for the macOS lane yet')
+    if event != 'workflow_dispatch' or ref != 'refs/heads/main':
+        raise ValueError('An explicit source is built only by a manual run on main')
+    if not re.fullmatch('[0-9a-f]{40}', value):
+        raise ValueError('The source must be a full 40-character commit SHA')
+    ancestor = subprocess.run(['git', 'merge-base', '--is-ancestor', value, 'HEAD'],
+                              capture_output=True, text=True, timeout=30)
+    if ancestor.returncode != 0:
+        raise ValueError(f'{value} is not a commit on main')
+    return value
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('platform', choices=['macos', 'windows', 'linux'])
     args = parser.parse_args()
     event, source = os.environ['GITHUB_EVENT_NAME'], os.environ['GITHUB_SHA']
-    current = current_schedule(event, source, args.platform)
-    published = descriptor(source, args.platform) if current and event == 'schedule' else None
-    build = current and needed(event, published, source, args.platform)
-    if not current:
-        print('Skip obsolete scheduled snapshot; main has advanced')
+    requested = explicit_source(os.environ.get('OKILUM_SOURCE'), args.platform,
+                                os.environ.get('GITHUB_REF', ''), event)
+    if requested:
+        # An older main commit: build it unless its platform build already exists.
+        build = descriptor(requested, args.platform) is None
+        source = requested
+        print(f'Explicit source {requested}: ' + ('build' if build else 'already published'))
+    else:
+        current = current_schedule(event, source, args.platform)
+        published = descriptor(source, args.platform) if current and event == 'schedule' else None
+        build = current and needed(event, published, source, args.platform)
+        if not current:
+            print('Skip obsolete scheduled snapshot; main has advanced')
+        print('Build newest commit' if build else 'No build: coalescing or already published')
     with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
         output.write(f'build={str(build).lower()}\n')
-    print('Build newest commit' if build else 'No build: coalescing or already published')
+        output.write(f'source={source}\n')

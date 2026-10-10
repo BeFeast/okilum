@@ -26,6 +26,8 @@ jobs:
         run: pacman -Syu --noconfirm --needed nodejs git python ca-certificates
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
+          # History lets publication verify an explicit source is a main commit (#1040).
+          fetch-depth: 0
           persist-credentials: false
       - name: Publish only a complete current-main build
         env:

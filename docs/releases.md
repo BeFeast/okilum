@@ -87,6 +87,29 @@ Secrets are the existing R2, Arch signing and `OKILUM_GITHUB_MIRROR` credentials
 `FORGEJO_TOKEN` comes from the Actions token. Stable promotion shares the macOS
 appcast publication lock; scheduled Beta does not block the macOS release queue.
 
+### Promoting an older main commit (#1040)
+
+Main often moves on before a source has all three builds: Linux builds every 30
+minutes and Windows every hour, so a commit that was main's head between two ticks
+never gets one. To promote such a commit, run **releases** on **main** with `source`
+set to its full SHA and `build` empty:
+
+1. The commit must be on main's history and must already have a macOS build. That
+   lane signs on the M4 under separate rules; without it the run stops and says so.
+2. Linux and Windows builds that are missing for that commit are started with the
+   same `source` input on their release workflows. They check out exactly that
+   commit, record it in their publication artifact, and are published to the **build
+   archive only**: the catalog, `arch/builds/<n>` and `windows/builds/<n>`. The beta
+   feeds keep their newer builds.
+3. A promotion request is saved in `okilum/releases/requests/<sha>.json`. When the
+   last missing build is published, publication starts the ordinary
+   `releases build=<mac>` promotion. If nothing was missing, that happens at once.
+
+No step waits on a runner, so publication and promotion keep their single lock. You
+can also run the Linux or Windows release workflow by hand with `source` to fill the
+catalog without promoting. A commit that already has its build for that platform is
+not built again.
+
 ## Superseded main builds (#562)
 
 All platform builds finish useful work even while main advances. Linux builds on

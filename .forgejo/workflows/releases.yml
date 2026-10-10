@@ -6,7 +6,11 @@ on:
   workflow_dispatch:
     inputs:
       build:
-        description: 'Owner-approved macOS beta build to promote on ALL OSes; empty refreshes Beta only'
+        description: 'Owner-approved macOS beta build to promote on ALL OSes; empty refreshes Beta only (or see source)'
+        required: false
+        default: ''
+      source:
+        description: 'Owner-approved: promote this main commit; missing Linux/Windows builds are made first (#1040)'
         required: false
         default: ''
       supersede_pending:
@@ -19,7 +23,8 @@ on:
 # Scheduled Beta never edits the appcast or queues against the M4 release.
 # Platform beta publishers finish independently; Beta mirrors each current public platform head.
 concurrency:
-  group: ${{ inputs.build != '' && 'okilum-macos-release' || 'okilum-github-beta' }}
+  # A source request only dispatches builds and returns; it must not hold the publication lock.
+  group: ${{ inputs.build != '' && 'okilum-macos-release' || (inputs.source != '' && 'okilum-release-request' || 'okilum-github-beta') }}
   cancel-in-progress: false
 jobs:
   github-mirror:
@@ -46,8 +51,13 @@ jobs:
           ARCH_GPG_PRIVATE_KEY: ${{ secrets.ARCH_GPG_PRIVATE_KEY }}
           ARCH_GPG_FINGERPRINT: ${{ vars.ARCH_GPG_FINGERPRINT }}
           PROMOTE_BUILD: ${{ inputs.build }}
+          PROMOTE_SOURCE: ${{ inputs.source }}
           SUPERSEDE_PENDING: ${{ inputs.supersede_pending }}
         run: |
+          if [ -n "$PROMOTE_SOURCE" ] && [ -z "$PROMOTE_BUILD" ]; then
+            # Builds what is missing for that commit; the last publication starts the promotion.
+            exec python scripts/releases/prepare.py request "$PROMOTE_SOURCE"
+          fi
           args=()
           if [ "$SUPERSEDE_PENDING" = true ]; then
             test -n "$PROMOTE_BUILD"

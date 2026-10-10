@@ -129,12 +129,15 @@ def execute(args, r2, key, tmp):
             raise ValueError('Archived package checksum mismatch')
         channel = 'stable'
     r2.put(f'{PREFIX}/okilum-signing-key.asc', key.public(), 'application/pgp-keys', 'no-cache')
-    publish_channel(r2, key, tmp, channel, manifest, package, signature)
+    # An explicit older commit (#1040) is archived for promotion; the beta feed keeps its newer build.
+    if not getattr(args, 'archive_only', False):
+        publish_channel(r2, key, tmp, channel, manifest, package, signature)
     if args.command == 'publish':
         catalog.record(r2, 'linux', args.build, args.source, [
             catalog.asset(f'{archive}/{name}', name, package),
             catalog.asset(f'{archive}/{name}.sig', name + '.sig', signature)])
-    print(f'Published {name} to {channel}; source {manifest["source"]}')
+    where = 'the build archive' if getattr(args, 'archive_only', False) else channel
+    print(f'Published {name} to {where}; source {manifest["source"]}')
 
 
 def main():
@@ -146,6 +149,8 @@ def main():
         if command == 'publish':
             p.add_argument('--source', required=True)
             p.add_argument('--package', required=True)
+            p.add_argument('--archive-only', action='store_true',
+                           help='record the build for promotion without changing the beta feed')
     args = parser.parse_args()
     package_name(args.build)
     with SigningKey() as key, tempfile.TemporaryDirectory() as tmp:
