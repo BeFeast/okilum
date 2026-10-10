@@ -407,11 +407,16 @@ impl Reader {
             .flatten();
         let language = code.unwrap_or(if plain_file { "text" } else { "markdown" });
         let wrap = code.is_none() || reader_ui_state::code_soft_wrap(cx);
+        // The note's reference definitions, for rendered blocks (#1067).
+        let block_context: BlockContext = Rc::new(std::cell::RefCell::new(
+            okilum_core::render::reference_definitions(store.text()).into(),
+        ));
         let blocks = (!plain_file).then(|| {
             (
                 self.vault_root.clone(),
                 self.current_rel.clone(),
                 cx.entity().downgrade(),
+                block_context.clone(),
             )
         });
         let input = cx.new(|cx| {
@@ -435,9 +440,9 @@ impl Reader {
             input.set_value(store.text().to_owned(), window, cx);
             input.set_direction_exempt_lines(direction_exempt_lines(store.text()));
             let press = input.block_press_slot();
-            input.set_block_renderer(
-                blocks.map(|(root, rel, reader)| live_blocks(root, rel, reader, press)),
-            );
+            input.set_block_renderer(blocks.map(|(root, rel, reader, context)| {
+                live_blocks(root, rel, reader, press, context)
+            }));
             input.ensure_highlighter_factory(
                 gpui_component::highlighter::input_highlighter_factory(),
             );
@@ -480,11 +485,16 @@ impl Reader {
                 cx.notify();
             }
         });
-        let changed = cx.subscribe(&input, |this, input, _: &SourceMutation, cx| {
+        let changed = cx.subscribe(&input, move |this, input, _: &SourceMutation, cx| {
             // Code blocks and tables keep one alignment as they change (S6c).
             input.update(cx, |state, _| {
-                let lines = direction_exempt_lines(&state.value());
-                state.set_direction_exempt_lines(lines);
+                let value = state.value();
+                state.set_direction_exempt_lines(direction_exempt_lines(&value));
+                // Rendered blocks resolve references against the whole note.
+                let definitions = okilum_core::render::reference_definitions(&value);
+                if block_context.borrow().as_ref() != definitions.as_str() {
+                    *block_context.borrow_mut() = definitions.into();
+                }
             });
             let Some(editing) = &mut this.editing else {
                 return;
@@ -1109,17 +1119,23 @@ impl Reader {
 /// content, and shown through the Reader's plugins. Display only: a click
 /// lands on the editor, which puts the caret in the block and reveals its
 /// source; links do not open from here.
+/// The note's link reference definitions, kept current as the note changes:
+/// a rendered block is prepared with them so its reference links resolve
+/// against the whole note (#1067).
+type BlockContext = Rc<std::cell::RefCell<SharedString>>;
+
 fn live_blocks(
     root: PathBuf,
     rel: String,
     reader: WeakEntity<Reader>,
     press: gpui_component::input::projection::BlockPressSlot,
+    context: BlockContext,
 ) -> gpui_component::input::projection::BlockRenderer {
-    // Prepared Markdown per block content, for the vault it was prepared
-    // against: a rescanned vault (a new image) prepares again.
+    // Prepared Markdown per block content and note definitions, for the vault
+    // it was prepared against: a rescanned vault (a new image) prepares again.
     let prepared = Rc::new(std::cell::RefCell::new((
         None::<Arc<okilum_core::vault::Vault>>,
-        std::collections::HashMap::<u64, SharedString>::new(),
+        std::collections::HashMap::<u64, (SharedString, SharedString)>::new(),
     )));
     Rc::new(move |block, source, _width, window, cx| {
         let Some(this) = reader.upgrade() else {
@@ -1142,15 +1158,22 @@ fn live_blocks(
             {
                 *prepared = (Some(vault.clone()), Default::default());
             }
-            prepared
-                .1
-                .entry(block.key)
-                .or_insert_with(|| {
-                    okilum_core::render::reader_document_from_source(&vault, &rel, source)
+            let definitions = context.borrow().clone();
+            let entry = prepared.1.entry(block.key).or_default();
+            if entry.1.is_empty() || entry.0 != definitions {
+                let source = if definitions.is_empty() {
+                    source.to_owned()
+                } else {
+                    format!("{source}\n\n{definitions}")
+                };
+                *entry = (
+                    definitions,
+                    okilum_core::render::reader_document_from_source(&vault, &rel, &source)
                         .rendered
-                        .into()
-                })
-                .clone()
+                        .into(),
+                );
+            }
+            entry.1.clone()
         };
         let font_size = px(reader_ui_state::font_size(cx));
         // A missing image must not hide its source behind a blank row.
