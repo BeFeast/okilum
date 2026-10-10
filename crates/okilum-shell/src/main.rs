@@ -686,6 +686,8 @@ struct Opts {
     query: Option<String>,
     jump: bool,
     copy_source: bool,
+    /// An external `okilum:` link to open (#1049, docs/deep-links.md).
+    link: Option<String>,
 }
 
 /// Payload for the custom "local-image" markdown block node. TextView's stock
@@ -6985,6 +6987,10 @@ fn main() {
         cx.activate(true);
         drop(appearance_phase);
 
+        if let Some(link) = opts.link.take() {
+            reader_open::open_deep_link(&link, cx);
+            return;
+        }
         if (opts.vault.is_some() || opts.open_path.is_some()) && opts.brain_endpoint.is_none() {
             if let Err(error) = reader_open::open_window(opts, cx) {
                 eprintln!("Cannot open Reader: {error:#}");
