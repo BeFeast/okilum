@@ -1,5 +1,5 @@
 diff --git a/crates/base/src/text/state.rs b/crates/base/src/text/state.rs
-index 1b124b32..8da7a5c1 100644
+index 1b124b32..352c869d 100644
 --- a/crates/base/src/text/state.rs
 +++ b/crates/base/src/text/state.rs
 @@ -34,6 +34,11 @@ const MAX_COALESCED_UPDATES_PER_PARSE: usize = 64;
@@ -19,7 +19,7 @@ index 1b124b32..8da7a5c1 100644
      pub(super) focus_handle: FocusHandle,
      pub(super) list_state: ListState,
 +    /// The list measures only visible blocks; see [`MEASURE_ALL_MAX_BLOCKS`].
-+    list_visible_only: bool,
++    pub(super) list_visible_only: bool,
 +    /// The estimated height of unmeasured blocks while `list_visible_only`.
 +    list_hint: Option<Pixels>,
 +    /// The view width the estimate was last applied at. The list forgets
