@@ -1,5 +1,6 @@
 #!/bin/bash
-# Build Okilum.app on the macOS runner, then sign, notarize, staple and zip it.
+# Build Okilum.app on the macOS runner, then sign, notarize, staple and zip it,
+# and pack the same app into a signed, notarized first-install DMG (#993).
 # Usage: build-macos-ci.sh OUTPUT_DIR. Runs from the repository root.
 #   OKILUM_BUILD_VERSION   monotonic CFBundleVersion (CI: 5000 + run number)
 #   OKILUM_SIGNING_IDENTITY, OKILUM_NOTARY_PROFILE   existing runner keychain items
@@ -95,12 +96,14 @@ PLIST
 plutil -lint "$APP/Contents/Info.plist"
 
 source scripts/updater/sign-bundle.sh
+source scripts/updater/make-dmg.sh
 cat >"$OUTPUT/release.env" <<EOF
 BUILD=$OKILUM_BUILD_VERSION
 DISPLAY_VERSION=$DISPLAY_VERSION
 SOURCE_SHA=$SOURCE_SHA
 SOURCE_TREE=$SOURCE_TREE
 ARCHIVE=$ARCHIVE
+DMG=$DMG
 SIGN_UPDATE=$(find "$OUTPUT/sparkle-bin" -name sign_update -type f | head -1)
 EOF
 cat "$OUTPUT/release.env"

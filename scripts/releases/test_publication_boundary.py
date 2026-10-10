@@ -138,20 +138,25 @@ class MacOSArtifact(unittest.TestCase):
             root = Path(tmp)
             archive = root / 'notarized.zip'
             archive.write_bytes(b'original signed archive')
+            dmg = root / 'Okilum-0.1.7000.dmg'
+            dmg.write_bytes(b'original signed disk image')
             stage = root / 'stage'
-            env = {'ARCHIVE': str(archive), 'BUILD': '7000', 'DISPLAY_VERSION': '0.1.7000',
+            env = {'ARCHIVE': str(archive), 'DMG': str(dmg), 'BUILD': '7000', 'DISPLAY_VERSION': '0.1.7000',
                    'SOURCE_SHA': 'a' * 40, 'SOURCE_TREE': 'b' * 40, 'SIGNATURE': 'signature',
                    'GITHUB_SHA': 'a' * 40, 'GITHUB_RUN_NUMBER': '2000'}
             with patch.dict(os.environ, env), patch('sys.argv', ['stage', 'stage', str(stage)]):
                 macos.main()
             archive.unlink()
+            dmg.unlink()
             with patch.dict(os.environ, env), patch('sys.argv', ['publish', 'publish', str(stage)]), \
                  patch.object(macos, 'publish') as publish:
                 macos.main()
                 args = publish.call_args.args[0]
                 self.assertEqual(Path(args.archive).read_bytes(), b'original signed archive')
+                self.assertEqual(Path(args.dmg).read_bytes(), b'original signed disk image')
                 self.assertEqual((args.build, args.source, args.signature), (7000, 'a' * 40, 'signature'))
-                for key, value in [('SOURCE_SHA', 'c' * 40), ('BUILD', '7001'), ('archive', '../escape')]:
+                for key, value in [('SOURCE_SHA', 'c' * 40), ('BUILD', '7001'), ('archive', '../escape'),
+                                   ('dmg', '../escape')]:
                     metadata = json.loads((stage / 'release.json').read_text())
                     original = metadata.copy()
                     metadata[key] = value
