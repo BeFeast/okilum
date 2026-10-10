@@ -897,7 +897,13 @@ fn open_error_text(error: &anyhow::Error) -> String {
         Some(ErrorKind::NotFound) => "This file or folder no longer exists. It may have \
                                       been moved, renamed or deleted."
             .into(),
-        Some(_) if error.downcast_ref::<std::io::Error>().is_some() => {
+        // `downcast_ref` looks through context, so inspect only the outermost layer.
+        Some(_)
+            if error
+                .chain()
+                .next()
+                .is_some_and(|e| e.downcast_ref::<std::io::Error>().is_some()) =>
+        {
             "This file or folder couldn’t be opened.".into()
         }
         _ => error.to_string(),

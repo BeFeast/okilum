@@ -49,7 +49,9 @@ pub(super) struct Editing {
 /// error with no authored context. The raw chain stays in stderr.
 fn edit_error_text(error: &anyhow::Error) -> String {
     use std::io::ErrorKind;
-    let Some(io) = error.downcast_ref::<std::io::Error>() else {
+    // `downcast_ref` looks through context, so inspect only the outermost layer.
+    let outermost = error.chain().next();
+    let Some(io) = outermost.and_then(|e| e.downcast_ref::<std::io::Error>()) else {
         return error.to_string();
     };
     match io.kind() {
