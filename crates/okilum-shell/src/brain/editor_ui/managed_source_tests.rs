@@ -96,10 +96,18 @@ fn readonly_blocks_native_mutation_same_turn_and_flight_remains_editable(cx: &mu
             before,
             "positive control: ordinary flight permits typing"
         );
-        assert!(v.source.value(cx).starts_with("accepted"));
+        // Typed at byte zero of a BOM note: after the BOM (#1093).
+        assert!(v
+            .source
+            .value(cx)
+            .trim_start_matches('\u{feff}')
+            .starts_with("accepted"));
         v.editor.flight = false;
     });
     cx.run_until_parked();
-    assert!(store.list().unwrap().drafts[0].text.starts_with("accepted"));
+    assert!(store.list().unwrap().drafts[0]
+        .text
+        .trim_start_matches('\u{feff}')
+        .starts_with("accepted"));
     std::fs::remove_dir_all(dir).unwrap();
 }

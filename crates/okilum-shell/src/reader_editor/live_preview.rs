@@ -792,7 +792,10 @@ mod tests {
             assert!(!e.live_preview.in_flight.get() && !e.live_preview.queued);
             let p = e.live_preview.accepted.as_ref().unwrap();
             assert_eq!(p.source().stamp, input.read(cx).source_stamp());
-            assert_eq!(p.source().text.as_ref(), format!("latest first {ORIGINAL}"));
+            assert_eq!(
+                p.source().text.as_ref(),
+                ORIGINAL.replacen('\u{feff}', "\u{feff}latest first ", 1)
+            );
             let display = p.compose(p.source(), &ActiveSource::default()).unwrap();
             assert_ne!(
                 display.text(),
@@ -928,7 +931,10 @@ mod tests {
         visual.simulate_keystrokes("ctrl-y");
         visual.run_until_parked();
         input.read_with(visual, |i, _| {
-            assert_eq!(i.value().as_ref(), format!("local {ORIGINAL}"))
+            assert_eq!(
+                i.value().as_ref(),
+                ORIGINAL.replacen('\u{feff}', "\u{feff}local ", 1)
+            )
         });
         std::fs::write(directory.path().join("vault/note.md"), "external").unwrap();
         reader.update_in(visual, |r, _, cx| {
@@ -945,7 +951,7 @@ mod tests {
             serde_json::from_slice(&std::fs::read(journal).unwrap()).unwrap();
         assert_eq!(
             draft["text"].as_str(),
-            Some(format!("local {ORIGINAL}").as_str())
+            Some(ORIGINAL.replacen('\u{feff}', "\u{feff}local ", 1).as_str())
         );
         assert_eq!(
             std::fs::read_to_string(directory.path().join("vault/note.md")).unwrap(),

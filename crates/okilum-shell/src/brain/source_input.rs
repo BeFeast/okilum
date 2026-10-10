@@ -49,6 +49,8 @@ impl SourceInput {
                 .replaceable(false)
                 .soft_wrap(true)
                 .wrapping_indent(WrappingIndent::None)
+                // A leading BOM stays at byte zero whatever is typed (#1093).
+                .keep_leading_bom(true)
                 .placeholder("Choose a note to view or edit");
             // Source starts with the accepted native hooks, before any classifier result.
             state.set_projection_provider(Some(Arc::new(SourceOnly)), cx);

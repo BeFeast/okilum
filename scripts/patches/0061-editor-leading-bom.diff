@@ -1,0 +1,146 @@
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+index efdf8446..6f92d347 100644
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -343,6 +343,12 @@ pub struct InputBaseState<M: InputModeKind> {
+     pub(super) pending_block_scroll: Pixels,
+     exact_clipboard: ClipboardSession,
+     document_newlines: bool,
++    /// A leading UTF-8 BOM is file metadata: edits never land before it or
++    /// remove it (#1093).
++    keep_leading_bom: bool,
++    /// Set while an exact replacement (`set_value`, `replace_source_range`)
++    /// runs: [`Self::keep_leading_bom`] does not move it.
++    exact_replacement: bool,
+     projection_mouse_hold: bool,
+     projection_lease_release: Option<Task<()>>,
+     pub(super) projection_pending_click: Option<(MouseDownEvent, bool)>,
+@@ -707,6 +713,8 @@ impl<M: InputModeKind> InputBaseState<M> {
+             pending_block_scroll: px(0.),
+             exact_clipboard: ClipboardSession::default(),
+             document_newlines: false,
++            keep_leading_bom: false,
++            exact_replacement: false,
+             projection_mouse_hold: false,
+             projection_lease_release: None,
+             projection_pending_click: None,
+@@ -1256,7 +1264,9 @@ impl<M: InputModeKind> InputBaseState<M> {
+         self.undo_manager.pending_intent = Some(EditIntent::Atomic);
+         self.pending_selection_after = Some(after);
+         let range_utf16 = self.range_to_utf16(&range);
++        self.exact_replacement = true;
+         self.replace_text_in_range_silent(Some(range_utf16), text, window, cx);
++        self.exact_replacement = false;
+         self.pending_selection_after = None;
+         self.selected_range = after;
+         self.sync_projection_active();
+@@ -1311,7 +1321,9 @@ impl<M: InputModeKind> InputBaseState<M> {
+         self.with_edits_allowed(|this| {
+             this.undo_manager.pending_intent = Some(EditIntent::Atomic);
+             let range = 0..this.text.chars().map(|c| c.len_utf16()).sum();
++            this.exact_replacement = true;
+             this.replace_text_in_range_silent(Some(range), &text, window, cx);
++            this.exact_replacement = false;
+             this.reset_highlighter(cx);
+         });
+     }
+@@ -1426,6 +1438,30 @@ impl<M: InputModeKind> InputBaseState<M> {
+         self
+     }
+ 
++    /// Keep a leading UTF-8 BOM in place: a user edit (typing, paste, IME,
++    /// deletion) that would start inside or before it starts after it, so
++    /// typing at the very start of a BOM file writes after the BOM and
++    /// select-all replaces only the text (#1093). Exact replacements
++    /// (`set_value`, `replace_source_range`) are applied as given: a restored
++    /// version or a reloaded file brings its own BOM, or none.
++    pub fn keep_leading_bom(mut self, enabled: bool) -> Self {
++        self.keep_leading_bom = enabled;
++        self
++    }
++
++    /// `range` moved past a leading BOM when [`Self::keep_leading_bom`] is on.
++    fn after_leading_bom(&self, range: Range<usize>) -> Range<usize> {
++        const BOM: &[u8] = "\u{feff}".as_bytes();
++        if !self.keep_leading_bom
++            || self.exact_replacement
++            || range.start >= BOM.len()
++            || !self.text.bytes().take(BOM.len()).eq(BOM.iter().copied())
++        {
++            return range;
++        }
++        BOM.len()..range.end.max(BOM.len())
++    }
++
+     fn insertion_newline(&self) -> &'static str {
+         if self.document_newlines {
+             super::document_newlines::delimiter(self.text.bytes())
+@@ -3681,6 +3717,12 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
+                 self.range_from_utf16(&range)
+             }))
+             .unwrap_or(self.selected_range.into());
++        let kept = self.after_leading_bom(range.clone());
++        // Deleting only the BOM (Backspace right after it): nothing to do.
++        if kept != range && kept.is_empty() && new_text.is_empty() {
++            return;
++        }
++        let range = kept;
+ 
+         self.reveal_replacement(&range);
+         let old_text = self.text.clone();
+@@ -3853,6 +3895,7 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
+                 self.range_from_utf16(&range)
+             }))
+             .unwrap_or(self.selected_range.into());
++        let range = self.after_leading_bom(range);
+ 
+         self.reveal_replacement(&range);
+         let old_text = self.text.clone();
+@@ -4524,6 +4567,47 @@ mod tests {
+         }
+     }
+ 
++    #[gpui::test]
++    fn edits_never_land_before_a_leading_bom(cx: &mut TestAppContext) {
++        cx.update(crate::init);
++        let text = "\u{feff}# T\r\n";
++        for keep in [true, false] {
++            let view = InputView::build_editor(cx, move |state| state.keep_leading_bom(keep));
++            let mut v = VisualTestContext::from_window(view.window_handle.into(), cx);
++            v.update(|window, cx| {
++                view.input.update(cx, |state, cx| {
++                    state.set_value(text, window, cx);
++                    // Typing at byte zero (Ctrl+Home, then a key).
++                    state.replace_text_in_range(Some(0..0), "X", window, cx);
++                    if !keep {
++                        // Control: without the option the edit lands first.
++                        assert_eq!(state.value().as_ref(), "X\u{feff}# T\r\n");
++                        return;
++                    }
++                    assert_eq!(state.value().as_ref(), "\u{feff}X# T\r\n");
++                    assert_eq!(state.cursor(), "\u{feff}X".len());
++                    // Backspace right after the BOM removes nothing.
++                    state.replace_text_in_range(Some(0..1), "", window, cx);
++                    assert_eq!(state.value().as_ref(), "\u{feff}X# T\r\n");
++                    // Select all, then type: the BOM stays.
++                    let all = state.value().encode_utf16().count();
++                    state.replace_text_in_range(Some(0..all), "Y", window, cx);
++                    assert_eq!(state.value().as_ref(), "\u{feff}Y");
++                    // Undo restores the exact bytes.
++                    state.undo(&super::Undo, window, cx);
++                    state.undo(&super::Undo, window, cx);
++                    assert_eq!(state.value().as_ref(), text);
++                    // An exact replacement is applied as given: a reloaded file
++                    // without a BOM, or a restored version with one.
++                    state.replace_all("no bom", window, cx);
++                    assert_eq!(state.value().as_ref(), "no bom");
++                    state.replace_all(text, window, cx);
++                    assert_eq!(state.value().as_ref(), text);
++                })
++            });
++        }
++    }
++
+     #[gpui::test]
+     fn scaled_lines_get_tall_rows_for_layout_caret_movement_and_scroll(cx: &mut TestAppContext) {
+         cx.update(crate::init);
