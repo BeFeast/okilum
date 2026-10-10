@@ -3,8 +3,7 @@
 //! gate test below fails when code computes a new base directory that the
 //! inventory and `roots()` do not know about.
 // Windows runs the purge from the Velopack hook, Linux from
-// `okilum --uninstall-data`; the macOS Settings action follows in #974.
-#![cfg_attr(target_os = "macos", allow(dead_code))]
+// `okilum --uninstall-data`, macOS from Settings → About → Uninstall Okilum….
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -422,6 +421,101 @@ fn enrollment_lock() -> Option<PathBuf> {
     Some(PathBuf::from(format!("/tmp/okilum-sync-enrollment-{uid}")))
 }
 
+/// What macOS keeps outside the app roots, removed after the app has quit:
+/// preferences go through `defaults` (cfprefsd caches them), and AppKit
+/// writes Saved Application State on quit. Arguments: bundle path, pid.
+#[cfg(any(target_os = "macos", test))]
+const MACOS_CLEANUP: &str = r#"
+app=$1; pid=$2
+while kill -0 "$pid" 2>/dev/null; do sleep 0.5; done
+sleep 1
+id=$(defaults read "$app/Contents/Info" CFBundleIdentifier 2>/dev/null) || id=com.befeast.okilum
+case "$id" in com.befeast.okilum|com.befeast.okilum.*) ;; *) exit 0 ;; esac
+defaults delete "$id" >/dev/null 2>&1
+lib="$HOME/Library"
+rm -rf "$lib/Preferences/$id.plist" "$lib/Saved Application State/$id.savedState"     "$lib/HTTPStorages/$id" "$lib/HTTPStorages/$id.binarycookies"     "$lib/Caches/$id" "$lib/WebKit/$id"
+find "$lib/Logs/DiagnosticReports" -maxdepth 1 -iname 'okilum*' -exec rm -f {} + 2>/dev/null
+case "$app" in
+    *.app) mkdir -p "$HOME/.Trash" && mv "$app" "$HOME/.Trash/Okilum $(date +%Y-%m-%d\ %H.%M.%S).app" ;;
+esac
+"#;
+
+/// Settings → About → Uninstall Okilum…: one confirmation, then remove
+/// everything Okilum created for this user, move the app to the Trash and quit.
+#[cfg(target_os = "macos")]
+pub(crate) fn uninstall_from_settings(window: &mut gpui::Window, cx: &mut gpui::App) {
+    let state = crate::reader_history::state_directory().ok();
+    let mut items: Vec<String> = roots()
+        .into_iter()
+        .filter(|p| p.exists())
+        .map(|p| p.display().to_string())
+        .collect();
+    items.push("Okilum's preferences, caches and saved window state".into());
+    items.push("Okilum.app (moved to the Trash)".into());
+    let vaults: BTreeSet<PathBuf> = state
+        .as_deref()
+        .map(recorded_vaults)
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    let mut outro =
+        vec!["Your notes stay where they are. Unsaved drafts are saved to Documents first.".into()];
+    if !vaults.is_empty() {
+        outro.push(format!(
+            "Vaults that stay: {}",
+            vaults
+                .iter()
+                .map(|v| v.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    let answer = crate::reader_confirm::confirm(
+        window,
+        cx,
+        "Uninstall Okilum?",
+        crate::reader_confirm::Body {
+            intro: vec!["This removes Okilum from this Mac:".into()],
+            items,
+            outro,
+        },
+        "Uninstall",
+    );
+    cx.spawn(async move |cx| {
+        if answer.recv().await != Ok(true) {
+            return;
+        }
+        let _ = cx.update(|cx| {
+            let home = std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_default();
+            let report = purge(
+                &roots(),
+                state.as_deref(),
+                &std::env::temp_dir(),
+                &home.join("Documents"),
+            );
+            eprintln!("Okilum uninstall: {report:?}");
+            let app = std::env::current_exe()
+                .ok()
+                .and_then(|exe| exe.ancestors().nth(3).map(Path::to_path_buf))
+                .unwrap_or_default();
+            use std::os::unix::process::CommandExt;
+            let _ = std::process::Command::new("/bin/sh")
+                .args(["-c", MACOS_CLEANUP, "okilum-uninstall"])
+                .arg(&app)
+                .arg(std::process::id().to_string())
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .process_group(0)
+                .spawn();
+            cx.quit();
+        });
+    })
+    .detach();
+}
+
 #[cfg(windows)]
 mod windows {
     use std::process::Command;
@@ -638,6 +732,81 @@ mod tests {
             .contains("okilum-syncthing-abc.service"));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn macos_cleanup_waits_for_exit_and_removes_only_okilum() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = tempfile::tempdir().unwrap();
+        let home = fixture.path().join("home");
+        let lib = home.join("Library");
+        let bin = fixture.path().join("bin");
+        let calls = fixture.path().join("defaults.log");
+        // A fake `defaults` records calls and answers the bundle id.
+        write(
+            &bin.join("defaults"),
+            &format!(
+                "#!/bin/sh\necho \"$@\" >> '{}'\n[ \"$1\" = read ] && echo com.befeast.okilum\nexit 0\n",
+                calls.display()
+            ),
+        );
+        std::fs::set_permissions(bin.join("defaults"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        let app = fixture.path().join("Applications/Okilum.app");
+        write(&app.join("Contents/Info.plist"), "plist");
+        for path in [
+            "Preferences/com.befeast.okilum.plist",
+            "Saved Application State/com.befeast.okilum.savedState/data.data",
+            "HTTPStorages/com.befeast.okilum/x",
+            "Caches/com.befeast.okilum/org.sparkle-project.Sparkle/x",
+            "Logs/DiagnosticReports/okilum-2026-10-10.ips",
+            "Logs/DiagnosticReports/Other-2026.ips",
+            "Preferences/com.other.app.plist",
+        ] {
+            write(&lib.join(path), "x");
+        }
+        // A pid that has already exited, so the wait loop returns at once.
+        let exited = std::process::Command::new("true").spawn().unwrap();
+        let pid = exited.id();
+        let mut exited = exited;
+        exited.wait().unwrap();
+        let status = std::process::Command::new("/bin/sh")
+            .args(["-c", MACOS_CLEANUP, "okilum-uninstall"])
+            .arg(&app)
+            .arg(pid.to_string())
+            .env("HOME", &home)
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(std::fs::read_to_string(&calls)
+            .unwrap()
+            .contains("delete com.befeast.okilum"));
+        for gone in [
+            "Preferences/com.befeast.okilum.plist",
+            "Saved Application State/com.befeast.okilum.savedState",
+            "HTTPStorages/com.befeast.okilum",
+            "Caches/com.befeast.okilum",
+            "Logs/DiagnosticReports/okilum-2026-10-10.ips",
+        ] {
+            assert!(!lib.join(gone).exists(), "{gone}");
+        }
+        assert!(
+            lib.join("Logs/DiagnosticReports/Other-2026.ips").exists(),
+            "positive control"
+        );
+        assert!(
+            lib.join("Preferences/com.other.app.plist").exists(),
+            "positive control"
+        );
+        assert!(!app.exists(), "the app moved to the Trash");
+        let trash: Vec<_> = std::fs::read_dir(home.join(".Trash"))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(trash.len(), 1);
+        assert!(trash[0].path().join("Contents/Info.plist").exists());
+    }
+
     #[test]
     fn vault_containment_ignores_case_where_the_file_system_does() {
         let root = Path::new("/Users/u/AppData/Local/okilum");
@@ -682,9 +851,9 @@ mod tests {
     /// add it to docs/uninstall.md and `roots()` (or the OS-specific removal),
     /// then update this list.
     const BASE_DIRECTORY_SITES: &[(&str, usize)] = &[
-        // Roots, crash dumps, the Velopack log folder and the Linux sync
-        // units and drafts export (all in the inventory).
-        ("crates/okilum-shell/src/app_footprint.rs", 9),
+        // Roots, crash dumps, the Velopack log folder, the Linux sync units,
+        // the drafts export and the macOS home (all in the inventory).
+        ("crates/okilum-shell/src/app_footprint.rs", 10),
         // Suggests ~/Downloads in the export dialog: the user picks the target.
         ("crates/okilum-shell/src/brain/context_ui.rs", 1),
         // Brain outboxes and profile: all under the `~/.config/okilum` root.

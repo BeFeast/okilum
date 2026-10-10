@@ -128,6 +128,20 @@ pub(crate) fn content(cx: &mut App) -> impl IntoElement {
                 }),
         )
         .children(reader_settings::update_status_row("about", cx))
+        .when(cfg!(target_os = "macos"), |view| {
+            view.child(
+                h_flex().child(
+                    Button::new("about-uninstall")
+                        .ghost()
+                        .small()
+                        .label("Uninstall Okilum…")
+                        .on_click(|_, _window, _cx| {
+                            #[cfg(target_os = "macos")]
+                            crate::app_footprint::uninstall_from_settings(_window, _cx);
+                        }),
+                ),
+            )
+        })
         .child(links)
         .when(cfg!(target_os = "linux"), |view| {
             view.child(
