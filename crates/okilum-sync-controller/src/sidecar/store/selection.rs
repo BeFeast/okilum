@@ -14,6 +14,17 @@ use std::{
 };
 
 pub(crate) const SELECTION: &str = "runtime.json";
+
+/// A plain label that is also safe as one path component (staging directory name).
+pub(crate) fn version_label_ok(version: &str) -> bool {
+    !version.is_empty()
+        && version.len() <= 64
+        && version != "."
+        && version != ".."
+        && version
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'+' | b'-'))
+}
 const SCHEMA: u32 = 1;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,16 +58,7 @@ impl Selection {
     fn validate(&self) -> Result<()> {
         ensure!(self.schema == SCHEMA, "unknown runtime selection schema");
         ensure!(
-            !self.version.is_empty()
-                && self.version.len() <= 64
-                && self
-                    .version
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'+' | b'-')),
-            "invalid runtime version label"
-        );
-        ensure!(
-            self.version != "." && self.version != "..",
+            version_label_ok(&self.version),
             "invalid runtime version label"
         );
         ensure!(
