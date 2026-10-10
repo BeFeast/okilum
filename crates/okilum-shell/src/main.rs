@@ -75,6 +75,7 @@ mod reader_settings;
 mod reader_settings_sync;
 mod reader_shortcuts;
 mod reader_sidebar;
+#[cfg(windows)]
 mod url_protocol;
 mod version_info;
 use reader_sidebar::SectionAction;
