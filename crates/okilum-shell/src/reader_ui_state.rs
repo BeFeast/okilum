@@ -797,6 +797,7 @@ impl Reader {
                 self.ui_state.source_highlight_pending = self.source_highlighting_pending(cx);
             }
             self.restore_source_position(offset, window, cx);
+            self.land_restored_source(window, cx);
             let reader = cx.entity().downgrade();
             window.on_next_frame(move |_, cx| {
                 let _ = reader.update(cx, |reader, cx| {

@@ -654,10 +654,15 @@ pub(crate) fn open_deep_link(link: &str, cx: &mut App) {
         Err(refused) => return show_error(anyhow::anyhow!(refused.message()), cx),
     };
     match resolve(&link, &known_roots(cx), &|path| path.is_file()) {
-        Resolution::Open { root, rel, .. } => {
+        Resolution::Open {
+            root,
+            rel,
+            position,
+        } => {
             let opts = super::Opts {
                 vault: Some(root),
                 note: Some(rel),
+                landing: Some(position),
                 reusable_roots: reusable_roots(cx),
                 ..Default::default()
             };
@@ -782,9 +787,13 @@ fn focus_existing(opts: &super::Opts, cx: &mut App) -> bool {
                     reader.start_loading(opts.clone(), window, cx);
                 } else if let Some(note) = &note {
                     if reader.document_ready() {
-                        reader.open_note(note, None, window, cx);
+                        match &opts.landing {
+                            Some(position) => reader.open_link(note, position.clone(), window, cx),
+                            None => reader.open_note(note, None, window, cx),
+                        }
                     } else {
                         reader.queued_open_note = Some(note.clone());
+                        reader.queued_landing = opts.landing.clone();
                     }
                 }
             });

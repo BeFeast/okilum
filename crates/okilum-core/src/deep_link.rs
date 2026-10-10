@@ -309,6 +309,41 @@ fn segments(path: &str) -> Result<String, Refused> {
     Ok(parts.join("/"))
 }
 
+/// The Reader block that shows file line `line` (1-based, frontmatter
+/// counted). `rendered` is the Reader's rewrite of the body; the block
+/// ordinal maps across only when both parses have the same top-level blocks,
+/// as task landing does. `None` means the line cannot be placed in the
+/// reading view: the caller says so instead of guessing. Lines in the
+/// frontmatter land on the first block, blank lines on the next block, lines
+/// past the end on the last one.
+pub fn reader_block(source: &str, rendered: &str, line: u32) -> Option<usize> {
+    use comrak::{parse_document, Arena};
+    let body = crate::render::without_frontmatter(source);
+    let prefix_lines = source[..source.len() - body.len()]
+        .bytes()
+        .filter(|b| *b == b'\n')
+        .count();
+    let body_line = (line as usize).saturating_sub(prefix_lines).max(1);
+    let options = crate::render::comrak_options();
+    let block_ends = |text: &str| {
+        let arena = Arena::new();
+        let root = parse_document(&arena, text, &options);
+        root.children()
+            .map(|top| top.data.borrow().sourcepos.end.line)
+            .collect::<Vec<_>>()
+    };
+    let original = block_ends(body);
+    if original.is_empty() || original.len() != block_ends(rendered).len() {
+        return None;
+    }
+    Some(
+        original
+            .iter()
+            .position(|end| *end >= body_line)
+            .unwrap_or(original.len() - 1),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,6 +356,20 @@ mod tests {
             } => (vault, path, position),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn reader_block_follows_file_lines() {
+        let source =
+            "---\ntitle: Plan\n---\n# Plan\n\nFirst paragraph\nstill first.\n\n- one\n- two\n";
+        let body = crate::render::without_frontmatter(source);
+        // Lines 1-3 frontmatter, 4 heading, 5 blank, 6-7 paragraph, 9-10 list.
+        for (line, block) in [(1, 0), (4, 0), (5, 1), (7, 1), (8, 2), (10, 2), (99, 2)] {
+            assert_eq!(reader_block(source, body, line), Some(block), "line {line}");
+        }
+        // Positive control: a rewrite that changes the block count is refused.
+        assert_eq!(reader_block(source, "# Plan\n", 6), None);
+        assert_eq!(reader_block("", "", 1), None);
     }
 
     #[test]
