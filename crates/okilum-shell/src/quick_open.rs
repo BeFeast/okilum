@@ -345,6 +345,9 @@ impl Palette {
     }
 
     pub fn invalidate(&mut self) {
+        // Any reset (a keystroke, Escape, reopen, Find, a vault switch) cancels
+        // an Enter held for the previous text (#1005).
+        self.accept_when_ready = None;
         self.generation = self.generation.wrapping_add(1);
         self.rows.clear();
         self.snippets.clear();
@@ -393,7 +396,6 @@ impl Reader {
     pub(super) fn close_quick_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.clear_hover(cx);
         self.quick_open.open = false;
-        self.quick_open.accept_when_ready = None;
         self.quick_open.invalidate();
         self.restore_document_focus(window, cx);
         cx.notify();
@@ -1145,6 +1147,56 @@ mod tests {
             assert!(!v.quick_open.open, "the held Enter was applied");
             assert_eq!(v.current_rel, "Reading list.md");
         });
+
+        // A reset after the held Enter cancels it: Escape on text, another
+        // keystroke, or reopening must never open a note nobody chose.
+        type Reset = fn(&mut Reader, &mut Window, &mut Context<Reader>);
+        let resets: [(&str, Reset); 3] = [
+            ("escape on text", |v, window, cx| {
+                v.quick_open
+                    .input
+                    .update(cx, |input, cx| input.set_value("", window, cx));
+                v.refresh_quick_open(cx);
+            }),
+            ("another keystroke", |v, window, cx| {
+                v.quick_open
+                    .input
+                    .update(cx, |input, cx| input.set_value("other", window, cx));
+                v.refresh_quick_open(cx);
+            }),
+            ("reopen", |v, window, cx| {
+                v.open_quick_open(true, window, cx)
+            }),
+        ];
+        for (name, reset) in resets {
+            reader.update_in(visual, |v, window, cx| {
+                v.open_note("Home.md", None, window, cx);
+                v.open_quick_open(false, window, cx);
+            });
+            visual.run_until_parked();
+            let (release, hold) = async_channel::bounded(1);
+            reader.update_in(visual, |v, window, cx| {
+                v.quick_open.hold_query = Some(hold);
+                v.quick_open
+                    .input
+                    .update(cx, |input, cx| input.set_value("reading", window, cx));
+                v.refresh_quick_open(cx);
+                v.accept_quick_open(window, cx);
+                assert!(v.quick_open.accept_when_ready.is_some(), "{name}: held");
+                reset(v, window, cx);
+                assert!(
+                    v.quick_open.accept_when_ready.is_none(),
+                    "{name}: cancelled"
+                );
+            });
+            release.try_send(()).unwrap();
+            visual.run_until_parked();
+            reader.update(visual, |v, _| {
+                assert!(v.quick_open.open, "{name}: palette stays open");
+                assert_eq!(v.current_rel, "Home.md", "{name}: nothing opened");
+            });
+            reader.update_in(visual, |v, window, cx| v.close_quick_open(window, cx));
+        }
     }
 
     #[gpui::test]
