@@ -431,6 +431,33 @@ impl Tree {
 }
 
 /// A vault-relative tree path: non-empty, `/`-separated, no empty or dot segments.
+/// A folder's index note (#1099): `_index.md` directly inside `folder`
+/// (`""` is the vault root), any letter case.
+#[derive(Debug, PartialEq, Eq)]
+pub enum FolderIndex {
+    None,
+    One(String),
+    /// Several spellings on a case-sensitive file system: never picked.
+    Several,
+}
+
+pub fn folder_index(folder: &str, entries: &[VaultEntry]) -> FolderIndex {
+    let mut found = entries.iter().filter(|entry| {
+        entry.kind == EntryKind::Markdown
+            && parent(&entry.path).unwrap_or("") == folder
+            && entry
+                .path
+                .rsplit('/')
+                .next()
+                .is_some_and(|name| name.eq_ignore_ascii_case("_index.md"))
+    });
+    match (found.next(), found.next()) {
+        (None, _) => FolderIndex::None,
+        (Some(entry), None) => FolderIndex::One(entry.path.clone()),
+        _ => FolderIndex::Several,
+    }
+}
+
 fn tree_path(path: &str) -> bool {
     !path.is_empty()
         && path
@@ -451,6 +478,39 @@ mod tests {
             kind,
         }
     }
+    #[test]
+    fn folder_index_is_a_direct_child_in_any_case_and_never_guessed() {
+        use EntryKind::{Directory, Markdown};
+        let entries = [
+            entry("Dev", Directory),
+            entry("Dev/Areas", Directory),
+            entry("Dev/Areas/apertune", Directory),
+            entry("Dev/Areas/apertune/_index.md", Markdown),
+            entry("Dev/Areas/apertune/specs/_index.md", Markdown),
+            entry("Dev/Areas/other", Directory),
+            entry("Dev/Areas/other/index.md", Markdown),
+            entry("Dev/Areas/twice", Directory),
+            entry("Dev/Areas/twice/_index.md", Markdown),
+            entry("Dev/Areas/twice/_Index.md", Markdown),
+            entry("_Index.md", Markdown),
+        ];
+        assert_eq!(
+            folder_index("Dev/Areas/apertune", &entries),
+            FolderIndex::One("Dev/Areas/apertune/_index.md".into())
+        );
+        // Positive control: a nested index or another name is not this folder's.
+        assert_eq!(folder_index("Dev/Areas", &entries), FolderIndex::None);
+        assert_eq!(folder_index("Dev/Areas/other", &entries), FolderIndex::None);
+        assert_eq!(
+            folder_index("Dev/Areas/twice", &entries),
+            FolderIndex::Several
+        );
+        assert_eq!(
+            folder_index("", &entries),
+            FolderIndex::One("_Index.md".into())
+        );
+    }
+
     #[test]
     fn invalid_entry_paths_cannot_make_the_root_its_own_child() {
         let valid = [

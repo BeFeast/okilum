@@ -3185,11 +3185,22 @@ impl Reader {
         tree.cursor = Some(row.path.clone());
         match row.kind {
             EntryKind::Directory => {
-                tree.toggle(&row.path);
-                if self.single_file && !row.expanded {
-                    self.load_quick_folder(row.path.clone(), cx);
+                self.toggle_tree_folder(row, window, cx);
+                // A folder with an index note opens it, like clicking the
+                // note (#1099); the chevron only toggles.
+                match reader_tree::folder_index(&row.path, &self.vault.entries) {
+                    reader_tree::FolderIndex::One(index) => {
+                        if self.current_rel != index {
+                            self.open_note(&index, None, window, cx);
+                        }
+                    }
+                    reader_tree::FolderIndex::Several => {
+                        self.link_notice = Some(
+                            "This folder has more than one _index note, so none was opened.".into(),
+                        );
+                    }
+                    reader_tree::FolderIndex::None => {}
                 }
-                self.tree_focus.focus(window, cx);
             }
             EntryKind::Markdown => {
                 self.open_note(&row.path, None, window, cx);
@@ -3204,6 +3215,23 @@ impl Reader {
         if row.kind != EntryKind::Directory {
             self.dismiss_sidebar_after_selection(window, cx);
         }
+        cx.notify();
+    }
+
+    /// Expand or collapse a folder row, nothing else (the chevron, #1099).
+    fn toggle_tree_folder(
+        &mut self,
+        row: &reader_tree::Row,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.tree_preview.close();
+        self.tree.cursor = Some(row.path.clone());
+        self.tree.toggle(&row.path);
+        if self.single_file && !row.expanded {
+            self.load_quick_folder(row.path.clone(), cx);
+        }
+        self.tree_focus.focus(window, cx);
         cx.notify();
     }
 
@@ -4588,7 +4616,7 @@ impl Reader {
                                         return;
                                     }
                                     let _ = toggle_entity.update(cx, |this, cx| {
-                                        this.activate_tree_row(&toggle_row, window, cx)
+                                        this.toggle_tree_folder(&toggle_row, window, cx)
                                     });
                                 })
                                 .child(
@@ -4633,10 +4661,9 @@ impl Reader {
                                             window,
                                             cx,
                                         )
-                                    } else if directory && event.click_count() != 2 {
-                                        this.tree.cursor = Some(row.path.clone());
-                                        this.tree_focus.focus(window, cx);
-                                        cx.notify();
+                                    } else if directory && event.click_count() > 1 {
+                                        // The first click already toggled and
+                                        // opened; a double click must not undo it.
                                     } else {
                                         this.activate_tree_row(&row, window, cx)
                                     }
@@ -8836,6 +8863,112 @@ mod document_link_landing_tests {
             assert_eq!(p.status, okilum_core::projects::Status::Planned);
             assert_eq!(p.open_tasks, 0);
         });
+    }
+
+    #[gpui::test]
+    fn folder_click_opens_its_index_note_and_the_chevron_only_toggles(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        for dir in ["Areas/apertune", "Areas/plain", "Areas/other"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        std::fs::write(root.join("Start.md"), "# Start\n").unwrap();
+        std::fs::write(root.join("Areas/apertune/_index.md"), "# Apertune\n").unwrap();
+        std::fs::write(root.join("Areas/apertune/Plan.md"), "# Plan\n").unwrap();
+        std::fs::write(root.join("Areas/plain/Note.md"), "# Note\n").unwrap();
+        std::fs::write(root.join("Areas/other/_Index.md"), "# Other\n").unwrap();
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("Start.md".into()),
+                        index_dir: Some(temp.path().join("cache")),
+                        ..Opts::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let view = reader.unwrap();
+        visual.simulate_resize(size(px(1400.), px(860.)));
+        visual.run_until_parked();
+        let row = |visual: &mut gpui::VisualTestContext, path: &str| {
+            view.update_in(visual, |v, _, _| {
+                v.sync_tree();
+                v.tree
+                    .rows
+                    .iter()
+                    .find(|r| r.path == path)
+                    .cloned()
+                    .unwrap()
+            })
+        };
+        // Expand «Areas» to reach its folders.
+        let areas = row(visual, "Areas");
+        view.update_in(visual, |v, window, cx| {
+            v.toggle_tree_folder(&areas, window, cx)
+        });
+        visual.run_until_parked();
+
+        // Click on a folder with an index: expands and opens the index.
+        let apertune = row(visual, "Areas/apertune");
+        assert!(!apertune.expanded);
+        view.update_in(visual, |v, window, cx| {
+            v.activate_tree_row(&apertune, window, cx)
+        });
+        visual.run_until_parked();
+        view.read_with(visual, |v, _| {
+            assert_eq!(v.current_rel, "Areas/apertune/_index.md")
+        });
+        assert!(row(visual, "Areas/apertune").expanded);
+
+        // Positive control: a folder without an index only toggles.
+        let plain = row(visual, "Areas/plain");
+        view.update_in(visual, |v, window, cx| {
+            v.activate_tree_row(&plain, window, cx)
+        });
+        visual.run_until_parked();
+        assert!(row(visual, "Areas/plain").expanded);
+        view.read_with(visual, |v, _| {
+            assert_eq!(v.current_rel, "Areas/apertune/_index.md")
+        });
+
+        // The chevron toggles a folder with an index and opens nothing.
+        let other = row(visual, "Areas/other");
+        view.update_in(visual, |v, window, cx| {
+            v.toggle_tree_folder(&other, window, cx)
+        });
+        visual.run_until_parked();
+        assert!(row(visual, "Areas/other").expanded);
+        view.read_with(visual, |v, _| {
+            assert_eq!(v.current_rel, "Areas/apertune/_index.md")
+        });
+
+        // Enter on the focused folder behaves like the click: `_Index.md`.
+        let other = row(visual, "Areas/other");
+        view.update_in(visual, |v, window, cx| {
+            v.tree.cursor = Some(other.path.clone());
+            v.tree_key(TreeKey::Open, window, cx)
+        });
+        visual.run_until_parked();
+        view.read_with(visual, |v, _| {
+            assert_eq!(v.current_rel, "Areas/other/_Index.md")
+        });
+        assert!(
+            !row(visual, "Areas/other").expanded,
+            "Enter toggled it closed"
+        );
     }
 
     #[gpui::test]
