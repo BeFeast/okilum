@@ -626,16 +626,8 @@ fn reader_text_style(theme: &Theme) -> TextViewStyle {
         ..Default::default()
     })
     .paragraph_gap(rems(0.75))
-    // docs/design/reader.md: 15.5 body → H1 30, H2 21, H3 17, H4–H6 body size.
-    .heading_font_size(|level, base| {
-        let size = match level {
-            1 => 30.,
-            2 => 21.,
-            3 => 17.,
-            _ => return base,
-        };
-        base * (size / brand::READING_FONT_SIZE)
-    })
+    // One scale for Reader and Live Preview (#1076).
+    .heading_font_size(|level, base| base * source_presentation::heading_scale(level))
 }
 
 #[cfg(test)]

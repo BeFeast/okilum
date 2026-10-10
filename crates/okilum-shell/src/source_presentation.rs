@@ -307,15 +307,15 @@ fn table_blocks(
         .collect()
 }
 
-/// Live Preview heading sizes, in units of the body font size. They match the
-/// Reader's headings (rems 2, 1.5, 1.25, 1.125; H5 and H6 at body size), so a
-/// note reads the same in both (#1034).
-fn heading_scale(level: u8) -> f32 {
+/// Heading sizes in units of the body font size, shared by the Reader and Live
+/// Preview so a note reads the same in both (#1076). docs/design/reader.md:
+/// 15.5 body -> H1 30, H2 21, H3 17, H4-H6 body size.
+pub(crate) fn heading_scale(level: u8) -> f32 {
+    const BODY: f32 = 15.5;
     match level {
-        1 => 2.,
-        2 => 1.5,
-        3 => 1.25,
-        4 => 1.125,
+        1 => 30. / BODY,
+        2 => 21. / BODY,
+        3 => 17. / BODY,
         _ => 1.,
     }
 }
@@ -722,7 +722,8 @@ mod tests {
         let text = "# One\n\nbody\n## Two\n### Three\n#### Four\n##### Five\n###### Six\n";
         let source = source(text);
         let provider = CachedProvider::classify(source.clone());
-        let expected = [(0, 2.), (3, 1.5), (4, 1.25), (5, 1.125)];
+        let expected = [1u8, 2, 3].map(heading_scale);
+        let expected = [(0, expected[0]), (3, expected[1]), (4, expected[2])];
         let scales = |projection: &dyn SourceProjection| {
             projection
                 .line_scales()
