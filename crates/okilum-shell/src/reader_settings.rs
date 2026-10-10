@@ -1167,6 +1167,7 @@ mod tests {
 
     #[gpui::test]
     fn confirmations_opened_from_settings_are_drawn(cx: &mut TestAppContext) {
+        use gpui_component::WindowExt;
         cx.update(|cx| {
             cx.set_reduce_motion(true);
             gpui_component::init(cx);
