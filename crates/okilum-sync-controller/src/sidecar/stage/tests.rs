@@ -158,3 +158,67 @@ fn bad_versions_and_a_missing_source_stage_nothing() {
     assert!(stage_supervisor(&missing, &f.root, "0.1.1").is_err());
     assert!(!f.root.join("supervisor").exists());
 }
+
+#[test]
+fn racing_stagings_of_different_content_cannot_overwrite_each_other() {
+    use std::sync::{Arc, Barrier};
+    let f = Fixture::new(b"unused");
+    let base = f
+        .payload
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let payloads: Vec<(PathBuf, Vec<u8>)> = ["a", "b"]
+        .iter()
+        .map(|side| {
+            let current = base.join(format!("app-{side}")).join("current");
+            fs::create_dir_all(&current).unwrap();
+            let path = current.join(NAME);
+            let content = format!("image {side}").into_bytes();
+            fs::write(&path, &content).unwrap();
+            (path, content)
+        })
+        .collect();
+    let barrier = Arc::new(Barrier::new(8));
+    let handles: Vec<_> = (0..8)
+        .map(|n| {
+            let (payload, content) = payloads[n % 2].clone();
+            let (root, barrier) = (f.root.clone(), barrier.clone());
+            std::thread::spawn(move || {
+                barrier.wait();
+                (content, stage_supervisor(&payload, &root, "0.1.9"))
+            })
+        })
+        .collect();
+    let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+    let staged = f.root.join("supervisor").join("0.1.9").join(NAME);
+    let winner = fs::read(&staged).unwrap();
+    assert!(winner == b"image a" || winner == b"image b");
+    for (content, result) in &results {
+        match result {
+            Ok(done) => {
+                assert_eq!(content, &winner, "a loser was reported as staged");
+                assert_eq!(done.digest, digest(&winner));
+                assert_eq!(done.path, staged);
+            }
+            Err(error) => {
+                assert_ne!(content, &winner);
+                assert!(
+                    error.to_string().contains("different supervisor"),
+                    "{error}"
+                );
+            }
+        }
+    }
+    assert_eq!(results.iter().filter(|(_, r)| r.is_ok()).count(), 4);
+    let names: Vec<_> = fs::read_dir(staged.parent().unwrap())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert_eq!(names, [NAME], "temporary copies were left behind");
+}

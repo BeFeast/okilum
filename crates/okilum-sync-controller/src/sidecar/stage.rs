@@ -129,19 +129,27 @@ pub fn stage_supervisor(payload: &Path, root: &Path, version: &str) -> Result<St
         // Keep the source's permissions (the executable bit) before locking it down.
         std::fs::set_permissions(&temporary, source.metadata()?.permissions())?;
         let digest = hex(&hasher.finalize());
-        if destination.exists() {
-            // Already staged: it must be exactly this content, and is left alone (it may
-            // be the running supervisor).
-            let existing = digest_of(&mut File::open(&destination)?)?;
-            ensure!(
-                existing == digest,
-                "a different supervisor is already staged under this version"
-            );
-        } else {
-            std::fs::rename(&temporary, &destination)?;
-            let mut permissions = std::fs::metadata(&destination)?.permissions();
-            permissions.set_readonly(true);
-            std::fs::set_permissions(&destination, permissions)?;
+        // Publish without replacing: a hard link fails if the name exists, atomically,
+        // so two racing stagings of different content cannot overwrite each other.
+        match std::fs::hard_link(&temporary, &destination) {
+            Ok(()) => {
+                // Drop the temporary name before locking the file down (a read-only file
+                // cannot be removed on Windows), then make the staged one read-only.
+                std::fs::remove_file(&temporary)?;
+                let mut permissions = std::fs::metadata(&destination)?.permissions();
+                permissions.set_readonly(true);
+                std::fs::set_permissions(&destination, permissions)?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                // Already staged: it must be exactly this content, and is left alone (it
+                // may be the running supervisor).
+                let existing = digest_of(&mut File::open(&destination)?)?;
+                ensure!(
+                    existing == digest,
+                    "a different supervisor is already staged under this version"
+                );
+            }
+            Err(error) => return Err(error.into()),
         }
         ensure!(
             digest_of(&mut File::open(&destination)?)? == digest,
