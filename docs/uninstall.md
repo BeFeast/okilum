@@ -94,15 +94,28 @@ sudo pacman -Rns okilum     # the package
   default for Markdown, is the user's own choice and stays. It is harmless once
   the package is gone.
 
-## macOS (`com.befeast.okilum`) — last PR
+## macOS (`com.befeast.okilum`)
 
-- `/Applications/Okilum.app`.
-- `~/Library/Application Support/com.befeast.okilum/` (state) and
-  `~/Library/Application Support/okilum/` (config), `~/Library/Caches/okilum/`.
-- Sparkle's cache under `~/Library/Caches/com.befeast.okilum/`.
-- `~/Library/Preferences/com.befeast.okilum.plist` (`OkilumReceiveBetaBuilds`,
-  Sparkle `SU*`).
-- `~/.config/okilum/` (Brain).
-- Saved Application State, HTTPStorages and DiagnosticReports for the bundle id.
-- Planned: Settings → "Uninstall Okilum…" with one confirmation, plus a documented
-  command. Moving the app to the Trash alone cannot clean these up.
+Okilum → Settings → About → **Uninstall Okilum…** shows one confirmation with
+what goes and which vaults stay, then:
+
+1. exports unsaved drafts to `~/Documents/Okilum unsaved drafts/` and removes the
+   roots: `~/Library/Application Support/com.befeast.okilum/` (state),
+   `~/Library/Application Support/okilum/` (config), `~/Library/Caches/okilum/`
+   (search index), `~/.config/okilum/` (Brain), `$TMPDIR/okilum-search-session-*`;
+2. quits, and a detached cleanup waits for the process to exit, then removes:
+   - preferences with `defaults delete <bundle id>` (cfprefsd caches them, so the
+     plist alone is not enough) and `~/Library/Preferences/<id>.plist`;
+   - `~/Library/Saved Application State/<id>.savedState` (written by AppKit on quit);
+   - `~/Library/HTTPStorages/<id>[.binarycookies]`, `~/Library/WebKit/<id>`;
+   - `~/Library/Caches/<id>/` (Sparkle's update cache);
+   - `~/Library/Logs/DiagnosticReports/okilum*`;
+3. moves `Okilum.app` to the Trash. If the user cannot write to `/Applications`,
+   the app stays there; dragging it to the Trash finishes the job.
+
+The bundle id is read from the app's `Info.plist` (a build that is not inside an
+`.app` bundle cleans nothing after quitting), so the QA build
+(`com.befeast.okilum.intel-qa`) cleans its own domain; anything that is not
+`com.befeast.okilum[.*]` is left alone. Moving the app to the Trash alone
+cannot clean these up. There are no LaunchAgents, keychain items or URL
+schemes; LaunchServices forgets the document types with the app.
