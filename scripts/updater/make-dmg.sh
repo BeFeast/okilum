@@ -4,9 +4,10 @@
 # Developer ID, notarizes and staples it, and checks it the way Gatekeeper sees a
 # download. Sets $DMG. The zip in $ARCHIVE stays the Sparkle update payload.
 DMG="$OUTPUT/Okilum-$DISPLAY_VERSION.dmg"
+# The M4 runner's python3 is the system 3.9: these are the last releases that support it.
 python3 -m venv "$OUTPUT/dmgbuild-env"
 "$OUTPUT/dmgbuild-env/bin/pip" install --quiet --disable-pip-version-check \
-    dmgbuild==1.6.7 ds_store==1.3.3 mac_alias==2.2.3
+    dmgbuild==1.6.5 ds_store==1.3.1 mac_alias==2.2.2
 rm -f "$DMG"
 "$OUTPUT/dmgbuild-env/bin/dmgbuild" -s scripts/macos-dmg/settings.py \
     -D app="$APP" -D icon="$APP/Contents/Resources/Okilum.icns" \
