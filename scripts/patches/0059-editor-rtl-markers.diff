@@ -1,0 +1,257 @@
+diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
+index 6ce418e1..e105f6b0 100644
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -2718,22 +2718,23 @@ impl<M: InputModeKind> Element for TextElement<M> {
+                 line_y,
+             );
+ 
+-            // Marker paint places rows left-aligned; a right-aligned line keeps
+-            // its glyphs (its markers are raw).
++            // Marker paint draws each row at the x the line paints it at, so a
++            // right-aligned (RTL) line gets its markers too (#1077).
+             let rows = prepaint.marker_rows.get(line_index).filter(|rows| marker_source_matches
+-                && !line.is_right_aligned() && rows.iter().any(Option::is_some));
++                && rows.iter().any(Option::is_some));
+             if let Some(rows) = rows {
+                 let line_rows = line.rows(&prepaint.last_layout.rows);
++                let content_width = prepaint.last_layout.content_width;
+                 for (row_index, row) in line.wrapped_lines.iter().enumerate() {
+-                    let indent = line.line_indent(row_index);
++                    let (x, align, align_width) = line.row_paint(row_index, text_align, Some(content_width));
+                     let row_top = line_rows.row_top(row_index);
+                     let row_height = line_rows.row_height(row_index);
+-                    let row_origin = p + point(indent, row_top);
++                    let row_origin = p + point(x, row_top);
+                     if let Some(Some(paint)) = rows.get(row_index) {
+                         painted_tasks.extend(paint.paint(row_origin, row_height,
+-                            prepaint.last_layout.content_width - indent, editor_style.foreground, window, cx));
++                            content_width - x, editor_style.foreground, window, cx));
+                     } else {
+-                        let _ = row.paint(row_origin, row_height, text_align, Some(prepaint.last_layout.content_width), window, cx);
++                        let _ = row.paint(row_origin, row_height, align, align_width, window, cx);
+                     }
+                 }
+             } else {
+diff --git a/crates/base/src/input/base/marker_paint.rs b/crates/base/src/input/base/marker_paint.rs
+index 93a4e3b0..2660a700 100644
+--- a/crates/base/src/input/base/marker_paint.rs
++++ b/crates/base/src/input/base/marker_paint.rs
+@@ -1,5 +1,6 @@
+ //! Paint-only consumer of one prepaint's immutable projection and visual rows.
+ use super::layout::LastLayout;
++use crate::input::bidi_geometry::{Cell, Geometry};
+ use crate::input::projection::{
+     ActiveSource, ConcealBias, LayoutStamp, MarkerKind, PinnedProjection, SourceSnapshot,
+     SourceStamp,
+@@ -12,9 +13,20 @@ use std::{cell::RefCell, ops::Range, sync::Arc};
+ use unicode_segmentation::UnicodeSegmentation;
+ 
+ pub(super) struct RowPaint {
+-    pieces: Vec<ForegroundPiece>,
++    foreground: Foreground,
+     shapes: Vec<Shape>,
+ }
++/// The row's own glyphs minus its replaced markers.
++enum Foreground {
++    /// Left-to-right rows: the glyph runs split around the markers.
++    Pieces(Vec<ForegroundPiece>),
++    /// Rows with right-to-left text (#1077): glyph indices are not monotone,
++    /// so the whole row paints clipped around each marker's visual span.
++    Clipped {
++        line: ShapedLine,
++        hidden: Vec<Range<Pixels>>,
++    },
++}
+ struct Shape {
+     x: Pixels,
+     width: Pixels,
+@@ -158,7 +170,11 @@ pub(super) fn prepare(
+                     if line.whitespace_indicators.is_some() {
+                         return None;
+                     }
++                    let geometry = unicode_bidi::BidiInfo::new(&row.text, None)
++                        .has_rtl()
++                        .then(|| Geometry::new(row));
+                     let mut ranges = Vec::new();
++                    let mut spans = Vec::new();
+                     let mut shapes = Vec::new();
+                     for (range, kind, scope_end, source) in &markers {
+                         if range.end <= start || range.start >= offset {
+@@ -169,12 +185,16 @@ pub(super) fn prepare(
+                             return None;
+                         }
+                         let local = range.start - start..range.end - start;
+-                        let x = row.x_for_index(local.start);
+-                        let width = row.x_for_index(local.end) - x;
++                        let span = match &geometry {
++                            Some(geometry) => rtl_span(geometry, &local)?,
++                            None => row.x_for_index(local.start)..row.x_for_index(local.end),
++                        };
++                        let (x, width) = (span.start, span.end - span.start);
+                         if width <= px(0.) {
+                             return None;
+                         }
+                         ranges.push(local);
++                        spans.push(span);
+                         shapes.push(Shape {
+                             x,
+                             width,
+@@ -201,8 +221,20 @@ pub(super) fn prepare(
+                     if shapes.is_empty() {
+                         return None;
+                     }
+-                    let pieces = foreground_pieces(row, &ranges)?;
+-                    Some(RowPaint { pieces, shapes })
++                    let foreground = match geometry {
++                        Some(_) => {
++                            spans.sort_by_key(|span| span.start);
++                            if spans.windows(2).any(|pair| pair[0].end > pair[1].start) {
++                                return None;
++                            }
++                            Foreground::Clipped {
++                                line: row.clone(),
++                                hidden: spans,
++                            }
++                        }
++                        None => Foreground::Pieces(foreground_pieces(row, &ranges)?),
++                    };
++                    Some(RowPaint { foreground, shapes })
+                 })
+                 .collect()
+         })
+@@ -275,15 +307,36 @@ impl RowPaint {
+         cx: &mut App,
+     ) -> Vec<PaintedTask> {
+         let mut tasks = Vec::new();
+-        for piece in &self.pieces {
+-            let _ = piece.shaped.paint(
+-                origin + point(piece.x, px(0.)),
+-                height,
+-                TextAlign::Left,
+-                None,
+-                window,
+-                cx,
+-            );
++        match &self.foreground {
++            Foreground::Pieces(pieces) => {
++                for piece in pieces {
++                    let _ = piece.shaped.paint(
++                        origin + point(piece.x, px(0.)),
++                        height,
++                        TextAlign::Left,
++                        None,
++                        window,
++                        cx,
++                    );
++                }
++            }
++            Foreground::Clipped { line, hidden } => {
++                // The gaps between hidden spans; tall glyphs may leave the row.
++                let far = px(1.0e5);
++                let edges = std::iter::once(-far)
++                    .chain(hidden.iter().flat_map(|span| [span.start, span.end]))
++                    .chain(std::iter::once(far))
++                    .collect::<Vec<_>>();
++                for gap in edges.chunks(2) {
++                    let bounds = Bounds::new(
++                        origin + point(gap[0], -height),
++                        size(gap[1] - gap[0], height * 3.),
++                    );
++                    window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
++                        let _ = line.paint(origin, height, TextAlign::Left, None, window, cx);
++                    });
++                }
++            }
+         }
+         for shape in &self.shapes {
+             let bounds = Bounds::new(origin + point(shape.x, px(0.)), size(shape.width, height));
+@@ -375,6 +428,31 @@ impl RowPaint {
+     }
+ }
+ 
++/// The visual span of `range` on a right-to-left row, if it is one contiguous
++/// run of whole cells that no other cell overlaps; otherwise the marker stays raw.
++fn rtl_span(geometry: &Geometry, range: &Range<usize>) -> Option<Range<Pixels>> {
++    let cells = &geometry.cells;
++    if !cells.iter().any(|cell| cell.source.start == range.start)
++        || !cells.iter().any(|cell| cell.source.end == range.end)
++        || cells.iter().any(|cell| {
++            (cell.source.start < range.start && cell.source.end > range.start)
++                || (cell.source.start < range.end && cell.source.end > range.end)
++        })
++    {
++        return None;
++    }
++    let [span] = &geometry.selection(range.clone())[..] else {
++        return None;
++    };
++    let span = span.clone();
++    let inside = |cell: &&Cell| range.start <= cell.source.start && cell.source.end <= range.end;
++    cells
++        .iter()
++        .filter(|cell| !inside(cell))
++        .all(|cell| cell.right <= span.start || cell.left >= span.end)
++        .then_some(span)
++}
++
+ pub(super) struct ForegroundPiece {
+     pub x: Pixels,
+ 
+@@ -597,4 +675,32 @@ mod tests {
+             "equal stamp cannot admit wrong bytes"
+         );
+     }
++
++    #[test]
++    fn rtl_marker_span_is_one_run_of_whole_cells() {
++        // `- [ ] אב` in an RTL paragraph: the marker sits on the right.
++        let cell = |source: Range<usize>, left: f32, right: f32, rtl: bool| Cell {
++            source,
++            left: px(left),
++            right: px(right),
++            rtl,
++        };
++        let geometry = Geometry {
++            cells: vec![
++                cell(8..10, 0., 8., true),
++                cell(6..8, 8., 16., true),
++                cell(5..6, 16., 20., false),
++                cell(0..1, 20., 24., false),
++                cell(1..2, 24., 28., false),
++                cell(2..3, 28., 32., false),
++                cell(3..4, 32., 36., false),
++                cell(4..5, 36., 40., false),
++            ],
++        };
++        assert_eq!(rtl_span(&geometry, &(0..6)), Some(px(16.)..px(40.)));
++        // A range split across cells, or not visually contiguous, stays raw.
++        assert_eq!(rtl_span(&geometry, &(7..8)), None);
++        assert_eq!(rtl_span(&geometry, &(4..9)), None);
++        assert_eq!(rtl_span(&geometry, &(4..8)), None, "two visual runs");
++    }
+ }
+diff --git a/crates/base/src/input/editor/display_map/text_wrapper.rs b/crates/base/src/input/editor/display_map/text_wrapper.rs
+index 51d7450f..876616bb 100644
+--- a/crates/base/src/input/editor/display_map/text_wrapper.rs
++++ b/crates/base/src/input/editor/display_map/text_wrapper.rs
+@@ -689,10 +689,6 @@ impl LineLayout {
+         self
+     }
+ 
+-    pub(crate) fn is_right_aligned(&self) -> bool {
+-        self.align_right.is_some()
+-    }
+-
+     /// Where row `ix` starts, relative to the line origin, when painted with
+     /// left alignment: right-aligned rows start at `edge - width`.
+     fn row_offset(&self, ix: usize) -> Pixels {
+@@ -712,7 +708,7 @@ impl LineLayout {
+     }
+ 
+     /// Paint arguments for row `ix`: right-aligned rows are already placed.
+-    fn row_paint(
++    pub(crate) fn row_paint(
+         &self,
+         ix: usize,
+         text_align: TextAlign,
