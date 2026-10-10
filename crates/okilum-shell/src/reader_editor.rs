@@ -402,8 +402,8 @@ impl Reader {
             .flatten();
         let language = code.unwrap_or(if plain_file { "text" } else { "markdown" });
         let wrap = code.is_none() || reader_ui_state::code_soft_wrap(cx);
-        let block_renderer = (!plain_file).then(|| {
-            live_blocks(
+        let blocks = (!plain_file).then(|| {
+            (
                 self.vault_root.clone(),
                 self.current_rel.clone(),
                 cx.entity().downgrade(),
@@ -427,7 +427,10 @@ impl Reader {
             input.set_exact_clipboard_provider(clipboard, cx);
             input.set_value(store.text().to_owned(), window, cx);
             input.set_direction_exempt_lines(direction_exempt_lines(store.text()));
-            input.set_block_renderer(block_renderer);
+            let press = input.block_press_slot();
+            input.set_block_renderer(
+                blocks.map(|(root, rel, reader)| live_blocks(root, rel, reader, press)),
+            );
             input.ensure_highlighter_factory(
                 gpui_component::highlighter::input_highlighter_factory(),
             );
@@ -1096,6 +1099,7 @@ fn live_blocks(
     root: PathBuf,
     rel: String,
     reader: WeakEntity<Reader>,
+    press: gpui_component::input::projection::BlockPressSlot,
 ) -> gpui_component::input::projection::BlockRenderer {
     // Prepared Markdown per block content, for the vault it was prepared
     // against: a rescanned vault (a new image) prepares again.
@@ -1147,6 +1151,28 @@ fn live_blocks(
         style.heading_base_font_size = font_size;
         // The first line keeps two identical blocks apart.
         let id = SharedString::from(format!("live-block-{}-{}", block.key, block.lines.start));
+        // A press on a table cell lands on that cell's source (#1067).
+        let on_cell = {
+            let press = press.clone();
+            let base = block.source.start.0;
+            let source: Arc<str> = source.into();
+            move |cell: gpui_component::text::TableCellPress,
+                  event: &gpui::MouseDownEvent,
+                  _: &mut Window,
+                  _: &mut App| {
+                let Some(at) =
+                    crate::source_presentation::table_cell_offset(&source, cell.row, cell.column)
+                else {
+                    return;
+                };
+                if let Ok(mut slot) = press.lock() {
+                    *slot = Some(gpui_component::input::projection::BlockPress {
+                        position: event.position,
+                        offset: gpui_component::input::projection::SourceByte(base + at),
+                    });
+                }
+            }
+        };
         div()
             // At least one line while an image loads: one height change, not
             // a shrink to padding and a grow.
@@ -1162,6 +1188,7 @@ fn live_blocks(
                     &identities,
                 )
                 .selectable(false)
+                .on_table_cell_press(on_cell)
                 .on_link_click(|_, _, _, _| {})
                 .style(style)
                 .text_size(font_size)

@@ -307,6 +307,72 @@ fn table_blocks(
         .collect()
 }
 
+/// Where a press on rendered table cell (`row`, `column`) lands in the table's
+/// Markdown `source`: the start of the cell's text (#1067). Row 0 is the header
+/// row; body rows follow the delimiter row. Cells split on unescaped `|`, as in
+/// GFM (also inside code spans). None when the cell is not written out.
+#[allow(dead_code)] // The bidi and marker examples include this file without the editor.
+pub(crate) fn table_cell_offset(source: &str, row: usize, column: usize) -> Option<usize> {
+    let line_ix = if row == 0 { 0 } else { row + 1 };
+    let mut start = 0;
+    let mut line = None;
+    for (ix, text) in source.split_inclusive('\n').enumerate() {
+        if ix == line_ix {
+            line = Some(text.trim_end_matches(['\n', '\r']));
+            break;
+        }
+        start += text.len();
+    }
+    let line = line?;
+    // Unescaped pipes split the row; a leading and a trailing one are borders.
+    let bytes = line.as_bytes();
+    let mut pipes = Vec::new();
+    let mut escaped = false;
+    for (at, &b) in bytes.iter().enumerate() {
+        match b {
+            b'\\' => escaped = !escaped,
+            b'|' if !escaped => pipes.push(at),
+            _ => escaped = false,
+        }
+        if b != b'\\' {
+            escaped = false;
+        }
+    }
+    let content_start = line.len() - line.trim_start().len();
+    let content_end = line.trim_end().len();
+    let mut bounds = vec![content_start];
+    for &pipe in &pipes {
+        bounds.push(pipe);
+    }
+    bounds.push(content_end);
+    let mut cells: Vec<std::ops::Range<usize>> = bounds
+        .windows(2)
+        .map(|pair| {
+            let from = if pair[0] == content_start && pipes.first() != Some(&pair[0]) {
+                pair[0]
+            } else {
+                pair[0] + 1
+            };
+            from..pair[1].max(from)
+        })
+        .collect();
+    if pipes.first() == Some(&content_start) {
+        cells.remove(0);
+    }
+    if pipes.last().is_some_and(|&pipe| pipe + 1 == content_end) {
+        cells.pop();
+    }
+    let cell = cells.get(column)?;
+    let text = &line[cell.clone()];
+    let lead = text.len() - text.trim_start().len();
+    let at = if text.trim().is_empty() {
+        cell.start + text.len().min(1)
+    } else {
+        cell.start + lead
+    };
+    Some(start + at)
+}
+
 /// Heading sizes in units of the body font size, shared by the Reader and Live
 /// Preview so a note reads the same in both (#1076). docs/design/reader.md:
 /// 15.5 body -> H1 30, H2 21, H3 17, H4-H6 body size.
@@ -914,5 +980,27 @@ This paragraph remains ordinary Markdown.
         let provider = CachedProvider::classify(source.clone());
         assert!(provider.compose(&source, &inactive(&source)).is_none());
         assert_eq!(source.text.len(), source_classifier::MAX_BYTES + 1);
+    }
+
+    #[test]
+    fn a_table_cell_press_lands_at_the_start_of_that_cells_text() {
+        let table = "| Name | Value |\n| --- | ---: |\n| alpha | `a\\|b` |\n|  | last |\n";
+        let at = |row, column| table_cell_offset(table, row, column).map(|at| &table[at..]);
+        assert!(at(0, 0).unwrap().starts_with("Name |"));
+        assert!(at(0, 1).unwrap().starts_with("Value |"));
+        assert!(at(1, 0).unwrap().starts_with("alpha |"));
+        // An escaped pipe stays inside its cell.
+        assert!(at(1, 1).unwrap().starts_with("`a\\|b` |"));
+        // An empty cell lands inside it, after the first space.
+        let empty = table_cell_offset(table, 2, 0).unwrap();
+        assert_eq!(&table[empty - 2..empty], "| ");
+        assert_eq!(&table[empty..empty + 3], " | ");
+        assert!(at(2, 1).unwrap().starts_with("last |"));
+        assert_eq!(table_cell_offset(table, 2, 2), None, "no third column");
+        assert_eq!(table_cell_offset(table, 3, 0), None, "no fourth row");
+        // Without border pipes.
+        let bare = "a | b\n--|--\nc | d\n";
+        assert!(bare[table_cell_offset(bare, 1, 1).unwrap()..].starts_with("d\n"));
+        assert!(bare[table_cell_offset(bare, 0, 0).unwrap()..].starts_with("a |"));
     }
 }

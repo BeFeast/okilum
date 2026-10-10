@@ -1,0 +1,429 @@
+diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
+index 1bedc48e..41815d6f 100644
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -427,6 +427,15 @@ pub(super) fn right_edge(layout: &LastLayout) -> Pixels {
+     )
+ }
+ 
++/// The rendered blocks of one prepaint: their buffer lines, elements with the
++/// rows they may paint in, and source ranges with window bounds.
++#[derive(Default)]
++struct BlockPrepaint {
++    lines: Vec<std::ops::Range<usize>>,
++    elements: Vec<(AnyElement, Bounds<Pixels>)>,
++    hits: Vec<(std::ops::Range<usize>, Bounds<Pixels>)>,
++}
++
+ impl<M: InputModeKind> TextElement<M> {
+     /// The row geometry of the whole document for this frame. Every layout,
+     /// scroll and hit-test path reads rows from here (S6b, #1034).
+@@ -470,10 +479,10 @@ impl<M: InputModeKind> TextElement<M> {
+         bounds: &Bounds<Pixels>,
+         window: &mut Window,
+         cx: &mut App,
+-    ) -> (Vec<std::ops::Range<usize>>, Vec<(AnyElement, Bounds<Pixels>)>) {
++    ) -> BlockPrepaint {
+         let state = self.state.read(cx);
+         let Some(renderer) = state.block_renderer.clone() else {
+-            return (Vec::new(), Vec::new());
++            return BlockPrepaint::default();
+         };
+         let width = layout.wrap_width.unwrap_or(layout.content_width);
+         let viewport_top = -state.scroll_handle.offset().y;
+@@ -494,6 +503,7 @@ impl<M: InputModeKind> TextElement<M> {
+             .collect();
+         let mut lines = Vec::new();
+         let mut elements = Vec::new();
++        let mut hits = Vec::new();
+         let mut measured = Vec::new();
+         for (block, rows, source) in jobs {
+             let mut element = renderer(&block, &source, width, window, cx);
+@@ -517,6 +527,10 @@ impl<M: InputModeKind> TextElement<M> {
+             let clip = Bounds::new(point(origin.x - far, origin.y), gpui::size(far * 2., used));
+             lines.push(block.lines.clone());
+             elements.push((element, clip));
++            hits.push((
++                block.source.start.0..block.source.end.0,
++                Bounds::new(origin, gpui::size(width, used)),
++            ));
+         }
+         if !measured.is_empty() {
+             self.state.update(cx, |state, _| {
+@@ -529,7 +543,7 @@ impl<M: InputModeKind> TextElement<M> {
+             // frame the rows kept the stale height until an unrelated repaint.
+             window.on_next_frame(|window, _| window.refresh());
+         }
+-        (lines, elements)
++        BlockPrepaint { lines, elements, hits }
+     }
+ 
+     pub(super) fn new(state: Entity<InputBaseState<M>>) -> Self {
+@@ -1800,6 +1814,8 @@ pub(super) struct PrepaintState {
+     /// blocks' prepainted elements (S7a, #936).
+     block_lines: Vec<std::ops::Range<usize>>,
+     block_elements: Vec<(AnyElement, Bounds<Pixels>)>,
++    /// Each painted block's source range and window bounds (#1067).
++    block_hits: Vec<(std::ops::Range<usize>, Bounds<Pixels>)>,
+     marker_source: Option<std::sync::Arc<super::marker_paint::MarkerSource>>,
+     marker_rows: Vec<Vec<Option<super::marker_paint::RowPaint>>>,
+     code_rows: Vec<Vec<bool>>,
+@@ -2468,7 +2484,11 @@ impl<M: InputModeKind> Element for TextElement<M> {
+ 
+         trace.current(TraceIdentity::new(last_layout.source_stamp, last_layout.presentation_epoch, last_layout.projection.is_some()));
+         trace.counts([last_layout.visible_buffer_lines.len() as u64, last_layout.lines.len() as u64, 0, 0]);
+-        let (block_lines, block_elements) = self.prepaint_blocks(&last_layout, &bounds, window, cx);
++        let BlockPrepaint {
++            lines: block_lines,
++            elements: block_elements,
++            hits: block_hits,
++        } = self.prepaint_blocks(&last_layout, &bounds, window, cx);
+         let state = self.state.read(cx);
+         let marker_source = super::marker_paint::source_for_markers(
+             last_layout.projection.as_ref(),
+@@ -2487,6 +2507,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+         PrepaintState {
+             block_lines,
+             block_elements,
++            block_hits,
+             marker_source,
+             marker_rows,
+             code_rows,
+@@ -2794,6 +2815,10 @@ impl<M: InputModeKind> Element for TextElement<M> {
+         // Clicks toggle exactly the task boxes drawn here (S5, #1034).
+         *self.state.read(cx).painted_tasks.borrow_mut() =
+             Some((prepaint.last_layout.source_stamp, painted_tasks));
++        *self.state.read(cx).painted_blocks.borrow_mut() = Some((
++            prepaint.last_layout.source_stamp,
++            std::mem::take(&mut prepaint.block_hits),
++        ));
+ 
+         // Paint blinking cursor
+         if focused && show_cursor {
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+index efdf8446..5c197530 100644
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -333,6 +333,12 @@ pub struct InputBaseState<M: InputModeKind> {
+     direction_exempt: Vec<std::ops::Range<usize>>,
+     /// Draws rendered projection blocks (S7a, #936).
+     pub(super) block_renderer: Option<crate::input::projection::BlockRenderer>,
++    /// Blocks the last paint drew, for the source revision it painted: (source
++    /// range, window bounds). A press inside one reveals it (#1067).
++    pub(super) painted_blocks:
++        std::cell::RefCell<Option<(SourceStamp, Vec<(std::ops::Range<usize>, Bounds<Pixels>)>)>>,
++    /// Where the block element under the current press asks it to land.
++    block_press: crate::input::projection::BlockPressSlot,
+     /// Last measured height of each block, by block key. One entry per block:
+     /// while the width changes (resize), rows keep the last height and the
+     /// next measurement corrects it, so nothing flashes or drifts.
+@@ -703,6 +709,8 @@ impl<M: InputModeKind> InputBaseState<M> {
+             paragraph_direction: false,
+             direction_exempt: Vec::new(),
+             block_renderer: None,
++            painted_blocks: Default::default(),
++            block_press: Default::default(),
+             block_heights: Default::default(),
+             pending_block_scroll: px(0.),
+             exact_clipboard: ClipboardSession::default(),
+@@ -899,6 +907,13 @@ impl<M: InputModeKind> InputBaseState<M> {
+         self.block_heights.borrow_mut().clear();
+     }
+ 
++    /// The slot a rendered block's element fills while handling a press, so
++    /// the press lands on the source of what was clicked (a table cell) rather
++    /// than on the raw row under the pointer (#1067).
++    pub fn block_press_slot(&self) -> crate::input::projection::BlockPressSlot {
++        self.block_press.clone()
++    }
++
+     /// Buffer line ranges that keep one alignment even with
+     /// [`Self::paragraph_direction`]: a code block or a table must not move
+     /// line by line. Sorted, not overlapping; the app updates them on edit.
+@@ -2205,6 +2220,24 @@ impl<M: InputModeKind> InputBaseState<M> {
+             cx.notify();
+             return;
+         };
++        // A press on a rendered block reveals it at once, with the caret where
++        // the block says the press landed (else on the raw row under the
++        // pointer, inside the block). No hold and no drag: the rendered
++        // geometry under the pointer is not the source's (#1067).
++        if let Some(target) = self.block_press_target(event, offset) {
++            self.selecting = false;
++            self.projection_mouse_hold = false;
++            cx.emit(crate::input::projection::SourceClick {
++                stamp: self.source_stamp(),
++                offset: crate::input::projection::SourceByte(target),
++                event: event.clone(),
++            });
++            self.move_to(target, None, cx);
++            self.projection.presentation_changed();
++            self.refresh_projection();
++            cx.notify();
++            return;
++        }
+         self.drag_anchors = if event.click_count == 1 && !event.modifiers.shift {
+             self.mouse_edge_carets(event.position)
+         } else {
+@@ -2296,6 +2329,31 @@ impl<M: InputModeKind> InputBaseState<M> {
+         }
+     }
+ 
++    /// The source offset a plain left press inside a painted block lands on,
++    /// or None when the press is not on a block.
++    fn block_press_target(&self, event: &MouseDownEvent, offset: usize) -> Option<usize> {
++        let pressed = self.block_press.lock().ok().and_then(|mut slot| slot.take());
++        if !self.projection.enabled
++            || event.button != MouseButton::Left
++            || event.modifiers.shift
++        {
++            return None;
++        }
++        let current = self.source_stamp();
++        let painted = self.painted_blocks.borrow();
++        let (_, blocks) = painted.as_ref().filter(|(stamp, _)| *stamp == current)?;
++        let (source, _) = blocks.iter().find(|(_, bounds)| bounds.contains(&event.position))?;
++        let inside = |at: usize| source.start <= at && at <= source.end;
++        Some(
++            pressed
++                .filter(|press| press.position == event.position)
++                .map(|press| press.offset.0)
++                .filter(|&at| inside(at))
++                .or(Some(offset).filter(|&at| inside(at)))
++                .unwrap_or(source.start),
++        )
++    }
++
+     pub(super) fn on_mouse_up(
+         &mut self,
+         event: &MouseUpEvent,
+diff --git a/crates/base/src/input/projection.rs b/crates/base/src/input/projection.rs
+index c79b920d..457ab591 100644
+--- a/crates/base/src/input/projection.rs
++++ b/crates/base/src/input/projection.rs
+@@ -162,6 +162,19 @@ pub struct ProjectionBlock {
+ }
+ 
+ /// Builds the element drawn for a rendered block at the given text width.
++/// Where a press on a rendered block lands in the source: a block's element
++/// records it while handling the press, before the editor does (#1067).
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub struct BlockPress {
++    /// The press's window position, to match it to the editor's press.
++    pub position: gpui::Point<gpui::Pixels>,
++    pub offset: SourceByte,
++}
++
++/// Shared between the editor and the block elements it hosts; see
++/// `InputState::block_press_slot`.
++pub type BlockPressSlot = std::sync::Arc<std::sync::Mutex<Option<BlockPress>>>;
++
+ pub type BlockRenderer = std::rc::Rc<
+     dyn Fn(&ProjectionBlock, &str, gpui::Pixels, &mut gpui::Window, &mut gpui::App) -> gpui::AnyElement,
+ >;
+diff --git a/crates/base/src/text/node.rs b/crates/base/src/text/node.rs
+index f25606bb..e752c979 100644
+--- a/crates/base/src/text/node.rs
++++ b/crates/base/src/text/node.rs
+@@ -6,7 +6,8 @@ use std::{
+ 
+ use gpui::{
+     AnyElement, App, DefiniteLength, Div, ElementId, FontStyle, FontWeight, HighlightStyle, Hsla,
+-    Image, ImageFormat, InteractiveElement as _, IntoElement, Length, ObjectFit, Overflow,
++    Image, ImageFormat, InteractiveElement as _, IntoElement, Length, MouseButton, ObjectFit,
++    Overflow,
+     ParentElement, Pixels, Refineable as _, ScrollHandle, SharedString, SharedUri,
+     StatefulInteractiveElement, StyleRefinement, Styled, StyledImage as _, WhiteSpace, Window,
+     canvas, div, img, prelude::FluentBuilder as _, px, relative, rems,
+@@ -1546,6 +1547,19 @@ pub(super) fn search_matches(
+     out
+ }
+ 
++/// The press listener for table cell (`row`, `column`), when a
++/// [`crate::text::TextView::on_table_cell_press`] hook is installed.
++fn cell_press(
++    node_cx: &NodeContext,
++    row: usize,
++    column: usize,
++) -> Option<impl Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static> {
++    let f = node_cx.table_cell_press.clone()?;
++    Some(move |event: &gpui::MouseDownEvent, window: &mut Window, cx: &mut App| {
++        f(super::text_view::TableCellPress { row, column }, event, window, cx)
++    })
++}
++
+ /// A context for rendering nodes, contains link references.
+ #[derive(Default, Clone)]
+ pub(crate) struct NodeContext {
+@@ -1563,6 +1577,7 @@ pub(crate) struct NodeContext {
+     pub(crate) code_block_actions: Option<Arc<CodeBlockActionsFn>>,
+     pub(crate) code_block_highlighter: Option<Arc<CodeBlockHighlighterFn>>,
+     pub(crate) table_actions: Option<Arc<TableActionsFn>>,
++    pub(crate) table_cell_press: Option<Arc<super::text_view::TableCellPressFn>>,
+     pub(crate) link_presentation: Option<Arc<super::text_view::LinkPresentationFn>>,
+     pub(crate) link_click_handler: Option<Arc<LinkClickHandlerFn>>,
+     pub(crate) link_hover_handler: Option<Arc<super::text_view::LinkHoverHandlerFn>>,
+@@ -2482,6 +2497,9 @@ impl BlockNode {
+                     div()
+                         .id(("cell", ix))
+                         .debug_selector(move || format!("table-cell-{row_ix}-{ix}"))
++                        .when_some(cell_press(node_cx, row_ix, ix), |this, f| {
++                            this.on_mouse_down(MouseButton::Left, f)
++                        })
+                         // Measured max-content width is the flex-basis;
+                         // `flex_grow` (proportional to it) distributes extra
+                         // space so a narrow table still fills the frame, while
+@@ -2720,6 +2738,9 @@ impl BlockNode {
+                 cells.push(
+                     div()
+                         .id(("cell", ix))
++                        .when_some(cell_press(node_cx, row_ix, ix), |this, f| {
++                            this.on_mouse_down(MouseButton::Left, f)
++                        })
+                         .overflow_hidden()
+                         .when(align == ColumnumnAlign::Center, |this| this.text_center())
+                         .when(align == ColumnumnAlign::Right, |this| this.text_right())
+diff --git a/crates/base/src/text/state.rs b/crates/base/src/text/state.rs
+index 43d65546..aa55a074 100644
+--- a/crates/base/src/text/state.rs
++++ b/crates/base/src/text/state.rs
+@@ -123,6 +123,7 @@ pub struct TextViewState {
+     pub(super) code_block_actions: Option<std::sync::Arc<CodeBlockActionsFn>>,
+     pub(super) code_block_highlighter: Option<std::sync::Arc<CodeBlockHighlighterFn>>,
+     pub(super) table_actions: Option<std::sync::Arc<TableActionsFn>>,
++    pub(super) table_cell_press: Option<std::sync::Arc<super::text_view::TableCellPressFn>>,
+     pub(super) link_presentation: Option<std::sync::Arc<super::text_view::LinkPresentationFn>>,
+     pub(super) link_hover_handler: Option<Arc<super::text_view::LinkHoverHandlerFn>>,
+     pub(super) link_click_handler: Option<std::sync::Arc<LinkClickHandlerFn>>,
+@@ -249,6 +250,7 @@ impl TextViewState {
+             code_block_language: None,
+             code_block_highlighter: None,
+             table_actions: None,
++            table_cell_press: None,
+             link_click_handler: None,
+             link_hover_handler: None,
+             link_presentation: None,
+@@ -1037,6 +1039,7 @@ impl Render for TextViewState {
+         node_cx.code_block_language = self.code_block_language.clone();
+         node_cx.code_block_highlighter = self.code_block_highlighter.clone();
+         node_cx.table_actions = self.table_actions.clone();
++        node_cx.table_cell_press = self.table_cell_press.clone();
+         node_cx.link_click_handler = self.link_click_handler.clone();
+         node_cx.link_hover_handler = self.link_hover_handler.clone();
+         node_cx.link_presentation = self.link_presentation.clone();
+diff --git a/crates/base/src/text/text_view.rs b/crates/base/src/text/text_view.rs
+index c91ab23b..a2f87746 100644
+--- a/crates/base/src/text/text_view.rs
++++ b/crates/base/src/text/text_view.rs
+@@ -87,6 +87,17 @@ impl TextViewDefaults {
+ pub(crate) type TableActionsFn =
+     dyn Fn(&TableData, &mut Window, &mut App) -> AnyElement + Send + Sync;
+ 
++/// A left press on a rendered table cell: its row (0 is the header row) and
++/// column, as written in the Markdown table.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct TableCellPress {
++    pub row: usize,
++    pub column: usize,
++}
++
++pub(crate) type TableCellPressFn =
++    dyn Fn(TableCellPress, &gpui::MouseDownEvent, &mut Window, &mut App) + Send + Sync;
++
+ pub(crate) type LinkHoverHandlerFn =
+     dyn Fn(&SharedString, bool, gpui::Point<Pixels>, &mut Window, &mut App) + Send + Sync;
+ 
+@@ -145,6 +156,7 @@ pub struct TextView {
+     code_block_language: Option<Arc<CodeBlockLanguageFn>>,
+     code_block_highlighter: Option<Arc<CodeBlockHighlighterFn>>,
+     table_actions: Option<Arc<TableActionsFn>>,
++    table_cell_press: Option<Arc<TableCellPressFn>>,
+     link_click_handler: Option<Arc<LinkClickHandlerFn>>,
+     link_hover_handler: Option<Arc<LinkHoverHandlerFn>>,
+     link_presentation: Option<Arc<LinkPresentationFn>>,
+@@ -192,6 +204,7 @@ impl TextView {
+             code_block_language: None,
+             code_block_highlighter: None,
+             table_actions: None,
++            table_cell_press: None,
+             link_click_handler: None,
+             link_hover_handler: None,
+             link_presentation: None,
+@@ -216,6 +229,7 @@ impl TextView {
+             code_block_language: None,
+             code_block_highlighter: None,
+             table_actions: None,
++            table_cell_press: None,
+             link_click_handler: None,
+             link_hover_handler: None,
+             link_presentation: None,
+@@ -240,6 +254,7 @@ impl TextView {
+             code_block_language: None,
+             code_block_highlighter: None,
+             table_actions: None,
++            table_cell_press: None,
+             link_click_handler: None,
+             link_hover_handler: None,
+             link_presentation: None,
+@@ -357,6 +372,16 @@ impl TextView {
+         self
+     }
+ 
++    /// Observe left presses on rendered table cells. The press still reaches
++    /// the elements around the table (an editor hosting it, for example).
++    pub fn on_table_cell_press<F>(mut self, f: F) -> Self
++    where
++        F: Fn(TableCellPress, &gpui::MouseDownEvent, &mut Window, &mut App) + Send + Sync + 'static,
++    {
++        self.table_cell_press = Some(Arc::new(f));
++        self
++    }
++
+     /// Style and explain links without replacing their text or selection runs.
+     pub fn link_presentation<F>(mut self, presentation: F) -> Self
+     where
+@@ -615,6 +640,7 @@ impl Element for TextView {
+             state.code_block_language = self.code_block_language.clone();
+             state.code_block_highlighter = code_block_highlighter.clone();
+             state.table_actions = self.table_actions.clone();
++            state.table_cell_press = self.table_cell_press.clone();
+             state.link_click_handler = self.link_click_handler.clone();
+             state.link_hover_handler = self.link_hover_handler.clone();
+             state.link_presentation = self.link_presentation.clone();
+diff --git a/crates/component/src/text/compat.rs b/crates/component/src/text/compat.rs
+index 44411bf4..5a2f808d 100644
+--- a/crates/component/src/text/compat.rs
++++ b/crates/component/src/text/compat.rs
+@@ -107,6 +107,17 @@ impl TextView {
+         self.inner = self.inner.table_actions(f);
+         self
+     }
++    /// Observes left presses on rendered table cells.
++    pub fn on_table_cell_press<F>(mut self, f: F) -> Self
++    where
++        F: Fn(gpui_base::text::TableCellPress, &gpui::MouseDownEvent, &mut Window, &mut App)
++            + Send
++            + Sync
++            + 'static,
++    {
++        self.inner = self.inner.on_table_cell_press(f);
++        self
++    }
+     /// Handles link clicks instead of opening the URL.
+     pub fn link_presentation<F>(mut self, f: F) -> Self
+     where
+diff --git a/crates/component/src/text/mod.rs b/crates/component/src/text/mod.rs
+index 4e5d266b..01485afc 100644
+--- a/crates/component/src/text/mod.rs
++++ b/crates/component/src/text/mod.rs
+@@ -8,8 +8,8 @@ pub use compat::{
+ };
+ pub use gpui_base::text::{
+     LinkPresentation, MarkdownBlockParserFn, MarkdownBlockRenderFn, MarkdownExtensions,
+-    MarkdownNode, MarkdownParseContext, MarkdownPlugin, SelectionFormat, TableData, TextViewState,
+-    markdown_ast,
++    MarkdownNode, MarkdownParseContext, MarkdownPlugin, SelectionFormat, TableCellPress, TableData,
++    TextViewState, markdown_ast,
+ };
+ pub use style::TextViewStyle;
+ 
