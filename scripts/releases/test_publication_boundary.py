@@ -94,11 +94,13 @@ class PublicationBoundary(unittest.TestCase):
         data = io.BytesIO()
         with zipfile.ZipFile(data, 'w') as archive:
             archive.writestr('payload.zip', b'archive')
+            # Manual builds record the commit they built (#1040).
+            archive.writestr('release-source.txt', 'f' * 40)
         for platform in ['macos', 'windows']:
             for event in ['schedule', 'workflow_dispatch']:
                 run = {'workflow_id': publication.WORKFLOWS[platform], 'prettyref': 'main',
                        'is_fork_pull_request': False, 'trigger_event': event,
-                       'status': 'success', 'commit_sha': 'selected-main', 'index_in_repo': 42}
+                       'status': 'success', 'commit_sha': 'f' * 40, 'index_in_repo': 42}
                 names = list(publication.ARTIFACTS[platform])
                 artifacts = [{'id': i, 'name': name, 'expired': False, 'run_id': 12}
                              for i, name in enumerate(names)]
@@ -109,7 +111,8 @@ class PublicationBoundary(unittest.TestCase):
                     store.return_value.call.return_value = None
                     publication.publish(api, platform, 12)
                     launch.assert_called_once()
-                    self.assertEqual(launch.call_args.kwargs['env']['GITHUB_SHA'], 'selected-main')
+                    self.assertEqual(launch.call_args.kwargs['env']['GITHUB_SHA'], 'f' * 40)
+                    self.assertNotIn('--archive-only', launch.call_args.args[0])
                     self.assertEqual(launch.call_args.kwargs['env']['GITHUB_RUN_NUMBER'], '42')
 
     def test_each_feed_prevents_an_older_snapshot_from_publishing(self):
@@ -135,7 +138,7 @@ class PublicationBoundary(unittest.TestCase):
 class ExplicitSourcePublication(unittest.TestCase):
     """#1040: a manual run that built an older main commit publishes to the archive only."""
 
-    def publish(self, marker):
+    def publish(self, marker, final_head='c' * 40):
         import publication
         import io
         import zipfile
@@ -151,7 +154,7 @@ class ExplicitSourcePublication(unittest.TestCase):
         api = Mock()
         api.call.side_effect = [run, {'commit': {'id': 'c' * 40}},
                                 [{'id': 9, 'name': 'arch-publication', 'expired': False, 'run_id': 12}],
-                                data.getvalue(), {'commit': {'id': 'c' * 40}}]
+                                data.getvalue(), {'commit': {'id': final_head}}]
         launches = []
 
         def run_command(args, **kwargs):
@@ -173,10 +176,19 @@ class ExplicitSourcePublication(unittest.TestCase):
         self.assertIn('--archive-only', command)
         self.assertEqual(command[command.index('--source') + 1], 'd' * 40)
 
-    def test_without_a_marker_the_newer_feed_still_refuses_it(self):
-        # Control: the same run without a recorded older source is an ordinary snapshot.
-        self.assertEqual(self.publish(None), [])
+    def test_main_moving_on_during_transfer_does_not_stop_an_archive_publication(self):
+        # The point of an explicit source is that main has moved past it.
+        launches = self.publish('d' * 40, final_head='e' * 40)
+        self.assertEqual(len(launches), 1)
+        self.assertIn('--archive-only', launches[0])
+
+    def test_the_run_own_commit_is_an_ordinary_snapshot(self):
+        # Control: recording the run's own commit is not archive-only, so the newer feed refuses it.
         self.assertEqual(self.publish('c' * 40), [])
+
+    def test_a_manual_build_without_its_record_is_refused(self):
+        with self.assertRaisesRegex(ValueError, 'did not record its source'):
+            self.publish(None)
 
     def test_a_malformed_marker_is_refused(self):
         with self.assertRaisesRegex(ValueError, 'Invalid source'):

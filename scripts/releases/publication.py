@@ -60,6 +60,8 @@ def published_build(store, platform):
 
 
 SOURCE_FILE = 'release-source.txt'
+# The artifact folder each build writes SOURCE_FILE into (see the release workflows).
+SOURCE_FOLDER = {'linux': 'arch', 'windows': 'windows'}
 
 
 def built_source(root, platform, run):
@@ -69,9 +71,14 @@ def built_source(root, platform, run):
     run's own commit is not the source. The build writes the checked-out commit into its
     publication artifact; artifacts without the file come from ordinary builds.
     """
-    folder = next(iter(ARTIFACTS[platform].values()))
-    marker = root / folder / SOURCE_FILE
+    if platform not in SOURCE_FOLDER:
+        return run['commit_sha']
+    marker = root / SOURCE_FOLDER[platform] / SOURCE_FILE
     if not marker.exists():
+        # Only a manual run can carry an explicit source; without its record the built
+        # commit is unknown, so it must not be published under the run's commit.
+        if run['trigger_event'] == 'workflow_dispatch':
+            raise ValueError('Manual build did not record its source commit')
         return run['commit_sha']
     source = marker.read_text().strip()
     if not re.fullmatch('[0-9a-f]{40}', source):
