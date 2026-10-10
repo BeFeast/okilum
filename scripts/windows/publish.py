@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Publish unsigned Velopack artifacts; publish feeds last, promote without rebuild."""
+"""Publish Velopack artifacts; publish feeds last, promote without rebuild."""
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import sys
@@ -60,7 +61,7 @@ def publish(root, build, source, store, portable=None, archive_only=False):
         raise ValueError('Setup is not a PE executable')
     metadata = {'build': build, 'version': version, 'source': source,
                 'setup_sha256': hashlib.sha256(setup).hexdigest(),
-                'feed': feed}
+                'feed': feed, **signing(root)}
     # Retain an immutable installer and complete feed for exact-build promotion.
     store.put(f'{PREFIX}/builds/{build}/Setup.exe', setup, 'application/octet-stream')
     store.put(f'{PREFIX}/builds/{build}/release.json', json.dumps(metadata).encode(), 'application/json')
@@ -76,6 +77,23 @@ def publish(root, build, source, store, portable=None, archive_only=False):
         catalog.record(store, 'windows', build, source, [
             catalog.asset(f'{archive}/Setup.exe', 'Setup.exe', setup),
             catalog.asset(f'{archive}/Okilum-windows-portable.zip', 'Okilum-windows-portable.zip', portable_data)])
+
+
+def signing(root):
+    """What the signer runner recorded (#1104). Builds before signing have no record."""
+    path = root / 'signing.json'
+    if not path.exists():
+        return {'signed': False}
+    try:
+        record = json.loads(path.read_text())
+    except ValueError:
+        # Empty or truncated: the signer job was interrupted while writing it.
+        raise ValueError('Malformed signing record') from None
+    if not isinstance(record, dict) or not isinstance(record.get('signed'), bool):
+        raise ValueError('Malformed signing record')
+    if record['signed'] and not re.fullmatch(r'[0-9a-f]{64}', record.get('certificate_sha256', '')):
+        raise ValueError('Signed build without a signer certificate fingerprint')
+    return {'signed': record['signed'], 'signer_sha256': record.get('certificate_sha256', '')}
 
 
 def prepare(root, store):
@@ -104,6 +122,9 @@ def promote(build, store):
     metadata = json.loads(data)
     if metadata['build'] != build or metadata['version'] != f'0.1.{build}':
         raise ValueError('Promotion metadata mismatch')
+    # Once signing is live, an unsigned Windows build never reaches stable (#1104).
+    if os.environ.get('OKILUM_WINDOWS_STABLE_REQUIRE_SIGNED') == '1' and not metadata.get('signed'):
+        raise ValueError(f'Windows build {build} is not signed; stable requires a signed build')
     # Stable needs only the selected full package. No cross-channel delta chain.
     feed = {'Assets': [a for a in metadata['feed']['Assets']
                        if a['Version'] == metadata['version'] and a['Type'] == 'Full']}

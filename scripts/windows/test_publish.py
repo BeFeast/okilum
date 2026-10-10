@@ -121,6 +121,41 @@ class PublicationTests(unittest.TestCase):
             p.prepare(Path(directory), Store())
             self.assertEqual(list(Path(directory).iterdir()), [])
 
+    def test_signing_record_is_archived_and_stable_can_require_it(self):
+        import os
+        from unittest import mock
+        pin = '5fe45be3a5ea5207fbc8ab89f7f6edd8412409f3746ff09e4f0a012c2022db0e'
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = Store()
+            fixture(root, 7000)  # an unsigned build from before signing: no record at all
+            p.publish(root, 7000, 'source', store)
+            self.assertFalse(json.loads(store.data['okilum/windows/builds/7000/release.json'])['signed'])
+            fixture(root, 7001)
+            (root / 'signing.json').write_text(json.dumps({'signed': True, 'certificate_sha256': pin}))
+            p.publish(root, 7001, 'source', store)
+            meta = json.loads(store.data['okilum/windows/builds/7001/release.json'])
+            self.assertEqual((meta['signed'], meta['signer_sha256']), (True, pin))
+            with mock.patch.dict(os.environ, {'OKILUM_WINDOWS_STABLE_REQUIRE_SIGNED': '1'}):
+                with self.assertRaisesRegex(ValueError, 'not signed'):
+                    p.promote(7000, store)
+                p.promote(7001, store)
+            # Without the switch, today's unsigned promotion keeps working.
+            with mock.patch.dict(os.environ, {'OKILUM_WINDOWS_STABLE_REQUIRE_SIGNED': ''}):
+                self.assertIsNone(p.signing(Path(directory) / 'missing').get('signer_sha256'))
+
+    def test_malformed_signing_record_is_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture(root)
+            (root / 'signing.json').write_text(json.dumps({'signed': True, 'certificate_sha256': 'abc'}))
+            with self.assertRaisesRegex(ValueError, 'fingerprint'):
+                p.publish(root, 7000, 'source', Store())
+            for broken in ('', '{"signed": tr', '[]'):
+                (root / 'signing.json').write_text(broken)
+                with self.assertRaisesRegex(ValueError, 'Malformed signing record'):
+                    p.publish(root, 7000, 'source', Store())
+
     def test_corrupt_installer_cannot_promote(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
