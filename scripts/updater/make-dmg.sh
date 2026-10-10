@@ -9,7 +9,10 @@ python3 -m venv "$OUTPUT/dmgbuild-env"
 "$OUTPUT/dmgbuild-env/bin/pip" install --quiet --disable-pip-version-check \
     dmgbuild==1.6.5 ds_store==1.3.1 mac_alias==2.2.2
 rm -f "$DMG"
-"$OUTPUT/dmgbuild-env/bin/dmgbuild" -s scripts/macos-dmg/settings.py \
+# On the M4 by day a freshly created volume stays busy for a while (seen 10.10, twice:
+# "couldn't unmount disk7 - Resource busy"); the CLI default of 5 retries waits ~20 s.
+# 12 retries back off for about 6 minutes in total.
+"$OUTPUT/dmgbuild-env/bin/dmgbuild" --detach-retries 12 -s scripts/macos-dmg/settings.py \
     -D app="$APP" -D icon="$APP/Contents/Resources/Okilum.icns" \
     -D background="$PWD/scripts/macos-dmg/background.png" \
     Okilum "$DMG"
