@@ -532,29 +532,14 @@ impl VaultColor {
     /// over `bar` at a low strength, halved in an inactive window so the
     /// focused one stands out. Strength is tested for AA text contrast.
     pub fn title_tint(self, bar: Hsla, dark: bool, active: bool) -> Hsla {
-        let (light, dark_strength) = title_tint_strength();
+        let (light, dark_strength) = TITLE_TINT_STRENGTH;
         let strength = if dark { dark_strength } else { light } * if active { 1. } else { 0.5 };
         bar.blend(self.value(dark).opacity(strength))
     }
 }
 
-/// Light / dark tint strength. `OKILUM_DEBUG_TITLE_TINT=<light>,<dark>` lets
-/// QA render candidate strengths for Oleg to choose from (#1050); it is
-/// removed once the strength is decided.
-fn title_tint_strength() -> (f32, f32) {
-    const DEFAULT: (f32, f32) = (0.12, 0.18);
-    static STRENGTH: OnceLock<(f32, f32)> = OnceLock::new();
-    *STRENGTH.get_or_init(|| {
-        std::env::var("OKILUM_DEBUG_TITLE_TINT")
-            .ok()
-            .and_then(|v| {
-                let (l, d) = v.split_once(',')?;
-                Some((l.trim().parse().ok()?, d.trim().parse().ok()?))
-            })
-            .filter(|(l, d): &(f32, f32)| (0.0..=0.5).contains(l) && (0.0..=0.5).contains(d))
-            .unwrap_or(DEFAULT)
-    })
-}
+/// Light / dark tint strength, chosen by Oleg from Linux frames (#1050).
+const TITLE_TINT_STRENGTH: (f32, f32) = (0.12, 0.18);
 
 /// Reapply after `Theme::sync_system_appearance` or `Theme::change`, which resets
 /// component colors. Preserve the toolkit's matching syntax highlight theme.
