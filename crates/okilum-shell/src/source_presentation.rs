@@ -5,8 +5,9 @@ use std::{
 };
 
 use gpui_component::input::projection::{
-    ActiveSource, ConcealBias, LineScale, MarkerKind, ProjectedByte, ProjectionMarker,
-    ProjectionProvider, ProjectionStyle, SourceByte, SourceProjection, SourceSnapshot,
+    ActiveSource, ConcealBias, LineScale, MarkerKind, ProjectedByte, ProjectionBlock,
+    ProjectionMarker, ProjectionProvider, ProjectionStyle, SourceByte, SourceProjection,
+    SourceSnapshot,
 };
 use okilum_core::{
     source_classifier::{self, Classification, RetainedPresentation, Style},
@@ -47,6 +48,9 @@ pub struct CachedProvider {
     classified: Classification,
     retained: Mutex<RetainedPresentation>,
     links: Vec<source_classifier::NoteLink>,
+    /// Tables of the classified revision, with their exact bytes, so a
+    /// later revision can find them before it is classified (S7, #936).
+    tables: Vec<(Range<usize>, String)>,
 }
 
 impl CachedProvider {
@@ -76,11 +80,24 @@ impl CachedProvider {
             Vec::new()
         };
         let classified = source_classifier::classify(&snapshot);
+        let tables = classified
+            .decorations_for(&snapshot)
+            .unwrap_or_default()
+            .iter()
+            .filter(|m| m.kind == source_classifier::decorations::Kind::Table)
+            .filter_map(|m| {
+                Some((
+                    m.range.clone(),
+                    source.text.get(m.range.clone())?.to_owned(),
+                ))
+            })
+            .collect();
         Self {
             source,
             retained: Mutex::new(RetainedPresentation::new(&classified)),
             classified,
             links,
+            tables,
         }
     }
     // Shared with native_projection216, which only consumes presentation data.
@@ -171,6 +188,13 @@ impl CachedProvider {
         let projection = reveal_snapshot.projection().clone();
         let styles = projected_styles(&projection, retained.styles(), colors)?;
         let line_scales = heading_line_scales(&projection, retained.styles());
+        let blocks = table_blocks(
+            &source.text,
+            self.current_tables(&current, &source.text),
+            std::iter::once(active.anchor.0.min(active.head.0)..active.anchor.0.max(active.head.0))
+                .chain(active.composition.as_ref().map(raw_range))
+                .chain(active.replacement.as_ref().map(raw_range)),
+        );
         Some(Arc::new(MappedProjection {
             source: source.clone(),
             markers: self
@@ -178,6 +202,7 @@ impl CachedProvider {
                 .decorations_for(&current)
                 .unwrap_or_default()
                 .iter()
+                .filter(|m| m.kind != source_classifier::decorations::Kind::Table)
                 .map(|m| ProjectionMarker {
                     range: SourceByte(m.range.start)..SourceByte(m.range.end),
                     scope: SourceByte(m.scope.start)..SourceByte(m.scope.end),
@@ -193,14 +218,77 @@ impl CachedProvider {
                         source_classifier::decorations::Kind::Task { checked } => {
                             MarkerKind::Task { checked }
                         }
+                        source_classifier::decorations::Kind::Table => unreachable!("filtered"),
                     },
                 })
                 .collect(),
             reveal: reveal_snapshot,
             styles,
             line_scales,
+            blocks,
         }))
     }
+}
+
+impl CachedProvider {
+    /// Table ranges in `text`, the current revision. The classified revision
+    /// gives them exactly; a newer one, not yet classified, finds each table
+    /// by its exact bytes nearest its old place, so tables stay rendered while
+    /// typing elsewhere. A table that changed is not found and shows raw.
+    fn current_tables(&self, current: &Snapshot, text: &str) -> Vec<Range<usize>> {
+        if let Ok(markers) = self.classified.decorations_for(current) {
+            return markers
+                .iter()
+                .filter(|m| m.kind == source_classifier::decorations::Kind::Table)
+                .map(|m| m.range.clone())
+                .collect();
+        }
+        let line_start = |at: usize| at == 0 || text.as_bytes()[at - 1] == b'\n';
+        let line_end = |at: usize| at == text.len() || matches!(text.as_bytes()[at], b'\n' | b'\r');
+        let mut found: Vec<Range<usize>> = self
+            .tables
+            .iter()
+            .filter_map(|(old, bytes)| {
+                text.match_indices(bytes.as_str())
+                    .map(|(at, _)| at..at + bytes.len())
+                    .filter(|range| line_start(range.start) && line_end(range.end))
+                    .min_by_key(|range| range.start.abs_diff(old.start))
+            })
+            .collect();
+        found.sort_by_key(|range| range.start);
+        found.dedup_by(|later, earlier| later.start < earlier.end);
+        found
+    }
+}
+
+/// Rendered table blocks: every table not touched by the caret, selection,
+/// composition or replacement (edges included), by whole projected lines.
+fn table_blocks(
+    text: &str,
+    tables: Vec<Range<usize>>,
+    active: impl Iterator<Item = Range<usize>> + Clone,
+) -> Vec<ProjectionBlock> {
+    use std::hash::{Hash, Hasher};
+    let newlines: Vec<usize> = text.match_indices('\n').map(|(at, _)| at).collect();
+    let line_of = |at: usize| newlines.partition_point(|&nl| nl < at);
+    tables
+        .into_iter()
+        .filter(|table| {
+            !active
+                .clone()
+                .any(|range| range.start <= table.end && table.start <= range.end)
+        })
+        .filter_map(|table| {
+            let bytes = text.get(table.clone())?;
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            bytes.hash(&mut hasher);
+            Some(ProjectionBlock {
+                lines: line_of(table.start)..line_of(table.end) + 1,
+                source: SourceByte(table.start)..SourceByte(table.end),
+                key: hasher.finish(),
+            })
+        })
+        .collect()
 }
 
 /// Live Preview heading sizes, in units of the body font size. They match the
@@ -259,8 +347,12 @@ struct MappedProjection {
     reveal: source_classifier::RevealSnapshot,
     styles: Vec<ProjectionStyle>,
     line_scales: Vec<LineScale>,
+    blocks: Vec<ProjectionBlock>,
 }
 impl SourceProjection for MappedProjection {
+    fn blocks(&self) -> &[ProjectionBlock] {
+        &self.blocks
+    }
     fn markers(&self) -> &[ProjectionMarker] {
         &self.markers
     }
