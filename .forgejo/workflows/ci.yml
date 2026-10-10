@@ -171,6 +171,34 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: python3 scripts/ci/github-linux.py
 
+  # A red main is reported to its suspects and to the "main is red" issue; a green
+  # one closes that issue. Keyed on the Linux lane itself: a superseded run is
+  # cancelled and leaves `check` failed or pending without saying anything.
+  main-health:
+    needs: [linux-local]
+    if: >-
+      always() && github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      (needs.linux-local.result == 'success' || needs.linux-local.result == 'failure')
+    runs-on: bridge
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 40
+      - name: Report main health
+        env:
+          FORGEJO_URL: ${{ github.server_url }}
+          REPOSITORY: ${{ github.repository }}
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}
+        run: python3 scripts/ci/main-health.py ${{ needs.linux-local.result == 'success' && 'green' || 'red' }}
+
   # Preserve ci/linux and existing downstream required contexts. A variable
   # switch in flight never changes which completed lane counts as evidence.
   linux:

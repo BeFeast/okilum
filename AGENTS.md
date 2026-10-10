@@ -58,6 +58,18 @@ This project has repeatedly been misled by its own instruments. Two standing rul
   its comparison must come from the same hardware, in the same session, or the delta
   means nothing.
 
+## Red main
+
+Main is not protected against merging an outdated branch, so a merge can turn main
+red after its own PR was green. CI on main reports a red Linux gate: every merge
+since the last green main gets a comment, and the issue "main is red" stays open
+until main is green again.
+
+- **Whoever merged the commit that turned main red reverts it or lands a fix within
+  20 minutes.** Check the suspects list in "main is red"; if your merge is on it,
+  find out within those 20 minutes whether it is yours.
+- Do not merge onto a red main except the revert or the fix.
+
 ## Conventions
 
 - Code, comments, commit messages, PR titles and bodies in English.
