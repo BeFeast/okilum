@@ -390,7 +390,10 @@ impl Reader {
                 .searchable(true)
                 .replaceable(false)
                 .soft_wrap(wrap)
-                .wrapping_indent(WrappingIndent::None);
+                .wrapping_indent(WrappingIndent::None)
+                // Hebrew paragraphs align right in notes; code and data files
+                // keep one alignment (S6c, #1034).
+                .paragraph_direction(!plain_file);
             input.set_search_query("", !reader_ui_state::find_case_sensitive(cx), cx);
             input.set_projection_provider(Some(Arc::new(ExactSource)), cx);
             input.set_exact_clipboard_provider(clipboard, cx);
