@@ -413,6 +413,11 @@ fn a_non_utf8_note_leaves_links_between_readable_notes_working() {
         "one item unreadable remains reported"
     );
     assert_eq!(vault.unreadable[0].path, dir.path().join("Non-UTF8.md"));
+    assert_eq!(
+        vault.unreadable[0].operation,
+        okilum_core::vault::DECODE_NOTE
+    );
+    assert!(vault.paths_complete());
     assert!(
         !vault.inventory_complete,
         "the inventory is still reported as having a skipped file"

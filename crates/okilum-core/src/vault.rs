@@ -215,6 +215,18 @@ pub(crate) fn cloud_placeholder(path: &Path) -> bool {
     false
 }
 
+/// What a failed read of a note is called. `read_to_string` reports bytes that are not UTF-8 as
+/// `InvalidData`: the same fact a byte read followed by a UTF-8 check reports as
+/// [`DECODE_NOTE`], so a cold scan and an incremental one describe the same file the same way
+/// (and the Reader can say "text encoding", not "could not be read").
+fn read_failure_operation(error: &std::io::Error) -> &'static str {
+    if error.kind() == std::io::ErrorKind::InvalidData {
+        DECODE_NOTE
+    } else {
+        "read note"
+    }
+}
+
 pub(crate) fn read_source(path: &Path) -> std::io::Result<String> {
     if cloud_placeholder(path) {
         return Err(std::io::Error::new(
@@ -409,7 +421,7 @@ impl Vault {
                 Err(error) => {
                     unreadable.push(UnreadableEntry {
                         path,
-                        operation: "read note",
+                        operation: read_failure_operation(&error),
                         error: error.to_string(),
                     });
                     None
@@ -463,8 +475,8 @@ impl Vault {
                 },
                 Err(error) => vault.unreadable.push(UnreadableEntry {
                     error: read_error(&path, &error),
+                    operation: read_failure_operation(&error),
                     path,
-                    operation: "read note",
                 }),
             }
         }
@@ -1518,6 +1530,9 @@ mod browser_inventory_tests {
         assert_eq!(vault.unreadable.len(), 1);
         assert_eq!(vault.unreadable[0].path, root.join("blocked.md"));
         assert_eq!(vault.unreadable[0].operation, "read note");
+        // A file that cannot be read for another reason is not "just not UTF-8": paths are
+        // still trusted only when the inventory is complete (#1120 keeps this boundary).
+        assert!(!vault.paths_complete());
         assert!(vault.unreadable[0].error.contains("Access is denied"));
         assert_eq!(vault.backlinks("target.md")[0].path, "good.md");
         // Keep known identities: an unreadable duplicate must not turn into a
