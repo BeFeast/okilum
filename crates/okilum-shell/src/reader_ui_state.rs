@@ -391,6 +391,8 @@ pub(crate) fn set_vault_color(root: &Path, color: Option<brand::VaultColor>, cx:
         }
         None => {
             state.saved.vault_colors.remove(root);
+            // A new colour later starts tinted again (#1050).
+            state.saved.untinted_vaults.remove(root);
         }
     }
     state.colors_changed.insert(root.to_owned());
@@ -1270,6 +1272,15 @@ mod tests {
             flush(cx);
             assert!(!read(&path).unwrap().vault_colors.contains_key(&root));
             assert_eq!(title_tint(&root, cx), None, "no colour, no tint");
+            // Clearing the colour also clears «don't tint»: a new colour
+            // starts tinted (review finding).
+            set_vault_color(&root, Some(brand::VaultColor::Blue), cx);
+            set_title_tint(&root, false, cx);
+            set_vault_color(&root, None, cx);
+            set_vault_color(&root, Some(brand::VaultColor::Pink), cx);
+            assert_eq!(title_tint(&root, cx), Some(brand::VaultColor::Pink));
+            flush(cx);
+            assert!(!read(&path).unwrap().untinted_vaults.contains(&root));
             // Positive control: a colour inside a vault is refused, like layouts.
             let inside = root.join("state");
             install(&inside, cx);
