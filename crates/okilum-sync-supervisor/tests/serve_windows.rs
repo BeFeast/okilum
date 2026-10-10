@@ -277,7 +277,7 @@ fn a_bad_stop_costs_only_that_exchange() {
 }
 
 #[test]
-fn a_runtime_whose_whole_tree_exits_by_itself_is_reported_and_its_hint_cleared() {
+fn a_tree_that_ends_by_itself_ends_the_supervisor_non_zero_with_the_hint_cleared() {
     let world = World::new(&["exit-parent"]);
     let (handle, _scope) = start(&world);
     wait_until("the runtime's descendant", || world.child_pid().is_some());
@@ -289,10 +289,15 @@ fn a_runtime_whose_whole_tree_exits_by_itself_is_reported_and_its_hint_cleared()
         !handle.is_finished(),
         "a live descendant is still the runtime"
     );
-    // Now the descendant ends too: the whole tree is gone.
+    // Now the descendant ends too. Its exit was never captured (capture happens inside a
+    // Stop), and the Job Object accounting refuses to certify such a tree as gone, so the
+    // supervisor fails closed instead of reporting a clean exit: non-zero, hint cleared,
+    // job closed (which kills anything left), and the OS restart policy takes over.
     fs::write(world.state.join("data/release-child"), b"").unwrap();
-    assert_eq!(handle.join().unwrap().unwrap(), Exit::RuntimeExited);
+    let error = handle.join().unwrap().unwrap_err();
+    assert!(format!("{error:#}").contains("uncaptured"), "{error:#}");
     assert_eq!(world.store.read_hint(soon()).unwrap(), None);
+    wait_until("the runtime tree to be gone", || !alive(child));
 }
 
 #[test]
