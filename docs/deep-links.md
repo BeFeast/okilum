@@ -14,6 +14,7 @@ okilum://v/<vault>/<path>[?line=<n>[&column=<n>]][&page=<n>][#<heading> | #^<blo
 okilum://file/<absolute path>[?line=<n>[&column=<n>]][&page=<n>][#…]
 okilum://note/<note-id>      (reserved, see «Stable ids»)
 okilum://task/<task-id>      (reserved)
+okilum://project/<project-id> (reserved, projects of the server model)
 ```
 
 - `v/<vault>/<path>`: the canonical form, which «Copy Okilum link» produces.
@@ -71,7 +72,9 @@ rendered link is rewritten to the `v/` form.
    - In Reader: scroll to the block that contains `line` and flash it once.
      The column is ignored.
    - In Edit (Live Preview or Source): caret at `line:column`, scrolled into
-     view. The note's current mode is kept; a link never switches modes.
+     view, also when the note has unsaved edits: the caret moves without asking,
+     since nothing is lost. The note's current mode is kept; a link never
+     switches modes.
    - `#heading` and `#^block` use the existing document-link landing, the same
      as a wikilink.
    - `page` uses the PDF viewer's page.
@@ -138,9 +141,10 @@ rendered link is rewritten to the `v/` form.
 
 ## Stable ids
 
-`note/<id>` and `task/<id>` are reserved now so the grammar does not change
-later. Notes and tasks have no stable ids yet (server concepts plan). Until
-they do, these links answer «This link needs a newer Okilum» and do nothing.
+`note/<id>`, `task/<id>` and `project/<id>` (projects of the server model) are
+reserved now so the grammar does not change later. None of them has stable ids
+yet (server concepts plan). Until they do, these links answer «This link needs
+a newer Okilum» and do nothing.
 
 ## Slices
 
@@ -156,10 +160,9 @@ they do, these links answer «This link needs a newer Okilum» and do nothing.
 4. The `okilum.app/open` page (site repository), linked from Copy link with
    a modifier.
 
-## Open questions for Oleg
+## Decisions (Oleg, 10.10)
 
-- Vault by **folder name** (portable across machines, can collide) — chosen
-  here. The alternative is an id stored in Okilum's preferences, which differs
-  per machine unless written into the vault, and the vault is never written.
-- Should a link to a note that is open with unsaved edits move the caret
-  without asking? Proposed: yes, since nothing is lost.
+- Vault is identified by **folder name**; several known vaults with that name
+  show a chooser.
+- A link to a note with unsaved edits moves the caret **without asking**.
+- `okilum://project/<id>` is reserved next to `note/` and `task/`.
