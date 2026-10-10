@@ -220,7 +220,10 @@ impl CachedProvider {
                             MarkerKind::Task { checked }
                         }
                         source_classifier::decorations::Kind::Table
-                        | source_classifier::decorations::Kind::Image => unreachable!("filtered"),
+                        | source_classifier::decorations::Kind::Image
+                        | source_classifier::decorations::Kind::Callout => {
+                            unreachable!("filtered")
+                        }
                     },
                 })
                 .collect(),
@@ -232,11 +235,14 @@ impl CachedProvider {
     }
 }
 
-/// Decorations Live Preview draws as rendered blocks: tables and images.
+/// Decorations Live Preview draws as rendered blocks: tables, images and
+/// callouts.
 fn is_block(kind: &source_classifier::decorations::Kind) -> bool {
     matches!(
         kind,
-        source_classifier::decorations::Kind::Table | source_classifier::decorations::Kind::Image
+        source_classifier::decorations::Kind::Table
+            | source_classifier::decorations::Kind::Image
+            | source_classifier::decorations::Kind::Callout
     )
 }
 
