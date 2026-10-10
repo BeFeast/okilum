@@ -972,11 +972,18 @@ mod entry_tests {
         cx: &mut TestAppContext,
     ) {
         // #1008: the first launch's window cost must be attributable to a step.
-        use super::super::{reader_diagnostics, reader_startup, Opts};
+        use super::super::{
+            reader_diagnostics, reader_history::ReadingHistory, reader_startup, Opts,
+        };
         let fixture =
             std::env::temp_dir().join(format!("okilum-window-phases-{}", uuid::Uuid::new_v4()));
         let state = fixture.join("state");
-        std::fs::create_dir_all(&state).unwrap();
+        let root = fixture.join("vault");
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        std::fs::write(root.join("last.md"), "# Last document").unwrap();
+        // A remembered document makes the launch open the Reader window, not the entry.
+        ReadingHistory::record_usable_document(&state, &root, "last.md").unwrap();
         cx.update(|cx| {
             gpui_component::init(cx);
             install(cx);
@@ -986,6 +993,7 @@ mod entry_tests {
             reader_startup::launch(
                 Opts {
                     session_directory: Some(state.clone()),
+                    index_dir: Some(fixture.join("index")),
                     ..Default::default()
                 },
                 cx,
