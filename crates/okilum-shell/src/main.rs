@@ -75,6 +75,7 @@ mod reader_settings;
 mod reader_settings_sync;
 mod reader_shortcuts;
 mod reader_sidebar;
+mod url_protocol;
 mod version_info;
 use reader_sidebar::SectionAction;
 mod reader_link_navigation;
@@ -6899,8 +6900,14 @@ OPTIONS:
 fn main() {
     #[cfg(windows)]
     velopack::VelopackApp::build()
-        .on_after_install_fast_callback(|_| markdown_handler::install())
-        .on_after_update_fast_callback(|_| markdown_handler::install())
+        .on_after_install_fast_callback(|_| {
+            markdown_handler::install();
+            url_protocol::install();
+        })
+        .on_after_update_fast_callback(|_| {
+            markdown_handler::install();
+            url_protocol::install();
+        })
         .on_before_uninstall_fast_callback(|_| app_footprint::uninstall())
         .run();
     let process_start = std::time::Instant::now();

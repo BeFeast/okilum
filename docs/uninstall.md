@@ -45,6 +45,7 @@ Velopack does not.
 | Uninstall entry | `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\BeFeast.Okilum` | Velopack |
 | Shortcuts | Start menu and desktop `Okilum.lnk` | Velopack |
 | Markdown Open With | `HKCU\Software\Classes\BeFeast.Okilum.Markdown`, value `BeFeast.Okilum.Markdown` in `HKCU\Software\Classes\.md\OpenWithProgids` | hook (`markdown_handler::uninstall`) |
+| `okilum:` links | `HKCU\Software\Classes\okilum` (installed build only; the portable ZIP registers nothing) | hook (`url_protocol::uninstall`) |
 | Notification identity | `HKCU\Software\Classes\AppUserModelId\com.befeast.okilum` | hook |
 | State and search index | `%LOCALAPPDATA%\okilum\` (state files, `editor-drafts\`, `link-moves\`, `sidebar\`, `reminders\`, `reader\<sha>\` index, `reader-diagnostic.log`, `windows-update-channel`) | hook |
 | Config | `%APPDATA%\okilum\` (`reader-layout.json`, `appearance.json`, `reader-runs\`) | hook |
@@ -52,7 +53,7 @@ Velopack does not.
 | Crash dumps | `%LOCALAPPDATA%\CrashDumps\okilum.exe.*.dmp` | hook |
 | Velopack's per-app log | `%LOCALAPPDATA%\velopack\velopack_BeFeast.Okilum.log` (Velopack writes it after the hook); the `velopack` folder only if then empty | hook, by a detached cleanup that waits for `Update.exe` to exit |
 
-There is no Run key, URL protocol, scheduled task, named pipe, service or
+There is no Run key, scheduled task, named pipe, service or
 Credential Manager entry. The sync sidecar's task and pipe exist in code but are
 not shipped on Windows.
 
@@ -117,5 +118,6 @@ The bundle id is read from the app's `Info.plist` (a build that is not inside an
 `.app` bundle cleans nothing after quitting), so the QA build
 (`com.befeast.okilum.intel-qa`) cleans its own domain; anything that is not
 `com.befeast.okilum[.*]` is left alone. Moving the app to the Trash alone
-cannot clean these up. There are no LaunchAgents, keychain items or URL
-schemes; LaunchServices forgets the document types with the app.
+cannot clean these up. There are no LaunchAgents or keychain items;
+LaunchServices forgets the document types and the `okilum:` URL scheme with
+the app.
