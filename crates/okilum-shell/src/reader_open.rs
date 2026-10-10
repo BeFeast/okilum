@@ -651,7 +651,7 @@ pub(crate) fn open_deep_link(link: &str, cx: &mut App) {
     super::reader_startup::supersede(cx);
     let link = match parse(link) {
         Ok(link) => link,
-        Err(refused) => return show_error(refused.message().into(), cx),
+        Err(refused) => return show_error(anyhow::anyhow!(refused.message()), cx),
     };
     match resolve(&link, &known_roots(cx), &|path| path.is_file()) {
         Resolution::Open { root, rel, .. } => {
@@ -662,12 +662,12 @@ pub(crate) fn open_deep_link(link: &str, cx: &mut App) {
                 ..Default::default()
             };
             if let Err(error) = open_window(opts, cx) {
-                show_error(format!("{error:#}"), cx);
+                show_error(error, cx);
             }
         }
         // A chooser follows; until then the user is told, never guessed for.
         Resolution::Choose { vault, roots, .. } => show_error(
-            format!(
+            anyhow::anyhow!(
                 "Several vaults are named \u{201c}{vault}\u{201d}:\n{}\nOpen the one you want first, then use the link again.",
                 roots
                     .iter()
@@ -677,7 +677,7 @@ pub(crate) fn open_deep_link(link: &str, cx: &mut App) {
             ),
             cx,
         ),
-        Resolution::Unavailable(message) => show_error(message, cx),
+        Resolution::Unavailable(message) => show_error(anyhow::anyhow!(message), cx),
     }
 }
 
