@@ -384,6 +384,11 @@ pub(crate) fn uninstall_data(assume_yes: bool) -> i32 {
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
         .unwrap_or_else(|| home.join("Documents"));
+    // Okilum or Sync may have started while the question was open.
+    if let Some(reason) = blocked(state.as_deref(), units.as_deref()) {
+        eprintln!("{reason}\nNothing was removed.");
+        return 2;
+    }
     let mut report = purge(&roots(), state.as_deref(), &temp, &documents);
     for lock in enrollment.into_iter().filter(|p| p.exists()) {
         match std::fs::remove_file(&lock) {
