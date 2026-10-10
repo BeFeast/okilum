@@ -52,7 +52,8 @@ class ScopeTests(unittest.TestCase):
                         with self.subTest(event=event, linux=linux, needed=needed, native=native):
                             result = subprocess.run(['bash', '-c', script], capture_output=True,
                                 env=dict(os.environ, EVENT=event, LINUX_RESULT=linux,
-                                         MACOS_REQUIRED=needed, MACOS_RESULT=native))
+                                         MACOS_REQUIRED=needed, MACOS_RESULT=native,
+                                         WINDOWS_RESULT=native))
                             self.assertEqual(result.returncode == 0, expected)
 
 
