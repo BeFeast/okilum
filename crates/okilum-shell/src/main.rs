@@ -6896,7 +6896,7 @@ fn main() {
         }
         #[cfg(all(unix, feature = "brain"))]
         {
-            let bounds = Bounds::centered(None, size(px(1500.), px(1000.)), cx);
+            let bounds = window_state::default_bounds(size(px(1500.), px(1000.)), cx);
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_min_size: Some(size(px(600.), px(400.))),
