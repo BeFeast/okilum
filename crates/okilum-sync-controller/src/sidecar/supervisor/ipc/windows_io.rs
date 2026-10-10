@@ -77,6 +77,10 @@ struct Reply {
 struct Request {
     operation: Operation,
     reply: mpsc::SyncSender<io::Result<Reply>>,
+    /// Bound of the kernel wait for this operation.
+    limit: Instant,
+    /// Bound of the checks around it (verification before, identification after).
+    finish: Instant,
 }
 
 /// Opens and verifies the client process from the connected pipe (the supervisor does
@@ -148,6 +152,26 @@ impl ServerIo {
     ) -> io::Result<Self> {
         Self::start(pipe, ClientSlot::Identify(Box::new(identify)), deadline)
     }
+    /// Wait up to `accept_wait` for a client, identify it, then give the exchange
+    /// `exchange` from that moment. The total must stay within the 30 s I/O limit.
+    pub fn accept_discovering_within(
+        pipe: PrivatePipe,
+        identify: impl FnOnce(&PrivatePipe) -> anyhow::Result<ProcessPeer> + Send + 'static,
+        accept_wait: Duration,
+        exchange: Duration,
+    ) -> io::Result<Self> {
+        let now = Instant::now();
+        let total = accept_wait.checked_add(exchange).ok_or_else(expired)?;
+        let endpoint = Endpoint::Server {
+            pipe,
+            peer: std::cell::RefCell::new(ClientSlot::Identify(Box::new(identify))),
+        };
+        let mut io = ClientIo::start(endpoint, now + total)?;
+        io.accept_by = Some(now + accept_wait);
+        io.exchange = Some(exchange);
+        io.request(Operation::Accept)?;
+        Ok(Self(io))
+    }
     fn start(pipe: PrivatePipe, slot: ClientSlot, deadline: Instant) -> io::Result<Self> {
         let endpoint = Endpoint::Server {
             pipe,
@@ -177,7 +201,13 @@ impl Write for ServerIo {
 /// Drop never joins a possibly delayed kernel cancellation on the caller thread.
 pub struct ClientIo {
     requests: mpsc::SyncSender<Request>,
+    /// Ceiling for everything. With `accept_by`, it is replaced by `now + exchange`
+    /// (never extended) once the accept completed.
     deadline: Instant,
+    /// When set, the wait for a client ends here instead of at `deadline`, so idle
+    /// waiting does not eat the exchange budget of a client that arrives late.
+    accept_by: Option<Instant>,
+    exchange: Option<Duration>,
     failed: bool,
     #[cfg(test)]
     completed: mpsc::Receiver<()>,
@@ -262,12 +292,13 @@ impl ClientIo {
                     // if a query stalls. Admission includes such retained workers.
                     let accepting = matches!(request.operation, Operation::Accept);
                     let verifying = matches!(request.operation, Operation::Verify);
+                    let (limit, finish) = (request.limit, request.finish);
                     let result = endpoint
                         .as_ref()
                         .map_err(|error| io::Error::new(error.kind(), error.to_string()))
                         .and_then(|endpoint| {
                             endpoint.verify(accepting)?;
-                            remaining(deadline)?;
+                            remaining(finish)?;
                             Ok(endpoint)
                         })
                         .and_then(|endpoint| {
@@ -280,7 +311,7 @@ impl ClientIo {
                             perform_inner(
                                 endpoint.handle(),
                                 request.operation,
-                                deadline,
+                                limit,
                                 #[cfg(test)]
                                 Some(&worker_evidence),
                             )
@@ -288,7 +319,7 @@ impl ClientIo {
                                 if accepting {
                                     endpoint.verify(false)?;
                                 }
-                                remaining(deadline)?;
+                                remaining(finish)?;
                                 Ok(reply)
                             })
                         });
@@ -306,6 +337,8 @@ impl ClientIo {
         Ok(Self {
             requests,
             deadline,
+            accept_by: None,
+            exchange: None,
             failed: false,
             #[cfg(test)]
             completed,
@@ -320,28 +353,44 @@ impl ClientIo {
                 "pipe I/O is poisoned",
             ));
         }
+        let accepting = matches!(operation, Operation::Accept);
+        let limit = match self.accept_by {
+            Some(by) if accepting => by.min(self.deadline),
+            _ => self.deadline,
+        };
+        let finish = self.deadline;
         let result = (|| {
-            remaining(self.deadline)?;
+            remaining(limit)?;
             let (reply, response) = mpsc::sync_channel(1);
             self.requests
-                .try_send(Request { operation, reply })
+                .try_send(Request {
+                    operation,
+                    reply,
+                    limit,
+                    finish,
+                })
                 .map_err(|_| {
                     io::Error::new(io::ErrorKind::BrokenPipe, "pipe worker unavailable")
                 })?;
-            let response =
-                response
-                    .recv_timeout(remaining(self.deadline)?)
-                    .map_err(|e| match e {
-                        mpsc::RecvTimeoutError::Timeout => expired(),
-                        mpsc::RecvTimeoutError::Disconnected => {
-                            io::Error::new(io::ErrorKind::BrokenPipe, "pipe worker exited")
-                        }
-                    })?;
+            let response = response
+                .recv_timeout(remaining(finish)?)
+                .map_err(|e| match e {
+                    mpsc::RecvTimeoutError::Timeout => expired(),
+                    mpsc::RecvTimeoutError::Disconnected => {
+                        io::Error::new(io::ErrorKind::BrokenPipe, "pipe worker exited")
+                    }
+                })?;
             // Never report a late successful completion as an in-budget reply.
-            remaining(self.deadline)?;
+            remaining(finish)?;
             response
         })();
         self.failed |= result.is_err();
+        if accepting && result.is_ok() {
+            if let Some(exchange) = self.exchange {
+                // The exchange budget starts when the client is in, and only shrinks.
+                self.deadline = self.deadline.min(Instant::now() + exchange);
+            }
+        }
         result
     }
 }

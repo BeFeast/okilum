@@ -40,6 +40,10 @@ pub fn parse(argv: impl IntoIterator<Item = OsString>) -> Result<Args> {
 mod tests {
     use super::*;
 
+    /// An absolute path on the platform the test runs on.
+    const ABSOLUTE: &str = if cfg!(windows) { r"C:\state" } else { "/state" };
+    const ABSOLUTE_B: &str = if cfg!(windows) { r"C:\other" } else { "/other" };
+
     fn parse_str(items: &[&str]) -> Result<Args> {
         parse(items.iter().map(OsString::from))
     }
@@ -48,20 +52,20 @@ mod tests {
     fn exactly_the_two_options_are_accepted() {
         let id = "6f1c2d3e-4a5b-4c6d-8e7f-0123456789ab";
         assert_eq!(parse_str(&[]).unwrap(), Args::default());
-        let full = parse_str(&["--instance", id, "--state", "/state"]).unwrap();
+        let full = parse_str(&["--instance", id, "--state", ABSOLUTE]).unwrap();
         assert_eq!(full.instance, Some(id.parse().unwrap()));
-        assert_eq!(full.state, Some(PathBuf::from("/state")));
+        assert_eq!(full.state, Some(PathBuf::from(ABSOLUTE)));
         // Order is free; each option only once.
-        assert!(parse_str(&["--state", "/state", "--instance", id]).is_ok());
+        assert!(parse_str(&["--state", ABSOLUTE, "--instance", id]).is_ok());
         for bad in [
             &["--instance", id, "--instance", id][..],
-            &["--state", "/a", "--state", "/b"],
+            &["--state", ABSOLUTE, "--state", ABSOLUTE_B],
             &["--instance"],
             &["--instance", "not-a-uuid"],
             &["--instance", "00000000-0000-0000-0000-000000000000"],
             &["--state", "relative/dir"],
             &["--state", ""],
-            &["--config", "/x"],
+            &["--config", ABSOLUTE],
             &["--instance", id, "extra"],
             &["serve"],
             &["--no-browser", "x"],

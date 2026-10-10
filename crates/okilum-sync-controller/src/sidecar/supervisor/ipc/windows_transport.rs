@@ -129,6 +129,37 @@ impl WindowsTransport {
             failed: false,
         })
     }
+    /// The supervisor's long-lived accept: wait up to `accept_wait` for a client, then
+    /// identify it and give the exchange `exchange` from that moment, so idle waiting
+    /// never shortens the budget of a client that arrives at the end of the window.
+    pub fn accept_discovering_within(
+        binding: Binding,
+        scope: Scope,
+        pipe: PrivatePipe,
+        policy: Arc<dyn ImagePolicy + Send + Sync>,
+        accept_wait: std::time::Duration,
+        exchange: std::time::Duration,
+    ) -> Result<Self> {
+        Self::validate_scope(&binding, &scope)?;
+        ensure!(
+            pipe.scope() == &scope,
+            "server endpoint belongs to another scope"
+        );
+        let owner = binding.owner.clone();
+        let wire = Wire::Server(ServerIo::accept_discovering_within(
+            pipe,
+            move |pipe| identify_client(pipe, &owner, &*policy),
+            accept_wait,
+            exchange,
+        )?);
+        Ok(Self {
+            binding,
+            scope,
+            wire,
+            verified: false,
+            failed: false,
+        })
+    }
     pub fn accept(
         binding: Binding,
         scope: Scope,

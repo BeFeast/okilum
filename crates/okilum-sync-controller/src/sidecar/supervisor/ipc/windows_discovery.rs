@@ -38,6 +38,15 @@ pub trait ImagePolicy {
     fn verify_image(&self, image: &Path) -> Result<()>;
 }
 
+/// The image path the OS reports for this process (what a peer's check compares).
+pub fn own_image_path() -> Result<String> {
+    image_path(unsafe { windows::Win32::System::Threading::GetCurrentProcess() })
+}
+/// Creation time of this process, in the unit the generation hint carries.
+pub fn own_start_time() -> Result<u64> {
+    start_time(unsafe { windows::Win32::System::Threading::GetCurrentProcess() })
+}
+
 pub(crate) fn image_path(process: HANDLE) -> Result<String> {
     let mut buffer = vec![0u16; 32768];
     let mut length = buffer.len() as u32;
