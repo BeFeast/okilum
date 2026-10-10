@@ -6955,6 +6955,7 @@ fn main() {
         diagnostics.event("app_run_callback", serde_json::json!({}));
         reader_reminder_notify::install(cx);
         cx.set_global(reader_diagnostics::LaunchTrace(diagnostics.clone()));
+        diagnostics.record_exits(cx);
         let recovery_phase = diagnostics.phase("recovery_and_window_state");
         if let Ok(directory) = opts
             .session_directory

@@ -1496,7 +1496,12 @@ mod entry_tests {
                     .unwrap()
                     .into()],
                 cx,
-            )
+            );
+            if entry_first {
+                // #1110: the window is created after a background step; the
+                // start window must stay until then or the app quits.
+                assert_eq!(cx.windows().len(), 1, "start window kept meanwhile");
+            }
         });
         cx.run_until_parked();
         assert_eq!(cx.windows().len(), 1, "no stale restore or entry remains");
@@ -1522,6 +1527,60 @@ mod entry_tests {
     #[gpui::test]
     fn explicit_delivery_replaces_first_run_entry(cx: &mut TestAppContext) {
         explicit_delivery_wins_startup(cx, true);
+    }
+
+    /// #1110: on a clean first run, choosing a vault folder on the start
+    /// screen (the picker's `dispatch_path`) never leaves the app without a
+    /// window, and the vault opens.
+    #[gpui::test]
+    fn first_run_choosing_a_vault_folder_keeps_a_window_until_it_opens(cx: &mut TestAppContext) {
+        use super::super::{reader_history::TestSessionDirectory, reader_startup, Opts};
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let root = fixture.path().join("Brain");
+        std::fs::create_dir_all(root.join("Inbox")).unwrap();
+        std::fs::write(root.join("Inbox/First.md"), "# First").unwrap();
+        let root = root.canonicalize().unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            install(cx);
+            cx.set_global(TestSessionDirectory(state.clone()));
+            reader_startup::launch(
+                Opts {
+                    session_directory: Some(state.clone()),
+                    index_dir: Some(fixture.path().join("index")),
+                    ..Default::default()
+                },
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            cx.windows().len(),
+            1,
+            "positive control: the start screen is shown"
+        );
+        let entry = cx.update(|cx| cx.windows()[0]);
+        cx.update(|cx| {
+            dispatch_path(&root, cx);
+            assert_eq!(
+                cx.windows(),
+                vec![entry],
+                "the start window stays while the vault window is prepared"
+            );
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert_eq!(
+                cx.windows().len(),
+                1,
+                "the vault window replaced the start window"
+            );
+            assert!(!cx.windows().contains(&entry));
+            let readers = &cx.global::<Readers>().0;
+            assert_eq!(readers.len(), 1);
+            assert_eq!(readers[0].1, root, "the chosen vault is open");
+        });
     }
 
     #[cfg(all(unix, feature = "brain"))]
