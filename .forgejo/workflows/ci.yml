@@ -17,10 +17,12 @@ on:
   push:
     branches: [main]
 
-# Supersede stale checks independently for each PR and for main.
+# A PR supersedes its own stale checks. Every main commit gets its own full run, so a
+# red main names the merge that broke it (main-health); merges land about every 11
+# minutes and a Linux run takes about 11, so cancelling hid most results.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -170,6 +172,36 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: python3 scripts/ci/github-linux.py
+
+  # A red main is reported to its suspects and to the "main is red" issue; a green
+  # one closes that issue. Keyed on the Linux lane itself: a superseded run is
+  # cancelled and leaves `check` failed or pending without saying anything.
+  main-health:
+    needs: [linux-local]
+    if: >-
+      always() && github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      (needs.linux-local.result == 'success' || needs.linux-local.result == 'failure')
+    runs-on: bridge
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      # Main as it is now: a newer commit may already be green (runs finish out of order).
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: main
+          fetch-depth: 60
+      - name: Report main health
+        env:
+          FORGEJO_URL: ${{ github.server_url }}
+          REPOSITORY: ${{ github.repository }}
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}
+        run: python3 scripts/ci/main-health.py ${{ needs.linux-local.result == 'success' && 'green' || 'red' }}
 
   # Preserve ci/linux and existing downstream required contexts. A variable
   # switch in flight never changes which completed lane counts as evidence.
