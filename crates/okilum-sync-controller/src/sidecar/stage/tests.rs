@@ -31,7 +31,15 @@ fn private_root(path: &Path) {
 impl Fixture {
     fn new(content: &[u8]) -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let base = fs::canonicalize(dir.path()).unwrap();
+        // Windows canonicalizes to `\\?\C:\...`, which the private-directory check
+        // (rightly) refuses; the product passes plain paths and only compares canonical ones.
+        let base = PathBuf::from(
+            fs::canonicalize(dir.path())
+                .unwrap()
+                .to_string_lossy()
+                .trim_start_matches(r"\\?\")
+                .to_string(),
+        );
         let current = base.join("app").join("current");
         fs::create_dir_all(&current).unwrap();
         let payload = current.join(NAME);
