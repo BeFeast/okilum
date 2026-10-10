@@ -8,6 +8,9 @@ fn main() -> anyhow::Result<()> {
     let (Some(program), Some(directory), None) = (args.next(), args.next(), args.next()) else {
         anyhow::bail!("usage: bundled_plist <Contents/MacOS/helper> <output directory>");
     };
-    std::fs::write(std::path::Path::new(&directory).join(PLIST), bundled_plist(&program)?)?;
+    std::fs::write(
+        std::path::Path::new(&directory).join(PLIST),
+        bundled_plist(&program)?,
+    )?;
     Ok(())
 }
