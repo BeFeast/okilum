@@ -228,6 +228,8 @@ impl Reader {
         let vault = self.vault.clone();
         let rel = rel.to_owned();
         let html = self.use_html;
+        let started = std::time::Instant::now();
+        self.open_started = Some(started);
         cx.spawn_in(window, async move |this, cx| {
             let document = cx
                 .background_executor()
@@ -284,7 +286,14 @@ impl Reader {
                 if this.navigation.preparation_generation != generation {
                     return;
                 }
+                if let Some(trace) = reader_diagnostics::trace(cx) {
+                    trace.event(
+                        "note_open_rendered",
+                        serde_json::json!({ "since_open_ms": started.elapsed().as_secs_f64() * 1000. }),
+                    );
+                }
                 let task_landing = document.is_ok().then_some(task_text).flatten();
+                let _phase = reader_diagnostics::phase(cx, "note_open_accept");
                 this.accept_prepared_document(request, document, window, cx);
                 if let Some(text) = task_landing {
                     this.land_task_text(text, cx);
