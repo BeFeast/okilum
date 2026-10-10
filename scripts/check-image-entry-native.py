@@ -3,39 +3,39 @@
 other, even in the first frames before their heights are measured.
 Run on an exclusive X11 display (never maestro).
 Usage: DISPLAY=:1034 python3 scripts/check-image-entry-native.py OKILUM_BINARY WORK_DIR LABEL
-The vault holds two generated 300x150 PNGs, solid blue and solid green, with a
+The vault holds two generated 300x150 SVGs (QA hit this with an SVG; solid
+PNGs did not reproduce it), solid blue and solid green, with a
 paragraph between them and a missing image after. The note opens in the Reader;
 Ctrl+Shift+E enters Live Preview and the screen is captured as fast as possible
 for about two seconds. Per frame: the rows holding blue and the rows holding
-green. Overlap = a row holding both colours, or the bands interleaving.
+green. A paragraph separates the images, so green must start at least a text
+line below blue. Overlap = green starting less than 8 rows below blue's last row
+(a block painted over the one above hides its lower rows, so the bands touch).
 Exit 0: no frame overlaps and the settled frame shows both images apart;
 exit 1: some frame overlaps; exit 2: the run proves nothing (no window, or the
 settled frame lacks an image). The pre-fix binary is the positive control: it
 must exit 1, or this probe cannot see the defect.
 """
-import os, shutil, subprocess, sys, time, zlib, struct
+import os, shutil, subprocess, sys, time
 from pathlib import Path
 
 binary, work, label = sys.argv[1], Path(sys.argv[2]), sys.argv[3]
-NOTE = ('# Images\n\nBefore the first image.\n\n![[blue.png]]\n\nBetween the images.\n\n'
-        '![[green.png]]\n\nBefore the missing image.\n\n![[missing-picture.png]]\n\nEND\n')
+NOTE = ('# Images\n\nBefore the first image.\n\n![[blue.svg]]\n\nBetween the images.\n\n'
+        '![[green.svg]]\n\nBefore the missing image.\n\n![[missing-picture.png]]\n\nEND\n')
 CROP = (284, 96, 776, 660)
 COLOURS = {'blue': '#3366cc', 'green': '#22aa44'}
 
 
-def png(path, rgb, w=300, h=150):
-    raw = b''.join(b'\x00' + bytes(rgb) * w for _ in range(h))
-    chunk = lambda tag, data: (struct.pack('>I', len(data)) + tag + data
-                               + struct.pack('>I', zlib.crc32(tag + data) & 0xffffffff))
-    path.write_bytes(b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0))
-                     + chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b''))
+def svg(path, colour, w=300, h=150):
+    path.write_text(f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" '
+                    f'viewBox="0 0 {w} {h}"><rect width="{w}" height="{h}" fill="{colour}"/></svg>\n')
 
 
 def rows_of(path, colour):
     """Rows of the crop holding at least 40 pixels of `colour`."""
     # Everything else to white first, then the colour to black: dark text stays out.
     out = subprocess.run(['convert', str(path), '-fuzz', '6%', '-fill', 'white', '+opaque', colour,
-                          '-fill', 'black', '-opaque', colour, '-scale', '1x100%!',
+                          '-fill', 'black', '-opaque', colour, '-scale', f'1x{CROP[3]}!',
                           '-depth', '16', 'txt:-'], capture_output=True, text=True, check=True).stdout
     width = CROP[2]
     rows = set()
@@ -52,16 +52,15 @@ def overlaps(path):
     blue, green = rows_of(path, COLOURS['blue']), rows_of(path, COLOURS['green'])
     if not blue or not green:
         return False, blue, green
-    interleaved = min(green) <= max(blue)
-    return bool(blue & green) or interleaved, blue, green
+    return min(green) - max(blue) < 8, blue, green
 
 
 app = work / label
 shutil.rmtree(app, ignore_errors=True)
 (app / 'vault').mkdir(parents=True)
 (app / 'vault' / 'images.md').write_text(NOTE)
-png(app / 'vault' / 'blue.png', (0x33, 0x66, 0xcc))
-png(app / 'vault' / 'green.png', (0x22, 0xaa, 0x44))
+svg(app / 'vault' / 'blue.svg', COLOURS['blue'])
+svg(app / 'vault' / 'green.svg', COLOURS['green'])
 home = app / 'home'
 env = dict(os.environ, WAYLAND_DISPLAY='', HOME=str(home), XDG_CONFIG_HOME=str(home / '.config'),
            XDG_DATA_HOME=str(home / 'share'), XDG_CACHE_HOME=str(home / 'cache'),
