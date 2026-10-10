@@ -76,6 +76,9 @@ rustix = { version = "=1.1.4", features = ["fs", "process"] }
 
 [target.'cfg(windows)'.dependencies]
 dirs = "6"
+# Named in GPUI's Platform trait signatures, wrapped for #1121; already locked through gpui.
+futures = "0.3"
+smallvec = "1"
 velopack = "=1.2.161"
 windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging", "Win32_Storage_FileSystem"] }
 

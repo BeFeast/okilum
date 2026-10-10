@@ -6948,6 +6948,11 @@ fn main() {
 
     let platform_phase = diagnostics.phase("platform_application");
     let clipboard = platform::managed_clipboard();
+    // Windows lays right-to-left glyphs out in logical order; the wrapper
+    // repairs their positions (#1121). Other platforms already shape bidi.
+    #[cfg(windows)]
+    let app = platform::windows_bidi::application().with_assets(Assets);
+    #[cfg(not(windows))]
     let app = gpui_platform::application().with_assets(Assets);
     drop(platform_phase);
     // Register before launch: macOS can deliver files before the launch callback.
