@@ -416,3 +416,96 @@ fn the_binary_exits_zero_when_idle_and_refuses_to_serve_without_a_signature_poli
     drop(transaction);
     assert_eq!(run(&["--state", &state]).status.code(), Some(0));
 }
+
+mod glue {
+    use super::*;
+    use okilum_sync_controller::sidecar::{
+        discovery::{discover, discover_detailed, stop, Discovered, WindowsConnector},
+        store::Hint,
+    };
+
+    struct Distrust;
+    impl ImagePolicy for Distrust {
+        fn verify_image(&self, _: &Path) -> Result<()> {
+            anyhow::bail!("untrusted signer")
+        }
+    }
+    const BUDGET: Duration = Duration::from_secs(10);
+
+    #[test]
+    fn a_live_supervisor_is_found_and_stopped_through_the_glue() {
+        let world = World::new(&[]);
+        let connector = WindowsConnector::new(Arc::new(Trust));
+        assert_eq!(
+            discover_detailed(&world.store, &world.binding, &connector, BUDGET),
+            Discovered::Absent
+        );
+        let (handle, scope) = start(&world);
+        // Discovering twice also proves the supervisor re-creates its pipe in between.
+        for _ in 0..2 {
+            assert_eq!(
+                discover(&world.store, &world.binding, &connector, BUDGET),
+                Some(scope.clone())
+            );
+        }
+        let Command::Stop(token) = arm_stop(&world, &scope) else {
+            unreachable!()
+        };
+        stop(&world.store, &world.binding, &connector, &token, BUDGET).unwrap();
+        assert_eq!(handle.join().unwrap().unwrap(), Exit::Stopped);
+        assert_eq!(
+            discover_detailed(&world.store, &world.binding, &connector, BUDGET),
+            Discovered::Absent
+        );
+    }
+
+    #[test]
+    fn a_stale_hint_is_unreachable_and_an_untrusted_server_is_never_sent_a_stop() {
+        let world = World::new(&[]);
+        let trusted = WindowsConnector::new(Arc::new(Trust));
+        world
+            .store
+            .publish_hint(soon(), &Hint::new(Uuid::new_v4(), 7).unwrap())
+            .unwrap();
+        let found = discover_detailed(
+            &world.store,
+            &world.binding,
+            &trusted,
+            Duration::from_secs(3),
+        );
+        assert!(matches!(found, Discovered::Unreachable(_)), "{found:?}");
+        world.store.clear_hint(soon()).unwrap();
+
+        let (handle, scope) = start(&world);
+        let distrust = WindowsConnector::new(Arc::new(Distrust));
+        let found = discover_detailed(
+            &world.store,
+            &world.binding,
+            &distrust,
+            Duration::from_secs(4),
+        );
+        assert!(matches!(found, Discovered::Unreachable(_)), "{found:?}");
+        let Command::Stop(token) = arm_stop(&world, &scope) else {
+            unreachable!()
+        };
+        assert!(stop(
+            &world.store,
+            &world.binding,
+            &distrust,
+            &token,
+            Duration::from_secs(4)
+        )
+        .is_err());
+        assert!(
+            !handle.is_finished(),
+            "a refused stop must not stop anything"
+        );
+        // Positive control: the trusted connector finds it and stops it with that token.
+        assert_eq!(
+            discover(&world.store, &world.binding, &trusted, BUDGET),
+            Some(scope)
+        );
+        stop(&world.store, &world.binding, &trusted, &token, BUDGET).unwrap();
+        assert_eq!(handle.join().unwrap().unwrap(), Exit::Stopped);
+    }
+}

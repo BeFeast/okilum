@@ -68,6 +68,15 @@ impl<D: StateDir> Store<D> {
             .map(|data| Hint::from_slice(&data))
             .transpose()
     }
+    /// Read without the instance lock, for callers that already hold a transaction (the
+    /// controller discovers the supervisor while it holds its own). Safe because the
+    /// hint is replaced atomically; a malformed hint is an error, never authority.
+    pub fn peek_hint(&self) -> Result<Option<Hint>> {
+        self.dir
+            .read(HINT)?
+            .map(|data| Hint::from_slice(&data))
+            .transpose()
+    }
     /// Clean supervisor exit. Idempotent.
     pub fn clear_hint(&self, deadline: Instant) -> Result<()> {
         let _lock = self.dir.lock(deadline)?;

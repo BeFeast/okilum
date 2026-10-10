@@ -409,3 +409,176 @@ fn the_binary_exits_zero_when_idle_and_refuses_to_serve_without_a_signature_poli
     drop(transaction);
     assert_eq!(run(&["--state", &state]).status.code(), Some(0));
 }
+
+// ---- the app's discovery glue against the real run loop -------------------------------
+
+mod glue {
+    use super::*;
+    use okilum_sync_controller::sidecar::{
+        discovery::{discover, discover_detailed, stop, Discovered, UnixConnector},
+        store::Hint,
+        supervisor::ipc::unix_transport::PeerCheck,
+    };
+
+    fn same_user(world: &World) -> UnixConnector<impl Fn() -> Box<dyn PeerCheck>> {
+        UnixConnector::new(world.state.clone(), || Box::new(SameUser))
+    }
+    struct Deny;
+    impl PeerCheck for Deny {
+        fn verify(&self, _: &std::os::unix::net::UnixStream, _: PeerEnd) -> anyhow::Result<()> {
+            anyhow::bail!("untrusted peer")
+        }
+    }
+    const BUDGET: Duration = Duration::from_secs(5);
+
+    #[test]
+    fn a_live_supervisor_is_found_and_stopped_through_the_glue() {
+        let world = World::new(&[]);
+        let connector = same_user(&world);
+        // Before anything runs there is no hint.
+        assert_eq!(
+            discover_detailed(&world.store, &world.binding, &connector, BUDGET),
+            Discovered::Absent
+        );
+        let (handle, scope) = start(&world);
+        let found = discover(&world.store, &world.binding, &connector, BUDGET);
+        assert_eq!(found, Some(scope.clone()), "the live generation is named");
+
+        let Command::Stop(token) = arm_stop(&world, &scope) else {
+            unreachable!()
+        };
+        stop(&world.store, &world.binding, &connector, &token, BUDGET).unwrap();
+        assert_eq!(handle.join().unwrap().unwrap(), Exit::Stopped);
+        // Cleanly gone: no hint, so nothing to find.
+        assert_eq!(
+            discover_detailed(&world.store, &world.binding, &connector, BUDGET),
+            Discovered::Absent
+        );
+    }
+
+    #[test]
+    fn a_stale_hint_after_a_crash_is_unreachable_not_live() {
+        let world = World::new(&[]);
+        let connector = same_user(&world);
+        // A supervisor that died without clearing its hint.
+        world
+            .store
+            .publish_hint(soon(), &Hint::new(Uuid::new_v4(), 7).unwrap())
+            .unwrap();
+        let found = discover_detailed(&world.store, &world.binding, &connector, BUDGET);
+        assert!(matches!(found, Discovered::Unreachable(_)), "{found:?}");
+        assert_eq!(
+            discover(&world.store, &world.binding, &connector, BUDGET),
+            None
+        );
+    }
+
+    #[test]
+    fn a_peer_that_fails_the_check_is_never_called_live_and_never_sent_a_stop() {
+        let world = World::new(&[]);
+        let (handle, scope) = start(&world);
+        let distrust = UnixConnector::new(world.state.clone(), || Box::new(Deny));
+        let found = discover_detailed(&world.store, &world.binding, &distrust, BUDGET);
+        assert!(
+            matches!(&found, Discovered::Unreachable(reason) if reason.contains("untrusted")),
+            "{found:?}"
+        );
+        let Command::Stop(token) = arm_stop(&world, &scope) else {
+            unreachable!()
+        };
+        assert!(stop(&world.store, &world.binding, &distrust, &token, BUDGET).is_err());
+        assert!(
+            !handle.is_finished(),
+            "a refused stop must not stop anything"
+        );
+        // Positive control: the trusted connector finds it and stops it with that token.
+        let connector = same_user(&world);
+        assert_eq!(
+            discover(&world.store, &world.binding, &connector, BUDGET),
+            Some(scope)
+        );
+        stop(&world.store, &world.binding, &connector, &token, BUDGET).unwrap();
+        assert_eq!(handle.join().unwrap().unwrap(), Exit::Stopped);
+    }
+
+    #[test]
+    fn a_stop_armed_for_another_generation_or_with_a_wrong_token_does_nothing() {
+        let world = World::new(&[]);
+        let connector = same_user(&world);
+        let (handle, scope) = start(&world);
+
+        // Armed for a supervisor generation that is not the live one.
+        let dead = Scope {
+            generation: Uuid::new_v4(),
+            ..scope.clone()
+        };
+        let mut transaction = world.store.begin(soon()).unwrap();
+        let current = transaction.current().unwrap().unwrap().clone();
+        let (next, other_generation) = current.disable(dead).unwrap();
+        transaction.commit(next).unwrap();
+        drop(transaction);
+        let error = stop(
+            &world.store,
+            &world.binding,
+            &connector,
+            &other_generation,
+            BUDGET,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("another generation"), "{error}");
+
+        // Right generation, token the journal does not hold: the server refuses.
+        let forged = Envelope::first(world.binding.clone())
+            .disable(scope.clone())
+            .unwrap()
+            .1;
+        assert!(stop(&world.store, &world.binding, &connector, &forged, BUDGET).is_err());
+        assert!(!handle.is_finished());
+
+        // Positive control: re-arm for the live generation, then it stops.
+        let Command::Stop(token) = arm_stop(&world, &scope) else {
+            unreachable!()
+        };
+        stop(&world.store, &world.binding, &connector, &token, BUDGET).unwrap();
+        assert_eq!(handle.join().unwrap().unwrap(), Exit::Stopped);
+    }
+
+    #[test]
+    fn nothing_published_means_no_stop_can_be_sent() {
+        let world = World::new(&[]);
+        let connector = same_user(&world);
+        let scope = Scope {
+            installation: world.binding.installation,
+            instance: world.binding.instance,
+            generation: Uuid::new_v4(),
+        };
+        let Command::Stop(token) = arm_stop(&world, &scope) else {
+            unreachable!()
+        };
+        let error = stop(&world.store, &world.binding, &connector, &token, BUDGET)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("no supervisor"), "{error}");
+    }
+
+    #[test]
+    fn discovery_works_while_the_controller_holds_its_transaction() {
+        // The controller discovers the supervisor inside its own transaction; the glue
+        // must not need the instance lock for the hint.
+        let world = World::new(&[]);
+        let connector = same_user(&world);
+        let (handle, scope) = start(&world);
+        let held = world.store.begin(soon()).unwrap();
+        assert_eq!(
+            discover(&world.store, &world.binding, &connector, BUDGET),
+            Some(scope.clone())
+        );
+        drop(held);
+        let Command::Stop(token) = arm_stop(&world, &scope) else {
+            unreachable!()
+        };
+        stop(&world.store, &world.binding, &connector, &token, BUDGET).unwrap();
+        assert_eq!(handle.join().unwrap().unwrap(), Exit::Stopped);
+    }
+}

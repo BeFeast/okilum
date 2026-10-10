@@ -10,6 +10,7 @@ use supervisor::ipc::Scope;
 use uuid::Uuid;
 
 pub mod authority;
+pub mod discovery;
 #[cfg(unix)]
 pub mod journal;
 pub mod macos;
