@@ -412,6 +412,8 @@ impl Reader {
         let input = cx.new(|cx| {
             let mut input = EditorState::new(window, cx)
                 .document_newlines(true)
+                // A leading BOM stays at byte zero whatever is typed (#1093).
+                .keep_leading_bom(true)
                 .language(language)
                 .line_number(code.is_some())
                 .folding(false)
@@ -2225,7 +2227,9 @@ mod tests {
                 .is_err());
             assert!(r.save_source(cx));
         });
-        let edited = format!("edit{original}");
+        // Typed at byte zero: after the BOM (#1093).
+        let edited = original.replacen('\u{feff}', "\u{feff}edit", 1);
+        assert_ne!(edited, original);
         reader.update_in(visual, |r, window, cx| {
             r.restore_source_version(&edited, original, window, cx)
                 .unwrap();
@@ -2823,9 +2827,13 @@ mod tests {
             assert!(reader.editing.as_ref().unwrap().store.dirty());
             assert!(reader.save_source(cx));
         });
+        // Typed at byte zero, the text lands after the BOM: the saved file
+        // still starts EF BB BF (#1093).
+        let saved = std::fs::read(root.join("first.md")).unwrap();
+        assert_eq!(&saved[..3], b"\xef\xbb\xbf");
         assert_eq!(
-            std::fs::read_to_string(root.join("first.md")).unwrap(),
-            format!("edit{original}")
+            String::from_utf8(saved).unwrap(),
+            original.replacen('\u{feff}', "\u{feff}edit", 1)
         );
         #[cfg(target_os = "macos")]
         visual.simulate_keystrokes("cmd-z");
