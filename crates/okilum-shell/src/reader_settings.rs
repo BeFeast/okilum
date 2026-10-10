@@ -1212,6 +1212,48 @@ mod tests {
     }
 
     #[gpui::test]
+    fn about_copies_one_line_version_info_and_says_so_inline(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(AppearancePreference(None));
+        });
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let settings = cx.new(|cx| Settings::new(None, cx));
+            Root::new(settings, window, cx)
+        });
+        visual.run_until_parked();
+        let about = visual
+            .debug_bounds("settings-section-About")
+            .expect("About section");
+        visual.simulate_click(about.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("about-version-copied").is_none());
+        let copy = visual
+            .debug_bounds("about-copy-version")
+            .expect("copy button next to the version");
+        visual.simulate_click(copy.center(), Modifiers::default());
+        visual.run_until_parked();
+        let copied = visual
+            .update(|_, cx| cx.read_from_clipboard())
+            .and_then(|item| item.text())
+            .expect("clipboard text");
+        assert_eq!(copied, crate::version_info::report());
+        assert!(!copied.contains('\n'));
+        assert!(
+            visual.debug_bounds("about-version-copied").is_some(),
+            "the label answers inline"
+        );
+        // Positive control: the label returns to Copy after the timer.
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_secs(3));
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(visual.debug_bounds("about-copy-version").is_some());
+        assert!(visual.debug_bounds("about-version-copied").is_none());
+    }
+
+    #[gpui::test]
     fn sections_switch_and_appearance_changes_without_a_vault(cx: &mut TestAppContext) {
         cx.update(|cx| {
             gpui_component::init(cx);

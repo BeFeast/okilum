@@ -75,6 +75,7 @@ mod reader_settings;
 mod reader_settings_sync;
 mod reader_shortcuts;
 mod reader_sidebar;
+mod version_info;
 use reader_sidebar::SectionAction;
 mod reader_link_navigation;
 mod reader_navigation;
@@ -6990,6 +6991,7 @@ fn main() {
             brain::source_trace::install(cx);
         }
         updater::install(cx);
+        version_info::install(cx);
         #[cfg(all(unix, feature = "brain"))]
         brain::app_quit::install(cx);
         #[cfg(not(all(unix, feature = "brain")))]
