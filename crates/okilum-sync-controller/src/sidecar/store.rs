@@ -25,6 +25,7 @@ pub use windows_dir::{WindowsDir, WindowsStore};
 mod hint;
 mod selection;
 pub use hint::Hint;
+pub(crate) use selection::version_label_ok;
 pub use selection::Selection;
 
 pub(crate) const NAME: &str = "sidecar.json";

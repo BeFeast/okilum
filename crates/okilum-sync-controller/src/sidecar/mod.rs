@@ -14,6 +14,7 @@ pub mod discovery;
 #[cfg(unix)]
 pub mod journal;
 pub mod macos;
+pub mod stage;
 pub mod store;
 pub mod supervisor;
 pub mod update;
