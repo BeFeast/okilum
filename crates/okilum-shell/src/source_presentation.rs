@@ -191,8 +191,7 @@ impl CachedProvider {
         let blocks = table_blocks(
             &source.text,
             self.current_tables(&current, &source.text),
-            [active.anchor.0.min(active.head.0)..active.anchor.0.max(active.head.0)]
-                .into_iter()
+            std::iter::once(active.anchor.0.min(active.head.0)..active.anchor.0.max(active.head.0))
                 .chain(active.composition.as_ref().map(raw_range))
                 .chain(active.replacement.as_ref().map(raw_range)),
         );
