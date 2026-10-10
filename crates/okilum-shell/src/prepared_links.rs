@@ -383,7 +383,7 @@ impl Reader {
                     let mut preparation = LinkPreparation::new(&vault, &from, |target| {
                         let (raw, heading_source) = if target == from {
                             (original.clone(), rendered.clone())
-                        } else if !vault.inventory_complete && !vault.single_file {
+                        } else if !vault.paths_complete() && !vault.single_file {
                             return Err("Link unavailable while the vault is loading.".into());
                         } else {
                             let raw = std::fs::read_to_string(vault.root.join(target))

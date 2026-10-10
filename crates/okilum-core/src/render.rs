@@ -350,7 +350,7 @@ pub fn rewrite_source_images(text: &str, vault: &Vault, note_rel: &str) -> Strin
 fn image_file_url(target: &str, vault: &Vault, from: &str) -> Option<String> {
     // Cached first paint already owns these image identities. Preserve it while
     // inventory verification is pending; link actions still await verified identity.
-    if !vault.inventory_complete && !vault.single_file {
+    if !vault.paths_complete() && !vault.single_file {
         return vault
             .resolve_asset(&crate::document_links::decode(target), from)
             .and_then(|path| url::Url::from_file_path(path).ok())
@@ -886,7 +886,7 @@ fn expand_embeds_structure(
                 out.push_str(line);
                 continue;
             }
-            if !(vault.inventory_complete || vault.single_file && vault.inventory_scanned) {
+            if !(vault.paths_complete() || vault.single_file && vault.inventory_scanned) {
                 if let Some(id) = block {
                     let info = block_embed::Info {
                         path: None,

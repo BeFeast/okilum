@@ -36,7 +36,7 @@ pub fn markdown_path<'a>(vault: &Vault, path: &'a str) -> Option<Cow<'a, str>> {
             .clone()
             .map(Cow::Owned);
     }
-    if !vault.inventory_complete {
+    if !vault.paths_complete() {
         // Cached identities already carry a canonical root. OS paths outside
         // it need background verification before choosing outside/root meaning.
         return input

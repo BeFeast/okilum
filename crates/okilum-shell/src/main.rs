@@ -7942,6 +7942,71 @@ mod document_link_landing_tests {
     }
 
     #[gpui::test]
+    fn one_non_utf8_note_does_not_block_links_between_readable_notes(cx: &mut gpui::TestAppContext) {
+        // #1120: the vault finished loading; one CP1251 note stays reported as unreadable, and
+        // wikilinks between the other notes still open instead of saying "still loading".
+        use okilum_core::document_links::prepared::LinkStatus;
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("Target.md"), "# Target\n\n[[Other vault]]\n").unwrap();
+        std::fs::write(root.join("Other vault.md"), "# Other vault\n\n[[Target]]\n").unwrap();
+        let legacy: Vec<u8> = [
+            &b"# Legacy encoding\n\n"[..],
+            &[0xCF, 0xF0, 0xE8, 0xE2, 0xE5, 0xF2, 0x20, 0xEC, 0xE8, 0xF0, 0x0A],
+        ]
+        .concat();
+        assert!(std::str::from_utf8(&legacy).is_err(), "the fixture is really not UTF-8");
+        std::fs::write(root.join("Non-UTF8.md"), &legacy).unwrap();
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("Target.md".into()),
+                        index_dir: Some(fixture.path().join("index")),
+                        session_directory: Some(fixture.path().join("state")),
+                        ..Opts::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let view = reader.unwrap();
+        visual.run_until_parked();
+        let url = view.read_with(visual, |v, _| {
+            assert!(v.vault.inventory_scanned, "the vault finished loading");
+            assert_eq!(v.vault.unreadable.len(), 1, "one item stays reported as unreadable");
+            assert!(!v.vault.inventory_complete);
+            assert_eq!(v.current_rel, "Target.md");
+            let link = v
+                .link_identities
+                .iter()
+                .find(|link| link.target == "Other vault")
+                .expect("the wikilink is prepared");
+            let state = v.prepared_links.get(&link.url).expect("its state is published");
+            assert_eq!(
+                (state.status, state.reason.as_str()),
+                (LinkStatus::Resolved, "Open document"),
+                "not \"unavailable while the vault is loading\""
+            );
+            link.url.clone()
+        });
+        let entity = view.downgrade();
+        visual.update(|window, cx| reader_link_navigation::handle_link(&entity, &url, window, cx));
+        visual.run_until_parked();
+        view.read_with(visual, |v, _| assert_eq!(v.current_rel, "Other vault.md"));
+    }
+
+    #[gpui::test]
     fn empty_sidebar_sections_show_no_zero_count(cx: &mut gpui::TestAppContext) {
         use reader_sidebar::Section;
         cx.update(|cx| {

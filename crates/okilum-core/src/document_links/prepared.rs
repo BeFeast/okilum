@@ -205,7 +205,7 @@ impl<'a, F: FnMut(&str) -> Result<TargetSnapshot, String>> LinkPreparation<'a, F
                 }
             }
         }
-        if !self.vault.inventory_complete
+        if !self.vault.paths_complete()
             && !matches!(state.status, LinkStatus::External | LinkStatus::Unsupported)
         {
             state = LinkState::unknown();
@@ -217,7 +217,7 @@ impl<'a, F: FnMut(&str) -> Result<TargetSnapshot, String>> LinkPreparation<'a, F
     }
 
     fn absence_is_known(&self, from: &str, target: &str, wiki: bool) -> bool {
-        if !self.vault.inventory_complete {
+        if !self.vault.paths_complete() {
             return false;
         }
         let Destination::Note { path, .. } = destination(target, wiki) else {

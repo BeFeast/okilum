@@ -239,6 +239,10 @@ pub struct VaultEntry {
     pub kind: EntryKind,
 }
 
+/// The `operation` of an [`UnreadableEntry`] for a note that exists under its real name
+/// but whose bytes are not valid UTF-8.
+pub const DECODE_NOTE: &str = "decode note";
+
 /// A skipped entry, retained so a partial inventory is never presented as complete.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct UnreadableEntry {
@@ -453,7 +457,7 @@ impl Vault {
                     }
                     Err(error) => vault.unreadable.push(UnreadableEntry {
                         path,
-                        operation: "decode note",
+                        operation: DECODE_NOTE,
                         error: error.to_string(),
                     }),
                 },
@@ -632,6 +636,24 @@ impl Vault {
             graph_root: None,
             graph_os_paths: Default::default(),
         })
+    }
+
+    /// Every note path in the vault is known, so a link can be resolved, and a missing target
+    /// reported as missing, even though the inventory is not [`complete`](Self::inventory_complete).
+    ///
+    /// A note that exists but is not valid UTF-8 is listed under its real name; only its
+    /// content is unusable, and it takes part in resolution and ambiguity like any other. That
+    /// is the only skipped entry that leaves the paths intact: a failed directory listing, a
+    /// cloud placeholder or an inventory still being scanned may hide paths, and an
+    /// incomplete inventory with no recorded reason is never trusted.
+    pub fn paths_complete(&self) -> bool {
+        self.inventory_complete
+            || (self.inventory_scanned
+                && !self.unreadable.is_empty()
+                && self
+                    .unreadable
+                    .iter()
+                    .all(|entry| entry.operation == DECODE_NOTE))
     }
 
     fn finish_scan_report(&mut self) {
@@ -924,7 +946,7 @@ impl Vault {
         // A provisional snapshot cannot establish lexical absence. Do not
         // probe cloud-backed paths before the first document is published, or
         // redirect to a root/suffix namesake while local occupancy is unknown.
-        if !self.inventory_complete {
+        if !self.paths_complete() {
             return Resolution::Unresolved;
         }
         // The complete graph uses metadata captured by enumeration, including
@@ -1066,7 +1088,7 @@ impl Vault {
         if t.is_empty() {
             return None;
         }
-        if !self.inventory_complete && !self.single_file {
+        if !self.paths_complete() && !self.single_file {
             let find = |key: &str| {
                 self.entries
                     .iter()
