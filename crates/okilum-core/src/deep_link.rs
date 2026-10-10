@@ -1,0 +1,306 @@
+//! External `okilum:` links (#1049, docs/deep-links.md). Parsing only: no file
+//! system access, no resolution. Internal Reader URLs (`okilum://open/…` and
+//! friends) are rejected here so they can never navigate from outside.
+
+/// Where a link points.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Address {
+    /// Vault by folder name and a vault-relative path with `/` separators.
+    Vault {
+        vault: String,
+        path: String,
+    },
+    /// An absolute file path (`/…` or `C:/…`), as written.
+    File(String),
+    /// Reserved stable-id forms; Okilum answers «needs a newer Okilum».
+    Note(String),
+    Task(String),
+    Project(String),
+}
+
+/// Where inside the target to land. `line` and `column` are 1-based;
+/// `column` counts Unicode scalar values.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Position {
+    pub line: Option<u32>,
+    pub column: Option<u32>,
+    pub page: Option<u32>,
+    pub heading: Option<String>,
+    pub block: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Link {
+    pub address: Address,
+    pub position: Position,
+}
+
+/// Why a link was refused; each has a message for the user.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refused {
+    NotOkilum,
+    TooLong,
+    Internal,
+    UnknownKind,
+    Malformed,
+    UnsafePath,
+}
+
+impl Refused {
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::NotOkilum => "This is not an Okilum link.",
+            Self::TooLong => "This link is too long.",
+            Self::Internal => "This link only works inside a note.",
+            Self::UnknownKind => "This link needs a newer Okilum.",
+            Self::Malformed => "This Okilum link is incomplete.",
+            Self::UnsafePath => "This link points outside its vault.",
+        }
+    }
+}
+
+pub const MAX_LEN: usize = 4096;
+
+/// Hosts the Reader uses for links inside rendered notes.
+const INTERNAL: &[&str] = &[
+    "open",
+    "attachment",
+    "footnote",
+    "footnote-back",
+    "outside-file",
+];
+
+pub fn parse(link: &str) -> Result<Link, Refused> {
+    let link = link.trim();
+    if link.len() > MAX_LEN {
+        return Err(Refused::TooLong);
+    }
+    if link.chars().any(|c| c.is_control()) {
+        return Err(Refused::Malformed);
+    }
+    let Some(rest) = strip_scheme(link) else {
+        return Err(Refused::NotOkilum);
+    };
+    let (rest, fragment) = match rest.split_once('#') {
+        Some((rest, fragment)) => (rest, Some(decode(fragment))),
+        None => (rest, None),
+    };
+    let (rest, query) = rest.split_once('?').unwrap_or((rest, ""));
+    let (kind, target) = rest.split_once('/').unwrap_or((rest, ""));
+    if INTERNAL.contains(&kind) {
+        return Err(Refused::Internal);
+    }
+    let address = match kind {
+        "v" => {
+            let (vault, path) = target.split_once('/').ok_or(Refused::Malformed)?;
+            let vault = decode(vault);
+            let path = segments(path)?;
+            if vault.is_empty() || vault.contains('/') {
+                return Err(Refused::Malformed);
+            }
+            Address::Vault { vault, path }
+        }
+        "file" => {
+            let path = decode(target);
+            let windows =
+                path.as_bytes().get(1) == Some(&b':') && path.as_bytes()[0].is_ascii_alphabetic();
+            if !(path.starts_with('/') || windows) {
+                return Err(Refused::Malformed);
+            }
+            if path.split(['/', '\\']).any(|s| s == "..") {
+                return Err(Refused::UnsafePath);
+            }
+            Address::File(path)
+        }
+        "note" | "task" | "project" => {
+            let id = decode(target);
+            if id.is_empty() || id.contains('/') {
+                return Err(Refused::Malformed);
+            }
+            match kind {
+                "note" => Address::Note(id),
+                "task" => Address::Task(id),
+                _ => Address::Project(id),
+            }
+        }
+        "" => return Err(Refused::Malformed),
+        _ => return Err(Refused::UnknownKind),
+    };
+    let mut position = Position::default();
+    for pair in query.split('&').filter(|p| !p.is_empty()) {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        let number = || decode(value).parse::<u32>().ok().filter(|n| *n > 0);
+        match key {
+            "line" => position.line = number(),
+            "column" => position.column = number(),
+            "page" => position.page = number(),
+            // Forward compatible: unknown parameters are ignored.
+            _ => {}
+        }
+    }
+    if position.line.is_none() {
+        position.column = None;
+    }
+    match fragment.filter(|f| !f.is_empty()) {
+        Some(block) if block.starts_with('^') => position.block = Some(block[1..].to_owned()),
+        Some(heading) => position.heading = Some(heading),
+        None => {}
+    }
+    Ok(Link { address, position })
+}
+
+fn strip_scheme(link: &str) -> Option<&str> {
+    let (scheme, rest) = link.split_once("://")?;
+    scheme.eq_ignore_ascii_case("okilum").then_some(rest)
+}
+
+/// Percent-decoding as UTF-8; unencoded non-ASCII (pasted from chat) passes
+/// through. Invalid escapes are kept literally.
+fn decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(h), Some(l)) = (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                out.push(h << 4 | l);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+}
+
+fn hex(b: u8) -> Option<u8> {
+    (b as char).to_digit(16).map(|d| d as u8)
+}
+
+/// A vault-relative path: decoded per segment, never empty, never escaping.
+fn segments(path: &str) -> Result<String, Refused> {
+    let parts: Vec<String> = path.split('/').map(decode).collect();
+    if parts.iter().any(|p| p.is_empty()) {
+        return Err(if path.is_empty() {
+            Refused::Malformed
+        } else {
+            Refused::UnsafePath
+        });
+    }
+    if parts
+        .iter()
+        .any(|p| p == "." || p == ".." || p.contains('/') || p.contains('\\'))
+    {
+        return Err(Refused::UnsafePath);
+    }
+    Ok(parts.join("/"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn vault(link: &str) -> (String, String, Position) {
+        match parse(link).unwrap() {
+            Link {
+                address: Address::Vault { vault, path },
+                position,
+            } => (vault, path, position),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn canonical_vault_form_with_position_and_encoding() {
+        let (v, p, pos) = vault("okilum://v/Notes/Projects/Launch%20plan.md?line=12&column=4");
+        assert_eq!(
+            (v.as_str(), p.as_str()),
+            ("Notes", "Projects/Launch plan.md")
+        );
+        assert_eq!((pos.line, pos.column), (Some(12), Some(4)));
+        // Hebrew and Cyrillic, encoded and as pasted.
+        let (_, p, _) = vault(
+            "okilum://v/%D0%97%D0%B0%D0%BC%D0%B5%D1%82%D0%BA%D0%B8/%D7%A9%D7%9C%D7%95%D7%9D.md",
+        );
+        assert_eq!(p, "שלום.md");
+        let (v, p, _) = vault("okilum://v/Заметки/שלום עולם.md");
+        assert_eq!((v.as_str(), p.as_str()), ("Заметки", "שלום עולם.md"));
+        // `+` is not a space; an invalid escape stays literal.
+        assert_eq!(vault("okilum://v/N/a+b%zz.md").1, "a+b%zz.md");
+        // Scheme is case-insensitive.
+        assert_eq!(vault("OKILUM://v/N/x.md").1, "x.md");
+    }
+
+    #[test]
+    fn fragments_pages_and_ignored_parameters() {
+        let (_, _, pos) = vault("okilum://v/N/a.md#Next%20steps");
+        assert_eq!(pos.heading.as_deref(), Some("Next steps"));
+        let (_, _, pos) = vault("okilum://v/N/a.md#^abc123");
+        assert_eq!(pos.block.as_deref(), Some("abc123"));
+        let (_, _, pos) = vault("okilum://v/N/doc.pdf?page=3&future=1");
+        assert_eq!(pos.page, Some(3));
+        // Column without a line, zero and junk numbers are dropped.
+        let (_, _, pos) = vault("okilum://v/N/a.md?column=4");
+        assert_eq!((pos.line, pos.column), (None, None));
+        let (_, _, pos) = vault("okilum://v/N/a.md?line=0&page=x");
+        assert_eq!((pos.line, pos.page), (None, None));
+    }
+
+    #[test]
+    fn file_and_reserved_id_forms() {
+        assert_eq!(
+            parse("okilum://file//home/me/Notes/a%20b.md?line=2")
+                .unwrap()
+                .address,
+            Address::File("/home/me/Notes/a b.md".into())
+        );
+        assert_eq!(
+            parse("okilum://file/C:/Users/me/Notes/a.md")
+                .unwrap()
+                .address,
+            Address::File("C:/Users/me/Notes/a.md".into())
+        );
+        assert_eq!(
+            parse("okilum://project/p-42").unwrap().address,
+            Address::Project("p-42".into())
+        );
+        assert_eq!(
+            parse("okilum://note/n1").unwrap().address,
+            Address::Note("n1".into())
+        );
+        assert_eq!(
+            parse("okilum://task/t1").unwrap().address,
+            Address::Task("t1".into())
+        );
+    }
+
+    #[test]
+    fn refusals() {
+        for (link, why) in [
+            ("https://example.com/a.md", Refused::NotOkilum),
+            ("okilum://open/Projects/Plan.md", Refused::Internal),
+            ("okilum://attachment/a.png", Refused::Internal),
+            ("okilum://footnote/1", Refused::Internal),
+            ("okilum://settings/reset", Refused::UnknownKind),
+            ("okilum://v/Notes", Refused::Malformed),
+            ("okilum://v/Notes/", Refused::Malformed),
+            ("okilum://v//a.md", Refused::Malformed),
+            ("okilum://v/N/../secret.md", Refused::UnsafePath),
+            ("okilum://v/N/a/%2E%2E/b.md", Refused::UnsafePath),
+            ("okilum://v/N/a%2Fb.md", Refused::UnsafePath),
+            ("okilum://v/N//a.md", Refused::UnsafePath),
+            ("okilum://file/relative/a.md", Refused::Malformed),
+            ("okilum://file//home/../etc/passwd", Refused::UnsafePath),
+            ("okilum://v/N/a\u{0}.md", Refused::Malformed),
+            ("okilum://note/", Refused::Malformed),
+        ] {
+            assert_eq!(parse(link), Err(why), "{link}");
+            assert!(!why.message().is_empty());
+        }
+        let long = format!("okilum://v/N/{}.md", "a".repeat(MAX_LEN));
+        assert_eq!(parse(&long), Err(Refused::TooLong));
+        // Positive control: the same shape inside the limit parses.
+        assert!(parse("okilum://v/N/a.md").is_ok());
+    }
+}
