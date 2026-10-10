@@ -1,6 +1,7 @@
 //! Native registration transport. The supervisor/verified-bundle boundary stays
 //! explicit; this type alone cannot certify process ownership or reap a child.
 use super::{Binding, SmApi, Status, PLIST};
+use crate::sidecar::{authority::StopToken, supervisor::ipc::Scope};
 use anyhow::{ensure, Result};
 use objc2::rc::Retained;
 use objc2_foundation::{NSProcessInfo, NSString};
@@ -16,6 +17,13 @@ pub trait OwnedSupervisor {
     fn await_running(&mut self, binding: &Binding) -> Result<()>;
     /// Request clean stop and await supervisor plus sidecar exit before success.
     fn stop_and_reap(&mut self, binding: &Binding) -> Result<()>;
+    /// Authenticated live generation (`discovery::SupervisorLink`); default none.
+    fn supervisor_scope(&mut self, _: &Binding) -> Result<Option<Scope>> {
+        Ok(None)
+    }
+    fn stop_supervisor(&mut self, _: &Binding, _: &StopToken) -> Result<()> {
+        anyhow::bail!("supervisor IPC is not wired on this guard")
+    }
 }
 
 pub struct NativeSm<G> {
@@ -90,6 +98,12 @@ impl<G: OwnedSupervisor> SmApi for NativeSm<G> {
     fn stop_owned(&mut self, binding: &Binding) -> Result<()> {
         self.verify_bundle(binding, PLIST)?;
         self.guard.stop_and_reap(binding)
+    }
+    fn supervisor_scope(&mut self, binding: &Binding) -> Result<Option<Scope>> {
+        self.guard.supervisor_scope(binding)
+    }
+    fn stop_supervisor(&mut self, binding: &Binding, token: &StopToken) -> Result<()> {
+        self.guard.stop_supervisor(binding, token)
     }
     fn unregister(&mut self, binding: &Binding, plist: &str) -> Result<()> {
         self.verify_bundle(binding, plist)?;
