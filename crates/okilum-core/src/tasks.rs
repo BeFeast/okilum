@@ -231,7 +231,7 @@ enum Filter {
         lowercase: String,
         include: bool,
     },
-    /// `path is <vault-relative path>`: Tessera's own exact-note filter, used by
+    /// `path is <vault-relative path>`: Okilum's own exact-note filter, used by
     /// the missed-reminders view (#919). Obsidian Tasks has no such line, so
     /// notes meant to also work there should keep using `path includes`.
     PathIs(String),
