@@ -64,18 +64,18 @@ impl OpenIntent {
         }
         let log = okilum_core::log::is_log_path(&path);
         let plain = super::reader_delimited::editable(&path.to_string_lossy());
-        if !path.is_file()
-            || !(log
-                || plain
-                || path
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("md")))
-        {
+        let markdown = path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("md"));
+        // Inside an explicitly chosen vault any file opens as it would from the file
+        // tree (PDF, image, archive…); a lone file still has to be a document kind.
+        let in_vault = explicit_root.is_some();
+        if !path.is_file() || !(log || plain || markdown || in_vault) {
             bail!("Choose a local Markdown, CSV, TSV, text, code or log file, or a folder");
         }
         // Fail before constructing a Reader rather than falling back to its first note.
         // A log is bytes, not UTF-8 text: only readability is required.
-        if read_primary && (log || plain) {
+        if read_primary && (log || plain || !markdown) {
             std::fs::File::open(&path).context("The file cannot be read")?;
         } else if read_primary {
             std::fs::read_to_string(&path).context("The Markdown file cannot be read as UTF-8")?;
@@ -213,6 +213,18 @@ mod tests {
             .to_string()
             .contains("code or log file"));
         assert!(OpenIntent::validate(&f.0.join("absent.log"), None, None).is_err());
+    }
+    #[test]
+    fn any_file_opens_inside_an_explicit_vault() {
+        // `--vault <v> --note x.zip` opens like a click in the file tree (#1080).
+        let f = Fixture::new();
+        for name in ["archive.zip", "scan.pdf", "photo.png"] {
+            std::fs::write(f.0.join(name), b"PK").unwrap();
+            let intent = OpenIntent::validate(&f.0.join(name), Some(&f.0), None).unwrap();
+            assert!(!intent.single_file, "{name}");
+            assert_eq!(intent.note.as_deref(), Some(name));
+        }
+        assert!(OpenIntent::validate(&f.0.join("absent.zip"), Some(&f.0), None).is_err());
     }
 }
 

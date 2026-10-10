@@ -169,6 +169,11 @@ fn prepare_log(path: &Path, root: Option<&Path>, cancel: &Cancellation) -> Resul
     })
 }
 
+/// Opened through the file viewer, like `open_note` does, never rendered as a note.
+fn opens_as_file(rel: &str) -> bool {
+    !rel.is_empty() && !rel.to_lowercase().ends_with(".md")
+}
+
 /// Plain attachments have no Markdown projection or search index. Their preview
 /// owns the background read after the containing quick folder is published.
 fn prepare_plain_file(path: &Path, root: Option<&Path>, cancel: &Cancellation) -> Result<Event> {
@@ -363,6 +368,7 @@ fn prepare_first_with_last_document(
                 // Logs are only remembered by the quick viewer.
                 .filter(|hint| !okilum_core::log::is_log_path(Path::new(hint)))
                 .filter(|hint| !reader_delimited::editable(hint))
+                .filter(|hint| !opens_as_file(hint))
                 .and_then(|hint| {
                     let path = intent.root.join(&hint);
                     let validated = if snapshot.as_ref().and_then(|s| s.source(&hint)).is_some() {
@@ -380,6 +386,15 @@ fn prepare_first_with_last_document(
         }
     };
     drop(selection_phase);
+    // A PDF, image or archive is not rendered as the first document: the Reader
+    // publishes an empty one and opens the file in its viewer (#1080).
+    let selected = selected.map(|rel| {
+        if opens_as_file(&rel) {
+            String::new()
+        } else {
+            rel
+        }
+    });
     let inventory_phase = opts
         .diagnostics
         .as_ref()
@@ -1554,7 +1569,7 @@ impl Reader {
             .intent
             .note
             .clone()
-            .filter(|rel| reader_delimited::editable(rel));
+            .filter(|rel| reader_delimited::editable(rel) || opens_as_file(rel));
         reader_open::register(cx.entity().downgrade(), pending.intent.root, cx);
         if preserve_document {
             self.link_notice = None;
@@ -5280,6 +5295,43 @@ mod tests {
             ))
             .is_err()
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn vault_note_that_is_an_archive_opens_as_a_file_not_a_document() {
+        // `--vault <v> --note qa.zip` (#1080): the vault loads with an empty first
+        // document and the archive keeps its place as the requested file.
+        let root = std::env::temp_dir().join(format!("okilum-zip-note-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("first.md"), "# First").unwrap();
+        std::fs::write(root.join("qa.zip"), b"PK\x05\x06").unwrap();
+        let opts = Opts {
+            vault: Some(root.clone()),
+            note: Some("qa.zip".into()),
+            ..Default::default()
+        };
+        let Event::First {
+            intent, document, ..
+        } = prepare_first_with_last_document(&opts, &Cancellation::default(), |_| Ok(None))
+            .unwrap()
+        else {
+            panic!("first")
+        };
+        assert!(!intent.single_file);
+        assert_eq!(intent.note.as_deref(), Some("qa.zip"));
+        assert_eq!(document.unwrap().0, "");
+        // A remembered archive is not restored as a note either; the vault falls back.
+        let vault = Opts { note: None, ..opts };
+        let Event::First { document, .. } =
+            prepare_first_with_last_document(&vault, &Cancellation::default(), |_| {
+                Ok(Some("qa.zip".into()))
+            })
+            .unwrap()
+        else {
+            panic!("first")
+        };
+        assert_eq!(document.unwrap().0, "first.md");
         std::fs::remove_dir_all(root).unwrap();
     }
 
