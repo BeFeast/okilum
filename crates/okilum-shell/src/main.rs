@@ -8,6 +8,7 @@
 //! timing) is deliberately gone: it measured a decision that has been made.
 
 mod about;
+mod version_info;
 mod app_footprint;
 #[cfg(all(unix, feature = "brain"))]
 mod brain;
@@ -6985,6 +6986,7 @@ fn main() {
             brain::source_trace::install(cx);
         }
         updater::install(cx);
+        version_info::install(cx);
         #[cfg(all(unix, feature = "brain"))]
         brain::app_quit::install(cx);
         #[cfg(not(all(unix, feature = "brain")))]

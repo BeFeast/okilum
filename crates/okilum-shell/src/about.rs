@@ -45,6 +45,48 @@ fn linux_update_source() -> &'static str {
     }
 }
 
+/// The generation whose "Copied" label is showing; 0 when none (#1097).
+static COPIED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static NEXT_COPY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Copies the one-line bug-report version info; the label answers inline for
+/// two seconds instead of a toast.
+fn copy_version_button() -> Button {
+    use std::sync::atomic::Ordering;
+    let copied = COPIED.load(Ordering::Relaxed) != 0;
+    Button::new("about-copy-version")
+        .xsmall()
+        .ghost()
+        .label(if copied { "Copied" } else { "Copy" })
+        .tooltip("Copy version info for a bug report")
+        .accessibility_label("Copy version info")
+        .debug_selector(move || {
+            if copied {
+                "about-version-copied".into()
+            } else {
+                "about-copy-version".into()
+            }
+        })
+        .on_click(|_, _, cx| {
+            crate::version_info::copy(cx);
+            let generation = NEXT_COPY.fetch_add(1, Ordering::Relaxed);
+            COPIED.store(generation, Ordering::Relaxed);
+            cx.refresh_windows();
+            cx.spawn(async move |cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(2))
+                    .await;
+                if COPIED
+                    .compare_exchange(generation, 0, Ordering::Relaxed, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    let _ = cx.update(|cx| cx.refresh_windows());
+                }
+            })
+            .detach();
+        })
+}
+
 pub(crate) fn content(cx: &mut App) -> impl IntoElement {
     let palette = brand::palette(cx);
     let mut links = h_flex().flex_wrap().gap_1();
@@ -104,16 +146,18 @@ pub(crate) fn content(cx: &mut App) -> impl IntoElement {
                         .text_sm()
                         .text_color(palette.text_muted)
                         .child(format!(
-                            "Version {} · Build {}{}",
+                            "Version {} · Build {}{} · {}",
                             env!("OKILUM_RELEASE_VERSION"),
                             env!("OKILUM_BUILD_VERSION"),
                             if about_channel().is_empty() {
                                 String::new()
                             } else {
                                 format!(" · {}", about_channel())
-                            }
+                            },
+                            crate::version_info::platform(),
                         )),
                 )
+                .child(copy_version_button())
                 .when(updater::available(), |row| {
                     row.child(
                         reader_icon_button(

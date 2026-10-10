@@ -18,6 +18,12 @@ pub(super) fn append(menu: PopupMenu) -> PopupMenu {
                 show_about(window, cx);
             }),
         )
+        .item(
+            PopupMenuItem::new("Copy version info").on_click(|_, window, cx| {
+                crate::version_info::copy(cx);
+                crate::reader_toast::transient("Version info copied", window, cx);
+            }),
+        )
         .map(|menu| {
             #[cfg(windows)]
             let menu = if crate::updater::available() {
