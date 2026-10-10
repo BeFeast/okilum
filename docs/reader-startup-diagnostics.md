@@ -56,6 +56,40 @@ bank is loaded after document publication and reconciled in the background.
 Older caches migrate through the complete bank once. Full scans and incremental
 watcher/save handling remain the scope of issue #487.
 
+## First-launch window cost on macOS (#1008)
+
+On the first launch of an install `native_window_open` took about 1 s on the Intel
+Mac mini (Hedva), against about 0.1 s on later launches. The cost is the Metal
+shader library: GPUI builds it from source at runtime (`runtime_shaders`) and macOS
+keeps the compiled result in a per-application cache,
+`$(getconf DARWIN_USER_CACHE_DIR)<bundle id>/com.apple.metal`. Nothing in Okilum's
+own state is involved.
+
+Measured on Hedva with build `beed5ef1` (x86_64, Developer ID signed,
+generated 2021-note vault), a fresh state directory for every run, ms:
+
+| run | Metal cache | `window_platform_create` | `window_view_build` | `window_first_draw` | `native_window_open` |
+|---|---|---|---|---|---|
+| a1 (first launch of this binary) | kept | 92 | 16 | 64 | 173 |
+| a2 | kept | 65 | 5 | 23 | 94 |
+| a3 | kept | 68 | 5 | 22 | 97 |
+| b1 | cleared | 1012 | 5 | 23 | 1041 |
+| b2 | cleared | 845 | 5 | 22 | 874 |
+| b3 | cleared | 825 | 6 | 24 | 856 |
+
+The positive control is the cleared cache: removing only this application's
+`com.apple.metal` and `com.apple.metalfe` directories moves the whole difference into
+`window_platform_create` and nowhere else. A fresh state directory alone does not
+(a1 to a3). The first launch of a newly built binary found the cache written by an
+earlier build, so the cache survives an update while the shader source is unchanged.
+
+**Decision: accept; no precompiled metallib.** The cost is about 0.8-1.0 s once, on the
+first launch after the cache is missing: a new install, a purged cache, or a GPUI
+update that changes the shader source. A metallib would remove it by adding the
+`xcrun metal` step to the macOS build, which `runtime_shaders` was kept to avoid
+(`docs/building.md`). Revisit if the cost is seen on every launch, which would mean the
+cache is not being kept.
+
 ## Cloud-latency reproduction (#502)
 
 The Linux-only probe injects latency into actual vault `open`, `read`, `stat`

@@ -1047,9 +1047,17 @@ fn prepare_search_batch(
         return Ok(None);
     };
     cancel.check()?;
-    let searcher = old.fork_session()?;
+    // The session copy lives in the app cache, not the system temp folder, whose
+    // per-user quota can be exhausted while the disk is nearly empty (#933).
+    let sessions = base.join("sessions");
+    Searcher::reclaim_abandoned_sessions(&sessions);
+    let searcher = old
+        .fork_session_in(&sessions)
+        .context("Fork the search session")?;
     drop(old);
-    searcher.update_snapshot_batch(vault, documents, removed)?;
+    searcher
+        .update_snapshot_batch(vault, documents, removed)
+        .context("Update the forked search index")?;
     cancel.check()?;
     use sha2::{Digest, Sha256};
     let generation = format!("{:x}", Sha256::digest(uuid::Uuid::new_v4().as_bytes()));

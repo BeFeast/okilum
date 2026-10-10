@@ -92,9 +92,3 @@ entries. The acceptance snapshot lists them separately.
 - Saved Application State, HTTPStorages and DiagnosticReports for the bundle id.
 - Planned: Settings → "Uninstall Okilum…" with one confirmation, plus a documented
   command. Moving the app to the Trash alone cannot clean these up.
-
-## Legacy Tessera leftovers
-
-Okilum starts from clean folders and does not read Tessera's. Removing old
-Tessera data (`tessera` dirs, `BeFeast.Tessera.*` keys, `uk.oklabs.tessera`) is a
-separate, explicit offer and not part of Okilum's uninstall.
