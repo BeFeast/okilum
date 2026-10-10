@@ -40,3 +40,11 @@ jobs:
         Get-Content rust-toolchain.toml; rustup show active-toolchain; if ($LASTEXITCODE) { exit $LASTEXITCODE }; rustc -Vv; if ($LASTEXITCODE) { exit $LASTEXITCODE }
         $a = @('test', '--locked', '-p', $env:PKG); if ($env:FEATURES) { $a += @('--features', $env:FEATURES) }; if ($env:FILTER) { $a += $env:FILTER }; $a += @('--', '--nocapture', '--test-threads=1'); & cargo @a; exit $LASTEXITCODE
       name: Run native tests
+    # #1120: a note that is not valid UTF-8 must not block links between readable notes. The
+    # core integration test scans a real vault; the shell test loads it in a Reader and follows
+    # the link. Compiling the shell tests is the long part of this step.
+    - shell: pwsh
+      run: |
+        cargo test --locked -p okilum-core --test prepared_links a_non_utf8_note_leaves_links_between_readable_notes_working -- --nocapture --test-threads=1 --exact; if ($LASTEXITCODE) { exit $LASTEXITCODE }
+        cargo test --locked -p okilum-shell --bins one_non_utf8_note_does_not_block_links_between_readable_notes -- --nocapture --test-threads=1 --exact; exit $LASTEXITCODE
+      name: Run link tests with a non-UTF-8 note
