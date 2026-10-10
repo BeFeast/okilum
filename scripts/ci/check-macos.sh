@@ -54,6 +54,8 @@ run_tests okilum-sync-controller --lib sidecar::
 # #1013: the supervisor's run loop against a real process tree and real sockets (the
 # shell does not depend on this crate, so nothing else would even build it here).
 run_tests okilum-sync-supervisor --tests ""
+# #1013: the supervisor's packaging steps, as the release runs them, on a real Mac.
+bash scripts/ci/check-supervisor-bundle.sh
 
 # #477: real Quick Look providers, bounded Retina output and cancellation.
 export OKILUM_THUMBNAIL_EVIDENCE_DIR="${RUNNER_TEMP}/thumbnail-evidence"

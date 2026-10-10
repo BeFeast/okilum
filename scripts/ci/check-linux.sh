@@ -12,7 +12,7 @@ python3 -m unittest discover -s scripts/releases -p 'test_*.py'
 bash -n scripts/releases/mirror.sh
 python3 scripts/brand-assets.py verify
 python3 scripts/test-third-party-notices.py
-bash -n scripts/build-macos-ci.sh scripts/updater/sign-bundle.sh scripts/ci/check-macos.sh
+bash -n scripts/build-macos-ci.sh scripts/updater/sign-bundle.sh scripts/ci/check-macos.sh scripts/ci/supervisor-bundle.sh scripts/ci/check-supervisor-bundle.sh
 python3 -m unittest discover -s scripts/ci -p 'test_*.py'
 python3 scripts/test-maintenance-matrix.py
 cargo test -p okilum-core -p okilum-shell -p okilum-sync
