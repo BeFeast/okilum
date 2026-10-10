@@ -26,6 +26,10 @@ pub enum Kind {
     /// Live Preview draws it rendered while the caret is outside (S7, #936).
     /// Its bytes are never classified or rewritten.
     Table,
+    /// A top-level paragraph that is only an image embed, `![[x.png]]` or
+    /// `![alt](path)`: Live Preview draws the image while the caret is
+    /// outside (S7b, #936).
+    Image,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -126,6 +130,26 @@ pub(super) fn extract<'a>(root: &'a AstNode<'a>, context: &Context<'_>) -> Optio
                 // An odd table stays raw; it does not cost the rest of the note.
                 if let Some(marker) = table_marker(node, context) {
                     markers.push(marker);
+                }
+            }
+            NodeValue::Paragraph
+                if node
+                    .parent()
+                    .is_some_and(|p| matches!(p.data.borrow().value, NodeValue::Document)) =>
+            {
+                if let Some(range) = context.range(node) {
+                    let start = context.lines[node.data.borrow().sourcepos.start.line - 1];
+                    if let Some(text) = context.source.get(start..range.end) {
+                        let line = text.trim_end_matches(['\r', '\n', ' ', '\t']);
+                        if image_embed(line) {
+                            let range = start..start + line.len();
+                            markers.push(Marker {
+                                range: range.clone(),
+                                scope: range,
+                                kind: Kind::Image,
+                            });
+                        }
+                    }
                 }
             }
             NodeValue::ThematicBreak => {
@@ -262,6 +286,37 @@ fn validate_ranges(markers: &[Marker], context: &Context<'_>) -> Option<()> {
     Some(())
 }
 
+/// Image file extensions an embed is drawn for.
+const IMAGE_EXTENSIONS: [&str; 8] = ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif"];
+
+/// One line that is exactly one image embed: `![[x.png]]`, `![[x.png|200]]`
+/// or `![alt](path.png)` / `![alt](https://…)`, with no other text.
+fn image_embed(line: &str) -> bool {
+    let is_image = |target: &str| {
+        let path = target.split(['|', '#', '?']).next().unwrap_or("").trim();
+        path.rsplit_once('.')
+            .is_some_and(|(_, ext)| IMAGE_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
+    };
+    if let Some(inner) = line
+        .strip_prefix("![[")
+        .and_then(|rest| rest.strip_suffix("]]"))
+    {
+        return !inner.contains(['[', ']', '\n']) && is_image(inner);
+    }
+    let Some(rest) = line.strip_prefix("![") else {
+        return false;
+    };
+    let Some((alt, target)) = rest.split_once("](") else {
+        return false;
+    };
+    let Some(target) = target.strip_suffix(')') else {
+        return false;
+    };
+    !alt.contains([']', '\n'])
+        && !target.contains(['(', ')', '\n', ' '])
+        && (is_image(target) || target.starts_with("https://") || target.starts_with("http://"))
+}
+
 /// A table's whole lines, ending on its last non-blank line.
 fn table_marker<'a>(node: &'a AstNode<'a>, context: &Context<'_>) -> Option<Marker> {
     let range = context.range(node)?;
@@ -392,6 +447,30 @@ mod tests {
                 ("+\t[X]", true, true),
                 ("- [ ]", false, true)
             ]
+        );
+    }
+
+    #[test]
+    fn image_only_paragraphs_are_image_blocks() {
+        let text = "![[photo.png]]\n\n![alt](img/a.JPG)\n\ntext ![[inline.png]] here\n\n![[Note]]\n\n![[b.webp|300]]\n\n- ![[in-list.png]]\n\n![x](https://example.com/p.png)\n";
+        let source = snapshot(text, 1);
+        let classified = classify(&source);
+        let images: Vec<_> = classified
+            .decorations_for(&source)
+            .unwrap()
+            .iter()
+            .filter(|m| m.kind == Kind::Image)
+            .map(|m| &text[m.range.clone()])
+            .collect();
+        assert_eq!(
+            images,
+            [
+                "![[photo.png]]",
+                "![alt](img/a.JPG)",
+                "![[b.webp|300]]",
+                "![x](https://example.com/p.png)"
+            ],
+            "inline images, note embeds and list items stay text"
         );
     }
 
