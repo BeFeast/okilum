@@ -35,6 +35,11 @@ python3 scripts/updater/sparkle.py prepare --archive "$SPARKLE_ARCHIVE" --destin
 mkdir -p "$OUTPUT/sparkle-bin"
 tar -xJf "$SPARKLE_ARCHIVE" -C "$OUTPUT/sparkle-bin" --include='*bin/sign_update'
 cargo build --release --locked --target aarch64-apple-darwin -p okilum-shell
+# The sync helper (#1013): its signature policy is compiled in from the build configuration.
+source scripts/ci/supervisor-bundle.sh
+BUNDLE_ID="${OKILUM_BUNDLE_ID:-com.befeast.okilum}"
+TEAM_ID="$(supervisor_team_id "$OKILUM_SIGNING_IDENTITY")"
+supervisor_build "$TEAM_ID" "$BUNDLE_ID" aarch64-apple-darwin
 
 APP="$OUTPUT/Okilum.app"
 rm -rf "$APP"
@@ -43,6 +48,7 @@ python3 scripts/third-party-notices.py --stage "$APP/Contents/Resources/Licenses
 ditto vendor/sparkle/Sparkle.framework "$APP/Contents/Frameworks/Sparkle.framework"
 python3 scripts/updater/sparkle.py verify "$APP/Contents/Frameworks"
 cp "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/okilum" "$APP/Contents/MacOS/okilum"
+supervisor_stage "$APP" "$CARGO_TARGET_DIR" aarch64-apple-darwin
 python3 scripts/brand-assets.py verify
 # The example binary runs outside the bundle; point it at the source framework.
 env DYLD_FRAMEWORK_PATH="$PWD/vendor/sparkle" cargo run --release --locked --target aarch64-apple-darwin -p okilum-shell --example macos_app_icon -- "$OUTPUT/icon-rasters"
@@ -53,7 +59,7 @@ cat >"$APP/Contents/Info.plist" <<PLIST
 <plist version="1.0"><dict>
 <key>CFBundleExecutable</key><string>okilum</string>
 <key>CFBundleIconFile</key><string>Okilum.icns</string>
-<key>CFBundleIdentifier</key><string>com.befeast.okilum</string>
+<key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
 <key>CFBundleName</key><string>Okilum</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleDocumentTypes</key>

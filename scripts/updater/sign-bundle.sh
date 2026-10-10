@@ -12,6 +12,11 @@ for COMPONENT in \
     codesign --force --preserve-metadata=identifier,entitlements --options runtime --timestamp --sign "$OKILUM_SIGNING_IDENTITY" "$COMPONENT"
 done
 [[ $(lipo -archs "$APP/Contents/MacOS/okilum") == arm64 ]]
+# The sync helper first (inside-out), with the explicit identifier its policy requires;
+# the app's own policy then trusts exactly this team and identifier.
+[[ $(lipo -archs "$APP/$SUPERVISOR_RELATIVE") == arm64 ]]
+supervisor_sign "$APP" "$OKILUM_SIGNING_IDENTITY" "$BUNDLE_ID" --timestamp
+codesign -dv --verbose=4 "$APP/$SUPERVISOR_RELATIVE" 2>&1 | grep -Fx "TeamIdentifier=$TEAM_ID" >/dev/null
 codesign --force --options runtime --timestamp --sign "$OKILUM_SIGNING_IDENTITY" "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
 ditto -c -k --sequesterRsrc --keepParent "$APP" "$OUTPUT/notarization-app.zip"
