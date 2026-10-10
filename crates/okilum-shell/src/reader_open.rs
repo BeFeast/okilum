@@ -1029,14 +1029,33 @@ fn confirm_link_vault(root: PathBuf, opts: super::Opts, cx: &mut App) {
 /// The user's answer: Open trusts the vault and opens the latest link.
 fn answer_link_vault(root: &Path, open: bool, window: &mut Window, cx: &mut App) {
     let pending = cx.default_global::<LinkPrompts>().0.remove(root);
-    window.remove_window();
     let Some((_, opts)) = pending.filter(|_| open) else {
+        window.remove_window();
         return;
     };
     super::reader_ui_state::trust_for_links(root, cx);
     if let Err(error) = open_window(opts, cx) {
+        window.remove_window();
         show_error(error, cx);
+        return;
     }
+    // The Reader window is created after a background step. Closing the
+    // prompt first would leave no window, which ends the app on Linux, so
+    // the prompt goes once the vault's window exists (or after 10 s).
+    let prompt = window.window_handle();
+    let root = root.to_owned();
+    cx.spawn(async move |cx| {
+        for _ in 0..200 {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(50))
+                .await;
+            if cx.update(|cx| reusable_roots(cx).contains(&root)) {
+                break;
+            }
+        }
+        let _ = prompt.update(cx, |_, window, _| window.remove_window());
+    })
+    .detach();
 }
 
 struct LinkConfirm {
