@@ -410,8 +410,18 @@ struct Tasks {
     task: Option<windows::Task>,
     mutations: Vec<&'static str>,
     collide: bool,
+    /// Calls that reached the port's supervisor methods.
+    supervisor_calls: Vec<&'static str>,
 }
 impl windows::TaskApi for Tasks {
+    fn supervisor_scope(&mut self, _: &Binding) -> Result<Option<supervisor::ipc::Scope>> {
+        self.supervisor_calls.push("scope");
+        Ok(None)
+    }
+    fn stop_supervisor(&mut self, _: &Binding, _: &authority::StopToken) -> Result<()> {
+        self.supervisor_calls.push("stop");
+        Ok(())
+    }
     fn current_sid(&self) -> Result<String> {
         Ok(binding().owner)
     }
@@ -512,6 +522,8 @@ struct Mac {
     approval: bool,
     mutations: Vec<&'static str>,
     wrong_bundle: bool,
+    /// Calls that reached the port's supervisor methods.
+    supervisor_calls: Vec<&'static str>,
 }
 impl Default for Mac {
     fn default() -> Self {
@@ -522,10 +534,19 @@ impl Default for Mac {
             approval: true,
             mutations: vec![],
             wrong_bundle: false,
+            supervisor_calls: vec![],
         }
     }
 }
 impl macos::SmApi for Mac {
+    fn supervisor_scope(&mut self, _: &Binding) -> Result<Option<supervisor::ipc::Scope>> {
+        self.supervisor_calls.push("scope");
+        Ok(None)
+    }
+    fn stop_supervisor(&mut self, _: &Binding, _: &authority::StopToken) -> Result<()> {
+        self.supervisor_calls.push("stop");
+        Ok(())
+    }
     fn major_version(&self) -> u32 {
         self.version
     }
@@ -621,4 +642,66 @@ fn controller_persists_enabled_while_waiting_for_macos_system_approval() {
     let before = controller.platform.0.mutations.clone();
     assert_eq!(controller.reconcile().unwrap(), State::Disabled);
     assert_eq!(controller.platform.0.mutations, before);
+}
+
+fn a_token() -> authority::StopToken {
+    use authority::{Reason, StopOperation};
+    authority::StopToken {
+        journal_epoch: Uuid::new_v4(),
+        operation: StopOperation {
+            operation_id: Uuid::new_v4(),
+            authorized_revision: 2,
+            scope: supervisor::ipc::Scope {
+                installation: binding().installation,
+                instance: binding().instance,
+                generation: Uuid::new_v4(),
+            },
+            reason: Reason::Disable,
+        },
+    }
+}
+
+#[test]
+fn adapters_reach_the_supervisor_port_only_for_a_registered_running_agent() {
+    // macOS: not registered -> none, and the port is never asked; refuses to stop.
+    let b = mac_binding();
+    let mut adapter = macos::SmAppService(Mac::default());
+    assert_eq!(adapter.supervisor_scope(&b).unwrap(), None);
+    assert!(adapter.stop_supervisor(&b, &a_token()).is_err());
+    assert!(
+        adapter.0.supervisor_calls.is_empty(),
+        "an absent agent reached the port"
+    );
+    // Registered but not running: still none for the scope, the stop may be forwarded.
+    adapter.0.status = macos::Status::Enabled;
+    assert_eq!(adapter.supervisor_scope(&b).unwrap(), None);
+    assert!(adapter.0.supervisor_calls.is_empty());
+    // Running: both reach the port (positive control).
+    adapter.0.running = true;
+    adapter.supervisor_scope(&b).unwrap();
+    adapter.stop_supervisor(&b, &a_token()).unwrap();
+    assert_eq!(adapter.0.supervisor_calls, ["scope", "stop"]);
+    // A replaced bundle gets nothing.
+    adapter.0.wrong_bundle = true;
+    assert!(adapter.supervisor_scope(&b).is_err());
+    assert!(adapter.stop_supervisor(&b, &a_token()).is_err());
+    assert_eq!(adapter.0.supervisor_calls.len(), 2);
+
+    // Windows: no task -> none / refuse without touching the port; a task whose
+    // definition was modified is never trusted; the owned running task is forwarded.
+    let b = binding();
+    let mut adapter = windows::TaskScheduler(Tasks::default());
+    assert_eq!(adapter.supervisor_scope(&b).unwrap(), None);
+    assert!(adapter.stop_supervisor(&b, &a_token()).is_err());
+    assert!(adapter.0.supervisor_calls.is_empty());
+    adapter.register(&b).unwrap();
+    adapter.start(&b).unwrap();
+    adapter.supervisor_scope(&b).unwrap();
+    adapter.stop_supervisor(&b, &a_token()).unwrap();
+    assert_eq!(adapter.0.supervisor_calls, ["scope", "stop"]);
+    let xml = windows::definition(&b).unwrap();
+    adapter.0.task.as_mut().unwrap().definition = xml.replace("LeastPrivilege", "HighestAvailable");
+    assert!(adapter.supervisor_scope(&b).is_err());
+    assert!(adapter.stop_supervisor(&b, &a_token()).is_err());
+    assert_eq!(adapter.0.supervisor_calls.len(), 2);
 }

@@ -1,6 +1,7 @@
 //! Native local Task Scheduler COM transport. No PowerShell, shell, password,
 //! elevation, remote scheduler connection or replace-existing registration.
 use super::{canonical, Binding, Task, TaskApi};
+use crate::sidecar::{authority::StopToken, supervisor::ipc::Scope};
 use anyhow::{ensure, Result};
 use std::{marker::PhantomData, rc::Rc};
 use windows::{
@@ -31,6 +32,13 @@ pub trait TaskGuard {
     /// Capture authenticated supervisor/child handles BEFORE scheduler Stop.
     fn capture_owned_processes(&mut self, task_name: &str) -> Result<Self::ProcessHandles>;
     fn await_exit(&mut self, handles: Self::ProcessHandles) -> Result<()>;
+    /// Authenticated live generation (`discovery::SupervisorLink`); default none.
+    fn supervisor_scope(&mut self, _: &Binding) -> Result<Option<Scope>> {
+        Ok(None)
+    }
+    fn stop_supervisor(&mut self, _: &Binding, _: &StopToken) -> Result<()> {
+        anyhow::bail!("supervisor IPC is not wired on this guard")
+    }
 }
 struct Apartment(PhantomData<Rc<()>>);
 impl Apartment {
@@ -116,6 +124,12 @@ fn validate_name(name: &str) -> Result<()> {
     Ok(())
 }
 impl<G: TaskGuard> TaskApi for NativeTasks<G> {
+    fn supervisor_scope(&mut self, binding: &Binding) -> Result<Option<Scope>> {
+        self.guard.supervisor_scope(binding)
+    }
+    fn stop_supervisor(&mut self, binding: &Binding, token: &StopToken) -> Result<()> {
+        self.guard.stop_supervisor(binding, token)
+    }
     fn current_sid(&self) -> Result<String> {
         super::security::current_sid()
     }

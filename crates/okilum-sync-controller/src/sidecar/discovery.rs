@@ -126,6 +126,34 @@ pub fn stop<D: StateDir, C: Connector>(
     Ok(())
 }
 
+/// What a platform guard embeds to implement `supervisor_scope` and `stop_supervisor`:
+/// the store whose hint it reads (without the instance lock), the platform connector
+/// and the time one call may take. Cloning the store shares its lock, so the link and
+/// the controller can use the same one.
+pub struct SupervisorLink<D: StateDir, C: Connector> {
+    store: Store<D>,
+    connector: C,
+    budget: Duration,
+}
+impl<D: StateDir, C: Connector> SupervisorLink<D, C> {
+    pub fn new(store: Store<D>, connector: C, budget: Duration) -> Self {
+        Self {
+            store,
+            connector,
+            budget,
+        }
+    }
+    pub fn scope(&self, binding: &Binding) -> Option<Scope> {
+        discover(&self.store, binding, &self.connector, self.budget)
+    }
+    pub fn detailed(&self, binding: &Binding) -> Discovered {
+        discover_detailed(&self.store, binding, &self.connector, self.budget)
+    }
+    pub fn stop(&self, binding: &Binding, token: &StopToken) -> Result<()> {
+        stop(&self.store, binding, &self.connector, token, self.budget)
+    }
+}
+
 #[cfg(unix)]
 pub use unix::UnixConnector;
 #[cfg(unix)]

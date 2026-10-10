@@ -26,6 +26,16 @@ pub trait SmApi {
     fn stop_owned(&mut self, binding: &Binding) -> Result<()>;
     /// Await SMAppService's unregister completion, not merely dispatch its call.
     fn unregister(&mut self, binding: &Binding, plist: &str) -> Result<()>;
+    /// Live, authenticated supervisor generation, or None (see `discovery`). The
+    /// default is None, which makes the controller stop natively under its own lock.
+    fn supervisor_scope(&mut self, _: &Binding) -> Result<Option<Scope>> {
+        Ok(None)
+    }
+    /// Send the journal's Stop token to the supervisor; Ok only once it reports
+    /// `Stopped`. The default has no channel and refuses.
+    fn stop_supervisor(&mut self, _: &Binding, _: &StopToken) -> Result<()> {
+        anyhow::bail!("supervisor IPC is not wired on this port")
+    }
 }
 pub struct SmAppService<A>(pub A);
 /// Static bundle resource. Writing it at build time does not register an agent.
@@ -106,13 +116,21 @@ impl<A: SmApi> Platform for SmAppService<A> {
         }
         Ok(())
     }
-    /// No authenticated supervisor endpoint is wired on this adapter yet, so the
-    /// controller stops natively under its lock instead of sending a token.
-    fn supervisor_scope(&mut self, _: &Binding) -> Result<Option<Scope>> {
-        Ok(None)
+    /// The bundle is verified first, then the port names the live generation.
+    fn supervisor_scope(&mut self, binding: &Binding) -> Result<Option<Scope>> {
+        // `inspect` verifies the bundle first. Only a registered, running agent can
+        // have a supervisor to name; anything else is simply "none".
+        if self.inspect(binding)? != Registration::Running {
+            return Ok(None);
+        }
+        self.0.supervisor_scope(binding)
     }
-    fn stop_supervisor(&mut self, _: &Binding, _: &StopToken) -> Result<()> {
-        anyhow::bail!("supervisor IPC is not wired on this adapter")
+    fn stop_supervisor(&mut self, binding: &Binding, token: &StopToken) -> Result<()> {
+        ensure!(
+            self.inspect(binding)? != Registration::Absent,
+            "no registered agent to stop"
+        );
+        self.0.stop_supervisor(binding, token)
     }
     fn unregister(&mut self, binding: &Binding) -> Result<()> {
         let state = self.inspect(binding)?;

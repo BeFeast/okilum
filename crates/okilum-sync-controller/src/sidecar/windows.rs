@@ -21,6 +21,16 @@ pub trait TaskApi {
     /// Stop the supervisor and confirm its Job Object's children have exited.
     fn stop_owned(&mut self, name: &str, definition: &str, owner: &str) -> Result<()>;
     fn delete_owned(&mut self, name: &str, definition: &str, owner: &str) -> Result<()>;
+    /// Live, authenticated supervisor generation, or None (see `discovery`). The
+    /// default is None, which makes the controller stop natively under its own lock.
+    fn supervisor_scope(&mut self, _: &Binding) -> Result<Option<Scope>> {
+        Ok(None)
+    }
+    /// Send the journal's Stop token to the supervisor; Ok only once it reports
+    /// `Stopped`. The default has no channel and refuses.
+    fn stop_supervisor(&mut self, _: &Binding, _: &StopToken) -> Result<()> {
+        anyhow::bail!("supervisor IPC is not wired on this port")
+    }
 }
 pub struct TaskScheduler<A>(pub A);
 pub fn task_name(binding: &Binding) -> String {
@@ -275,13 +285,19 @@ impl<A: TaskApi> Platform for TaskScheduler<A> {
         let xml = self.expected(binding)?;
         self.0.stop_owned(&task_name(binding), &xml, &binding.owner)
     }
-    /// No authenticated supervisor endpoint is wired on this adapter yet, so the
-    /// controller stops natively under its lock instead of sending a token.
-    fn supervisor_scope(&mut self, _: &Binding) -> Result<Option<Scope>> {
-        Ok(None)
+    /// The task's owner and definition are re-read first (a name is not ownership).
+    fn supervisor_scope(&mut self, binding: &Binding) -> Result<Option<Scope>> {
+        if self.inspect(binding)? != Registration::Running {
+            return Ok(None);
+        }
+        self.0.supervisor_scope(binding)
     }
-    fn stop_supervisor(&mut self, _: &Binding, _: &StopToken) -> Result<()> {
-        anyhow::bail!("supervisor IPC is not wired on this adapter")
+    fn stop_supervisor(&mut self, binding: &Binding, token: &StopToken) -> Result<()> {
+        ensure!(
+            self.inspect(binding)? != Registration::Absent,
+            "no owned task to stop"
+        );
+        self.0.stop_supervisor(binding, token)
     }
     fn unregister(&mut self, binding: &Binding) -> Result<()> {
         let state = self.inspect(binding)?;

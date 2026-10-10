@@ -582,3 +582,181 @@ mod glue {
         assert_eq!(handle.join().unwrap().unwrap(), Exit::Stopped);
     }
 }
+
+// ---- the real Controller and the macOS adapter against the real supervisor ------------
+
+mod controller {
+    use super::*;
+    use okilum_sync_controller::sidecar::{
+        authority::StopToken,
+        discovery::{SupervisorLink, UnixConnector},
+        macos::{SmApi, SmAppService, Status as SmStatus},
+        supervisor::ipc::unix_transport::PeerCheck,
+        Controller, Intent, State,
+    };
+    use std::{cell::RefCell, rc::Rc};
+
+    type Link = SupervisorLink<
+        okilum_sync_controller::sidecar::store::UnixDir,
+        UnixConnector<Box<dyn Fn() -> Box<dyn PeerCheck>>>,
+    >;
+    #[derive(Default)]
+    struct Calls {
+        native_stops: usize,
+        unregisters: usize,
+        registered: bool,
+    }
+    /// A ServiceManagement port whose process knowledge comes from the real supervisor.
+    struct Port {
+        link: Link,
+        calls: Rc<RefCell<Calls>>,
+    }
+    impl SmApi for Port {
+        fn major_version(&self) -> u32 {
+            14
+        }
+        fn verify_bundle(&mut self, _: &Binding, _: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn verify_payload(&mut self, _: &Binding) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn status(&mut self, _: &str) -> anyhow::Result<SmStatus> {
+            Ok(if self.calls.borrow().registered {
+                SmStatus::Enabled
+            } else {
+                SmStatus::NotRegistered
+            })
+        }
+        fn running(&mut self, binding: &Binding) -> anyhow::Result<bool> {
+            Ok(self.link.scope(binding).is_some())
+        }
+        fn register(&mut self, _: &Binding, _: &str) -> anyhow::Result<()> {
+            self.calls.borrow_mut().registered = true;
+            Ok(())
+        }
+        fn start_owned(&mut self, _: &Binding) -> anyhow::Result<()> {
+            anyhow::bail!("the test starts the supervisor itself")
+        }
+        fn stop_owned(&mut self, _: &Binding) -> anyhow::Result<()> {
+            self.calls.borrow_mut().native_stops += 1;
+            Ok(())
+        }
+        fn unregister(&mut self, _: &Binding, _: &str) -> anyhow::Result<()> {
+            let mut calls = self.calls.borrow_mut();
+            calls.unregisters += 1;
+            calls.registered = false;
+            Ok(())
+        }
+        fn supervisor_scope(&mut self, binding: &Binding) -> anyhow::Result<Option<Scope>> {
+            Ok(self.link.scope(binding))
+        }
+        fn stop_supervisor(&mut self, binding: &Binding, token: &StopToken) -> anyhow::Result<()> {
+            self.link.stop(binding, token)
+        }
+    }
+    fn port(world: &World, trusted: bool) -> (SmAppService<Port>, Rc<RefCell<Calls>>) {
+        let calls = Rc::new(RefCell::new(Calls {
+            registered: true,
+            ..Calls::default()
+        }));
+        let peer: Box<dyn Fn() -> Box<dyn PeerCheck>> = if trusted {
+            Box::new(|| Box::new(SameUser))
+        } else {
+            Box::new(|| Box::new(super::glue_deny()))
+        };
+        let link = SupervisorLink::new(
+            world.store.clone(),
+            UnixConnector::new(world.state.clone(), peer),
+            Duration::from_secs(5),
+        );
+        (
+            SmAppService(Port {
+                link,
+                calls: calls.clone(),
+            }),
+            calls,
+        )
+    }
+
+    #[test]
+    fn disable_stops_the_real_supervisor_through_a_token_and_never_by_native_force() {
+        let world = World::new(&[]);
+        let (handle, _scope) = start(&world);
+        let (platform, calls) = port(&world, true);
+        let mut controller = Controller::new(world.store.clone(), platform);
+
+        assert_eq!(controller.disable().unwrap(), State::Disabled);
+        assert_eq!(handle.join().unwrap().unwrap(), Exit::Stopped);
+
+        let calls = calls.borrow();
+        assert_eq!(calls.native_stops, 0, "the supervisor was stopped by force");
+        assert_eq!(calls.unregisters, 1);
+        let journal = world.store.begin(soon()).unwrap();
+        let envelope = journal.current().unwrap().unwrap().clone();
+        assert_eq!(envelope.intent(), Intent::Disabled);
+        assert!(envelope.stop().is_none(), "the operation was not consumed");
+        // Enabled at 1, Disabled armed at 2, operation completed at 3.
+        assert_eq!(envelope.revision(), 3);
+        drop(journal);
+        assert_eq!(world.store.read_hint(soon()).unwrap(), None);
+    }
+
+    #[test]
+    fn an_unauthenticated_supervisor_gets_no_token_and_the_native_fallback_runs() {
+        let world = World::new(&[]);
+        let (handle, scope) = start(&world);
+        // This controller cannot authenticate the supervisor, so it sees nothing running
+        // and takes the documented fallback: stop natively and unregister under its lock.
+        let (platform, calls) = port(&world, false);
+        let mut controller = Controller::new(world.store.clone(), platform);
+        assert_eq!(controller.disable().unwrap(), State::Disabled);
+        {
+            let calls = calls.borrow();
+            assert_eq!(calls.native_stops, 1, "the native fallback did not run");
+            assert_eq!(calls.unregisters, 1);
+        }
+        {
+            let journal = world.store.begin(soon()).unwrap();
+            let envelope = journal.current().unwrap().unwrap();
+            assert_eq!(envelope.intent(), Intent::Disabled);
+            assert!(
+                envelope.stop().is_none(),
+                "a stop was armed for a peer we could not verify"
+            );
+        }
+        // The test's native stop is a fake, so the supervisor itself was not touched:
+        // proof that no token reached it.
+        assert!(
+            !handle.is_finished(),
+            "a token reached an unauthenticated peer"
+        );
+        // Positive control: arm for the live generation, and the trusted connector stops
+        // that same supervisor with the token.
+        let Command::Stop(token) = arm_stop(&world, &scope) else {
+            unreachable!()
+        };
+        let connector = UnixConnector::new(world.state.clone(), || {
+            Box::new(SameUser) as Box<dyn PeerCheck>
+        });
+        okilum_sync_controller::sidecar::discovery::stop(
+            &world.store,
+            &world.binding,
+            &connector,
+            &token,
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert_eq!(handle.join().unwrap().unwrap(), Exit::Stopped);
+    }
+}
+
+fn glue_deny() -> impl okilum_sync_controller::sidecar::supervisor::ipc::unix_transport::PeerCheck {
+    struct Deny;
+    impl okilum_sync_controller::sidecar::supervisor::ipc::unix_transport::PeerCheck for Deny {
+        fn verify(&self, _: &std::os::unix::net::UnixStream, _: PeerEnd) -> anyhow::Result<()> {
+            anyhow::bail!("untrusted peer")
+        }
+    }
+    Deny
+}
