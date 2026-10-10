@@ -24,6 +24,9 @@ pub(crate) struct Request {
     use_html: bool,
     copy_source: bool,
     jump: bool,
+    /// An external `okilum:` link (#1049); older senders omit it.
+    #[serde(default)]
+    link: Option<String>,
 }
 
 pub(crate) enum Instance {
@@ -134,6 +137,7 @@ pub(crate) fn connect(opts: &Opts) -> anyhow::Result<Instance> {
                         use_html: opts.use_html,
                         copy_source: opts.copy_source,
                         jump: opts.jump,
+                        link: opts.link.clone(),
                     };
                     serde_json::to_writer(&mut stream, &request)?;
                     stream.write_all(b"\n")?;
@@ -158,7 +162,9 @@ pub(crate) fn receive(receiver: async_channel::Receiver<Request>, cx: &mut App) 
     cx.spawn(async move |cx| {
         while let Ok(request) = receiver.recv().await {
             cx.update(|cx| {
-                if request.vault.is_some() || request.path.is_some() {
+                if let Some(link) = &request.link {
+                    reader_open::open_deep_link(link, cx);
+                } else if request.vault.is_some() || request.path.is_some() {
                     if let Err(error) = reader_open::open_window(
                         Opts {
                             vault: request.vault,

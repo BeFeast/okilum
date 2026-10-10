@@ -315,6 +315,22 @@ pub(crate) fn parse_args(
                 _ => {}
             }
         }
+        // `okilum okilum://…` (OS handlers pass the clicked link) (#1049).
+        if !literal && arg.to_str().is_some_and(|a| has_scheme(a, "okilum:")) {
+            if opts
+                .link
+                .replace(arg.to_string_lossy().into_owned())
+                .is_some()
+            {
+                bail!("Open one link per CLI invocation");
+            }
+            continue;
+        }
+        // `%u` in the .desktop file may hand a local file as a file: URL.
+        let arg = match arg.to_str() {
+            Some(a) if !literal && has_scheme(a, "file:") => file_url_path(a)?.into_os_string(),
+            _ => arg,
+        };
         if positional.replace(PathBuf::from(arg)).is_some() {
             bail!("Open one file or folder per CLI invocation");
         }
@@ -399,6 +415,15 @@ pub(crate) fn apply_intent(opts: &mut super::Opts, intent: &OpenIntent) -> Resul
     opts.vault = Some(intent.root.clone());
     opts.note = intent.note.clone();
     Ok(())
+}
+
+/// `value` starts with `scheme` (case-insensitive) and has more after it.
+/// `get` keeps a multi-byte first character from panicking the slice.
+fn has_scheme(value: &str, scheme: &str) -> bool {
+    value.len() > scheme.len()
+        && value
+            .get(..scheme.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(scheme))
 }
 
 pub(crate) fn file_url_path(value: &str) -> Result<PathBuf> {
@@ -590,10 +615,69 @@ pub(crate) fn picker_path(
 
 pub(crate) fn dispatch_urls(urls: Vec<String>, cx: &mut App) {
     for url in urls {
+        if has_scheme(&url, "okilum:") {
+            open_deep_link(&url, cx);
+            continue;
+        }
         match file_url_path(&url) {
             Ok(path) => dispatch_path(&path, cx),
             Err(error) => show_error(error, cx),
         }
+    }
+}
+
+/// Vault roots this machine knows: open windows first, then reading history.
+fn known_roots(cx: &App) -> Vec<PathBuf> {
+    let mut roots = reusable_roots(cx);
+    if let Ok(directory) = super::reader_history::state_directory() {
+        if let Ok((_, history)) = super::reader_history::ReadingHistory::startup_roots(&directory) {
+            for root in history {
+                if !roots.contains(&root) {
+                    roots.push(root);
+                }
+            }
+        }
+    }
+    roots
+        .into_iter()
+        .map(|root| root.canonicalize().unwrap_or(root))
+        .collect()
+}
+
+/// Open an external `okilum:` link (#1049). Links only navigate: they open a
+/// vault the user already opened and a note in it, never create anything.
+pub(crate) fn open_deep_link(link: &str, cx: &mut App) {
+    use okilum_core::deep_link::{parse, resolve, Resolution};
+    super::reader_startup::supersede(cx);
+    let link = match parse(link) {
+        Ok(link) => link,
+        Err(refused) => return show_error(refused.message().into(), cx),
+    };
+    match resolve(&link, &known_roots(cx), &|path| path.is_file()) {
+        Resolution::Open { root, rel, .. } => {
+            let opts = super::Opts {
+                vault: Some(root),
+                note: Some(rel),
+                reusable_roots: reusable_roots(cx),
+                ..Default::default()
+            };
+            if let Err(error) = open_window(opts, cx) {
+                show_error(format!("{error:#}"), cx);
+            }
+        }
+        // A chooser follows; until then the user is told, never guessed for.
+        Resolution::Choose { vault, roots, .. } => show_error(
+            format!(
+                "Several vaults are named \u{201c}{vault}\u{201d}:\n{}\nOpen the one you want first, then use the link again.",
+                roots
+                    .iter()
+                    .map(|r| r.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ),
+            cx,
+        ),
+        Resolution::Unavailable(message) => show_error(message, cx),
     }
 }
 
@@ -1003,6 +1087,34 @@ mod entry_tests {
             Command::UninstallData { .. } => bail!("Unexpected uninstall"),
         }
     }
+    /// #1049: a clicked link arrives as the argument; a `%u` file arrives
+    /// as a file: URL. Neither becomes a bogus path.
+    #[test]
+    fn link_and_file_url_arguments() {
+        let opts = parse(&["okilum://v/Notes/Plan.md?line=3"]).unwrap();
+        assert_eq!(
+            opts.link.as_deref(),
+            Some("okilum://v/Notes/Plan.md?line=3")
+        );
+        assert!(opts.open_path.is_none(), "a link is not a file path");
+        assert!(parse(&["OKILUM://v/N/a.md"]).unwrap().link.is_some());
+        assert!(parse(&["okilum://v/N/a.md", "okilum://v/N/b.md"]).is_err());
+        let file = parse(&["file:///tmp/My%20notes/a.md"]).unwrap();
+        assert_eq!(
+            file.open_path.as_deref(),
+            Some(Path::new("/tmp/My notes/a.md"))
+        );
+        assert!(file.link.is_none());
+        // Positive control: after `--` both are ordinary file names.
+        let literal = parse(&["--", "okilum:x"]).unwrap();
+        assert!(literal.link.is_none());
+        assert_eq!(literal.open_path.as_deref(), Some(Path::new("okilum:x")));
+        // Non-ASCII names are paths, not schemes, and never split a character.
+        let name = parse(&["öööö.md"]).unwrap();
+        assert_eq!(name.open_path.as_deref(), Some(Path::new("öööö.md")));
+        assert!(name.link.is_none());
+    }
+
     #[test]
     fn uninstall_data_is_a_standalone_command() {
         let command = |args: &[&str]| {

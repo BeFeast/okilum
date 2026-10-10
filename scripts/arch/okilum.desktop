@@ -2,10 +2,10 @@
 Type=Application
 Name=Okilum
 Comment=Read and search your Markdown vault
-Exec=okilum %f
+Exec=okilum %u
 Icon=okilum
 Terminal=false
 Categories=Office;Utility;
-MimeType=text/markdown;
+MimeType=text/markdown;x-scheme-handler/okilum;
 StartupNotify=true
 StartupWMClass=okilum
