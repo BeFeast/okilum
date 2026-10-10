@@ -73,9 +73,9 @@ jobs:
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
-          # Only an explicit older main commit (#1040) changes the checkout; every other
-          # run keeps the default ref (including pull-request merge refs).
-          ref: ${{ inputs.source != '' && needs.select.outputs.source || '' }}
+          # An explicit older main commit (#1040) or a scheduled tick (main tip, chosen by
+          # select) sets the checkout; manual and pull-request runs keep the default ref.
+          ref: ${{ (inputs.source != '' || github.event_name == 'schedule') && needs.select.outputs.source || '' }}
           persist-credentials: false
       - name: Install cross-build tools
         run: |

@@ -23,10 +23,7 @@ def needed(event, published, source, platform):
     return False
 
 
-def current_schedule(event, source, platform):
-    """Only automatic Windows/Linux ticks discard an obsolete main snapshot."""
-    if event != 'schedule' or platform not in ('windows', 'linux'):
-        return True
+def main_tip():
     result = subprocess.run(['git', 'ls-remote', '--exit-code', 'origin',
                              'refs/heads/main'], check=True, capture_output=True,
                             text=True, timeout=15)
@@ -35,7 +32,19 @@ def current_schedule(event, source, platform):
             or len(fields[0]) != 40
             or any(c not in '0123456789abcdef' for c in fields[0])):
         raise ValueError('Cannot identify current main for scheduled build')
-    return fields[0] == source
+    return fields[0]
+
+
+def scheduled_source(event, source, platform):
+    """The commit an automatic Windows/Linux tick builds: main as it is now.
+
+    A tick carries the main snapshot from when it fired. Merges land faster than the
+    tick reaches its runner, so skipping an outdated snapshot starved beta for hours;
+    the tick builds the current main tip instead (unless that is already published).
+    """
+    if event != 'schedule' or platform not in ('windows', 'linux'):
+        return source
+    return main_tip()
 
 
 def descriptor(source, platform):
@@ -88,11 +97,12 @@ if __name__ == '__main__':
         source = requested
         print(f'Explicit source {requested}: ' + ('build' if build else 'already published'))
     else:
-        current = current_schedule(event, source, args.platform)
-        published = descriptor(source, args.platform) if current and event == 'schedule' else None
-        build = current and needed(event, published, source, args.platform)
-        if not current:
-            print('Skip obsolete scheduled snapshot; main has advanced')
+        tip = scheduled_source(event, source, args.platform)
+        if tip != source:
+            print(f'Scheduled snapshot {source[:8]} is behind main; building main tip {tip[:8]}')
+            source = tip
+        published = descriptor(source, args.platform) if event == 'schedule' else None
+        build = needed(event, published, source, args.platform)
         print('Build newest commit' if build else 'No build: coalescing or already published')
     with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
         output.write(f'build={str(build).lower()}\n')

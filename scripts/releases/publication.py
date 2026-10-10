@@ -141,7 +141,9 @@ def publish(client, platform, run_id):
             extract(data, root / folder)
         source = built_source(root, platform, run)
         # An explicit older commit is archived for promotion and never moves the beta feed.
-        archive_only = source != run['commit_sha']
+        # A scheduled tick also differs from its run's commit: it builds main's tip, which
+        # is newer than the tick's snapshot, so it publishes to beta as usual.
+        archive_only = source != run['commit_sha'] and run['trigger_event'] == 'workflow_dispatch'
         if not archive_only and published_build(R2(), platform) > build:
             print(f'Newer {platform} build already published: nothing changed')
             return
