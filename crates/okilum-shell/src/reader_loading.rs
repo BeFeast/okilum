@@ -1898,14 +1898,16 @@ impl Reader {
             report(window, trace);
             return;
         }
+        // Reports once; the watcher itself lives until the next open replaces it.
+        let reported = std::rc::Rc::new(std::cell::Cell::new(false));
         self.note_body_trace =
             Some(
-                cx.observe_in(&self.content, window, move |this, content, window, cx| {
-                    if content.read(cx).preparation_status().is_none() {
+                cx.observe_in(&self.content, window, move |_, content, window, cx| {
+                    if reported.get() || content.read(cx).preparation_status().is_none() {
                         return;
                     }
+                    reported.set(true);
                     report(window, trace.clone());
-                    this.note_body_trace = None;
                 }),
             );
     }
