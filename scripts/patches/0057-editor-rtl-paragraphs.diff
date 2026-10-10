@@ -1,17 +1,31 @@
 diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
-index 59aaa978..09f7b973 100644
+index 59aaa978..2c2ccfa6 100644
 --- a/crates/base/src/input/base/element.rs
 +++ b/crates/base/src/input/base/element.rs
-@@ -1517,8 +1517,16 @@ impl<M: InputModeKind> TextElement<M> {
+@@ -419,6 +419,14 @@ pub(super) struct TextElement<M: InputModeKind> {
+     placeholder: SharedString,
+ }
+ 
++/// The edge a right-to-left paragraph's rows align to: the wrap width, or the
++/// text area (less the margin the caret keeps) when soft wrap is off.
++pub(super) fn right_edge(layout: &LastLayout) -> Pixels {
++    layout.wrap_width.unwrap_or(
++        (layout.content_width - layout.line_number_width - RIGHT_MARGIN).max(px(0.)),
++    )
++}
++
+ impl<M: InputModeKind> TextElement<M> {
+     /// The row geometry of the whole document for this frame. Every layout,
+     /// scroll and hit-test path reads rows from here (S6b, #1034).
+@@ -1517,8 +1525,15 @@ impl<M: InputModeKind> TextElement<M> {
              };
              let hang = if hang <= state.hang_room() { hang } else { px(0.) };
  
 +            // A right-to-left paragraph aligns its rows to the right edge of the
 +            // text, by its first strong character (S6c, #1034).
-+            let align_right = (state.paragraph_direction
-+                && last_layout.text_align == TextAlign::Left
-+                && crate::input::bidi_geometry::paragraph_is_rtl(&line_text))
-+                .then(|| last_layout.wrap_width.unwrap_or(last_layout.content_width));
++            let align_right = (last_layout.text_align == TextAlign::Left
++                && state.paragraph_rtl_at(buffer_line))
++                .then(|| right_edge(last_layout));
 +
              let line_layout = LineLayout::new()
                  .first_row(state.display_map.buffer_line_to_display_row(buffer_line))
@@ -19,8 +33,20 @@ index 59aaa978..09f7b973 100644
                  .lines(wrapped_lines)
                  .wrap_indent(wrap_indent)
                  .with_background(line_has_background)
+@@ -2589,7 +2604,10 @@ impl<M: InputModeKind> Element for TextElement<M> {
+                 line_y,
+             );
+ 
+-            let rows = prepaint.marker_rows.get(line_index).filter(|rows| marker_source_matches && rows.iter().any(Option::is_some));
++            // Marker paint places rows left-aligned; a right-aligned line keeps
++            // its glyphs (its markers are raw).
++            let rows = prepaint.marker_rows.get(line_index).filter(|rows| marker_source_matches
++                && !line.is_right_aligned() && rows.iter().any(Option::is_some));
+             if let Some(rows) = rows {
+                 let line_rows = line.rows(&prepaint.last_layout.rows);
+                 for (row_index, row) in line.wrapped_lines.iter().enumerate() {
 diff --git a/crates/base/src/input/base/movement.rs b/crates/base/src/input/base/movement.rs
-index 345da147..cbcd7725 100644
+index 345da147..a1629082 100644
 --- a/crates/base/src/input/base/movement.rs
 +++ b/crates/base/src/input/base/movement.rs
 @@ -233,7 +233,15 @@ impl<M: InputModeKind> InputBaseState<M> {
@@ -34,7 +60,7 @@ index 345da147..cbcd7725 100644
 +                last,
 +                row,
 +                self.hang_room(),
-+                self.paragraph_direction,
++                &|line| self.paragraph_rtl_at(line),
 +                window,
 +            )?;
              let offset = current
@@ -44,7 +70,7 @@ index 345da147..cbcd7725 100644
              target_row,
              preferred,
              self.hang_room(),
-+            self.paragraph_direction,
++            &|line| self.paragraph_rtl_at(line),
              window,
          )?;
          let mut active = self.projection.active.clone();
@@ -52,7 +78,7 @@ index 345da147..cbcd7725 100644
              target.row,
              preferred,
              self.hang_room(),
-+            self.paragraph_direction,
++            &|line| self.paragraph_rtl_at(line),
              window,
          )?;
          active.anchor = SourceByte(resolved.0);
@@ -60,12 +86,12 @@ index 345da147..cbcd7725 100644
          wrap_row: usize,
          preferred: gpui::Pixels,
          hang_room: gpui::Pixels,
-+        paragraph_direction: bool,
++        rtl_at: &dyn Fn(usize) -> bool,
          window: &Window,
      ) -> Option<(usize, bool)> {
          let row = map.display_row_to_buffer_line(wrap_row);
 -        let (start, line) = Self::projected_line_layout(projection, map, last, row, hang_room, window)?;
-+        let (start, line) = Self::projected_line_layout(projection, map, last, row, hang_room, paragraph_direction, window)?;
++        let (start, line) = Self::projected_line_layout(projection, map, last, row, hang_room, rtl_at, window)?;
          let first_source =
              projection.to_source(super::projection::ProjectedByte(start), ConcealBias::Right)?;
          let first = map.offset_to_wrap_display_point(first_source.0);
@@ -73,18 +99,16 @@ index 345da147..cbcd7725 100644
          last: &super::layout::LastLayout,
          row: usize,
          hang_room: gpui::Pixels,
-+        paragraph_direction: bool,
++        rtl_at: &dyn Fn(usize) -> bool,
          window: &Window,
      ) -> Option<(usize, super::display_map::LineLayout)> {
          let displayed = ropey::Rope::from(projection.text());
-@@ -386,8 +398,13 @@ impl<M: InputModeKind> InputBaseState<M> {
+@@ -386,8 +398,11 @@ impl<M: InputModeKind> InputBaseState<M> {
              _ => gpui::px(0.),
          };
          let hang = if hang <= hang_room { hang } else { gpui::px(0.) };
-+        let align_right = (paragraph_direction
-+            && last.text_align == gpui::TextAlign::Left
-+            && crate::input::bidi_geometry::paragraph_is_rtl(&text))
-+            .then(|| last.wrap_width.unwrap_or(last.content_width));
++        let align_right = (last.text_align == gpui::TextAlign::Left && rtl_at(row))
++            .then(|| super::element::right_edge(last));
          let line = super::display_map::LineLayout::new()
              .first_row(map.buffer_line_to_display_row(row))
 +            .align_right(align_right)
@@ -92,27 +116,58 @@ index 345da147..cbcd7725 100644
          // Bidi rows place a marker by their own geometry; they never hang.
          let line = if line.has_bidi() { line } else { line.hang(hang) };
 diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
-index 1b49b038..9f85f583 100644
+index 1b49b038..99fa28e1 100644
 --- a/crates/base/src/input/base/state.rs
 +++ b/crates/base/src/input/base/state.rs
-@@ -327,6 +327,8 @@ pub struct InputBaseState<M: InputModeKind> {
+@@ -327,6 +327,10 @@ pub struct InputBaseState<M: InputModeKind> {
          std::cell::RefCell<Option<(SourceStamp, Vec<super::marker_paint::PaintedTask>)>>,
      /// Selection to record as "after" for the next edit, so redo restores it.
      pending_selection_after: Option<Selection>,
 +    /// Right-align right-to-left paragraphs by their first strong character.
 +    pub(super) paragraph_direction: bool,
++    /// Buffer line ranges that keep one alignment (code blocks, tables).
++    direction_exempt: Vec<std::ops::Range<usize>>,
      exact_clipboard: ClipboardSession,
      document_newlines: bool,
      projection_mouse_hold: bool,
-@@ -686,6 +688,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+@@ -686,6 +690,8 @@ impl<M: InputModeKind> InputBaseState<M> {
              marker_source_cache: Default::default(),
              painted_tasks: Default::default(),
              pending_selection_after: None,
 +            paragraph_direction: false,
++            direction_exempt: Vec::new(),
              exact_clipboard: ClipboardSession::default(),
              document_newlines: false,
              projection_mouse_hold: false,
-@@ -7407,6 +7410,15 @@ impl InputBaseState<crate::input::EditorMode> {
+@@ -870,6 +876,27 @@ impl<M: InputModeKind> InputBaseState<M> {
+         self.projected_editor_style = style;
+     }
+ 
++    /// Buffer line ranges that keep one alignment even with
++    /// [`Self::paragraph_direction`]: a code block or a table must not move
++    /// line by line. Sorted, not overlapping; the app updates them on edit.
++    pub fn set_direction_exempt_lines(&mut self, lines: Vec<std::ops::Range<usize>>) {
++        self.direction_exempt = lines;
++    }
++
++    /// Whether buffer `line` is laid out right-to-left: a paragraph whose
++    /// first strong character, in its source text, is right-to-left. The
++    /// source decides, so revealing concealed text never moves the line.
++    pub(super) fn paragraph_rtl_at(&self, line: usize) -> bool {
++        if !self.paragraph_direction || line >= self.text.lines_len() {
++            return false;
++        }
++        let exempt = self.direction_exempt.partition_point(|r| r.end <= line);
++        if self.direction_exempt.get(exempt).is_some_and(|r| r.start <= line) {
++            return false;
++        }
++        crate::input::bidi_geometry::paragraph_is_rtl(&self.text.slice_line(line).to_string())
++    }
++
+     /// Room left of the text for a hanging prefix: the empty space from the
+     /// editor's edge to the text, less a little air so a marker never touches
+     /// the edge. None beside line numbers.
+@@ -7407,6 +7434,15 @@ impl InputBaseState<crate::input::EditorMode> {
          true
      }
  
@@ -175,7 +230,7 @@ index 0f04a5da..6dad3818 100644
      use gpui::px;
  
 diff --git a/crates/base/src/input/editor/display_map/text_wrapper.rs b/crates/base/src/input/editor/display_map/text_wrapper.rs
-index 0d3b6d27..4a5cf0a1 100644
+index 0d3b6d27..51d7450f 100644
 --- a/crates/base/src/input/editor/display_map/text_wrapper.rs
 +++ b/crates/base/src/input/editor/display_map/text_wrapper.rs
 @@ -621,6 +621,9 @@ pub(crate) struct LineLayout {
@@ -196,7 +251,7 @@ index 0d3b6d27..4a5cf0a1 100644
              whitespace_chars: Vec::new(),
              whitespace_indicators: None,
              has_background: false,
-@@ -679,6 +683,43 @@ impl LineLayout {
+@@ -679,6 +683,47 @@ impl LineLayout {
          self
      }
  
@@ -204,6 +259,10 @@ index 0d3b6d27..4a5cf0a1 100644
 +    pub(crate) fn align_right(mut self, edge: Option<Pixels>) -> Self {
 +        self.align_right = edge;
 +        self
++    }
++
++    pub(crate) fn is_right_aligned(&self) -> bool {
++        self.align_right.is_some()
 +    }
 +
 +    /// Where row `ix` starts, relative to the line origin, when painted with
@@ -240,7 +299,7 @@ index 0d3b6d27..4a5cf0a1 100644
      /// The pixel indent applied to the given visual line, relative to the line's
      /// leading text. Continuation lines (index > 0) are indented; the first row
      /// moves left by its hanging prefix.
-@@ -762,8 +803,6 @@ impl LineLayout {
+@@ -762,8 +807,6 @@ impl LineLayout {
          let mut acc_len = 0;
          let rows = self.rows(&last_layout.rows);
  
@@ -249,7 +308,7 @@ index 0d3b6d27..4a5cf0a1 100644
          for (i, line) in self.wrapped_lines.iter().enumerate() {
              let is_last = i + 1 == self.wrapped_lines.len();
  
-@@ -785,8 +824,7 @@ impl LineLayout {
+@@ -785,8 +828,7 @@ impl LineLayout {
                          map.position(Caret { index: local, affinity: if affinity == Affinity::Before {
                              Affinity::After } else { Affinity::Before } }))
                  }).unwrap_or_else(|| line.x_for_index(local))
@@ -259,7 +318,7 @@ index 0d3b6d27..4a5cf0a1 100644
                  return Some(point(x, rows.row_top(i)));
              }
  
-@@ -809,13 +847,12 @@ impl LineLayout {
+@@ -809,13 +851,12 @@ impl LineLayout {
      ) -> Option<(usize, usize, Pixels)> {
          let mut offset = 0;
          let rows = self.rows(&last_layout.rows);
@@ -274,7 +333,7 @@ index 0d3b6d27..4a5cf0a1 100644
              }
  
              offset += line.len;
-@@ -942,7 +979,7 @@ impl LineLayout {
+@@ -942,7 +983,7 @@ impl LineLayout {
                  let local = range.start.saturating_sub(start)..range.end.min(end)-start;
                  let spans = if let Some(map) = &self.bidi[i] { map.selection(local) }
                      else { vec![line.x_for_index(local.start)..line.x_for_index(local.end)] };
@@ -283,7 +342,7 @@ index 0d3b6d27..4a5cf0a1 100644
                  for span in spans {
                      result.push(gpui::Bounds::new(point(x + span.start, self.rows(&last.rows).row_top(i)),
                          size(span.end - span.start, self.rows(&last.rows).row_height(i))));
-@@ -1004,8 +1041,9 @@ impl LineLayout {
+@@ -1004,8 +1045,9 @@ impl LineLayout {
          }
  
          for (ix, line) in self.wrapped_lines.iter().enumerate() {
@@ -294,7 +353,7 @@ index 0d3b6d27..4a5cf0a1 100644
                  rows.row_height(ix),
                  text_align,
                  align_width,
-@@ -1026,8 +1064,9 @@ impl LineLayout {
+@@ -1026,8 +1068,9 @@ impl LineLayout {
      ) {
          let rows = self.rows(rows);
          for (ix, line) in self.wrapped_lines.iter().enumerate() {
@@ -305,7 +364,7 @@ index 0d3b6d27..4a5cf0a1 100644
                  rows.row_height(ix),
                  text_align,
                  align_width,
-@@ -1046,7 +1085,7 @@ impl LineLayout {
+@@ -1046,7 +1089,7 @@ impl LineLayout {
                  };
  
                  let origin = point(
