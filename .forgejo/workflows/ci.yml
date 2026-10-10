@@ -298,6 +298,31 @@ jobs:
 
   # This job preserves the required Forgejo `ci / macos` status. Only the
   # exact-head result from exactly one executed lane passes; no failure fallback.
+  # #1110 / AGENTS 9a: the first-run Reader tests on native Windows, every
+  # code PR (same scope as macOS; drafts wait like macOS).
+  windows-github:
+    needs: native-scope
+    if: >-
+      github.event_name == 'pull_request' &&
+      needs.native-scope.outputs.macos == 'true' &&
+      !github.event.pull_request.draft &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: bridge
+    timeout-minutes: 120
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - name: Run the exact PR head's first-run tests on GitHub Windows
+        env:
+          MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_LANE: native-shell
+        run: python3 scripts/ci/github-pr.py
+
   macos:
     needs: [linux, native-scope, macos-github, macos-local]
     if: always() && github.event_name == 'pull_request'
@@ -346,7 +371,7 @@ jobs:
   # Keep the existing protected-branch context. Skipped/cancelled/failed native
   # jobs never pass a code PR; docs-only PRs and main retain Linux-only CI here.
   check:
-    needs: [linux, native-scope, macos]
+    needs: [linux, native-scope, macos, windows-github]
     if: always()
     runs-on: bridge
     timeout-minutes: 2
@@ -357,12 +382,15 @@ jobs:
           LINUX_RESULT: ${{ needs.linux.result }}
           MACOS_REQUIRED: ${{ needs.native-scope.outputs.macos }}
           MACOS_RESULT: ${{ needs.macos.result }}
+          WINDOWS_RESULT: ${{ needs.windows-github.result }}
         run: |
           set -euo pipefail
           test "$LINUX_RESULT" = success
           if [ "$EVENT" = pull_request ]; then
             case "$MACOS_REQUIRED" in
-              true) test "$MACOS_RESULT" = success ;;
+              true)
+                test "$MACOS_RESULT" = success
+                test "$WINDOWS_RESULT" = success ;;
               false) echo "Documentation-only PR: native runner not needed" ;;
               *) echo "Missing native scope result" >&2; exit 1 ;;
             esac
