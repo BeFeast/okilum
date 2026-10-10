@@ -121,9 +121,12 @@ rendered link is rewritten to the `v/` form.
 - **Links only navigate.** They open a vault, a note and a position. They never
   create, write, rename, delete, run a command, change settings, start search
   indexing in a new folder, or connect sync or Inbox.
-- **First use of a vault from a link needs confirmation** («Open vault
-  “Notes” at …?»). The same applies to a file outside every known vault.
-  Vaults already opened by the user open without asking.
+- **First use of a vault from a link needs confirmation**: «A link asks to
+  open vault “Notes”.» with its full path, Open and Cancel. Open is
+  remembered per vault (`link_trusted_vaults` in `reader-ui.json`), so only
+  the first link to a vault asks. A vault already open in a window opens
+  without asking: the link only moves within what is on screen. The same
+  confirmation will apply to a file outside every known vault.
 - Rejected outright, with a message: unknown hosts, internal hosts, relative
   or `..` paths, NUL or control characters, links over 4096 bytes, and
   non-`okilum` schemes passed as the argument.

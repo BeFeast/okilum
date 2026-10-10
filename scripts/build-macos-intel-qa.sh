@@ -51,6 +51,9 @@ p.write_bytes(plistlib.dumps(dict(CFBundleExecutable='okilum',
  CFBundlePackageType='APPL',CFBundleVersion=os.environ['OKILUM_BUILD_VERSION'],
  CFBundleShortVersionString=os.environ['OKILUM_RELEASE_VERSION'],
  LSMinimumSystemVersion='12.0',NSHighResolutionCapable=True,
+ # okilum: links (#1049) reach this app like the release build.
+ CFBundleURLTypes=[dict(CFBundleURLName='com.befeast.okilum.intel-qa.link',
+  CFBundleURLSchemes=['okilum'])],
  OkilumSourceCommit=os.environ['OKILUM_SOURCE_COMMIT'])))
 PY
 [[ $(lipo -archs "$APP/Contents/MacOS/okilum") == x86_64 ]]

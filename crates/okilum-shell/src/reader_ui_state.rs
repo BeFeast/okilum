@@ -132,6 +132,9 @@ struct Saved {
     /// Vaults whose colour does not tint the title bar (#1050); tinting is
     /// on by default whenever a colour is set.
     untinted_vaults: BTreeSet<PathBuf>,
+    /// Vaults the user agreed to open from an external `okilum:` link
+    /// (#1049): only the first link to a vault asks.
+    link_trusted_vaults: BTreeSet<PathBuf>,
     last_layout: Option<Layout>,
     frames: BTreeMap<String, window_state::Frame>,
     last_frame: Option<window_state::Frame>,
@@ -152,6 +155,7 @@ impl Default for Saved {
             vaults: Default::default(),
             vault_colors: Default::default(),
             untinted_vaults: Default::default(),
+            link_trusted_vaults: Default::default(),
             last_layout: None,
             frames: Default::default(),
             last_frame: None,
@@ -171,6 +175,7 @@ struct Store {
     toolbar_labels_changed: bool,
     code_soft_wrap_changed: bool,
     colors_changed: BTreeSet<PathBuf>,
+    trust_changed: BTreeSet<PathBuf>,
     delimited_changed: BTreeSet<PathBuf>,
     frames_changed: BTreeSet<String>,
     last_changed: bool,
@@ -243,6 +248,7 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         toolbar_labels_changed: false,
         code_soft_wrap_changed: false,
         colors_changed: Default::default(),
+        trust_changed: Default::default(),
         delimited_changed: Default::default(),
         frames_changed: Default::default(),
         last_changed: false,
@@ -371,6 +377,26 @@ pub(crate) fn set_title_tint(root: &Path, enabled: bool, cx: &mut App) {
     cx.refresh_windows();
 }
 
+/// The user agreed to open this vault from an external link (#1049).
+pub(crate) fn link_trusted(root: &Path, cx: &App) -> bool {
+    cx.try_global::<Store>()
+        .is_some_and(|state| state.saved.link_trusted_vaults.contains(root))
+}
+
+/// Remember that links may open this vault without asking again.
+pub(crate) fn trust_for_links(root: &Path, cx: &mut App) {
+    let Some(state) = cx.try_global::<Store>() else {
+        return;
+    };
+    if state.saved.link_trusted_vaults.contains(root) {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.link_trusted_vaults.insert(root.to_owned());
+    state.trust_changed.insert(root.to_owned());
+    schedule(cx);
+}
+
 /// Every window of this vault repaints with the new colour at once.
 pub(crate) fn set_vault_color(root: &Path, color: Option<brand::VaultColor>, cx: &mut App) {
     // Compare stored keys: «None» must also clear a preset this build
@@ -436,6 +462,7 @@ struct WriteJob {
     toolbar_labels_changed: bool,
     code_soft_wrap_changed: bool,
     colors_changed: BTreeSet<PathBuf>,
+    trust_changed: BTreeSet<PathBuf>,
     delimited_changed: BTreeSet<PathBuf>,
     serial: Arc<AtomicU64>,
     generation: u64,
@@ -450,6 +477,7 @@ impl WriteJob {
             .keys()
             .chain(self.saved.vault_colors.keys())
             .chain(self.saved.untinted_vaults.iter())
+            .chain(self.saved.link_trusted_vaults.iter())
         {
             anyhow::ensure!(
                 outside_vault(root, &self.path),
@@ -521,6 +549,13 @@ impl WriteJob {
                 latest.untinted_vaults.remove(root);
             }
         }
+        for root in &self.trust_changed {
+            if self.saved.link_trusted_vaults.contains(root) {
+                latest.link_trusted_vaults.insert(root.clone());
+            } else {
+                latest.link_trusted_vaults.remove(root);
+            }
+        }
         if self.last_changed {
             latest.last_layout = self.saved.last_layout.clone();
         }
@@ -560,6 +595,7 @@ fn job(cx: &App) -> Option<WriteJob> {
             && !state.toolbar_labels_changed
             && !state.code_soft_wrap_changed
             && state.colors_changed.is_empty()
+            && state.trust_changed.is_empty()
             && state.delimited_changed.is_empty()
             && !state.last_changed
             && !state.last_frame_changed)
@@ -582,6 +618,7 @@ fn job(cx: &App) -> Option<WriteJob> {
         toolbar_labels_changed: state.toolbar_labels_changed,
         code_soft_wrap_changed: state.code_soft_wrap_changed,
         colors_changed: state.colors_changed.clone(),
+        trust_changed: state.trust_changed.clone(),
         delimited_changed: state.delimited_changed.clone(),
         serial: state.serial.clone(),
         generation: state.serial.load(Ordering::SeqCst),
@@ -1163,6 +1200,7 @@ fn mark_saved(generation: u64, cx: &mut App) {
         state.toolbar_labels_changed = false;
         state.code_soft_wrap_changed = false;
         state.colors_changed.clear();
+        state.trust_changed.clear();
         state.delimited_changed.clear();
         state.last_changed = false;
         state.last_frame_changed = false;
@@ -1294,6 +1332,17 @@ mod tests {
             assert_eq!(title_tint(&root, cx), Some(brand::VaultColor::Pink));
             flush(cx);
             assert!(!read(&path).unwrap().untinted_vaults.contains(&root));
+            // #1049: a vault a link opened once is remembered; nothing is
+            // trusted before the user agrees.
+            assert!(
+                !link_trusted(&root, cx),
+                "positive control: not trusted yet"
+            );
+            trust_for_links(&root, cx);
+            flush(cx);
+            install(&directory, cx);
+            assert!(link_trusted(&root, cx));
+            assert!(read(&path).unwrap().link_trusted_vaults.contains(&root));
             // Positive control: a colour inside a vault is refused, like layouts.
             let inside = root.join("state");
             install(&inside, cx);
@@ -1429,6 +1478,7 @@ mod tests {
                 toolbar_labels_changed: false,
                 code_soft_wrap_changed: false,
                 colors_changed: Default::default(),
+                trust_changed: Default::default(),
                 delimited_changed: Default::default(),
                 frames_changed: Default::default(),
                 last_changed: false,

@@ -69,6 +69,11 @@ cat >"$APP/Contents/Info.plist" <<PLIST
   <key>LSHandlerRank</key><string>Alternate</string>
   <key>LSItemContentTypes</key><array><string>public.markdown</string><string>net.daringfireball.markdown</string></array>
 </dict></array>
+<key>CFBundleURLTypes</key>
+<array><dict>
+  <key>CFBundleURLName</key><string>$BUNDLE_ID.link</string>
+  <key>CFBundleURLSchemes</key><array><string>okilum</string></array>
+</dict></array>
 <key>UTImportedTypeDeclarations</key>
 <array><dict>
   <key>UTTypeIdentifier</key><string>public.markdown</string>
@@ -100,6 +105,7 @@ cat >"$APP/Contents/Info.plist" <<PLIST
 </dict></plist>
 PLIST
 plutil -lint "$APP/Contents/Info.plist"
+[[ $(plutil -extract CFBundleURLTypes.0.CFBundleURLSchemes.0 raw "$APP/Contents/Info.plist") == okilum ]]
 
 source scripts/updater/sign-bundle.sh
 source scripts/updater/make-dmg.sh
