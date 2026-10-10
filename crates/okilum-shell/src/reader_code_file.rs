@@ -164,6 +164,24 @@ fn editor(
     input
 }
 
+/// The context menu of text with no language server: Copy / Select All, plus
+/// Cut / Paste when editable (#1010). The builder runs inside the input's own
+/// update, so it must not read the input; Copy without a selection does nothing.
+pub(crate) fn text_menu(
+    menu: gpui_component::native_menu::NativeMenu,
+    editable: bool,
+) -> gpui_component::native_menu::NativeMenu {
+    use gpui_component::input::{Copy, Cut, Paste, SelectAll};
+    let menu = if editable {
+        menu.menu("Cut", Box::new(Cut))
+            .menu("Copy", Box::new(Copy))
+            .menu("Paste", Box::new(Paste))
+    } else {
+        menu.menu("Copy", Box::new(Copy))
+    };
+    menu.separator().menu("Select All", Box::new(SelectAll))
+}
+
 /// Code text size: the editor's 13 px scaled with the reading text size.
 pub(crate) fn text_size(cx: &App) -> Pixels {
     px(13. * reader_ui_state::font_size(cx) / BODY_FONT_SIZE)
@@ -243,15 +261,7 @@ impl Render for CodePreview {
                 // The element applies its own flag to the state on every render.
                 Editor::new(input)
                     .readonly(true)
-                    // Read-only text: no language-server or editing items (#1010).
-                    // The builder runs inside the input's own update, so it must
-                    // not read the input; Copy without a selection does nothing.
-                    .context_menu(|menu, _, _| {
-                        use gpui_component::input::{Copy, SelectAll};
-                        menu.menu("Copy", Box::new(Copy))
-                            .separator()
-                            .menu("Select All", Box::new(SelectAll))
-                    })
+                    .context_menu(|menu, _, _| text_menu(menu, false))
                     .appearance(false)
                     .font_family(crate::source_presentation::CODE_FONT)
                     .text_size(text_size(cx))
