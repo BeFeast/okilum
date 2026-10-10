@@ -33,9 +33,37 @@ use windows_sys::Win32::{
     Storage::FileSystem::*,
     System::{
         SystemServices::{IO_REPARSE_TAG_CLOUD, IO_REPARSE_TAG_CLOUD_MASK},
-        WindowsProgramming::DRIVE_FIXED,
+        WindowsProgramming::{DRIVE_FIXED, DRIVE_REMOTE},
     },
 };
+
+/// A vault location Okilum does not save to on Windows. The text is shown to
+/// the reader as is (ui-rules №7), so it names what still works. #516 keeps
+/// network vaults read-only until SMB safe save exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnsupportedLocation {
+    Network,
+    NotLocalNtfs,
+}
+
+impl std::fmt::Display for UnsupportedLocation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Network => {
+                "This vault is on a network drive, so Okilum opens it read-only. \
+                 To edit a note, use ⋯ → Open with default app, or copy the vault \
+                 to a folder on this computer."
+            }
+            Self::NotLocalNtfs => {
+                "Okilum saves notes only on this computer's NTFS drives, so this \
+                 vault opens read-only. To edit a note, use ⋯ → Open with default \
+                 app, or copy the vault to a folder on this computer."
+            }
+        })
+    }
+}
+
+impl std::error::Error for UnsupportedLocation {}
 
 fn wide(path: &Path) -> Result<Vec<u16>> {
     let mut text: Vec<_> = path.as_os_str().encode_wide().collect();
@@ -170,10 +198,11 @@ impl Directory {
         let Some(Component::Prefix(prefix)) = components.next() else {
             bail!("Missing local drive");
         };
-        ensure!(
-            matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)),
-            "Network paths are outside the NTFS editing backend"
-        );
+        match prefix.kind() {
+            Prefix::Disk(_) | Prefix::VerbatimDisk(_) => {}
+            Prefix::UNC(..) | Prefix::VerbatimUNC(..) => bail!(UnsupportedLocation::Network),
+            _ => bail!(UnsupportedLocation::NotLocalNtfs),
+        }
         ensure!(
             matches!(components.next(), Some(Component::RootDir)),
             "Expected a drive root"
@@ -182,10 +211,11 @@ impl Directory {
         current.push(std::path::MAIN_SEPARATOR.to_string());
         let drive = wide(&current)?;
         // Reject mapped network drives too: SMB may report an NTFS volume name.
-        ensure!(
-            unsafe { GetDriveTypeW(drive.as_ptr()) } == DRIVE_FIXED,
-            "Editing requires a local fixed NTFS volume"
-        );
+        match unsafe { GetDriveTypeW(drive.as_ptr()) } {
+            DRIVE_FIXED => {}
+            DRIVE_REMOTE => bail!(UnsupportedLocation::Network),
+            _ => bail!(UnsupportedLocation::NotLocalNtfs),
+        }
         let mut ancestors = vec![Self::pin(&current)?];
         let mut filesystem = [0u16; 32];
         let ok = unsafe {
@@ -209,10 +239,9 @@ impl Directory {
             .iter()
             .position(|c| *c == 0)
             .unwrap_or(filesystem.len());
-        ensure!(
-            String::from_utf16_lossy(&filesystem[..end]).eq_ignore_ascii_case("NTFS"),
-            "Editing requires NTFS"
-        );
+        if !String::from_utf16_lossy(&filesystem[..end]).eq_ignore_ascii_case("NTFS") {
+            bail!(UnsupportedLocation::NotLocalNtfs);
+        }
         for component in components {
             let Component::Normal(name) = component else {
                 bail!("Invalid directory component");

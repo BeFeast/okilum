@@ -363,7 +363,10 @@ impl Reader {
         let store = match result {
             Ok(store) => store,
             Err(error) => {
-                self.link_notice = Some(format!("Cannot edit: {error:#}").into());
+                // A read-only location explains itself and what still works.
+                let notice =
+                    location_notice(&error).unwrap_or_else(|| format!("Cannot edit: {error:#}"));
+                self.link_notice = Some(notice.into());
                 cx.notify();
                 return;
             }
@@ -1524,6 +1527,18 @@ impl Reader {
         }
         result
     }
+}
+
+#[cfg(windows)]
+fn location_notice(error: &anyhow::Error) -> Option<String> {
+    error
+        .downcast_ref::<okilum_core::windows_files::UnsupportedLocation>()
+        .map(ToString::to_string)
+}
+
+#[cfg(not(windows))]
+fn location_notice(_: &anyhow::Error) -> Option<String> {
+    None
 }
 
 #[cfg(test)]
