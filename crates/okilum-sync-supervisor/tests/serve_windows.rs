@@ -478,6 +478,7 @@ mod glue {
 
         let (handle, scope) = start(&world);
         let distrust = WindowsConnector::new(Arc::new(Distrust));
+        let started = Instant::now();
         let found = discover_detailed(
             &world.store,
             &world.binding,
@@ -485,6 +486,11 @@ mod glue {
             Duration::from_secs(4),
         );
         assert!(matches!(found, Discovered::Unreachable(_)), "{found:?}");
+        assert!(
+            started.elapsed() < Duration::from_millis(1200),
+            "a failed verification was retried: {:?}",
+            started.elapsed()
+        );
         let Command::Stop(token) = arm_stop(&world, &scope) else {
             unreachable!()
         };
