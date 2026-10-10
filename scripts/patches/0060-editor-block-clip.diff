@@ -1,0 +1,73 @@
+diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
+index 6ce418e1..0c599ca7 100644
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -460,14 +460,17 @@ impl<M: InputModeKind> TextElement<M> {
+     /// Lay out and prepaint the visible rendered blocks at the text width.
+     /// A block whose height differs from its rows is remeasured: its height is
+     /// cached for the next frame's rows, and when it sits above the viewport
+-    /// the next frame scrolls by the difference (S7a, #936).
++    /// the next frame scrolls by the difference (S7a, #936). Each block comes
++    /// with the window rows it owns: until the next frame lays its rows out at
++    /// the measured height, it paints clipped to them, never over its
++    /// neighbours (#1075).
+     fn prepaint_blocks(
+         &self,
+         layout: &LastLayout,
+         bounds: &Bounds<Pixels>,
+         window: &mut Window,
+         cx: &mut App,
+-    ) -> (Vec<std::ops::Range<usize>>, Vec<AnyElement>) {
++    ) -> (Vec<std::ops::Range<usize>>, Vec<(AnyElement, Bounds<Pixels>)>) {
+         let state = self.state.read(cx);
+         let Some(renderer) = state.block_renderer.clone() else {
+             return (Vec::new(), Vec::new());
+@@ -507,9 +510,13 @@ impl<M: InputModeKind> TextElement<M> {
+                 let shift = if top < viewport_top { size.height - used } else { px(0.) };
+                 measured.push((block.key, size.height, shift));
+             }
+-            element.prepaint_at(bounds.origin + point(layout.line_number_width, top), window, cx);
++            let origin = bounds.origin + point(layout.line_number_width, top);
++            element.prepaint_at(origin, window, cx);
++            // Clip vertically only: a wide block may scroll sideways.
++            let far = px(1.0e5);
++            let clip = Bounds::new(point(origin.x - far, origin.y), size(far * 2., used));
+             lines.push(block.lines.clone());
+-            elements.push(element);
++            elements.push((element, clip));
+         }
+         if !measured.is_empty() {
+             self.state.update(cx, |state, _| {
+@@ -518,7 +525,9 @@ impl<M: InputModeKind> TextElement<M> {
+                     state.pending_block_scroll += shift;
+                 }
+             });
+-            window.refresh();
++            // `refresh` is a no-op while the window draws; without the next
++            // frame the rows kept the stale height until an unrelated repaint.
++            window.on_next_frame(|window, _| window.refresh());
+         }
+         (lines, elements)
+     }
+@@ -1790,7 +1799,7 @@ pub(super) struct PrepaintState {
+     /// Buffer lines drawn by a rendered block instead of their text, and the
+     /// blocks' prepainted elements (S7a, #936).
+     block_lines: Vec<std::ops::Range<usize>>,
+-    block_elements: Vec<AnyElement>,
++    block_elements: Vec<(AnyElement, Bounds<Pixels>)>,
+     marker_source: Option<std::sync::Arc<super::marker_paint::MarkerSource>>,
+     marker_rows: Vec<Vec<Option<super::marker_paint::RowPaint>>>,
+     code_rows: Vec<Vec<bool>>,
+@@ -2775,8 +2784,10 @@ impl<M: InputModeKind> Element for TextElement<M> {
+                 }
+             }
+         }
+-        for element in &mut prepaint.block_elements {
+-            element.paint(window, cx);
++        for (element, clip) in &mut prepaint.block_elements {
++            window.with_content_mask(Some(gpui::ContentMask { bounds: *clip }), |window| {
++                element.paint(window, cx)
++            });
+         }
+ 
+         // Clicks toggle exactly the task boxes drawn here (S5, #1034).
