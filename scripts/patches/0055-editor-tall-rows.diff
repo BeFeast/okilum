@@ -1,0 +1,627 @@
+diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
+index ccd5f88f..c54586e2 100644
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -757,8 +757,8 @@ impl<M: InputModeKind> TextElement<M> {
+                 });
+ 
+                 // Split the selection into multiple items
+-                let wrapped_lines =
+-                    last_layout.rows.row_end_at(end.y) - last_layout.rows.row_end_at(start.y);
++                let line_rows = line.rows(&last_layout.rows);
++                let wrapped_lines = line_rows.row_end_at(end.y) - line_rows.row_end_at(start.y);
+ 
+                 let mut end_x = end.x;
+                 if wrapped_lines > 0 {
+@@ -1252,7 +1252,7 @@ impl<M: InputModeKind> TextElement<M> {
+                     });
+                 }
+ 
+-                offset_y += last_layout.rows.rows_height(line.wrapped_lines.len());
++                offset_y += line.rows(&last_layout.rows).rows_height(line.wrapped_lines.len());
+             }
+ 
+             infos
+@@ -1486,6 +1486,7 @@ impl<M: InputModeKind> TextElement<M> {
+             };
+ 
+             let line_layout = LineLayout::new()
++                .first_row(state.display_map.buffer_line_to_display_row(buffer_line))
+                 .lines(wrapped_lines)
+                 .wrap_indent(wrap_indent)
+                 .with_background(line_has_background)
+@@ -2401,13 +2402,17 @@ impl<M: InputModeKind> Element for TextElement<M> {
+             offset_y += invisible_top_padding;
+ 
+             // Each item is the normal lines.
+-            for (lines, &buffer_line) in line_numbers
++            for (line_index, (lines, &buffer_line)) in line_numbers
+                 .iter()
+                 .zip(prepaint.last_layout.visible_buffer_lines.iter())
++                .enumerate()
+             {
+                 let is_active = prepaint.current_row == Some(buffer_line);
+                 let p = point(input_bounds.origin.x, origin.y + offset_y);
+-                let height = prepaint.last_layout.rows.rows_height(lines.len());
++                let height = match prepaint.last_layout.lines.get(line_index) {
++                    Some(line) => line.rows(&prepaint.last_layout.rows).rows_height(lines.len()),
++                    None => prepaint.last_layout.rows.rows_height(lines.len()),
++                };
+                 // Paint the current line background
+                 if is_active {
+                     if let Some(bg_color) = active_line_color {
+@@ -2452,14 +2457,15 @@ impl<M: InputModeKind> Element for TextElement<M> {
+ 
+             // Code block rows (#868): a quiet background under selection and text.
+             if let Some(rows) = prepaint.code_rows.get(line_index).filter(|_| marker_source_matches) {
++                let line_rows = line.rows(&prepaint.last_layout.rows);
+                 for (row_index, inside) in rows.iter().enumerate() {
+                     if *inside {
+                         window.paint_quad(fill(
+                             Bounds::new(
+-                                p + point(px(0.), prepaint.last_layout.rows.row_top(row_index)),
++                                p + point(px(0.), line_rows.row_top(row_index)),
+                                 size(
+                                     prepaint.last_layout.content_width,
+-                                    prepaint.last_layout.rows.row_height(row_index),
++                                    line_rows.row_height(row_index),
+                                 ),
+                             ),
+                             editor_style.foreground.opacity(0.05),
+@@ -2542,10 +2548,11 @@ impl<M: InputModeKind> Element for TextElement<M> {
+ 
+             let rows = prepaint.marker_rows.get(line_index).filter(|rows| marker_source_matches && rows.iter().any(Option::is_some));
+             if let Some(rows) = rows {
++                let line_rows = line.rows(&prepaint.last_layout.rows);
+                 for (row_index, row) in line.wrapped_lines.iter().enumerate() {
+                     let indent = if row_index == 0 { px(0.) } else { line.wrap_indent };
+-                    let row_top = prepaint.last_layout.rows.row_top(row_index);
+-                    let row_height = prepaint.last_layout.rows.row_height(row_index);
++                    let row_top = line_rows.row_top(row_index);
++                    let row_height = line_rows.row_height(row_index);
+                     let row_origin = p + point(indent, row_top);
+                     if let Some(Some(paint)) = rows.get(row_index) {
+                         paint.paint(row_origin, row_height, prepaint.last_layout.content_width - indent,
+@@ -2622,14 +2629,18 @@ impl<M: InputModeKind> Element for TextElement<M> {
+             window.paint_quad(fill(gutter_bounds, gutter_bg));
+ 
+             // Each item is the normal lines.
+-            for (lines, &buffer_line) in line_numbers
++            for (line_index, (lines, &buffer_line)) in line_numbers
+                 .iter()
+                 .zip(prepaint.last_layout.visible_buffer_lines.iter())
++                .enumerate()
+             {
+                 let p = point(input_bounds.origin.x, origin.y + offset_y);
+                 let is_active = prepaint.current_row == Some(buffer_line);
+ 
+-                let height = prepaint.last_layout.rows.rows_height(lines.len());
++                let height = match prepaint.last_layout.lines.get(line_index) {
++                    Some(line) => line.rows(&prepaint.last_layout.rows).rows_height(lines.len()),
++                    None => prepaint.last_layout.rows.rows_height(lines.len()),
++                };
+                 // paint active line number background
+                 if is_active {
+                     if let Some(bg_color) = active_line_color {
+diff --git a/crates/base/src/input/base/layout.rs b/crates/base/src/input/base/layout.rs
+index db5faf12..aa722953 100644
+--- a/crates/base/src/input/base/layout.rs
++++ b/crates/base/src/input/base/layout.rs
+@@ -11,52 +11,196 @@ pub(crate) struct WhitespaceIndicators {
+     pub(crate) tab: ShapedLine,
+ }
+ 
+-/// One source of truth for row geometry (S6a, #1034): where a display or wrap
+-/// row starts, how tall rows are, and which row holds a y. Every row is
+-/// `line_height` tall today, so callers never compute `row * line_height`.
+-/// Callers pass two kinds of row: absolute display rows (visible range,
+-/// scrolling) and wrap rows counted from 0 inside one buffer line
+-/// (`LineLayout` size, paint, caret). Per-row heights (S6b) need the second
+-/// kind offset by the line's first display row.
+-#[derive(Clone, Copy, Debug, PartialEq)]
++/// One source of truth for row geometry (S6a/S6b, #1034): where a display row
++/// starts, how tall it is, and which row holds a y. Rows are `line_height` tall
++/// unless listed as tall rows (headings), so callers never compute
++/// `row * line_height`.
++///
++/// Rows here are absolute display rows. Wrap rows counted from 0 inside one
++/// buffer line go through [`LineRows`], which offsets them by the line's first
++/// display row.
++#[derive(Clone, Debug, PartialEq)]
+ pub(crate) struct RowMetrics {
+     line_height: Pixels,
++    /// Rows taller than `line_height`, sorted by row, without duplicates.
++    tall: Rc<[TallRow]>,
++}
++
++#[derive(Clone, Copy, Debug, PartialEq)]
++struct TallRow {
++    row: usize,
++    /// Height above `line_height`.
++    extra: Pixels,
++    /// Sum of `extra` over this row and every tall row before it.
++    extra_through: Pixels,
+ }
+ 
+ impl RowMetrics {
+     pub(crate) fn uniform(line_height: Pixels) -> Self {
+-        Self { line_height }
++        Self {
++            line_height,
++            tall: Rc::from([]),
++        }
++    }
++
++    /// Rows with their own height. Heights at or below `line_height` are
++    /// ignored; a repeated row keeps its last height.
++    pub(crate) fn with_heights(
++        line_height: Pixels,
++        heights: impl IntoIterator<Item = (usize, Pixels)>,
++    ) -> Self {
++        let mut rows: Vec<(usize, Pixels)> = heights
++            .into_iter()
++            .filter(|(_, h)| *h > line_height)
++            .collect();
++        rows.sort_by_key(|(row, _)| *row);
++        rows.dedup_by(|later, earlier| {
++            let same = later.0 == earlier.0;
++            if same {
++                earlier.1 = later.1;
++            }
++            same
++        });
++        let mut extra_through = px(0.);
++        let tall = rows
++            .into_iter()
++            .map(|(row, height)| {
++                let extra = height - line_height;
++                extra_through += extra;
++                TallRow {
++                    row,
++                    extra,
++                    extra_through,
++                }
++            })
++            .collect();
++        Self { line_height, tall }
++    }
++
++    pub(crate) fn is_uniform(&self) -> bool {
++        self.tall.is_empty()
++    }
++
++    /// Sum of the extra height of tall rows before `row`.
++    fn extra_before(&self, row: usize) -> Pixels {
++        let ix = self.tall.partition_point(|t| t.row < row);
++        if ix == 0 {
++            px(0.)
++        } else {
++            self.tall[ix - 1].extra_through
++        }
+     }
+ 
+     /// Content y of the top of `row`.
+     pub(crate) fn row_top(&self, row: usize) -> Pixels {
+-        self.line_height * row
++        self.line_height * row + self.extra_before(row)
+     }
+ 
+     /// The height of `row`.
+-    pub(crate) fn row_height(&self, _row: usize) -> Pixels {
+-        self.line_height
++    pub(crate) fn row_height(&self, row: usize) -> Pixels {
++        match self.tall.binary_search_by_key(&row, |t| t.row) {
++            Ok(ix) => self.line_height + self.tall[ix].extra,
++            Err(_) => self.line_height,
++        }
+     }
+ 
+     /// The height of the first `rows` rows.
+     pub(crate) fn rows_height(&self, rows: usize) -> Pixels {
+-        self.line_height * rows
++        self.row_top(rows)
+     }
+ 
+     /// The row that contains content y; rows above 0 clamp to 0.
+     pub(crate) fn row_at(&self, y: Pixels) -> usize {
+-        (f32::from(y.max(px(0.))) / f32::from(self.line_height)).floor() as usize
++        let y = y.max(px(0.));
++        let uniform = |from_row: usize, from_y: Pixels| {
++            from_row + (f32::from(y - from_y) / f32::from(self.line_height)).floor() as usize
++        };
++        // The last tall row that starts at or above y.
++        let ix = self.tall.partition_point(|t| self.row_top(t.row) <= y);
++        if ix == 0 {
++            return uniform(0, px(0.));
++        }
++        let tall = self.tall[ix - 1];
++        let bottom = self.row_top(tall.row) + self.line_height + tall.extra;
++        if y < bottom {
++            tall.row
++        } else {
++            uniform(tall.row + 1, bottom)
++        }
+     }
+ 
+     /// The end (exclusive) of the rows a range ending at `y` touches.
+     pub(crate) fn row_end_at(&self, y: Pixels) -> usize {
+-        (f32::from(y.max(px(0.))) / f32::from(self.line_height)).ceil() as usize
++        let row = self.row_at(y);
++        if y <= self.row_top(row) { row } else { row + 1 }
+     }
+ 
+-    /// How many whole rows fit in `height`.
++    /// How many whole `line_height` rows fit in `height`: the page step of
++    /// vertical movement, which counts rows rather than pixels.
+     pub(crate) fn rows_in(&self, height: Pixels) -> usize {
+         (f32::from(height.max(px(0.))) / f32::from(self.line_height)) as usize
+     }
++
++    /// The wrap rows of the buffer line whose first display row is `first`.
++    pub(crate) fn line(&self, first: usize) -> LineRows<'_> {
++        LineRows {
++            rows: self,
++            first,
++            top: self.row_top(first),
++        }
++    }
++}
++
++/// Row geometry of one buffer line, in wrap rows counted from 0 and y measured
++/// from the top of the line.
++#[derive(Clone, Copy)]
++pub(crate) struct LineRows<'a> {
++    rows: &'a RowMetrics,
++    first: usize,
++    top: Pixels,
++}
++
++impl LineRows<'_> {
++    /// Built from the line's own rows rather than as a difference of two
++    /// document tops, so uniform rows give exactly `row * line_height`.
++    pub(crate) fn row_top(&self, row: usize) -> Pixels {
++        let rows = self.rows;
++        rows.line_height * row
++            + (rows.extra_before(self.first + row) - rows.extra_before(self.first))
++    }
++
++    pub(crate) fn row_height(&self, row: usize) -> Pixels {
++        self.rows.row_height(self.first + row)
++    }
++
++    pub(crate) fn rows_height(&self, rows: usize) -> Pixels {
++        self.row_top(rows)
++    }
++
++    /// The wrap row holding y, in exact agreement with [`Self::row_top`]: the
++    /// document-space guess can land one row off when `top + y` rounds.
++    pub(crate) fn row_at(&self, y: Pixels) -> usize {
++        let y = y.max(px(0.));
++        if self.rows.is_uniform() {
++            return (f32::from(y) / f32::from(self.rows.line_height)).floor() as usize;
++        }
++        let mut row = self.rows.row_at(self.top + y).saturating_sub(self.first);
++        while row > 0 && self.row_top(row) > y {
++            row -= 1;
++        }
++        while self.row_top(row + 1) <= y {
++            row += 1;
++        }
++        row
++    }
++
++    pub(crate) fn row_end_at(&self, y: Pixels) -> usize {
++        if self.rows.is_uniform() {
++            return (f32::from(y.max(px(0.))) / f32::from(self.rows.line_height)).ceil() as usize;
++        }
++        let row = self.row_at(y);
++        if y <= self.row_top(row) { row } else { row + 1 }
++    }
+ }
+ 
+ #[cfg(test)]
+@@ -66,20 +210,130 @@ mod row_metrics_tests {
+     #[test]
+     fn uniform_rows_match_the_line_height_arithmetic_they_replace() {
+         let rows = RowMetrics::uniform(px(20.));
++        assert!(rows.is_uniform());
+         assert_eq!(rows.row_top(0), px(0.));
+         assert_eq!(rows.row_top(7), px(140.));
++        assert_eq!(rows.row_height(7), px(20.));
+         assert_eq!(rows.rows_height(3), px(60.));
+         assert_eq!(rows.row_at(px(-5.)), 0);
+         assert_eq!(rows.row_at(px(39.9)), 1);
+         assert_eq!(rows.row_at(px(40.)), 2);
++        assert_eq!(rows.row_end_at(px(-5.)), 0);
++        assert_eq!(rows.row_end_at(px(0.)), 0);
+         assert_eq!(rows.row_end_at(px(40.)), 2);
+         assert_eq!(rows.row_end_at(px(40.1)), 3);
+         assert_eq!(rows.rows_in(px(59.)), 2);
++        assert_eq!(rows.rows_in(px(-1.)), 0);
+         // Inverse: the top of a row maps back to it.
+         for row in 0..50 {
+             assert_eq!(rows.row_at(rows.row_top(row)), row);
+         }
+     }
++
++    #[test]
++    fn fractional_line_heights_round_trip() {
++        for line_height in [px(18.4), px(19.2), px(23.7)] {
++            let rows = RowMetrics::uniform(line_height);
++            for row in 0..2000 {
++                assert_eq!(
++                    rows.row_at(rows.row_top(row) + px(0.01)),
++                    row,
++                    "{line_height:?} row {row}"
++                );
++            }
++        }
++    }
++
++    #[test]
++    fn tall_rows_shift_every_row_below_them() {
++        // Rows 2 and 5 are 36 and 30 px tall; the rest 20.
++        let rows = RowMetrics::with_heights(
++            px(20.),
++            [(5, px(30.)), (2, px(36.)), (7, px(12.)), (2, px(36.))],
++        );
++        assert!(!rows.is_uniform());
++        let tops = [0., 20., 40., 76., 96., 116., 146., 166.];
++        for (row, top) in tops.iter().enumerate() {
++            assert_eq!(rows.row_top(row), px(*top), "row {row}");
++        }
++        assert_eq!(rows.row_height(2), px(36.));
++        assert_eq!(rows.row_height(5), px(30.));
++        assert_eq!(rows.row_height(7), px(20.), "short heights are ignored");
++        assert_eq!(rows.rows_height(8), px(166.) + px(20.));
++
++        assert_eq!(rows.row_at(px(39.9)), 1);
++        assert_eq!(rows.row_at(px(40.)), 2);
++        assert_eq!(rows.row_at(px(75.9)), 2);
++        assert_eq!(rows.row_at(px(76.)), 3);
++        assert_eq!(rows.row_at(px(145.9)), 5);
++        assert_eq!(rows.row_at(px(146.)), 6);
++        assert_eq!(rows.row_at(px(1000.)), 6 + ((1000. - 146.) / 20.) as usize);
++        assert_eq!(rows.row_end_at(px(76.)), 3);
++        assert_eq!(rows.row_end_at(px(76.5)), 4);
++        for row in 0..40 {
++            assert_eq!(rows.row_at(rows.row_top(row)), row, "row {row}");
++            let bottom = rows.row_top(row) + rows.row_height(row);
++            assert_eq!(rows.row_at(bottom - px(0.01)), row, "row {row} bottom");
++        }
++    }
++
++    #[test]
++    fn line_rows_count_from_the_line_top() {
++        // A heading that wraps to display rows 3 and 4, both 36 px tall.
++        let rows = RowMetrics::with_heights(px(20.), [(3, px(36.)), (4, px(36.))]);
++        let heading = rows.line(3);
++        assert_eq!(heading.row_top(0), px(0.));
++        assert_eq!(heading.row_top(1), px(36.));
++        assert_eq!(heading.row_height(1), px(36.));
++        assert_eq!(heading.rows_height(2), px(72.));
++        assert_eq!(heading.row_at(px(-3.)), 0);
++        assert_eq!(heading.row_at(px(35.9)), 0);
++        assert_eq!(heading.row_at(px(36.)), 1);
++        assert_eq!(heading.row_end_at(px(36.)), 1);
++        assert_eq!(heading.row_end_at(px(37.)), 2);
++        // A plain line below the heading: local rows are line_height tall.
++        let body = rows.line(5);
++        assert_eq!(body.row_top(2), px(40.));
++        assert_eq!(body.rows_height(1), px(20.));
++        // Uniform rows give the same answer for any first row.
++        let uniform = RowMetrics::uniform(px(20.));
++        assert_eq!(uniform.line(9).row_top(3), uniform.line(0).row_top(3));
++    }
++
++    #[test]
++    fn line_rows_far_down_the_document_match_the_line_local_arithmetic() {
++        for line_height in [px(18.4), px(20.02), px(23.7)] {
++            // Uniform rows: bit-identical to `row * line_height`, any first row.
++            let uniform = RowMetrics::uniform(line_height);
++            let tall = RowMetrics::with_heights(line_height, [(40, line_height * 2.)]);
++            for first in [0, 41, 999, 4_321, 12_345] {
++                let line = uniform.line(first);
++                for row in 0..6 {
++                    assert_eq!(line.row_top(row), line_height * row);
++                    assert_eq!(line.row_at(line_height * row), row);
++                }
++                // With a tall row above, a y exactly on a local row top still
++                // maps to that row, never the one above.
++                let line = tall.line(first);
++                for row in 0..6 {
++                    let top = line.row_top(row);
++                    assert_eq!(
++                        line.row_at(top),
++                        row,
++                        "{line_height:?} first {first} row {row}"
++                    );
++                    assert_eq!(
++                        line.row_end_at(top),
++                        row,
++                        "{line_height:?} first {first} row {row}"
++                    );
++                    let inside = top + line.row_height(row) * 0.5;
++                    assert_eq!(line.row_at(inside), row);
++                    assert_eq!(line.row_end_at(inside), row + 1);
++                }
++            }
++        }
++    }
+ }
+ 
+ #[derive(Clone)]
+diff --git a/crates/base/src/input/base/movement.rs b/crates/base/src/input/base/movement.rs
+index 67b60282..2557dcee 100644
+--- a/crates/base/src/input/base/movement.rs
++++ b/crates/base/src/input/base/movement.rs
+@@ -77,7 +77,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+             return;
+         };
+         let hit = if let Some(right) = pending.edge { line.visual_edge(right) } else {
+-            line.closest_caret_for_position(Point { x: pending.preferred.0, y: last.rows.row_top(target.local_row) }, last)
++            line.closest_caret_for_position(Point { x: pending.preferred.0, y: line.rows(&last.rows).row_top(target.local_row) }, last)
+         };
+         let Some((index, affinity, bidi_affinity)) = hit else {
+             return;
+@@ -333,7 +333,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+         let (index, affinity) = line.closest_index_for_position(
+             Point {
+                 x: preferred,
+-                y: last.rows.row_top(wrap_row.saturating_sub(first.row)),
++                y: line.rows(&last.rows).row_top(wrap_row.saturating_sub(first.row)),
+             },
+             last,
+         )?;
+@@ -375,7 +375,9 @@ impl<M: InputModeKind> InputBaseState<M> {
+                 None,
+             ));
+         }
+-        let line = super::display_map::LineLayout::new().lines(shaped);
++        let line = super::display_map::LineLayout::new()
++            .first_row(map.buffer_line_to_display_row(row))
++            .lines(shaped);
+         Some((start, line))
+     }
+ 
+@@ -463,7 +465,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+                 if let Some((x, line_end_affinity, bidi_affinity)) = line.closest_caret_for_position(
+                     Point {
+                         x: preferred_x,
+-                        y: last_layout.rows.row_top(next_display_point.local_row),
++                        y: line.rows(&last_layout.rows).row_top(next_display_point.local_row),
+                     },
+                     last_layout,
+                 ) {
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+index 62d0ed03..66db03ac 100644
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -927,7 +927,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+             let prev_lines_offset = last_layout.visible_line_byte_offsets[vi];
+             let local_offset = offset.saturating_sub(prev_lines_offset);
+             if let Some(pos) = line.position_for_index(local_offset, last_layout, false) {
+-                let sub_line_index = last_layout.rows.row_at(pos.y);
++                let sub_line_index = line.rows(&last_layout.rows).row_at(pos.y);
+                 let adjusted_pos = point(pos.x + last_layout.line_number_width, pos.y + y_offset);
+                 return (vi, sub_line_index, Some(adjusted_pos));
+             }
+diff --git a/crates/base/src/input/editor/display_map/text_wrapper.rs b/crates/base/src/input/editor/display_map/text_wrapper.rs
+index 223ae195..000f511e 100644
+--- a/crates/base/src/input/editor/display_map/text_wrapper.rs
++++ b/crates/base/src/input/editor/display_map/text_wrapper.rs
+@@ -1,5 +1,5 @@
+ use crate::input::bidi_geometry::{Affinity, Caret, Geometry};
+-use crate::input::layout::RowMetrics;
++use crate::input::layout::{LineRows, RowMetrics};
+ use crate::input::attribution::{self, Identity as TraceIdentity, Span as TraceSpan};
+ use gpui::Half;
+ use std::borrow::Cow;
+@@ -605,6 +605,9 @@ pub(crate) struct LineLayout {
+     /// can skip the glyph walk for the common case of a line without highlights.
+     has_background: bool,
+     bidi: Vec<Option<Geometry>>,
++    /// The display row of the first wrapped line; row geometry is looked up
++    /// from here (S6b, #1034).
++    first_row: usize,
+ }
+ 
+ impl LineLayout {
+@@ -618,9 +621,21 @@ impl LineLayout {
+             whitespace_indicators: None,
+             has_background: false,
+             bidi: Vec::new(),
++            first_row: 0,
+         }
+     }
+ 
++    /// Set the display row of the first wrapped line.
++    pub(crate) fn first_row(mut self, first_row: usize) -> Self {
++        self.first_row = first_row;
++        self
++    }
++
++    /// The row geometry of this line's wrapped lines.
++    pub(crate) fn rows<'a>(&self, rows: &'a RowMetrics) -> LineRows<'a> {
++        rows.line(self.first_row)
++    }
++
+     /// Record whether any run of this line carries a background color.
+     pub(crate) fn with_background(mut self, has_background: bool) -> Self {
+         self.has_background = has_background;
+@@ -746,7 +761,7 @@ impl LineLayout {
+             // Always advance by actual line length. The last line gets +1 so the
+             // cursor can be placed after the final character.
+             acc_len += if is_last { line.len + 1 } else { line.len };
+-            offset_y += last_layout.rows.row_height(i);
++            offset_y += self.rows(&last_layout.rows).row_height(i);
+         }
+ 
+         None
+@@ -766,7 +781,7 @@ impl LineLayout {
+         let x_offset = last_layout.alignment_offset(self.longest_width);
+ 
+         for (i, line) in self.wrapped_lines.iter().enumerate() {
+-            let line_bottom = line_top + last_layout.rows.row_height(i);
++            let line_bottom = line_top + self.rows(&last_layout.rows).row_height(i);
+             if pos.y >= line_top && pos.y < line_bottom {
+                 return Some((i, offset, pos.x - x_offset - self.line_indent(i)));
+             }
+@@ -898,8 +913,8 @@ impl LineLayout {
+                     else { vec![line.x_for_index(local.start)..line.x_for_index(local.end)] };
+                 let x = last.alignment_offset(self.longest_width) + self.line_indent(i);
+                 for span in spans {
+-                    result.push(gpui::Bounds::new(point(x + span.start, last.rows.row_top(i)),
+-                        size(span.end - span.start, last.rows.row_height(i))));
++                    result.push(gpui::Bounds::new(point(x + span.start, self.rows(&last.rows).row_top(i)),
++                        size(span.end - span.start, self.rows(&last.rows).row_height(i))));
+                 }
+             }
+             start = end;
+@@ -907,7 +922,7 @@ impl LineLayout {
+         if range.start <= self.len && range.end > self.len {
+             if let Some(pos) = self.position_for_caret(self.len, last, true, Affinity::After) {
+                 let last_row = self.wrapped_lines.len().saturating_sub(1);
+-                result.push(gpui::Bounds::new(pos, size(px(6.), last.rows.row_height(last_row))));
++                result.push(gpui::Bounds::new(pos, size(px(6.), self.rows(&last.rows).row_height(last_row))));
+             }
+         }
+         result
+@@ -934,7 +949,7 @@ impl LineLayout {
+             .map(|(ix, line)| line.width + self.line_indent(ix))
+             .max()
+             .unwrap_or(self.longest_width);
+-        size(width, rows.rows_height(self.wrapped_lines.len()))
++        size(width, self.rows(rows).rows_height(self.wrapped_lines.len()))
+     }
+ 
+     /// Paint only the glyph background quads of this line.
+@@ -950,6 +965,7 @@ impl LineLayout {
+         window: &mut Window,
+         cx: &mut App,
+     ) {
++        let rows = self.rows(rows);
+         // Painting a background walks every glyph and pushes a scene layer, so skip the
+         // whole pass for lines that have no background color to paint.
+         if !self.has_background {
+@@ -977,6 +993,7 @@ impl LineLayout {
+         window: &mut Window,
+         cx: &mut App,
+     ) {
++        let rows = self.rows(rows);
+         for (ix, line) in self.wrapped_lines.iter().enumerate() {
+             _ = line.paint(
+                 pos + point(self.line_indent(ix), rows.row_top(ix)),
+diff --git a/crates/base/src/input/editor/indent.rs b/crates/base/src/input/editor/indent.rs
+index 58028063..86083ad5 100644
+--- a/crates/base/src/input/editor/indent.rs
++++ b/crates/base/src/input/editor/indent.rs
+@@ -153,7 +153,7 @@ impl<M: InputModeKind> TextElement<M> {
+                 current_indents = last_indents.clone();
+             }
+ 
+-            offset_y += last_layout.rows.rows_height(line_layout.wrapped_lines.len());
++            offset_y += line_layout.rows(&last_layout.rows).rows_height(line_layout.wrapped_lines.len());
+             last_indents = current_indents;
+         }
+ 
