@@ -220,6 +220,10 @@ impl AsRawHandle for PrivatePipe {
 /// Connected client primitive, not a deadline-bounded Transport. The caller must
 /// obtain scope and the expected process through authenticated discovery/launch.
 /// No wire bytes are sent until both the descriptor and captured peer pass.
+/// Context of the error from opening the pipe, before anything is verified. A caller
+/// that retries only for "the pipe is not there right now" matches on it.
+pub const OPEN_CONTEXT: &str = "CreateFileW(private pipe client)";
+
 pub struct PrivateClient {
     handle: OwnedHandle,
     // Retain the verified process object for the entire connection lifetime.
@@ -274,7 +278,7 @@ impl PrivateClient {
                 None,
             )
         }
-        .context("CreateFileW(private pipe client)")?;
+        .context(OPEN_CONTEXT)?;
         Ok(unsafe { OwnedHandle::from_raw_handle(raw.0) })
     }
     pub fn verify(&self) -> Result<()> {

@@ -175,13 +175,15 @@ pub use win::WindowsConnector;
 mod win {
     use super::*;
     use crate::sidecar::supervisor::ipc::{
-        windows_discovery::ImagePolicy, windows_transport::WindowsTransport,
+        windows_discovery::ImagePolicy, windows_endpoint::OPEN_CONTEXT,
+        windows_transport::WindowsTransport,
     };
     use std::sync::Arc;
 
     /// Connect-then-verify over the supervisor's named pipe. The supervisor recreates
-    /// its single pipe instance between connections, so a refused attempt is retried
-    /// briefly (never past the deadline) before it counts as unreachable.
+    /// its single pipe instance between connections, so an attempt that could not even
+    /// open the pipe is retried briefly (never past the deadline); an attempt that
+    /// reached the pipe and failed verification is not.
     pub struct WindowsConnector {
         policy: Arc<dyn ImagePolicy + Send + Sync>,
         retry_for: Duration,
@@ -213,7 +215,14 @@ mod win {
                     deadline,
                 ) {
                     Ok(transport) => return Ok(transport),
-                    Err(error) if Instant::now() >= give_up => return Err(error),
+                    // Only "the pipe is not there / is busy right now" is worth another
+                    // try; a failed verification is final and must not cost latency.
+                    Err(error)
+                        if Instant::now() >= give_up
+                            || !format!("{error:#}").contains(OPEN_CONTEXT) =>
+                    {
+                        return Err(error)
+                    }
                     Err(_) => std::thread::sleep(Duration::from_millis(50)),
                 }
             }
