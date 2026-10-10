@@ -77,8 +77,8 @@ sudo pacman -Rns okilum     # the package
 - **Package files**, removed by pacman: `/usr/bin/okilum`,
   `/usr/share/applications/okilum.desktop`,
   `/usr/share/icons/hicolor/*/apps/okilum.*`, `/usr/share/licenses/okilum/`.
-  The package's `okilum.install` prints the same order on `pre_remove` and the
-  remaining folders on `post_remove`. pacman runs as root and cannot reach each
+  The package's `okilum.install` lists the remaining per-user folders on
+  `post_remove` (the binary is already gone by then). pacman runs as root and cannot reach each
   user's home, so it does not delete per-user data itself.
 - **Per user**, removed by `okilum --uninstall-data` (`--yes` skips the one
   confirmation):

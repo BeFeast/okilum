@@ -1,14 +1,7 @@
 # pacman install scriptlet (#974). pacman runs this as root and cannot reach
 # each user's home, so per-user data is removed by the user, not by pacman.
-
-pre_remove() {
-    cat <<'MSG'
-==> Okilum keeps your notes where they are. To also remove Okilum's own
-    settings, history, caches and search index for your user, run this
-    first (as yourself, not root), then remove the package again:
-        okilum --uninstall-data
-MSG
-}
+# The message only appears once the package is going: by then `okilum
+# --uninstall-data` is gone too, so it lists the folders instead.
 
 post_remove() {
     cat <<'MSG'
