@@ -15,9 +15,12 @@ SUPERVISOR_RELATIVE="Contents/MacOS/$SUPERVISOR_NAME"
 # `security find-identity` lists `"Developer ID Application: Name (TEAMID)"`; the hash or
 # the full name both select the line. A configured OKILUM_SIGNING_TEAM_ID must agree.
 supervisor_team_id() {
-    local identity="$1" derived configured="${OKILUM_SIGNING_TEAM_ID:-}"
-    derived="$(security find-identity -v -p codesigning | grep -F "$identity" \
-        | sed -En 's/.*\(([A-Z0-9]{10})\)"[[:space:]]*$/\1/p' | head -1)"
+    local identity="$1" listing derived configured="${OKILUM_SIGNING_TEAM_ID:-}"
+    # A failing `security` is an error. No matching line is not: `grep` exiting 1 must
+    # not abort this function under pipefail before the fallback below can run.
+    listing="$(security find-identity -v -p codesigning)"
+    derived="$(printf '%s\n' "$listing" | grep -F "$identity" \
+        | sed -En 's/.*\(([A-Z0-9]{10})\)"[[:space:]]*$/\1/p' | head -1 || true)"
     if [[ -n $derived && -n $configured && $derived != "$configured" ]]; then
         echo "OKILUM_SIGNING_TEAM_ID ($configured) differs from the signing identity's team ($derived)" >&2
         return 1
