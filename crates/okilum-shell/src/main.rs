@@ -3186,9 +3186,16 @@ impl Reader {
         match row.kind {
             EntryKind::Directory => {
                 self.toggle_tree_folder(row, window, cx);
-                // A folder with an index note opens it, like clicking the
-                // note (#1099); the chevron only toggles.
-                match reader_tree::folder_index(&row.path, &self.vault.entries) {
+                // Expanding a folder with an index note opens it, like
+                // clicking the note (#1099); the chevron only toggles.
+                // Collapsing never opens: revealing the index would expand
+                // the folder again.
+                let index = if row.expanded {
+                    reader_tree::FolderIndex::None
+                } else {
+                    reader_tree::folder_index(&row.path, &self.vault.entries)
+                };
+                match index {
                     reader_tree::FolderIndex::One(index) => {
                         if self.current_rel != index {
                             self.open_note(&index, None, window, cx);
@@ -8955,20 +8962,25 @@ mod document_link_landing_tests {
             assert_eq!(v.current_rel, "Areas/apertune/_index.md")
         });
 
-        // Enter on the focused folder behaves like the click: `_Index.md`.
-        let other = row(visual, "Areas/other");
-        view.update_in(visual, |v, window, cx| {
-            v.tree.cursor = Some(other.path.clone());
-            v.tree_key(TreeKey::Open, window, cx)
+        // Enter behaves like the click: collapsing only collapses ...
+        let enter = |visual: &mut gpui::VisualTestContext| {
+            view.update_in(visual, |v, window, cx| {
+                v.tree.cursor = Some("Areas/other".into());
+                v.tree_key(TreeKey::Open, window, cx)
+            });
+            visual.run_until_parked();
+        };
+        enter(visual);
+        assert!(!row(visual, "Areas/other").expanded, "Enter collapsed it");
+        view.read_with(visual, |v, _| {
+            assert_eq!(v.current_rel, "Areas/apertune/_index.md")
         });
-        visual.run_until_parked();
+        // ... and expanding opens the index, here spelled `_Index.md`.
+        enter(visual);
+        assert!(row(visual, "Areas/other").expanded);
         view.read_with(visual, |v, _| {
             assert_eq!(v.current_rel, "Areas/other/_Index.md")
         });
-        assert!(
-            !row(visual, "Areas/other").expanded,
-            "Enter toggled it closed"
-        );
     }
 
     #[gpui::test]

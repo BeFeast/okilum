@@ -1726,13 +1726,13 @@ mod tests {
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
             assert!(
-                r.tree
+                !r.tree
                     .rows
                     .iter()
                     .find(|row| row.path == "Folder")
                     .unwrap()
                     .expanded,
-                "single folder click only selects"
+                "a single folder click toggles (#1099)"
             )
         });
         visual.simulate_event(MouseDownEvent {
@@ -1757,7 +1757,7 @@ mod tests {
                     .find(|row| row.path == "Folder")
                     .unwrap()
                     .expanded,
-                "double click toggles once"
+                "the second click of a double click does not toggle back"
             )
         });
         reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
