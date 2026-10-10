@@ -1,5 +1,5 @@
 diff --git a/crates/base/src/text/state.rs b/crates/base/src/text/state.rs
-index 1b124b32..e96c527c 100644
+index 1b124b32..df73281b 100644
 --- a/crates/base/src/text/state.rs
 +++ b/crates/base/src/text/state.rs
 @@ -34,6 +34,11 @@ const MAX_COALESCED_UPDATES_PER_PARSE: usize = 64;
@@ -73,10 +73,10 @@ index 1b124b32..e96c527c 100644
                      self.displayed_source_copy = self.pending_source_copy.clone();
                      self.refresh_search();
                      self.parsed_error = None;
-@@ -1061,6 +1090,13 @@ impl Render for TextViewState {
+@@ -1060,6 +1089,13 @@ impl Render for TextViewState {
+     }
  }
  
- #[derive(Clone, PartialEq, Default)]
 +/// A block's height before it is measured: its share of the source as wrapped
 +/// lines at about 80 characters, 24 px each, plus the gap between blocks.
 +fn estimated_block_height(source_bytes: usize, blocks: usize) -> Pixels {
@@ -84,9 +84,9 @@ index 1b124b32..e96c527c 100644
 +    px((bytes_per_block / 80.).ceil().max(1.) * 24. + 12.)
 +}
 +
+ #[derive(Clone, PartialEq, Default)]
  pub(crate) struct ParsedContent {
      pub(crate) document: ParsedDocument,
-     pub(crate) node_cx: node::NodeContext,
 @@ -1244,6 +1280,40 @@ mod tests {
      use crate::text::MarkdownNode;
      use gpui::TestAppContext;
