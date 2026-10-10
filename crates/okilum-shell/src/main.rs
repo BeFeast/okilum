@@ -1292,6 +1292,9 @@ struct Reader {
     reminder_prefs: reader_reminder_settings::Preferences,
     #[cfg(any(unix, windows))]
     reminder_prefs_error: Option<String>,
+    /// Show the reminders note through the native Tasks view (#919).
+    #[cfg(any(unix, windows))]
+    reminders_view: bool,
     #[cfg(any(unix, windows))]
     renaming: Option<reader_move::Renaming>,
     #[cfg(any(unix, windows))]
@@ -1615,6 +1618,8 @@ impl Reader {
             reminder_prefs: Default::default(),
             #[cfg(any(unix, windows))]
             reminder_prefs_error: None,
+            #[cfg(any(unix, windows))]
+            reminders_view: false,
             #[cfg(any(unix, windows))]
             renaming: None,
             #[cfg(any(unix, windows))]
@@ -2049,6 +2054,12 @@ impl Reader {
         }
         if self.current_rel != rel {
             self.timeline = None;
+        }
+        // Every way of reaching another note (history, links, tree) ends up here:
+        // the Tasks view of the reminders note ends when another note is shown.
+        #[cfg(any(unix, windows))]
+        if rel != self.reminder_prefs.note {
+            self.reminders_view = false;
         }
         self.current_rel = rel.to_string();
         self.file_preview = if okilum_core::excalidraw::is_drawing(rel) {

@@ -68,6 +68,18 @@ impl Policy {
     }
 }
 
+/// Source of the Tasks view of the reminders note (#919): the existing native
+/// dashboard with one section holding every task of exactly this note. Its
+/// All / Open / Overdue chips narrow it, and the app opens it on Overdue, so
+/// missed reminders are the same dashboard users already know. It is derived
+/// from the note name alone; nothing is stored. `None` when the name cannot be
+/// written into a query line without changing its meaning.
+pub fn reminders_dashboard(note: &str) -> Option<String> {
+    let safe = !note.is_empty() && note.trim() == note && !note.contains(['`', '{']);
+    (safe && !note.chars().any(char::is_control))
+        .then(|| format!("---\nview: tasks\n---\n# Reminders\n\n```tasks\npath is {note}\n```\n"))
+}
+
 /// Tasks metadata markers: the visible text ends where the first one starts.
 const METADATA: [char; 11] = [
     '📅', '⏳', '🛫', '✅', '❌', '➕', '⏫', '🔼', '🔽', '⏬', '🔺',
@@ -556,6 +568,46 @@ mod tests {
             Some(datetime!(2026-10-20 09:00))
         );
         assert_eq!(next_wake(&[], &ledger, now, &policy), None);
+    }
+
+    #[test]
+    fn the_reminders_view_is_one_native_section_for_exactly_one_note() {
+        use crate::typed_view::{self, layout, Selection};
+        let today = date!(2026 - 10 - 09);
+        let source = reminders_dashboard("Inbox/Remind.md").unwrap();
+        assert_eq!(
+            typed_view::select(&source, &Default::default()),
+            Selection::Native(typed_view::TASKS)
+        );
+        let dashboard = layout::parse(&source, today, layout::Defaults::default()).unwrap();
+        assert_eq!(dashboard.sections.len(), 1);
+        let section = &dashboard.sections[0];
+        assert_eq!(section.title.as_deref(), Some("Reminders"));
+        assert!(section.query.unsupported.is_empty());
+        let mut index = crate::tasks::Index::default();
+        index.replace(
+            "Inbox/Remind.md",
+            "- [ ] late 📅 2026-10-01\n- [ ] today 📅 2026-10-09\n- [x] done 📅 2026-10-01\n",
+        );
+        index.replace("Remind.md", "- [ ] elsewhere 📅 2026-10-01\n");
+        index.replace("Other/Inbox/Remind.md", "- [ ] deeper 📅 2026-10-01\n");
+        let run = |extra: &str| {
+            let query =
+                crate::tasks::Query::parse(&format!("{}\n{extra}", section.query_source), today);
+            let mut found: Vec<_> = index.query(&query).into_iter().map(|t| t.text).collect();
+            found.sort();
+            found
+        };
+        // All: exactly this note, not the same file name elsewhere.
+        assert_eq!(run("").len(), 3, "{:?}", run(""));
+        // The dashboard's Overdue chip adds these two lines to the section query.
+        let overdue = run("not done\ndue before today");
+        assert_eq!(overdue.len(), 1, "{overdue:?}");
+        assert!(overdue[0].starts_with("late"));
+        // Names that could change the query or close its fence are refused.
+        for bad in ["", " x.md", "a`b.md", "a\nb.md", "{{x}}.md"] {
+            assert_eq!(reminders_dashboard(bad), None, "{bad:?}");
+        }
     }
 
     #[test]

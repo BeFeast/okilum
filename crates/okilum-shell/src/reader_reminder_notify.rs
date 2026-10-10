@@ -179,6 +179,7 @@ impl Reader {
         let written = cx
             .background_executor()
             .spawn(async move { store(&path, &json) });
+        let missed = notice.as_ref().map_or(0, |notice| notice.overdue.len());
         let notification = notice.map(|notice| {
             (
                 SharedString::from(key(&self.vault_root)),
@@ -195,6 +196,11 @@ impl Reader {
                         this.reminder_notifier.ledger = Some(next);
                         if let Some((key, title, body)) = notification {
                             this.deliver(key, title, body, cx);
+                        }
+                        // The same news inside the app, for when the system
+                        // notification is denied or went by unseen.
+                        if missed > 0 {
+                            this.announce_missed_reminders(missed, cx);
                         }
                         this.arm_reminder_wake(wake, now, cx);
                         if std::mem::take(&mut this.reminder_notifier.again) {
@@ -231,13 +237,59 @@ impl Reader {
             .message(body)
             .system()
             .on_click(move |_, window, cx| {
-                let _ = reader.update(cx, |reader, cx| {
-                    let note = reader.reminder_prefs.note.clone();
-                    reader.open_note(&note, None, window, cx)
-                });
+                let _ = reader.update(cx, |reader, cx| reader.show_reminders_view(window, cx));
             });
         let _ = self.reader_window.update(cx, |_, window, cx| {
             window.push_notification(notification, cx)
+        });
+    }
+
+    /// The reminders note seen through the existing native Tasks view (#919),
+    /// opened on its Overdue chip. Navigating to another note ends it.
+    pub(super) fn show_reminders_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let note = self.reminder_prefs.note.clone();
+        if self.current_rel != note || self.file_preview.is_some() {
+            self.open_note(&note, None, window, cx);
+        }
+        self.reminders_view = true;
+        cx.notify();
+    }
+
+    /// The Tasks source for the view above, while it is active for the open note.
+    pub(super) fn reminders_lens(&self) -> Option<Arc<str>> {
+        if !self.reminders_view || self.current_rel != self.reminder_prefs.note {
+            return None;
+        }
+        schedule::reminders_dashboard(&self.reminder_prefs.note)
+            .map(|source| Arc::from(source.as_str()))
+    }
+
+    fn announce_missed_reminders(&mut self, missed: usize, cx: &mut Context<Self>) {
+        let message = if missed == 1 {
+            "1 missed reminder".to_owned()
+        } else {
+            format!("{missed} missed reminders")
+        };
+        let reader = cx.weak_entity();
+        let window = self.reader_window;
+        let _ = window.update(cx, |_, window, cx| {
+            reader_toast::push(
+                Notification::new().message(message).action(move |_, _, _| {
+                    let reader = reader.clone();
+                    Button::new("missed-reminders-show")
+                        .debug_selector(|| "missed-reminders-show".into())
+                        .ghost()
+                        .small()
+                        .label("Show")
+                        .on_click(move |_, window, cx| {
+                            let _ =
+                                reader.update(cx, |this, cx| this.show_reminders_view(window, cx));
+                        })
+                }),
+                Some(Duration::from_secs(8)),
+                window,
+                cx,
+            );
         });
     }
 
@@ -282,6 +334,14 @@ impl Reader {
             });
         })
         .detach();
+    }
+}
+
+/// Reminders exist only where the guarded writer does.
+#[cfg(not(any(unix, windows)))]
+impl Reader {
+    pub(super) fn reminders_lens(&self) -> Option<Arc<str>> {
+        None
     }
 }
 
@@ -358,6 +418,15 @@ mod tests {
         (reader.unwrap(), visual)
     }
 
+    /// GPUI's one-shot toast animation uses wall time, unlike the test executor's
+    /// lifetime clock: let it finish before looking at the toast's bounds.
+    fn settle_toasts(visual: &mut VisualTestContext) {
+        std::thread::sleep(Duration::from_millis(450));
+        visual.update(|window, _| window.refresh());
+        visual.executor().advance_clock(Duration::from_millis(400));
+        visual.run_until_parked();
+    }
+
     fn tick(reader: &Entity<Reader>, visual: &mut VisualTestContext) {
         reader.update(visual, |reader, cx| reader.reminder_tick(cx));
         visual.run_until_parked();
@@ -425,6 +494,9 @@ mod tests {
             1,
             "never repeated"
         );
+        // A reminder due today is not a missed one: no in-app "Show" toast.
+        settle_toasts(visual);
+        assert!(visual.debug_bounds("missed-reminders-show").is_none());
 
         // Delivery is recorded before and independently of the window: what a
         // restarted app reads is exactly what this one believes.
@@ -457,6 +529,10 @@ mod tests {
         assert_eq!(
             reader.read_with(visual, |r, _| r.current_rel.clone()),
             reader_reminder::NOTE
+        );
+        assert!(
+            reader.read_with(visual, |r, _| r.reminders_lens().is_some()),
+            "the click shows the reminders note in the native Tasks view"
         );
         TEST_NOW.with(|cell| cell.set(None));
         std::fs::remove_dir_all(temp).unwrap();
@@ -545,6 +621,118 @@ mod tests {
             visual.shown_system_notifications().len(),
             1,
             "no overdue summary appeared"
+        );
+        TEST_NOW.with(|cell| cell.set(None));
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[gpui::test]
+    fn the_reminders_view_lists_only_this_notes_overdue_tasks_and_ends_on_navigation(
+        cx: &mut TestAppContext,
+    ) {
+        use okilum_core::typed_view::layout;
+        let temp = std::env::temp_dir().join(format!("okilum-notify-{}", uuid::Uuid::new_v4()));
+        let (root, state) = (temp.join("vault"), temp.join("state"));
+        std::fs::create_dir_all(root.join("Sub")).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(root.join("start.md"), "# Start\n").unwrap();
+        std::fs::write(
+            root.join(reader_reminder::NOTE),
+            "- [ ] Late one [[start.md]] 📅 2020-01-01\n- [ ] Far future [[start.md]] 📅 2099-01-01\n- [x] Done one [[start.md]] 📅 2020-01-02\n",
+        )
+        .unwrap();
+        // The same file name elsewhere, with more overdue tasks: a substring
+        // filter would let these in and add rows.
+        std::fs::write(
+            root.join("Sub").join(reader_reminder::NOTE),
+            "- [ ] Elsewhere A 📅 2020-01-01\n- [ ] Elsewhere B 📅 2020-01-01\n",
+        )
+        .unwrap();
+        at(datetime!(2026-10-01 12:00));
+        let (reader, visual) = mount(cx, &root, &state);
+        visual.simulate_resize(size(px(1400.), px(960.)));
+        reader.update_in(visual, |r, window, cx| r.show_reminders_view(window, cx));
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds("native-tasks-dashboard").is_some(),
+            "positive control: the existing native view is shown"
+        );
+        let source = schedule::reminders_dashboard(reader_reminder::NOTE).unwrap();
+        let offset = layout::parse(&source, reader_tasks::today(), layout::Defaults::default())
+            .unwrap()
+            .sections[0]
+            .source_line;
+        let row = |ix: usize| -> &'static str {
+            Box::leak(format!("task-title-{offset}-{ix}").into_boxed_str())
+        };
+        assert!(
+            visual.debug_bounds(row(0)).is_some(),
+            "the overdue task is listed"
+        );
+        assert!(
+            visual.debug_bounds(row(1)).is_none(),
+            "no future, done or other-folder task is listed"
+        );
+
+        // Any way of leaving the note ends the view, history included; coming
+        // back shows the plain note, not the view.
+        reader.update_in(visual, |r, window, cx| r.history_move(-1, window, cx));
+        visual.run_until_parked();
+        assert_eq!(
+            reader.read_with(visual, |r, _| r.current_rel.clone()),
+            "start.md"
+        );
+        assert!(visual.debug_bounds("native-tasks-dashboard").is_none());
+        assert!(!reader.read_with(visual, |r, _| r.reminders_view));
+        reader.update_in(visual, |r, window, cx| r.history_move(1, window, cx));
+        visual.run_until_parked();
+        assert_eq!(
+            reader.read_with(visual, |r, _| r.current_rel.clone()),
+            reader_reminder::NOTE,
+            "positive control: the reminders note is open again"
+        );
+        assert!(visual.debug_bounds("native-tasks-dashboard").is_none());
+        TEST_NOW.with(|cell| cell.set(None));
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[gpui::test]
+    fn missed_reminders_get_one_toast_whose_show_opens_the_view(cx: &mut TestAppContext) {
+        let temp = std::env::temp_dir().join(format!("okilum-notify-{}", uuid::Uuid::new_v4()));
+        let (root, state) = (temp.join("vault"), temp.join("state"));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(root.join("start.md"), "# Start\n").unwrap();
+        at(datetime!(2026-10-01 12:00));
+        let (reader, visual) = mount(cx, &root, &state);
+        visual.simulate_resize(size(px(1400.), px(960.)));
+        tick(&reader, visual);
+        let drafts = state.join("editor-drafts");
+        write::add(
+            &root,
+            &drafts,
+            reader_reminder::NOTE,
+            "- [ ] Slept through [[start.md]] 📅 2026-10-05\n",
+        )
+        .unwrap();
+        reindex(&reader, visual);
+        // The app was not running when it came due; it is found overdue now.
+        at(datetime!(2026-10-06 09:00));
+        tick(&reader, visual);
+        let shown = visual.shown_system_notifications();
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].title.as_ref(), "1 task overdue");
+        settle_toasts(visual);
+        let show = visual
+            .debug_bounds("missed-reminders-show")
+            .expect("the in-app toast offers Show");
+        assert!(reader.read_with(visual, |r, _| r.reminders_lens().is_none()));
+        visual.simulate_mouse_move(show.center(), None, Modifiers::default());
+        visual.simulate_click(show.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(
+            reader.read_with(visual, |r, _| r.reminders_lens().is_some()),
+            "Show opens the reminders note in the native Tasks view"
         );
         TEST_NOW.with(|cell| cell.set(None));
         std::fs::remove_dir_all(temp).unwrap();
