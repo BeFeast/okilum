@@ -140,8 +140,10 @@ pub(super) fn extract<'a>(root: &'a AstNode<'a>, context: &Context<'_>) -> Optio
                 if let Some(range) = context.range(node) {
                     let start = context.lines[node.data.borrow().sourcepos.start.line - 1];
                     if let Some(text) = context.source.get(start..range.end) {
-                        let line = text.trim_end_matches(['\r', '\n', ' ', '\t']);
-                        if image_embed(line) {
+                        // The block covers the whole line, trailing blanks too:
+                        // a caret there is inside it and reveals the source.
+                        let line = text.trim_end_matches(['\r', '\n']);
+                        if image_embed(line.trim_end_matches([' ', '\t'])) {
                             let range = start..start + line.len();
                             markers.push(Marker {
                                 range: range.clone(),
@@ -286,8 +288,11 @@ fn validate_ranges(markers: &[Marker], context: &Context<'_>) -> Option<()> {
     Some(())
 }
 
-/// Image file extensions an embed is drawn for.
-const IMAGE_EXTENSIONS: [&str; 8] = ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif"];
+/// Image file extensions an embed is drawn for: the Reader's list
+/// (`render::preprocess`).
+const IMAGE_EXTENSIONS: [&str; 9] = [
+    "png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "heic", "heif",
+];
 
 /// One line that is exactly one image embed: `![[x.png]]`, `![[x.png|200]]`
 /// or `![alt](path.png)` / `![alt](https://…)`, with no other text.
@@ -312,7 +317,7 @@ fn image_embed(line: &str) -> bool {
     let Some(target) = target.strip_suffix(')') else {
         return false;
     };
-    !alt.contains([']', '\n'])
+    !alt.contains([']', '\n', '\\'])
         && !target.contains(['(', ')', '\n', ' '])
         && (is_image(target) || target.starts_with("https://") || target.starts_with("http://"))
 }
@@ -452,7 +457,7 @@ mod tests {
 
     #[test]
     fn image_only_paragraphs_are_image_blocks() {
-        let text = "![[photo.png]]\n\n![alt](img/a.JPG)\n\ntext ![[inline.png]] here\n\n![[Note]]\n\n![[b.webp|300]]\n\n- ![[in-list.png]]\n\n![x](https://example.com/p.png)\n";
+        let text = "![[photo.png]]  \n\n![alt](img/a.JPG)\n\ntext ![[inline.png]] here\n\n![[Note]]\n\n![[b.webp|300]]\n\n- ![[in-list.png]]\n\n![x](https://example.com/p.png)\n\n![a\\](x.png)\n";
         let source = snapshot(text, 1);
         let classified = classify(&source);
         let images: Vec<_> = classified
@@ -465,7 +470,7 @@ mod tests {
         assert_eq!(
             images,
             [
-                "![[photo.png]]",
+                "![[photo.png]]  ",
                 "![alt](img/a.JPG)",
                 "![[b.webp|300]]",
                 "![x](https://example.com/p.png)"

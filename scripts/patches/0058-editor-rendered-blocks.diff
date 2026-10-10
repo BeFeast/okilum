@@ -1,5 +1,5 @@
 diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
-index 2c2ccfa6..097b329a 100644
+index 2c2ccfa6..6ce418e1 100644
 --- a/crates/base/src/input/base/element.rs
 +++ b/crates/base/src/input/base/element.rs
 @@ -4,7 +4,7 @@ use crate::input::{InputExtras as _, InputModeKind};
@@ -124,7 +124,7 @@ index 2c2ccfa6..097b329a 100644
      marker_source: Option<std::sync::Arc<super::marker_paint::MarkerSource>>,
      marker_rows: Vec<Vec<Option<super::marker_paint::RowPaint>>>,
      code_rows: Vec<Vec<bool>>,
-@@ -1989,6 +2077,18 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -1989,6 +2077,19 @@ impl<M: InputModeKind> Element for TextElement<M> {
                  .display_map
                  .install_projection(state.projection.pin(), &state.text, window, cx);
              let rows = Self::row_metrics(state, window.line_height());
@@ -135,7 +135,8 @@ index 2c2ccfa6..097b329a 100644
 +                state.pending_block_scroll = px(0.);
 +            } else if state.pending_block_scroll != px(0.) {
 +                let mut scroll = state.scroll_handle.offset();
-+                scroll.y -= state.pending_block_scroll;
++                // Never past the document top.
++                scroll.y = (scroll.y - state.pending_block_scroll).min(px(0.));
 +                state.pending_block_scroll = px(0.);
 +                state.scroll_handle.set_offset(scroll);
 +                state.deferred_scroll_offset = Some(scroll);
@@ -143,7 +144,7 @@ index 2c2ccfa6..097b329a 100644
              if let Some((offset, old_y, affinity)) = source_anchor {
                  let row = state.display_map.offset_to_wrap_display_point_with_affinity(
                      offset, affinity).row;
-@@ -2358,6 +2458,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -2358,6 +2459,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
  
          trace.current(TraceIdentity::new(last_layout.source_stamp, last_layout.presentation_epoch, last_layout.projection.is_some()));
          trace.counts([last_layout.visible_buffer_lines.len() as u64, last_layout.lines.len() as u64, 0, 0]);
@@ -151,7 +152,7 @@ index 2c2ccfa6..097b329a 100644
          let state = self.state.read(cx);
          let marker_source = super::marker_paint::source_for_markers(
              last_layout.projection.as_ref(),
-@@ -2374,6 +2475,8 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -2374,6 +2476,8 @@ impl<M: InputModeKind> Element for TextElement<M> {
              super::marker_paint::code_rows(&last_layout, source)
          ).unwrap_or_default();
          PrepaintState {
@@ -160,7 +161,7 @@ index 2c2ccfa6..097b329a 100644
              marker_source,
              marker_rows,
              code_rows,
-@@ -2507,6 +2610,11 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -2507,6 +2611,11 @@ impl<M: InputModeKind> Element for TextElement<M> {
              .zip(prepaint.last_layout.visible_buffer_lines.iter())
              .enumerate()
          {
@@ -172,7 +173,7 @@ index 2c2ccfa6..097b329a 100644
              let p = point(
                  origin.x + prepaint.last_layout.line_number_width + scroll_offset,
                  origin.y + offset_y,
-@@ -2597,6 +2705,11 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -2597,6 +2706,11 @@ impl<M: InputModeKind> Element for TextElement<M> {
              .iter()
              .zip(prepaint.last_layout.visible_buffer_lines.iter()).enumerate()
          {
@@ -184,7 +185,7 @@ index 2c2ccfa6..097b329a 100644
              let row = buffer_line;
              let line_y = origin.y + offset_y;
              let p = point(
-@@ -2661,6 +2774,10 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -2661,6 +2775,10 @@ impl<M: InputModeKind> Element for TextElement<M> {
                  }
              }
          }
