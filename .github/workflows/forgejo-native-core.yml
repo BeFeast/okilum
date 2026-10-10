@@ -45,6 +45,9 @@ jobs:
     # the link. Compiling the shell tests is the long part of this step.
     - shell: pwsh
       run: |
+        # The shell's build script embeds an icon; this lane only runs tests, so a minimal one will do.
+        python scripts/ci/test-icon.py "$env:RUNNER_TEMP\test.ico"; if ($LASTEXITCODE) { exit $LASTEXITCODE }
+        $env:OKILUM_WINDOWS_ICON = "$env:RUNNER_TEMP\test.ico"
         cargo test --locked -p okilum-core --test prepared_links a_non_utf8_note_leaves_links_between_readable_notes_working -- --nocapture --test-threads=1 --exact; if ($LASTEXITCODE) { exit $LASTEXITCODE }
         cargo test --locked -p okilum-shell --bins one_non_utf8_note_does_not_block_links_between_readable_notes -- --nocapture --test-threads=1 --exact; exit $LASTEXITCODE
       name: Run link tests with a non-UTF-8 note
