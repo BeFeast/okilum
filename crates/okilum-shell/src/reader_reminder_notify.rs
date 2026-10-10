@@ -7,11 +7,13 @@
 //! quiet, so a duplicate window never doubles a notification. The scheduler
 //! reads the already-published task index: no second vault scan or watcher.
 use super::*;
-use gpui::SystemNotification;
+use gpui_component::{notification::Notification, WindowExt as _};
 use okilum_core::reminder_schedule::{self as schedule, Ledger, Policy};
 use std::collections::HashMap;
 
-const TAG: &str = "okilum.reminders";
+/// Identifies a vault's reminder notification to gpui-component, which owns the
+/// delivery: a repeat for the same vault replaces the earlier one.
+struct ReminderNotice;
 /// A sleeping machine or a changed clock must not leave a stale long timer.
 const MAX_WAIT: Duration = Duration::from_secs(15 * 60);
 const MIN_WAIT: Duration = Duration::from_secs(1);
@@ -64,10 +66,6 @@ pub(super) fn key(root: &Path) -> String {
         .unwrap_or_default()
 }
 
-fn tag(root: &Path) -> String {
-    format!("{TAG}.{}", key(root))
-}
-
 /// Delivery bookkeeping lives with app state, never inside the vault.
 fn ledger_path(state: &Path, root: &Path) -> PathBuf {
     state.join("reminders").join(format!("{}.json", key(root)))
@@ -105,35 +103,16 @@ pub(super) fn store(path: &Path, json: &str) -> std::io::Result<()> {
     result
 }
 
-/// Name the app to the notification centre, then route a click on a reminder
-/// notification to the window that owns it. Platforms drop notifications until
+/// Name the app to the notification centre. Platforms drop notifications until
 /// the identity is set (Windows AppUserModelID, the name shown to the user), so
 /// it is set here, once, before any window posts one.
+///
+/// This registers no response handler, on purpose: gpui keeps a single one and
+/// gpui-component owns it, so a handler installed here before
+/// `gpui_component::init` is silently replaced and a click does nothing (#961).
+/// The click is routed by the notification itself, see `deliver`.
 pub(super) fn install(cx: &mut App) {
     cx.set_app_identity("com.befeast.okilum", "Okilum");
-    cx.on_system_notification_response(|response, cx| {
-        if !response.tag.starts_with(TAG) {
-            return;
-        }
-        let owner = cx.try_global::<Owners>().and_then(|owners| {
-            owners
-                .0
-                .iter()
-                .find(|(root, _)| tag(root) == response.tag.as_ref())
-                .and_then(|(_, owner)| owner.upgrade())
-        });
-        let Some(owner) = owner else {
-            return;
-        };
-        let window = owner.read(cx).reader_window;
-        let _ = window.update(cx, |_, window, cx| {
-            window.activate_window();
-            owner.update(cx, |reader, cx| {
-                let note = reader.reminder_prefs.note.clone();
-                reader.open_note(&note, None, window, cx)
-            });
-        });
-    });
 }
 
 #[cfg(any(unix, windows))]
@@ -200,11 +179,12 @@ impl Reader {
         let written = cx
             .background_executor()
             .spawn(async move { store(&path, &json) });
-        let notification = notice.map(|notice| SystemNotification {
-            tag: tag(&self.vault_root).into(),
-            title: notice.title().into(),
-            body: notice.body().into(),
-            actions: Vec::new(),
+        let notification = notice.map(|notice| {
+            (
+                SharedString::from(key(&self.vault_root)),
+                SharedString::from(notice.title()),
+                SharedString::from(notice.body()),
+            )
         });
         cx.spawn(async move |this, cx| {
             let result = written.await;
@@ -213,8 +193,8 @@ impl Reader {
                 match result {
                     Ok(()) => {
                         this.reminder_notifier.ledger = Some(next);
-                        if let Some(notification) = notification {
-                            cx.show_system_notification(notification);
+                        if let Some((key, title, body)) = notification {
+                            this.deliver(key, title, body, cx);
                         }
                         this.arm_reminder_wake(wake, now, cx);
                         if std::mem::take(&mut this.reminder_notifier.again) {
@@ -229,6 +209,36 @@ impl Reader {
             });
         })
         .detach();
+    }
+
+    /// Post the reminder to the system notification centre through the window
+    /// that owns the vault's reminders. Clicking it brings that window forward
+    /// and opens the reminders note (#961); gpui-component dispatches the click
+    /// back to this window, so the click needs no handler of ours. Only the owner
+    /// window gets here: `reminder_tick` returns before delivering unless
+    /// `claim_reminders` made this window the owner.
+    fn deliver(
+        &self,
+        key: SharedString,
+        title: SharedString,
+        body: SharedString,
+        cx: &mut Context<Self>,
+    ) {
+        let reader = cx.weak_entity();
+        let notification = Notification::new()
+            .id1::<ReminderNotice>(key)
+            .title(title)
+            .message(body)
+            .system()
+            .on_click(move |_, window, cx| {
+                let _ = reader.update(cx, |reader, cx| {
+                    let note = reader.reminder_prefs.note.clone();
+                    reader.open_note(&note, None, window, cx)
+                });
+            });
+        let _ = self.reader_window.update(cx, |_, window, cx| {
+            window.push_notification(notification, cx)
+        });
     }
 
     /// The first window of a vault to ask becomes its owner; a closed owner is
@@ -293,9 +303,11 @@ mod tests {
         state: &Path,
     ) -> (Entity<Reader>, &'a mut VisualTestContext) {
         cx.update(|cx| {
+            // The order of the application: gpui-component's own response handler
+            // is registered after ours, which is what lost the click (#961).
+            install(cx);
             gpui_component::init(cx);
             bind_keys(cx);
-            install(cx);
         });
         let mut reader = None;
         let (_, visual) = cx.add_window_view(|window, cx| {
@@ -401,7 +413,11 @@ mod tests {
         let shown = visual.shown_system_notifications();
         assert_eq!(shown.len(), 1, "positive control: a notification is shown");
         assert_eq!(shown[0].title.as_ref(), "Call Dana");
-        assert_eq!(shown[0].tag.as_ref(), tag(&root));
+        assert!(
+            shown[0].tag.contains(&key(&root)),
+            "one notification per vault: {}",
+            shown[0].tag
+        );
         at(datetime!(2026-11-02 09:30));
         tick(&reader, visual);
         assert_eq!(
@@ -545,9 +561,9 @@ mod tests {
         std::fs::write(root.join("start.md"), "# Start\n").unwrap();
         at(datetime!(2026-10-01 12:00));
         cx.update(|cx| {
+            install(cx);
             gpui_component::init(cx);
             bind_keys(cx);
-            install(cx);
         });
         let (first, mut first_visual) = open(cx, &root, &state);
         let visual = &mut first_visual;
