@@ -1,10 +1,13 @@
 #!/bin/bash
 # Artifact-only Monterey QA build; independent of the arm64 release publisher.
+# Runs as a cross-build on Apple Silicon or natively on an Intel Mac (Hedva, #1011).
+# OKILUM_SIGNING_IDENTITY=- signs ad-hoc, for a QA Mac without a Developer ID.
 set -Eeuo pipefail
 OUTPUT="${1:?output directory required}"
 : "${OKILUM_BUILD_VERSION:?}" "${OKILUM_SIGNING_IDENTITY:?}"
 [[ $OKILUM_BUILD_VERSION =~ ^[1-9][0-9]*$ ]]
-[[ $(uname -s) == Darwin && $(uname -m) == arm64 ]]
+[[ $(uname -s) == Darwin ]]
+[[ $(uname -m) == arm64 || $(uname -m) == x86_64 ]]
 mkdir -p "$OUTPUT"
 OUTPUT="$(cd "$OUTPUT" && pwd)"
 if [ -f "$HOME/.cargo/env" ]; then . "$HOME/.cargo/env"; fi
@@ -54,12 +57,17 @@ PY
 # Reject an accidentally newer deployment target in the binary or bundled code.
 python3 scripts/verify-macos-intel-qa.py "$APP"
 FRAMEWORK="$APP/Contents/Frameworks/Sparkle.framework"
+# Ad-hoc signatures carry neither a hardened runtime nor a secure timestamp.
+SIGN_OPTIONS=(--options runtime --timestamp)
+[[ $OKILUM_SIGNING_IDENTITY == - ]] && SIGN_OPTIONS=()
 for COMPONENT in \
  "$FRAMEWORK/Versions/B/XPCServices/Downloader.xpc" \
  "$FRAMEWORK/Versions/B/XPCServices/Installer.xpc" \
  "$FRAMEWORK/Versions/B/Updater.app" \
  "$FRAMEWORK/Versions/B/Autoupdate" "$FRAMEWORK" "$APP"; do
- codesign --force --preserve-metadata=identifier,entitlements --options runtime --timestamp --sign "$OKILUM_SIGNING_IDENTITY" "$COMPONENT"
+ # The guarded expansion keeps an empty array legal under set -u in macOS's bash 3.2.
+ codesign --force --preserve-metadata=identifier,entitlements ${SIGN_OPTIONS[@]+"${SIGN_OPTIONS[@]}"} \
+  --sign "$OKILUM_SIGNING_IDENTITY" "$COMPONENT"
 done
 codesign --verify --deep --strict --verbose=2 "$APP"
 ditto -c -k --sequesterRsrc --keepParent "$APP" "$OUTPUT/Okilum-intel-qa-$OKILUM_BUILD_VERSION.zip"
