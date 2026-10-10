@@ -62,7 +62,7 @@ certificate_sha256() {
         certum-pkcs11)
             local pass=""
             [ -z "${OKILUM_WINDOWS_SIGN_PIN_FILE:-}" ] || pass=$(cat "$OKILUM_WINDOWS_SIGN_PIN_FILE")
-            PASS="$pass" keytool -exportcert -alias "$OKILUM_WINDOWS_SIGN_ALIAS" -keystore NONE \
+            PASS="$pass" timeout 60 keytool -exportcert -alias "$OKILUM_WINDOWS_SIGN_ALIAS" -keystore NONE \
                 -storetype PKCS11 -providerClass sun.security.pkcs11.SunPKCS11 -providerArg "$cfg" \
                 -storepass:env PASS -file "$der" >/dev/null 2>&1 || return 1
             ;;
@@ -101,7 +101,8 @@ short="${OKILUM_WINDOWS_SIGN_WAIT:-4}" long="${OKILUM_WINDOWS_SIGN_RETRY:-10}"  
 waiting=0 failures=0
 while :; do
     log=$(mktemp)
-    if "$jsign" "${store[@]}" --alg SHA-256 --tsaurl "$tsa" --tsmode RFC3161 --tsretries 3 --tsretrywait 10 \
+    # A stuck SimplySign session must not hold the beta: give up after 10 minutes.
+    if timeout 600 "$jsign" "${store[@]}" --alg SHA-256 --tsaurl "$tsa" --tsmode RFC3161 --tsretries 3 --tsretrywait 10 \
             --name Okilum --url https://okilum.app "$@" >"$log" 2>&1; then
         cat "$log"; rm -f "$log"
         exit 0

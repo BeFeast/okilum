@@ -32,16 +32,32 @@ json.dump({'signed': signed, 'reason': reason,
 PY
 }
 
-if probe=$(bash "$here/sign.sh" --probe 2>&1); then
-    echo "$probe"
-    bash "$here/sign.sh" "$payload/okilum.exe" "$payload/okilum-sync-supervisor.exe"
-    python3 "$here/portable-zip.py" "$payload" "$version"
+signed_release() {
+    bash "$here/sign.sh" "$payload/okilum.exe" "$payload/okilum-sync-supervisor.exe" &&
+    python3 "$here/portable-zip.py" "$payload" "$version" &&
     OKILUM_WINDOWS_SIGN_TEMPLATE="$here/sign.sh {{file...}}" \
     OKILUM_WINDOWS_SIGN_EXCLUDE='[\\/](okilum|okilum-sync-supervisor)\.exe$' \
-        bash "$here/pack.sh" "$tools" "$payload" "$output"
+        bash "$here/pack.sh" "$tools" "$payload" "$output" &&
     python3 "$here/verify-signatures.py" "$output" "$payload"/okilum-*-x86_64.zip
-    record true "signed and verified"
-    exit 0
+}
+
+if probe=$(bash "$here/sign.sh" --probe 2>&1); then
+    echo "$probe"
+    # Keep the unsigned payload: if signing fails halfway (session ends, timestamp server
+    # down), the policy can still ship this build unsigned rather than not at all.
+    pristine=$(mktemp -d)
+    cp -a "$payload" "$pristine/payload"
+    cp -a "$output" "$pristine/output"   # holds the delta base from publish.py prepare
+    if signed_release; then
+        rm -rf "$pristine"
+        record true "signed and verified"
+        exit 0
+    fi
+    probe="signing failed after a successful probe"
+    rm -rf "$payload" "$output"
+    mv "$pristine/payload" "$payload"
+    mv "$pristine/output" "$output"
+    rm -rf "$pristine"
 fi
 
 echo "$probe" >&2
