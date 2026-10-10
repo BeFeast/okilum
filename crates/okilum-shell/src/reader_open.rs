@@ -626,8 +626,8 @@ pub(crate) fn dispatch_urls(urls: Vec<String>, cx: &mut App) {
 /// Vault roots this machine knows: open windows first, then reading history.
 fn known_roots(cx: &App) -> Vec<PathBuf> {
     let mut roots = reusable_roots(cx);
-    if let Ok(directory) = reader_history::state_directory() {
-        if let Ok((_, history)) = reader_history::ReadingHistory::startup_roots(&directory) {
+    if let Ok(directory) = super::reader_history::state_directory() {
+        if let Ok((_, history)) = super::reader_history::ReadingHistory::startup_roots(&directory) {
             for root in history {
                 if !roots.contains(&root) {
                     roots.push(root);

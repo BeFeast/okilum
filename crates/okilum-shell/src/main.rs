@@ -6987,8 +6987,8 @@ fn main() {
         cx.activate(true);
         drop(appearance_phase);
 
-        if let Some(link) = opts.link.take() {
-            reader_open::open_deep_link(&link, cx);
+        if let Some(link) = &opts.link {
+            reader_open::open_deep_link(link, cx);
             return;
         }
         if (opts.vault.is_some() || opts.open_path.is_some()) && opts.brain_endpoint.is_none() {
