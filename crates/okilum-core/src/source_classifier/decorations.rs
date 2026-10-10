@@ -98,8 +98,10 @@ pub(super) fn extract<'a>(root: &'a AstNode<'a>, context: &Context<'_>) -> Optio
                     .range(node)
                     .and_then(|range| context.source.get(range))
                     .and_then(|text| text.lines().next());
+                let start = context.range(node).map_or(0, |range| range.start);
                 if top_level
                     && first_line.is_some_and(|line| crate::callout::parse_header(line).is_some())
+                    && !hidden_by_reader(context.source, start)
                 {
                     if let Some(marker) = whole_line_block(node, context, Kind::Callout) {
                         markers.push(marker);
@@ -202,6 +204,21 @@ pub(super) fn extract<'a>(root: &'a AstNode<'a>, context: &Context<'_>) -> Optio
             return None;
         }
     }
+    // A callout holding tasks stays a decorated quote: its checkboxes stay
+    // clickable, which a rendered block cannot offer yet.
+    let with_tasks: Vec<Range<usize>> = markers
+        .iter()
+        .filter(|m| m.kind == Kind::Callout)
+        .filter(|c| {
+            markers.iter().any(|m| {
+                matches!(m.kind, Kind::Task { .. })
+                    && c.range.start <= m.range.start
+                    && m.range.end <= c.range.end
+            })
+        })
+        .map(|m| m.range.clone())
+        .collect();
+    markers.retain(|m| !(m.kind == Kind::Callout && with_tasks.contains(&m.range)));
     // A callout is drawn whole; the quote bars, lists and tasks inside it are
     // not decorated separately (they would overlap it).
     let callouts: Vec<Range<usize>> = markers
@@ -351,6 +368,16 @@ fn image_embed(line: &str) -> bool {
     !alt.contains([']', '\n', '\\'])
         && !target.contains(['(', ')', '\n', ' '])
         && (is_image(target) || target.starts_with("https://") || target.starts_with("http://"))
+}
+
+/// Whether the Reader hides text starting at `start`: inside a `%%` comment
+/// or a `$$` math block (`render::before_links`). Counted from the note start;
+/// a miss only leaves source raw.
+fn hidden_by_reader(source: &str, start: usize) -> bool {
+    let before = &source[..start];
+    let comments = before.matches("%%").count();
+    let math = before.lines().filter(|line| line.trim() == "$$").count();
+    comments % 2 == 1 || math % 2 == 1
 }
 
 /// A block's whole lines (a table, a callout), ending on its last non-blank
@@ -539,6 +566,24 @@ mod tests {
             quotes,
             [">", ">"],
             "the plain quote and the quote in a list keep their bars; the callouts' are dropped"
+        );
+    }
+
+    #[test]
+    fn callouts_with_tasks_or_hidden_by_the_reader_stay_quotes() {
+        let text = "> [!todo] Today\n> - [ ] task\n\n%%\n> [!note] draft\n%%\n\n$$\n> [!note] math\n$$\n\n> [!note] shown\n";
+        let source = snapshot(text, 1);
+        let classified = classify(&source);
+        let markers = classified.decorations_for(&source).unwrap();
+        let callouts: Vec<_> = markers
+            .iter()
+            .filter(|m| m.kind == Kind::Callout)
+            .map(|m| &text[m.range.clone()])
+            .collect();
+        assert_eq!(callouts, ["> [!note] shown"]);
+        assert!(
+            markers.iter().any(|m| matches!(m.kind, Kind::Task { .. })),
+            "the todo callout keeps its clickable task"
         );
     }
 
