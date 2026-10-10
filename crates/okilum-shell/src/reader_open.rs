@@ -334,7 +334,7 @@ pub(crate) fn parse_args(
     Ok(Command::Launch(Box::new(opts)))
 }
 
-fn cache_base() -> Result<PathBuf> {
+pub(crate) fn cache_base() -> Result<PathBuf> {
     #[cfg(target_os = "macos")]
     let base = std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Library/Caches"));
     #[cfg(all(unix, not(target_os = "macos")))]

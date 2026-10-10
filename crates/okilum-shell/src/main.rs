@@ -8,6 +8,7 @@
 //! timing) is deliberately gone: it measured a decision that has been made.
 
 mod about;
+mod app_footprint;
 #[cfg(all(unix, feature = "brain"))]
 mod brain;
 mod brand;
@@ -6757,9 +6758,10 @@ fn main() {
     velopack::VelopackApp::build()
         .on_after_install_fast_callback(|_| markdown_handler::install())
         .on_after_update_fast_callback(|_| markdown_handler::install())
-        .on_before_uninstall_fast_callback(|_| markdown_handler::uninstall())
+        .on_before_uninstall_fast_callback(|_| app_footprint::uninstall())
         .run();
     let process_start = std::time::Instant::now();
+    std::thread::spawn(app_footprint::sweep_stale_search_sessions);
     // Before any thread exists (see `init_local_offset`).
     reader_properties::init_local_offset();
     let offset_elapsed = process_start.elapsed();
