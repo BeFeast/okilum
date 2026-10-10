@@ -399,6 +399,9 @@ impl Reader {
             input.set_exact_clipboard_provider(clipboard, cx);
             input.set_value(store.text().to_owned(), window, cx);
             input.set_direction_exempt_lines(direction_exempt_lines(store.text()));
+            if !plain_file {
+                input.set_block_renderer(Some(Rc::new(live_table)));
+            }
             input.ensure_highlighter_factory(
                 gpui_component::highlighter::input_highlighter_factory(),
             );
@@ -1055,6 +1058,26 @@ impl Reader {
             )
             .into_any_element()
     }
+}
+
+/// A Live Preview table, drawn like the Reader draws it (S7, #936). The
+/// element is display only: a click lands on the editor, which puts the caret
+/// in the table and reveals its source.
+fn live_table(
+    block: &gpui_component::input::projection::ProjectionBlock,
+    source: &str,
+    _width: Pixels,
+    _window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let mut style = reader_text_style(cx.theme());
+    style.heading_base_font_size = px(reader_ui_state::font_size(cx));
+    TextView::markdown(("live-table", block.key as usize), source.to_owned())
+        .selectable(false)
+        .style(style)
+        .text_size(px(reader_ui_state::font_size(cx)))
+        .w_full()
+        .into_any_element()
 }
 
 /// Lines that keep one alignment when paragraphs take their own direction:

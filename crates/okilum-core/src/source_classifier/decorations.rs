@@ -22,6 +22,10 @@ pub enum Kind {
     Task {
         checked: bool,
     },
+    /// A top-level GFM table, whole lines from its first row to its last:
+    /// Live Preview draws it rendered while the caret is outside (S7, #936).
+    /// Its bytes are never classified or rewritten.
+    Table,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -113,6 +117,16 @@ pub(super) fn extract<'a>(root: &'a AstNode<'a>, context: &Context<'_>) -> Optio
                     scope: range,
                     kind: Kind::CodeBlock,
                 });
+            }
+            NodeValue::Table(_)
+                if node
+                    .parent()
+                    .is_some_and(|p| matches!(p.data.borrow().value, NodeValue::Document)) =>
+            {
+                // An odd table stays raw; it does not cost the rest of the note.
+                if let Some(marker) = table_marker(node, context) {
+                    markers.push(marker);
+                }
             }
             NodeValue::ThematicBreak => {
                 let scope = context.range(node)?;
@@ -248,6 +262,26 @@ fn validate_ranges(markers: &[Marker], context: &Context<'_>) -> Option<()> {
     Some(())
 }
 
+/// A table's whole lines, ending on its last non-blank line.
+fn table_marker<'a>(node: &'a AstNode<'a>, context: &Context<'_>) -> Option<Marker> {
+    let range = context.range(node)?;
+    let start = context.lines[node.data.borrow().sourcepos.start.line - 1];
+    let text = context.source.get(start..range.end)?;
+    let mut end = start;
+    let mut offset = start;
+    for line in text.split_inclusive('\n') {
+        if !line.trim().is_empty() {
+            end = offset + line.trim_end_matches(['\r', '\n']).len();
+        }
+        offset += line.len();
+    }
+    (end > start).then(|| Marker {
+        range: start..end,
+        scope: start..end,
+        kind: Kind::Table,
+    })
+}
+
 /// `- [ ]` of a bullet task item, exactly as written: bullet, whitespace,
 /// `[`, one of ` xX`, `]`, then whitespace or the end of the line.
 fn task_marker<'a>(node: &'a AstNode<'a>, context: &Context<'_>, checked: bool) -> Option<Marker> {
@@ -358,6 +392,25 @@ mod tests {
                 ("+\t[X]", true, true),
                 ("- [ ]", false, true)
             ]
+        );
+    }
+
+    #[test]
+    fn top_level_tables_are_whole_line_blocks() {
+        let text = "intro\n\n| a | b |\n|---|---|\n| 1 | שלום |\n\n> | q |\n> |---|\n";
+        let source = snapshot(text, 1);
+        let classified = classify(&source);
+        let tables: Vec<_> = classified
+            .decorations_for(&source)
+            .unwrap()
+            .iter()
+            .filter(|m| m.kind == Kind::Table)
+            .map(|m| &text[m.range.clone()])
+            .collect();
+        assert_eq!(
+            tables,
+            ["| a | b |\n|---|---|\n| 1 | שלום |"],
+            "quoted tables stay raw"
         );
     }
 
