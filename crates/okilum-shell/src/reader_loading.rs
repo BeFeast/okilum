@@ -1876,7 +1876,7 @@ impl Reader {
                 return;
             }
             reported.set(true);
-            let ms = |t: std::time::Instant| t.duration_since(started).as_secs_f64() * 1000.;
+            let ms = move |t: std::time::Instant| t.duration_since(started).as_secs_f64() * 1000.;
             trace.event(
                 "note_open_parsed",
                 serde_json::json!({ "since_open_ms": ms(std::time::Instant::now()), "bytes": bytes }),
