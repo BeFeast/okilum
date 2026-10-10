@@ -38,6 +38,7 @@ mod reader_confirm;
 mod reader_create;
 #[cfg(windows)]
 mod reader_creation_undo_windows;
+mod reader_deep_link;
 mod reader_delimited;
 mod reader_diagnostics;
 mod reader_document_menu;
@@ -688,6 +689,8 @@ struct Opts {
     copy_source: bool,
     /// An external `okilum:` link to open (#1049, docs/deep-links.md).
     link: Option<String>,
+    /// Where the link lands in `note` once it is open (#1049).
+    landing: Option<okilum_core::deep_link::Position>,
 }
 
 /// Payload for the custom "local-image" markdown block node. TextView's stock
@@ -1321,6 +1324,11 @@ struct Reader {
     loading: Option<reader_loading::Loading>,
     pending_open_document: Option<reader_loading::PendingDocument>,
     queued_open_note: Option<String>,
+    /// Where an external link queued with `queued_open_note` lands (#1049).
+    queued_landing: Option<okilum_core::deep_link::Position>,
+    /// An external link opened while editing: once its note is accepted, the
+    /// editor returns there with the caret on the link's line (#1049).
+    pending_link_edit: Option<reader_deep_link::EditLanding>,
     shared_session: Option<reader_session::Shared>,
     shared_version: u64,
     usable_document: bool,
@@ -1573,6 +1581,8 @@ impl Reader {
             loading: None,
             pending_open_document: None,
             queued_open_note: None,
+            queued_landing: None,
+            pending_link_edit: None,
             shared_session: None,
             shared_version: 0,
             usable_document: false,
@@ -1896,6 +1906,19 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.open_note_landing(rel, jump_term, heading, None, window, cx);
+    }
+
+    /// `open_note_at`, or at a file line from an external link (#1049).
+    fn open_note_landing(
+        &mut self,
+        rel: &str,
+        jump_term: Option<&str>,
+        heading: Option<&str>,
+        line: Option<u32>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.tree_preview.close();
         if rel.is_empty() {
             self.show_empty_vault(window, cx);
@@ -1907,7 +1930,11 @@ impl Reader {
         }
         self.clear_hover(cx);
         self.file_preview = None;
-        self.prepare_document(rel, jump_term, heading, window, cx);
+        if line.is_some() {
+            self.prepare_link_document(rel, line, heading, window, cx);
+        } else {
+            self.prepare_document(rel, jump_term, heading, window, cx);
+        }
     }
 
     fn accept_prepared_document(

@@ -171,6 +171,13 @@ pub(crate) struct PreparedDocument {
     pub frontmatter: Option<String>,
 }
 
+/// Where to land once the document is rendered.
+pub(crate) enum Landing {
+    Task(okilum_core::tasks::Task),
+    /// A file line from an external link (#1049), 1-based.
+    Line(u32),
+}
+
 pub(crate) struct DocumentRequest {
     pub rel: String,
     pub jump: Option<String>,
@@ -197,14 +204,32 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.prepare_document_target(&task.path, (None, None), Some(task.clone()), window, cx);
+        self.prepare_document_target(
+            &task.path,
+            (None, None),
+            Some(Landing::Task(task.clone())),
+            window,
+            cx,
+        );
+    }
+
+    /// An external link's note, at a file line or a heading (#1049).
+    pub(crate) fn prepare_link_document(
+        &mut self,
+        rel: &str,
+        line: Option<u32>,
+        heading: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.prepare_document_target(rel, (None, heading), line.map(Landing::Line), window, cx);
     }
 
     fn prepare_document_target(
         &mut self,
         rel: &str,
         location: (Option<&str>, Option<&str>),
-        task: Option<okilum_core::tasks::Task>,
+        landing: Option<Landing>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -256,15 +281,32 @@ impl Reader {
                         })
                     };
                     document.and_then(|document| {
-                        let target = if let Some(task) = task {
-                            let original = document.original.as_deref().ok_or_else(|| {
-                                anyhow::anyhow!("Task navigation is unavailable in HTML mode")
-                            })?;
-                            let target =
-                                okilum_core::tasks::target(&task, original, &document.source)?;
-                            Some((target.block, target.text.unwrap_or_default()))
-                        } else {
-                            None
+                        let target = match landing {
+                            Some(Landing::Task(task)) => {
+                                let original = document.original.as_deref().ok_or_else(|| {
+                                    anyhow::anyhow!("Task navigation is unavailable in HTML mode")
+                                })?;
+                                let target =
+                                    okilum_core::tasks::target(&task, original, &document.source)?;
+                                Some(Ok((target.block, Some(target.text.unwrap_or_default()))))
+                            }
+                            // A line that cannot be placed opens the note at the
+                            // top and says so; it never lands on a guess.
+                            Some(Landing::Line(line)) => Some(
+                                document
+                                    .canonical_source
+                                    .as_deref()
+                                    .and_then(|source| {
+                                        okilum_core::deep_link::reader_block(
+                                            source,
+                                            &document.source,
+                                            line,
+                                        )
+                                    })
+                                    .map(|block| (block, None))
+                                    .ok_or(line),
+                            ),
+                            None => None,
                         };
                         Ok((document, target))
                     })
@@ -272,13 +314,18 @@ impl Reader {
                 .await;
             let mut request = request;
             let mut task_text = None;
+            let mut unplaced_line = None;
             let document = document.map(|(document, target)| {
-                if let Some((block, text)) = target {
-                    task_text = Some(text);
-                    request.restore_position = Some(ListOffset {
-                        item_ix: block,
-                        offset_in_item: px(0.),
-                    });
+                match target {
+                    Some(Ok((block, text))) => {
+                        task_text = text;
+                        request.restore_position = Some(ListOffset {
+                            item_ix: block,
+                            offset_in_item: px(0.),
+                        });
+                    }
+                    Some(Err(line)) => unplaced_line = Some(line),
+                    None => {}
                 }
                 document
             });
@@ -293,10 +340,21 @@ impl Reader {
                     );
                 }
                 let task_landing = document.is_ok().then_some(task_text).flatten();
+                let unplaced_line = document.is_ok().then_some(unplaced_line).flatten();
                 let _phase = reader_diagnostics::phase(cx, "note_open_accept");
                 this.accept_prepared_document(request, document, window, cx);
                 if let Some(text) = task_landing {
                     this.land_task_text(text, cx);
+                }
+                this.finish_link_edit(generation, window, cx);
+                if let Some(line) = unplaced_line {
+                    this.link_notice = Some(
+                        format!(
+                            "Line {line} can\u{2019}t be shown in the reading view. Edit the note to go to it."
+                        )
+                        .into(),
+                    );
+                    cx.notify();
                 }
             });
         })
