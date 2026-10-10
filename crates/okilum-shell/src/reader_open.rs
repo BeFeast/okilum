@@ -1007,7 +1007,8 @@ mod entry_tests {
             "native_window_open",
         ];
         let mut seen: Vec<(String, f64)> = Vec::new();
-        for _ in 0..200 {
+        // The diagnostic thread writes asynchronously; leave it ample time on a loaded runner.
+        for _ in 0..2000 {
             let text =
                 std::fs::read_to_string(state.join("reader-diagnostic.log")).unwrap_or_default();
             seen = text
