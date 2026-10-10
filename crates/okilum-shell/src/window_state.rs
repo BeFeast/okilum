@@ -377,7 +377,7 @@ mod tests {
         assert_eq!(bounds.origin.x, px(0.), "no longer x = -110");
         assert_eq!(bounds.size, size(px(1280.), px(999.)));
         assert!(bounds.top() >= narrow.top() && bounds.bottom() <= narrow.bottom());
-        // A wide second display at a negative x keeps the preferred size, centred.
+        // A wide visible area with a negative origin keeps the preferred size, centred.
         let wide = Bounds::new(point(px(-2560.), px(0.)), size(px(2560.), px(1415.)));
         let bounds = centered_in(wide, preferred);
         assert_eq!(bounds.size, preferred);
