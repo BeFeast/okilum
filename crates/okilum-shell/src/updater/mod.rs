@@ -1,6 +1,8 @@
 //! macOS updates through stock Sparkle 2: its standard UI downloads, installs
 //! and relaunches. A manual check only probes and reports inline (#995). The
 //! app adds menu items and the beta channel preference.
+#[cfg(any(target_os = "linux", test))]
+pub(crate) mod linux_repo;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(any(windows, test))]
@@ -132,7 +134,19 @@ pub(crate) fn channel() -> &'static str {
     } else {
         "Stable"
     };
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(target_os = "linux")]
+    return if env!("OKILUM_BUILD_VERSION") == "development" {
+        "Development"
+    } else {
+        // The pacman repository that delivers updates (#1036).
+        match linux_repo::current() {
+            linux_repo::Source::Beta => "Beta",
+            linux_repo::Source::Stable => "Stable",
+            linux_repo::Source::Both => "Beta and Stable",
+            linux_repo::Source::Unknown => "System packages",
+        }
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     if env!("OKILUM_BUILD_VERSION") == "development" {
         "Development"
     } else {
