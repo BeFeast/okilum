@@ -4,7 +4,7 @@
 //! between Reader and editing.
 
 use super::*;
-use gpui_component::input::RopeExt as _;
+use gpui_component::input::{EditorState, RopeExt as _};
 use okilum_core::deep_link::Position;
 
 /// The editor caret a link places once its note is open.
@@ -149,16 +149,15 @@ impl Reader {
         line: u32,
         column: Option<u32>,
         window: &mut Window,
-        _: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
         let Some(input) = self.source_input() else {
             return;
         };
         let line = line.saturating_sub(1);
         let character = column.unwrap_or(1).saturating_sub(1);
-        // The editor scrolls only once it has a layout.
-        window.on_next_frame(move |window, cx| {
-            input.update(cx, |input, cx| {
+        let place =
+            move |input: &mut EditorState, window: &mut Window, cx: &mut Context<EditorState>| {
                 let last = input.text().lines_len().saturating_sub(1) as u32;
                 input.set_cursor_position(
                     gpui_component::input::Position {
@@ -168,7 +167,12 @@ impl Reader {
                     window,
                     cx,
                 );
-            });
+            };
+        // Now, so the caret is right at once; again after the next frame,
+        // because the editor scrolls only once it has a layout.
+        input.update(cx, |input, cx| place(input, window, cx));
+        window.on_next_frame(move |window, cx| {
+            input.update(cx, |input, cx| place(input, window, cx));
         });
     }
 }
