@@ -184,16 +184,18 @@ index 1b49b038..99fa28e1 100644
      #[doc(hidden)]
      pub fn line_number(mut self, line_number: bool) -> Self {
 diff --git a/crates/base/src/input/bidi_geometry.rs b/crates/base/src/input/bidi_geometry.rs
-index 0f04a5da..6dad3818 100644
+index 0f04a5da..401a81ec 100644
 --- a/crates/base/src/input/bidi_geometry.rs
 +++ b/crates/base/src/input/bidi_geometry.rs
-@@ -5,6 +5,17 @@ use gpui::{Pixels, ShapedLine};
+@@ -5,6 +5,19 @@ use gpui::{Pixels, ShapedLine};
  use unicode_bidi::BidiInfo;
  use unicode_segmentation::UnicodeSegmentation;
  
 +/// Whether a paragraph is right-to-left: its first strong character is R or
 +/// AL (Unicode bidi rules P2/P3, without isolates). A paragraph with no strong
-+/// character is left-to-right. Reader and the editor both use this (S6c, #1034).
++/// character is left-to-right. The editor uses this (S6c, #1034).
++// Okilum's bidi examples compile this file by `#[path]` without the editor.
++#[allow(dead_code)]
 +pub(crate) fn paragraph_is_rtl(text: &str) -> bool {
 +    use unicode_bidi::BidiClass::{AL, L, R};
 +    text.chars()
@@ -205,7 +207,7 @@ index 0f04a5da..6dad3818 100644
  /// Which neighboring logical grapheme owns the caret. This is independent of
  /// soft-wrap affinity; one boolean cannot encode both choices.
  #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-@@ -258,6 +269,23 @@ pub(crate) fn covering<T>(
+@@ -258,6 +271,23 @@ pub(crate) fn covering<T>(
  
  #[cfg(test)]
  mod tests {

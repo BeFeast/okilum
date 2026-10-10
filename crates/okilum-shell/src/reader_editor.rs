@@ -1542,7 +1542,7 @@ mod tests {
         );
         assert_eq!(
             super::direction_exempt_lines("```\nx\n`````\ny"),
-            [0..3],
+            vec![std::ops::Range { start: 0, end: 3 }],
             "longer close fence"
         );
     }
