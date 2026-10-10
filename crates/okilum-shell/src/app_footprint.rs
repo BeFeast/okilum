@@ -514,6 +514,8 @@ mod tests {
         ("crates/okilum-shell/src/brain/native_outbox.rs", 2),
         ("crates/okilum-shell/src/brain/t3_route_outbox.rs", 2),
         ("crates/okilum-shell/src/brain.rs", 2),
+        // Looks for installed editors in ~/Applications; reads only.
+        ("crates/okilum-shell/src/open_in.rs", 1),
         ("crates/okilum-shell/src/reader_history.rs", 4),
         ("crates/okilum-shell/src/reader_layout.rs", 3),
         ("crates/okilum-shell/src/reader_open.rs", 4),
