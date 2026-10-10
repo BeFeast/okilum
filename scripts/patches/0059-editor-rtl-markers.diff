@@ -206,7 +206,7 @@ index 93a4e3b0..2660a700 100644
 +    #[test]
 +    fn rtl_marker_span_is_one_run_of_whole_cells() {
 +        // `- [ ] אב` in an RTL paragraph: the marker sits on the right.
-+        let cell = |source: Range<usize>, left: f32, right: f32, rtl: bool| Cell {
++        let cell = |source: Range<usize>, left: f32, right: f32, rtl: bool| super::Cell {
 +            source,
 +            left: px(left),
 +            right: px(right),
