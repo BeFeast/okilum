@@ -12,6 +12,10 @@ def needs_macos(paths):
             return True
         if path.startswith(('web/', 'inbox/', 'scripts/arch/', 'scripts/windows/')):
             return True
+        # QA fixtures, release publication, rebrand tooling and design mockups are
+        # Python/HTML outside the Reader; the Linux gate runs their tests.
+        if path.startswith(('scripts/qa/', 'scripts/releases/', 'scripts/rebrand/', 'design/')):
+            return True
         if path.startswith('docs/') and path.endswith(('.svg', '.png', '.jpg', '.webp')):
             return True
         return path in {

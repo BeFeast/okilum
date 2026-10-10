@@ -22,16 +22,22 @@ cargo_args=(test --release --locked --target aarch64-apple-darwin)
 # with cfg(test), because this crate has no integration-test targets.
 cargo build --release --locked --target aarch64-apple-darwin -p okilum-shell
 # Compile test-only cfg branches and integration tests.
-cargo "${cargo_args[@]}" -p okilum-core -p okilum-shell --no-run
+# Core and shell tests below select exactly this package pair: the same selection
+# unifies the same features (and dev-dependencies), so they reuse these binaries.
+# Selecting one package at a time rebuilt core and shell, about 7 minutes per PR.
+SHARED=(-p okilum-core -p okilum-shell)
+cargo "${cargo_args[@]}" "${SHARED[@]}" --no-run
 
 run_tests() {
     local package="$1" target="$2" filter="$3"
     shift 3
+    local selection=(-p "$package")
+    case "$package" in okilum-core|okilum-shell) selection=("${SHARED[@]}") ;; esac
     # Positive control: a renamed/removed filter must not silently run zero tests.
-    cargo "${cargo_args[@]}" -p "$package" "$target" "$filter" -- --list "$@" \
+    cargo "${cargo_args[@]}" "${selection[@]}" "$target" "$filter" -- --list "$@" \
         | tee "${RUNNER_TEMP}/macos-test-list.txt"
     grep -q ': test$' "${RUNNER_TEMP}/macos-test-list.txt"
-    cargo "${cargo_args[@]}" -p "$package" "$target" "$filter" -- --test-threads=1 "$@"
+    cargo "${cargo_args[@]}" "${selection[@]}" "$target" "$filter" -- --test-threads=1 "$@"
 }
 # APFS rejects invalid UTF-8 filenames even though Unix OsString can represent them.
 run_tests okilum-core --lib link_rewrite::tests::sidecars_and_invalid_utf8_do_not_abort_move_or_enter_search --exact
