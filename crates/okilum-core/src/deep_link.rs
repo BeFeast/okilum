@@ -61,6 +61,118 @@ impl Refused {
 
 pub const MAX_LEN: usize = 4096;
 
+/// A link matched against the vaults this machine knows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Resolution {
+    /// Open `rel` (vault-relative, `/`-separated) in `root`.
+    Open {
+        root: std::path::PathBuf,
+        rel: String,
+        position: Position,
+    },
+    /// Several known vaults have this name: the user picks one (never guessed).
+    Choose {
+        vault: String,
+        roots: Vec<std::path::PathBuf>,
+        rel: String,
+        position: Position,
+    },
+    /// A clear, user-facing refusal.
+    Unavailable(String),
+}
+
+/// Match `link` against `known` vault roots (canonical paths). `exists`
+/// reports whether a path is a file; injectable for tests.
+pub fn resolve(
+    link: &Link,
+    known: &[std::path::PathBuf],
+    exists: &dyn Fn(&std::path::Path) -> bool,
+) -> Resolution {
+    use std::path::{Path, PathBuf};
+    let position = link.position.clone();
+    let name_of = |root: &Path| {
+        root.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    };
+    let same_name = |a: &str, b: &str| {
+        if cfg!(any(target_os = "macos", windows)) {
+            a.to_lowercase() == b.to_lowercase()
+        } else {
+            a == b
+        }
+    };
+    // `.md` may be omitted when only the Markdown file exists.
+    let pick = |root: &Path, rel: &str| -> Option<String> {
+        if exists(&root.join(rel)) {
+            return Some(rel.to_owned());
+        }
+        let md = format!("{rel}.md");
+        (Path::new(rel).extension().is_none() && exists(&root.join(&md))).then_some(md)
+    };
+    match &link.address {
+        Address::Vault { vault, path } => {
+            let mut roots: Vec<PathBuf> = Vec::new();
+            for root in known {
+                if same_name(&name_of(root), vault) && !roots.contains(root) {
+                    roots.push(root.clone());
+                }
+            }
+            match roots.len() {
+                0 => Resolution::Unavailable(format!(
+                    "Vault \u{201c}{vault}\u{201d} is not on this computer."
+                )),
+                1 => match pick(&roots[0], path) {
+                    Some(rel) => Resolution::Open {
+                        root: roots.remove(0),
+                        rel,
+                        position,
+                    },
+                    None => Resolution::Unavailable(format!(
+                        "\u{201c}{path}\u{201d} is not in vault \u{201c}{vault}\u{201d}."
+                    )),
+                },
+                _ => Resolution::Choose {
+                    vault: vault.clone(),
+                    roots,
+                    rel: path.clone(),
+                    position,
+                },
+            }
+        }
+        Address::File(file) => {
+            let file = Path::new(file);
+            // The deepest known vault that contains the file.
+            let root = known
+                .iter()
+                .filter(|root| file.starts_with(root) && file != root.as_path())
+                .max_by_key(|root| root.components().count());
+            match root {
+                Some(root) if exists(file) => Resolution::Open {
+                    root: root.clone(),
+                    rel: file
+                        .strip_prefix(root)
+                        .map(|r| {
+                            r.components()
+                                .map(|c| c.as_os_str().to_string_lossy())
+                                .collect::<Vec<_>>()
+                                .join("/")
+                        })
+                        .unwrap_or_default(),
+                    position,
+                },
+                Some(_) => Resolution::Unavailable("This file no longer exists.".into()),
+                None => Resolution::Unavailable(
+                    "This file is not in a vault you have opened in Okilum.".into(),
+                ),
+            }
+        }
+        Address::Note(_) | Address::Task(_) | Address::Project(_) => {
+            Resolution::Unavailable(Refused::UnknownKind.message().into())
+        }
+    }
+}
+
 /// Hosts the Reader uses for links inside rendered notes.
 const INTERNAL: &[&str] = &[
     "open",
@@ -272,6 +384,68 @@ mod tests {
         assert_eq!(
             parse("okilum://task/t1").unwrap().address,
             Address::Task("t1".into())
+        );
+    }
+
+    #[test]
+    fn resolution_against_known_vaults() {
+        use std::path::{Path, PathBuf};
+        let files = [
+            "/home/me/Notes/Projects/Plan.md",
+            "/home/me/Notes/Inbox.md",
+            "/work/Notes/Plan.md",
+            "/home/me/Notes/Sub/Vault/Deep.md",
+        ];
+        let exists = |p: &Path| files.iter().any(|f| Path::new(f) == p);
+        let known: Vec<PathBuf> = [
+            "/home/me/Notes",
+            "/home/me/Notes/Sub/Vault",
+            "/data/Archive",
+        ]
+        .map(PathBuf::from)
+        .to_vec();
+        let r = |link: &str, known: &[PathBuf]| resolve(&parse(link).unwrap(), known, &exists);
+        assert_eq!(
+            r("okilum://v/Notes/Projects/Plan.md?line=3", &known),
+            Resolution::Open {
+                root: "/home/me/Notes".into(),
+                rel: "Projects/Plan.md".into(),
+                position: Position {
+                    line: Some(3),
+                    ..Default::default()
+                }
+            }
+        );
+        // `.md` may be omitted.
+        assert!(
+            matches!(r("okilum://v/Notes/Inbox", &known), Resolution::Open { rel, .. } if rel == "Inbox.md")
+        );
+        // Missing note and unknown vault are said, not created or guessed.
+        assert!(
+            matches!(r("okilum://v/Notes/Nope.md", &known), Resolution::Unavailable(m) if m.contains("Nope.md"))
+        );
+        assert!(
+            matches!(r("okilum://v/Travel/a.md", &known), Resolution::Unavailable(m) if m.contains("Travel"))
+        );
+        // Two known vaults named Notes: a choice, never a guess.
+        let mut two = known.clone();
+        two.push("/work/Notes".into());
+        assert!(matches!(
+            r("okilum://v/Notes/Plan.md", &two),
+            Resolution::Choose { roots, .. } if roots.len() == 2
+        ));
+        // file/: the deepest known vault that contains it.
+        assert!(matches!(
+            r("okilum://file//home/me/Notes/Sub/Vault/Deep.md", &known),
+            Resolution::Open { root, rel, .. } if root == Path::new("/home/me/Notes/Sub/Vault") && rel == "Deep.md"
+        ));
+        assert!(matches!(
+            r("okilum://file//work/Notes/Plan.md", &known),
+            Resolution::Unavailable(m) if m.contains("not in a vault")
+        ));
+        // Reserved ids answer with the newer-Okilum message.
+        assert!(
+            matches!(r("okilum://project/p1", &known), Resolution::Unavailable(m) if m.contains("newer"))
         );
     }
 
