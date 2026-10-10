@@ -7942,7 +7942,9 @@ mod document_link_landing_tests {
     }
 
     #[gpui::test]
-    fn one_non_utf8_note_does_not_block_links_between_readable_notes(cx: &mut gpui::TestAppContext) {
+    fn one_non_utf8_note_does_not_block_links_between_readable_notes(
+        cx: &mut gpui::TestAppContext,
+    ) {
         // #1120: the vault finished loading; one CP1251 note stays reported as unreadable, and
         // wikilinks between the other notes still open instead of saying "still loading".
         use okilum_core::document_links::prepared::LinkStatus;
@@ -7957,10 +7959,15 @@ mod document_link_landing_tests {
         std::fs::write(root.join("Other vault.md"), "# Other vault\n\n[[Target]]\n").unwrap();
         let legacy: Vec<u8> = [
             &b"# Legacy encoding\n\n"[..],
-            &[0xCF, 0xF0, 0xE8, 0xE2, 0xE5, 0xF2, 0x20, 0xEC, 0xE8, 0xF0, 0x0A],
+            &[
+                0xCF, 0xF0, 0xE8, 0xE2, 0xE5, 0xF2, 0x20, 0xEC, 0xE8, 0xF0, 0x0A,
+            ],
         ]
         .concat();
-        assert!(std::str::from_utf8(&legacy).is_err(), "the fixture is really not UTF-8");
+        assert!(
+            std::str::from_utf8(&legacy).is_err(),
+            "the fixture is really not UTF-8"
+        );
         std::fs::write(root.join("Non-UTF8.md"), &legacy).unwrap();
         let mut reader = None;
         let (_, visual) = cx.add_window_view(|window, cx| {
@@ -7984,7 +7991,11 @@ mod document_link_landing_tests {
         visual.run_until_parked();
         let url = view.read_with(visual, |v, _| {
             assert!(v.vault.inventory_scanned, "the vault finished loading");
-            assert_eq!(v.vault.unreadable.len(), 1, "one item stays reported as unreadable");
+            assert_eq!(
+                v.vault.unreadable.len(),
+                1,
+                "one item stays reported as unreadable"
+            );
             assert!(!v.vault.inventory_complete);
             assert_eq!(v.current_rel, "Target.md");
             let link = v
@@ -7992,7 +8003,10 @@ mod document_link_landing_tests {
                 .iter()
                 .find(|link| link.target == "Other vault")
                 .expect("the wikilink is prepared");
-            let state = v.prepared_links.get(&link.url).expect("its state is published");
+            let state = v
+                .prepared_links
+                .get(&link.url)
+                .expect("its state is published");
             assert_eq!(
                 (state.status, state.reason.as_str()),
                 (LinkStatus::Resolved, "Open document"),
