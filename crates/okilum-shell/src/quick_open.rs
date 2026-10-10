@@ -305,13 +305,23 @@ pub(super) struct Palette {
     running: bool,
     pending: bool,
     /// Enter typed ahead of the current query's results (#1005): accept the
-    /// top row in this window once they arrive.
-    accept_when_ready: Option<gpui::AnyWindowHandle>,
+    /// top row in this window once they arrive, if the palette still shows
+    /// what Enter was pressed for.
+    accept_when_ready: Option<HeldEnter>,
     message: String,
     pub recent: Vec<String>,
     scroll: ScrollHandle,
     #[cfg(test)]
     hold_query: Option<async_channel::Receiver<()>>,
+}
+
+/// What an early Enter was pressed for. A later change of text, mode or vault
+/// (Escape, a keystroke, reopening, a vault switch) makes it stale.
+pub(super) struct HeldEnter {
+    window: gpui::AnyWindowHandle,
+    query: String,
+    full_text: bool,
+    root: PathBuf,
 }
 
 impl Palette {
@@ -345,9 +355,6 @@ impl Palette {
     }
 
     pub fn invalidate(&mut self) {
-        // Any reset (a keystroke, Escape, reopen, Find, a vault switch) cancels
-        // an Enter held for the previous text (#1005).
-        self.accept_when_ready = None;
         self.generation = self.generation.wrapping_add(1);
         self.rows.clear();
         self.snippets.clear();
@@ -396,6 +403,7 @@ impl Reader {
     pub(super) fn close_quick_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.clear_hover(cx);
         self.quick_open.open = false;
+        self.quick_open.accept_when_ready = None;
         self.quick_open.invalidate();
         self.restore_document_focus(window, cx);
         cx.notify();
@@ -523,7 +531,10 @@ impl Reader {
                     // These rows answer the text typed so far, unless a newer
                     // query is queued: only then does an early Enter apply.
                     if !this.quick_open.pending {
-                        accept = this.quick_open.accept_when_ready.take();
+                        let held = this.quick_open.accept_when_ready.take();
+                        accept = held
+                            .filter(|held| this.still_shows(held, cx))
+                            .map(|held| held.window);
                     }
                     match result {
                         Ok((rows, snippets, message)) => {
@@ -563,6 +574,17 @@ impl Reader {
         cx.notify();
     }
 
+    fn quick_open_query(&self, cx: &App) -> String {
+        self.quick_open.input.read(cx).value().trim().to_string()
+    }
+
+    /// The palette still shows the text, mode and vault an early Enter was for.
+    fn still_shows(&self, held: &HeldEnter, cx: &App) -> bool {
+        held.query == self.quick_open_query(cx)
+            && held.full_text == self.quick_open.full_text
+            && held.root == self.vault_root
+    }
+
     fn accept_quick_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.quick_open.open {
             return;
@@ -570,7 +592,12 @@ impl Reader {
         // Rows still belong to an earlier text: wait for this query (#1005).
         if self.quick_open.running || self.quick_open.pending {
             self.quick_open.selected = 0;
-            self.quick_open.accept_when_ready = Some(window.window_handle());
+            self.quick_open.accept_when_ready = Some(HeldEnter {
+                window: window.window_handle(),
+                query: self.quick_open_query(cx),
+                full_text: self.quick_open.full_text,
+                root: self.vault_root.clone(),
+            });
             return;
         }
         self.quick_open.accept_when_ready = None;
@@ -1184,10 +1211,6 @@ mod tests {
                 v.accept_quick_open(window, cx);
                 assert!(v.quick_open.accept_when_ready.is_some(), "{name}: held");
                 reset(v, window, cx);
-                assert!(
-                    v.quick_open.accept_when_ready.is_none(),
-                    "{name}: cancelled"
-                );
             });
             release.try_send(()).unwrap();
             visual.run_until_parked();
