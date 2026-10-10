@@ -1,5 +1,5 @@
 diff --git a/crates/base/src/text/state.rs b/crates/base/src/text/state.rs
-index 1b124b32..352c869d 100644
+index 1b124b32..43d65546 100644
 --- a/crates/base/src/text/state.rs
 +++ b/crates/base/src/text/state.rs
 @@ -34,6 +34,11 @@ const MAX_COALESCED_UPDATES_PER_PARSE: usize = 64;
@@ -73,8 +73,8 @@ index 1b124b32..352c869d 100644
 +    }
 +
 +    /// The list forgets unmeasured heights when its width changes, and a new
-+    /// list does so on its first layout. Restore the estimate in the frame
-+    /// after, keeping measured heights and the scroll position.
++    /// list does so on its first layout. Restore the estimate right after that
++    /// layout, keeping measured heights and the scroll position.
 +    pub(super) fn restore_list_hint(&mut self, width: Pixels) -> bool {
 +        if self.list_hint.is_none() || self.list_hinted_width == Some(width) {
 +            return false;
@@ -101,31 +101,19 @@ index 1b124b32..352c869d 100644
                      self.displayed_source_copy = self.pending_source_copy.clone();
                      self.refresh_search();
                      self.parsed_error = None;
-@@ -1039,14 +1096,23 @@ impl Render for TextViewState {
-                     )
-                 };
-                 let mut revision_changed = false;
-+                let mut restore_hint = false;
-                 state.update(cx, |state, cx| {
-                     revision_changed = state
+@@ -1044,6 +1101,11 @@ impl Render for TextViewState {
                          .selection_adapter
                          .update_layout_revision(state.selection_revision, state.is_selecting);
                      state.update_bounds(bounds, cx);
-+                    restore_hint = state.restore_list_hint(bounds.size.width);
++                    // This canvas prepaints after the list, which has just
++                    // cleared unmeasured heights if its width changed.
++                    if state.restore_list_hint(bounds.size.width) {
++                        state.apply_list_hint(cx);
++                    }
                      state.apply_search_geometry(cx);
                      state.compatible_layout_update = false;
                  });
-+                if restore_hint {
-+                    // The list clears unmeasured heights in this frame's layout.
-+                    let state = state.clone();
-+                    window.on_next_frame(move |_, cx| {
-+                        state.update(cx, |state, cx| state.apply_list_hint(cx));
-+                    });
-+                }
-                 if !is_selecting
-                     && ((size_changed
-                         && selection_involves_view
-@@ -1060,6 +1126,13 @@ impl Render for TextViewState {
+@@ -1060,6 +1122,13 @@ impl Render for TextViewState {
      }
  }
  
@@ -139,7 +127,7 @@ index 1b124b32..352c869d 100644
  #[derive(Clone, PartialEq, Default)]
  pub(crate) struct ParsedContent {
      pub(crate) document: ParsedDocument,
-@@ -1244,6 +1317,40 @@ mod tests {
+@@ -1244,6 +1313,40 @@ mod tests {
      use crate::text::MarkdownNode;
      use gpui::TestAppContext;
  
