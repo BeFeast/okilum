@@ -4,6 +4,8 @@
 //! platform transport, and ends with its tree. It reads the lifecycle journal and never
 //! writes it. This crate carries no GUI code.
 pub mod args;
+#[cfg(unix)]
+pub mod policy;
 pub mod startup;
 
 pub mod serve;

@@ -193,6 +193,7 @@ fn code_path(code: &Owned) -> Result<PathBuf> {
 /// Peer must be the same user, satisfy `requirement`, and be the code at `executable`.
 /// Both paths are resolved at each check, so an update that retargets a link is
 /// followed and a long-lived value never compares against a stale resolution.
+#[derive(Clone)]
 pub struct SignedPeer {
     requirement: CodeRequirement,
     executable: PathBuf,
