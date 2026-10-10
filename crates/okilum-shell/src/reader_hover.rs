@@ -25,6 +25,12 @@ pub(super) struct HoverPreview {
     message: Option<String>,
     _subscription: Option<Subscription>,
     bounds: std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>,
+    /// Open beside a side panel whose left edge is this x, never over it
+    /// (#1101).
+    beside: Option<Pixels>,
+    /// The last wheel scroll over a panel list; kept across `clear_hover`
+    /// so previews stay quiet until the pointer rests after scrolling.
+    scrolled_at: Option<std::time::Instant>,
 }
 
 impl HoverPreview {
@@ -35,6 +41,9 @@ impl HoverPreview {
         self.source.is_some()
     }
 }
+
+/// How long scrolling must have stopped before a panel preview may open.
+const QUIET_AFTER_SCROLL: Duration = Duration::from_millis(300);
 
 fn command(modifiers: gpui::Modifiers) -> bool {
     if cfg!(target_os = "macos") {
@@ -106,6 +115,7 @@ impl Reader {
         let generation = self.hover_preview.generation.wrapping_add(1);
         self.hover_preview = HoverPreview {
             generation,
+            scrolled_at: self.hover_preview.scrolled_at,
             ..Default::default()
         };
         cx.notify();
@@ -153,6 +163,41 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.hover_note_at(source, target, position, None, window, cx);
+    }
+
+    /// A side-panel row's title (#1101): the preview opens left of the panel
+    /// (`panel_left`), and only once scrolling has been quiet for a moment.
+    pub(super) fn hover_note_beside(
+        &mut self,
+        source: String,
+        target: Target,
+        position: Point<Pixels>,
+        panel_left: Pixels,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.hover_note_at(source, target, position, Some(panel_left), window, cx);
+    }
+
+    /// A wheel scroll over a side-panel list closes the preview and keeps new
+    /// ones away until scrolling stops (#1101). The list still scrolls.
+    pub(super) fn panel_scrolled(&mut self, cx: &mut Context<Self>) {
+        self.hover_preview.scrolled_at = Some(std::time::Instant::now());
+        if self.hover_preview.is_active() {
+            self.clear_hover(cx);
+        }
+    }
+
+    fn hover_note_at(
+        &mut self,
+        source: String,
+        target: Target,
+        position: Point<Pixels>,
+        beside: Option<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !target.path.to_lowercase().ends_with(".md") {
             return;
         }
@@ -170,16 +215,20 @@ impl Reader {
         self.hover_preview.source = Some(source);
         self.hover_preview.target = Some(target);
         self.hover_preview.anchor = position;
+        self.hover_preview.beside = beside;
         self.hover_preview.over_source = true;
-        self.schedule_hover(
-            if immediate {
-                Duration::ZERO
-            } else {
-                Duration::from_millis(350)
-            },
-            window,
-            cx,
-        );
+        let delay = if immediate {
+            Duration::ZERO
+        } else {
+            Duration::from_millis(350)
+        };
+        // After a panel scroll the pointer must rest QUIET_AFTER_SCROLL once
+        // scrolling has stopped; any further scroll cancels this wait.
+        let quiet = beside
+            .and(self.hover_preview.scrolled_at)
+            .map(|at| QUIET_AFTER_SCROLL.saturating_sub(at.elapsed()) + QUIET_AFTER_SCROLL)
+            .unwrap_or_default();
+        self.schedule_hover(delay.max(quiet), window, cx);
     }
 
     pub(super) fn hover_modifiers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -439,7 +488,16 @@ impl Reader {
         let bounds = h.bounds.clone();
         Some(
             anchored()
-                .position(h.anchor + point(px(12.), px(18.)))
+                .position(match h.beside {
+                    // Left of the panel, level with the hovered title.
+                    Some(left) if left - width - px(12.) >= px(12.) => {
+                        point(left - width - px(12.), h.anchor.y - px(18.))
+                    }
+                    // No room beside it: above the hovered row, so neither
+                    // the row nor the rows below it are covered.
+                    Some(_) => point(h.anchor.x - width, h.anchor.y - height - px(12.)),
+                    None => h.anchor + point(px(12.), px(18.)),
+                })
                 .snap_to_window_with_margin(px(12.))
                 .child(
                     v_flex()
@@ -923,6 +981,67 @@ mod tests {
         visual.simulate_resize(size(px(1400.), px(900.)));
         visual.run_until_parked();
         (reader.unwrap(), visual, root)
+    }
+
+    #[gpui::test]
+    fn linked_from_previews_only_from_the_title_beside_the_panel_and_scrolling_wins(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (reader, visual, root) = fixture(cx);
+        reader.update_in(visual, |v, window, cx| {
+            let width = f32::from(v.body_bounds.size.width);
+            if !v.panels.visible(reader_layout::Panel::Backlinks, width) {
+                v.panel_settings = None;
+                v.toggle_panel(reader_layout::Panel::Backlinks, window, cx);
+            }
+        });
+        visual.run_until_parked();
+        let visible = |visual: &mut gpui::VisualTestContext| {
+            reader.read_with(visual, |v, _| v.hover_preview.visible)
+        };
+        let settle = |visual: &mut gpui::VisualTestContext, ms: u64| {
+            visual.executor().advance_clock(Duration::from_millis(ms));
+            visual.run_until_parked();
+        };
+        let place = visual
+            .debug_bounds("backlink-place-0-0")
+            .expect("positive control: Start.md has a place in sub/Target.md");
+        let title = visual.debug_bounds("backlink-title-0").unwrap();
+        let list = visual.debug_bounds("backlinks-list").unwrap();
+        let away = point(px(300.), px(300.));
+
+        // The context line never previews.
+        visual.simulate_mouse_move(place.center(), None, gpui::Modifiers::default());
+        settle(visual, 1000);
+        assert!(!visible(visual), "a place line opened a preview");
+
+        // The title does, after the usual delay, beside the panel.
+        visual.simulate_mouse_move(title.center(), None, gpui::Modifiers::default());
+        settle(visual, 200);
+        assert!(!visible(visual), "not before the link-hover delay");
+        settle(visual, 400);
+        assert!(visible(visual), "title previews");
+        let preview = visual.debug_bounds("note-hover-preview").unwrap();
+        assert!(
+            preview.right() <= list.left(),
+            "preview {preview:?} covers the list {list:?}"
+        );
+
+        // A scroll over the list closes it; resting again right away does
+        // not reopen it until scrolling has been quiet.
+        reader.update_in(visual, |v, _, cx| v.panel_scrolled(cx));
+        visual.run_until_parked();
+        assert!(!visible(visual), "scroll closes the preview");
+        visual.simulate_mouse_move(away, None, gpui::Modifiers::default());
+        visual.simulate_mouse_move(title.center(), None, gpui::Modifiers::default());
+        settle(visual, 400);
+        assert!(!visible(visual), "no preview straight after a scroll");
+        settle(visual, 400);
+        assert!(
+            visible(visual),
+            "the title previews again once scrolling stopped"
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[gpui::test]
