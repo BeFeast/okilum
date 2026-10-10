@@ -118,11 +118,18 @@ impl<A: SmApi> Platform for SmAppService<A> {
     }
     /// The bundle is verified first, then the port names the live generation.
     fn supervisor_scope(&mut self, binding: &Binding) -> Result<Option<Scope>> {
-        self.verify(binding)?;
+        // `inspect` verifies the bundle first. Only a registered, running agent can
+        // have a supervisor to name; anything else is simply "none".
+        if self.inspect(binding)? != Registration::Running {
+            return Ok(None);
+        }
         self.0.supervisor_scope(binding)
     }
     fn stop_supervisor(&mut self, binding: &Binding, token: &StopToken) -> Result<()> {
-        self.verify(binding)?;
+        ensure!(
+            self.inspect(binding)? != Registration::Absent,
+            "no registered agent to stop"
+        );
         self.0.stop_supervisor(binding, token)
     }
     fn unregister(&mut self, binding: &Binding) -> Result<()> {
