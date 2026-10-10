@@ -250,7 +250,7 @@ index 046dcd3c..5636a622 100644
          assert_eq!(rows.row_end_at(px(76.5)), 4);
          for row in 0..40 {
 diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
-index 99fa28e1..3d493a16 100644
+index 99fa28e1..efdf8446 100644
 --- a/crates/base/src/input/base/state.rs
 +++ b/crates/base/src/input/base/state.rs
 @@ -331,6 +331,16 @@ pub struct InputBaseState<M: InputModeKind> {
@@ -304,7 +304,7 @@ index 99fa28e1..3d493a16 100644
 +        // A rendered block's element may take focus on the same press; the
 +        // click is the editor's, so keyboard focus stays here (S7a, #936).
 +        if !self.focus_handle.is_focused(window) {
-+            window.focus(&self.focus_handle);
++            window.focus(&self.focus_handle, cx);
 +        }
          // Input has its own text selection; suppress the window-level text
          // selection (Root) so it does not start a drag from here.
