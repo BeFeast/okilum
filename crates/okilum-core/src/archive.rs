@@ -294,6 +294,10 @@ pub fn extract(
         };
         let target = destination.join(relative);
         if entry.kind == Kind::Directory {
+            // An existing folder is merged into; anything else in its place is a conflict.
+            if std::fs::symlink_metadata(&target).is_ok_and(|meta| !meta.is_dir()) {
+                existing.push(target.clone());
+            }
             plan.push((entry, target));
             continue;
         }
@@ -687,6 +691,36 @@ mod tests {
             "new b"
         );
         assert_eq!(done.directories, [clean.path().join("sub")]);
+    }
+
+    #[test]
+    fn a_file_where_the_archive_has_a_folder_is_a_conflict() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = write(
+            dir.path(),
+            "f.zip",
+            &stored_zip(&[
+                (b"docs/", true, false, b""),
+                (b"docs/a.md", true, false, b"a"),
+            ]),
+        );
+        let out = tempfile::tempdir().unwrap();
+        std::fs::write(out.path().join("docs"), "a plain file").unwrap();
+        let error = extract(&archive, &[0], out.path(), Limits::default()).unwrap_err();
+        assert_eq!(
+            refused(error),
+            Refused::Exists(vec![out.path().join("docs")])
+        );
+        assert_eq!(
+            std::fs::read_to_string(out.path().join("docs")).unwrap(),
+            "a plain file"
+        );
+        // Positive control: an existing folder of that name is merged into.
+        let merge = tempfile::tempdir().unwrap();
+        std::fs::create_dir(merge.path().join("docs")).unwrap();
+        let done = extract(&archive, &[], merge.path(), Limits::default()).unwrap();
+        assert_eq!(done.files, [merge.path().join("docs/a.md")]);
+        assert!(done.directories.is_empty());
     }
 
     #[cfg(unix)]
