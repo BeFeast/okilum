@@ -135,8 +135,12 @@ Fonts stay the brand pair: Noto Sans (UI and text) and Cascadia Code (code).
 | Code block | 13 / 21 | 400 | `code-bg`, 1 px `code-border`, radius 8, padding 14×16 |
 | Table | 0.92 em | header 600 `text-muted` | row rule `border-subtle` |
 
-The document column has a maximum width of 740 px including 40 px of horizontal padding, so lines are at most 660 px, about 75
-characters. The column is centred in the available document area. The
+The document column has a maximum width of 740 px including its horizontal padding:
+a left gutter of 48 px and 40 px on the right, so lines are at most 652 px, about 75
+characters. The gutter is the same in Reader, Source and Live Preview, so text keeps
+its x when the mode changes; a revealed heading marker (`##`) hangs in it in Live
+Preview (#1034). On narrow windows it shrinks linearly to 24 px at the 600 px minimum
+window width. The column is centred in the available document area. The
 padding is 44 px at the top. The `document-end-space` token is
 `max(120px, 0.30 × window viewport height)` (#419), inside the scrollable
 content after the last block. Reader and source editing use it; the editor

@@ -5,8 +5,8 @@ use std::{
 };
 
 use gpui_component::input::projection::{
-    ActiveSource, ConcealBias, MarkerKind, ProjectedByte, ProjectionMarker, ProjectionProvider,
-    ProjectionStyle, SourceByte, SourceProjection, SourceSnapshot,
+    ActiveSource, ConcealBias, LineScale, MarkerKind, ProjectedByte, ProjectionMarker,
+    ProjectionProvider, ProjectionStyle, SourceByte, SourceProjection, SourceSnapshot,
 };
 use okilum_core::{
     source_classifier::{self, Classification, RetainedPresentation, Style},
@@ -170,6 +170,7 @@ impl CachedProvider {
         let reveal_snapshot = retained.prepare_reveal(&reveal).ok()?;
         let projection = reveal_snapshot.projection().clone();
         let styles = projected_styles(&projection, retained.styles(), colors)?;
+        let line_scales = heading_line_scales(&projection, retained.styles());
         Some(Arc::new(MappedProjection {
             source: source.clone(),
             markers: self
@@ -194,8 +195,59 @@ impl CachedProvider {
                 .collect(),
             reveal: reveal_snapshot,
             styles,
+            line_scales,
         }))
     }
+}
+
+/// Live Preview heading sizes, in units of the body font size. They match the
+/// Reader's headings (rems 2, 1.5, 1.25, 1.125; H5 and H6 at body size), so a
+/// note reads the same in both (#1034).
+fn heading_scale(level: u8) -> f32 {
+    match level {
+        1 => 2.,
+        2 => 1.5,
+        3 => 1.25,
+        4 => 1.125,
+        _ => 1.,
+    }
+}
+
+/// One entry per projected heading line: its scale, and the revealed marker
+/// (`## `) that hangs in the margin so the heading text does not move when the
+/// caret reveals it.
+fn heading_line_scales(
+    projection: &Projection,
+    styles: &[source_classifier::StyleSpan],
+) -> Vec<LineScale> {
+    let display = projection.display();
+    let newlines: Vec<usize> = display.match_indices('\n').map(|(at, _)| at).collect();
+    let mut scales: Vec<LineScale> = styles
+        .iter()
+        .filter_map(|style| match style.style {
+            Style::Heading(level) => {
+                let start = projection
+                    .source_to_display(projection.snapshot(), style.range.start)
+                    .ok()?;
+                let line = newlines.partition_point(|&at| at < start);
+                let line_start = line.checked_sub(1).map_or(0, |prev| newlines[prev] + 1);
+                let scale = heading_scale(level);
+                // Only a bare revealed marker hangs: a quote or list prefix
+                // before it stays in the text so per-row markers keep aligning.
+                let prefix = &display[line_start..start];
+                let marker = prefix.trim_end_matches([' ', '\t']);
+                let bare = (1..=6).contains(&marker.len())
+                    && marker.bytes().all(|b| b == b'#')
+                    && marker.len() < prefix.len();
+                let hang = if bare { prefix.len() } else { 0 };
+                (scale > 1. || hang > 0).then_some(LineScale { line, scale, hang })
+            }
+            _ => None,
+        })
+        .collect();
+    scales.sort_by_key(|scale| scale.line);
+    scales.dedup_by_key(|scale| scale.line);
+    scales
 }
 
 struct MappedProjection {
@@ -203,10 +255,14 @@ struct MappedProjection {
     source: SourceSnapshot,
     reveal: source_classifier::RevealSnapshot,
     styles: Vec<ProjectionStyle>,
+    line_scales: Vec<LineScale>,
 }
 impl SourceProjection for MappedProjection {
     fn markers(&self) -> &[ProjectionMarker] {
         &self.markers
+    }
+    fn line_scales(&self) -> &[LineScale] {
+        &self.line_scales
     }
     fn marker_scope_is_raw(&self, scope: &Range<SourceByte>) -> bool {
         self.reveal
@@ -548,6 +604,54 @@ mod tests {
             .styles()
             .iter()
             .any(|style| style.bold && style.color == Some(colors.heading)));
+    }
+
+    #[test]
+    fn heading_lines_scale_like_the_reader_and_follow_reveal() {
+        let text = "# One\n\nbody\n## Two\n### Three\n#### Four\n##### Five\n###### Six\n";
+        let source = source(text);
+        let provider = CachedProvider::classify(source.clone());
+        let expected = [(0, 2.), (3, 1.5), (4, 1.25), (5, 1.125)];
+        let scales = |projection: &dyn SourceProjection| {
+            projection
+                .line_scales()
+                .iter()
+                .filter(|s| s.scale > 1.)
+                .map(|s| (s.line, s.scale))
+                .collect::<Vec<_>>()
+        };
+        let hangs = |projection: &dyn SourceProjection| {
+            projection
+                .line_scales()
+                .iter()
+                .filter(|s| s.hang > 0)
+                .map(|s| (s.line, s.hang))
+                .collect::<Vec<_>>()
+        };
+        // Concealed markers: the same lines, at the Reader's sizes.
+        let idle = provider.compose(&source, &inactive(&source)).unwrap();
+        assert_ne!(idle.text(), text, "markers are concealed");
+        assert_eq!(scales(idle.as_ref()), expected);
+        assert!(
+            hangs(idle.as_ref()).is_empty(),
+            "a concealed marker has nothing to hang"
+        );
+        // Revealing `## ` on the caret line keeps every line where it was.
+        let caret = SourceByte(text.find("Two").unwrap());
+        let revealed = provider
+            .compose(
+                &source,
+                &ActiveSource {
+                    anchor: caret,
+                    head: caret,
+                    ..ActiveSource::default()
+                },
+            )
+            .unwrap();
+        assert!(revealed.text().contains("## Two"));
+        assert_eq!(scales(revealed.as_ref()), expected);
+        // The revealed `## ` hangs in the margin; nothing else does.
+        assert_eq!(hangs(revealed.as_ref()), [(3, "## ".len())]);
     }
 
     #[test]
