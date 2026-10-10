@@ -146,6 +146,8 @@ pub(crate) struct FilePreview {
     /// Source code with syntax highlighting (#998).
     pub code: Option<Entity<reader_code_file::CodePreview>>,
     pub table: Option<Entity<reader_delimited::TablePreview>>,
+    /// A ZIP archive's entries, previews and extraction (#996).
+    pub archive: Option<Entity<reader_archive::ArchivePreview>>,
     #[cfg(any(target_os = "macos", all(test, unix)))]
     pub thumbnail: Option<Entity<reader_thumbnail::Thumbnail>>,
     /// The log view, for a log opened in the quick viewer (#602).
@@ -172,6 +174,7 @@ impl FilePreview {
             live_identity: Arc::new(()),
             _live: None,
             table: None,
+            archive: None,
             code: None,
             rel: rel.into(),
             path,
@@ -347,6 +350,10 @@ impl Reader {
                     let view = cx.new(|cx| reader_log::LogView::indexing(rel, path, window, cx));
                     view.read(cx).focus_handle().clone().focus(window, cx);
                     preview.log = Some(view);
+                } else if reader_archive::eligible(rel) {
+                    let path = preview.path.clone();
+                    preview.archive =
+                        Some(cx.new(|cx| reader_archive::ArchivePreview::new(path, window, cx)));
                 } else if reader_delimited::eligible(rel) {
                     preview.table =
                         Some(cx.new(|cx| {
@@ -373,6 +380,7 @@ impl Reader {
                     && preview.text.is_none()
                     && preview.code.is_none()
                     && preview.table.is_none()
+                    && preview.archive.is_none()
                     && reader_thumbnail::eligible(rel)
                 {
                     preview.thumbnail = Some(cx.new(|cx| {
@@ -434,6 +442,17 @@ impl Reader {
                         .text_color(cx.theme().muted_foreground)
                         .child(message.clone()),
                 )
+                .into_any_element();
+        }
+        if let Some(archive) = &preview.archive {
+            return v_flex()
+                .id("reader-archive-preview")
+                .key_context("ReaderFile")
+                .track_focus(&self.focus_handle)
+                .size_full()
+                .min_h_0()
+                .child(self.render_document_header(window, cx))
+                .child(archive.clone())
                 .into_any_element();
         }
         if let Some(table) = &preview.table {
