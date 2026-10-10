@@ -346,9 +346,14 @@ impl Reader {
             return;
         }
         if self.editing.is_some() {
+            let file = self.selected_file().to_owned();
+            let input = self.editing.as_ref().map(|editing| editing.input.clone());
             if !self.leave_source(cx) {
                 return;
             }
+            // Saved: keep its Undo history for a return to Edit (#1095).
+            self.retained_edit =
+                input.map(|input| (file, input.update(cx, |input, _| input.take_edit_history())));
             if plain_file {
                 let rel = self.selected_file().to_owned();
                 self.preview_file(&rel, window, cx);
@@ -628,6 +633,12 @@ impl Reader {
             menu_facts,
             _subscriptions: vec![changed, blur, clicked, toggled, highlighting, menu_watch],
         });
+        // Back from the Reader to unchanged text: Undo continues (#1095).
+        if let Some((file, history)) = self.retained_edit.take() {
+            if file == self.selected_file() {
+                input.update(cx, |input, cx| input.restore_edit_history(history, cx));
+            }
+        }
         self.set_live_preview(self.ui_state.live_preview, window, cx);
         self.start_editor_layout_diagnostics(input.clone(), cx);
         input.focus_handle(cx).focus(window, cx);
@@ -2774,6 +2785,99 @@ mod tests {
             std::fs::read_to_string(root.join("start.md")).unwrap(),
             format!("новый 🧠 {original}")
         );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[gpui::test]
+    fn reader_round_trip_keeps_undo_history_for_unchanged_text(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let directory =
+            std::env::temp_dir().join(format!("okilum-source-{}", uuid::Uuid::new_v4()));
+        let root = directory.join("notes");
+        std::fs::create_dir_all(&root).unwrap();
+        let original = "one **two** three\n";
+        std::fs::write(root.join("note.md"), original).unwrap();
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        open_path: Some(root.join("note.md")),
+                        index_dir: Some(directory.join("index")),
+                        session_directory: Some(directory.join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        let end = original.len() - 1;
+        let edited = "one **two** threeX\n";
+        let round_trip = |visual: &mut VisualTestContext, external: Option<&str>| {
+            reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
+            visual.run_until_parked();
+            if let Some(text) = external {
+                std::fs::write(root.join("note.md"), text).unwrap();
+            }
+            reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
+            visual.run_until_parked();
+        };
+        let value = |visual: &mut VisualTestContext| {
+            reader.update_in(visual, |r, _, cx| {
+                r.editing
+                    .as_ref()
+                    .unwrap()
+                    .input
+                    .read(cx)
+                    .value()
+                    .to_string()
+            })
+        };
+        let undo = |visual: &mut VisualTestContext| {
+            #[cfg(target_os = "macos")]
+            visual.simulate_keystrokes("cmd-z");
+            #[cfg(not(target_os = "macos"))]
+            visual.simulate_keystrokes("ctrl-z");
+            visual.run_until_parked();
+        };
+        // Edit, type X at the end of the line, save; Reader and back.
+        reader.update_in(visual, |r, window, cx| {
+            r.toggle_source(window, cx);
+            let input = r.editing.as_ref().unwrap().input.clone();
+            input.update(cx, |input, cx| {
+                input.replace_text_in_range(Some(end..end), "X", window, cx)
+            });
+            assert!(r.save_source(cx));
+        });
+        visual.run_until_parked();
+        round_trip(visual, None);
+        assert_eq!(value(visual), edited);
+        // The edit made before the Reader still undoes, exactly.
+        undo(visual);
+        assert_eq!(value(visual), original);
+        // Control: a file changed outside while in the Reader starts a new
+        // history; Undo has nothing from before to apply to it.
+        reader.update_in(visual, |r, window, cx| {
+            let input = r.editing.as_ref().unwrap().input.clone();
+            input.update(cx, |input, cx| {
+                input.replace_text_in_range(Some(end..end), "X", window, cx)
+            });
+            assert!(r.save_source(cx));
+        });
+        visual.run_until_parked();
+        round_trip(visual, Some("external\n"));
+        assert_eq!(value(visual), "external\n");
+        undo(visual);
+        assert_eq!(value(visual), "external\n");
         std::fs::remove_dir_all(directory).unwrap();
     }
 
