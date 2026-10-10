@@ -87,7 +87,6 @@ fn unsupported_and_malformed_blocks_have_positive_neighbor() {
         "**bold** [broken",
         "**bold** `broken",
         "**bold** ~single~",
-        "**bold** [ref][id]",
         "**bold** [label](dest \"title\")",
         "**bold** [label](a(b)c)",
         "**bold** [label](a\\)b)",
@@ -228,12 +227,17 @@ fn an_unresolved_reference_does_not_keep_its_resolved_neighbours_raw() {
         .map(|link| link.target.clone())
         .collect();
     assert_eq!(targets, ["https://example.com/after"; 5]);
-    // Control: a malformed inline link still keeps its whole block Source,
-    // valid formatting next to it included.
+    // Next to an unresolved reference, formatting renders and the reference
+    // stays as written: plain text, as in CommonMark and Obsidian.
+    assert_eq!(display("**bold** [ref][id]"), "bold [ref][id]");
+    // Control: a malformed inline link, a footnote, an embed or a wikilink
+    // left as text still keeps its whole block Source, formatting included.
     for raw in [
         "[docs](http://x **bold**\n",
         "see [a](b c) **bold**\n",
         "[^1] **bold**\n",
+        "![[embed]] **bold**\n",
+        "[[unclosed **bold**\n",
     ] {
         assert_eq!(display(raw), raw, "{raw:?}");
     }
