@@ -113,7 +113,8 @@ what goes and which vaults stay, then:
 3. moves `Okilum.app` to the Trash. If the user cannot write to `/Applications`,
    the app stays there; dragging it to the Trash finishes the job.
 
-The bundle id is read from the app's `Info.plist`, so the QA build
+The bundle id is read from the app's `Info.plist` (a build that is not inside an
+`.app` bundle cleans nothing after quitting), so the QA build
 (`com.befeast.okilum.intel-qa`) cleans its own domain; anything that is not
 `com.befeast.okilum[.*]` is left alone. Moving the app to the Trash alone
 cannot clean these up. There are no LaunchAgents, keychain items or URL

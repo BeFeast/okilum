@@ -429,7 +429,9 @@ const MACOS_CLEANUP: &str = r#"
 app=$1; pid=$2
 while kill -0 "$pid" 2>/dev/null; do sleep 0.5; done
 sleep 1
-id=$(defaults read "$app/Contents/Info" CFBundleIdentifier 2>/dev/null) || id=com.befeast.okilum
+# Only a real Okilum bundle names what to clean: no bundle, no guess.
+case "$app" in *.app) ;; *) exit 0 ;; esac
+id=$(defaults read "$app/Contents/Info" CFBundleIdentifier 2>/dev/null) || exit 0
 case "$id" in com.befeast.okilum|com.befeast.okilum.*) ;; *) exit 0 ;; esac
 defaults delete "$id" >/dev/null 2>&1
 lib="$HOME/Library"
@@ -805,6 +807,23 @@ mod tests {
             .collect();
         assert_eq!(trash.len(), 1);
         assert!(trash[0].path().join("Contents/Info.plist").exists());
+
+        // An executable outside an app bundle (a development build) must not
+        // fall back to the production id: nothing is cleaned.
+        write(&lib.join("Preferences/com.befeast.okilum.plist"), "x");
+        let loose = fixture.path().join("target/debug");
+        std::fs::create_dir_all(&loose).unwrap();
+        let status = std::process::Command::new("/bin/sh")
+            .args(["-c", MACOS_CLEANUP, "okilum-uninstall"])
+            .arg(&loose)
+            .arg(pid.to_string())
+            .env("HOME", &home)
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(lib.join("Preferences/com.befeast.okilum.plist").exists());
+        assert!(loose.exists());
     }
 
     #[test]
