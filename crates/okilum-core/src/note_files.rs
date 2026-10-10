@@ -279,7 +279,9 @@ mod tests {
     }
     #[test]
     fn typing_in_a_new_note_starts_after_its_frontmatter_and_heading() {
-        let at = |source: &str| &source[..body_start(source)];
+        fn at(source: &str) -> &str {
+            &source[..body_start(source)]
+        }
         // The default note: the caret is on the line after the H1.
         let note = "---\ntype: Note\ncreated: 2026-10-05\n---\n\n# Привет 🧠\n";
         assert_eq!(body_start(note), note.len());

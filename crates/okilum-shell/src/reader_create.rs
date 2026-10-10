@@ -439,7 +439,7 @@ impl Reader {
                 let body = okilum_core::note_files::body_start(&source);
                 if let Some(editing) = &self.editing {
                     editing
-                        .input
+                        .input()
                         .update(cx, |input, cx| input.set_selected_range(body..body, cx));
                 }
                 self.announce_creation(&created, Some(source), window, cx);
