@@ -32,7 +32,7 @@ pub(crate) fn report() -> String {
         channel(&crate::updater::channel()),
         os(),
         arch(),
-        install(),
+        install_kind(),
         source(env!("OKILUM_SOURCE_COMMIT")),
     )
 }
@@ -171,7 +171,7 @@ fn windows_value(name: &str) -> Option<String> {
 }
 
 /// How this copy was installed, without personal paths.
-fn install() -> String {
+fn install_kind() -> String {
     #[cfg(windows)]
     {
         if crate::updater::channel() == "Portable" {

@@ -8,7 +8,6 @@
 //! timing) is deliberately gone: it measured a decision that has been made.
 
 mod about;
-mod version_info;
 mod app_footprint;
 #[cfg(all(unix, feature = "brain"))]
 mod brain;
@@ -76,6 +75,7 @@ mod reader_settings;
 mod reader_settings_sync;
 mod reader_shortcuts;
 mod reader_sidebar;
+mod version_info;
 use reader_sidebar::SectionAction;
 mod reader_link_navigation;
 mod reader_navigation;
