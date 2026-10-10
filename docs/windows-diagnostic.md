@@ -14,6 +14,9 @@ or folder onto the executable. Command-line examples:
 .\okilum.exe --vault "C:\Users\Oleg\Obsidian Vault" --note "Dev/Example.md"
 ```
 
+Sync is not part of the portable build: it installs no background helper or
+login task and leaves nothing behind. Use the installer for sync (#1037).
+
 Brain, managed workspace, export, note creation, rename/move and source editing are unavailable. Ctrl+E
 shows "Editing is not available on Windows yet". No Windows update feed is used.
 The header's More (⋯) menu provides Open file/folder, Appearance, About and Quit.
