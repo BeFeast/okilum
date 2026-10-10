@@ -995,6 +995,10 @@ impl Reader {
             .child(
                 Editor::new(&editing.input)
                     .appearance(false)
+                    .map(|editor| {
+                        let (left, right) = self.note_text_margins(window, cx);
+                        editor.text_margins(left, right)
+                    })
                     .context_menu({
                         let facts = editing.menu_facts.clone();
                         move |menu, _, cx| reader_reminder::editor_menu(menu, &facts, cx)

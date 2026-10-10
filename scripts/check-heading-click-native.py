@@ -10,7 +10,8 @@ import os, shutil, subprocess, sys, time
 from pathlib import Path
 
 binary, work, label = sys.argv[1], Path(sys.argv[2]), sys.argv[3]
-HX, HY = int(os.environ.get('HX', '385')), int(os.environ.get('HY', '160'))  # click in `Demo`
+# Click in `Demo`: the H1 is twice the body size, after the note gutter (#1034).
+HX, HY = int(os.environ.get('HX', '500')), int(os.environ.get('HY', '172'))
 PY = int(os.environ.get('PY', '114'))  # a paragraph row
 CROP = os.environ.get('CROP', '60x26+296+147')  # WxH+X+Y of the heading's left edge
 

@@ -171,6 +171,37 @@ fn reader_bottom_space(viewport_height: Pixels) -> Pixels {
 const READER_MAX_WIDTH: f32 = 740.;
 const READER_SIDE_PADDING: f32 = 40.;
 
+/// Left gutter of the note text, the same in Reader, Source and Live Preview
+/// so text does not move between them. It holds a revealed heading marker
+/// (`##`) in Live Preview (#1034): 48 px, narrowing linearly to 24 px at the
+/// 600 px minimum window so narrow windows keep their text width.
+fn note_gutter(window: &Window) -> Pixels {
+    let width = f32::from(window.viewport_size().width);
+    px((24. + (width - 600.) * 24. / 400.).clamp(24., 48.))
+}
+
+impl Reader {
+    /// Left and right margins of the note text across the whole document
+    /// pane: Reader's centred column (reading width) with its gutter and right
+    /// padding. The editor fills the pane, so wheel scrolling works over the
+    /// margins, and uses these so text keeps its x and line width between
+    /// Reader, Source and Live Preview.
+    fn note_text_margins(&self, window: &Window, cx: &App) -> (Pixels, Pixels) {
+        let available = f32::from(self.body_bounds.size.width);
+        let pane = if reader_layout::overlay(available) {
+            available
+        } else {
+            let widths = self.panels.widths(&self.panel_widths, available);
+            available - widths.notes - widths.backlinks
+        };
+        let offset = ((pane - reader_ui_state::reading_width(cx)) / 2.).max(0.);
+        (
+            px(offset) + note_gutter(window),
+            px(offset + READER_SIDE_PADDING),
+        )
+    }
+}
+
 /// Key context of the reader window. Every binding below is scoped to it so
 /// the inputs keep their own (`Input`) bindings: gpui dispatches the deepest
 /// matching binding first, and an input that does not consume a key (Escape,
@@ -4870,7 +4901,8 @@ impl Reader {
                                         .selection_format(self.sel_format)
                                         .style(style)
                                         .text_size(px(reader_ui_state::font_size(cx)))
-                                        .px(px(READER_SIDE_PADDING))
+                                        .pl(note_gutter(window))
+                                        .pr(px(READER_SIDE_PADDING))
                                         .pt(self.reader_top_inset(cx))
                                         .w_full()
                                         .flex_1()
@@ -7113,11 +7145,11 @@ mod document_link_landing_tests {
     }
 
     /// A point a few pixels inside the first text line of the centred
-    /// Reader column (docs/design/reader.md: ≤740px, 40px sides, 44px top).
+    /// Reader column (docs/design/reader.md: ≤740px, left gutter ≤48px, 44px top).
     fn reader_text_origin(document: Bounds<Pixels>) -> Point<Pixels> {
         let column = document.size.width.min(px(READER_MAX_WIDTH));
         point(
-            document.left() + (document.size.width - column) / 2. + px(READER_SIDE_PADDING + 4.),
+            document.left() + (document.size.width - column) / 2. + px(48. + 8.),
             document.top() + px(44. + 20.),
         )
     }

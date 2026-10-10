@@ -1,5 +1,5 @@
 diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
-index ccd5f88f..abbd3661 100644
+index ccd5f88f..dd455dea 100644
 --- a/crates/base/src/input/base/element.rs
 +++ b/crates/base/src/input/base/element.rs
 @@ -420,6 +420,17 @@ pub(super) struct TextElement<M: InputModeKind> {
@@ -118,7 +118,22 @@ index ccd5f88f..abbd3661 100644
          let viewport_top = (-scroll_top).max(px(0.));
          let viewport_bottom = viewport_top + input_height;
          let first_display = rows.row_at(viewport_top).min(display_count - 1);
-@@ -1213,6 +1225,7 @@ impl<M: InputModeKind> TextElement<M> {
+@@ -1040,10 +1052,11 @@ impl<M: InputModeKind> TextElement<M> {
+             );
+ 
+             empty_line_number.width + LINE_NUMBER_RIGHT_MARGIN
+-        } else if state.is_code_editor() {
+-            LINE_NUMBER_RIGHT_MARGIN
+         } else {
+-            px(0.)
++            // Without line numbers the space is empty; it widens to the text
++            // gutter the app asked for.
++            let margin = if state.is_code_editor() { LINE_NUMBER_RIGHT_MARGIN } else { px(0.) };
++            margin.max(state.text_gutter - state.editor_paddings.left)
+         };
+ 
+         if state.mode.is_folding() {
+@@ -1213,6 +1226,7 @@ impl<M: InputModeKind> TextElement<M> {
              is_folded: bool,
              display_row: usize,
              offset_y: Pixels,
@@ -126,7 +141,7 @@ index ccd5f88f..abbd3661 100644
          }
  
          let line_number_hitbox = window.insert_hitbox(
-@@ -1249,25 +1262,26 @@ impl<M: InputModeKind> TextElement<M> {
+@@ -1249,25 +1263,26 @@ impl<M: InputModeKind> TextElement<M> {
                          is_folded,
                          display_row: buffer_line,
                          offset_y,
@@ -159,7 +174,7 @@ index ccd5f88f..abbd3661 100644
              // Position fold icon to the right of line numbers.
              // Use origin_x (unscrolled) so icons stay fixed in the gutter during horizontal scroll.
              let fold_icon_bounds = Bounds::new(
-@@ -1446,6 +1460,8 @@ impl<M: InputModeKind> TextElement<M> {
+@@ -1446,6 +1461,8 @@ impl<M: InputModeKind> TextElement<M> {
  
              let mut wrapped_lines: SmallVec<[ShapedLine; 1]> = SmallVec::with_capacity(1);
              let mut line_has_background = false;
@@ -168,7 +183,7 @@ index ccd5f88f..abbd3661 100644
  
              for range in &line_item.wrapped_lines {
                  let line_runs = runs_for_range(runs, run_offset, &range);
-@@ -1466,7 +1482,7 @@ impl<M: InputModeKind> TextElement<M> {
+@@ -1466,7 +1483,7 @@ impl<M: InputModeKind> TextElement<M> {
                  let shape_start = attribution::now();
                  let shaped_line = window
                      .text_system()
@@ -177,15 +192,28 @@ index ccd5f88f..abbd3661 100644
                  trace.shape_finished(shape_start);
  
                  line_has_background |= has_background(&line_runs);
-@@ -1486,6 +1502,7 @@ impl<M: InputModeKind> TextElement<M> {
+@@ -1485,7 +1502,20 @@ impl<M: InputModeKind> TextElement<M> {
+                 px(0.)
              };
  
++            // A revealed heading marker hangs in the margin; the text after it
++            // keeps the position it has while the marker is concealed.
++            let hang_bytes = state.display_map.line_hang(buffer_line);
++            // It hangs only if it fits the left padding; otherwise it stays
++            // inline, as it would be clipped at the editor's edge.
++            let hang = match wrapped_lines.first() {
++                Some(first) if hang_bytes > 0 && hang_bytes <= first.len => first.x_for_index(hang_bytes),
++                _ => px(0.),
++            };
++            let hang = if hang <= state.hang_room(last_layout.line_number_width) { hang } else { px(0.) };
++
              let line_layout = LineLayout::new()
 +                .first_row(state.display_map.buffer_line_to_display_row(buffer_line))
++                .hang(hang)
                  .lines(wrapped_lines)
                  .wrap_indent(wrap_indent)
                  .with_background(line_has_background)
-@@ -1822,7 +1839,8 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -1822,7 +1852,8 @@ impl<M: InputModeKind> Element for TextElement<M> {
              let mut y = last.visible_top;
              for (line, start) in last.lines.iter().zip(&last.visible_line_byte_offsets) {
                  let mut projected = *start;
@@ -195,7 +223,7 @@ index ccd5f88f..abbd3661 100644
                      let screen_y = y + initial.scroll_handle.offset().y;
                      if screen_y >= px(0.) && screen_y < bounds.size.height {
                          let old = last.source(projected, ConcealBias::Right)?;
-@@ -1830,7 +1848,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -1830,7 +1861,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
                          return Some((current, y, false));
                      }
                      projected += row.len;
@@ -204,7 +232,7 @@ index ccd5f88f..abbd3661 100644
                  }
              }
              None
-@@ -1935,7 +1953,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -1935,7 +1966,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
              if let Some((offset, old_y, affinity)) = source_anchor {
                  let row = state.display_map.offset_to_wrap_display_point_with_affinity(
                      offset, affinity).row;
@@ -213,7 +241,7 @@ index ccd5f88f..abbd3661 100644
                  let new_y = rows.row_top(row);
                  let delta = old_y - new_y;
                  {
-@@ -1956,7 +1974,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -1956,7 +1987,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
              }
              // User scroll toward the natural extent retires the lease. Never
              // grow it from scroll alone or retain it after disabling projection.
@@ -222,7 +250,7 @@ index ccd5f88f..abbd3661 100644
                  .rows_height(state.display_map.wrap_row_count())
                  + empty_bottom_height(state.is_code_editor(), state.scroll_beyond_last_line,
                      bounds.size.height, window.line_height())).max(bounds.size.height);
-@@ -2025,7 +2043,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -2025,7 +2056,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
              visible_top,
              visible_range_offset,
              line_height,
@@ -231,7 +259,7 @@ index ccd5f88f..abbd3661 100644
              wrap_width,
              wrapping_indent,
              line_number_width,
-@@ -2174,7 +2192,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -2174,7 +2205,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
              } else {
                  longest_line_width
              },
@@ -240,7 +268,7 @@ index ccd5f88f..abbd3661 100644
                  + empty_bottom_height.max(ghost_lines_height))
              .max(bounds.size.height) + state.projection_anchor_tail,
          );
-@@ -2401,13 +2419,17 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -2401,13 +2432,17 @@ impl<M: InputModeKind> Element for TextElement<M> {
              offset_y += invisible_top_padding;
  
              // Each item is the normal lines.
@@ -260,7 +288,7 @@ index ccd5f88f..abbd3661 100644
                  // Paint the current line background
                  if is_active {
                      if let Some(bg_color) = active_line_color {
-@@ -2452,14 +2474,15 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -2452,14 +2487,15 @@ impl<M: InputModeKind> Element for TextElement<M> {
  
              // Code block rows (#868): a quiet background under selection and text.
              if let Some(rows) = prepaint.code_rows.get(line_index).filter(|_| marker_source_matches) {
@@ -278,21 +306,22 @@ index ccd5f88f..abbd3661 100644
                                  ),
                              ),
                              editor_style.foreground.opacity(0.05),
-@@ -2542,10 +2565,11 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -2542,10 +2578,11 @@ impl<M: InputModeKind> Element for TextElement<M> {
  
              let rows = prepaint.marker_rows.get(line_index).filter(|rows| marker_source_matches && rows.iter().any(Option::is_some));
              if let Some(rows) = rows {
 +                let line_rows = line.rows(&prepaint.last_layout.rows);
                  for (row_index, row) in line.wrapped_lines.iter().enumerate() {
-                     let indent = if row_index == 0 { px(0.) } else { line.wrap_indent };
+-                    let indent = if row_index == 0 { px(0.) } else { line.wrap_indent };
 -                    let row_top = prepaint.last_layout.rows.row_top(row_index);
 -                    let row_height = prepaint.last_layout.rows.row_height(row_index);
++                    let indent = line.line_indent(row_index);
 +                    let row_top = line_rows.row_top(row_index);
 +                    let row_height = line_rows.row_height(row_index);
                      let row_origin = p + point(indent, row_top);
                      if let Some(Some(paint)) = rows.get(row_index) {
                          paint.paint(row_origin, row_height, prepaint.last_layout.content_width - indent,
-@@ -2622,14 +2646,18 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -2622,14 +2659,18 @@ impl<M: InputModeKind> Element for TextElement<M> {
              window.paint_quad(fill(gutter_bounds, gutter_bg));
  
              // Each item is the normal lines.
@@ -676,7 +705,7 @@ index db5faf12..0a819f91 100644
          if self.source_stamp.document != current.document {
              return None;
 diff --git a/crates/base/src/input/base/movement.rs b/crates/base/src/input/base/movement.rs
-index 67b60282..8927241c 100644
+index 67b60282..34169767 100644
 --- a/crates/base/src/input/base/movement.rs
 +++ b/crates/base/src/input/base/movement.rs
 @@ -77,7 +77,7 @@ impl<M: InputModeKind> InputBaseState<M> {
@@ -688,7 +717,44 @@ index 67b60282..8927241c 100644
          };
          let Some((index, affinity, bidi_affinity)) = hit else {
              return;
-@@ -333,7 +333,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+@@ -232,7 +232,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+         } else {
+             let row = self.text.offset_to_point(self.cursor()).row;
+             let (start, line) =
+-                Self::projected_line_layout(current.as_ref(), &current_map, last, row, window)?;
++                Self::projected_line_layout(current.as_ref(), &current_map, last, row, self.hang_room(last.line_number_width), window)?;
+             let offset = current
+                 .to_projected(SourceByte(self.cursor()), ConcealBias::Right)?
+                 .0;
+@@ -257,6 +257,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+             last,
+             target_row,
+             preferred,
++            self.hang_room(last.line_number_width),
+             window,
+         )?;
+         let mut active = self.projection.active.clone();
+@@ -291,6 +292,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+             last,
+             target.row,
+             preferred,
++            self.hang_room(last.line_number_width),
+             window,
+         )?;
+         active.anchor = SourceByte(resolved.0);
+@@ -323,17 +325,18 @@ impl<M: InputModeKind> InputBaseState<M> {
+         last: &super::layout::LastLayout,
+         wrap_row: usize,
+         preferred: gpui::Pixels,
++        hang_room: gpui::Pixels,
+         window: &Window,
+     ) -> Option<(usize, bool)> {
+         let row = map.display_row_to_buffer_line(wrap_row);
+-        let (start, line) = Self::projected_line_layout(projection, map, last, row, window)?;
++        let (start, line) = Self::projected_line_layout(projection, map, last, row, hang_room, window)?;
+         let first_source =
+             projection.to_source(super::projection::ProjectedByte(start), ConcealBias::Right)?;
+         let first = map.offset_to_wrap_display_point(first_source.0);
          let (index, affinity) = line.closest_index_for_position(
              Point {
                  x: preferred,
@@ -697,7 +763,23 @@ index 67b60282..8927241c 100644
              },
              last,
          )?;
-@@ -370,12 +370,14 @@ impl<M: InputModeKind> InputBaseState<M> {
+@@ -354,13 +357,14 @@ impl<M: InputModeKind> InputBaseState<M> {
+         map: &super::display_map::DisplayMap,
+         last: &super::layout::LastLayout,
+         row: usize,
++        hang_room: gpui::Pixels,
+         window: &Window,
+     ) -> Option<(usize, super::display_map::LineLayout)> {
+         let displayed = ropey::Rope::from(projection.text());
+         let start = displayed.line_start_offset(row);
+         let text = displayed.slice_line(row).to_string();
+         let item = map.line(row)?;
+-        let mut shaped = smallvec::SmallVec::new();
++        let mut shaped: smallvec::SmallVec<[gpui::ShapedLine; 1]> = smallvec::SmallVec::new();
+         for range in &item.wrapped_lines {
+             let runs = super::projection_layout::projected_runs(
+                 projection,
+@@ -370,12 +374,21 @@ impl<M: InputModeKind> InputBaseState<M> {
              );
              shaped.push(window.text_system().shape_line(
                  text[range.clone()].to_string().into(),
@@ -708,13 +790,20 @@ index 67b60282..8927241c 100644
              ));
          }
 -        let line = super::display_map::LineLayout::new().lines(shaped);
++        let hang_bytes = map.line_hang(row);
++        let hang = match shaped.first() {
++            Some(first) if hang_bytes > 0 && hang_bytes <= first.len => first.x_for_index(hang_bytes),
++            _ => gpui::px(0.),
++        };
++        let hang = if hang <= hang_room { hang } else { gpui::px(0.) };
 +        let line = super::display_map::LineLayout::new()
 +            .first_row(map.buffer_line_to_display_row(row))
++            .hang(hang)
 +            .lines(shaped);
          Some((start, line))
      }
  
-@@ -463,7 +465,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+@@ -463,7 +476,7 @@ impl<M: InputModeKind> InputBaseState<M> {
                  if let Some((x, line_end_affinity, bidi_affinity)) = line.closest_caret_for_position(
                      Point {
                          x: preferred_x,
@@ -724,10 +813,53 @@ index 67b60282..8927241c 100644
                      last_layout,
                  ) {
 diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
-index 62d0ed03..622211cd 100644
+index 62d0ed03..b108fb32 100644
 --- a/crates/base/src/input/base/state.rs
 +++ b/crates/base/src/input/base/state.rs
-@@ -920,14 +920,13 @@ impl<M: InputModeKind> InputBaseState<M> {
+@@ -394,6 +394,7 @@ pub struct InputBaseState<M: InputModeKind> {
+     pub(crate) scroll_size: gpui::Size<Pixels>,
+     pub(super) editor_scrollbar_snapshot: Cell<Option<EditorScrollbarSnapshot>>,
+     pub(super) editor_paddings: Edges<Pixels>,
++    pub(super) text_gutter: Pixels,
+     /// The style this state paints with: what was projected onto it, with
+     /// every colour left unset resolved from the palette that is current. It
+     /// is rebuilt at the top of every render, which is what keeps it current
+@@ -726,6 +727,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+             scroll_size: gpui::size(px(0.), px(0.)),
+             editor_scrollbar_snapshot: Cell::new(None),
+             editor_paddings: Edges::default(),
++            text_gutter: px(0.),
+             deferred_scroll_offset: None,
+             preferred_column: None,
+             placeholder: SharedString::default(),
+@@ -859,6 +861,26 @@ impl<M: InputModeKind> InputBaseState<M> {
+         self.projected_editor_style = style;
+     }
+ 
++    /// Room left of the text for a hanging prefix: the empty space from the
++    /// editor's edge to the text, less a little air so a marker never touches
++    /// the edge. None beside line numbers.
++    pub(super) fn hang_room(&self, line_number_width: Pixels) -> Pixels {
++        if self.mode.line_number() {
++            return px(0.);
++        }
++        (self.editor_paddings.left + line_number_width - px(4.)).max(px(0.))
++    }
++
++    /// Keep at least `gutter` from the editor's edge to the text when there
++    /// are no line numbers (#1034). A revealed leading marker that fits hangs
++    /// in it instead of moving the text.
++    pub fn set_text_gutter(&mut self, gutter: Pixels) {
++        if self.text_gutter != gutter {
++            self.projection.presentation_changed();
++        }
++        self.text_gutter = gutter;
++    }
++
+     /// Set presentation padding for multi-line text and its scrollbar layout.
+     #[doc(hidden)]
+     pub fn set_editor_paddings(&mut self, paddings: Edges<Pixels>) {
+@@ -920,14 +942,13 @@ impl<M: InputModeKind> InputBaseState<M> {
          let Some(offset) = last_layout.project(offset, ConcealBias::Right) else {
              return (0, 0, None);
          };
@@ -743,7 +875,7 @@ index 62d0ed03..622211cd 100644
                  let adjusted_pos = point(pos.x + last_layout.line_number_width, pos.y + y_offset);
                  return (vi, sub_line_index, Some(adjusted_pos));
              }
-@@ -2341,6 +2340,9 @@ impl<M: InputModeKind> InputBaseState<M> {
+@@ -2341,6 +2362,9 @@ impl<M: InputModeKind> InputBaseState<M> {
              }
          }
  
@@ -753,7 +885,7 @@ index 62d0ed03..622211cd 100644
          // Scroll the row into view. Use the same edge clearance helper as
          // `TextElement::layout_cursor` so both scroll-into-view paths agree
          // (a mismatch flickered on `Down` at end-of-buffer with a small
-@@ -2353,11 +2355,11 @@ impl<M: InputModeKind> InputBaseState<M> {
+@@ -2353,11 +2377,11 @@ impl<M: InputModeKind> InputBaseState<M> {
                  line_height,
              )
          } else {
@@ -768,7 +900,7 @@ index 62d0ed03..622211cd 100644
          } else if row_offset_y + edge_height > -scroll_offset.y + bounds.size.height {
              // Scroll down
              scroll_offset.y = -(row_offset_y - bounds.size.height + edge_height);
-@@ -2777,7 +2779,6 @@ impl<M: InputModeKind> InputBaseState<M> {
+@@ -2777,7 +2801,6 @@ impl<M: InputModeKind> InputBaseState<M> {
              return Some((0, false, Affinity::Before));
          };
  
@@ -776,7 +908,7 @@ index 62d0ed03..622211cd 100644
          let line_number_width = last_layout.line_number_width;
          // Masked display offsets are not source offsets; they have no bidi runs anyway.
          let anchor = (extending && !self.masked)
-@@ -3320,7 +3321,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+@@ -3320,7 +3343,7 @@ impl<M: InputModeKind> InputBaseState<M> {
  
          Some(Bounds::from_corners(
              last_bounds.origin + start_pos,
@@ -785,7 +917,7 @@ index 62d0ed03..622211cd 100644
          ))
      }
  
-@@ -3769,7 +3770,6 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
+@@ -3769,7 +3792,6 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
          if self.projection.enabled && last_layout.source_stamp != self.source_stamp() {
              return None;
          }
@@ -793,7 +925,7 @@ index 62d0ed03..622211cd 100644
          let line_number_width = last_layout.line_number_width;
          let range = self.checked_native_range(&range_utf16)?;
          let range = last_layout.project(range.start, ConcealBias::Left)?
-@@ -3819,8 +3819,9 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
+@@ -3819,8 +3841,9 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
  
          Some(Bounds::from_corners(
              bounds.origin + line_number_origin + point(start_origin.x.min(end_origin.x), start_origin.y),
@@ -805,25 +937,32 @@ index 62d0ed03..622211cd 100644
          ))
      }
  
-@@ -4302,6 +4303,114 @@ mod tests {
+@@ -4302,6 +4325,178 @@ mod tests {
          }
      }
  
-+    /// Identity projection whose line 1 is a heading at twice the font size.
-+    struct ScaledLineProvider;
-+    struct ScaledLineProjection(super::super::projection::SourceSnapshot);
++    /// Identity projection whose line 1 is a heading at twice the font size,
++    /// with `hang` leading bytes in the margin.
++    struct ScaledLineProvider {
++        hang: usize,
++    }
++    struct ScaledLineProjection(
++        super::super::projection::SourceSnapshot,
++        [super::super::projection::LineScale; 1],
++    );
 +    impl ProjectionProvider for ScaledLineProvider {
 +        fn compose(
 +            &self,
 +            source: &super::super::projection::SourceSnapshot,
 +            _: &ActiveSource,
 +        ) -> Option<Arc<dyn super::super::projection::SourceProjection>> {
-+            Some(Arc::new(ScaledLineProjection(source.clone())))
++            let scale = super::super::projection::LineScale { line: 1, scale: 2., hang: self.hang };
++            Some(Arc::new(ScaledLineProjection(source.clone(), [scale])))
 +        }
 +    }
 +    impl super::super::projection::SourceProjection for ScaledLineProjection {
 +        fn line_scales(&self) -> &[super::super::projection::LineScale] {
-+            &[super::super::projection::LineScale { line: 1, scale: 2. }]
++            &self.1
 +        }
 +        fn source(&self) -> &super::super::projection::SourceSnapshot {
 +            &self.0
@@ -864,7 +1003,7 @@ index 62d0ed03..622211cd 100644
 +        v.update(|window, cx| {
 +            view.input.update(cx, |state, cx| {
 +                state.set_value(text, window, cx);
-+                state.set_projection_provider(Some(Arc::new(ScaledLineProvider)), cx);
++                state.set_projection_provider(Some(Arc::new(ScaledLineProvider { hang: 0 })), cx);
 +                window.activate_window();
 +                state.focus(window, cx);
 +            })
@@ -917,14 +1056,71 @@ index 62d0ed03..622211cd 100644
 +        });
 +    }
 +
++    #[gpui::test]
++    fn hanging_marker_keeps_the_heading_text_at_the_line_start(cx: &mut TestAppContext) {
++        cx.update(crate::init);
++        let view = InputView::build_editor(cx, |state| {
++            state
++                .folding(false)
++                .searchable(false)
++                .wrapping_indent(super::super::WrappingIndent::None)
++                .line_number(false)
++        });
++        let mut v = VisualTestContext::from_window(view.window_handle.into(), cx);
++        let text = "abcd\n## abcd\nabcd";
++        v.update(|window, cx| {
++            view.input.update(cx, |state, cx| {
++                state.set_value(text, window, cx);
++                // Room for the hanging `## ` left of the text.
++                state.set_text_gutter(px(80.));
++                state.set_projection_provider(Some(Arc::new(ScaledLineProvider { hang: 3 })), cx);
++                window.activate_window();
++                state.focus(window, cx);
++            })
++        });
++        v.run_until_parked();
++        v.update(|window, cx| {
++            view.input.update(cx, |state, cx| {
++                let layout = state.last_layout.as_ref().unwrap();
++                // The gutter is the distance from the editor's edge to the text.
++                assert_eq!(state.editor_paddings.left + layout.line_number_width, px(80.));
++                let heading = &layout.lines[1];
++                // The text after `## ` starts where the line starts; the marker
++                // sits left of it.
++                let text_start = heading.position_for_index(3, layout, false).unwrap();
++                let marker = heading.position_for_index(0, layout, false).unwrap();
++                assert!(f32::from(text_start.x).abs() < 0.01, "{text_start:?}");
++                assert!(marker.x < px(-1.), "{marker:?}");
++                // A click on the heading text hits it; vertical movement from
++                // column 0 of the body lands on the heading text, not the marker.
++                let (hit, _) = heading
++                    .closest_index_for_position(point(px(0.5), layout.rows.row_height(1) * 0.5), layout)
++                    .unwrap();
++                assert_eq!(hit, 3);
++                state.move_vertical(1, window, cx);
++                assert_eq!(state.cursor(), "abcd\n## ".len());
++                // Without room the marker stays inline instead of being clipped.
++                state.set_text_gutter(px(0.));
++                cx.notify();
++            })
++        });
++        v.run_until_parked();
++        v.update(|_, cx| {
++            let state = view.input.read(cx);
++            let layout = state.last_layout.as_ref().unwrap();
++            let marker = layout.lines[1].position_for_index(0, layout, false).unwrap();
++            assert!(f32::from(marker.x).abs() < 0.01, "{marker:?}");
++        });
++    }
++
      #[gpui::test]
      fn presentation_anchor_survives_unpainted_edits_without_stale_hit_layout(cx: &mut TestAppContext) {
          cx.update(crate::init);
 diff --git a/crates/base/src/input/editor/display_map/display_map.rs b/crates/base/src/input/editor/display_map/display_map.rs
-index d7c3406c..b3a78ddb 100644
+index d7c3406c..f8d503d9 100644
 --- a/crates/base/src/input/editor/display_map/display_map.rs
 +++ b/crates/base/src/input/editor/display_map/display_map.rs
-@@ -130,6 +130,35 @@ impl DisplayMap {
+@@ -130,6 +130,43 @@ impl DisplayMap {
          }
      }
  
@@ -933,6 +1129,14 @@ index d7c3406c..b3a78ddb 100644
 +    pub(crate) fn line_scale(&self, line: usize) -> f32 {
 +        self.projection.as_ref().map_or(1., |pin| {
 +            crate::input::projection::line_scale(pin.projection.line_scales(), line)
++        })
++    }
++
++    /// The hanging prefix of buffer `line` in bytes under the installed
++    /// projection; 0 in Source.
++    pub(crate) fn line_hang(&self, line: usize) -> usize {
++        self.projection.as_ref().map_or(0, |pin| {
++            crate::input::projection::line_hang(pin.projection.line_scales(), line)
 +        })
 +    }
 +
@@ -961,7 +1165,7 @@ index d7c3406c..b3a78ddb 100644
      #[inline]
      pub fn is_buffer_line_hidden(&self, line: usize) -> bool {
 diff --git a/crates/base/src/input/editor/display_map/text_wrapper.rs b/crates/base/src/input/editor/display_map/text_wrapper.rs
-index 223ae195..7338aac6 100644
+index 223ae195..e88530a9 100644
 --- a/crates/base/src/input/editor/display_map/text_wrapper.rs
 +++ b/crates/base/src/input/editor/display_map/text_wrapper.rs
 @@ -1,5 +1,5 @@
@@ -992,7 +1196,17 @@ index 223ae195..7338aac6 100644
                      &runs,
                      self.wrap_width,
                      None,
-@@ -605,6 +607,9 @@ pub(crate) struct LineLayout {
+@@ -597,6 +599,9 @@ pub(crate) struct LineLayout {
+     /// Extra left offset applied to continuation wrapped lines, used to reserve the first line's
+     /// indentation when [`WrappingIndent::Same`] is used.
+     pub(crate) wrap_indent: Pixels,
++    /// Width of the first row's leading text drawn left of the line start,
++    /// in the margin: a revealed heading marker (S6b, #1034).
++    hang: Pixels,
+     pub(crate) longest_width: Pixels,
+     pub(crate) whitespace_indicators: Option<WhitespaceIndicators>,
+     /// Whitespace indicators: (line_index, x_position, is_tab)
+@@ -605,6 +610,9 @@ pub(crate) struct LineLayout {
      /// can skip the glyph walk for the common case of a line without highlights.
      has_background: bool,
      bidi: Vec<Option<Geometry>>,
@@ -1002,7 +1216,12 @@ index 223ae195..7338aac6 100644
  }
  
  impl LineLayout {
-@@ -618,9 +623,21 @@ impl LineLayout {
+@@ -614,13 +622,26 @@ impl LineLayout {
+             longest_width: px(0.),
+             wrapped_lines: SmallVec::new(),
+             wrap_indent: px(0.),
++            hang: px(0.),
+             whitespace_chars: Vec::new(),
              whitespace_indicators: None,
              has_background: false,
              bidi: Vec::new(),
@@ -1024,7 +1243,30 @@ index 223ae195..7338aac6 100644
      /// Record whether any run of this line carries a background color.
      pub(crate) fn with_background(mut self, has_background: bool) -> Self {
          self.has_background = has_background;
-@@ -713,7 +730,7 @@ impl LineLayout {
+@@ -633,12 +654,19 @@ impl LineLayout {
+         self
+     }
+ 
++    /// Draw the first `hang` pixels of the first row left of the line start.
++    pub(crate) fn hang(mut self, hang: Pixels) -> Self {
++        self.hang = hang;
++        self
++    }
++
+     /// The pixel indent applied to the given visual line, relative to the line's
+-    /// leading text. Only continuation lines (index > 0) are indented.
++    /// leading text. Continuation lines (index > 0) are indented; the first row
++    /// moves left by its hanging prefix.
+     #[inline]
+-    fn line_indent(&self, line_index: usize) -> Pixels {
++    pub(crate) fn line_indent(&self, line_index: usize) -> Pixels {
+         if line_index == 0 {
+-            px(0.)
++            -self.hang
+         } else {
+             self.wrap_indent
+         }
+@@ -713,7 +741,7 @@ impl LineLayout {
      pub(crate) fn position_for_caret(&self, offset: usize, last_layout: &LastLayout,
          line_end_affinity: bool, affinity: Affinity) -> Option<Point<Pixels>> {
          let mut acc_len = 0;
@@ -1033,7 +1275,7 @@ index 223ae195..7338aac6 100644
  
          let x_offset = last_layout.alignment_offset(self.longest_width);
  
-@@ -740,13 +757,12 @@ impl LineLayout {
+@@ -740,13 +768,12 @@ impl LineLayout {
                  }).unwrap_or_else(|| line.x_for_index(local))
                      + x_offset
                      + self.line_indent(i);
@@ -1048,7 +1290,7 @@ index 223ae195..7338aac6 100644
          }
  
          None
-@@ -762,17 +778,17 @@ impl LineLayout {
+@@ -762,17 +789,17 @@ impl LineLayout {
          last_layout: &LastLayout,
      ) -> Option<(usize, usize, Pixels)> {
          let mut offset = 0;
@@ -1070,7 +1312,7 @@ index 223ae195..7338aac6 100644
          }
  
          None
-@@ -898,8 +914,8 @@ impl LineLayout {
+@@ -898,8 +925,8 @@ impl LineLayout {
                      else { vec![line.x_for_index(local.start)..line.x_for_index(local.end)] };
                  let x = last.alignment_offset(self.longest_width) + self.line_indent(i);
                  for span in spans {
@@ -1081,7 +1323,7 @@ index 223ae195..7338aac6 100644
                  }
              }
              start = end;
-@@ -907,7 +923,7 @@ impl LineLayout {
+@@ -907,7 +934,7 @@ impl LineLayout {
          if range.start <= self.len && range.end > self.len {
              if let Some(pos) = self.position_for_caret(self.len, last, true, Affinity::After) {
                  let last_row = self.wrapped_lines.len().saturating_sub(1);
@@ -1090,7 +1332,7 @@ index 223ae195..7338aac6 100644
              }
          }
          result
-@@ -934,7 +950,7 @@ impl LineLayout {
+@@ -934,7 +961,7 @@ impl LineLayout {
              .map(|(ix, line)| line.width + self.line_indent(ix))
              .max()
              .unwrap_or(self.longest_width);
@@ -1099,7 +1341,7 @@ index 223ae195..7338aac6 100644
      }
  
      /// Paint only the glyph background quads of this line.
-@@ -950,6 +966,7 @@ impl LineLayout {
+@@ -950,6 +977,7 @@ impl LineLayout {
          window: &mut Window,
          cx: &mut App,
      ) {
@@ -1107,7 +1349,7 @@ index 223ae195..7338aac6 100644
          // Painting a background walks every glyph and pushes a scene layer, so skip the
          // whole pass for lines that have no background color to paint.
          if !self.has_background {
-@@ -977,6 +994,7 @@ impl LineLayout {
+@@ -977,6 +1005,7 @@ impl LineLayout {
          window: &mut Window,
          cx: &mut App,
      ) {
@@ -1145,7 +1387,7 @@ index 58028063..aff732f2 100644
          }
  
 diff --git a/crates/base/src/input/projection.rs b/crates/base/src/input/projection.rs
-index 97f7915a..cb1e4872 100644
+index 97f7915a..df25f063 100644
 --- a/crates/base/src/input/projection.rs
 +++ b/crates/base/src/input/projection.rs
 @@ -78,8 +78,8 @@ pub struct SourceClick {
@@ -1159,7 +1401,7 @@ index 97f7915a..cb1e4872 100644
  #[derive(Clone, Debug, PartialEq)]
  pub struct ProjectionStyle {
      pub range: Range<ProjectedByte>,
-@@ -101,8 +101,34 @@ pub struct ProjectionMarker {
+@@ -101,8 +101,43 @@ pub struct ProjectionMarker {
      pub kind: MarkerKind,
  }
  
@@ -1170,6 +1412,10 @@ index 97f7915a..cb1e4872 100644
 +    /// Line index in the projected text.
 +    pub line: usize,
 +    pub scale: f32,
++    /// Projected bytes at the start of the line drawn in the left margin, so
++    /// the text after them stays where it is when they are concealed: a
++    /// revealed heading marker. 0 for none.
++    pub hang: usize,
 +}
 +
 +/// The largest line scale honoured; larger requests are clamped.
@@ -1184,6 +1430,11 @@ index 97f7915a..cb1e4872 100644
 +    }
 +}
 +
++/// The hanging prefix of projected `line`, in bytes.
++pub fn line_hang(scales: &[LineScale], line: usize) -> usize {
++    scales.binary_search_by_key(&line, |s| s.line).map_or(0, |ix| scales[ix].hang)
++}
++
  pub trait SourceProjection: Send + Sync {
      fn markers(&self) -> &[ProjectionMarker] { &[] }
 +    /// Lines drawn larger than the editor font, sorted by line without
@@ -1194,3 +1445,135 @@ index 97f7915a..cb1e4872 100644
      /// Immutable reveal decision used to compose this projection. Providers that
      /// do not expose a policy retain raw marker foreground by default.
      fn marker_scope_is_raw(&self, _scope: &Range<SourceByte>) -> bool {
+diff --git a/crates/component/src/input/editor.rs b/crates/component/src/input/editor.rs
+index 9e3c6862..380b1656 100644
+--- a/crates/component/src/input/editor.rs
++++ b/crates/component/src/input/editor.rs
+@@ -1,8 +1,8 @@
+ use std::rc::Rc;
+ 
+ use gpui::{
+-    App, DefiniteLength, Entity, IntoElement, RenderOnce, SharedString, StyleRefinement, Styled,
+-    Window, prelude::FluentBuilder as _, relative,
++    App, DefiniteLength, Entity, IntoElement, Pixels, RenderOnce, SharedString, StyleRefinement,
++    Styled, Window, prelude::FluentBuilder as _, relative,
+ };
+ 
+ use super::{EditorState, Input};
+@@ -19,6 +19,7 @@ pub struct Editor {
+     state: Entity<EditorState>,
+     style: StyleRefinement,
+     height: Option<DefiniteLength>,
++    text_margins: Option<(Pixels, Pixels)>,
+     appearance: bool,
+     bordered: bool,
+     disabled: bool,
+@@ -39,6 +40,7 @@ impl Editor {
+             state: state.clone(),
+             style: StyleRefinement::default(),
+             height: None,
++            text_margins: None,
+             appearance: true,
+             bordered: true,
+             disabled: false,
+@@ -55,6 +57,12 @@ impl Editor {
+         self
+     }
+ 
++    /// Margins around the text; see [`Input::text_margins`].
++    pub fn text_margins(mut self, left: Pixels, right: Pixels) -> Self {
++        self.text_margins = Some((left, right));
++        self
++    }
++
+     pub fn appearance(mut self, appearance: bool) -> Self {
+         self.appearance = appearance;
+         self
+@@ -132,6 +140,7 @@ impl RenderOnce for Editor {
+             .tab_index(self.tab_index)
+             .role(self.role)
+             .when_some(self.height, |this, height| this.h(height))
++            .when_some(self.text_margins, |this, (left, right)| this.text_margins(left, right))
+             .when_some(self.aria_label, |this, label| this.aria_label(label))
+             .when_some(self.context_menu_builder, |this, build| {
+                 this.context_menu(move |menu, window, cx| build(menu, window, cx))
+diff --git a/crates/component/src/input/input.rs b/crates/component/src/input/input.rs
+index 5eb9b44b..cccc5ac7 100644
+--- a/crates/component/src/input/input.rs
++++ b/crates/component/src/input/input.rs
+@@ -3,7 +3,7 @@ use std::rc::Rc;
+ use gpui::prelude::FluentBuilder as _;
+ use gpui::{
+     AccessibleAction, AnyElement, App, DefiniteLength, Edges, Entity, Hsla,
+-    InteractiveElement as _, IntoElement, ParentElement as _, Rems, RenderOnce, Role, SharedString,
++    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Rems, RenderOnce, Role, SharedString,
+     StatefulInteractiveElement as _, StyleRefinement, Styled, TextAlign, Window, div, px, relative,
+ };
+ 
+@@ -113,6 +113,7 @@ pub struct Input {
+     prefix: Option<AnyElement>,
+     suffix: Option<AnyElement>,
+     height: Option<DefiniteLength>,
++    text_margins: Option<(Pixels, Pixels)>,
+     appearance: bool,
+     cleanable: bool,
+     mask_toggle: bool,
+@@ -184,6 +185,7 @@ impl Input {
+             prefix: None,
+             suffix: None,
+             height: None,
++            text_margins: None,
+             appearance: true,
+             cleanable: false,
+             mask_toggle: false,
+@@ -234,6 +236,15 @@ impl Input {
+         self
+     }
+ 
++    /// Keep at least `left` from the input's left edge to the text (without
++    /// line numbers) and `right` from the text to its right edge (multi-line
++    /// only). A revealed leading marker that fits hangs in the left margin
++    /// instead of moving the text.
++    pub fn text_margins(mut self, left: Pixels, right: Pixels) -> Self {
++        self.text_margins = Some((left, right));
++        self
++    }
++
+     /// Set the appearance of the input field, if false the input field will no border, background.
+     pub fn appearance(mut self, appearance: bool) -> Self {
+         self.appearance = appearance;
+@@ -412,7 +423,9 @@ impl RenderOnce for Input {
+             if state.presentation(cx).is_multi_line() {
+                 Edges {
+                     top: self.size.input_py(),
+-                    right: self.size.input_px(),
++                    right: self
++                        .text_margins
++                        .map_or(self.size.input_px(), |(_, right)| right.max(self.size.input_px())),
+                     bottom: self.size.input_py(),
+                     left: self.size.input_px(),
+                 }
+@@ -421,6 +434,7 @@ impl RenderOnce for Input {
+             },
+             cx,
+         );
++        state.set_text_gutter(self.text_margins.map_or(Pixels::default(), |(left, _)| left), cx);
+         state.set_disabled(self.disabled, cx);
+         state.set_readonly(self.readonly, cx);
+         state.set_text_align(text_align, cx);
+diff --git a/crates/component/src/input/state.rs b/crates/component/src/input/state.rs
+index 0f0eec92..bc5956de 100644
+--- a/crates/component/src/input/state.rs
++++ b/crates/component/src/input/state.rs
+@@ -107,6 +107,11 @@ impl TextInputState {
+             .update(cx, |state, _| state.set_editor_paddings(paddings)))
+     }
+ 
++    pub(crate) fn set_text_gutter(&self, gutter: gpui::Pixels, cx: &mut App) {
++        dispatch!(self, |state| state
++            .update(cx, |state, _| state.set_text_gutter(gutter)))
++    }
++
+     pub(crate) fn ensure_highlighter_factory(
+         &self,
+         factory: gpui_base::input::InputHighlighterFactory,

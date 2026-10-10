@@ -213,7 +213,9 @@ fn heading_scale(level: u8) -> f32 {
     }
 }
 
-/// One scale per projected line that holds a heading larger than body text.
+/// One entry per projected heading line: its scale, and the revealed marker
+/// (`## `) that hangs in the margin so the heading text does not move when the
+/// caret reveals it.
 fn heading_line_scales(
     projection: &Projection,
     styles: &[source_classifier::StyleSpan],
@@ -223,14 +225,15 @@ fn heading_line_scales(
     let mut scales: Vec<LineScale> = styles
         .iter()
         .filter_map(|style| match style.style {
-            Style::Heading(level) if heading_scale(level) > 1. => {
+            Style::Heading(level) => {
                 let start = projection
                     .source_to_display(projection.snapshot(), style.range.start)
                     .ok()?;
-                Some(LineScale {
-                    line: newlines.partition_point(|&at| at < start),
-                    scale: heading_scale(level),
-                })
+                let line = newlines.partition_point(|&at| at < start);
+                let line_start = line.checked_sub(1).map_or(0, |prev| newlines[prev] + 1);
+                let scale = heading_scale(level);
+                let hang = start - line_start;
+                (scale > 1. || hang > 0).then_some(LineScale { line, scale, hang })
             }
             _ => None,
         })
@@ -606,13 +609,26 @@ mod tests {
             projection
                 .line_scales()
                 .iter()
+                .filter(|s| s.scale > 1.)
                 .map(|s| (s.line, s.scale))
+                .collect::<Vec<_>>()
+        };
+        let hangs = |projection: &dyn SourceProjection| {
+            projection
+                .line_scales()
+                .iter()
+                .filter(|s| s.hang > 0)
+                .map(|s| (s.line, s.hang))
                 .collect::<Vec<_>>()
         };
         // Concealed markers: the same lines, at the Reader's sizes.
         let idle = provider.compose(&source, &inactive(&source)).unwrap();
         assert_ne!(idle.text(), text, "markers are concealed");
         assert_eq!(scales(idle.as_ref()), expected);
+        assert!(
+            hangs(idle.as_ref()).is_empty(),
+            "a concealed marker has nothing to hang"
+        );
         // Revealing `## ` on the caret line keeps every line where it was.
         let caret = SourceByte(text.find("Two").unwrap());
         let revealed = provider
@@ -627,6 +643,8 @@ mod tests {
             .unwrap();
         assert!(revealed.text().contains("## Two"));
         assert_eq!(scales(revealed.as_ref()), expected);
+        // The revealed `## ` hangs in the margin; nothing else does.
+        assert_eq!(hangs(revealed.as_ref()), [(3, "## ".len())]);
     }
 
     #[test]
