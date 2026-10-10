@@ -258,7 +258,7 @@ index d8323519..314a5a7f 100644
      }
  
 diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
-index 054636dd..612df56a 100644
+index 054636dd..d351f507 100644
 --- a/crates/base/src/input/base/state.rs
 +++ b/crates/base/src/input/base/state.rs
 @@ -927,7 +927,7 @@ impl<M: InputModeKind> InputBaseState<M> {
@@ -285,7 +285,27 @@ index 054636dd..612df56a 100644
                      visible_range_offset: 0..3,
                      lines: std::rc::Rc::new(vec![]),
                      line_height: px(20.),
-+                    rows: super::layout::RowMetrics::uniform(px(20.)),
++                    rows: crate::input::layout::RowMetrics::uniform(px(20.)),
                      wrap_width: Some(px(100.)),
                      wrapping_indent: super::super::WrappingIndent::None,
                      line_number_width: px(0.),
+diff --git a/crates/base/src/input/editor/display_map/text_wrapper.rs b/crates/base/src/input/editor/display_map/text_wrapper.rs
+index 60070787..7d59ff70 100644
+--- a/crates/base/src/input/editor/display_map/text_wrapper.rs
++++ b/crates/base/src/input/editor/display_map/text_wrapper.rs
+@@ -1476,6 +1476,7 @@ mod tests {
+             visible_range_offset: 0..0,
+             lines: Rc::new(vec![]),
+             line_height,
++            rows: crate::input::layout::RowMetrics::uniform(line_height),
+             wrap_width: None,
+             wrapping_indent: WrappingIndent::default(),
+             line_number_width: px(0.),
+@@ -1802,6 +1803,7 @@ mod tests {
+             visible_range_offset: 0..0,
+             lines: Rc::new(vec![]),
+             line_height: px(20.0),
++            rows: crate::input::layout::RowMetrics::uniform(px(20.0)),
+             wrap_width: Some(px(10.)),
+             wrapping_indent: WrappingIndent::Same,
+             line_number_width: px(0.),
