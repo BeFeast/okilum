@@ -16,6 +16,7 @@ pub(crate) struct Trace {
 
 struct TraceInner {
     start: std::time::Instant,
+    state: Option<PathBuf>,
     launch: String,
     send: std::sync::mpsc::Sender<(Option<PathBuf>, serde_json::Value)>,
     seen: std::sync::Mutex<std::collections::HashSet<(Option<PathBuf>, &'static str)>>,
@@ -42,7 +43,9 @@ impl Trace {
         start: std::time::Instant,
     ) -> Self {
         let (send, receive) = std::sync::mpsc::channel::<(Option<PathBuf>, serde_json::Value)>();
+        let writer_state = state.clone();
         std::thread::spawn(move || {
+            let state = writer_state;
             while let Ok((root, report)) = receive.recv() {
                 append_report(root.as_deref(), state.as_deref(), &report);
             }
@@ -50,6 +53,7 @@ impl Trace {
         let trace = Self {
             inner: Arc::new(TraceInner {
                 start,
+                state,
                 launch: uuid::Uuid::new_v4().to_string(),
                 send,
                 seen: Default::default(),
@@ -79,14 +83,65 @@ impl Trace {
     }
 
     pub(crate) fn event(&self, phase: &'static str, details: serde_json::Value) {
-        let _ = self.inner.send.send((
-            self.root.clone(),
-            serde_json::json!({
-                "time": timestamp(), "launch": self.inner.launch, "phase": phase,
-                "elapsed_ms": self.inner.start.elapsed().as_secs_f64() * 1000.,
-                "vault": self.root.as_deref().map(okilum_core::vault::display_path), "details": details,
-            }),
-        ));
+        let _ = self
+            .inner
+            .send
+            .send((self.root.clone(), self.report(phase, details)));
+    }
+
+    fn report(&self, phase: &'static str, details: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "time": timestamp(), "launch": self.inner.launch, "phase": phase,
+            "elapsed_ms": self.inner.start.elapsed().as_secs_f64() * 1000.,
+            "vault": self.root.as_deref().map(okilum_core::vault::display_path), "details": details,
+        })
+    }
+
+    /// Written before returning: the process may end right after (#1110).
+    pub(crate) fn event_now(&self, phase: &'static str, details: serde_json::Value) {
+        append_report(
+            self.root.as_deref(),
+            self.inner.state.as_deref(),
+            &self.report(phase, details),
+        );
+    }
+
+    /// Every way out of the GUI leaves a line (#1110): a quit records how
+    /// many windows were left (none means the last window closed), a panic
+    /// its message and place, before the previous hook runs.
+    pub(crate) fn record_exits(&self, cx: &mut App) {
+        let trace = self.clone();
+        cx.on_app_quit(move |cx| {
+            let windows = cx.windows().len();
+            trace.event_now(
+                "app_quit",
+                serde_json::json!({
+                    "windows": windows,
+                    "reason": if windows == 0 { "last window closed" } else { "quit" },
+                }),
+            );
+            async {}
+        })
+        .detach();
+        let trace = self.clone();
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let message = info
+                .payload()
+                .downcast_ref::<&str>()
+                .map(|s| (*s).to_owned())
+                .or_else(|| info.payload().downcast_ref::<String>().cloned())
+                .unwrap_or_default();
+            trace.event_now(
+                "panic",
+                serde_json::json!({
+                    "message": message,
+                    "location": info.location().map(|l| format!("{}:{}", l.file(), l.line())),
+                    "thread": std::thread::current().name().map(str::to_owned),
+                }),
+            );
+            previous(info);
+        }));
     }
 
     pub(crate) fn once(&self, phase: &'static str, details: serde_json::Value) {

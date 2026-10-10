@@ -15,13 +15,23 @@ pub(crate) struct Startup {
 impl Global for Startup {}
 
 /// Explicit file delivery or a picker choice wins over an in-flight history read.
+///
+/// The start window closes only once another window exists. A vault window
+/// is created after a background step, and closing the last window ends the
+/// app on Linux and Windows (#1110); callers run this again once their window
+/// is up, which retires the start window then.
 pub(crate) fn supersede(cx: &mut App) {
-    if cx.try_global::<Startup>().is_some() {
-        let state = cx.global_mut::<Startup>();
-        state.superseded = true;
-        if let Some(entry) = state.entry.take() {
-            let _ = entry.update(cx, |_, window, _| window.remove_window());
-        }
+    if cx.try_global::<Startup>().is_none() {
+        return;
+    }
+    let state = cx.global_mut::<Startup>();
+    state.superseded = true;
+    let Some(entry) = state.entry else {
+        return;
+    };
+    if cx.windows().iter().any(|window| *window != entry) {
+        cx.global_mut::<Startup>().entry = None;
+        let _ = entry.update(cx, |_, window, _| window.remove_window());
     }
 }
 
