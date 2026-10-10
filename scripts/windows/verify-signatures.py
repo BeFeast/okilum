@@ -3,7 +3,7 @@
 
     verify-signatures.py RELEASE_DIR [PORTABLE_ZIP]
 
-RELEASE_DIR holds Setup.exe and the full nupkg from `vpk pack`; every PE inside the
+RELEASE_DIR holds the Setup.exe and the full nupkg from `vpk pack`; every PE inside the
 package (lib/app/*.exe, *.dll) and okilum.exe inside the portable ZIP are checked too.
 Each one must verify with osslsigncode, carry a verified RFC 3161 timestamp, have exactly
 one signature (Velopack on Linux re-signs what is not excluded, which would nest a second),
@@ -70,8 +70,11 @@ def problems(path, work, pinned, subject, ca, tsa_ca):
 def targets(release, portable, work):
     """(label, path) for every PE the release ships."""
     found = []
-    setup = release / 'Setup.exe'
-    found.append(('Setup.exe', setup))
+    # Velopack names the installer after the channel: BeFeast.Okilum-<channel>-Setup.exe.
+    setups = glob.glob(str(release / '*Setup.exe'))
+    if len(setups) != 1:
+        sys.exit(f'verify-signatures: expected one Setup.exe in {release}, found {setups}')
+    found.append((Path(setups[0]).name, Path(setups[0])))
     packages = glob.glob(str(release / '*-full.nupkg'))
     if len(packages) != 1:
         sys.exit(f'verify-signatures: expected one full nupkg in {release}, found {packages}')

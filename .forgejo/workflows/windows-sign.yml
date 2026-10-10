@@ -77,7 +77,7 @@ jobs:
         with:
           name: windows-sign-${{ inputs.backend }}
           path: |
-            target/windows-release/Setup.exe
+            target/windows-release/*Setup.exe
             target/windows-release/*-full.nupkg
             target/windows-dist/okilum-*-x86_64.zip
           retention-days: 3
