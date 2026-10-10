@@ -129,6 +129,7 @@ impl Reader {
                 .child(
                     Editor::new(&input)
                         .readonly(true)
+                        .context_menu(|menu, _, _| crate::reader_code_file::text_menu(menu, false))
                         .font_family("Cascadia Code")
                         .h(px(320.)),
                 )

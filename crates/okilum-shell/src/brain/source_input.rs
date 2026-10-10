@@ -152,6 +152,8 @@ impl SourceInput {
                 .into_any_element(),
             Self::Managed(state) => Editor::new(state)
                 .readonly(readonly)
+                // A note has no language server (#1010).
+                .context_menu(move |menu, _, _| crate::reader_code_file::text_menu(menu, !readonly))
                 .font_family(super::source_projection::BODY_FONT)
                 .text_size(px(16.))
                 .h(px(300.))
