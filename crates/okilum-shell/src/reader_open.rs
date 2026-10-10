@@ -556,7 +556,7 @@ fn pick(folder: bool, cx: &mut App) {
         cx.update(|cx| match result {
             Ok(Some(path)) => dispatch_path(&path, cx),
             Ok(None) => {}
-            Err(error) => show_error(format!("{error:#}"), cx),
+            Err(error) => show_error(error, cx),
         });
     })
     .detach();
@@ -592,7 +592,7 @@ pub(crate) fn dispatch_urls(urls: Vec<String>, cx: &mut App) {
     for url in urls {
         match file_url_path(&url) {
             Ok(path) => dispatch_path(&path, cx),
-            Err(error) => show_error(format!("{error:#}"), cx),
+            Err(error) => show_error(error, cx),
         }
     }
 }
@@ -605,7 +605,7 @@ fn dispatch_path(path: &Path, cx: &mut App) {
         ..Default::default()
     };
     if let Err(error) = open_window(opts, cx) {
-        show_error(format!("{error:#}"), cx);
+        show_error(error, cx);
     }
 }
 
@@ -631,8 +631,8 @@ pub(crate) fn open_window(mut opts: super::Opts, cx: &mut App) -> Result<()> {
                         })
                     })
                     .context("No file or vault was requested")?;
-                let path =
-                    okilum_core::vault::canonical_root(&path).context("Resolve requested path")?;
+                let path = okilum_core::vault::canonical_root(&path)
+                    .context("This file or folder couldn’t be opened.")?;
                 let intent = OpenIntent::validate_cached(
                     &path,
                     opts.vault.as_deref(),
@@ -654,11 +654,11 @@ pub(crate) fn open_window(mut opts: super::Opts, cx: &mut App) -> Result<()> {
             Ok(opts) => {
                 if !focus_existing(&opts, cx) {
                     if let Err(error) = create_window(opts, None, None, cx) {
-                        show_error(format!("{error:#}"), cx);
+                        show_error(error, cx);
                     }
                 }
             }
-            Err(error) => show_error(format!("{error:#}"), cx),
+            Err(error) => show_error(error, cx),
         });
     })
     .detach();
@@ -826,7 +826,7 @@ fn new_window(cx: &mut App) {
                     });
                     let Ok(options) = options else { return };
                     if let Err(error) = create_window(opts, Some(session), Some(options), cx) {
-                        show_error(format!("{error:#}"), cx);
+                        show_error(error, cx);
                     }
                 });
                 break;
@@ -835,7 +835,9 @@ fn new_window(cx: &mut App) {
             Ok((None, true)) => {
                 cx.update(|cx| {
                     show_error(
-                        "Open the vault successfully before creating another window.".into(),
+                        anyhow::anyhow!(
+                            "Open the vault successfully before creating another window."
+                        ),
                         cx,
                     )
                 });
@@ -879,8 +881,32 @@ impl Render for OpenError {
             .child(controls(ControlsPresentation::Entry))
     }
 }
-fn show_error(message: String, cx: &mut App) {
-    eprintln!("Cannot open document: {message}");
+/// The open-failure text: plain words for the common OS errors, otherwise
+/// the outermost, human-written context. The full chain stays in stderr.
+fn open_error_text(error: &anyhow::Error) -> String {
+    use std::io::ErrorKind;
+    let io = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<std::io::Error>());
+    match io.map(std::io::Error::kind) {
+        Some(ErrorKind::PermissionDenied) => {
+            "Okilum doesn’t have permission to open this file or folder. Check its \
+             permissions, then try again."
+                .into()
+        }
+        Some(ErrorKind::NotFound) => "This file or folder no longer exists. It may have \
+                                      been moved, renamed or deleted."
+            .into(),
+        Some(_) if error.downcast_ref::<std::io::Error>().is_some() => {
+            "This file or folder couldn’t be opened.".into()
+        }
+        _ => error.to_string(),
+    }
+}
+
+fn show_error(error: anyhow::Error, cx: &mut App) {
+    eprintln!("Cannot open document: {error:#}");
+    let message = open_error_text(&error);
     let (options, frame_key) = super::window_state::prepare(window_options(cx), "open-error", cx);
     let result = cx.open_window(options, |window, cx| {
         window.set_window_title("Okilum — Cannot open document");
@@ -909,6 +935,36 @@ pub(crate) fn receive_events(receiver: async_channel::Receiver<Vec<String>>, cx:
 mod entry_tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    #[test]
+    fn open_failures_show_plain_words_without_os_errors() {
+        use std::io::{Error as Io, ErrorKind};
+        let denied = anyhow::Error::from(Io::from(ErrorKind::PermissionDenied))
+            .context("This file or folder couldn’t be opened.");
+        let missing = anyhow::Error::from(Io::from(ErrorKind::NotFound))
+            .context("The requested path is missing or inaccessible");
+        let other = anyhow::Error::from(Io::other("device not ready (os error 21)"));
+        let utf8 = anyhow::Error::from(Io::from(ErrorKind::InvalidData))
+            .context("The Markdown file cannot be read as UTF-8");
+        for (error, expected) in [
+            (&denied, "Okilum doesn’t have permission"),
+            (&missing, "This file or folder no longer exists"),
+            (&other, "This file or folder couldn’t be opened."),
+            (&utf8, "The Markdown file cannot be read as UTF-8"),
+        ] {
+            let text = open_error_text(error);
+            assert!(text.starts_with(expected), "{text}");
+            assert!(!text.contains("os error"), "{text}");
+            assert!(!text.contains(':'), "{text}");
+        }
+        // Positive control: the raw chain still carries the OS detail for stderr.
+        assert!(format!("{other:#}").contains("os error 21"));
+        let authored = anyhow::anyhow!("Select exactly one file or folder");
+        assert_eq!(
+            open_error_text(&authored),
+            "Select exactly one file or folder"
+        );
+    }
 
     fn tree(root: &Path) -> std::collections::BTreeMap<PathBuf, Option<Vec<u8>>> {
         fn walk(
