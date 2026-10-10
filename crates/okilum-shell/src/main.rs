@@ -6572,9 +6572,19 @@ impl Render for Reader {
                             .child(header),
                     )
                 } else {
+                    // The vault colour tints the whole bar (#1050), fading when
+                    // the window is not focused.
+                    let tint = reader_ui_state::title_tint(&self.vault_root, cx).map(|color| {
+                        color.title_tint(
+                            brand::palette(cx).surface,
+                            cx.theme().is_dark(),
+                            window.is_window_active(),
+                        )
+                    });
                     view.child(
                         TitleBar::new()
                             .h(px(READER_HEADER_HEIGHT))
+                            .when_some(tint, |bar, tint| bar.bg(tint))
                             // Traffic lights are hidden in full screen; drop
                             // the space the toolkit reserves for them (#365).
                             .when(window.is_fullscreen(), |bar| bar.pl(px(10.)))

@@ -527,6 +527,33 @@ impl VaultColor {
     pub fn color(self, cx: &App) -> Hsla {
         self.value(Theme::global(cx).is_dark())
     }
+
+    /// The title bar tinted with this colour (#1050): the vault colour laid
+    /// over `bar` at a low strength, halved in an inactive window so the
+    /// focused one stands out. Strength is tested for AA text contrast.
+    pub fn title_tint(self, bar: Hsla, dark: bool, active: bool) -> Hsla {
+        let (light, dark_strength) = title_tint_strength();
+        let strength = if dark { dark_strength } else { light } * if active { 1. } else { 0.5 };
+        bar.blend(self.value(dark).opacity(strength))
+    }
+}
+
+/// Light / dark tint strength. `OKILUM_DEBUG_TITLE_TINT=<light>,<dark>` lets
+/// QA render candidate strengths for Oleg to choose from (#1050); it is
+/// removed once the strength is decided.
+fn title_tint_strength() -> (f32, f32) {
+    const DEFAULT: (f32, f32) = (0.12, 0.18);
+    static STRENGTH: OnceLock<(f32, f32)> = OnceLock::new();
+    *STRENGTH.get_or_init(|| {
+        std::env::var("OKILUM_DEBUG_TITLE_TINT")
+            .ok()
+            .and_then(|v| {
+                let (l, d) = v.split_once(',')?;
+                Some((l.trim().parse().ok()?, d.trim().parse().ok()?))
+            })
+            .filter(|(l, d): &(f32, f32)| (0.0..=0.5).contains(l) && (0.0..=0.5).contains(d))
+            .unwrap_or(DEFAULT)
+    })
 }
 
 /// Reapply after `Theme::sync_system_appearance` or `Theme::change`, which resets
@@ -874,6 +901,43 @@ mod tests {
         // #767676 on white is the canonical 4.54:1 AA boundary grey.
         let grey: Hsla = rgb(0x767676).into();
         assert!((contrast(grey, white) - 4.54).abs() < 0.01);
+    }
+
+    /// #1050: a tinted title bar keeps its text and icons readable.
+    #[test]
+    fn tinted_title_bars_keep_text_readable() {
+        // At the default strength, every preset in every theme keeps title
+        // text at AA and muted icons at 3:1, active and inactive.
+        let mut failures = Vec::new();
+        for theme in ThemeId::ALL {
+            for dark in [false, true] {
+                let (p, _) = tokens(theme, dark);
+                for color in VaultColor::ALL {
+                    for active in [true, false] {
+                        let bar = color.title_tint(p.surface, dark, active);
+                        for (what, fg, min) in [("text", p.text, 4.5), ("muted", p.text_muted, 3.0)]
+                        {
+                            let ratio = contrast(fg, bar);
+                            if ratio < min {
+                                failures.push(format!(
+                                    "{} {} {} active={active} {what}: {ratio:.2}",
+                                    theme.key(),
+                                    if dark { "dark" } else { "light" },
+                                    color.key()
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+        // Positive control: the tint changes the bar, and less when inactive.
+        let (p, _) = tokens(ThemeId::default(), false);
+        let active = VaultColor::Green.title_tint(p.surface, false, true);
+        let inactive = VaultColor::Green.title_tint(p.surface, false, false);
+        assert!(contrast(active, p.surface) > contrast(inactive, p.surface));
+        assert!(contrast(inactive, p.surface) > 1.0);
     }
 
     /// #774: every vault colour stays a visible UI mark (3:1) on every

@@ -129,6 +129,9 @@ struct Saved {
     /// Per-vault accent preset key (#774), keyed like `vaults` by the
     /// canonical root. Unknown keys from a newer build are kept, not shown.
     vault_colors: BTreeMap<PathBuf, String>,
+    /// Vaults whose colour does not tint the title bar (#1050); tinting is
+    /// on by default whenever a colour is set.
+    untinted_vaults: BTreeSet<PathBuf>,
     last_layout: Option<Layout>,
     frames: BTreeMap<String, window_state::Frame>,
     last_frame: Option<window_state::Frame>,
@@ -148,6 +151,7 @@ impl Default for Saved {
             delimited_no_header: Default::default(),
             vaults: Default::default(),
             vault_colors: Default::default(),
+            untinted_vaults: Default::default(),
             last_layout: None,
             frames: Default::default(),
             last_frame: None,
@@ -339,6 +343,34 @@ pub(crate) fn vault_color(root: &Path, cx: &App) -> Option<brand::VaultColor> {
         .and_then(|key| brand::VaultColor::from_key(key))
 }
 
+/// The title bar tint colour for this vault, if a colour is set and the
+/// vault did not turn tinting off (#1050).
+pub(crate) fn title_tint(root: &Path, cx: &App) -> Option<brand::VaultColor> {
+    let state = cx.try_global::<Store>()?;
+    if state.saved.untinted_vaults.contains(root) {
+        return None;
+    }
+    vault_color(root, cx)
+}
+
+pub(crate) fn set_title_tint(root: &Path, enabled: bool, cx: &mut App) {
+    let Some(state) = cx.try_global::<Store>() else {
+        return;
+    };
+    if state.saved.untinted_vaults.contains(root) != enabled {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    if enabled {
+        state.saved.untinted_vaults.remove(root);
+    } else {
+        state.saved.untinted_vaults.insert(root.to_owned());
+    }
+    state.colors_changed.insert(root.to_owned());
+    schedule(cx);
+    cx.refresh_windows();
+}
+
 /// Every window of this vault repaints with the new colour at once.
 pub(crate) fn set_vault_color(root: &Path, color: Option<brand::VaultColor>, cx: &mut App) {
     // Compare stored keys: «None» must also clear a preset this build
@@ -415,6 +447,7 @@ impl WriteJob {
             .vaults
             .keys()
             .chain(self.saved.vault_colors.keys())
+            .chain(self.saved.untinted_vaults.iter())
         {
             anyhow::ensure!(
                 outside_vault(root, &self.path),
@@ -479,6 +512,11 @@ impl WriteJob {
                 None => {
                     latest.vault_colors.remove(root);
                 }
+            }
+            if self.saved.untinted_vaults.contains(root) {
+                latest.untinted_vaults.insert(root.clone());
+            } else {
+                latest.untinted_vaults.remove(root);
             }
         }
         if self.last_changed {
@@ -1213,9 +1251,25 @@ mod tests {
             set_vault_color(&future, None, cx);
             flush(cx);
             assert!(!read(&path).unwrap().vault_colors.contains_key(&future));
+            // #1050: tinting is on by default and can be turned off per vault.
+            assert_eq!(title_tint(&root, cx), Some(brand::VaultColor::Blue));
+            set_title_tint(&root, false, cx);
+            flush(cx);
+            install(&directory, cx);
+            assert_eq!(title_tint(&root, cx), None);
+            assert_eq!(
+                vault_color(&root, cx),
+                Some(brand::VaultColor::Blue),
+                "colour kept"
+            );
+            assert!(read(&path).unwrap().untinted_vaults.contains(&root));
+            set_title_tint(&root, true, cx);
+            flush(cx);
+            assert!(!read(&path).unwrap().untinted_vaults.contains(&root));
             set_vault_color(&root, None, cx);
             flush(cx);
             assert!(!read(&path).unwrap().vault_colors.contains_key(&root));
+            assert_eq!(title_tint(&root, cx), None, "no colour, no tint");
             // Positive control: a colour inside a vault is refused, like layouts.
             let inside = root.join("state");
             install(&inside, cx);
