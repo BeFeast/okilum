@@ -97,7 +97,7 @@ pub fn rewrite_links<'a>(root: &'a AstNode<'a>, vault: &Vault, note_rel: &str, s
             NodeValue::Image(img) => {
                 if !img.url.contains("://") {
                     img.url = image_file_url(&img.url, vault, note_rel)
-                        .unwrap_or_else(|| "okilum-asset://unavailable".into());
+                        .unwrap_or_else(|| UNAVAILABLE_IMAGE.into());
                 }
             }
             NodeValue::Link(link) => {
@@ -340,10 +340,7 @@ pub fn rewrite_source_images(text: &str, vault: &Vault, note_rel: &str) -> Strin
                     }),
             );
         }
-        Some(
-            image_file_url(url, vault, note_rel)
-                .unwrap_or_else(|| "okilum-asset://unavailable".into()),
-        )
+        Some(image_file_url(url, vault, note_rel).unwrap_or_else(|| UNAVAILABLE_IMAGE.into()))
     })
 }
 
@@ -809,6 +806,16 @@ pub const EMBED_PENDING: &str = "pending";
 /// Whether rendered source still holds an embed waiting for the inventory:
 /// a note embed (`embed pending …`) or a block embed (`embed block {…}` with
 /// status `Pending`). Both resolve only when the document is rendered again.
+/// The URL of an image that did not resolve to a vault file.
+pub const UNAVAILABLE_IMAGE: &str = "okilum-asset://unavailable";
+
+/// Whether `rendered` shows an image or drawing that did not resolve. Before
+/// the vault inventory is complete a local file can be missing from it, so the
+/// note is rendered again once it completes (#1126).
+pub fn has_unavailable_images(rendered: &str) -> bool {
+    rendered.contains(UNAVAILABLE_IMAGE) || rendered.contains("okilum-drawing-unavailable:")
+}
+
 pub fn has_pending_embeds(rendered: &str) -> bool {
     rendered.lines().any(|line| {
         let Some(meta) = line

@@ -1645,8 +1645,10 @@ impl Reader {
         self.navigation.reconciliation_generation =
             self.navigation.reconciliation_generation.wrapping_add(1);
         // Note and block embeds both wait for the inventory; an unchanged
-        // source must still be rendered again to resolve them (#932).
-        let pending_embed = okilum_core::render::has_pending_embeds(&self.note_source);
+        // source must still be rendered again to resolve them (#932). So does
+        // an image the incomplete inventory did not know yet (#1126).
+        let pending_embed = okilum_core::render::has_pending_embeds(&self.note_source)
+            || okilum_core::render::has_unavailable_images(&self.note_source);
         if !pending_embed && self.note_canonical_source.as_deref() == Some(raw.as_ref()) {
             self.refresh_link_preparation(cx);
             return;
@@ -4582,6 +4584,71 @@ mod tests {
             assert_eq!(v.current_rel, "start.md");
             assert!(!okilum_core::render::has_pending_embeds(&v.note_source));
             assert!(v.note_source.contains("BlockBody932"));
+        });
+    }
+
+    /// #1126: in a fresh vault, the first note's local image is drawn once the
+    /// inventory completes, without navigating away and back.
+    #[gpui::test]
+    fn first_note_of_a_fresh_vault_draws_its_local_image_without_reopening(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = TestDirectory::new();
+        let root = temp.path().join("source");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(
+            root.join("Recovery.md"),
+            "# Recovery\n\nA paragraph.\n\n![Blue](blue.png)\n\n[[Other]]\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("Other.md"), "# Other\n\n[[Recovery]]\n").unwrap();
+        std::fs::write(root.join("blue.png"), b"\x89PNG\r\n\x1a\n").unwrap();
+        let (release, hold) = async_channel::bounded(1);
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("Recovery.md".into()),
+                        index_dir: Some(temp.path().join("cache")),
+                        preparation_hold: Some(hold),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        visual.run_until_parked();
+        reader.read_with(visual, |v, _| {
+            assert!(v.document_ready());
+            // Positive control: the first render really ran before the
+            // inventory knew the image.
+            assert!(okilum_core::render::has_unavailable_images(&v.note_source));
+        });
+        release.try_send(()).unwrap();
+        visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_millis(300));
+        visual.run_until_parked();
+        reader.read_with(visual, |v, _| {
+            assert_eq!(v.current_rel, "Recovery.md", "no navigation");
+            assert!(!okilum_core::render::has_unavailable_images(&v.note_source));
+            // The image now points at the vault file.
+            assert!(
+                v.note_source
+                    .split(['(', ')'])
+                    .any(|url| url.starts_with("file://") && url.ends_with("/blue.png")),
+                "{}",
+                v.note_source
+            );
         });
     }
 
