@@ -30,6 +30,10 @@ pub enum Kind {
     /// `![alt](path)`: Live Preview draws the image while the caret is
     /// outside (S7b, #936).
     Image,
+    /// A top-level Obsidian callout (`> [!type] Title` and its quoted body),
+    /// whole lines: Live Preview draws it rendered while the caret is outside
+    /// (S7c, #936). Markers inside it are dropped: it is one block.
+    Callout,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -87,6 +91,20 @@ pub(super) fn extract<'a>(root: &'a AstNode<'a>, context: &Context<'_>) -> Optio
                 // An unsupported quote prefix leaves that quote raw; it does not
                 // cost the rest of the note its decorations.
                 markers.extend(quote_markers(node, context).unwrap_or_default());
+                let top_level = node
+                    .parent()
+                    .is_some_and(|p| matches!(p.data.borrow().value, NodeValue::Document));
+                let first_line = context
+                    .range(node)
+                    .and_then(|range| context.source.get(range))
+                    .and_then(|text| text.lines().next());
+                if top_level
+                    && first_line.is_some_and(|line| crate::callout::parse_header(line).is_some())
+                {
+                    if let Some(marker) = whole_line_block(node, context, Kind::Callout) {
+                        markers.push(marker);
+                    }
+                }
             }
             NodeValue::CodeBlock(_)
                 if node
@@ -128,7 +146,7 @@ pub(super) fn extract<'a>(root: &'a AstNode<'a>, context: &Context<'_>) -> Optio
                     .is_some_and(|p| matches!(p.data.borrow().value, NodeValue::Document)) =>
             {
                 // An odd table stays raw; it does not cost the rest of the note.
-                if let Some(marker) = table_marker(node, context) {
+                if let Some(marker) = whole_line_block(node, context, Kind::Table) {
                     markers.push(marker);
                 }
             }
@@ -184,6 +202,19 @@ pub(super) fn extract<'a>(root: &'a AstNode<'a>, context: &Context<'_>) -> Optio
             return None;
         }
     }
+    // A callout is drawn whole; the quote bars, lists and tasks inside it are
+    // not decorated separately (they would overlap it).
+    let callouts: Vec<Range<usize>> = markers
+        .iter()
+        .filter(|m| m.kind == Kind::Callout)
+        .map(|m| m.range.clone())
+        .collect();
+    markers.retain(|m| {
+        m.kind == Kind::Callout
+            || !callouts
+                .iter()
+                .any(|c| c.start <= m.range.start && m.range.end <= c.end)
+    });
     validate_ranges(&markers, context)?;
     markers.sort_by_key(|marker| marker.range.start);
     if markers
@@ -322,8 +353,13 @@ fn image_embed(line: &str) -> bool {
         && (is_image(target) || target.starts_with("https://") || target.starts_with("http://"))
 }
 
-/// A table's whole lines, ending on its last non-blank line.
-fn table_marker<'a>(node: &'a AstNode<'a>, context: &Context<'_>) -> Option<Marker> {
+/// A block's whole lines (a table, a callout), ending on its last non-blank
+/// line.
+fn whole_line_block<'a>(
+    node: &'a AstNode<'a>,
+    context: &Context<'_>,
+    kind: Kind,
+) -> Option<Marker> {
     let range = context.range(node)?;
     let start = context.lines[node.data.borrow().sourcepos.start.line - 1];
     let text = context.source.get(start..range.end)?;
@@ -338,7 +374,7 @@ fn table_marker<'a>(node: &'a AstNode<'a>, context: &Context<'_>) -> Option<Mark
     (end > start).then_some(Marker {
         range: start..end,
         scope: start..end,
-        kind: Kind::Table,
+        kind,
     })
 }
 
@@ -476,6 +512,33 @@ mod tests {
                 "![x](https://example.com/p.png)"
             ],
             "inline images, note embeds and list items stay text"
+        );
+    }
+
+    #[test]
+    fn top_level_callouts_are_whole_line_blocks() {
+        let text = "> [!note] Title\n> body **bold**\n\n> plain quote\n\n> [!tip]-\n> folded\n\n- > [!warning] in a list\n";
+        let source = snapshot(text, 1);
+        let classified = classify(&source);
+        let markers = classified.decorations_for(&source).unwrap();
+        let callouts: Vec<_> = markers
+            .iter()
+            .filter(|m| m.kind == Kind::Callout)
+            .map(|m| &text[m.range.clone()])
+            .collect();
+        assert_eq!(
+            callouts,
+            ["> [!note] Title\n> body **bold**", "> [!tip]-\n> folded"]
+        );
+        let quotes: Vec<_> = markers
+            .iter()
+            .filter(|m| matches!(m.kind, Kind::Quote { .. }))
+            .map(|m| &text[m.range.clone()])
+            .collect();
+        assert_eq!(
+            quotes,
+            [">", ">"],
+            "the plain quote and the quote in a list keep their bars; the callouts' are dropped"
         );
     }
 
