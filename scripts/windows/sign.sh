@@ -27,7 +27,7 @@ backend="${OKILUM_WINDOWS_SIGN_BACKEND:-}"
 jsign="${OKILUM_JSIGN:-jsign}"
 tsa="${OKILUM_WINDOWS_SIGN_TSA:-http://time.certum.pl}"
 
-normalize() { tr -d ': \n' | tr '[:upper:]' '[:lower:]'; }
+normalize() { tr -d ': \r\n' | tr '[:upper:]' '[:lower:]'; }
 
 store=()
 case "$backend" in
@@ -52,6 +52,9 @@ case "$backend" in
 esac
 
 # The certificate the configured key presents, as a lower-case SHA-256 of its DER.
+# The probe reads it by PKCS#11 label while jsign signs by alias; the pilot confirms the
+# two name the same object on SimplySign, and verify-signatures.py pins the certificate
+# that actually signed every output, so a mismatch cannot reach publication.
 certificate_sha256() {
     local der
     der=$(mktemp)
