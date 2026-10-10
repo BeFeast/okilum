@@ -9,12 +9,13 @@ on:
 permissions:
   contents: read
 
-# main runs only refresh the shared native cache: keep just the newest main
-# commit and cancel older ones still queued or running. forgejo-pr/* refs are
-# unique per PR head, so PR checks are never cancelled here.
+# main runs only refresh the shared native cache. A running refresh is not cancelled:
+# when every merge cancelled it, the cache was never saved and PRs built cold. Only
+# the newest pending main run waits behind it. forgejo-pr/* refs are unique per PR
+# head, so PR checks are never cancelled here.
 concurrency:
   group: forgejo-macos-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}
+  cancel-in-progress: false
 
 jobs:
   macos:
@@ -37,6 +38,10 @@ jobs:
             ~/.cargo/git/
             ~/.cache/okilum-macos/reader-arm64/
           key: forgejo-native-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'scripts/ci/check-macos.sh', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff') }}
+          # An older main cache still holds most compiled dependencies; cargo rebuilds
+          # only what changed. Without it nearly every PR built from scratch (#1074).
+          restore-keys: |
+            forgejo-native-v1-${{ runner.os }}-${{ runner.arch }}-
       - name: Compile Reader and run quick native regressions
         id: native
         if: github.ref != 'refs/heads/main' || steps.native-cache.outputs.cache-hit != 'true'
