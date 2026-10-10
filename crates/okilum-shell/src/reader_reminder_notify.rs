@@ -7,7 +7,7 @@
 //! quiet, so a duplicate window never doubles a notification. The scheduler
 //! reads the already-published task index: no second vault scan or watcher.
 use super::*;
-use gpui_component::notification::Notification;
+use gpui_component::{notification::Notification, WindowExt as _};
 use okilum_core::reminder_schedule::{self as schedule, Ledger, Policy};
 use std::collections::HashMap;
 
