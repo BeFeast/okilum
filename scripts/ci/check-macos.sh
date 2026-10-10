@@ -51,6 +51,13 @@ done
 # The shell has a single binary target; avoid example/test harnesses with zero matches.
 run_tests okilum-shell --bins platform::exact_macos_clipboard::native_tests
 run_tests okilum-shell --bins reader_replay::
+# #1110 (AGENTS 9a): first run → choose a vault → a window always exists; this
+# replaces the manual first-launch check on every PR.
+for name in \
+    first_run_choosing_a_vault_folder_keeps_a_window_until_it_opens \
+    explicit_delivery_replaces_first_run_entry; do
+    run_tests okilum-shell --bins "reader_open::entry_tests::$name" --exact
+done
 
 # #588: the managed-sidecar library is compiled into the shell, but its tests only ran on
 # Linux and Windows. These cover the Unix state store (flock, atomic replace), the
