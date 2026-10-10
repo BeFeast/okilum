@@ -647,6 +647,26 @@ impl Settings {
                             vault_color_swatches(&color_root, cx),
                             cx,
                         ))
+                        .when(
+                            reader_ui_state::vault_color(&color_root, cx).is_some(),
+                            |content| {
+                                let root = color_root.clone();
+                                let tinted = reader_ui_state::title_tint(&root, cx).is_some();
+                                content.child(setting_row(
+                                    "Tint title bar",
+                                    "Colour the window's title bar for this vault.",
+                                    div().debug_selector(|| "settings-title-tint".into()).child(
+                                        Switch::new("settings-title-tint-switch")
+                                            .accessibility_label("Tint title bar")
+                                            .checked(tinted)
+                                            .on_click(move |_, _, cx| {
+                                                reader_ui_state::set_title_tint(&root, !tinted, cx)
+                                            }),
+                                    ),
+                                    cx,
+                                ))
+                            },
+                        )
                         .child(self.template_controls(cx))
                         .children(self.vault(cx).map(|reader| {
                             #[cfg(any(unix, windows))]
