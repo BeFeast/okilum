@@ -1,0 +1,12 @@
+[Unit]
+Description=Okilum signer VNC display :1 (localhost only, reached through SSH)
+After=network.target
+
+[Service]
+User=okilum-signer
+# localhost-only: the SSH key is the gate. No VNC password to store or hand out.
+ExecStart=/usr/bin/Xtigervnc :1 -localhost -SecurityTypes None -geometry 1280x800 -depth 24 -AlwaysShared -desktop okilum-signer
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
