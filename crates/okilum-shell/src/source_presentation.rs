@@ -232,7 +232,14 @@ fn heading_line_scales(
                 let line = newlines.partition_point(|&at| at < start);
                 let line_start = line.checked_sub(1).map_or(0, |prev| newlines[prev] + 1);
                 let scale = heading_scale(level);
-                let hang = start - line_start;
+                // Only a bare revealed marker hangs: a quote or list prefix
+                // before it stays in the text so per-row markers keep aligning.
+                let prefix = &display[line_start..start];
+                let marker = prefix.trim_end_matches([' ', '\t']);
+                let bare = (1..=6).contains(&marker.len())
+                    && marker.bytes().all(|b| b == b'#')
+                    && marker.len() < prefix.len();
+                let hang = if bare { prefix.len() } else { 0 };
                 (scale > 1. || hang > 0).then_some(LineScale { line, scale, hang })
             }
             _ => None,

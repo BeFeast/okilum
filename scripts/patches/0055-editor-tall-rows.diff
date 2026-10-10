@@ -1,5 +1,5 @@
 diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
-index ccd5f88f..dd455dea 100644
+index ccd5f88f..d271f340 100644
 --- a/crates/base/src/input/base/element.rs
 +++ b/crates/base/src/input/base/element.rs
 @@ -420,6 +420,17 @@ pub(super) struct TextElement<M: InputModeKind> {
@@ -20,20 +20,84 @@ index ccd5f88f..dd455dea 100644
      pub(super) fn new(state: Entity<InputBaseState<M>>) -> Self {
          Self {
              state,
-@@ -630,8 +641,10 @@ impl<M: InputModeKind> TextElement<M> {
+@@ -565,6 +576,11 @@ impl<M: InputModeKind> TextElement<M> {
+         let cursor_start = caret_for(sel_start_row, selected_range.start, false);
+         let cursor_end = caret_for(sel_end_row, selected_range.end, false);
+ 
++        // A caret on a hanging marker sits left of the text (negative x) by
++        // design; horizontal scrolling treats it as the line start (#1034).
++        let scroll_x = |pos: Point<Pixels>| pos.x.max(px(0.));
++        // The caret's own row: a heading row is taller than `line_height`.
++        let caret_row_height = last_layout.row_height_at(cursor_pos.y);
+         let cursor_bounds = {
+             let auto_scrolling = state.auto_scroll.is_active();
+             if selection_changed && !is_selected_all {
+@@ -576,14 +592,14 @@ impl<M: InputModeKind> TextElement<M> {
+                     TextAlign::Center => CURSOR_WIDTH,
+                 };
+ 
+-                scroll_offset.x = if scroll_offset.x + cursor_pos.x
++                scroll_offset.x = if scroll_offset.x + scroll_x(cursor_pos)
+                     > (bounds.size.width - line_number_width - safety_margin)
+                 {
+                     // cursor is out of right
+-                    bounds.size.width - line_number_width - safety_margin - cursor_pos.x
+-                } else if scroll_offset.x + cursor_pos.x < px(0.) {
++                    bounds.size.width - line_number_width - safety_margin - scroll_x(cursor_pos)
++                } else if scroll_offset.x + scroll_x(cursor_pos) < px(0.) {
+                     // cursor is out of left
+-                    scroll_offset.x - cursor_pos.x
++                    scroll_offset.x - scroll_x(cursor_pos)
+                 } else {
+                     scroll_offset.x
+                 };
+@@ -593,7 +609,9 @@ impl<M: InputModeKind> TextElement<M> {
+                 if !auto_scrolling {
+                     // If we change the scroll_offset.y, GPUI will render and trigger the next run loop.
+                     // So, here we just adjust offset by `line_height` for move smooth.
+-                    scroll_offset.y = if scroll_offset.y + cursor_pos.y
++                    // The margin is in body rows; a taller caret row adds its extra
++                    // height so a heading near the bottom scrolls fully into view.
++                    scroll_offset.y = if scroll_offset.y + cursor_pos.y + (caret_row_height - line_height)
+                         > bounds.size.height - top_bottom_margin
+                     {
+                         // cursor is out of bottom
+@@ -608,9 +626,9 @@ impl<M: InputModeKind> TextElement<M> {
+ 
+                 // For selection to move scroll
+                 if state.selection_reversed {
+-                    if scroll_offset.x + cursor_start.x < px(0.) {
++                    if scroll_offset.x + scroll_x(cursor_start) < px(0.) {
+                         // selection start is out of left
+-                        scroll_offset.x = -cursor_start.x;
++                        scroll_offset.x = -scroll_x(cursor_start);
+                     }
+                     if !auto_scrolling && scroll_offset.y + cursor_start.y < px(0.) {
+                         // selection start is out of top
+@@ -619,9 +637,9 @@ impl<M: InputModeKind> TextElement<M> {
+                 } else {
+                     // TODO: Consider to remove this part,
+                     // maybe is not necessary (But selection_reversed is needed).
+-                    if scroll_offset.x + cursor_end.x <= px(0.) {
++                    if scroll_offset.x + scroll_x(cursor_end) <= px(0.) {
+                         // selection end is out of left
+-                        scroll_offset.x = -cursor_end.x;
++                        scroll_offset.x = -scroll_x(cursor_end);
+                     }
+                     if !auto_scrolling && scroll_offset.y + cursor_end.y <= px(0.) {
+                         // selection end is out of top
+@@ -630,8 +648,8 @@ impl<M: InputModeKind> TextElement<M> {
                  }
              }
  
 -            // cursor bounds
 -            let cursor_height = 0.85 * line_height;
 +            // cursor bounds: sized to the row the caret sits in.
-+            let caret_row_height =
-+                last_layout.rows.row_height(last_layout.rows.row_at(cursor_pos.y));
 +            let cursor_height = 0.85 * caret_row_height;
  
              // Match the caret to the deferred scroll target (applied below) that
              // the text paints at; otherwise the caret follows the cursor-scroll
-@@ -652,7 +665,7 @@ impl<M: InputModeKind> TextElement<M> {
+@@ -652,7 +670,7 @@ impl<M: InputModeKind> TextElement<M> {
              Some(Bounds::new(
                  point(
                      cursor_x,
@@ -42,7 +106,7 @@ index ccd5f88f..dd455dea 100644
                  ),
                  size(CURSOR_WIDTH, cursor_height),
              ))
-@@ -709,7 +722,6 @@ impl<M: InputModeKind> TextElement<M> {
+@@ -709,7 +727,6 @@ impl<M: InputModeKind> TextElement<M> {
              return if any { builder.build().ok() } else { None };
          }
  
@@ -50,7 +114,7 @@ index ccd5f88f..dd455dea 100644
          let visible_top = last_layout.visible_top;
          let lines = &last_layout.lines;
          let line_number_width = last_layout.line_number_width;
-@@ -757,8 +769,8 @@ impl<M: InputModeKind> TextElement<M> {
+@@ -757,8 +774,8 @@ impl<M: InputModeKind> TextElement<M> {
                  });
  
                  // Split the selection into multiple items
@@ -61,7 +125,7 @@ index ccd5f88f..dd455dea 100644
  
                  let mut end_x = end.x;
                  if wrapped_lines > 0 {
-@@ -768,28 +780,28 @@ impl<M: InputModeKind> TextElement<M> {
+@@ -768,28 +785,28 @@ impl<M: InputModeKind> TextElement<M> {
                  // Ensure at least 6px width for the selection for empty lines.
                  end_x = end_x.max(start.x + px(6.));
  
@@ -103,22 +167,30 @@ index ccd5f88f..dd455dea 100644
                      });
                  }
              }
-@@ -975,12 +987,12 @@ impl<M: InputModeKind> TextElement<M> {
+@@ -951,7 +968,7 @@ impl<M: InputModeKind> TextElement<M> {
+     fn calculate_visible_range(
+         &self,
+         state: &InputBaseState<M>,
+-        line_height: Pixels,
++        rows: &RowMetrics,
+         input_height: Pixels,
+     ) -> (Range<usize>, Vec<usize>, Pixels) {
+         // Add extra rows to avoid showing empty space when scroll to bottom.
+@@ -975,12 +992,11 @@ impl<M: InputModeKind> TextElement<M> {
          scroll_top = clamp_auto_grow_vertical_scroll_offset(
              &state.mode,
              scroll_top,
 -            line_height * total_lines,
-+            Self::row_metrics(state, line_height).rows_height(total_lines),
++            rows.rows_height(total_lines),
              input_height,
          );
  
          // The visible window maps to a display-row range through the row metrics.
 -        let rows = RowMetrics::uniform(line_height);
-+        let rows = Self::row_metrics(state, line_height);
          let viewport_top = (-scroll_top).max(px(0.));
          let viewport_bottom = viewport_top + input_height;
          let first_display = rows.row_at(viewport_top).min(display_count - 1);
-@@ -1040,10 +1052,11 @@ impl<M: InputModeKind> TextElement<M> {
+@@ -1040,10 +1056,11 @@ impl<M: InputModeKind> TextElement<M> {
              );
  
              empty_line_number.width + LINE_NUMBER_RIGHT_MARGIN
@@ -133,7 +205,7 @@ index ccd5f88f..dd455dea 100644
          };
  
          if state.mode.is_folding() {
-@@ -1213,6 +1226,7 @@ impl<M: InputModeKind> TextElement<M> {
+@@ -1213,6 +1230,7 @@ impl<M: InputModeKind> TextElement<M> {
              is_folded: bool,
              display_row: usize,
              offset_y: Pixels,
@@ -141,7 +213,7 @@ index ccd5f88f..dd455dea 100644
          }
  
          let line_number_hitbox = window.insert_hitbox(
-@@ -1249,25 +1263,26 @@ impl<M: InputModeKind> TextElement<M> {
+@@ -1249,25 +1267,26 @@ impl<M: InputModeKind> TextElement<M> {
                          is_folded,
                          display_row: buffer_line,
                          offset_y,
@@ -174,7 +246,7 @@ index ccd5f88f..dd455dea 100644
              // Position fold icon to the right of line numbers.
              // Use origin_x (unscrolled) so icons stay fixed in the gutter during horizontal scroll.
              let fold_icon_bounds = Bounds::new(
-@@ -1446,6 +1461,8 @@ impl<M: InputModeKind> TextElement<M> {
+@@ -1446,6 +1465,8 @@ impl<M: InputModeKind> TextElement<M> {
  
              let mut wrapped_lines: SmallVec<[ShapedLine; 1]> = SmallVec::with_capacity(1);
              let mut line_has_background = false;
@@ -183,7 +255,7 @@ index ccd5f88f..dd455dea 100644
  
              for range in &line_item.wrapped_lines {
                  let line_runs = runs_for_range(runs, run_offset, &range);
-@@ -1466,7 +1483,7 @@ impl<M: InputModeKind> TextElement<M> {
+@@ -1466,7 +1487,7 @@ impl<M: InputModeKind> TextElement<M> {
                  let shape_start = attribution::now();
                  let shaped_line = window
                      .text_system()
@@ -192,7 +264,7 @@ index ccd5f88f..dd455dea 100644
                  trace.shape_finished(shape_start);
  
                  line_has_background |= has_background(&line_runs);
-@@ -1485,7 +1502,20 @@ impl<M: InputModeKind> TextElement<M> {
+@@ -1485,11 +1506,25 @@ impl<M: InputModeKind> TextElement<M> {
                  px(0.)
              };
  
@@ -205,15 +277,20 @@ index ccd5f88f..dd455dea 100644
 +                Some(first) if hang_bytes > 0 && hang_bytes <= first.len => first.x_for_index(hang_bytes),
 +                _ => px(0.),
 +            };
-+            let hang = if hang <= state.hang_room(last_layout.line_number_width) { hang } else { px(0.) };
++            let hang = if hang <= state.hang_room() { hang } else { px(0.) };
 +
              let line_layout = LineLayout::new()
 +                .first_row(state.display_map.buffer_line_to_display_row(buffer_line))
-+                .hang(hang)
                  .lines(wrapped_lines)
                  .wrap_indent(wrap_indent)
                  .with_background(line_has_background)
-@@ -1822,7 +1852,8 @@ impl<M: InputModeKind> Element for TextElement<M> {
+                 .with_whitespaces(whitespace_indicators.clone());
++            // Bidi rows place a marker by their own geometry; they never hang.
++            let line_layout = if line_layout.has_bidi() { line_layout } else { line_layout.hang(hang) };
+             lines.push(line_layout);
+ 
+             // +1 for the `\n`
+@@ -1822,7 +1857,8 @@ impl<M: InputModeKind> Element for TextElement<M> {
              let mut y = last.visible_top;
              for (line, start) in last.lines.iter().zip(&last.visible_line_byte_offsets) {
                  let mut projected = *start;
@@ -223,7 +300,7 @@ index ccd5f88f..dd455dea 100644
                      let screen_y = y + initial.scroll_handle.offset().y;
                      if screen_y >= px(0.) && screen_y < bounds.size.height {
                          let old = last.source(projected, ConcealBias::Right)?;
-@@ -1830,7 +1861,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -1830,7 +1866,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
                          return Some((current, y, false));
                      }
                      projected += row.len;
@@ -232,34 +309,70 @@ index ccd5f88f..dd455dea 100644
                  }
              }
              None
-@@ -1935,7 +1966,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -1899,6 +1935,8 @@ impl<M: InputModeKind> Element for TextElement<M> {
+             });
+         }
+ 
++        // Rows of this frame, built once after the projection is installed.
++        let mut frame_rows = None;
+         self.state.update(cx, |state, cx| {
+             let changed = state.last_layout.as_ref().is_none_or(|last| {
+                 last.font != font
+@@ -1929,13 +1967,16 @@ impl<M: InputModeKind> Element for TextElement<M> {
+             {
+                 state.projection.current = None;
+             }
++            state
++                .display_map
++                .set_hang_room(state.hang_room());
+             state
+                 .display_map
+                 .install_projection(state.projection.pin(), &state.text, window, cx);
++            let rows = Self::row_metrics(state, window.line_height());
              if let Some((offset, old_y, affinity)) = source_anchor {
                  let row = state.display_map.offset_to_wrap_display_point_with_affinity(
                      offset, affinity).row;
 -                let rows = RowMetrics::uniform(window.line_height());
-+                let rows = Self::row_metrics(state, window.line_height());
                  let new_y = rows.row_top(row);
                  let delta = old_y - new_y;
                  {
-@@ -1956,7 +1987,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -1956,12 +1997,13 @@ impl<M: InputModeKind> Element for TextElement<M> {
              }
              // User scroll toward the natural extent retires the lease. Never
              // grow it from scroll alone or retain it after disabling projection.
 -            let natural = (RowMetrics::uniform(window.line_height())
-+            let natural = (Self::row_metrics(state, window.line_height())
++            let natural = (rows
                  .rows_height(state.display_map.wrap_row_count())
                  + empty_bottom_height(state.is_code_editor(), state.scroll_beyond_last_line,
                      bounds.size.height, window.line_height())).max(bounds.size.height);
-@@ -2025,7 +2056,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+             let needed = (bounds.size.height - state.scroll_handle.offset().y - natural).max(px(0.));
+             state.projection_anchor_tail = state.projection_anchor_tail.min(needed);
++            frame_rows = Some(rows);
+         });
+         let state = self.state.read(cx);
+         let projected_rope = state
+@@ -1971,9 +2013,10 @@ impl<M: InputModeKind> Element for TextElement<M> {
+             .map(|p| Rope::from(p.text()));
+         let display_text = projected_rope.as_ref().unwrap_or(display_text);
+         let line_height = window.line_height();
++        let rows = frame_rows.unwrap_or_else(|| RowMetrics::uniform(line_height));
+ 
+         let (visible_range, visible_buffer_lines, visible_top) =
+-            self.calculate_visible_range(&state, line_height, bounds.size.height);
++            self.calculate_visible_range(&state, &rows, bounds.size.height);
+         let visible_start_offset = state.text.line_start_offset(visible_range.start);
+         let visible_end_offset = state
+             .text
+@@ -2025,7 +2068,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
              visible_top,
              visible_range_offset,
              line_height,
 -            rows: RowMetrics::uniform(line_height),
-+            rows: Self::row_metrics(state, line_height),
++            rows,
              wrap_width,
              wrapping_indent,
              line_number_width,
-@@ -2174,7 +2205,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -2174,7 +2217,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
              } else {
                  longest_line_width
              },
@@ -268,7 +381,7 @@ index ccd5f88f..dd455dea 100644
                  + empty_bottom_height.max(ghost_lines_height))
              .max(bounds.size.height) + state.projection_anchor_tail,
          );
-@@ -2401,13 +2432,17 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -2401,13 +2444,17 @@ impl<M: InputModeKind> Element for TextElement<M> {
              offset_y += invisible_top_padding;
  
              // Each item is the normal lines.
@@ -288,7 +401,7 @@ index ccd5f88f..dd455dea 100644
                  // Paint the current line background
                  if is_active {
                      if let Some(bg_color) = active_line_color {
-@@ -2452,14 +2487,15 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -2452,14 +2499,15 @@ impl<M: InputModeKind> Element for TextElement<M> {
  
              // Code block rows (#868): a quiet background under selection and text.
              if let Some(rows) = prepaint.code_rows.get(line_index).filter(|_| marker_source_matches) {
@@ -306,7 +419,7 @@ index ccd5f88f..dd455dea 100644
                                  ),
                              ),
                              editor_style.foreground.opacity(0.05),
-@@ -2542,10 +2578,11 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -2542,10 +2590,11 @@ impl<M: InputModeKind> Element for TextElement<M> {
  
              let rows = prepaint.marker_rows.get(line_index).filter(|rows| marker_source_matches && rows.iter().any(Option::is_some));
              if let Some(rows) = rows {
@@ -321,7 +434,7 @@ index ccd5f88f..dd455dea 100644
                      let row_origin = p + point(indent, row_top);
                      if let Some(Some(paint)) = rows.get(row_index) {
                          paint.paint(row_origin, row_height, prepaint.last_layout.content_width - indent,
-@@ -2622,14 +2659,18 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -2622,14 +2671,18 @@ impl<M: InputModeKind> Element for TextElement<M> {
              window.paint_quad(fill(gutter_bounds, gutter_bg));
  
              // Each item is the normal lines.
@@ -343,10 +456,10 @@ index ccd5f88f..dd455dea 100644
                  if is_active {
                      if let Some(bg_color) = active_line_color {
 diff --git a/crates/base/src/input/base/layout.rs b/crates/base/src/input/base/layout.rs
-index db5faf12..0a819f91 100644
+index db5faf12..046dcd3c 100644
 --- a/crates/base/src/input/base/layout.rs
 +++ b/crates/base/src/input/base/layout.rs
-@@ -11,52 +11,198 @@ pub(crate) struct WhitespaceIndicators {
+@@ -11,52 +11,223 @@ pub(crate) struct WhitespaceIndicators {
      pub(crate) tab: ShapedLine,
  }
  
@@ -463,25 +576,51 @@ index db5faf12..0a819f91 100644
 +        self.row_top(rows)
      }
  
-     /// The row that contains content y; rows above 0 clamp to 0.
+-    /// The row that contains content y; rows above 0 clamp to 0.
++    /// The row that contains content y; rows above 0 clamp to 0. Agrees
++    /// exactly with [`Self::row_top`]: below a tall row the closed-form guess
++    /// can land one row off when the line height is fractional.
      pub(crate) fn row_at(&self, y: Pixels) -> usize {
 -        (f32::from(y.max(px(0.))) / f32::from(self.line_height)).floor() as usize
 +        let y = y.max(px(0.));
 +        let uniform = |from_row: usize, from_y: Pixels| {
 +            from_row + (f32::from(y - from_y) / f32::from(self.line_height)).floor() as usize
 +        };
-+        // The last tall row that starts at or above y.
-+        let ix = self.tall.partition_point(|t| self.row_top(t.row) <= y);
-+        if ix == 0 {
++        if self.tall.is_empty() {
 +            return uniform(0, px(0.));
 +        }
-+        let tall = self.tall[ix - 1];
-+        let bottom = self.row_top(tall.row) + self.line_height + tall.extra;
-+        if y < bottom {
-+            tall.row
++        // The last tall row that starts at or above y.
++        let ix = self.tall.partition_point(|t| self.row_top(t.row) <= y);
++        let mut row = if ix == 0 {
++            uniform(0, px(0.))
 +        } else {
-+            uniform(tall.row + 1, bottom)
++            let tall = self.tall[ix - 1];
++            let bottom = self.row_top(tall.row + 1);
++            if y < bottom { tall.row } else { uniform(tall.row + 1, bottom) }
++        };
++        while row > 0 && self.row_top(row) > y {
++            row -= 1;
 +        }
++        while self.row_top(row + 1) <= y {
++            row += 1;
++        }
++        row
++    }
++
++    /// How many rows from `row` down fit in `height` (at least one): the page
++    /// step of vertical movement, measured in pixels so tall rows count as
++    /// what they are.
++    pub(crate) fn rows_below(&self, row: usize, height: Pixels) -> usize {
++        (self.row_at(self.row_top(row) + height.max(px(0.))) - row).max(1)
++    }
++
++    /// How many rows from `row` up fit in `height` (at least one).
++    pub(crate) fn rows_above(&self, row: usize, height: Pixels) -> usize {
++        let top = self.row_top(row) - height.max(px(0.));
++        if top <= px(0.) {
++            return row.max(1);
++        }
++        (row - self.row_end_at(top)).max(1)
      }
  
      /// The end (exclusive) of the rows a range ending at `y` touches.
@@ -561,7 +700,7 @@ index db5faf12..0a819f91 100644
  }
  
  #[cfg(test)]
-@@ -66,20 +212,130 @@ mod row_metrics_tests {
+@@ -66,20 +237,159 @@ mod row_metrics_tests {
      #[test]
      fn uniform_rows_match_the_line_height_arithmetic_they_replace() {
          let rows = RowMetrics::uniform(px(20.));
@@ -633,6 +772,35 @@ index db5faf12..0a819f91 100644
 +    }
 +
 +    #[test]
++    fn tall_rows_round_trip_far_down_with_fractional_line_heights() {
++        for line_height in [px(18.4), px(19.2), px(20.02), px(22.4), px(23.7), px(25.6)] {
++            for scale in [1.125, 1.25, 1.5, 2.] {
++                let rows = RowMetrics::with_heights(
++                    line_height,
++                    [(40, line_height * scale), (300, line_height * scale), (301, line_height * scale)],
++                );
++                for row in (0..12_000).step_by(7) {
++                    let top = rows.row_top(row);
++                    assert_eq!(rows.row_at(top), row, "{line_height:?} x{scale} row {row}");
++                    assert_eq!(rows.row_end_at(top), row, "{line_height:?} x{scale} row {row}");
++                }
++            }
++        }
++    }
++
++    #[test]
++    fn page_steps_measure_tall_rows_in_pixels() {
++        // Rows 10..20 are twice as tall: a 200 px page from row 10 holds 5.
++        let tall = (10..20).map(|row| (row, px(40.)));
++        let rows = RowMetrics::with_heights(px(20.), tall);
++        assert_eq!(rows.rows_below(0, px(200.)), 10);
++        assert_eq!(rows.rows_below(10, px(200.)), 5);
++        assert_eq!(rows.rows_above(25, px(200.)), 7, "5 plain rows, then 2.5 tall ones");
++        assert_eq!(rows.rows_above(3, px(200.)), 3, "clamped at the top");
++        assert_eq!(rows.rows_below(4, px(1.)), 1, "always moves");
++    }
++
++    #[test]
 +    fn line_rows_count_from_the_line_top() {
 +        // A heading that wraps to display rows 3 and 4, both 36 px tall.
 +        let rows = RowMetrics::with_heights(px(20.), [(3, px(36.)), (4, px(36.))]);
@@ -692,7 +860,7 @@ index db5faf12..0a819f91 100644
  }
  
  #[derive(Clone)]
-@@ -112,6 +368,11 @@ pub(super) struct LastLayout {
+@@ -112,6 +422,11 @@ pub(super) struct LastLayout {
  }
  
  impl LastLayout {
@@ -705,7 +873,7 @@ index db5faf12..0a819f91 100644
          if self.source_stamp.document != current.document {
              return None;
 diff --git a/crates/base/src/input/base/movement.rs b/crates/base/src/input/base/movement.rs
-index 67b60282..34169767 100644
+index 67b60282..345da147 100644
 --- a/crates/base/src/input/base/movement.rs
 +++ b/crates/base/src/input/base/movement.rs
 @@ -77,7 +77,7 @@ impl<M: InputModeKind> InputBaseState<M> {
@@ -717,32 +885,40 @@ index 67b60282..34169767 100644
          };
          let Some((index, affinity, bidi_affinity)) = hit else {
              return;
-@@ -232,7 +232,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+@@ -211,6 +211,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+                 last.font_size,
+                 last.wrap_width,
+             );
++            map.set_hang_room(self.hang_room());
+             map.install_projection(
+                 Some(PinnedProjection {
+                     stamp: LayoutStamp {
+@@ -232,7 +233,7 @@ impl<M: InputModeKind> InputBaseState<M> {
          } else {
              let row = self.text.offset_to_point(self.cursor()).row;
              let (start, line) =
 -                Self::projected_line_layout(current.as_ref(), &current_map, last, row, window)?;
-+                Self::projected_line_layout(current.as_ref(), &current_map, last, row, self.hang_room(last.line_number_width), window)?;
++                Self::projected_line_layout(current.as_ref(), &current_map, last, row, self.hang_room(), window)?;
              let offset = current
                  .to_projected(SourceByte(self.cursor()), ConcealBias::Right)?
                  .0;
-@@ -257,6 +257,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+@@ -257,6 +258,7 @@ impl<M: InputModeKind> InputBaseState<M> {
              last,
              target_row,
              preferred,
-+            self.hang_room(last.line_number_width),
++            self.hang_room(),
              window,
          )?;
          let mut active = self.projection.active.clone();
-@@ -291,6 +292,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+@@ -291,6 +293,7 @@ impl<M: InputModeKind> InputBaseState<M> {
              last,
              target.row,
              preferred,
-+            self.hang_room(last.line_number_width),
++            self.hang_room(),
              window,
          )?;
          active.anchor = SourceByte(resolved.0);
-@@ -323,17 +325,18 @@ impl<M: InputModeKind> InputBaseState<M> {
+@@ -323,17 +326,18 @@ impl<M: InputModeKind> InputBaseState<M> {
          last: &super::layout::LastLayout,
          wrap_row: usize,
          preferred: gpui::Pixels,
@@ -763,7 +939,7 @@ index 67b60282..34169767 100644
              },
              last,
          )?;
-@@ -354,13 +357,14 @@ impl<M: InputModeKind> InputBaseState<M> {
+@@ -354,13 +358,14 @@ impl<M: InputModeKind> InputBaseState<M> {
          map: &super::display_map::DisplayMap,
          last: &super::layout::LastLayout,
          row: usize,
@@ -779,7 +955,7 @@ index 67b60282..34169767 100644
          for range in &item.wrapped_lines {
              let runs = super::projection_layout::projected_runs(
                  projection,
-@@ -370,12 +374,21 @@ impl<M: InputModeKind> InputBaseState<M> {
+@@ -370,12 +375,22 @@ impl<M: InputModeKind> InputBaseState<M> {
              );
              shaped.push(window.text_system().shape_line(
                  text[range.clone()].to_string().into(),
@@ -798,12 +974,13 @@ index 67b60282..34169767 100644
 +        let hang = if hang <= hang_room { hang } else { gpui::px(0.) };
 +        let line = super::display_map::LineLayout::new()
 +            .first_row(map.buffer_line_to_display_row(row))
-+            .hang(hang)
 +            .lines(shaped);
++        // Bidi rows place a marker by their own geometry; they never hang.
++        let line = if line.has_bidi() { line } else { line.hang(hang) };
          Some((start, line))
      }
  
-@@ -463,7 +476,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+@@ -463,7 +478,7 @@ impl<M: InputModeKind> InputBaseState<M> {
                  if let Some((x, line_end_affinity, bidi_affinity)) = line.closest_caret_for_position(
                      Point {
                          x: preferred_x,
@@ -812,8 +989,55 @@ index 67b60282..34169767 100644
                      },
                      last_layout,
                  ) {
+@@ -685,16 +700,30 @@ impl<M: InputModeKind> InputBaseState<M> {
+         self.move_vertical(1, window, cx);
+     }
+ 
++    /// Rows in one page from the caret. With tall rows (headings) the page is
++    /// measured in pixels, so it neither skips text nor stops short (#1034).
++    fn page_rows(&self, down: bool) -> Option<isize> {
++        let last_layout = self.last_layout.as_ref()?;
++        let rows = &last_layout.rows;
++        let height = self.input_bounds.size.height;
++        if rows.is_uniform() {
++            return Some(rows.rows_in(height) as isize);
++        }
++        let Some(caret) = self.line_and_position_for_offset(self.cursor()).2 else {
++            return Some(rows.rows_in(height) as isize);
++        };
++        let row = rows.row_at(caret.y);
++        Some(if down { rows.rows_below(row, height) } else { rows.rows_above(row, height) } as isize)
++    }
++
+     pub(super) fn page_up(&mut self, _: &MovePageUp, window: &mut Window, cx: &mut Context<Self>) {
+         if self.is_single_line() {
+             return;
+         }
+ 
+-        let Some(last_layout) = &self.last_layout else {
++        let Some(display_lines) = self.page_rows(false) else {
+             return;
+         };
+-
+-        let display_lines = last_layout.rows.rows_in(self.input_bounds.size.height) as isize;
+         self.move_vertical(-display_lines, window, cx);
+     }
+ 
+@@ -708,11 +737,9 @@ impl<M: InputModeKind> InputBaseState<M> {
+             return;
+         }
+ 
+-        let Some(last_layout) = &self.last_layout else {
++        let Some(display_lines) = self.page_rows(true) else {
+             return;
+         };
+-
+-        let display_lines = last_layout.rows.rows_in(self.input_bounds.size.height) as isize;
+         self.move_vertical(display_lines, window, cx);
+     }
+ 
 diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
-index 62d0ed03..b108fb32 100644
+index 62d0ed03..1a44d98d 100644
 --- a/crates/base/src/input/base/state.rs
 +++ b/crates/base/src/input/base/state.rs
 @@ -394,6 +394,7 @@ pub struct InputBaseState<M: InputModeKind> {
@@ -832,18 +1056,25 @@ index 62d0ed03..b108fb32 100644
              deferred_scroll_offset: None,
              preferred_column: None,
              placeholder: SharedString::default(),
-@@ -859,6 +861,26 @@ impl<M: InputModeKind> InputBaseState<M> {
+@@ -859,6 +861,33 @@ impl<M: InputModeKind> InputBaseState<M> {
          self.projected_editor_style = style;
      }
  
 +    /// Room left of the text for a hanging prefix: the empty space from the
 +    /// editor's edge to the text, less a little air so a marker never touches
 +    /// the edge. None beside line numbers.
-+    pub(super) fn hang_room(&self, line_number_width: Pixels) -> Pixels {
++    pub(super) fn hang_room(&self) -> Pixels {
 +        if self.mode.line_number() {
 +            return px(0.);
 +        }
-+        (self.editor_paddings.left + line_number_width - px(4.)).max(px(0.))
++        // The empty line-number margin, as `TextElement` lays it out.
++        let margin = if self.is_code_editor() {
++            super::element::LINE_NUMBER_RIGHT_MARGIN
++        } else {
++            px(0.)
++        };
++        let margin = margin.max(self.text_gutter - self.editor_paddings.left);
++        (self.editor_paddings.left + margin - px(4.)).max(px(0.))
 +    }
 +
 +    /// Keep at least `gutter` from the editor's edge to the text when there
@@ -859,7 +1090,7 @@ index 62d0ed03..b108fb32 100644
      /// Set presentation padding for multi-line text and its scrollbar layout.
      #[doc(hidden)]
      pub fn set_editor_paddings(&mut self, paddings: Edges<Pixels>) {
-@@ -920,14 +942,13 @@ impl<M: InputModeKind> InputBaseState<M> {
+@@ -920,14 +949,13 @@ impl<M: InputModeKind> InputBaseState<M> {
          let Some(offset) = last_layout.project(offset, ConcealBias::Right) else {
              return (0, 0, None);
          };
@@ -875,7 +1106,7 @@ index 62d0ed03..b108fb32 100644
                  let adjusted_pos = point(pos.x + last_layout.line_number_width, pos.y + y_offset);
                  return (vi, sub_line_index, Some(adjusted_pos));
              }
-@@ -2341,6 +2362,9 @@ impl<M: InputModeKind> InputBaseState<M> {
+@@ -2341,6 +2369,9 @@ impl<M: InputModeKind> InputBaseState<M> {
              }
          }
  
@@ -885,7 +1116,7 @@ index 62d0ed03..b108fb32 100644
          // Scroll the row into view. Use the same edge clearance helper as
          // `TextElement::layout_cursor` so both scroll-into-view paths agree
          // (a mismatch flickered on `Down` at end-of-buffer with a small
-@@ -2353,11 +2377,11 @@ impl<M: InputModeKind> InputBaseState<M> {
+@@ -2353,11 +2384,11 @@ impl<M: InputModeKind> InputBaseState<M> {
                  line_height,
              )
          } else {
@@ -900,7 +1131,7 @@ index 62d0ed03..b108fb32 100644
          } else if row_offset_y + edge_height > -scroll_offset.y + bounds.size.height {
              // Scroll down
              scroll_offset.y = -(row_offset_y - bounds.size.height + edge_height);
-@@ -2777,7 +2801,6 @@ impl<M: InputModeKind> InputBaseState<M> {
+@@ -2777,7 +2808,6 @@ impl<M: InputModeKind> InputBaseState<M> {
              return Some((0, false, Affinity::Before));
          };
  
@@ -908,7 +1139,7 @@ index 62d0ed03..b108fb32 100644
          let line_number_width = last_layout.line_number_width;
          // Masked display offsets are not source offsets; they have no bidi runs anyway.
          let anchor = (extending && !self.masked)
-@@ -3320,7 +3343,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+@@ -3320,7 +3350,7 @@ impl<M: InputModeKind> InputBaseState<M> {
  
          Some(Bounds::from_corners(
              last_bounds.origin + start_pos,
@@ -917,7 +1148,7 @@ index 62d0ed03..b108fb32 100644
          ))
      }
  
-@@ -3769,7 +3792,6 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
+@@ -3769,7 +3799,6 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
          if self.projection.enabled && last_layout.source_stamp != self.source_stamp() {
              return None;
          }
@@ -925,7 +1156,7 @@ index 62d0ed03..b108fb32 100644
          let line_number_width = last_layout.line_number_width;
          let range = self.checked_native_range(&range_utf16)?;
          let range = last_layout.project(range.start, ConcealBias::Left)?
-@@ -3819,8 +3841,9 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
+@@ -3819,8 +3848,9 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
  
          Some(Bounds::from_corners(
              bounds.origin + line_number_origin + point(start_origin.x.min(end_origin.x), start_origin.y),
@@ -937,7 +1168,7 @@ index 62d0ed03..b108fb32 100644
          ))
      }
  
-@@ -4302,6 +4325,178 @@ mod tests {
+@@ -4302,6 +4332,178 @@ mod tests {
          }
      }
  
@@ -1117,13 +1348,35 @@ index 62d0ed03..b108fb32 100644
      fn presentation_anchor_survives_unpainted_edits_without_stale_hit_layout(cx: &mut TestAppContext) {
          cx.update(crate::init);
 diff --git a/crates/base/src/input/editor/display_map/display_map.rs b/crates/base/src/input/editor/display_map/display_map.rs
-index d7c3406c..f8d503d9 100644
+index d7c3406c..2b15c052 100644
 --- a/crates/base/src/input/editor/display_map/display_map.rs
 +++ b/crates/base/src/input/editor/display_map/display_map.rs
-@@ -130,6 +130,43 @@ impl DisplayMap {
+@@ -32,6 +32,7 @@ pub struct DisplayMap {
+     fold_map: FoldMap,
+     source_text: Rope,
+     projection: Option<PinnedProjection>,
++    hang_room: Pixels,
+ }
+ 
+ impl DisplayMap {
+@@ -41,6 +42,7 @@ impl DisplayMap {
+             fold_map: FoldMap::new(),
+             source_text: Rope::new(),
+             projection: None,
++            hang_room: Pixels::default(),
          }
      }
  
+@@ -130,6 +132,49 @@ impl DisplayMap {
+         }
+     }
+ 
++    /// Room left of the text for a hanging prefix; set before installing a
++    /// projection. Wrapping leaves out a prefix that fits it.
++    pub(crate) fn set_hang_room(&mut self, room: Pixels) {
++        self.hang_room = room;
++    }
++
 +    /// The font scale of buffer `line` under the installed projection; 1 in
 +    /// Source or for unscaled lines.
 +    pub(crate) fn line_scale(&self, line: usize) -> f32 {
@@ -1164,8 +1417,23 @@ index d7c3406c..f8d503d9 100644
      /// Check if a buffer line is completely hidden
      #[inline]
      pub fn is_buffer_line_hidden(&self, line: usize) -> bool {
+@@ -305,8 +350,12 @@ impl DisplayMap {
+         self.source_text = source.clone();
+         match projection {
+             Some(pinned) => {
+-                self.wrap_map
+-                    .set_projected(pinned.projection.as_ref(), pinned.stamp.presentation, window);
++                self.wrap_map.set_projected(
++                    pinned.projection.as_ref(),
++                    pinned.stamp.presentation,
++                    self.hang_room,
++                    window,
++                );
+                 self.projection = Some(pinned);
+             }
+             None if self.projection.take().is_some() => self.wrap_map.restore_source(source, cx),
 diff --git a/crates/base/src/input/editor/display_map/text_wrapper.rs b/crates/base/src/input/editor/display_map/text_wrapper.rs
-index 223ae195..e88530a9 100644
+index 223ae195..0d3b6d27 100644
 --- a/crates/base/src/input/editor/display_map/text_wrapper.rs
 +++ b/crates/base/src/input/editor/display_map/text_wrapper.rs
 @@ -1,5 +1,5 @@
@@ -1175,7 +1443,14 @@ index 223ae195..e88530a9 100644
  use crate::input::attribution::{self, Identity as TraceIdentity, Span as TraceSpan};
  use gpui::Half;
  use std::borrow::Cow;
-@@ -419,9 +419,11 @@ impl TextWrapper {
+@@ -413,18 +413,39 @@ impl TextWrapper {
+         &mut self,
+         projection: &dyn crate::input::projection::SourceProjection,
+         epoch: u64,
++        hang_room: Pixels,
+         window: &gpui::Window,
+     ) {
+         let mut trace = TraceSpan::new("set_projected", TraceIdentity::new(projection.source().stamp, epoch, true));
          let text = Rope::from(projection.text());
          trace.counts([text.len() as u64, text.lines_len() as u64, projection.styles().len() as u64, 0]);
          let mut items = Vec::new();
@@ -1184,19 +1459,52 @@ index 223ae195..e88530a9 100644
              let line = text.slice_line(row).to_string();
              let start = text.line_start_offset(row);
 +            let font_size = self.font_size * crate::input::projection::line_scale(scales, row);
++            // A hanging prefix (a revealed heading marker) that fits the room
++            // left of the text is drawn in the margin, so the line wraps as if
++            // it were not there: revealing it never changes the rows (#1034).
++            let hang = crate::input::projection::line_hang(scales, row);
++            let hang = if hang > 0 && hang < line.len() && line.is_char_boundary(hang) && !has_rtl(&line) {
++                let runs = crate::input::projection_layout::projected_runs(
++                    projection,
++                    start..start + hang,
++                    &self.font,
++                    gpui::black(),
++                );
++                let marker = window
++                    .text_system()
++                    .shape_line(line[..hang].to_string().into(), font_size, &runs, None);
++                if marker.width <= hang_room { hang } else { 0 }
++            } else {
++                0
++            };
              let runs = crate::input::projection_layout::projected_runs(
                  projection,
-                 start..start + line.len(),
-@@ -433,7 +435,7 @@ impl TextWrapper {
+-                start..start + line.len(),
++                start + hang..start + line.len(),
+                 &self.font,
+                 gpui::black(),
+             );
+@@ -432,8 +453,8 @@ impl TextWrapper {
+             let shaped = window
                  .text_system()
                  .shape_text(
-                     line.clone().into(),
+-                    line.clone().into(),
 -                    self.font_size,
++                    line[hang..].to_string().into(),
 +                    font_size,
                      &runs,
                      self.wrap_width,
                      None,
-@@ -597,6 +599,9 @@ pub(crate) struct LineLayout {
+@@ -454,7 +475,7 @@ impl TextWrapper {
+                     &line,
+                     shaped.into_iter().flat_map(|shaped| {
+                         shaped.wrap_boundaries.iter().map(move |boundary| {
+-                            shaped.unwrapped_layout.runs[boundary.run_ix].glyphs[boundary.glyph_ix].index
++                            hang + shaped.unwrapped_layout.runs[boundary.run_ix].glyphs[boundary.glyph_ix].index
+                         })
+                     }),
+                 ),
+@@ -597,6 +618,9 @@ pub(crate) struct LineLayout {
      /// Extra left offset applied to continuation wrapped lines, used to reserve the first line's
      /// indentation when [`WrappingIndent::Same`] is used.
      pub(crate) wrap_indent: Pixels,
@@ -1206,7 +1514,7 @@ index 223ae195..e88530a9 100644
      pub(crate) longest_width: Pixels,
      pub(crate) whitespace_indicators: Option<WhitespaceIndicators>,
      /// Whitespace indicators: (line_index, x_position, is_tab)
-@@ -605,6 +610,9 @@ pub(crate) struct LineLayout {
+@@ -605,6 +629,9 @@ pub(crate) struct LineLayout {
      /// can skip the glyph walk for the common case of a line without highlights.
      has_background: bool,
      bidi: Vec<Option<Geometry>>,
@@ -1216,7 +1524,7 @@ index 223ae195..e88530a9 100644
  }
  
  impl LineLayout {
-@@ -614,13 +622,26 @@ impl LineLayout {
+@@ -614,13 +641,26 @@ impl LineLayout {
              longest_width: px(0.),
              wrapped_lines: SmallVec::new(),
              wrap_indent: px(0.),
@@ -1243,7 +1551,7 @@ index 223ae195..e88530a9 100644
      /// Record whether any run of this line carries a background color.
      pub(crate) fn with_background(mut self, has_background: bool) -> Self {
          self.has_background = has_background;
-@@ -633,12 +654,19 @@ impl LineLayout {
+@@ -633,12 +673,19 @@ impl LineLayout {
          self
      }
  
@@ -1266,7 +1574,7 @@ index 223ae195..e88530a9 100644
          } else {
              self.wrap_indent
          }
-@@ -713,7 +741,7 @@ impl LineLayout {
+@@ -713,7 +760,7 @@ impl LineLayout {
      pub(crate) fn position_for_caret(&self, offset: usize, last_layout: &LastLayout,
          line_end_affinity: bool, affinity: Affinity) -> Option<Point<Pixels>> {
          let mut acc_len = 0;
@@ -1275,7 +1583,7 @@ index 223ae195..e88530a9 100644
  
          let x_offset = last_layout.alignment_offset(self.longest_width);
  
-@@ -740,13 +768,12 @@ impl LineLayout {
+@@ -740,13 +787,12 @@ impl LineLayout {
                  }).unwrap_or_else(|| line.x_for_index(local))
                      + x_offset
                      + self.line_indent(i);
@@ -1290,7 +1598,7 @@ index 223ae195..e88530a9 100644
          }
  
          None
-@@ -762,17 +789,17 @@ impl LineLayout {
+@@ -762,17 +808,17 @@ impl LineLayout {
          last_layout: &LastLayout,
      ) -> Option<(usize, usize, Pixels)> {
          let mut offset = 0;
@@ -1312,7 +1620,7 @@ index 223ae195..e88530a9 100644
          }
  
          None
-@@ -898,8 +925,8 @@ impl LineLayout {
+@@ -898,8 +944,8 @@ impl LineLayout {
                      else { vec![line.x_for_index(local.start)..line.x_for_index(local.end)] };
                  let x = last.alignment_offset(self.longest_width) + self.line_indent(i);
                  for span in spans {
@@ -1323,7 +1631,7 @@ index 223ae195..e88530a9 100644
                  }
              }
              start = end;
-@@ -907,7 +934,7 @@ impl LineLayout {
+@@ -907,7 +953,7 @@ impl LineLayout {
          if range.start <= self.len && range.end > self.len {
              if let Some(pos) = self.position_for_caret(self.len, last, true, Affinity::After) {
                  let last_row = self.wrapped_lines.len().saturating_sub(1);
@@ -1332,7 +1640,7 @@ index 223ae195..e88530a9 100644
              }
          }
          result
-@@ -934,7 +961,7 @@ impl LineLayout {
+@@ -934,7 +980,7 @@ impl LineLayout {
              .map(|(ix, line)| line.width + self.line_indent(ix))
              .max()
              .unwrap_or(self.longest_width);
@@ -1341,7 +1649,7 @@ index 223ae195..e88530a9 100644
      }
  
      /// Paint only the glyph background quads of this line.
-@@ -950,6 +977,7 @@ impl LineLayout {
+@@ -950,6 +996,7 @@ impl LineLayout {
          window: &mut Window,
          cx: &mut App,
      ) {
@@ -1349,7 +1657,7 @@ index 223ae195..e88530a9 100644
          // Painting a background walks every glyph and pushes a scene layer, so skip the
          // whole pass for lines that have no background color to paint.
          if !self.has_background {
-@@ -977,6 +1005,7 @@ impl LineLayout {
+@@ -977,6 +1024,7 @@ impl LineLayout {
          window: &mut Window,
          cx: &mut App,
      ) {
@@ -1357,6 +1665,22 @@ index 223ae195..e88530a9 100644
          for (ix, line) in self.wrapped_lines.iter().enumerate() {
              _ = line.paint(
                  pos + point(self.line_indent(ix), rows.row_top(ix)),
+diff --git a/crates/base/src/input/editor/display_map/wrap_map.rs b/crates/base/src/input/editor/display_map/wrap_map.rs
+index 30b0b0ff..4643b338 100644
+--- a/crates/base/src/input/editor/display_map/wrap_map.rs
++++ b/crates/base/src/input/editor/display_map/wrap_map.rs
+@@ -140,9 +140,10 @@ impl WrapMap {
+         &mut self,
+         projection: &dyn crate::input::projection::SourceProjection,
+         epoch: u64,
++        hang_room: gpui::Pixels,
+         window: &gpui::Window,
+     ) {
+-        self.wrapper.set_projected(projection, epoch, window);
++        self.wrapper.set_projected(projection, epoch, hang_room, window);
+     }
+ 
+     pub(super) fn restore_source(&mut self, text: &Rope, cx: &mut App) {
 diff --git a/crates/base/src/input/editor/indent.rs b/crates/base/src/input/editor/indent.rs
 index 58028063..aff732f2 100644
 --- a/crates/base/src/input/editor/indent.rs

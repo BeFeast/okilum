@@ -195,9 +195,10 @@ impl Reader {
             available - widths.notes - widths.backlinks
         };
         let offset = ((pane - reader_ui_state::reading_width(cx)) / 2.).max(0.);
+        // The editor keeps 10 px between its wrap width and its right padding.
         (
             px(offset) + note_gutter(window),
-            px(offset + READER_SIDE_PADDING),
+            px(offset + READER_SIDE_PADDING - 10.),
         )
     }
 }
