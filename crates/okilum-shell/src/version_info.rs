@@ -25,16 +25,30 @@ pub(crate) fn help_menu() -> Menu {
 /// `Okilum 0.1.10467 (build 10467, beta channel) — macOS 15.6 arm64 — app in
 /// /Applications — source beed5ef1`
 pub(crate) fn report() -> String {
+    let install = install_kind();
     format!(
-        "Okilum {} (build {}, {}) — {} {} — {} — source {}",
+        "Okilum {} ({}) — {} {} — {} — source {}",
         env!("OKILUM_RELEASE_VERSION"),
-        env!("OKILUM_BUILD_VERSION"),
-        channel(crate::updater::channel()),
+        build_part(
+            env!("OKILUM_BUILD_VERSION"),
+            &channel(crate::updater::channel()),
+            &install
+        ),
         os(),
         arch(),
-        install_kind(),
+        install,
         source(env!("OKILUM_SOURCE_COMMIT")),
     )
+}
+
+/// `build N, beta channel`; a channel that only repeats the install kind
+/// (Windows "portable") is said once, in the install part.
+fn build_part(build: &str, channel: &str, install: &str) -> String {
+    if channel == install {
+        format!("build {build}")
+    } else {
+        format!("build {build}, {channel}")
+    }
 }
 
 /// The compact form for the visible About line: `macOS arm64`.
@@ -240,6 +254,12 @@ mod tests {
             "beed5ef1"
         );
         assert_eq!(source("unknown (development)"), "unknown (development)");
+        assert_eq!(build_part("5068", "portable", "portable"), "build 5068");
+        // Positive control: a real channel stays next to the build.
+        assert_eq!(
+            build_part("5068", "beta channel", "installer"),
+            "build 5068, beta channel"
+        );
     }
 
     #[test]
