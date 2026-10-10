@@ -53,6 +53,8 @@ pub(crate) struct ArchivePreview {
     entry: Option<EntryView>,
     /// Holds only the previewed entry; removed when the view drops.
     scratch: Option<tempfile::TempDir>,
+    /// The previous preview's folder inside `scratch`, removed when another entry opens.
+    previous: Option<PathBuf>,
     generation: u64,
     extracting: bool,
     scroll: UniformListScrollHandle,
@@ -93,6 +95,7 @@ impl ArchivePreview {
             focused: None,
             entry: None,
             scratch: None,
+            previous: None,
             generation: 0,
             extracting: false,
             scroll: UniformListScrollHandle::new(),
@@ -178,6 +181,10 @@ impl ArchivePreview {
             .map(|n| n.to_string_lossy().into_owned())
             .filter(|n| !n.is_empty())
             .unwrap_or_else(|| "entry".into());
+        // Keep only the entry being shown: drop the one written for the previous preview.
+        if let Some(previous) = self.previous.replace(folder.clone()) {
+            let _ = std::fs::remove_dir_all(previous);
+        }
         let target = folder.join(&file_name);
         let source = self.path.clone();
         self.entry = Some(EntryView::Loading);
@@ -320,7 +327,10 @@ impl ArchivePreview {
             .when(focused, |row| row.bg(palette.selected))
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, window, cx| this.open_entry(index, window, cx)))
-            .child(
+            .child(if entry.kind == Kind::Directory {
+                // Folders come with their files; only files are marked for extraction.
+                div().flex_none().w(px(MARK_WIDTH)).into_any_element()
+            } else {
                 div()
                     .id(("archive-mark", index))
                     .flex_none()
@@ -333,8 +343,9 @@ impl ArchivePreview {
                         }
                         cx.stop_propagation();
                         cx.notify();
-                    })),
-            )
+                    }))
+                    .into_any_element()
+            })
             .child(
                 div()
                     .flex_1()
