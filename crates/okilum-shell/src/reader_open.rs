@@ -316,11 +316,7 @@ pub(crate) fn parse_args(
             }
         }
         // `okilum okilum://…` (OS handlers pass the clicked link) (#1049).
-        if !literal
-            && arg
-                .to_str()
-                .is_some_and(|a| a.len() > 7 && a[..7].eq_ignore_ascii_case("okilum:"))
-        {
+        if !literal && arg.to_str().is_some_and(|a| has_scheme(a, "okilum:")) {
             if opts
                 .link
                 .replace(arg.to_string_lossy().into_owned())
@@ -332,9 +328,7 @@ pub(crate) fn parse_args(
         }
         // `%u` in the .desktop file may hand a local file as a file: URL.
         let arg = match arg.to_str() {
-            Some(a) if !literal && a.len() > 5 && a[..5].eq_ignore_ascii_case("file:") => {
-                file_url_path(a)?.into_os_string()
-            }
+            Some(a) if !literal && has_scheme(a, "file:") => file_url_path(a)?.into_os_string(),
             _ => arg,
         };
         if positional.replace(PathBuf::from(arg)).is_some() {
@@ -421,6 +415,15 @@ pub(crate) fn apply_intent(opts: &mut super::Opts, intent: &OpenIntent) -> Resul
     opts.vault = Some(intent.root.clone());
     opts.note = intent.note.clone();
     Ok(())
+}
+
+/// `value` starts with `scheme` (case-insensitive) and has more after it.
+/// `get` keeps a multi-byte first character from panicking the slice.
+fn has_scheme(value: &str, scheme: &str) -> bool {
+    value.len() > scheme.len()
+        && value
+            .get(..scheme.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(scheme))
 }
 
 pub(crate) fn file_url_path(value: &str) -> Result<PathBuf> {
@@ -612,7 +615,7 @@ pub(crate) fn picker_path(
 
 pub(crate) fn dispatch_urls(urls: Vec<String>, cx: &mut App) {
     for url in urls {
-        if url.len() > 7 && url[..7].eq_ignore_ascii_case("okilum:") {
+        if has_scheme(&url, "okilum:") {
             open_deep_link(&url, cx);
             continue;
         }
@@ -1044,6 +1047,10 @@ mod entry_tests {
         let literal = parse(&["--", "okilum:x"]).unwrap();
         assert!(literal.link.is_none());
         assert_eq!(literal.open_path.as_deref(), Some(Path::new("okilum:x")));
+        // Non-ASCII names are paths, not schemes, and never split a character.
+        let name = parse(&["öööö.md"]).unwrap();
+        assert_eq!(name.open_path.as_deref(), Some(Path::new("öööö.md")));
+        assert!(name.link.is_none());
     }
 
     #[test]
