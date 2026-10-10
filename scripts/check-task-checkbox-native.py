@@ -3,10 +3,11 @@
 edit and one undo step, and the click does not move the caret.
 Run on an exclusive X11 display (never maestro).
 Usage: DISPLAY=:1034 python3 scripts/check-task-checkbox-native.py OKILUM_BINARY WORK_DIR LABEL
-Steps: caret to the end of the note; click the first checkbox; type `Z`; click the
-second checkbox; copy the whole source. Expected: first box checked, second box
-cleared, `Z` at the very end (the caret stayed put). Then three undos must give the
-original note back exactly: one step per toggle. The checkboxes are found on screen
+Steps: caret to the end of the note; click the first checkbox; type `Z`; double-click
+the second checkbox (two quick presses toggle twice, back to checked); click it once
+more; copy the whole source. Expected: first box checked, second box
+cleared, `Z` at the very end (the caret stayed put). Then five undos (four toggles and
+the typing) must give the original note back exactly: one step per toggle. The checkboxes are found on screen
 as the leftmost ink of the first two text bands. Exit 1: wrong source; exit 2: the
 run proves nothing (no window, boxes not found, nothing copied).
 """
@@ -116,12 +117,15 @@ try:
     time.sleep(1)
     xd(env, 'type', 'Z')
     time.sleep(.5)
+    # Two quick presses toggle twice; then one more click clears it.
+    xd(env, 'mousemove', str(second[0]), str(second[1]), 'click', '--repeat', '2', '--delay', '80', '1')
+    time.sleep(1)
     xd(env, 'mousemove', str(second[0]), str(second[1]), 'click', '1')
     time.sleep(1)
     subprocess.run(['import', '-window', 'root', str(work / f'{label}-2-toggled.png')], env=env,
                    check=True)
     toggled = clipboard(env)
-    for _ in range(3):
+    for _ in range(5):
         xd(env, 'key', 'ctrl+z')
         time.sleep(.4)
     undone = clipboard(env)
