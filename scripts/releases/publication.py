@@ -15,6 +15,8 @@ import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'updater'))
 from release import Forgejo, R2
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import prepare
 
 SCRIPTS = Path(__file__).resolve().parents[1]
 WORKFLOWS = {'macos': 'macos-release.yml', 'linux': 'linux-release.yml',
@@ -57,6 +59,31 @@ def published_build(store, platform):
     return max((int(item.findtext(version)) for item in channel.findall('item')), default=0)
 
 
+SOURCE_FILE = 'release-source.txt'
+
+
+def built_source(root, platform, run):
+    """The commit the artifact was built from (#1040).
+
+    A run dispatched with an explicit source checks out that older main commit, so the
+    run's own commit is not the source. The build writes the checked-out commit into its
+    publication artifact; artifacts without the file come from ordinary builds.
+    """
+    folder = next(iter(ARTIFACTS[platform].values()))
+    marker = root / folder / SOURCE_FILE
+    if not marker.exists():
+        return run['commit_sha']
+    source = marker.read_text().strip()
+    if not re.fullmatch('[0-9a-f]{40}', source):
+        raise ValueError('Invalid source recorded by the build')
+    if source != run['commit_sha']:
+        ancestor = subprocess.run(['git', 'merge-base', '--is-ancestor', source, 'origin/main'],
+                                  capture_output=True, text=True, timeout=30)
+        if ancestor.returncode != 0:
+            raise ValueError(f'Recorded source {source} is not a commit on main')
+    return source
+
+
 def extract(data, directory):
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         for entry in archive.infolist():
@@ -91,7 +118,9 @@ def publish(client, platform, run_id):
     build = 5000 + run['index_in_repo']
     # Serialized with every platform publisher and stable promotion. Complete
     # trusted snapshots remain useful after a merge, but never roll back a feed.
-    if published_build(R2(), platform) > build:
+    # Only a manual run can carry an explicit older source (#1040), which goes to the
+    # archive instead; it is decided after reading the artifact.
+    if run['trigger_event'] != 'workflow_dispatch' and published_build(R2(), platform) > build:
         print(f'Newer {platform} build already published: nothing changed')
         return
     artifacts = client.call('GET', f'/actions/runs/{run_id}/artifacts')
@@ -103,6 +132,12 @@ def publish(client, platform, run_id):
                 raise ValueError(f'Missing or ambiguous artifact: {name}')
             data = client.call('GET', f'/actions/artifacts/{matching[0]["id"]}/zip', raw=True)
             extract(data, root / folder)
+        source = built_source(root, platform, run)
+        # An explicit older commit is archived for promotion and never moves the beta feed.
+        archive_only = source != run['commit_sha']
+        if not archive_only and published_build(R2(), platform) > build:
+            print(f'Newer {platform} build already published: nothing changed')
+            return
         # Recheck after downloads; no public mutation precedes this check.
         if (client.call('GET', '/branches/main')['commit']['id'] != run['commit_sha']
                 and not snapshot_run(run, platform)):
@@ -110,17 +145,21 @@ def publish(client, platform, run_id):
             return
         env = {**os.environ, 'GITHUB_SHA': run['commit_sha'],
                'GITHUB_RUN_NUMBER': str(run['index_in_repo'])}
+        extra = ['--archive-only'] if archive_only else []
         if platform == 'macos':
             command = [str(SCRIPTS / 'releases/macos-artifact.py'), 'publish', str(root / 'macos')]
         elif platform == 'linux':
             command = [str(SCRIPTS / 'arch/publish.py'), 'publish', '--build', str(build),
-                       '--source', run['commit_sha'], '--package', one(root / 'arch', '*.pkg.tar.zst')]
+                       '--source', source, '--package', one(root / 'arch', '*.pkg.tar.zst'), *extra]
         else:
             command = [str(SCRIPTS / 'windows/publish.py'), 'publish', '--build', str(build),
-                       '--source', run['commit_sha'], '--directory', str(root / 'windows'),
-                       '--portable', one(root / 'portable', '*.zip')]
+                       '--source', source, '--directory', str(root / 'windows'),
+                       '--portable', one(root / 'portable', '*.zip'), *extra]
         subprocess.run([sys.executable, *command], env=env, check=True)
-        print(f'Published {platform} build {build} from completed run {run_id}')
+        print(f'Published {platform} build {build} from completed run {run_id}, source {source}'
+              + (' (archive only)' if archive_only else ''))
+    # The last missing build of a requested promotion (#1040) starts it.
+    prepare.complete(R2(), client, source)
 
 
 if __name__ == '__main__':

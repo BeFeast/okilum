@@ -69,6 +69,31 @@ class PublicationTests(unittest.TestCase):
             self.assertEqual(store.data['okilum/windows/stable/Setup.exe'], b'MZinstaller')
             self.assertEqual(json.loads(store.data[store.writes[-1]]), feed)
 
+    def test_archive_only_keeps_beta_and_still_promotes(self):
+        """An explicit older commit (#1040): archived, promotable, beta untouched."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'newer').mkdir()
+            (root / 'older').mkdir()
+            store = Store()
+            fixture(root / 'newer', 7100)
+            p.publish(root / 'newer', 7100, 'newer-source', store)
+            beta = store.data['okilum/windows/beta/releases.beta.json']
+            installer = store.data['okilum/windows/beta/Setup.exe']
+            name, _ = fixture(root / 'older', 7000)
+            (root / 'older' / 'BeFeast.Okilum-beta-Setup.exe').write_bytes(b'MZolder')
+            # Control: the ordinary path refuses to roll the feed back.
+            with self.assertRaisesRegex(ValueError, 'roll back'):
+                p.publish(root / 'older', 7000, 'older-source', store)
+            p.publish(root / 'older', 7000, 'older-source', store, archive_only=True)
+            self.assertEqual(store.data['okilum/windows/beta/releases.beta.json'], beta)
+            self.assertEqual(store.data['okilum/windows/beta/Setup.exe'], installer)
+            self.assertEqual(json.loads(store.data['okilum/windows/builds/7000/release.json'])['source'],
+                             'older-source')
+            p.promote(7000, store)
+            self.assertEqual(store.data['okilum/windows/stable/Setup.exe'], b'MZolder')
+            self.assertEqual(store.data[f'okilum/windows/stable/{name}'], (root / 'older' / name).read_bytes())
+
     def test_corruption_and_traversal_never_publish_feed(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

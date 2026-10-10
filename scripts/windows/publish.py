@@ -38,7 +38,7 @@ def version_key(value):
     return tuple(map(int, value.split('.')))
 
 
-def publish(root, build, source, store, portable=None):
+def publish(root, build, source, store, portable=None, archive_only=False):
     portable_data = portable.read_bytes() if portable else None
     feed = json.loads((root / 'releases.beta.json').read_bytes())
     assets = validate_feed(feed, lambda name: (root / name).read_bytes())
@@ -50,7 +50,8 @@ def publish(root, build, source, store, portable=None):
     if previous_build and json.loads(previous_build)['source'] != source:
         raise ValueError('Build number already belongs to another source')
     current = store.call('GET', f'{base}/releases.beta.json')
-    if current and max(version_key(a['Version']) for a in json.loads(current)['Assets']) > version_key(version):
+    if (not archive_only and current
+            and max(version_key(a['Version']) for a in json.loads(current)['Assets']) > version_key(version)):
         raise ValueError('Refusing to roll back the beta feed')
     for asset in assets:
         store.put(f"{base}/{asset['FileName']}", (root / asset['FileName']).read_bytes(), 'application/octet-stream')
@@ -63,8 +64,11 @@ def publish(root, build, source, store, portable=None):
     # Retain an immutable installer and complete feed for exact-build promotion.
     store.put(f'{PREFIX}/builds/{build}/Setup.exe', setup, 'application/octet-stream')
     store.put(f'{PREFIX}/builds/{build}/release.json', json.dumps(metadata).encode(), 'application/json')
-    store.put(f'{base}/Setup.exe', setup, 'application/octet-stream', 'no-cache')
-    store.put(f'{base}/releases.beta.json', json.dumps(feed).encode(), 'application/json', 'no-cache')
+    # An explicit older commit (#1040) is archived for promotion only: packages stay
+    # addressable by their unique names, the beta feed and installer keep the newer build.
+    if not archive_only:
+        store.put(f'{base}/Setup.exe', setup, 'application/octet-stream', 'no-cache')
+        store.put(f'{base}/releases.beta.json', json.dumps(feed).encode(), 'application/json', 'no-cache')
 
     if portable_data is not None:
         archive = f'{PREFIX}/builds/{build}'
@@ -130,10 +134,12 @@ if __name__ == '__main__':
     p.add_argument('--build', type=int, required=True)
     p.add_argument('--source', required=True)
     p.add_argument('--portable', type=Path, required=True)
+    p.add_argument('--archive-only', action='store_true',
+                   help='record the build for promotion without changing the beta feed')
     p = commands.add_parser('promote')
     p.add_argument('--build', type=int, required=True)
     a = parser.parse_args()
     store = R2()
     if a.command == 'prepare': prepare(a.directory, store)
-    elif a.command == 'publish': publish(a.directory, a.build, a.source, store, a.portable)
+    elif a.command == 'publish': publish(a.directory, a.build, a.source, store, a.portable, a.archive_only)
     else: promote(a.build, store)

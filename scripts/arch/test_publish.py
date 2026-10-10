@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 import publish
+import catalog
 
 
 class MemoryR2:
@@ -75,6 +76,47 @@ class SignedRepository(unittest.TestCase):
                     store.objects['okilum/arch/stable/x86_64/latest.json'] = publish.encode(manifest)
                     with self.assertRaisesRegex(ValueError, 'backwards'):
                         publish.publish_channel(store, key, root, 'stable', {'build': 42}, b'', b'')
+            publish.run('gpgconf', '--homedir', str(home), '--kill', 'all')
+
+
+    def test_archive_only_records_an_older_build_without_moving_beta(self):
+        """#1040: an explicit older commit is archived and promotable; beta stays newer."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            home = root / 'gpg'
+            home.mkdir(mode=0o700)
+            subprocess.run(['gpg', '--homedir', str(home), '--batch', '--passphrase', '',
+                            '--quick-generate-key', 'Test <test@example.invalid>', 'ed25519', 'sign', '1d'], check=True)
+            info = publish.run('gpg', '--homedir', str(home), '--with-colons', '--list-secret-keys').decode()
+            fingerprint = next(line.split(':')[9] for line in info.splitlines() if line.startswith('fpr:'))
+            secret = publish.run('gpg', '--homedir', str(home), '--armor', '--export-secret-keys').decode()
+
+            def package(build):
+                folder = root / f'pkg{build}'
+                folder.mkdir()
+                (folder / '.PKGINFO').write_text(f'pkgname = okilum\npkgver = 0.1.{build}-1\narch = x86_64\n'
+                                                 'pkgdesc = test\nsize = 0\n')
+                path = folder / publish.package_name(build)
+                publish.run('bsdtar', '-caf', str(path), '-C', str(folder), '.PKGINFO')
+                return str(path)
+            store = MemoryR2()
+            with patch.dict(os.environ, ARCH_GPG_PRIVATE_KEY=secret, ARCH_GPG_FINGERPRINT=fingerprint):
+                with publish.SigningKey() as key:
+                    for build, source, archive_only in [(50, 'b' * 40, False), (44, 'a' * 40, True)]:
+                        tmp = root / f'run{build}'
+                        tmp.mkdir()
+                        args = argparse.Namespace(command='publish', build=build, source=source,
+                                                  package=package(build), archive_only=archive_only)
+                        publish.execute(args, store, key, tmp)
+                    beta = json.loads(store.objects['okilum/arch/beta/x86_64/latest.json'])
+                    self.assertEqual(beta['build'], 50)
+                    self.assertEqual(json.loads(store.objects['okilum/arch/builds/44/manifest.json'])['source'],
+                                     'a' * 40)
+                    self.assertIn(f'{catalog.PREFIX}/{"a" * 40}/linux.json', store.objects)
+                    tmp = root / 'promote'
+                    tmp.mkdir()
+                    publish.execute(argparse.Namespace(command='promote', build=44), store, key, tmp)
+                    self.assertEqual(json.loads(store.objects['okilum/arch/stable/x86_64/latest.json'])['build'], 44)
             publish.run('gpgconf', '--homedir', str(home), '--kill', 'all')
 
 

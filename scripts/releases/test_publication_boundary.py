@@ -132,6 +132,57 @@ class PublicationBoundary(unittest.TestCase):
                 self.assertEqual(api.call.call_count, 2)
 
 
+class ExplicitSourcePublication(unittest.TestCase):
+    """#1040: a manual run that built an older main commit publishes to the archive only."""
+
+    def publish(self, marker):
+        import publication
+        import io
+        import zipfile
+        from unittest.mock import Mock
+        data = io.BytesIO()
+        with zipfile.ZipFile(data, 'w') as archive:
+            archive.writestr('okilum-0.1.5042-1-x86_64.pkg.tar.zst', b'package')
+            if marker is not None:
+                archive.writestr(publication.SOURCE_FILE, marker + '\n')
+        run = {'workflow_id': 'linux-release.yml', 'prettyref': 'main',
+               'is_fork_pull_request': False, 'trigger_event': 'workflow_dispatch',
+               'status': 'success', 'commit_sha': 'c' * 40, 'index_in_repo': 42}
+        api = Mock()
+        api.call.side_effect = [run, {'commit': {'id': 'c' * 40}},
+                                [{'id': 9, 'name': 'arch-publication', 'expired': False, 'run_id': 12}],
+                                data.getvalue(), {'commit': {'id': 'c' * 40}}]
+        launches = []
+
+        def run_command(args, **kwargs):
+            if args[:2] == ['git', 'merge-base']:
+                return subprocess.CompletedProcess(args, 0)
+            launches.append(args)
+            return subprocess.CompletedProcess(args, 0)
+        with patch.object(publication, 'R2') as store, \
+                patch.object(publication.subprocess, 'run', side_effect=run_command):
+            # The beta feed already holds a newer build than this run.
+            store.return_value.call.return_value = json.dumps({'build': 9999}).encode()
+            publication.publish(api, 'linux', 12)
+        return launches
+
+    def test_an_older_recorded_source_is_published_to_the_archive(self):
+        launches = self.publish('d' * 40)
+        self.assertEqual(len(launches), 1)
+        command = launches[0]
+        self.assertIn('--archive-only', command)
+        self.assertEqual(command[command.index('--source') + 1], 'd' * 40)
+
+    def test_without_a_marker_the_newer_feed_still_refuses_it(self):
+        # Control: the same run without a recorded older source is an ordinary snapshot.
+        self.assertEqual(self.publish(None), [])
+        self.assertEqual(self.publish('c' * 40), [])
+
+    def test_a_malformed_marker_is_refused(self):
+        with self.assertRaisesRegex(ValueError, 'Invalid source'):
+            self.publish('not-a-sha')
+
+
 class MacOSArtifact(unittest.TestCase):
     def test_signed_archive_moves_between_hosts_and_preserves_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -82,3 +82,33 @@ class LinuxWindowTests(unittest.TestCase):
         self.assertIn("if: needs.select.outputs.build == 'true'", workflow)
         self.assertIn('cancel-in-progress: false', workflow)
         self.assertIn('python3 scripts/releases/publication.py dispatch linux', workflow)
+
+
+class ExplicitSource(unittest.TestCase):
+    """#1040: an older main commit, built on a manual run of main only."""
+    SHA = 'b' * 40
+
+    def test_no_request_keeps_the_ordinary_selection(self):
+        self.assertIsNone(module.explicit_source('', 'linux', 'refs/heads/main', 'workflow_dispatch'))
+        self.assertIsNone(module.explicit_source(None, 'windows', 'refs/heads/main', 'schedule'))
+
+    @patch.object(module.subprocess, 'run', return_value=SimpleNamespace(returncode=0))
+    def test_a_main_commit_on_a_manual_main_run_is_accepted(self, run):
+        for platform in ['linux', 'windows']:
+            self.assertEqual(module.explicit_source(f' {self.SHA} ', platform, 'refs/heads/main',
+                                                    'workflow_dispatch'), self.SHA)
+        self.assertEqual(run.call_args.args[0][:3], ['git', 'merge-base', '--is-ancestor'])
+
+    @patch.object(module.subprocess, 'run', return_value=SimpleNamespace(returncode=1))
+    def test_everything_else_is_refused(self, run):
+        cases = [
+            (self.SHA, 'macos', 'refs/heads/main', 'workflow_dispatch', 'macOS'),
+            (self.SHA, 'linux', 'refs/heads/main', 'schedule', 'manual run'),
+            (self.SHA, 'linux', 'refs/heads/feature', 'workflow_dispatch', 'manual run'),
+            ('abc123', 'linux', 'refs/heads/main', 'workflow_dispatch', '40-character'),
+            (self.SHA, 'linux', 'refs/heads/main', 'workflow_dispatch', 'not a commit on main'),
+        ]
+        for value, platform, ref, event, message in cases:
+            with self.assertRaisesRegex(ValueError, message):
+                module.explicit_source(value, platform, ref, event)
+
