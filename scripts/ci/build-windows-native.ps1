@@ -26,6 +26,12 @@ Checked { bash scripts/vendor-setup.sh }
 Checked { bash scripts/vendor-setup.sh --verify }
 Checked { cargo build --locked --target x86_64-pc-windows-msvc --profile windows-diagnostic -p okilum-shell --no-default-features }
 Copy-Item target/x86_64-pc-windows-msvc/windows-diagnostic/okilum.exe $payload
+# The sync supervisor (#1013) ships in the package, exactly as the cross-build packs it;
+# without this the PR lane would pass while never building it. Same profile and flags.
+Checked { cargo build --locked --target x86_64-pc-windows-msvc --profile windows-diagnostic -p okilum-sync-supervisor }
+Copy-Item target/x86_64-pc-windows-msvc/windows-diagnostic/okilum-sync-supervisor.exe $payload
+# GUI subsystem, or a login task would flash a console window.
+Checked { python scripts/windows/pe.py gui (Join-Path $payload 'okilum-sync-supervisor.exe') }
 Checked { python scripts/third-party-notices.py --stage $payload }
 Copy-Item docs/windows-delivery.md "$payload/README.md"
 Checked { python scripts/ci/stage-windows-shaders.py $payload }
@@ -40,3 +46,16 @@ Expand-Archive $archive -DestinationPath $tools -Force
 $channel = (Get-Content scripts/windows/channel.json | ConvertFrom-Json).default_channel
 Checked { dotnet "$tools/tools/net8.0/any/vpk.dll" pack --packId BeFeast.Okilum --packTitle Okilum --packAuthors BeFeast --packVersion $env:OKILUM_RELEASE_VERSION --packDir $payload --mainExe okilum.exe --runtime win-x64 --channel $channel --icon $env:OKILUM_WINDOWS_ICON --exclude '.*\.(pdb|zip|sha256)$|metadata\.json' --outputDir target/windows-release --skip-updates --yes }
 if (!(Get-ChildItem target/windows-release -Filter '*.nupkg')) { throw 'Packager produced no package' }
+# What Velopack actually packed, not what was meant to go in.
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+# Exactly this build's package: a stale one from an earlier run in the same workspace
+# must not stand in for it.
+$full = @(Get-ChildItem target/windows-release -Filter "BeFeast.Okilum-$($env:OKILUM_RELEASE_VERSION)-$channel-full.nupkg")
+if ($full.Count -ne 1) { throw "Expected one full package for $($env:OKILUM_RELEASE_VERSION), found $($full.Count)" }
+$full = $full[0]
+$zip = [System.IO.Compression.ZipFile]::OpenRead($full.FullName)
+try {
+    if (!($zip.Entries | Where-Object { $_.FullName -eq 'lib/app/okilum-sync-supervisor.exe' })) {
+        throw 'okilum-sync-supervisor.exe is not in the package'
+    }
+} finally { $zip.Dispose() }
