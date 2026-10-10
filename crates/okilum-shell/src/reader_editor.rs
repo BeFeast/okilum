@@ -45,6 +45,21 @@ pub(super) struct Editing {
     _subscriptions: Vec<Subscription>,
 }
 
+/// The authored reason an editor could not start, or plain words for an OS
+/// error with no authored context. The raw chain stays in stderr.
+fn edit_error_text(error: &anyhow::Error) -> String {
+    use std::io::ErrorKind;
+    let Some(io) = error.downcast_ref::<std::io::Error>() else {
+        return error.to_string();
+    };
+    match io.kind() {
+        ErrorKind::PermissionDenied => "Okilum doesn’t have permission to change this note.",
+        ErrorKind::NotFound => "This note no longer exists. It may have been moved or deleted.",
+        _ => "This note couldn’t be opened for editing.",
+    }
+    .into()
+}
+
 const DRAFT_WRITE_NOTICE: &str =
     "The recovery copy couldn’t be saved. Keep this window open and retry Save or copy your draft.";
 
@@ -363,9 +378,10 @@ impl Reader {
         let store = match result {
             Ok(store) => store,
             Err(error) => {
+                eprintln!("Cannot edit: {error:#}");
                 // A read-only location explains itself and what still works.
-                let notice =
-                    location_notice(&error).unwrap_or_else(|| format!("Cannot edit: {error:#}"));
+                let notice = location_notice(&error)
+                    .unwrap_or_else(|| format!("Cannot edit: {}", edit_error_text(&error)));
                 self.link_notice = Some(notice.into());
                 cx.notify();
                 return;
@@ -2985,5 +3001,40 @@ mod tests {
         assert!(root.join("start.md").exists());
         assert!(!root.join("New/renamed.md").exists());
         std::fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod edit_error_tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+
+    #[test]
+    fn edit_failures_show_authored_reasons_or_plain_words() {
+        use std::io::{Error as Io, ErrorKind};
+        let recovery = anyhow::Error::from(Io::from(ErrorKind::PermissionDenied))
+            .context(okilum_core::file_editor::RECOVERY_UNAVAILABLE);
+        assert_eq!(
+            edit_error_text(&recovery),
+            okilum_core::file_editor::RECOVERY_UNAVAILABLE
+        );
+        for (kind, expected) in [
+            (
+                ErrorKind::PermissionDenied,
+                "Okilum doesn’t have permission",
+            ),
+            (ErrorKind::NotFound, "This note no longer exists"),
+            (
+                ErrorKind::Other,
+                "This note couldn’t be opened for editing.",
+            ),
+        ] {
+            let raw = anyhow::Error::from(Io::new(kind, "Access is denied. (os error 5)"));
+            let text = edit_error_text(&raw);
+            assert!(text.starts_with(expected), "{text}");
+            assert!(!text.contains("os error"), "{text}");
+            // Positive control: stderr keeps the OS detail.
+            assert!(format!("{raw:#}").contains("os error 5"));
+        }
     }
 }

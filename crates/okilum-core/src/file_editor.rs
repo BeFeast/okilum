@@ -51,6 +51,11 @@ fn flock_retry_interrupted(
         }
     }
 }
+/// Shown when the recovery folder itself cannot be used, so the reader is not
+/// told that another window holds the note.
+pub const RECOVERY_UNAVAILABLE: &str =
+    "Okilum couldn’t prepare a recovery copy for this note. Check that it can write to its data folder.";
+
 impl EditorLock {
     pub(crate) fn acquire(path: &Path) -> Result<Self> {
         #[cfg(unix)]
@@ -75,6 +80,14 @@ impl EditorLock {
             file,
             #[cfg(unix)]
             owner_process: std::process::id(),
+        })
+    }
+
+    /// Acquire, naming the cause: `busy` only when another editor holds it.
+    fn acquire_or(path: &Path, busy: &'static str) -> Result<Self> {
+        Self::acquire(path).map_err(|error| {
+            let held = lock_busy(&error);
+            error.context(if held { busy } else { RECOVERY_UNAVAILABLE })
         })
     }
 }
@@ -215,10 +228,12 @@ impl FileEditor {
     }
 
     fn reserve_path(path: PathBuf, state: &Path) -> Result<EditorLock> {
-        fs::create_dir_all(state)?;
+        fs::create_dir_all(state).context(RECOVERY_UNAVAILABLE)?;
         let key = format!("{:x}", Sha256::digest(path.as_os_str().as_encoded_bytes()));
-        let lock = EditorLock::acquire(&state.join(format!("{key}.lock")))
-            .context("The destination has an active editor or recovery writer")?;
+        let lock = EditorLock::acquire_or(
+            &state.join(format!("{key}.lock")),
+            "The destination has an active editor or recovery writer",
+        )?;
         match fs::read(state.join(format!("{key}.json"))) {
             Ok(bytes) => {
                 let draft: Draft = serde_json::from_slice(&bytes)?;
@@ -248,10 +263,12 @@ impl FileEditor {
         let path = path.canonicalize()?;
         #[cfg(unix)]
         let directory = Directory::open(path.parent().context("Missing source folder")?)?;
-        fs::create_dir_all(state)?;
+        fs::create_dir_all(state).context(RECOVERY_UNAVAILABLE)?;
         let key = format!("{:x}", Sha256::digest(path.as_os_str().as_encoded_bytes()));
-        let lock = EditorLock::acquire(&state.join(format!("{key}.lock")))
-            .context("This note is already being edited in another window")?;
+        let lock = EditorLock::acquire_or(
+            &state.join(format!("{key}.lock")),
+            "This note is already being edited in another window",
+        )?;
         let journal = state.join(format!("{key}.json"));
         let (base, opened) = directory.read(path.file_name().unwrap())?;
         #[cfg(unix)]
@@ -495,6 +512,27 @@ impl FileEditor {
         self.persist()?;
         let _ = crate::source_history::prune(self.journal.parent().unwrap());
         Ok(Save::Saved)
+    }
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::*;
+
+    #[test]
+    fn windows_editor_lock_names_busy_only_when_another_editor_holds_it() {
+        let state = tempfile::tempdir().unwrap();
+        let path = state.path().join("note.lock");
+        let held = EditorLock::acquire(&path).unwrap();
+        // Positive control: a second editor on the same note is reported as busy.
+        let busy = EditorLock::acquire_or(&path, "busy").err().unwrap();
+        assert_eq!(busy.to_string(), "busy", "{busy:#}");
+        drop(held);
+        // A lock file that cannot be created is a recovery-folder problem.
+        let missing = state.path().join("absent").join("note.lock");
+        let error = EditorLock::acquire_or(&missing, "busy").err().unwrap();
+        assert_eq!(error.to_string(), RECOVERY_UNAVAILABLE, "{error:#}");
+        assert!(EditorLock::acquire_or(&path, "busy").is_ok());
     }
 }
 
