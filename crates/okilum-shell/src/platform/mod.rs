@@ -6,9 +6,9 @@ pub mod labels;
 /// Right-to-left glyph order for the Windows text system (#1121).
 #[cfg(any(windows, test))]
 pub(crate) mod bidi_layout;
+pub mod reveal;
 #[cfg(windows)]
 pub(crate) mod windows_bidi;
-pub mod reveal;
 
 use gpui::Global;
 use gpui_component::input::clipboard::ExactClipboardProvider;

@@ -9,10 +9,10 @@ use gpui::{
     Action, AnyWindowHandle, AppLifecyclePhase, BackgroundExecutor, ClipboardItem,
     ClipboardReadError, CursorStyle, DevicePixels, Font, FontId, FontMetrics, FontRun,
     ForegroundExecutor, GlyphId, Hsla, Keymap, LineLayout, Menu, MenuItem, OwnedMenu,
-    PathPromptOptions, Pixels, Platform, PlatformDisplay, PlatformGestures,
-    PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem, PlatformWindow,
-    RenderGlyphParams, ScreenCaptureSource, Size, SystemNotification, SystemNotificationResponse,
-    Task, TextRenderingMode, ThermalState, WindowAppearance, WindowButtonLayout, WindowParams,
+    PathPromptOptions, Pixels, Platform, PlatformDisplay, PlatformGestures, PlatformKeyboardLayout,
+    PlatformKeyboardMapper, PlatformTextSystem, PlatformWindow, RenderGlyphParams,
+    ScreenCaptureSource, Size, SystemNotification, SystemNotificationResponse, Task,
+    TextRenderingMode, ThermalState, WindowAppearance, WindowButtonLayout, WindowParams,
 };
 use smallvec::SmallVec;
 use std::{
@@ -47,11 +47,7 @@ impl PlatformTextSystem for BidiTextSystem {
     fn font_metrics(&self, font_id: FontId) -> FontMetrics {
         self.0.font_metrics(font_id)
     }
-    fn typographic_bounds(
-        &self,
-        font_id: FontId,
-        glyph_id: GlyphId,
-    ) -> Result<gpui::Bounds<f32>> {
+    fn typographic_bounds(&self, font_id: FontId, glyph_id: GlyphId) -> Result<gpui::Bounds<f32>> {
         self.0.typographic_bounds(font_id, glyph_id)
     }
     fn advance(&self, font_id: FontId, glyph_id: GlyphId) -> Result<Size<f32>> {
@@ -284,9 +280,7 @@ impl Platform for BidiPlatform {
     fn write_to_clipboard(&self, item: ClipboardItem) {
         self.inner.write_to_clipboard(item)
     }
-    fn read_from_clipboard_async(
-        &self,
-    ) -> Task<Result<Option<ClipboardItem>, ClipboardReadError>> {
+    fn read_from_clipboard_async(&self) -> Task<Result<Option<ClipboardItem>, ClipboardReadError>> {
         self.inner.read_from_clipboard_async()
     }
     fn write_credentials(&self, url: &str, username: &str, password: &[u8]) -> Task<Result<()>> {
