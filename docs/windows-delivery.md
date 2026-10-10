@@ -67,3 +67,15 @@ members. This does not replace native installation/update acceptance above.
 
 Windows Beta builds the newest main once an hour; manual dispatch of
 `windows-release` on main builds immediately. See [release cadence](releases.md).
+
+## Sync supervisor (not active yet)
+
+The package carries `okilum-sync-supervisor.exe` in the application folder (`lib/app`
+inside the full package). It is a GUI-subsystem program, so a login task never flashes a
+console, and the build refuses a package without it (`scripts/windows/pack.sh`,
+`scripts/windows/pe.py`). Nothing starts it: Reader has no Sync on Windows yet (#1029).
+When Enable exists it copies the helper out of the application folder to
+`<private state>/supervisor/<version>/` (`sidecar::stage`), because Velopack replaces the
+application folder on every update and a background process running from it would block
+the update and the uninstall. Like the app, the helper is unsigned until the code-signing
+certificate exists; Velopack signs everything it packs through the same hook.

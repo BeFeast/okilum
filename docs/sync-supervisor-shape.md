@@ -68,3 +68,14 @@ If the Windows payload layer cannot stage a second executable outside `current`,
 notarising a second nested helper proves to break Sparkle's whole-bundle update, the
 mode-of-the-app alternative returns, with the costs above. Neither is expected: nested
 helpers in `Contents/MacOS` are the platform's normal shape.
+
+## Status
+
+The macOS and Windows supervisors, discovery, adapters, build-config policy, macOS
+bundle packaging and, for Windows, the package contents and the staging outside the
+application folder are done (#1013). Known limits, none of them hidden by a stub:
+the Windows signature policy waits for the code-signing certificate (until then a
+release build refuses to serve, and nothing starts the helper anyway); nothing in
+Reader drives the supervisor on macOS or Windows (#1029), so reconnecting after an app
+restart, showing and restarting a crashed supervisor, and uninstall removing the units
+are accepted there, not here.

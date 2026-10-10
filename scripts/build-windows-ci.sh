@@ -23,6 +23,12 @@ export RC_x86_64_pc_windows_msvc="$PWD/scripts/windows-rc.py"
 cargo xwin build --locked --target x86_64-pc-windows-msvc \
     --profile windows-diagnostic -p okilum-shell --no-default-features
 cp "${CARGO_TARGET_DIR:-target}/x86_64-pc-windows-msvc/windows-diagnostic/okilum.exe" "$output/okilum.exe"
+# The sync supervisor (#1013) ships in the package; the Enable flow stages it outside
+# `current`. Same profile and flags as the shell, so shared dependencies are reused.
+cargo xwin build --locked --target x86_64-pc-windows-msvc \
+    --profile windows-diagnostic -p okilum-sync-supervisor
+cp "${CARGO_TARGET_DIR:-target}/x86_64-pc-windows-msvc/windows-diagnostic/okilum-sync-supervisor.exe" "$output/okilum-sync-supervisor.exe"
+python3 scripts/windows/pe.py gui "$output/okilum-sync-supervisor.exe"
 python3 scripts/third-party-notices.py --stage "$output"
 cp docs/windows-diagnostic.md "$output/README.md"
 cargo metadata --locked --format-version 1 > "$output/metadata.json"

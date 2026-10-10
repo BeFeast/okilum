@@ -1,6 +1,8 @@
-#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
-//! `okilum-sync-supervisor`: see the crate documentation. A release build on Windows is
-//! a GUI-subsystem program, so a login task never flashes a console. Exit status: 0 after an
+#![cfg_attr(windows, windows_subsystem = "windows")]
+//! `okilum-sync-supervisor`: see the crate documentation. On Windows it is a GUI-subsystem
+//! program in every profile, so a login task never flashes a console; the packaging
+//! asserts that on the produced file. Standard handles a parent passes explicitly (the
+//! tests do) still work. Exit status: 0 after an
 //! authorized Stop or when the lifecycle intent is not Enabled (launchd's
 //! `SuccessfulExit=false` does not relaunch), 1 for a refusal or a runtime crash (the
 //! OS restart policy decides what happens).
