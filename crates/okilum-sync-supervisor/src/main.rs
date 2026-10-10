@@ -21,13 +21,30 @@ mod unix_main {
         time::{Duration, Instant},
     };
 
-    /// No signature policy is configured in this build, so a release build refuses to
-    /// serve rather than accept an unauthenticated peer. The development feature
-    /// accepts any peer of the same user.
-    fn peer_check() -> Result<fn() -> Box<dyn PeerCheck>> {
+    /// The signature policy of this build. A release build carries the signing
+    /// configuration (Team ID and bundle identifier, compiled in; see `policy`) and
+    /// accepts only the app signed by that team. Without one it refuses to serve rather
+    /// than accept an unauthenticated peer, unless built with the development feature,
+    /// which accepts any peer of the same user.
+    fn peer_check() -> Result<Box<dyn Fn() -> Box<dyn PeerCheck>>> {
+        #[cfg(target_os = "macos")]
+        {
+            use okilum_sync_controller::sidecar::supervisor::ipc::macos_peer::SignedPeer;
+            if let Some(release) = okilum_sync_supervisor::policy::build_policy()? {
+                let own = std::env::current_exe().context("cannot resolve this executable")?;
+                let app = own
+                    .parent()
+                    .context("the helper has no directory")?
+                    .join(&release.app_executable);
+                let peer = SignedPeer::new(release.app_requirement, &app)?;
+                return Ok(Box::new(move || {
+                    Box::new(peer.clone()) as Box<dyn PeerCheck>
+                }));
+            }
+        }
         #[cfg(feature = "dev-same-user")]
         {
-            Ok(|| Box::new(SameUser))
+            Ok(Box::new(|| Box::new(SameUser) as Box<dyn PeerCheck>))
         }
         #[cfg(not(feature = "dev-same-user"))]
         {
