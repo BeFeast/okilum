@@ -1576,12 +1576,22 @@ impl Reader {
             );
         }
         self.restore_ui_state(window, cx);
+        let first_link = self
+            .loading
+            .as_ref()
+            .and_then(|load| load.opts.landing.clone())
+            .filter(|_| !preserve_document);
         if let Some(note) = self.queued_open_note.take() {
-            self.open_note(&note, None, window, cx);
+            match self.queued_landing.take() {
+                Some(position) => self.open_link(&note, position, window, cx),
+                None => self.open_note(&note, None, window, cx),
+            }
         } else if let Some(log) = pending.log {
             self.mount_log(log, window, cx);
         } else if let Some(rel) = plain_file {
             self.preview_file(&rel, window, cx);
+        } else if let Some(position) = first_link {
+            self.open_first_link(position, window, cx);
         }
         self.refresh_quick_open(cx);
         if let Some(trace) = &self.loading.as_ref().unwrap().opts.diagnostics {

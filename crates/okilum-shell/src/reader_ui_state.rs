@@ -797,6 +797,7 @@ impl Reader {
                 self.ui_state.source_highlight_pending = self.source_highlighting_pending(cx);
             }
             self.restore_source_position(offset, window, cx);
+            self.land_restored_source(window, cx);
             let reader = cx.entity().downgrade();
             window.on_next_frame(move |_, cx| {
                 let _ = reader.update(cx, |reader, cx| {
@@ -805,6 +806,18 @@ impl Reader {
                 });
             });
         }
+    }
+
+    /// A window about to restore its editor opens it for a link instead: at
+    /// the top, not at the last session's scroll (#1049). False when the
+    /// window is not restoring an editor.
+    pub(crate) fn retarget_restored_editor(&mut self) -> bool {
+        if self.ui_state.source.is_none() {
+            return false;
+        }
+        self.ui_state.source = Some([0.; 2]);
+        self.ui_state.source_reader_position = None;
+        true
     }
 
     pub(crate) fn restoring_source(&self) -> bool {
