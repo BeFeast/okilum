@@ -257,11 +257,15 @@ pub(crate) fn uninstall() {
 }
 
 /// PowerShell `-EncodedCommand`: base64 of the UTF-16LE script.
+// Called by the Windows uninstall hook; tested everywhere.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn encoded_command(script: &str) -> String {
     let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
     base64_encode(&bytes)
 }
 
+// Called by the Windows uninstall hook; tested everywhere.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn base64_encode(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
