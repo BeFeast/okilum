@@ -59,7 +59,9 @@ not shipped on Windows.
 Acceptance on a clean profile: `scripts/uninstall/windows-snapshot.ps1 -Out before.txt`
 before install, use the app, uninstall, snapshot again, then
 `scripts/uninstall/diff.py before.txt after.txt --vault <vault>`. It lists every
-added entry and fails on anything named after Okilum outside the vault.
+added entry and fails on anything named after Okilum outside the vault and
+the exported `Okilum unsaved drafts`. Names are checked only below the home
+recorded in the snapshot, so a QA home whose path says okilum is fine.
 
 Known residue owned by Windows or Velopack, not by Okilum: Velopack's shared log
 `%LOCALAPPDATA%\velopack\velopack.log` (only written by `Setup.exe`), Explorer's `MuiCache` and `Recent`
