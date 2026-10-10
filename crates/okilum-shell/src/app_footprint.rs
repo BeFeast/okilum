@@ -342,7 +342,12 @@ pub(crate) fn uninstall_data(assume_yes: bool) -> i32 {
     targets.extend(search_sessions(&temp));
     let enrollment = enrollment_lock();
     targets.extend(enrollment.iter().filter(|p| p.exists()).cloned());
-    let vaults = state.as_deref().map(recorded_vaults).unwrap_or_default();
+    let vaults: BTreeSet<PathBuf> = state
+        .as_deref()
+        .map(recorded_vaults)
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
     if targets.is_empty() {
         println!("No Okilum data was found for this user. Nothing to remove.");
         return 0;
@@ -668,8 +673,9 @@ mod tests {
     /// add it to docs/uninstall.md and `roots()` (or the OS-specific removal),
     /// then update this list.
     const BASE_DIRECTORY_SITES: &[(&str, usize)] = &[
-        // Roots, crash dumps and the Velopack log folder (all in the inventory).
-        ("crates/okilum-shell/src/app_footprint.rs", 6),
+        // Roots, crash dumps, the Velopack log folder and the Linux sync
+        // units and drafts export (all in the inventory).
+        ("crates/okilum-shell/src/app_footprint.rs", 9),
         // Suggests ~/Downloads in the export dialog: the user picks the target.
         ("crates/okilum-shell/src/brain/context_ui.rs", 1),
         // Brain outboxes and profile: all under the `~/.config/okilum` root.
