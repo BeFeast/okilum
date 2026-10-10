@@ -526,6 +526,20 @@ impl<'s> Context<'s> {
         {
             return None;
         }
+        // An unresolved reference is whole bracket pairs; a lone or nested
+        // bracket (`[broken`) is malformed.
+        let mut open = false;
+        for byte in text.bytes() {
+            match (byte, open) {
+                (b'[', false) => open = true,
+                (b']', true) => open = false,
+                (b'[' | b']', _) => return None,
+                _ => {}
+            }
+        }
+        if open {
+            return None;
+        }
         Some(())
     }
     /// The text of `node` outside links, images and code, in source order.
