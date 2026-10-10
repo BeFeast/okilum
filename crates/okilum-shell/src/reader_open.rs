@@ -818,8 +818,7 @@ fn new_window(cx: &mut App) {
 
 pub(crate) fn window_options(cx: &App) -> WindowOptions {
     WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-            None,
+        window_bounds: Some(WindowBounds::Windowed(super::window_state::default_bounds(
             size(px(1500.), px(1000.)),
             cx,
         ))),

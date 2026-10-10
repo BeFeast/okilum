@@ -62,8 +62,7 @@ fn show_section(reader: Option<WeakEntity<Reader>>, section: Option<Section>, cx
             }
         }
         let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                None,
+            window_bounds: Some(WindowBounds::Windowed(super::window_state::default_bounds(
                 size(px(780.), px(520.)),
                 cx,
             ))),

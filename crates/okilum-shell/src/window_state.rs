@@ -1,6 +1,6 @@
 //! Durable native window geometry, separate from vaults and rebuildable caches.
 use gpui::{
-    point, px, size, App, Bounds, Entity, Global, Pixels, Window, WindowBounds, WindowOptions,
+    point, px, size, App, Bounds, Entity, Global, Pixels, Size, Window, WindowBounds, WindowOptions,
 };
 use gpui_component::Root;
 use serde::{Deserialize, Serialize};
@@ -170,6 +170,28 @@ pub(crate) fn prepare(
         }
     }
     (options, Some(key_with_slot))
+}
+
+/// A new window with no saved frame (#1007): the preferred size, shrunk to the
+/// primary display's visible area and centred in it. `Bounds::centered` uses
+/// the full display, so a 1500-px window on a 1280-px screen started at -110.
+pub(crate) fn default_bounds(preferred: Size<Pixels>, cx: &App) -> Bounds<Pixels> {
+    match cx.primary_display() {
+        Some(display) => centered_in(display.visible_bounds(), preferred),
+        None => Bounds::centered(None, preferred, cx),
+    }
+}
+
+fn centered_in(visible: Bounds<Pixels>, preferred: Size<Pixels>) -> Bounds<Pixels> {
+    let width = preferred.width.min(visible.size.width);
+    let height = preferred.height.min(visible.size.height);
+    Bounds::new(
+        point(
+            visible.left() + (visible.size.width - width) / 2.,
+            visible.top() + (visible.size.height - height) / 2.,
+        ),
+        size(width, height),
+    )
 }
 
 /// Explicit duplicates use the source display and size, never a restored slot's
@@ -345,6 +367,22 @@ pub(crate) fn track_with_restore(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_window_fits_and_centres_in_the_visible_area() {
+        let preferred = size(px(1500.), px(1000.));
+        // #1007: Hedva's 1280x1024 display below a 25-px menu bar.
+        let narrow = Bounds::new(point(px(0.), px(25.)), size(px(1280.), px(999.)));
+        let bounds = centered_in(narrow, preferred);
+        assert_eq!(bounds.origin.x, px(0.), "no longer x = -110");
+        assert_eq!(bounds.size, size(px(1280.), px(999.)));
+        assert!(bounds.top() >= narrow.top() && bounds.bottom() <= narrow.bottom());
+        // A wide visible area with a negative origin keeps the preferred size, centred.
+        let wide = Bounds::new(point(px(-2560.), px(0.)), size(px(2560.), px(1415.)));
+        let bounds = centered_in(wide, preferred);
+        assert_eq!(bounds.size, preferred);
+        assert_eq!(bounds.origin, point(px(-2030.), px(207.5)));
+    }
 
     #[test]
     fn duplicate_cascades_on_its_display_and_wraps_at_work_area_edges() {
