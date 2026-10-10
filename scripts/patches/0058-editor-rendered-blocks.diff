@@ -1,5 +1,5 @@
 diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
-index 2c2ccfa6..cd4c2d2d 100644
+index 2c2ccfa6..097b329a 100644
 --- a/crates/base/src/input/base/element.rs
 +++ b/crates/base/src/input/base/element.rs
 @@ -4,7 +4,7 @@ use crate::input::{InputExtras as _, InputModeKind};
@@ -11,14 +11,12 @@ index 2c2ccfa6..cd4c2d2d 100644
      GlobalElementId,
  };
  use gpui::{
-@@ -430,15 +430,98 @@ pub(super) fn right_edge(layout: &LastLayout) -> Pixels {
- impl<M: InputModeKind> TextElement<M> {
+@@ -431,14 +431,98 @@ impl<M: InputModeKind> TextElement<M> {
      /// The row geometry of the whole document for this frame. Every layout,
      /// scroll and hit-test path reads rows from here (S6b, #1034).
--    fn row_metrics(state: &InputBaseState<M>, line_height: Pixels) -> RowMetrics {
+     fn row_metrics(state: &InputBaseState<M>, line_height: Pixels) -> RowMetrics {
 -        let tall = state.display_map.tall_rows(line_height);
 -        if tall.is_empty() {
-+    fn row_metrics(state: &InputBaseState<M>, line_height: Pixels, block_width: Pixels) -> RowMetrics {
 +        let mut heights = state.display_map.tall_rows(line_height);
 +        if state.block_renderer.is_some() {
 +            // A rendered block spreads its measured height (the raw rows'
@@ -30,7 +28,7 @@ index 2c2ccfa6..cd4c2d2d 100644
 +                    continue;
 +                }
 +                let height = measured
-+                    .get(&(block.key, f32::from(block_width).to_bits()))
++                    .get(&block.key)
 +                    .copied()
 +                    .unwrap_or(line_height * rows.len());
 +                let each = height / rows.len() as f32;
@@ -90,7 +88,9 @@ index 2c2ccfa6..cd4c2d2d 100644
 +            );
 +            let top = layout.rows.row_top(rows.start);
 +            let used = layout.rows.row_top(rows.end) - top;
-+            if (size.height - used).abs() > px(0.5) {
++            // A first layout before its content is parsed can be empty: not a
++            // measurement.
++            if size.height >= px(1.) && (size.height - used).abs() > px(0.5) {
 +                let shift = if top < viewport_top { size.height - used } else { px(0.) };
 +                measured.push((block.key, size.height, shift));
 +            }
@@ -99,10 +99,9 @@ index 2c2ccfa6..cd4c2d2d 100644
 +            elements.push(element);
 +        }
 +        if !measured.is_empty() {
-+            let bits = f32::from(width).to_bits();
 +            self.state.update(cx, |state, _| {
 +                for (key, height, shift) in measured {
-+                    state.block_heights.borrow_mut().insert((key, bits), height);
++                    state.block_heights.borrow_mut().insert(key, height);
 +                    state.pending_block_scroll += shift;
 +                }
 +            });
@@ -114,7 +113,7 @@ index 2c2ccfa6..cd4c2d2d 100644
      pub(super) fn new(state: Entity<InputBaseState<M>>) -> Self {
          Self {
              state,
-@@ -1703,6 +1786,10 @@ impl<M: InputModeKind> TextElement<M> {
+@@ -1703,6 +1787,10 @@ impl<M: InputModeKind> TextElement<M> {
  }
  
  pub(super) struct PrepaintState {
@@ -125,15 +124,16 @@ index 2c2ccfa6..cd4c2d2d 100644
      marker_source: Option<std::sync::Arc<super::marker_paint::MarkerSource>>,
      marker_rows: Vec<Vec<Option<super::marker_paint::RowPaint>>>,
      code_rows: Vec<Vec<bool>>,
-@@ -1988,7 +2075,16 @@ impl<M: InputModeKind> Element for TextElement<M> {
-             state
+@@ -1989,6 +2077,18 @@ impl<M: InputModeKind> Element for TextElement<M> {
                  .display_map
                  .install_projection(state.projection.pin(), &state.text, window, cx);
--            let rows = Self::row_metrics(state, window.line_height());
-+            let rows = Self::row_metrics(state, window.line_height(), wrap_width.unwrap_or(bounds.size.width));
+             let rows = Self::row_metrics(state, window.line_height());
 +            // A block above the viewport grew or shrank when it was measured:
 +            // scroll by the same amount with the new rows, so the view holds.
-+            if state.pending_block_scroll != px(0.) {
++            // An edit's source anchor already absorbs it this frame.
++            if source_anchor.is_some() {
++                state.pending_block_scroll = px(0.);
++            } else if state.pending_block_scroll != px(0.) {
 +                let mut scroll = state.scroll_handle.offset();
 +                scroll.y -= state.pending_block_scroll;
 +                state.pending_block_scroll = px(0.);
@@ -143,7 +143,7 @@ index 2c2ccfa6..cd4c2d2d 100644
              if let Some((offset, old_y, affinity)) = source_anchor {
                  let row = state.display_map.offset_to_wrap_display_point_with_affinity(
                      offset, affinity).row;
-@@ -2358,6 +2454,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -2358,6 +2458,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
  
          trace.current(TraceIdentity::new(last_layout.source_stamp, last_layout.presentation_epoch, last_layout.projection.is_some()));
          trace.counts([last_layout.visible_buffer_lines.len() as u64, last_layout.lines.len() as u64, 0, 0]);
@@ -151,7 +151,7 @@ index 2c2ccfa6..cd4c2d2d 100644
          let state = self.state.read(cx);
          let marker_source = super::marker_paint::source_for_markers(
              last_layout.projection.as_ref(),
-@@ -2374,6 +2471,8 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -2374,6 +2475,8 @@ impl<M: InputModeKind> Element for TextElement<M> {
              super::marker_paint::code_rows(&last_layout, source)
          ).unwrap_or_default();
          PrepaintState {
@@ -160,7 +160,7 @@ index 2c2ccfa6..cd4c2d2d 100644
              marker_source,
              marker_rows,
              code_rows,
-@@ -2507,6 +2606,11 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -2507,6 +2610,11 @@ impl<M: InputModeKind> Element for TextElement<M> {
              .zip(prepaint.last_layout.visible_buffer_lines.iter())
              .enumerate()
          {
@@ -172,7 +172,7 @@ index 2c2ccfa6..cd4c2d2d 100644
              let p = point(
                  origin.x + prepaint.last_layout.line_number_width + scroll_offset,
                  origin.y + offset_y,
-@@ -2597,6 +2701,11 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -2597,6 +2705,11 @@ impl<M: InputModeKind> Element for TextElement<M> {
              .iter()
              .zip(prepaint.last_layout.visible_buffer_lines.iter()).enumerate()
          {
@@ -184,7 +184,7 @@ index 2c2ccfa6..cd4c2d2d 100644
              let row = buffer_line;
              let line_y = origin.y + offset_y;
              let p = point(
-@@ -2661,6 +2770,10 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -2661,6 +2774,10 @@ impl<M: InputModeKind> Element for TextElement<M> {
                  }
              }
          }
@@ -250,17 +250,19 @@ index 046dcd3c..5636a622 100644
          assert_eq!(rows.row_end_at(px(76.5)), 4);
          for row in 0..40 {
 diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
-index 99fa28e1..4edabeef 100644
+index 99fa28e1..3d493a16 100644
 --- a/crates/base/src/input/base/state.rs
 +++ b/crates/base/src/input/base/state.rs
-@@ -331,6 +331,14 @@ pub struct InputBaseState<M: InputModeKind> {
+@@ -331,6 +331,16 @@ pub struct InputBaseState<M: InputModeKind> {
      pub(super) paragraph_direction: bool,
      /// Buffer line ranges that keep one alignment (code blocks, tables).
      direction_exempt: Vec<std::ops::Range<usize>>,
 +    /// Draws rendered projection blocks (S7a, #936).
 +    pub(super) block_renderer: Option<crate::input::projection::BlockRenderer>,
-+    /// Measured block heights by (block key, text width bits).
-+    pub(super) block_heights: std::cell::RefCell<std::collections::HashMap<(u64, u32), Pixels>>,
++    /// Last measured height of each block, by block key. One entry per block:
++    /// while the width changes (resize), rows keep the last height and the
++    /// next measurement corrects it, so nothing flashes or drifts.
++    pub(super) block_heights: std::cell::RefCell<std::collections::HashMap<u64, Pixels>>,
 +    /// Height a block above the viewport gained at its last measurement; the
 +    /// next prepaint scrolls by it together with the new rows, so the view
 +    /// stays still.
@@ -268,7 +270,7 @@ index 99fa28e1..4edabeef 100644
      exact_clipboard: ClipboardSession,
      document_newlines: bool,
      projection_mouse_hold: bool,
-@@ -692,6 +700,9 @@ impl<M: InputModeKind> InputBaseState<M> {
+@@ -692,6 +702,9 @@ impl<M: InputModeKind> InputBaseState<M> {
              pending_selection_after: None,
              paragraph_direction: false,
              direction_exempt: Vec::new(),
@@ -278,7 +280,7 @@ index 99fa28e1..4edabeef 100644
              exact_clipboard: ClipboardSession::default(),
              document_newlines: false,
              projection_mouse_hold: false,
-@@ -876,6 +887,16 @@ impl<M: InputModeKind> InputBaseState<M> {
+@@ -876,6 +889,16 @@ impl<M: InputModeKind> InputBaseState<M> {
          self.projected_editor_style = style;
      }
  
@@ -295,7 +297,19 @@ index 99fa28e1..4edabeef 100644
      /// Buffer line ranges that keep one alignment even with
      /// [`Self::paragraph_direction`]: a code block or a table must not move
      /// line by line. Sorted, not overlapping; the app updates them on edit.
-@@ -4620,6 +4641,95 @@ mod tests {
+@@ -2150,6 +2173,11 @@ impl<M: InputModeKind> InputBaseState<M> {
+             return;
+         }
+         self.undo_manager.break_transaction_coalescing();
++        // A rendered block's element may take focus on the same press; the
++        // click is the editor's, so keyboard focus stays here (S7a, #936).
++        if !self.focus_handle.is_focused(window) {
++            window.focus(&self.focus_handle);
++        }
+         // Input has its own text selection; suppress the window-level text
+         // selection (Root) so it does not start a drag from here.
+         crate::global_state::GlobalState::suppress_text_selection(cx);
+@@ -4620,6 +4648,95 @@ mod tests {
          });
      }
  

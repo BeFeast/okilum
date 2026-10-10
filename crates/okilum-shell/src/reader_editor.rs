@@ -1072,8 +1072,13 @@ fn live_table(
 ) -> AnyElement {
     let mut style = reader_text_style(cx.theme());
     style.heading_base_font_size = px(reader_ui_state::font_size(cx));
-    TextView::markdown(("live-table", block.key as usize), source.to_owned())
+    // The first line keeps two identical tables apart.
+    let id = SharedString::from(format!("live-table-{}-{}", block.key, block.lines.start));
+    TextView::markdown(id, source.to_owned())
         .selectable(false)
+        // A click reveals the table's source; links open from there, never
+        // straight to the system handler.
+        .on_link_click(|_, _, _, _| {})
         .style(style)
         .text_size(px(reader_ui_state::font_size(cx)))
         .w_full()
