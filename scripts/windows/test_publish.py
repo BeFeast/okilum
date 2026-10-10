@@ -151,6 +151,10 @@ class PublicationTests(unittest.TestCase):
             (root / 'signing.json').write_text(json.dumps({'signed': True, 'certificate_sha256': 'abc'}))
             with self.assertRaisesRegex(ValueError, 'fingerprint'):
                 p.publish(root, 7000, 'source', Store())
+            for broken in ('', '{"signed": tr', '[]'):
+                (root / 'signing.json').write_text(broken)
+                with self.assertRaisesRegex(ValueError, 'Malformed signing record'):
+                    p.publish(root, 7000, 'source', Store())
 
     def test_corrupt_installer_cannot_promote(self):
         with tempfile.TemporaryDirectory() as directory:

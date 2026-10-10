@@ -84,8 +84,12 @@ def signing(root):
     path = root / 'signing.json'
     if not path.exists():
         return {'signed': False}
-    record = json.loads(path.read_text())
-    if not isinstance(record.get('signed'), bool):
+    try:
+        record = json.loads(path.read_text())
+    except ValueError:
+        # Empty or truncated: the signer job was interrupted while writing it.
+        raise ValueError('Malformed signing record') from None
+    if not isinstance(record, dict) or not isinstance(record.get('signed'), bool):
         raise ValueError('Malformed signing record')
     if record['signed'] and not re.fullmatch(r'[0-9a-f]{64}', record.get('certificate_sha256', '')):
         raise ValueError('Signed build without a signer certificate fingerprint')
