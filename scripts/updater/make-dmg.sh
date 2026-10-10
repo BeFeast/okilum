@@ -30,7 +30,12 @@ test "$(readlink "$MOUNT/Applications")" = /Applications
 test -f "$MOUNT/.background.tiff"
 codesign --verify --deep --strict "$MOUNT/Okilum.app"
 xcrun stapler validate "$MOUNT/Okilum.app"
-diff -r "$APP" "$MOUNT/Okilum.app" >/dev/null
+# Same app: the code directory hash covers the executable and every sealed resource.
+# (diff -r cannot walk the framework's Versions/Current symlinks and silently skips them.)
+cdhash() { codesign -d --verbose=4 "$1" 2>&1 | sed -n 's/^CDHash=//p'; }
+test -n "$(cdhash "$APP")"
+test "$(cdhash "$APP")" = "$(cdhash "$MOUNT/Okilum.app")"
+echo "DMG app CDHash $(cdhash "$MOUNT/Okilum.app") matches the stapled app"
 hdiutil detach "$MOUNT" -quiet
 trap - EXIT
 rm -f "$OUTPUT/fresh-download.dmg"
