@@ -560,8 +560,9 @@ impl Reader {
                     "attachment" => this.preview_file(&resolved.candidates[0], window, cx),
                     "outside_file" => this.outside_file_menu(&resolved.url, window, cx),
                     "ambiguous" => {
-                        this.link_notice =
-                            Some("This document link is ambiguous. Choose its destination.".into());
+                        this.link_notice = Some(
+                            reader_link_navigation::ambiguous_notice(&resolved.candidates).into(),
+                        );
                         this.link_choices = resolved
                             .candidates
                             .into_iter()

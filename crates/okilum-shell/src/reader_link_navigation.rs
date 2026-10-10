@@ -1,6 +1,19 @@
 //! Shared prepared-link navigation; destination routing for note panes lives here.
 use super::*;
 
+/// The chooser's question: files are files, not documents (#315).
+pub(super) fn ambiguous_notice(candidates: &[String]) -> &'static str {
+    if !candidates.is_empty()
+        && candidates
+            .iter()
+            .all(|path| !path.to_lowercase().ends_with(".md"))
+    {
+        "This link matches several files. Choose one."
+    } else {
+        "This document link is ambiguous. Choose its destination."
+    }
+}
+
 /// Link handling shared by the reader's TextView and every nested one (a
 /// callout body): wikilinks open notes, ambiguous ones go to search,
 /// unresolved ones are inert, http(s) leaves the app.
@@ -103,8 +116,7 @@ pub(super) fn handle_link(
                     &this.vault,
                     &this.current_rel,
                 );
-                this.link_notice =
-                    Some("This document link is ambiguous. Choose its destination.".into());
+                this.link_notice = Some(ambiguous_notice(&resolved.candidates).into());
                 this.link_choices = resolved
                     .candidates
                     .into_iter()
@@ -143,5 +155,30 @@ pub(super) fn handle_link(
             this.link_notice = Some("This link action is not supported.".into());
             cx.notify();
         });
+    }
+}
+
+#[cfg(test)]
+mod ambiguous_notice_tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+
+    #[test]
+    fn ambiguous_files_are_called_files() {
+        let files = ["a/shared.csv".to_owned(), "b/shared.csv".to_owned()];
+        assert_eq!(
+            ambiguous_notice(&files),
+            "This link matches several files. Choose one."
+        );
+        // Positive control: notes keep the document wording.
+        let notes = ["a/n.md".to_owned(), "b/N.MD".to_owned()];
+        assert_eq!(
+            ambiguous_notice(&notes),
+            "This document link is ambiguous. Choose its destination."
+        );
+        assert_eq!(
+            ambiguous_notice(&[]),
+            "This document link is ambiguous. Choose its destination."
+        );
     }
 }

@@ -133,7 +133,7 @@ pub fn destination(target: &str, wiki: bool) -> Destination {
         return Destination::Unsupported("This URI or filesystem link is not supported.");
     }
     if !wiki && !path.is_empty() && !path.to_lowercase().ends_with(".md") {
-        return Destination::Unsupported("Only local .md document links are supported; attachment and extensionless actions are not available.");
+        return Destination::Unsupported("Links open notes and files that have an extension. Folders and files without an extension can’t be opened from a link.");
     }
     if path.is_empty() && heading.is_none() {
         return Destination::Unsupported("This link has no destination.");
