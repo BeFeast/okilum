@@ -445,7 +445,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
     button::{Button, ButtonVariants as _},
-    h_flex, v_flex, Root, Sizable, TitleBar,
+    h_flex, v_flex, ActiveTheme as _, Root, Sizable, TitleBar,
 };
 
 #[derive(Default)]
@@ -666,8 +666,16 @@ pub(crate) fn open_deep_link(link: &str, cx: &mut App) {
                 reusable_roots: reusable_roots(cx),
                 ..Default::default()
             };
-            if let Err(error) = open_window(opts, cx) {
-                show_error(error, cx);
+            // A vault already on screen, or one the user let links open
+            // before, opens at once; the first link to any other asks.
+            let open_now = opts.reusable_roots.contains(&root)
+                || super::reader_ui_state::link_trusted(&root, cx);
+            if open_now {
+                if let Err(error) = open_window(opts, cx) {
+                    show_error(error, cx);
+                }
+            } else {
+                confirm_link_vault(root, opts, cx);
             }
         }
         // A chooser follows; until then the user is told, never guessed for.
@@ -960,6 +968,115 @@ pub(crate) fn window_options(cx: &App) -> WindowOptions {
         window_decorations: Some(WindowDecorations::Client),
         titlebar: Some(super::reader_titlebar_options()),
         ..TitleBar::window_options()
+    }
+}
+
+/// Vaults with a «open from a link?» window up, and the latest link for each:
+/// repeated links reuse the one prompt instead of stacking (#1049).
+#[derive(Default)]
+struct LinkPrompts(std::collections::BTreeMap<PathBuf, (AnyWindowHandle, super::Opts)>);
+impl Global for LinkPrompts {}
+
+/// The first external link to a vault asks before opening it (#1049,
+/// docs/deep-links.md «Security»). Open remembers the vault for links.
+fn confirm_link_vault(root: PathBuf, opts: super::Opts, cx: &mut App) {
+    let open = cx
+        .default_global::<LinkPrompts>()
+        .0
+        .get(&root)
+        .map(|(handle, _)| *handle)
+        .filter(|handle| cx.windows().contains(handle));
+    if let Some(handle) = open {
+        if let Some((_, latest)) = cx.global_mut::<LinkPrompts>().0.get_mut(&root) {
+            *latest = opts;
+        }
+        let _ = handle.update(cx, |_, window, _| window.activate_window());
+        return;
+    }
+    // A prompt closed with its window button left a stale entry.
+    cx.global_mut::<LinkPrompts>().0.remove(&root);
+    let name = root
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| root.display().to_string());
+    let options = WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(super::window_state::default_bounds(
+            size(px(560.), px(240.)),
+            cx,
+        ))),
+        window_min_size: Some(size(px(420.), px(200.))),
+        ..window_options(cx)
+    };
+    let view_root = root.clone();
+    let result = cx.open_window(options, |window, cx| {
+        window.set_window_title("Okilum — Open link");
+        let view = cx.new(|_| LinkConfirm {
+            root: view_root,
+            name,
+        });
+        cx.new(|cx| Root::new(view, window, cx))
+    });
+    match result {
+        Ok(handle) => {
+            cx.global_mut::<LinkPrompts>()
+                .0
+                .insert(root, (handle.into(), opts));
+        }
+        Err(error) => show_error(error, cx),
+    }
+}
+
+/// The user's answer: Open trusts the vault and opens the latest link.
+fn answer_link_vault(root: &Path, open: bool, window: &mut Window, cx: &mut App) {
+    let pending = cx.default_global::<LinkPrompts>().0.remove(root);
+    window.remove_window();
+    let Some((_, opts)) = pending.filter(|_| open) else {
+        return;
+    };
+    super::reader_ui_state::trust_for_links(root, cx);
+    if let Err(error) = open_window(opts, cx) {
+        show_error(error, cx);
+    }
+}
+
+struct LinkConfirm {
+    root: PathBuf,
+    name: String,
+}
+impl Render for LinkConfirm {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let (open_root, cancel_root) = (self.root.clone(), self.root.clone());
+        v_flex()
+            .p_4()
+            .gap_3()
+            .child(TitleBar::new().child("Open link"))
+            .child(format!(
+                "A link asks to open vault \u{201c}{}\u{201d}.",
+                self.name
+            ))
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(self.root.display().to_string()),
+            )
+            .child("Links only open notes. Okilum asks once per vault.")
+            .child(
+                h_flex()
+                    .gap_2()
+                    .justify_end()
+                    .child(Button::new("link-vault-cancel").label("Cancel").on_click(
+                        move |_, window, cx| answer_link_vault(&cancel_root, false, window, cx),
+                    ))
+                    .child(
+                        Button::new("link-vault-open")
+                            .primary()
+                            .label("Open")
+                            .on_click(move |_, window, cx| {
+                                answer_link_vault(&open_root, true, window, cx)
+                            }),
+                    ),
+            )
     }
 }
 
