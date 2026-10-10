@@ -5509,6 +5509,10 @@ impl Reader {
     }
 
     fn has_properties(&self) -> bool {
+        // A previewed file has no frontmatter; `properties` still holds the last note's.
+        if self.file_preview.is_some() {
+            return false;
+        }
         match &self.properties {
             Ok(props) => !props.is_empty(),
             Err(_) => true,

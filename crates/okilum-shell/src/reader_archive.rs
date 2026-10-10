@@ -314,6 +314,7 @@ impl ArchivePreview {
             Kind::Directory => entry.name.clone(),
             Kind::Symlink => format!("{}  (link)", entry.name),
             Kind::File if entry.encrypted => format!("🔒 {}", entry.name),
+            Kind::File if entry.path.is_none() => format!("⚠ {}", entry.name),
             Kind::File => entry.name.clone(),
         };
         h_flex()
@@ -366,6 +367,15 @@ impl ArchivePreview {
                 muted,
             ))
             .into_any_element()
+    }
+
+    /// The focused entry's name points outside the archive folder (`../`, absolute).
+    /// Its preview is a copy under a safe name; extraction refuses it (#1081).
+    fn unsafe_note(&self, listing: &Listing) -> Option<&'static str> {
+        let entry = &listing.entries[self.focused?];
+        (entry.kind == Kind::File && entry.path.is_none()).then_some(
+            "⚠ This name points outside the archive folder. The preview is a safe copy; extracting it is refused.",
+        )
     }
 
     fn render_entry(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -573,8 +583,12 @@ impl Render for ArchivePreview {
         view.child(toolbar)
             .child(div().px_6().child(Input::new(&self.filter)))
             .child(table)
+            .when_some(self.unsafe_note(&listing), |view, note| {
+                view.child(div().px_6().text_color(palette.text_muted).child(note))
+            })
             .when_some(self.render_entry(cx), |view, entry| {
-                view.child(div().w_full().flex_1().min_h_0().child(entry))
+                // A flex column, so the text and table viewers' `flex_1` gets the height (#1079).
+                view.child(v_flex().w_full().flex_1().min_h_0().child(entry))
             })
     }
 }
