@@ -52,7 +52,11 @@ Symlinks and unrelated directories are skipped. Only accepted opens update
 counted or evicted until next opened. Interrupted `.evicted-*` cleanup is retried
 independently; an antivirus cleanup hold is logged and cannot stop other retention.
 Durable history and recovery drafts are outside retention.
-Explicit `--index-dir` remains an exact override and is excluded from managed LRU.
+Explicit `--index-dir` remains an exact override and is excluded from managed LRU. It names
+the index of the vault the instance is launched on; a vault opened later in the same instance
+(Open folder, the first-run picker, an OS delivery) does not inherit it. An isolated instance (an
+absolute `OKILUM_STATE_DIR`) keeps all such caches, and their LRU, under `<state>/cache` instead
+of the user's cache (#1129).
 The published vault owns its cache path immediately, so Retry/Rescan during
 background preparation cannot write into the previous vault's cache. Returning
 to a retained vault publishes its persisted tree, last note and search before

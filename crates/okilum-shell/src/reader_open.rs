@@ -136,6 +136,75 @@ mod tests {
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
+    /// #1129: a second vault opened in an isolated instance (QA, a portable copy) must not go to
+    /// the user's shared cache, whose retention would evict the user's own Reader caches.
+    #[test]
+    fn an_isolated_instance_keeps_every_vault_cache_and_its_retention_to_itself() {
+        use crate::reader_cache::Lease;
+        let temp = tempfile::tempdir().unwrap();
+        let state = temp.path().join("qa-state");
+        let shared = temp.path().join("user-cache");
+        let vault = |name: &str| {
+            let root = temp.path().join(name);
+            std::fs::create_dir_all(&root).unwrap();
+            root
+        };
+        let intent = |root: &Path| OpenIntent {
+            root: root.to_path_buf(),
+            single_file: false,
+            note: None,
+        };
+
+        // Not isolated: the OS cache (positive control that the two scopes differ).
+        let os_base = cache_base_with(None).unwrap();
+        assert!(!os_base.starts_with(&state));
+        // Isolated: every vault, whichever window opens it, resolves under the state directory.
+        let isolated = cache_base_with(Some(state.clone())).unwrap();
+        assert_eq!(isolated, state.join("cache"));
+        let (a, b) = (vault("vault-a"), vault("vault-b"));
+        for root in [&a, &b] {
+            let path = intent(root).cache_path(&isolated);
+            assert!(
+                path.starts_with(state.join("cache/okilum/reader")),
+                "{path:?}"
+            );
+            assert_ne!(path, intent(root).cache_path(&os_base));
+        }
+
+        // The user's own Reader holds three registered vault caches in the shared base.
+        let mut theirs = Vec::new();
+        for n in 0..3 {
+            let root = vault(&format!("theirs-{n}"));
+            let path = intent(&root).cache_path(&shared);
+            let lease = Lease::acquire(path.clone(), &root).unwrap();
+            lease.mark_published().unwrap();
+            std::fs::write(path.join("reader-startup.json"), "derived cache").unwrap();
+            theirs.push(path);
+        }
+        // The isolated instance opens four vaults; retention (three kept) must evict among its own.
+        let mut evicted = Vec::new();
+        for n in 0..4 {
+            let root = vault(&format!("mine-{n}"));
+            let path = intent(&root).cache_path(&isolated);
+            let lease = Lease::acquire(path, &root).unwrap();
+            lease.mark_published().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            evicted.extend(lease.prune().unwrap().removed);
+        }
+        assert_eq!(
+            evicted.len(),
+            1,
+            "positive control: retention really ran and evicted"
+        );
+        assert!(evicted[0].starts_with(state.join("cache")), "{evicted:?}");
+        for path in theirs {
+            assert!(
+                path.join("reader-startup.json").is_file(),
+                "the user's cache {path:?} is untouched"
+            );
+        }
+    }
+
     #[test]
     fn exact_file_and_root_precedence_do_not_select_namesake() {
         let f = Fixture::new();
@@ -380,7 +449,19 @@ pub(crate) fn parse_args(
     Ok(Command::Launch(Box::new(opts)))
 }
 
+/// Where derived caches live. An isolated instance (an absolute `OKILUM_STATE_DIR`: QA, a
+/// portable copy) owns them under `<state>/cache`, exactly as it owns its config under
+/// `<state>/config`, for every window and the first-run folder picker. Without that, a second
+/// vault opened in such an instance went to the user's shared cache, and its retention (the three
+/// most recently opened vaults) evicted caches that belong to the user's own Reader (#1129).
 pub(crate) fn cache_base() -> Result<PathBuf> {
+    cache_base_with(crate::reader_history::isolated_state_directory())
+}
+
+fn cache_base_with(isolated_state: Option<PathBuf>) -> Result<PathBuf> {
+    if let Some(state) = isolated_state {
+        return Ok(state.join("cache"));
+    }
     #[cfg(target_os = "macos")]
     let base = std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Library/Caches"));
     #[cfg(all(unix, not(target_os = "macos")))]
