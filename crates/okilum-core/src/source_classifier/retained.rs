@@ -416,7 +416,7 @@ impl RetainedPresentation {
         let last_marker = fragment
             .lines()
             .filter(|line| !line.starts_with([' ', '\t']) && opens_list_item(line))
-            .last()
+            .next_back()
             .map(list_marker_kind);
         let interrupts = next.is_some_and(|line| {
             atx_heading(line)
