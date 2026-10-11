@@ -93,6 +93,10 @@ impl Reader {
         self.delete_path_guarded(relative, None, window, cx);
     }
 
+    /// Windows undoes a creation through `windows_files::undo_created`
+    /// (`reader_creation_undo_windows`), which removes the unchanged item
+    /// instead of filling the Recycle Bin.
+    #[cfg(unix)]
     pub(super) fn delete_created_path(
         &mut self,
         item: Arc<reader_create::CreatedUndo>,
