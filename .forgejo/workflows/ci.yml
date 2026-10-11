@@ -201,6 +201,7 @@ jobs:
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SHA: ${{ github.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}
+          RUN_ID: ${{ github.run_id }}
         run: python3 scripts/ci/main-health.py ${{ needs.linux-local.result == 'success' && 'green' || 'red' }}
 
   # Preserve ci/linux and existing downstream required contexts. A variable

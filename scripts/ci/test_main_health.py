@@ -103,6 +103,35 @@ class MainHealthTests(unittest.TestCase):
         finally:
             health.first_parents, health.tip, health.is_ancestor = saved
 
+    def test_failing_tests_are_named_and_infrastructure_blames_no_merge(self):
+        cargo = ('2026-10-10T23:00:00Z    Compiling okilum v0.1.0\n'
+                 '2026-10-10T23:02:51Z ---- platform::clip::tests::pipe stdout ----\n'
+                 '2026-10-10T23:02:51Z test result: FAILED. 817 passed; 1 failed\n')
+        self.assertEqual(health.classify(cargo), ('code', ['platform::clip::tests::pipe']))
+        self.assertEqual(health.classify('2026Z error[E0425]: cannot find value\n')[0], 'code')
+        self.assertEqual(health.classify('2026Z Error response from daemon: no such image\n'),
+                         ('infra', 'Error response from daemon'))
+        self.assertEqual(health.classify('2026Z Run Main checkout\n2026Z Job failed\n')[0], 'infra')
+        self.assertEqual(health.classify('2026Z    Compiling x\n2026Z Job failed\n')[0], 'unknown')
+        history = [('c3', "Merge pull request 'a' (#3) from x into main"), ('c0', 'm0')]
+        saved = health.first_parents, health.tip, health.lane_log
+        health.first_parents = lambda sha, limit: history
+        health.tip = lambda: 'c3'
+        try:
+            health.lane_log = lambda api, run_id: '2026Z Job failed\n'
+            api = FakeApi(green={'c0'}, authors={3: 'ana'})
+            health.red(api, 'c3', 'run/1', run_id=7)
+            self.assertEqual([w[1] for w in api.writes], ['/issues'])
+            self.assertIn('looks like infrastructure', api.writes[0][2]['body'])
+            health.lane_log = lambda api, run_id: cargo
+            api = FakeApi(green={'c0'}, authors={3: 'ana'})
+            health.red(api, 'c3', 'run/2', run_id=8)
+            issue = next(w for w in api.writes if w[1] == '/issues')
+            self.assertIn('`platform::clip::tests::pipe`', issue[2]['body'])
+            self.assertIn('/issues/3/comments', [w[1] for w in api.writes])
+        finally:
+            health.first_parents, health.tip, health.lane_log = saved
+
 
 if __name__ == '__main__':
     unittest.main()

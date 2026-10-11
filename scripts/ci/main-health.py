@@ -10,7 +10,12 @@ so that status says nothing. Each suspect PR gets one
 comment per red episode, addressed to its author, and a single "main is red"
 issue carries the current state for the manager. A green main closes that issue.
 
-Environment: FORGEJO_URL, REPOSITORY, FORGEJO_TOKEN, SHA, RUN_URL, and an optional
+A failure that never reached the build or tests (runner, Docker, network, disk) is
+reported as likely infrastructure and blames no merge; Forgejo has no API to re-run a
+job, so a human re-runs it or the next merge retests. For real failures the failing
+tests are listed.
+
+Environment: FORGEJO_URL, REPOSITORY, FORGEJO_TOKEN, SHA, RUN_URL, RUN_ID, and an optional
 DRY_RUN=1 that prints instead of writing.
 """
 import json
@@ -36,6 +41,11 @@ class Api:
         self.token = token
         self.dry_run = dry_run
 
+    def text(self, path):
+        request = urllib.request.Request(self.base + path, headers={'Authorization': f'token {self.token}'})
+        with urllib.request.urlopen(request, timeout=60) as response:
+            return response.read().decode('utf-8', 'replace')
+
     def call(self, method, path, body=None):
         if self.dry_run and method != 'GET':
             print(f'DRY {method} {path} {json.dumps(body)[:400]}')
@@ -54,6 +64,42 @@ class Api:
     def open_issue(self):
         query = urllib.parse.urlencode({'state': 'open', 'type': 'issues', 'q': ISSUE_TITLE, 'limit': 50})
         return next((i for i in self.call('GET', f'/issues?{query}') if i['title'] == ISSUE_TITLE), None)
+
+
+INFRA_MARKERS = ('Cannot connect to the Docker daemon', 'Error response from daemon',
+                 'No space left on device', 'Could not resolve host', 'Connection reset by peer',
+                 'context deadline exceeded', 'lost communication with the server',
+                 'The runner has received a shutdown signal', 'failed to create container')
+FAILED_TEST = re.compile(r'^---- (\S+) stdout ----$', re.M)
+LOG_PREFIX = re.compile(r'^\S+Z ', re.M)
+
+
+def classify(log):
+    """('code', failing tests), ('infra', reason) or ('unknown', []) for a failed lane log."""
+    text = LOG_PREFIX.sub('', log or '')
+    tests = FAILED_TEST.findall(text)
+    if tests or 'test result: FAILED' in text:
+        return 'code', tests
+    if re.search(r'^error(\[E\d+\])?: ', text, re.M):
+        return 'code', []
+    for marker in INFRA_MARKERS:
+        if marker in text:
+            return 'infra', marker
+    if not re.search(r'^\s*(Compiling|Checking|Finished|Running) ', text, re.M):
+        return 'infra', 'the job ended before any build or test output'
+    return 'unknown', []
+
+
+def lane_log(api, run_id):
+    """The failed Linux lane's log in this run, or None when it cannot be read."""
+    try:
+        jobs = api.call('GET', f'/actions/runs/{run_id}/jobs')
+        jobs = jobs if isinstance(jobs, list) else jobs.get('jobs', [])
+        job = next(j for j in jobs if j['name'] == 'linux-local' and j['status'] == 'failure')
+        return api.text(f"/actions/jobs/{job['id']}/logs")
+    except Exception as error:  # a missing permission or log must not hide the red main
+        print(f'Cannot read the lane log: {error}')
+        return None
 
 
 def lane_passed(statuses):
@@ -113,11 +159,25 @@ def superseded(api, sha):
     return False
 
 
-def red(api, sha, run_url):
+def red(api, sha, run_url, run_id=None):
     # Each main commit runs on its own, so runs can finish out of order.
     if superseded(api, sha):
         print(f'{sha[:8]} is red, but a newer main commit containing it is green')
         return
+    kind, detail = classify(lane_log(api, run_id)) if run_id else ('unknown', [])
+    if kind == 'infra':
+        body = (f'The Linux gate failed on main at {sha[:8]}: {run_url}\n\n'
+                f'**This looks like infrastructure, not a merge**: {detail}. No merge is blamed. '
+                'Re-run the job in the web UI (Forgejo has no API for it) or let the next merge retest; '
+                'if it fails again with build or test output, the merges are reported.\n'
+                'This issue closes itself when main is green again.')
+        issue = api.open_issue()
+        if issue is None:
+            api.call('POST', '/issues', {'title': ISSUE_TITLE, 'body': body})
+        else:
+            api.call('POST', f"/issues/{issue['number']}/comments", {'body': body})
+        return
+    failing = (''.join(f'\n- `{t}`' for t in detail) + '\n\n') if detail else ''
     commits, green = suspects(api, sha)
     episode = green or 'unknown'
     marker = f'<!-- main-red {episode[:12]} -->'
@@ -137,6 +197,7 @@ def red(api, sha, run_url):
             f'{marker}\n@{author} main is red at {sha[:8]} ({run_url}). This merge landed after the '
             f'last green main ({episode[:8]}), so it is a suspect.\n\n{RULE}')})
     body = (f'The Linux gate failed on main at {sha[:8]}: {run_url}\n\n'
+            + (f'Failing tests:{failing}' if failing else '') +
             f'Last green main: {episode[:8]}. Merges since then:\n' + '\n'.join(lines) + f'\n\n{RULE}\n'
             'This issue closes itself when main is green again.')
     issue = api.open_issue()
@@ -170,7 +231,10 @@ def main():
     state = sys.argv[1]
     env = os.environ
     api = Api(env['FORGEJO_URL'], env['REPOSITORY'], env['FORGEJO_TOKEN'], env.get('DRY_RUN') == '1')
-    {'red': red, 'green': green}[state](api, env['SHA'], env['RUN_URL'])
+    if state == 'red':
+        red(api, env['SHA'], env['RUN_URL'], env.get('RUN_ID'))
+    else:
+        green(api, env['SHA'], env['RUN_URL'])
 
 
 if __name__ == '__main__':
