@@ -567,19 +567,22 @@ pub(crate) fn controls(presentation: ControlsPresentation) -> impl IntoElement {
         )
 }
 
+/// The picker's confirm button. A vault opens editable, so the folder button
+/// promises nothing more (#1122, #1116); the same text on every OS.
+fn picker_prompt(folder: bool) -> &'static str {
+    if folder {
+        "Open folder"
+    } else {
+        "Open Markdown, CSV, TSV, text or log file"
+    }
+}
+
 fn pick(folder: bool, cx: &mut App) {
     let result = cx.prompt_for_paths(PathPromptOptions {
         files: !folder,
         directories: folder,
         multiple: false,
-        prompt: Some(
-            if folder {
-                "Open read-only folder"
-            } else {
-                "Open Markdown, CSV, TSV, text or log file"
-            }
-            .into(),
-        ),
+        prompt: Some(picker_prompt(folder).into()),
     });
     cx.spawn(async move |cx| {
         let result = match result.await {
@@ -1680,6 +1683,14 @@ mod entry_tests {
         assert!(parse(&[]).is_ok());
         assert!(parse(&["--managed-workspace"]).is_err());
         assert!(parse(&["--brain-endpoint", "127.0.0.1:99"]).is_err());
+    }
+
+    #[test]
+    fn folder_picker_never_promises_read_only() {
+        assert_eq!(picker_prompt(true), "Open folder");
+        // Positive control: the file picker keeps its own wording.
+        assert!(picker_prompt(false).starts_with("Open Markdown"));
+        assert!(!picker_prompt(true).to_lowercase().contains("read-only"));
     }
 
     #[test]
