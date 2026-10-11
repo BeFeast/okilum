@@ -56,7 +56,9 @@ rendered link is rewritten to the `v/` form.
    - One match: use it.
    - None: «Vault “X” is not on this computer.» with Open folder….
    - Several: a chooser listing the full paths. It never guesses (AGENTS:
-     ambiguity is surfaced).
+     ambiguity is surfaced). A vault without the note is listed but cannot be
+     chosen; choosing one counts as the first-use consent below. A newer link
+     replaces an open chooser.
    - `file/<path>`: canonicalize, then the known vault whose root contains it,
      with the deepest root winning. If no known vault contains it, the file
      opens on its own as today's single-file mode, after the first-use
