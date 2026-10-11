@@ -1162,10 +1162,13 @@ fn confirm_link_vault(root: PathBuf, opts: super::Opts, cx: &mut App) {
     let view_root = root.clone();
     let result = cx.open_window(options, |window, cx| {
         window.set_window_title("Okilum — Open link");
-        let view = cx.new(|_| LinkConfirm {
+        let view = cx.new(|cx| LinkConfirm {
             root: view_root,
             name,
+            focus: cx.focus_handle(),
         });
+        // Focused from the start, so Enter and Esc answer it (#1271).
+        view.read(cx).focus.clone().focus(window, cx);
         cx.new(|cx| Root::new(view, window, cx))
     });
     match result {
@@ -1327,11 +1330,23 @@ impl Render for LinkVaultChoice {
 struct LinkConfirm {
     root: PathBuf,
     name: String,
+    focus: FocusHandle,
 }
 impl Render for LinkConfirm {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (open_root, cancel_root) = (self.root.clone(), self.root.clone());
         v_flex()
+            .track_focus(&self.focus)
+            // Enter is the primary button (Open), Esc is Cancel (#1271).
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                let open = match event.keystroke.key.as_str() {
+                    "enter" => true,
+                    "escape" => false,
+                    _ => return,
+                };
+                cx.stop_propagation();
+                answer_link_vault(&this.root, open, window, cx);
+            }))
             .p_4()
             .gap_3()
             .child(TitleBar::new().child("Open link"))
@@ -2044,6 +2059,68 @@ mod entry_tests {
         open("okilum://v/Notes/target.md?line=81", cx);
         settle(cx);
         assert_eq!(landed(cx), ("target.md".into(), 40, None), "running window");
+    }
+
+    /// #1271: the link confirmation answers the keyboard like any dialog:
+    /// Enter is Open (the vault opens and is trusted), Esc is Cancel
+    /// (nothing opens). Another key leaves it waiting.
+    #[gpui::test]
+    fn link_confirmation_answers_enter_and_escape(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("Notes");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("Plan.md"), "# Plan\n").unwrap();
+        let root = root.canonicalize().unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            super::super::bind_keys(cx);
+            install(cx);
+            super::super::reader_ui_state::install(&fixture.path().join("ui-state"), cx);
+        });
+        let prompt = |cx: &mut TestAppContext| {
+            let known = [root.clone()];
+            cx.update(|cx| open_deep_link_among("okilum://v/Notes/Plan.md", &known, cx));
+            cx.run_until_parked();
+            cx.update(|cx| {
+                cx.global::<LinkPrompts>()
+                    .0
+                    .get(&root)
+                    .map(|(handle, _)| *handle)
+                    .expect("the link asks first")
+            })
+        };
+        let state = |cx: &mut TestAppContext, window: AnyWindowHandle| {
+            cx.update(|cx| {
+                (
+                    cx.windows().contains(&window),
+                    cx.global::<Readers>().0.len(),
+                    super::super::reader_ui_state::link_trusted(&root, cx),
+                )
+            })
+        };
+
+        let window = prompt(cx);
+        let mut visual = gpui::VisualTestContext::from_window(window, cx);
+        visual.simulate_keystrokes("a");
+        cx.run_until_parked();
+        assert_eq!(
+            state(cx, window),
+            (true, 0, false),
+            "another key: still asking"
+        );
+        visual.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        assert_eq!(state(cx, window), (false, 0, false), "Esc cancels");
+
+        let window = prompt(cx);
+        let mut visual = gpui::VisualTestContext::from_window(window, cx);
+        visual.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert_eq!(
+            state(cx, window),
+            (false, 1, true),
+            "Enter opens and trusts"
+        );
     }
 
     /// #1110: on a clean first run, choosing a vault folder on the start

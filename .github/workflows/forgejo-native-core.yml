@@ -56,7 +56,9 @@ jobs:
           'document_link_landing_tests::hover_and_navigation_agree_in_a_vault_with_a_non_utf8_note_also_on_a_warm_start',
           'prepared_links::tests::the_first_click_on_a_link_opens_it_after_a_word_selection',
           # #1269: an okilum: link's line lands, cold and in a running window (verbatim roots).
-          'reader_open::entry_tests::line_links_land_on_the_line_cold_and_in_a_running_window'
+          'reader_open::entry_tests::line_links_land_on_the_line_cold_and_in_a_running_window',
+          # #1271: Enter opens and Esc cancels the link confirmation.
+          'reader_open::entry_tests::link_confirmation_answers_enter_and_escape'
         )) {
           $found = & cargo test --locked -p okilum-shell --bins $shell -- --list --exact 2>$null
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
