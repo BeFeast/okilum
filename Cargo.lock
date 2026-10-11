@@ -7985,6 +7985,8 @@ dependencies = [
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
+ "okilum-core",
+ "okilum-sync-controller",
  "regex",
  "resvg 0.45.1",
  "rust-embed",
@@ -7997,9 +7999,9 @@ dependencies = [
  "similar",
  "smallvec",
  "tempfile",
- "okilum-core",
- "okilum-sync-controller",
  "time",
+ "tree-sitter",
+ "tree-sitter-mermaid",
  "unicode-bidi",
  "unicode-linebreak",
  "unicode-segmentation",
@@ -8667,9 +8669,9 @@ dependencies = [
 
 [[package]]
 name = "tree-sitter-language"
-version = "0.1.8"
+version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca0d1bf6fdd806e43ae5198f82f527056d359def39e54e67a0f478ac09dac081"
+checksum = "009994f150cc0cd50ff54917d5bc8bffe8cad10ca10d81c34da2ec421ae61782"
 
 [[package]]
 name = "tree-sitter-lua"
@@ -8696,6 +8698,16 @@ name = "tree-sitter-md"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2efd398be546456c814598ee56c0f51769a77241511b4a58077815d120afa882"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-mermaid"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "892884a2b4ae12139c4d2f82e9e9244fb9a38c168f8be5937b0ba81d79139dce"
 dependencies = [
  "cc",
  "tree-sitter-language",
