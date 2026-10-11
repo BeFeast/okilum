@@ -195,6 +195,10 @@ pub struct LogTail {
 impl LogTail {
     /// Opens `path` and reads what it holds now. Nothing is written.
     pub fn open(path: &Path) -> Result<Self> {
+        ensure!(
+            super::compression(path).is_none(),
+            "A compressed log does not grow and cannot be followed"
+        );
         let file = open_shared(path).context("The log file cannot be opened")?;
         let id = identity(&file).context("The log file cannot be inspected")?;
         let mut tail = Self {
