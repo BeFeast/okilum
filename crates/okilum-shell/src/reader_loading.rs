@@ -28,6 +28,9 @@ impl Cancellation {
     }
 }
 
+/// An empty vault's first view: an invitation, not an error (#1123).
+pub(crate) const EMPTY_VAULT: &str = "This folder has no notes yet. Create the first one.";
+
 pub(crate) struct Loading {
     pub generation: u64,
     pub cancellation: Cancellation,
@@ -41,6 +44,9 @@ pub(crate) struct Loading {
     pub network: bool,
     pub network_waiting: bool,
     pub progress_revision: u64,
+    /// The folder was read completely and holds no notes: a new vault, not
+    /// a failure (#1123). Shown as an invitation to write the first note.
+    pub empty: bool,
 }
 impl Drop for Loading {
     fn drop(&mut self) {
@@ -1397,8 +1403,25 @@ impl Reader {
         let Some((rel, document)) = document else {
             // A terminal candidate result is not a publication. Keep every
             // field of the previously usable Reader, including its watcher.
+            // A folder read in full with no notes is simply new (#1123);
+            // anything skipped or unreadable stays a failure with Retry.
+            let empty =
+                vault.notes.is_empty() && vault.unreadable.is_empty() && vault.inventory_complete;
+            if empty {
+                let name = intent
+                    .root
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                window.set_window_title(&format!("Okilum — {name}"));
+            }
             if let Some(load) = &mut self.loading {
-                load.phase = "This folder contains no readable Markdown documents.".into();
+                load.empty = empty;
+                load.phase = if empty {
+                    EMPTY_VAULT.into()
+                } else {
+                    "This folder contains no readable Markdown documents.".into()
+                };
                 load.active = false;
                 load.opts.cache_lease = None;
                 load.cancellation.cancel();
@@ -2170,6 +2193,7 @@ impl Reader {
             network,
             network_waiting,
             progress_revision: 0,
+            empty: false,
         });
         self.watch_network_progress(cx);
         if self.loading.as_ref().unwrap().warm {
@@ -2596,7 +2620,8 @@ impl Reader {
                     .child({
                         // Error chains can be long; keep Retry and the header
                         // controls reachable and show the full text on hover.
-                        let failed = !load.active && !load.phase.contains("cancelled");
+                        let failed =
+                            !load.active && !load.empty && !load.phase.contains("cancelled");
                         let phase = if load.network_waiting && load.active {
                             "Vault location is not responding — showing last loaded content".to_string()
                         } else { load.phase.clone() };
@@ -2621,7 +2646,21 @@ impl Reader {
                                 .on_click(cx.listener(|this, _, _, cx| this.cancel_loading(cx))),
                         )
                     })
-                    .when((!load.active && load.phase != "Ready") || load.network_waiting, |view| {
+                    .when(load.empty && !load.active, |view| {
+                        view.child(
+                            Button::new("empty-vault-new-note")
+                                .label("New note")
+                                .small()
+                                .primary()
+                                .on_click(|_, window, cx| {
+                                    window.dispatch_action(Box::new(NewNote), cx)
+                                }),
+                        )
+                    })
+                    .when(
+                        ((!load.active && load.phase != "Ready") || load.network_waiting)
+                            && !load.empty,
+                        |view| {
                         view.child(
                             Button::new("retry-reader-loading")
                                 .label("Retry")
@@ -2892,6 +2931,84 @@ mod tests {
                 "late preparation cannot revive a closed note"
             );
         });
+    }
+
+    #[gpui::test]
+    fn an_empty_vault_invites_the_first_note_instead_of_failing(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = TestDirectory::new();
+        let empty = temp.path().join("Fresh");
+        let other = temp.path().join("Pictures");
+        std::fs::create_dir(&empty).unwrap();
+        std::fs::create_dir(&other).unwrap();
+        // Positive control: a folder whose Markdown cannot be read still fails.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let locked = other.join("locked.md");
+            std::fs::write(&locked, "# Locked").unwrap();
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        }
+        let open = |cx: &mut TestAppContext, root: &Path| {
+            let opts = Opts {
+                vault: Some(root.canonicalize().unwrap()),
+                cache_base_override: Some(temp.path().join("os-cache")),
+                session_directory: Some(temp.path().join("state")),
+                ..Default::default()
+            };
+            let mut reader = None;
+            let (_, visual) = cx.add_window_view(|window, cx| {
+                let v = cx.new(|cx| Reader::new(opts, window, cx));
+                reader = Some(v.clone());
+                Root::new(v, window, cx)
+            });
+            visual.run_until_parked();
+            (reader.unwrap(), visual)
+        };
+        let (reader, visual) = open(cx, &empty);
+        reader.read_with(visual, |v, _| {
+            let load = v.loading.as_ref().unwrap();
+            assert!(load.empty, "a complete, note-free folder is a new vault");
+            assert_eq!(load.phase, EMPTY_VAULT);
+        });
+        assert!(
+            visual.debug_bounds("retry-reader-loading").is_none(),
+            "no Retry"
+        );
+        assert!(
+            visual.debug_bounds("empty-vault-new-note").is_some(),
+            "New note offered"
+        );
+        assert_eq!(visual.window_title().as_deref(), Some("Okilum — Fresh"));
+        #[cfg(unix)]
+        if !nix_is_root() {
+            let (reader, visual) = open(cx, &other);
+            reader.read_with(visual, |v, _| {
+                let load = v.loading.as_ref().unwrap();
+                assert!(!load.empty, "unreadable notes are a failure");
+                assert!(
+                    load.phase.contains("no readable Markdown"),
+                    "{}",
+                    load.phase
+                );
+            });
+        }
+    }
+
+    #[cfg(unix)]
+    fn nix_is_root() -> bool {
+        // Root reads mode-000 files, which would make the control vacuous.
+        std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find(|l| l.starts_with("Uid:"))
+                    .map(|l| l.split_whitespace().nth(1) == Some("0"))
+            })
+            .unwrap_or(false)
     }
 
     #[gpui::test]
