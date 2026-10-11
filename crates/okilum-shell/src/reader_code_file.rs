@@ -194,7 +194,9 @@ impl CodePreview {
                         json.formatting = false;
                         json.pretty = Some(pretty);
                     }
-                    this.show_json(true, window, cx);
+                    // Raw chosen while formatting wins: keep the result, don't show it.
+                    let pretty = !reader_ui_state::json_raw(cx);
+                    this.show_json(pretty, window, cx);
                 });
             })
             .detach();
