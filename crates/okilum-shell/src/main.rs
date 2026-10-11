@@ -586,10 +586,11 @@ fn parse_appearance_settings(
         .unwrap_or_default();
     (AppearancePreference(mode), brand::ThemeChoice(theme))
 }
+/// The saved Light/Dark/System choice and theme. A start after a crash keeps
+/// them too (#956): safe startup resets layout (panels stay closed), but two
+/// validated preference values cannot cause a crash, and dropping them
+/// showed System while the menu and file still said Light.
 fn load_appearance(cx: &App) -> (AppearancePreference, brand::ThemeChoice) {
-    if reader_recovery::is_recovering(cx) {
-        return Default::default();
-    }
     if let Some(saved) = reader_ui_state::appearance(cx) {
         return (
             saved,
