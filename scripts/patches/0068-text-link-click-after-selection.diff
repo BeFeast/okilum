@@ -1,0 +1,16 @@
+--- a/crates/base/src/text/inline.rs
++++ b/crates/base/src/text/inline.rs
+@@ -916,8 +916,11 @@
+             }
+         });
+ 
+-        if !is_selection {
+-            // click to open link
++        {
++            // Click to open a link. Registered whatever the selection was when this frame was
++            // painted: a press on a link clears a stale selection, but the repaint that would
++            // drop `is_selection` comes after the release (a quick tap, a slow frame). A drag that
++            // ends over a link is told apart at event time by `has_selection` below.
+             window.on_mouse_event({
+                 let links = self.links.clone();
+                 let text_layout = text_layout.clone();
