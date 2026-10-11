@@ -97,7 +97,32 @@ class MacosLaneOnceTests(unittest.TestCase):
         self.assertEqual(workflow.count('vars.OKILUM_MACOS_LANE'), 1)
         scope = re.search(r'^  native-scope:\n(.*?)(?=^  [\w-]+:)', workflow, re.M | re.S)[1]
         self.assertIn('vars.OKILUM_MACOS_LANE', scope)
-        self.assertIn('echo local || echo hosted', scope)
+        self.assertIn('scripts/ci/macos-lane.py', scope)
         for job, lane in [('macos-github', 'hosted'), ('macos-local', 'local')]:
             block = re.search(rf'^  {job}:\n(.*?)(?=^  [\w-]+:)', workflow, re.M | re.S)[1]
             self.assertIn(f"needs.native-scope.outputs.macos_lane == '{lane}'", block)
+
+
+class MacosLaneIdleTests(unittest.TestCase):
+    """2026-10-11: in the M4 window a PR takes the M4 only while it is idle."""
+
+    def setUp(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('lane', Path(__file__).with_name('macos-lane.py'))
+        self.lane = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.lane)
+
+    def test_busy_m4_sends_the_pr_to_hosted_and_idle_keeps_it_local(self):
+        running = [{'workflow_id': 'ci.yml', 'name': 'macos-local', 'status': 'running', 'run_number': 7}]
+        self.assertEqual(self.lane.choose('local', running)[0], 'hosted')
+        release = [{'workflow_id': 'macos-release.yml', 'name': 'release', 'status': 'running'}]
+        self.assertEqual(self.lane.choose('local', release)[0], 'hosted')
+        finished = [{'workflow_id': 'ci.yml', 'name': 'macos-local', 'status': 'success'},
+                    {'workflow_id': 'ci.yml', 'name': 'linux-local', 'status': 'running'}]
+        self.assertEqual(self.lane.choose('local', finished)[0], 'local')
+
+    def test_variable_still_rules_outside_the_window_and_when_tasks_are_unknown(self):
+        running = [{'workflow_id': 'ci.yml', 'name': 'macos-local', 'status': 'running'}]
+        self.assertEqual(self.lane.choose('hosted', running)[0], 'hosted')
+        self.assertEqual(self.lane.choose('', [])[0], 'hosted')
+        self.assertEqual(self.lane.choose('local', None)[0], 'local')

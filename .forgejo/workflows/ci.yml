@@ -53,7 +53,8 @@ jobs:
           MACOS_LANE: ${{ vars.OKILUM_MACOS_LANE }}
         run: |
           set -euo pipefail
-          echo "macos_lane=$([ "$MACOS_LANE" = local ] && echo local || echo hosted)" >> "$GITHUB_OUTPUT"
+          # In the M4 window a PR uses the M4 only while it is idle, otherwise hosted (2026-10-11).
+          echo "macos_lane=$(FORGEJO_URL='${{ github.server_url }}' REPOSITORY='${{ github.repository }}' python3 scripts/ci/macos-lane.py)" >> "$GITHUB_OUTPUT"
           git fetch --no-tags --depth=1 origin "$BASE_SHA"
           needed=$(git diff --name-only -z "$BASE_SHA" HEAD | python3 scripts/ci/macos-scope.py)
           echo "macos=$needed" >> "$GITHUB_OUTPUT"
