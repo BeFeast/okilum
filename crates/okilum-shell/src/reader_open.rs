@@ -1529,6 +1529,84 @@ mod entry_tests {
         explicit_delivery_wins_startup(cx, true);
     }
 
+    /// #1137: on macOS the app outlives its last window; a reopen (Dock
+    /// click, `open -a`) with no window brings back the last vault, or the
+    /// start screen when there is none. With a window it opens nothing new.
+    #[gpui::test]
+    fn reopen_without_windows_restores_the_last_vault_or_the_start_screen(cx: &mut TestAppContext) {
+        use super::super::{
+            reader_history::{ReadingHistory, TestSessionDirectory},
+            reader_startup, Opts,
+        };
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let root = fixture.path().join("Notes");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("Plan.md"), "# Plan").unwrap();
+        let root = root.canonicalize().unwrap();
+        let base = Opts {
+            session_directory: Some(state.clone()),
+            index_dir: Some(fixture.path().join("index")),
+            ..Default::default()
+        };
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            install(cx);
+            cx.set_global(TestSessionDirectory(state.clone()));
+            cx.set_global(reader_startup::ReopenBase(base.clone()));
+            // macOS keeps the app running without windows (#1137).
+            cx.set_quit_mode(gpui::QuitMode::Explicit);
+            // No history yet: the first launch shows the start screen.
+            reader_startup::launch(base.clone(), cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(cx.windows().len(), 1, "start screen");
+        let close_all = |cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                for window in cx.windows() {
+                    let _ = window.update(cx, |_, window, _| window.remove_window());
+                }
+            });
+            cx.run_until_parked();
+            assert!(
+                cx.update(|cx| cx.windows().is_empty()),
+                "all windows closed"
+            );
+        };
+        // Reopen with no window and no history: the start screen again.
+        close_all(cx);
+        cx.update(reader_startup::reopen);
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert_eq!(cx.windows().len(), 1);
+            assert!(cx
+                .global::<Readers>()
+                .0
+                .iter()
+                .all(|(r, _)| r.upgrade().is_none()));
+        });
+        // With a remembered vault, reopen restores it.
+        ReadingHistory::record_usable_document(&state, &root, "Plan.md").unwrap();
+        close_all(cx);
+        cx.update(reader_startup::reopen);
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert_eq!(cx.windows().len(), 1, "one window, the vault");
+            let reader = cx
+                .global::<Readers>()
+                .0
+                .iter()
+                .find_map(|(r, _)| r.upgrade())
+                .expect("a Reader was opened");
+            assert_eq!(reader.read(cx).vault_root, root);
+            assert_eq!(reader.read(cx).current_rel, "Plan.md");
+        });
+        // Positive control: a reopen while a window exists opens nothing new.
+        cx.update(reader_startup::reopen);
+        cx.run_until_parked();
+        assert_eq!(cx.windows().len(), 1);
+    }
+
     /// #1110: on a clean first run, choosing a vault folder on the start
     /// screen (the picker's `dispatch_path`) never leaves the app without a
     /// window, and the vault opens.

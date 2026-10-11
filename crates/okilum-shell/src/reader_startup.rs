@@ -35,6 +35,35 @@ pub(crate) fn supersede(cx: &mut App) {
     }
 }
 
+/// The options the process started its Reader with (state, index and
+/// diagnostics), kept so a macOS reopen can start the same way again.
+pub(crate) struct ReopenBase(pub Opts);
+impl Global for ReopenBase {}
+
+/// macOS reopen (Dock click, `open -a`) while no window is visible (#1137).
+/// Closing every window keeps the app running there, so this brings a
+/// minimized window back, or runs startup again: the last vault, or the
+/// start screen. Linux and Windows end the app with its last window (#1110).
+pub(crate) fn reopen(cx: &mut App) {
+    let windows = cx.windows();
+    if let Some(trace) = super::reader_diagnostics::trace(cx) {
+        trace.event(
+            "app_reopen",
+            serde_json::json!({ "windows": windows.len() }),
+        );
+    }
+    if let Some(window) = windows.first() {
+        let _ = window.update(cx, |_, window, _| window.activate_window());
+        cx.activate(true);
+        return;
+    }
+    let Some(base) = cx.try_global::<ReopenBase>().map(|base| base.0.clone()) else {
+        return;
+    };
+    cx.set_global(Startup::default());
+    launch(base, cx);
+}
+
 pub(crate) fn launch(mut opts: Opts, cx: &mut App) {
     let directory = opts.session_directory.clone();
     let diagnostics = opts.diagnostics.clone();
