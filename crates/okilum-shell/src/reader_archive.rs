@@ -472,7 +472,12 @@ fn when(t: archive::Modified) -> String {
 impl Render for ArchivePreview {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = brand::palette(cx);
-        let view = v_flex().w_full().flex_1().min_h_0().gap_2();
+        let view = v_flex()
+            .debug_selector(|| "archive-view".into())
+            .w_full()
+            .flex_1()
+            .min_h_0()
+            .gap_2();
         if let Some(error) = &self.error {
             return view.child(
                 div()
@@ -563,6 +568,7 @@ impl Render for ArchivePreview {
         let count = self.rows.len();
         // At most 40% of the pane, so the selected entry keeps room (#1149).
         let table = v_flex()
+            .debug_selector(|| "archive-table".into())
             .mx_6()
             .h(px(ROW_HEIGHT * 12.))
             .max_h(relative(0.4))
@@ -695,6 +701,28 @@ mod tests {
         assert!(
             f32::from(code.size.height) >= f32::from(slot.size.height) - 1.,
             "the code preview fills its slot: {code:?} in {slot:?}"
+        );
+
+        // A small window: the table yields to the 40% cap, the preview keeps room.
+        visual.simulate_resize(gpui::size(px(1000.), px(560.)));
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let view = visual.debug_bounds("archive-view").expect("archive view");
+        let table = visual.debug_bounds("archive-table").expect("entry table");
+        let code = visual
+            .debug_bounds("reader-code-file")
+            .expect("code preview");
+        assert!(
+            f32::from(table.size.height) <= f32::from(view.size.height) * 0.4 + 1.,
+            "the table is capped: {table:?} in {view:?}"
+        );
+        assert!(
+            f32::from(table.size.height) < ROW_HEIGHT * 12.,
+            "positive control: the cap, not the 12-row height, applies here: {table:?}"
+        );
+        assert!(
+            f32::from(code.size.height) > 80.,
+            "the preview keeps room: {code:?}"
         );
     }
 
