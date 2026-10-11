@@ -1216,7 +1216,10 @@ fn live_blocks(
             .min_h(window.line_height())
             .w_full()
             .child(
-                reader_plugins(
+                // Each block is its own document: its position in the note
+                // keeps identical callouts' fold state apart (#1067).
+                reader_plugins_at(
+                    block.source.start.0,
                     root.clone(),
                     TextView::markdown(id, markdown),
                     reader.clone(),

@@ -733,9 +733,13 @@ struct Callout {
 }
 
 /// Parse an Obsidian callout out of a blockquote node. `None` for a plain quote.
+/// `fold_base` offsets the callout's fold-state key: a Live Preview block is
+/// its own document, so identical callouts in two blocks must not share
+/// their fold state (#1067). The Reader passes 0.
 fn parse_callout(
     node: &markdown_ast::Node,
     cx: &gpui_component::text::MarkdownParseContext<'_>,
+    fold_base: usize,
 ) -> Option<MarkdownNode> {
     let markdown_ast::Node::Blockquote(_) = node else {
         return None;
@@ -751,7 +755,7 @@ fn parse_callout(
                 header: header.clone(),
                 body: body.clone(),
                 offset,
-                key: reader_obsidian::callout_key(offset, source),
+                key: reader_obsidian::callout_key(fold_base + offset, source),
             },
         )
         .plain_part("title", header.title.clone())
@@ -968,6 +972,20 @@ fn reader_plugins(
     states: prepared_links::States,
     identities: &[okilum_core::document_links::prepared::LinkIdentity],
 ) -> TextView {
+    reader_plugins_at(0, root, view, entity, sel_format, states, identities)
+}
+
+/// [`reader_plugins`] for a document that is one part of a note: `fold_base`
+/// keeps its callouts' fold state apart from other parts' (#1067).
+fn reader_plugins_at(
+    fold_base: usize,
+    root: PathBuf,
+    view: TextView,
+    entity: WeakEntity<Reader>,
+    sel_format: SelectionFormat,
+    states: prepared_links::States,
+    identities: &[okilum_core::document_links::prepared::LinkIdentity],
+) -> TextView {
     // Use exactly the same eligibility as the Create note hover action.
     #[cfg(any(unix, windows))]
     let missing_cards = identities
@@ -984,7 +1002,8 @@ fn reader_plugins(
     };
     let hover_entity = entity.clone();
     let tasks_entity = entity.clone();
-    let view = markdown_plugins(
+    let view = markdown_plugins_at(
+        fold_base,
         view,
         Arc::new(move |url, event, window, cx| {
             if matches!(event, ClickEvent::Mouse(e) if e.up.button == MouseButton::Right) {
@@ -1051,6 +1070,17 @@ type MarkdownImageResolver = Arc<dyn Fn(&str) -> Option<MarkdownImage> + Send + 
 /// The same recursive Markdown plugins serve local Reader paths and remote
 /// Brain image bytes. The caller supplies navigation and image authority.
 fn markdown_plugins(
+    view: TextView,
+    link_handler: MarkdownLinkHandler,
+    image_resolver: MarkdownImageResolver,
+    sel_format: SelectionFormat,
+) -> TextView {
+    markdown_plugins_at(0, view, link_handler, image_resolver, sel_format)
+}
+
+/// [`markdown_plugins`] for one part of a note; see [`reader_plugins_at`].
+fn markdown_plugins_at(
+    fold_base: usize,
     view: TextView,
     link_handler: MarkdownLinkHandler,
     image_resolver: MarkdownImageResolver,
@@ -1132,7 +1162,7 @@ fn markdown_plugins(
                 None => div().into_any_element(),
             }
         })
-        .markdown_block_parser(parse_callout)
+        .markdown_block_parser(move |node, cx| parse_callout(node, cx, fold_base))
         .markdown_block_renderer("callout", move |node, _window, cx| {
             let Some(data) = node.data::<Callout>() else {
                 return div().into_any_element();

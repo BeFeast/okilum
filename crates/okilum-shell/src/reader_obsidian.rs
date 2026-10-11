@@ -290,6 +290,25 @@ mod tests {
         );
     }
 
+    /// #1067: two identical callouts in different Live Preview blocks (each
+    /// its own document, so both at offset 0) keep their own fold state.
+    #[gpui::test]
+    fn identical_callouts_in_two_blocks_fold_separately(cx: &mut gpui::TestAppContext) {
+        let source = "> [!faq]- Same\n> body\n";
+        let (first, second) = (callout_key(0, source), callout_key(120, source));
+        assert_ne!(first, second);
+        let (_, visual) = cx.add_window_view(|_, _| gpui::Empty);
+        visual.update(|window, cx| {
+            assert!(!callout_open(first, Fold::Closed, cx));
+            toggle_callout(first, Fold::Closed, window, cx);
+            assert!(callout_open(first, Fold::Closed, cx));
+            assert!(
+                !callout_open(second, Fold::Closed, cx),
+                "the other block's callout stays closed"
+            );
+        });
+    }
+
     #[gpui::test]
     fn foldable_callouts_start_as_written_and_toggle(cx: &mut gpui::TestAppContext) {
         cx.update(gpui_component::init);
