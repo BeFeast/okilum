@@ -5232,23 +5232,6 @@ impl Reader {
                 let hover_rel = head.path.clone();
                 let header = h_flex()
                     .id(SharedString::from(format!("bl-source-{gx}")))
-                    .on_hover(cx.listener(move |this, active, window, cx| {
-                        let key = format!("backlink:{hover_rel}");
-                        if *active {
-                            this.hover_note(
-                                key,
-                                reader_hover::Target {
-                                    path: hover_rel.clone(),
-                                    heading: None,
-                                },
-                                window.mouse_position(),
-                                window,
-                                cx,
-                            );
-                        } else {
-                            this.leave_hover(&key, cx);
-                        }
-                    }))
                     .group(group.clone())
                     .gap_1p5()
                     .px_2()
@@ -5266,30 +5249,62 @@ impl Reader {
                             cx,
                         )
                     }))
+                    // Only the icon and title preview the note (#1101): the
+                    // rest of the card and its places scroll and read freely.
                     .child(
-                        Icon::new(if any_ambiguous {
-                            IconName::TriangleAlert
-                        } else {
-                            IconName::FileText
-                        })
-                        .small()
-                        .text_color(if any_ambiguous {
-                            cx.theme().warning
-                        } else {
-                            p.text_muted
-                        }),
-                    )
-                    .child(
-                        div()
+                        h_flex()
+                            .id(SharedString::from(format!("bl-title-{gx}")))
+                            .debug_selector(move || format!("backlink-title-{gx}"))
                             .flex_none()
                             .max_w(relative(0.6))
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .whitespace_nowrap()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(p.text)
-                            .child(title),
+                            .min_w_0()
+                            .gap_1p5()
+                            .on_hover(cx.listener(move |this, active, window, cx| {
+                                let key = format!("backlink:{hover_rel}");
+                                if *active {
+                                    let body = this.body_bounds;
+                                    let widths = this
+                                        .panels
+                                        .widths(&this.panel_widths, f32::from(body.size.width));
+                                    this.hover_note_beside(
+                                        key,
+                                        reader_hover::Target {
+                                            path: hover_rel.clone(),
+                                            heading: None,
+                                        },
+                                        window.mouse_position(),
+                                        body.right() - px(widths.backlinks),
+                                        window,
+                                        cx,
+                                    );
+                                } else {
+                                    this.leave_hover(&key, cx);
+                                }
+                            }))
+                            .child(
+                                Icon::new(if any_ambiguous {
+                                    IconName::TriangleAlert
+                                } else {
+                                    IconName::FileText
+                                })
+                                .small()
+                                .text_color(if any_ambiguous {
+                                    cx.theme().warning
+                                } else {
+                                    p.text_muted
+                                }),
+                            )
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .whitespace_nowrap()
+                                    .text_sm()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(p.text)
+                                    .child(title),
+                            ),
                     )
                     .child(
                         div()
@@ -5395,26 +5410,9 @@ impl Reader {
                                 .build(window, cx),
                             )
                         });
-                        let hover_path = head.path.clone();
                         div()
                             .id(SharedString::from(format!("bl-{gx}-{lx}")))
-                            .on_hover(cx.listener(move |this, active, window, cx| {
-                                let key = format!("backlink:{gx}:{lx}:{hover_path}");
-                                if *active {
-                                    this.hover_note(
-                                        key,
-                                        reader_hover::Target {
-                                            path: hover_path.clone(),
-                                            heading: None,
-                                        },
-                                        window.mouse_position(),
-                                        window,
-                                        cx,
-                                    );
-                                } else {
-                                    this.leave_hover(&key, cx);
-                                }
-                            }))
+                            .debug_selector(move || format!("backlink-place-{gx}-{lx}"))
                             .px_2()
                             .py_1()
                             .rounded(px(6.))
@@ -5476,9 +5474,14 @@ impl Reader {
         });
         v_flex()
             .id("backlinks")
+            .debug_selector(|| "backlinks-list".into())
             .flex_1()
             .min_h(px(96.))
             .overflow_y_scroll()
+            // Scrolling wins over previews (#1101); the list still scrolls.
+            .on_scroll_wheel(
+                cx.listener(|this, _: &ScrollWheelEvent, _, cx| this.panel_scrolled(cx)),
+            )
             .py_1()
             .when_some(empty, |list, line| {
                 list.child(panel_empty_line(muted, line))
