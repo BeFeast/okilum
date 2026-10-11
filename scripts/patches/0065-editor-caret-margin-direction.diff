@@ -1,0 +1,27 @@
+diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
+index 41815d6f..c4bf0e44 100644
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -726,12 +726,20 @@ impl<M: InputModeKind> TextElement<M> {
+                     // So, here we just adjust offset by `line_height` for move smooth.
+                     // The margin is in body rows; a taller caret row adds its extra
+                     // height so a heading near the bottom scrolls fully into view.
++                    // The margin applies in the direction the caret moved: Enter
++                    // near the top moves it down and must not pull the rows above
++                    // it down a line; it still scrolls if the caret leaves the
++                    // viewport (#1096).
++                    let moved_up = state.last_cursor.is_some_and(|last| state.cursor() < last);
++                    let moved_down = state.last_cursor.is_some_and(|last| state.cursor() > last);
++                    let top_margin = if moved_down { px(0.) } else { top_bottom_margin };
++                    let bottom_margin = if moved_up { px(0.) } else { top_bottom_margin };
+                     scroll_offset.y = if scroll_offset.y + cursor_pos.y + (caret_row_height - line_height)
+-                        > bounds.size.height - top_bottom_margin
++                        > bounds.size.height - bottom_margin
+                     {
+                         // cursor is out of bottom
+                         scroll_offset.y - line_height
+-                    } else if scroll_offset.y + cursor_pos.y < top_bottom_margin {
++                    } else if scroll_offset.y + cursor_pos.y < top_margin {
+                         // cursor is out of top
+                         (scroll_offset.y + line_height).min(px(0.))
+                     } else {
