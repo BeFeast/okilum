@@ -238,6 +238,9 @@ fn an_unresolved_reference_does_not_keep_its_resolved_neighbours_raw() {
         "[^1] **bold**\n",
         "![[embed]] **bold**\n",
         "[[unclosed **bold**\n",
+        // Footnotes, also when `[^a]: …` parses as a link definition (#1092).
+        "**bold** [^a]\n\n[^a]: Alpha.\n",
+        "**bold** ^[inline note]\n",
     ] {
         assert_eq!(display(raw), raw, "{raw:?}");
     }

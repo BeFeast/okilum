@@ -520,7 +520,7 @@ impl<'s> Context<'s> {
         // across text nodes, so look at the block's own text as a whole (#1092).
         let mut text = String::new();
         self.loose_text(node, &mut text)?;
-        if ["](", "[^", "[["]
+        if ["](", "[^", "^[", "[["]
             .iter()
             .any(|syntax| text.contains(syntax))
         {
@@ -637,6 +637,11 @@ impl<'s> Context<'s> {
     fn link<'a>(&self, node: &'a AstNode<'a>, candidate: &mut Candidate, wiki: bool) -> Option<()> {
         let range = self.range(node)?;
         let raw = self.source.get(range.clone())?;
+        // `[^id]` is a footnote reference even when a `[^id]: …` line also
+        // parses as a link definition: it keeps its block Source (#1092).
+        if !wiki && raw.starts_with("[^") {
+            return None;
+        }
         let children: Vec<_> = node.children().collect();
         let (label, target) = if wiki {
             if raw.contains(['\r', '\n'])
