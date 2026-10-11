@@ -13,6 +13,10 @@ on:
         description: 'Owner-approved: promote this main commit; missing Linux/Windows builds are made first (#1040)'
         required: false
         default: ''
+      windows_only:
+        description: 'With build: put the re-signed Windows build of that stable build on stable; Mac, Linux, tag and notes unchanged (#1104)'
+        type: boolean
+        default: false
       supersede_pending:
         description: 'Owner-approved recovery only: supersede interrupted promotion with a NEWER build'
         required: false
@@ -55,12 +59,17 @@ jobs:
           PROMOTE_BUILD: ${{ inputs.build }}
           PROMOTE_SOURCE: ${{ inputs.source }}
           SUPERSEDE_PENDING: ${{ inputs.supersede_pending }}
+          WINDOWS_ONLY: ${{ inputs.windows_only }}
         run: |
           if [ -n "$PROMOTE_SOURCE" ] && [ -z "$PROMOTE_BUILD" ]; then
             # Builds what is missing for that commit; the last publication starts the promotion.
             exec python scripts/releases/prepare.py request "$PROMOTE_SOURCE"
           fi
           args=()
+          if [ "$WINDOWS_ONLY" = true ]; then
+            test -n "$PROMOTE_BUILD"
+            exec python scripts/releases/publish.py --build "$PROMOTE_BUILD" --windows-only
+          fi
           if [ "$SUPERSEDE_PENDING" = true ]; then
             test -n "$PROMOTE_BUILD"
             args+=(--supersede-pending)

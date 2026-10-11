@@ -208,6 +208,11 @@ def github_release(github, tag, release, files, body, stable):
 
 def preflight_stable(store, release):
     """Check all channel rollback guards and archived metadata before mutating any."""
+    preflight_windows(store, release)
+    preflight_linux_macos(store, release)
+
+
+def preflight_windows(store, release):
     win_build = release['platforms']['windows']['build']
     meta = json.loads(store.call('GET', f'okilum/windows/builds/{win_build}/release.json'))
     if meta['source'] != release['source'] or meta['build'] != win_build:
@@ -221,6 +226,9 @@ def preflight_stable(store, release):
 
     # Run the real Windows preparation/validation, discarding its planned writes.
     windows.promote(win_build, ValidateOnly())
+
+
+def preflight_linux_macos(store, release):
     linux = release['platforms']['linux']['build']
     meta = json.loads(store.call('GET', f'okilum/arch/builds/{linux}/manifest.json'))
     if meta['source'] != release['source'] or meta['build'] != linux:
@@ -246,6 +254,40 @@ def preflight_stable(store, release):
             raise ValueError('macOS stable would roll back')
     if not found:
         raise ValueError('Selected macOS build is absent from appcast')
+
+
+def complete_windows(store, github, build):
+    """Put the re-signed Windows build of the current stable commit on stable (#1104).
+
+    Stable already carries `build` with an unsigned Windows build; after the owner's
+    SimplySign login the same bytes are re-signed into a new Windows build of the same
+    commit. Only Windows changes: its feed, its catalog entry and its files on the
+    existing GitHub release. Mac, Linux, the tag and the release notes stay as published.
+    """
+    key = f'{catalog.PREFIX}/stable.json'
+    previous = json.loads(store.call('GET', key) or 'null')
+    if previous is None or previous['build'] != build:
+        raise ValueError(f'Stable is not build {build}; promote it normally')
+    release = choose(store, build)  # the catalog now, not the earlier promotion snapshot
+    if release is None or release['source'] != previous['source']:
+        raise ValueError('The catalog for this build names another commit than stable')
+    for platform in ('macos', 'linux'):
+        if release['platforms'][platform] != previous['platforms'][platform]:
+            raise ValueError(f'{platform} changed since the stable promotion; promote normally')
+    if release['platforms']['windows'] == previous['platforms']['windows']:
+        print('Stable Windows is already this build')
+        return
+    preflight_windows(store, release)
+    files = catalog.download(store, release)
+    tag = f'v0.1.{build}'
+    published = github.call('GET', f'/releases/tags/{tag}')
+    if published is None:
+        raise ValueError(f'GitHub release {tag} is missing')
+    windows.promote(release['platforms']['windows']['build'], store)
+    github_release(github, tag, release, files, published.get('body') or '', True)
+    store.put(f'{catalog.PREFIX}/promoting.json', catalog.encode(release), 'application/json', 'no-cache')
+    store.put(key, catalog.encode(release), 'application/json', 'no-cache')
+    print(f"Stable Windows is now {release['platforms']['windows']['build']} for {build}")
 
 
 def execute(store, github, forgejo, build=None, supersede_pending=False):
@@ -320,7 +362,14 @@ if __name__ == '__main__':
     parser.add_argument('--build', type=int, help='Explicit stable promotion: accepted macOS build')
     parser.add_argument('--supersede-pending', action='store_true',
                         help='Owner-approved recovery: replace an interrupted promotion with a newer build')
+    parser.add_argument('--windows-only', action='store_true',
+                        help='Stable only: put the re-signed Windows build of this stable build on stable (#1104)')
     args = parser.parse_args()
+    if args.windows_only:
+        if args.build is None:
+            parser.error('--windows-only requires --build')
+        complete_windows(R2(), GitHub(), args.build)
+        raise SystemExit(0)
     if args.supersede_pending and args.build is None:
         parser.error('--supersede-pending requires --build')
     if args.build is not None and args.build < 1:
