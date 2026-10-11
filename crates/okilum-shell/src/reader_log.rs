@@ -4474,10 +4474,12 @@ mod tests {
         visual.run_until_parked();
         tick(visual);
 
-        // Appends to both files: far more matches than fit.
+        // Appends to both files, interleaved in time so the merge is rebuilt
+        // and refiltered: far more matches than fit. Each check follows the
+        // poll that brought data, as a writer that never stops would; a
+        // quiet poll afterwards would pin again and hide the jump (#1282).
         append(&a, &lines(10, 2, 60, "warn"));
         append(&b, &lines(11, 2, 60, "error"));
-        tick(visual);
         tick(visual);
         assert_eq!(view.read_with(visual, |view, _| view.visible_len()), 120);
         assert_eq!(
@@ -4486,12 +4488,15 @@ mod tests {
             "newest match in view after appends"
         );
 
-        // Rotation of the added file keeps the view on the newest match.
+        // Rotation of the added file, then more records in both files.
         std::fs::rename(&b, b.with_extension("jsonl.1")).unwrap();
-        std::fs::write(&b, lines(200, 1, 5, "warn")).unwrap();
+        std::fs::write(&b, lines(200, 2, 5, "warn")).unwrap();
         tick(visual);
         tick(visual);
-        assert_eq!(view.read_with(visual, |view, _| view.visible_len()), 125);
+        append(&a, &lines(211, 2, 5, "warn"));
+        append(&b, &lines(210, 2, 5, "error"));
+        tick(visual);
+        assert_eq!(view.read_with(visual, |view, _| view.visible_len()), 135);
         view.read_with(visual, |view, _| {
             assert!(view.following() && view.follow.as_ref().unwrap().pinned)
         });
