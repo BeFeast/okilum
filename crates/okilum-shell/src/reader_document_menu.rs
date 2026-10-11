@@ -471,6 +471,7 @@ impl Reader {
         self.find_open = false;
         self.usable_document = false;
         self.outline.clear();
+        self.outline_list.reset(0);
         self.backlinks.clear();
         self.properties = Ok(Vec::new());
         self.link_notice = None;

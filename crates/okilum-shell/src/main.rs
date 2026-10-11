@@ -1437,6 +1437,8 @@ struct Reader {
     backlink_groups: Vec<std::ops::Range<usize>>,
     /// The «Linked from» list renders only the cards in view: a hub note has thousands.
     backlinks_list: ListState,
+    /// The «On this page» rows; only the ones in view are built (#1004).
+    outline_list: ListState,
     use_html: bool,
     sel_format: SelectionFormat,
     /// Focus of the reader root: what receives the key bindings when no
@@ -1719,6 +1721,7 @@ impl Reader {
             backlinks: Vec::new(),
             backlink_groups: Vec::new(),
             backlinks_list: ListState::new(0, ListAlignment::Top, px(200.)),
+            outline_list: ListState::new(0, ListAlignment::Top, px(200.)),
             use_html,
             sel_format,
             focus_handle: cx.focus_handle(),
@@ -2115,6 +2118,8 @@ impl Reader {
                 .filter(|heading| heading.supported_container)
                 .collect()
         };
+        self.outline_list
+            .reset_with_uniform_height(self.outline.len(), px(OUTLINE_ROW_HEIGHT));
         self.properties = frontmatter
             .as_deref()
             .map(okilum_core::properties::parse)
@@ -6049,56 +6054,72 @@ impl Reader {
         let current = self.current_section(cx);
         let entity = cx.entity().downgrade();
         let base = self.outline.iter().map(|h| h.level).min().unwrap_or(1);
+        // Only the rows in view are built, so the panel costs the same for 32 and 436
+        // headings (#1004). The list needs a height of its own: every row's, up to 60 %.
+        let rows_height = self.outline.len() as f32 * OUTLINE_ROW_HEIGHT;
         v_flex()
             .id("reader-outline")
+            .debug_selector(|| "reader-outline-list".into())
             .flex_none()
+            .h(px(rows_height + 8.))
             .max_h(relative(0.6))
-            .overflow_y_scroll()
             .py_1()
-            .children(self.outline.iter().enumerate().map(|(ix, heading)| {
-                let block = heading.target.block;
-                let is_current = current == Some(ix);
-                let indent = f32::from(heading.level.saturating_sub(base)) * 12.;
-                div()
-                    .id(("reader-outline-item", ix))
-                    .debug_selector(move || format!("reader-outline-row-{ix}"))
-                    // Scroll long outlines; never shrink a row below its text.
-                    .flex_none()
-                    .pl(px(14. + indent))
-                    .pr_3()
-                    .py(px(3.))
-                    .border_l_2()
-                    .border_color(if is_current {
-                        p.accent
-                    } else {
-                        gpui::transparent_black()
-                    })
-                    .text_color(if is_current { p.text } else { p.text_muted })
-                    .when(is_current, |d| d.font_weight(FontWeight::MEDIUM))
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .whitespace_nowrap()
-                    .cursor_pointer()
-                    .hover(move |d| d.bg(hover))
-                    .child(
+            .child(
+                list(
+                    self.outline_list.clone(),
+                    cx.processor(move |this, ix, _window, cx| {
+                        let Some(heading) = this.outline.get(ix) else {
+                            return div().into_any_element();
+                        };
+                        let p = brand::palette(cx);
+                        let block = heading.target.block;
+                        let is_current = current == Some(ix);
+                        let indent = f32::from(heading.level.saturating_sub(base)) * 12.;
                         div()
-                            .debug_selector(move || format!("reader-outline-text-{ix}"))
+                            .id(("reader-outline-item", ix))
+                            .debug_selector(move || format!("reader-outline-row-{ix}"))
+                            // Never shrink a row below its text; the list scrolls.
+                            .flex_none()
+                            .h(px(OUTLINE_ROW_HEIGHT))
+                            .pl(px(14. + indent))
+                            .pr_3()
+                            .py(px(3.))
+                            .border_l_2()
+                            .border_color(if is_current {
+                                p.accent
+                            } else {
+                                gpui::transparent_black()
+                            })
+                            .text_color(if is_current { p.text } else { p.text_muted })
+                            .when(is_current, |d| d.font_weight(FontWeight::MEDIUM))
+                            .overflow_hidden()
                             .text_ellipsis()
-                            .child(heading.text.clone()),
-                    )
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.scroll_to_block(block, cx);
-                        let focus = this.content.read(cx).focus_handle().clone();
-                        focus.focus(window, cx);
-                    }))
-                    .context_menu({
-                        let entity = entity.clone();
-                        let text = heading.text.clone();
-                        move |menu, _, _| {
-                            reader_deep_link::heading_link_item(menu, &entity, text.clone())
-                        }
-                    })
-            }))
+                            .whitespace_nowrap()
+                            .cursor_pointer()
+                            .hover(move |d| d.bg(hover))
+                            .child(
+                                div()
+                                    .debug_selector(move || format!("reader-outline-text-{ix}"))
+                                    .text_ellipsis()
+                                    .child(heading.text.clone()),
+                            )
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.scroll_to_block(block, cx);
+                                let focus = this.content.read(cx).focus_handle().clone();
+                                focus.focus(window, cx);
+                            }))
+                            .context_menu({
+                                let entity = entity.clone();
+                                let text = heading.text.clone();
+                                move |menu, _, _| {
+                                    reader_deep_link::heading_link_item(menu, &entity, text.clone())
+                                }
+                            })
+                            .into_any_element()
+                    }),
+                )
+                .size_full(),
+            )
             .into_any_element()
     }
 }
@@ -6116,6 +6137,8 @@ fn panel_empty_line(color: Hsla, text: &'static str) -> AnyElement {
 }
 
 const READER_HEADER_HEIGHT: f32 = 46.;
+/// Height of one «On this page» row: the 13 px chrome text line plus 3 px above and below (#1004).
+const OUTLINE_ROW_HEIGHT: f32 = 27.;
 /// Places shown per linking note before «Show N more» (#394).
 const BACKLINK_PLACES_SHOWN: usize = 3;
 
@@ -7814,6 +7837,113 @@ mod document_link_landing_tests {
             }
         }
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[gpui::test]
+    fn the_outline_builds_only_the_rows_in_view(cx: &mut gpui::TestAppContext) {
+        // #1004: «On this page» built a row, with its own click listener, for every heading on
+        // every redrawn frame, so a note with hundreds of headings made every scroll frame
+        // slower. Only the rows in view are built.
+        const HEADINGS: usize = 436;
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        let source = (0..HEADINGS)
+            .map(|i| format!("{} Section {i}\n\nText.\n\n", "#".repeat(i % 3 + 1)))
+            .collect::<String>();
+        std::fs::write(root.join("many.md"), source).unwrap();
+        std::fs::write(root.join("few.md"), "# One\n\n## Two\n").unwrap();
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("many.md".into()),
+                        session_directory: Some(fixture.path().join("state")),
+                        ..Opts::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let view = reader.unwrap();
+        visual.run_until_parked();
+        visual.simulate_resize(size(px(1366.), px(768.)));
+        view.update(visual, |v, cx| {
+            v.panels.open(reader_layout::Panel::Backlinks);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        view.read_with(visual, |v, _| {
+            assert_eq!(v.outline.len(), HEADINGS, "positive control: all headings exist");
+            assert_eq!(v.outline_list.item_count(), HEADINGS);
+        });
+        // `debug_bounds` takes a `&'static str`.
+        let name = |prefix: &str, ix: usize| -> &'static str {
+            Box::leak(format!("{prefix}-{ix}").into_boxed_str())
+        };
+        let built = |visual: &mut VisualTestContext| -> Vec<usize> {
+            (0..HEADINGS)
+                .filter(|ix| visual.debug_bounds(name("reader-outline-row", *ix)).is_some())
+                .collect()
+        };
+        let first = built(visual);
+        assert!(first.contains(&0), "positive control: the first row is drawn");
+        assert!(
+            (5..=40).contains(&first.len()),
+            "{} of {HEADINGS} rows built for one screen",
+            first.len()
+        );
+        assert!(!first.contains(&(HEADINGS - 1)), "the last row is not built");
+        let list = visual.debug_bounds("reader-outline-list").unwrap();
+        assert!(
+            list.size.height <= px(768. * 0.6 + 1.),
+            "the list keeps the 60 % cap: {list:?}"
+        );
+        let row = visual.debug_bounds("reader-outline-row-0").unwrap();
+        assert_eq!(row.size.height, px(OUTLINE_ROW_HEIGHT));
+
+        // Scrolling brings other rows into view (the list really works).
+        view.update(visual, |v, cx| {
+            v.outline_list.scroll_by(px(3000.));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let scrolled = built(visual);
+        assert!(!scrolled.is_empty() && !scrolled.contains(&0), "{scrolled:?}");
+        assert!(scrolled.len() <= 40);
+
+        // A click on a row still jumps to its heading.
+        let target = scrolled[scrolled.len() / 2];
+        let at = visual.debug_bounds(name("reader-outline-row", target)).unwrap();
+        let block = view.read_with(visual, |v, _| v.outline[target].target.block);
+        visual.simulate_click(at.center(), Modifiers::default());
+        visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_millis(300));
+        visual.run_until_parked();
+        view.read_with(visual, |v, cx| {
+            assert_eq!(
+                v.content.read(cx).list_state().logical_scroll_top().item_ix,
+                block
+            );
+        });
+
+        // Another note resets the list to its own headings.
+        view.update_in(visual, |v, window, cx| v.open_note("few.md", None, window, cx));
+        visual.run_until_parked();
+        view.read_with(visual, |v, _| {
+            assert_eq!(v.outline.len(), 2);
+            assert_eq!(v.outline_list.item_count(), 2);
+        });
+        assert_eq!(built(visual), vec![0, 1]);
     }
 
     #[gpui::test]
