@@ -306,6 +306,16 @@ mod tests {
     }
 
     #[test]
+    fn quill_json_sink_shape() {
+        // include/quill/sinks/JsonSink.h writes the time as a string (#1157).
+        let (_, ts) = classify(
+            br#"{"timestamp":"1791612242497259677","file_name":"main.cpp","line":"42","thread_id":"7","logger":"root","log_level":"INFO","message":"order accepted"}"#,
+            Format::JsonLines,
+        );
+        assert_eq!(ts, Some(1_791_612_242_497_259_677));
+    }
+
+    #[test]
     fn missing_unknown_and_unparsed_are_distinct() {
         assert_eq!(classify(br#"{"a":1}"#, Format::JsonLines).0, Level::Missing);
         assert_eq!(
