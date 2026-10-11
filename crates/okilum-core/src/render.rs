@@ -597,6 +597,20 @@ mod reader_document_tests {
     use super::*;
 
     #[test]
+    fn a_block_resolves_reference_links_defined_elsewhere_in_the_note() {
+        let note = "Intro [docs][ref].\n\n| a |\n|---|\n| [t][ref] |\n\n```\n[fake]: https://no.test\n```\n\n[ref]: https://x.test\n[^1]: footnote\n";
+        assert_eq!(reference_definitions(note), "[ref]: https://x.test\n");
+        let vault = Vault::from_note_paths(["note.md".into()]);
+        let block = "| a |\n|---|\n| [t][ref] |\n";
+        // Alone, the block cannot resolve the reference: positive control.
+        let alone = reader_document_from_source(&vault, "note.md", block).rendered;
+        assert!(!alone.contains("https://x.test"), "{alone}");
+        let with = format!("{block}\n{}", reference_definitions(note));
+        let rendered = reader_document_from_source(&vault, "note.md", &with).rendered;
+        assert!(rendered.contains("https://x.test"), "{rendered}");
+    }
+
+    #[test]
     fn captured_primary_source_renders_without_reopening_the_file() {
         let fixture = tempfile::tempdir().unwrap();
         let mut vault = Vault::from_note_paths(["note.md".into(), "Target.md".into()]);
@@ -806,6 +820,39 @@ pub const EMBED_PENDING: &str = "pending";
 /// Whether rendered source still holds an embed waiting for the inventory:
 /// a note embed (`embed pending …`) or a block embed (`embed block {…}` with
 /// status `Pending`). Both resolve only when the document is rendered again.
+/// The note's link reference definitions (`[id]: url`), one per line, outside
+/// fenced code. A Live Preview block is prepared from its own Markdown; these
+/// keep its reference links resolving against the whole note (#1067).
+/// Footnote definitions are left out: appended to a block they would render a
+/// footnote list under it.
+pub fn reference_definitions(source: &str) -> String {
+    let mut out = String::new();
+    let mut fence: Option<(u8, usize)> = None;
+    for line in source.lines() {
+        let trimmed = line.trim_start_matches(' ');
+        let marker = trimmed.bytes().next().filter(|b| *b == b'`' || *b == b'~');
+        if let Some(byte) = marker {
+            let run = trimmed.bytes().take_while(|b| *b == byte).count();
+            if run >= 3 && line.len() - trimmed.len() <= 3 {
+                match fence {
+                    None => fence = Some((byte, run)),
+                    Some((open, len)) if open == byte && run >= len => fence = None,
+                    _ => {}
+                }
+                continue;
+            }
+        }
+        if fence.is_none()
+            && crate::source_classifier::definition_row(line)
+            && !trimmed.starts_with("[^")
+        {
+            out.push_str(line.trim_end_matches('\r'));
+            out.push('\n');
+        }
+    }
+    out
+}
+
 /// The URL of an image that did not resolve to a vault file.
 pub const UNAVAILABLE_IMAGE: &str = "okilum-asset://unavailable";
 

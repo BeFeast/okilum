@@ -406,7 +406,7 @@ fn content_blocks<'a>(
 }
 
 /// `[label]: destination` after at most three spaces of indentation.
-fn definition_row(row: &str) -> bool {
+pub(crate) fn definition_row(row: &str) -> bool {
     let indent = row.len() - row.trim_start_matches(' ').len();
     let Some((label, tail)) = row[indent..]
         .strip_prefix('[')
