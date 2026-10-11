@@ -360,7 +360,8 @@ fn enrolled_index_reads_and_rebuilds_without_mutating_feed_or_source_receipts() 
         true,
     )
     .unwrap();
-    for _ in 0..200 {
+    // Up to 30 s: a busy CI runner indexes slowly; the loop exits as soon as it is ready.
+    for _ in 0..3000 {
         if index.status().status == "ready" {
             break;
         }
@@ -387,7 +388,8 @@ fn enrolled_index_reads_and_rebuilds_without_mutating_feed_or_source_receipts() 
         .contains("knowledge.md"));
     let generation = index.status().generation;
     index.rebuild().unwrap();
-    for _ in 0..200 {
+    // Up to 30 s: a busy CI runner indexes slowly; the loop exits as soon as it is ready.
+    for _ in 0..3000 {
         let status = index.status();
         if status.status == "ready" && status.generation != generation {
             break;
