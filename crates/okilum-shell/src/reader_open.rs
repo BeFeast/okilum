@@ -804,6 +804,19 @@ fn open_deep_link_among(link: &str, known: &[PathBuf], cx: &mut App) {
             rel,
             position,
         } => {
+            // #1269: the position as it arrived, before any window takes it.
+            if let Some(trace) = super::reader_diagnostics::trace(cx) {
+                trace.event(
+                    "link_open",
+                    serde_json::json!({
+                        "line": position.line,
+                        "column": position.column,
+                        "fragment": position.heading.is_some() || position.block.is_some(),
+                        "on_screen": reusable_roots(cx).contains(&root),
+                        "trusted": super::reader_ui_state::link_trusted(&root, cx),
+                    }),
+                );
+            }
             let opts = super::Opts {
                 vault: Some(root.clone()),
                 note: Some(rel),
@@ -1969,6 +1982,68 @@ mod entry_tests {
             assert_eq!(readers[0].1, home);
             assert!(super::super::reader_ui_state::link_trusted(&home, cx));
         });
+    }
+
+    /// #1269: a link's line lands through the entry path an OS link takes,
+    /// from a cold start (a trusted vault, no window) and into the window
+    /// already showing that vault. Roots are canonical, as `known_roots`
+    /// makes them (verbatim `\\?\` paths on Windows).
+    #[gpui::test]
+    fn line_links_land_on_the_line_cold_and_in_a_running_window(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("Notes");
+        std::fs::create_dir_all(&root).unwrap();
+        // Paragraph i is block i-1 on file line 2i-1 (line 81: paragraph 41, block 40).
+        let body: String = (1..=60).map(|i| format!("Paragraph {i}.\n\n")).collect();
+        std::fs::write(root.join("target.md"), &body).unwrap();
+        std::fs::write(root.join("other.md"), &body).unwrap();
+        let root = root.canonicalize().unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            super::super::bind_keys(cx);
+            install(cx);
+            super::super::reader_ui_state::install(&fixture.path().join("ui-state"), cx);
+            super::super::reader_ui_state::trust_for_links(&root, cx);
+        });
+        let settle = |cx: &mut TestAppContext| {
+            for _ in 0..5 {
+                cx.run_until_parked();
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_millis(300));
+            }
+            cx.run_until_parked();
+        };
+        let landed = |cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                let readers = &cx.global::<Readers>().0;
+                assert_eq!(readers.len(), 1, "one Reader for the vault");
+                let reader = readers[0].0.upgrade().unwrap();
+                let reader = reader.read(cx);
+                let top = reader.content.read(cx).list_state().logical_scroll_top();
+                (
+                    reader.current_rel.clone(),
+                    top.item_ix,
+                    reader.link_notice.clone(),
+                )
+            })
+        };
+        let open = |link: &str, cx: &mut TestAppContext| {
+            let root = root.clone();
+            cx.update(|cx| open_deep_link_among(link, &[root], cx));
+        };
+
+        open("okilum://v/Notes/target.md?line=81", cx);
+        settle(cx);
+        assert_eq!(landed(cx), ("target.md".into(), 40, None), "cold start");
+
+        // Positive control: without a line the running window opens a note at the top.
+        open("okilum://v/Notes/other.md", cx);
+        settle(cx);
+        assert_eq!(landed(cx), ("other.md".into(), 0, None));
+
+        open("okilum://v/Notes/target.md?line=81", cx);
+        settle(cx);
+        assert_eq!(landed(cx), ("target.md".into(), 40, None), "running window");
     }
 
     /// #1110: on a clean first run, choosing a vault folder on the start
