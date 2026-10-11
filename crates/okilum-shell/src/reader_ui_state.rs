@@ -126,6 +126,8 @@ struct Saved {
     code_soft_wrap: bool,
     /// JSON files show their raw text instead of a pretty-printed view (#1131).
     json_raw: bool,
+    /// Pane sizes of list/detail splits (#1156), by split key.
+    split_sizes: BTreeMap<String, f32>,
     delimited_no_header: BTreeSet<PathBuf>,
     vaults: BTreeMap<PathBuf, Layout>,
     /// Per-vault accent preset key (#774), keyed like `vaults` by the
@@ -154,6 +156,7 @@ impl Default for Saved {
             toolbar_labels: false,
             code_soft_wrap: false,
             json_raw: false,
+            split_sizes: Default::default(),
             delimited_no_header: Default::default(),
             vaults: Default::default(),
             vault_colors: Default::default(),
@@ -178,6 +181,7 @@ struct Store {
     toolbar_labels_changed: bool,
     code_soft_wrap_changed: bool,
     json_raw_changed: bool,
+    splits_changed: BTreeSet<String>,
     colors_changed: BTreeSet<PathBuf>,
     trust_changed: BTreeSet<PathBuf>,
     delimited_changed: BTreeSet<PathBuf>,
@@ -252,6 +256,7 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         toolbar_labels_changed: false,
         code_soft_wrap_changed: false,
         json_raw_changed: false,
+        splits_changed: Default::default(),
         colors_changed: Default::default(),
         trust_changed: Default::default(),
         delimited_changed: Default::default(),
@@ -467,6 +472,7 @@ struct WriteJob {
     toolbar_labels_changed: bool,
     code_soft_wrap_changed: bool,
     json_raw_changed: bool,
+    splits_changed: BTreeSet<String>,
     colors_changed: BTreeSet<PathBuf>,
     trust_changed: BTreeSet<PathBuf>,
     delimited_changed: BTreeSet<PathBuf>,
@@ -542,6 +548,11 @@ impl WriteJob {
         if self.json_raw_changed {
             latest.json_raw = self.saved.json_raw;
         }
+        for key in &self.splits_changed {
+            if let Some(size) = self.saved.split_sizes.get(key) {
+                latest.split_sizes.insert(key.clone(), *size);
+            }
+        }
         // Per root, like layouts: a colour removed here is removed there.
         for root in &self.colors_changed {
             match self.saved.vault_colors.get(root) {
@@ -604,6 +615,7 @@ fn job(cx: &App) -> Option<WriteJob> {
             && !state.toolbar_labels_changed
             && !state.code_soft_wrap_changed
             && !state.json_raw_changed
+            && state.splits_changed.is_empty()
             && state.colors_changed.is_empty()
             && state.trust_changed.is_empty()
             && state.delimited_changed.is_empty()
@@ -628,6 +640,7 @@ fn job(cx: &App) -> Option<WriteJob> {
         toolbar_labels_changed: state.toolbar_labels_changed,
         code_soft_wrap_changed: state.code_soft_wrap_changed,
         json_raw_changed: state.json_raw_changed,
+        splits_changed: state.splits_changed.clone(),
         colors_changed: state.colors_changed.clone(),
         trust_changed: state.trust_changed.clone(),
         delimited_changed: state.delimited_changed.clone(),
@@ -1153,6 +1166,23 @@ pub(crate) fn json_raw(cx: &App) -> bool {
         .is_some_and(|state| state.saved.json_raw)
 }
 
+/// The remembered pane size of a list/detail split (#1156).
+pub(crate) fn split_size(key: &str, cx: &App) -> Option<f32> {
+    cx.try_global::<Store>()
+        .and_then(|state| state.saved.split_sizes.get(key).copied())
+        .filter(|size| size.is_finite() && *size > 0.)
+}
+
+pub(crate) fn set_split_size(key: &str, size: f32, cx: &mut App) {
+    if !installed(cx) || !size.is_finite() || split_size(key, cx) == Some(size) {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.split_sizes.insert(key.into(), size);
+    state.splits_changed.insert(key.into());
+    schedule(cx);
+}
+
 pub(crate) fn set_json_raw(value: bool, cx: &mut App) {
     if !installed(cx) || json_raw(cx) == value {
         return;
@@ -1228,6 +1258,7 @@ fn mark_saved(generation: u64, cx: &mut App) {
         state.toolbar_labels_changed = false;
         state.code_soft_wrap_changed = false;
         state.json_raw_changed = false;
+        state.splits_changed.clear();
         state.colors_changed.clear();
         state.trust_changed.clear();
         state.delimited_changed.clear();
@@ -1507,6 +1538,7 @@ mod tests {
                 toolbar_labels_changed: false,
                 code_soft_wrap_changed: false,
                 json_raw_changed: false,
+                splits_changed: Default::default(),
                 colors_changed: Default::default(),
                 trust_changed: Default::default(),
                 delimited_changed: Default::default(),
