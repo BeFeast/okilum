@@ -207,7 +207,8 @@ impl Reader {
     /// The heading under `position` in the Reader, by the list's real block
     /// bounds; `None` off a heading.
     pub(crate) fn heading_at(&self, position: Point<Pixels>, cx: &App) -> Option<String> {
-        if self.editing.is_some() || self.file_preview.is_some() {
+        // A right-click on a link belongs to the link's own menu (#943).
+        if self.editing.is_some() || self.file_preview.is_some() || self.pointer_on_link() {
             return None;
         }
         let list = self.content.read(cx).list_state();
