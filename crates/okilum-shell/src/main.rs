@@ -5254,10 +5254,7 @@ impl Reader {
                     .child(
                         h_flex()
                             .id(SharedString::from(format!("bl-title-{gx}")))
-                            .debug_selector({
-                                let gx = gx;
-                                move || format!("backlink-title-{gx}")
-                            })
+                            .debug_selector(move || format!("backlink-title-{gx}"))
                             .flex_none()
                             .max_w(relative(0.6))
                             .min_w_0()
