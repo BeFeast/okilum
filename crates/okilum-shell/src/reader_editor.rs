@@ -2499,6 +2499,106 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// #945: Undo and Redo of an edit that is out of view scroll the editor
+    /// back to the restored caret, in Source and in Live Preview.
+    #[gpui::test]
+    fn undo_and_redo_scroll_to_the_restored_caret(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let root = std::env::temp_dir().join(format!("okilum-undo945-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = (0..90)
+            .map(|i| format!("Paragraph {i}\n\n"))
+            .collect::<String>()
+            + "LAST LINE";
+        std::fs::write(root.join("long.md"), &source).unwrap();
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("long.md".into()),
+                        session_directory: Some(root.join("state")),
+                        ..Opts::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.simulate_resize(size(px(1500.), px(700.)));
+        visual.run_until_parked();
+        reader.update_in(visual, |v, window, cx| v.toggle_source(window, cx));
+        visual.run_until_parked();
+        let input = reader.read_with(visual, |v, _| v.editing.as_ref().unwrap().input.clone());
+        let scroll_to_bottom = |visual: &mut VisualTestContext| {
+            let bounds = input.read_with(visual, |v, _| v.input_bounds());
+            visual.simulate_event(ScrollWheelEvent {
+                position: bounds.center(),
+                delta: ScrollDelta::Pixels(point(px(0.), px(-100000.))),
+                ..Default::default()
+            });
+            visual.run_until_parked();
+            visual.update(|w, cx| w.draw(cx).clear(cx));
+            // Positive control: the edit is out of view before Undo/Redo.
+            input.read_with(visual, |v, _| {
+                assert!(v.scroll_offset().y < px(-500.), "editor actually scrolled");
+            });
+        };
+        let edit_in_view = |visual: &mut VisualTestContext, what: &str| {
+            visual.update(|w, cx| w.draw(cx).clear(cx));
+            input.read_with(visual, |v, _| {
+                let caret = v.range_to_bounds(&(0..1)).unwrap();
+                let view = v.input_bounds();
+                assert!(
+                    caret.top() >= view.top() && caret.bottom() <= view.bottom(),
+                    "{what} shows the restored caret: {caret:?} in {view:?}"
+                );
+            });
+        };
+        for live_preview in [false, true] {
+            reader.update_in(visual, |v, window, cx| {
+                v.set_live_preview(live_preview, window, cx)
+            });
+            visual.run_until_parked();
+            visual.update(|window, cx| {
+                input.update(cx, |input, cx| {
+                    input.replace_text_in_range(Some(0..0), "edit ", window, cx)
+                })
+            });
+            visual.run_until_parked();
+            scroll_to_bottom(visual);
+            #[cfg(target_os = "macos")]
+            visual.simulate_keystrokes("cmd-z");
+            #[cfg(not(target_os = "macos"))]
+            visual.simulate_keystrokes("ctrl-z");
+            visual.run_until_parked();
+            assert!(input.read_with(visual, |v, _| v.value().starts_with("Paragraph 0")));
+            edit_in_view(visual, "Undo");
+            scroll_to_bottom(visual);
+            #[cfg(target_os = "macos")]
+            visual.simulate_keystrokes("cmd-shift-z");
+            #[cfg(not(target_os = "macos"))]
+            visual.simulate_keystrokes("ctrl-y");
+            visual.run_until_parked();
+            assert!(input.read_with(visual, |v, _| v.value().starts_with("edit Paragraph 0")));
+            edit_in_view(visual, "Redo");
+            // Leave the text as it was for the next mode.
+            #[cfg(target_os = "macos")]
+            visual.simulate_keystrokes("cmd-z");
+            #[cfg(not(target_os = "macos"))]
+            visual.simulate_keystrokes("ctrl-z");
+            visual.run_until_parked();
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     use super::*;
     use ::core::prelude::v1::test;
 
