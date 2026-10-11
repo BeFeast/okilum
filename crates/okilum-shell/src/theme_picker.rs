@@ -199,9 +199,12 @@ mod tests {
     #[gpui::test]
     fn saved_appearance_survives_a_crash_restart(cx: &mut gpui::TestAppContext) {
         let state = tempfile::tempdir().unwrap();
+        // A non-default theme, so keeping it is distinguishable from a reset.
+        let theme = brand::ThemeId::ALL[brand::ThemeId::ALL.len() - 1];
         std::fs::write(
             state.path().join("reader-ui.json"),
-            r#"{"version":1,"appearance":"light","theme":"tessera"}"#,
+            serde_json::json!({ "version": 1, "appearance": "light", "theme": theme.key() })
+                .to_string(),
         )
         .unwrap();
         cx.update(|cx| {
@@ -216,10 +219,7 @@ mod tests {
                 mode.0 == Some(ThemeMode::Light),
                 "saved Light kept after a crash"
             );
-            assert_eq!(
-                choice.0,
-                brand::ThemeId::from_key("tessera").unwrap_or_default()
-            );
+            assert_eq!(choice.0, theme, "saved theme kept");
         });
     }
 
