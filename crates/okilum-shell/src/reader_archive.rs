@@ -657,7 +657,7 @@ mod tests {
             Root::new(entity, window, cx)
         });
         let reader = reader.unwrap();
-        visual.simulate_resize(size(px(1440.), px(900.)));
+        visual.simulate_resize(gpui::size(px(1440.), px(900.)));
         visual.run_until_parked();
         reader.update_in(visual, |r, window, cx| {
             r.preview_file("redesign.zip", window, cx)
