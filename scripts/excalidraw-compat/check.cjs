@@ -55,9 +55,10 @@ const sorted = (entries) => JSON.stringify(Object.fromEntries([...entries].sort(
     const raw = fs.readFileSync(path.join(dir, name), "utf8");
     if (raw.replace(/^﻿/, "").trimStart().startsWith("{")) continue; // plain .excalidraw JSON
     // The writer keeps the opened file's line endings. The plugin's section
-    // regexes expect "\n" and its loadData rejects a CRLF Drawing block, so CRLF
-    // input files are checked after normalisation (as the Rust check does) and
-    // counted separately; whether Obsidian normalises on read is not asserted.
+    // regexes expect "\n" and its loadData rejects a CRLF Drawing block, but
+    // Obsidian hands the plugin's view LF text (#938, docs/excalidraw-reader.md),
+    // so CRLF files are checked after the same normalisation (as the Rust check
+    // does) and counted separately.
     const crlf = raw.includes("\r\n");
     if (crlf) normalised += 1;
     const data = crlf ? raw.replace(/\r\n/g, "\n") : raw;
