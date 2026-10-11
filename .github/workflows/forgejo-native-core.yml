@@ -53,7 +53,8 @@ jobs:
         # #1188: the hover and the click must agree in such a vault (the test reads the same states).
         foreach ($shell in @(
           'document_link_landing_tests::one_non_utf8_note_does_not_block_links_between_readable_notes',
-          'document_link_landing_tests::hover_and_navigation_agree_in_a_vault_with_a_non_utf8_note_also_on_a_warm_start'
+          'document_link_landing_tests::hover_and_navigation_agree_in_a_vault_with_a_non_utf8_note_also_on_a_warm_start',
+          'prepared_links::tests::the_first_click_on_a_link_opens_it_after_a_word_selection'
         )) {
           $found = & cargo test --locked -p okilum-shell --bins $shell -- --list --exact 2>$null
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
