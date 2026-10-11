@@ -113,21 +113,32 @@ class MainHealthTests(unittest.TestCase):
                          ('infra', 'Error response from daemon'))
         self.assertEqual(health.classify('2026Z Run Main checkout\n2026Z Job failed\n')[0], 'infra')
         self.assertEqual(health.classify('2026Z    Compiling x\n2026Z Job failed\n')[0], 'unknown')
-        history = [('c3', "Merge pull request 'a' (#3) from x into main"), ('c0', 'm0')]
+        history = [('c3c3c3c3', "Merge pull request 'a' (#3) from x into main"), ('c0c0c0c0', 'm0')]
         saved = health.first_parents, health.tip, health.lane_log
         health.first_parents = lambda sha, limit: history
-        health.tip = lambda: 'c3'
+        health.tip = lambda: 'c3c3c3c3'
         try:
             health.lane_log = lambda api, run_id: '2026Z Job failed\n'
-            api = FakeApi(green={'c0'}, authors={3: 'ana'})
-            health.red(api, 'c3', 'run/1', run_id=7)
+            api = FakeApi(green={'c0c0c0c0'}, authors={3: 'ana'})
+            health.red(api, 'c3c3c3c3', 'run/1', run_id=7)
             self.assertEqual([w[1] for w in api.writes], ['/issues'])
             self.assertIn('looks like infrastructure', api.writes[0][2]['body'])
+            # One failing test: the first red waits for confirmation and wakes nobody.
             health.lane_log = lambda api, run_id: cargo
-            api = FakeApi(green={'c0'}, authors={3: 'ana'})
-            health.red(api, 'c3', 'run/2', run_id=8)
-            issue = next(w for w in api.writes if w[1] == '/issues')
-            self.assertIn('`platform::clip::tests::pipe`', issue[2]['body'])
+            api = FakeApi(green={'c0c0c0c0'}, authors={3: 'ana'})
+            health.red(api, 'c3c3c3c3', 'run/2', run_id=8)
+            self.assertEqual([w[1] for w in api.writes], ['/issues'])
+            body = api.writes[0][2]['body']
+            self.assertIn('`platform::clip::tests::pipe`', body)
+            self.assertIn(health.AWAITING, body)
+            # The next main commit is red too: now the merges are blamed.
+            api.open_issue = lambda: {'number': 5, 'body': body}
+            health.red(api, 'c3c3c3c3', 'run/3', run_id=9)
+            self.assertIn('/issues/3/comments', [w[1] for w in api.writes])
+            # A compile error is deterministic and blames at once.
+            health.lane_log = lambda api, run_id: '2026Z    Compiling x\n2026Z error[E0308]: mismatched types\n'
+            api = FakeApi(green={'c0c0c0c0'}, authors={3: 'ana'})
+            health.red(api, 'c3c3c3c3', 'run/4', run_id=10)
             self.assertIn('/issues/3/comments', [w[1] for w in api.writes])
         finally:
             health.first_parents, health.tip, health.lane_log = saved

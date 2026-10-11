@@ -31,6 +31,7 @@ ISSUE_TITLE = 'main is red'
 RULE = ('Rule: whoever merged the commit that turned main red reverts it or lands a fix '
         'within 20 minutes (AGENTS.md, "Red main").')
 MAX_SUSPECTS = 20
+AWAITING = 'Awaiting confirmation'
 RED_SHA = re.compile(r'failed on main at ([0-9a-f]{7,40})')
 PR_SUBJECT = re.compile(r"^Merge pull request '.*' \(#(\d+)\) from ")
 
@@ -178,6 +179,20 @@ def red(api, sha, run_url, run_id=None):
             api.call('POST', f"/issues/{issue['number']}/comments", {'body': body})
         return
     failing = (''.join(f'\n- `{t}`' for t in detail) + '\n\n') if detail else ''
+    # One failing test that the next commit may pass is how this lane's flakes look
+    # (#1179): the first such red opens the issue without waking anyone; a second red main
+    # commit in the same episode confirms it. Compile errors and unknown reds blame at once.
+    issue = api.open_issue()
+    if kind == 'code' and len(detail) == 1 and (issue is None or not reported_red(api, issue)):
+        body = (f'The Linux gate failed on main at {sha[:8]}: {run_url}\n\nFailing tests:{failing}'
+                f'**{AWAITING}**: a single failing test, which the next main commit usually passes. '
+                'No merge is blamed yet; a second red main commit blames the merges since the last green one.\n'
+                'This issue closes itself when main is green again.')
+        if issue is None:
+            api.call('POST', '/issues', {'title': ISSUE_TITLE, 'body': body})
+        else:
+            api.call('POST', f"/issues/{issue['number']}/comments", {'body': body})
+        return
     commits, green = suspects(api, sha)
     episode = green or 'unknown'
     marker = f'<!-- main-red {episode[:12]} -->'
