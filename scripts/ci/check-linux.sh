@@ -9,6 +9,7 @@ python3 -m unittest discover -s scripts/updater -p 'test_*.py'
 python3 -m unittest discover -s scripts/arch -p 'test_*.py'
 python3 -m unittest discover -s scripts/windows -p 'test_*.py'
 python3 -m unittest discover -s scripts/releases -p 'test_*.py'
+python3 -m unittest discover -s scripts/uninstall -p 'test_*.py'
 bash -n scripts/releases/mirror.sh
 python3 scripts/brand-assets.py verify
 python3 scripts/test-third-party-notices.py

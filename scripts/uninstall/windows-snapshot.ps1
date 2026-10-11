@@ -13,5 +13,6 @@ Get-ChildItem -LiteralPath 'HKCU:\Software' -Recurse -ErrorAction SilentlyContin
         $lines.Add('K ' + $key)
         foreach ($value in $_.GetValueNames()) { $lines.Add('V ' + $key + '\' + $value) }
     }
-$lines | Sort-Object -Unique | Set-Content -LiteralPath $Out -Encoding UTF8
+# diff.py checks names only below this home, so a QA profile path may say okilum.
+@("# home $env:USERPROFILE") + @($lines | Sort-Object -Unique) | Set-Content -LiteralPath $Out -Encoding UTF8
 "snapshot: $($lines.Count) entries -> $Out"
