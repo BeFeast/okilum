@@ -4,7 +4,8 @@ edit and one undo step, and the click does not move the caret.
 Run on an exclusive X11 display (never maestro).
 Usage: DISPLAY=:1034 python3 scripts/check-task-checkbox-native.py OKILUM_BINARY WORK_DIR LABEL
 
-Also checks the keyboard «Toggle task» (Ctrl+L) on an ordered task (#1051).
+Also checks the keyboard «Toggle task» (Ctrl+L) on an ordered task and that a
+press dragged away from a box toggles nothing (#1051).
 Steps: caret to the end of the note; click the first checkbox; type `Z`; double-click
 the second checkbox (two quick presses toggle twice, back to checked); click it once
 more; copy the whole source. Expected: first box checked, second box
@@ -164,6 +165,14 @@ try:
         sys.exit(2)
     ok &= keyboard.rstrip('\n').endswith('3. [x] ordered task')
     ok &= keyboard_undone.rstrip('\n').endswith('3. [ ] ordered task')
+    # #1051: press on the first box, drag away, release: nothing toggles.
+    xd(env, 'mousemove', str(first[0]), str(first[1]), 'mousedown', '1')
+    xd(env, 'mousemove', str(first[0] + 240), str(first[1] + 120))
+    xd(env, 'mouseup', '1')
+    time.sleep(1)
+    dragged = clipboard(env)
+    print(label, {'dragged_away': dragged}, flush=True)
+    ok &= dragged == keyboard_undone
     sys.exit(0 if ok else 1)
 finally:
     proc.terminate()
