@@ -55,6 +55,8 @@ unicode-bidi = "0.3.18"
 unicode-linebreak = "0.1.5"
 
 [dev-dependencies]
+# Builds ZIP fixtures for the archive viewer tests (#1149); okilum-core already uses it.
+zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 velopack = { version = "=1.2.161", features = ["public-utils"] }
 gpui = { workspace = true, features = ["test-support"] }
 

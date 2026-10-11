@@ -8012,6 +8012,7 @@ dependencies = [
  "wayland-protocols-wlr",
  "windows-sys 0.61.2",
  "zbus",
+ "zip",
 ]
 
 [[package]]
