@@ -1611,30 +1611,15 @@ mod browser_inventory_tests {
             Vault::discover(&notes, &mut ok).unwrap(),
             Discovery::Found("Plan.md".into())
         );
-        // Root reads mode-000 files, which would make this control vacuous.
-        #[cfg(unix)]
-        if std::fs::read_to_string("/proc/self/status")
-            .map(|s| {
-                !s.lines()
-                    .any(|l| l.starts_with("Uid:") && l.split_whitespace().nth(1) == Some("0"))
-            })
-            .unwrap_or(true)
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let locked = fixture.path().join("Locked");
-            std::fs::create_dir_all(&locked).unwrap();
-            std::fs::write(locked.join("secret.md"), "# Secret").unwrap();
-            std::fs::set_permissions(
-                locked.join("secret.md"),
-                std::fs::Permissions::from_mode(0o000),
-            )
-            .unwrap();
-            assert_eq!(
-                Vault::discover(&locked, &mut ok).unwrap(),
-                Discovery::Unreadable,
-                "unreadable Markdown is never an empty vault"
-            );
-        }
+        // Markdown that is not UTF-8 cannot be read, as root too.
+        let unreadable = fixture.path().join("Broken");
+        std::fs::create_dir_all(&unreadable).unwrap();
+        std::fs::write(unreadable.join("bad.md"), [0xff, 0xfe]).unwrap();
+        assert_eq!(
+            Vault::discover(&unreadable, &mut ok).unwrap(),
+            Discovery::Unreadable,
+            "unreadable Markdown is never an empty vault"
+        );
     }
 
     #[test]
