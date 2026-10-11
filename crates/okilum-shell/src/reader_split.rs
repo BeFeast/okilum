@@ -15,10 +15,18 @@ impl Render for SplitDrag {
     }
 }
 
+/// The pane height before the user drags it.
+#[derive(Clone, Copy)]
+pub(super) enum Initial {
+    Pixels(f32),
+    /// A share of the split's height, e.g. the ZIP preview's 60% (#1149).
+    Share(f32),
+}
+
 pub(super) struct Split {
     /// UI state key and debug selector prefix.
     key: &'static str,
-    default: f32,
+    initial: Initial,
     /// The pane never gets smaller than its header.
     min_pane: f32,
     /// The list keeps room for a few rows.
@@ -29,10 +37,10 @@ pub(super) struct Split {
 }
 
 impl Split {
-    pub(super) fn new(key: &'static str, default: f32, min_pane: f32, min_list: f32) -> Self {
+    pub(super) fn new(key: &'static str, initial: Initial, min_pane: f32, min_list: f32) -> Self {
         Self {
             key,
-            default,
+            initial,
             min_pane,
             min_list,
             height: None,
@@ -42,14 +50,20 @@ impl Split {
 
     /// The pane height to lay out; the flex layout still shrinks it down to
     /// `min_pane` when the window is too small for the list's minimum.
-    pub(super) fn height(&self, cx: &App) -> f32 {
+    fn height(&self, cx: &App) -> Initial {
         if self.collapsed {
-            return self.min_pane;
+            return Initial::Pixels(self.min_pane);
         }
-        self.height
+        match self
+            .height
             .or_else(|| reader_ui_state::split_size(self.key, cx))
-            .unwrap_or(self.default)
-            .max(self.min_pane)
+        {
+            Some(height) => Initial::Pixels(height.max(self.min_pane)),
+            None => match self.initial {
+                Initial::Pixels(height) => Initial::Pixels(height.max(self.min_pane)),
+                share => share,
+            },
+        }
     }
 
     /// `requested` pane height inside a split `available` px tall.
@@ -118,8 +132,13 @@ pub(super) fn vertical<V: 'static>(
                 .debug_selector(move || format!("{key}-pane"))
                 .flex()
                 .flex_col()
-                .flex_shrink(1.)
-                .h(px(split.height(cx)))
+                .map(|pane| match split.height(cx) {
+                    Initial::Pixels(height) => pane.flex_shrink(1.).h(px(height)),
+                    // Grows against the list's `flex_1`: share / (1 - share).
+                    Initial::Share(share) => pane
+                        .flex_basis(px(0.))
+                        .flex_grow(share / (1. - share).max(0.01)),
+                })
                 .min_h(px(split.min_pane))
                 .w_full()
                 .overflow_hidden()
@@ -152,7 +171,7 @@ mod tests {
 
     #[test]
     fn dragging_keeps_the_list_rows_and_the_pane_header() {
-        let mut split = Split::new("test", 240., 36., 120.);
+        let mut split = Split::new("test", Initial::Pixels(240.), 36., 120.);
         split.drag_to(540., 900.);
         assert_eq!(split.height, Some(540.));
         // Not past the list's minimum, not below the header.
