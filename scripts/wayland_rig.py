@@ -38,6 +38,13 @@ class Rig:
             if socks:
                 break
         env['WAYLAND_DISPLAY'] = socks[0]
+        # swaymsg finds sway only through SWAYSOCK.
+        for _ in range(20):
+            ipc = [p for p in self.run.iterdir() if p.name.startswith('sway-ipc.')]
+            if ipc:
+                env['SWAYSOCK'] = str(ipc[0])
+                break
+            time.sleep(.25)
         self.env = env
         # Headless sway has no keyboard; the input method's grab needs one with a keymap.
         self.procs.append(subprocess.Popen(['wtype', '-s', '3600000', '-k', 'F24'], env=env))
