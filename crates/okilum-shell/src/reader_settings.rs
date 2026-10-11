@@ -1,6 +1,7 @@
 //! Explicit, lazily opened user settings. No vault scans or startup reads.
 use super::*;
 use gpui_component::{button::ButtonGroup, switch::Switch, ThemeMode};
+use okilum_core::log::source_link;
 
 gpui::actions!(okilum_settings, [OpenSettings, CloseSettings]);
 
@@ -229,6 +230,9 @@ struct Settings {
     template_pending: bool,
     #[cfg(any(unix, windows))]
     template_epoch: u64,
+    /// The custom editor command line for log source links (#1165), made
+    /// on first render because an input needs the window.
+    editor_command: Option<(Entity<InputState>, Subscription)>,
 }
 impl Settings {
     fn new(reader: Option<WeakEntity<Reader>>, cx: &mut Context<Self>) -> Self {
@@ -249,6 +253,7 @@ impl Settings {
             reader,
             focus: cx.focus_handle(),
             _reader_changes: observer,
+            editor_command: None,
             #[cfg(any(unix, windows))]
             template_root: None,
             #[cfg(any(unix, windows))]
@@ -418,6 +423,77 @@ impl Settings {
         })
         .detach();
     }
+    /// Where log source locations open (#1165).
+    fn log_editor_controls(&self, cx: &mut Context<Self>) -> AnyElement {
+        use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
+        let current = reader_ui_state::log_editor(cx);
+        let label = |editor: &source_link::Editor| match editor {
+            source_link::Editor::VsCode => "VS Code",
+            source_link::Editor::Cursor => "Cursor",
+            source_link::Editor::Zed => "Zed",
+            source_link::Editor::JetBrains => "CLion / JetBrains",
+            source_link::Editor::Custom(_) => "Custom command",
+        };
+        let custom = match &current {
+            source_link::Editor::Custom(command) => Some(command.clone()),
+            _ => None,
+        };
+        let input = self.editor_command.as_ref().map(|(input, _)| input.clone());
+        let choices = [
+            source_link::Editor::VsCode,
+            source_link::Editor::Cursor,
+            source_link::Editor::Zed,
+            source_link::Editor::JetBrains,
+            source_link::Editor::Custom(
+                input
+                    .as_ref()
+                    .map(|input| input.read(cx).value().to_string())
+                    .unwrap_or_default(),
+            ),
+        ];
+        let selected = label(&current);
+        v_flex()
+            .gap_2()
+            .child(setting_row(
+                "Open log source links in",
+                "A click on file:line in a log, such as a stack frame, opens it here.",
+                Button::new("settings-log-editor")
+                    .debug_selector(|| "settings-log-editor".into())
+                    .outline()
+                    .small()
+                    .label(selected)
+                    .dropdown_caret(true)
+                    .dropdown_menu(move |menu, _, _| {
+                        let mut menu = menu;
+                        for choice in choices.clone() {
+                            let checked = label(&choice) == selected;
+                            menu = menu.item(
+                                PopupMenuItem::new(label(&choice))
+                                    .checked(checked)
+                                    .on_click(move |_, _, cx| {
+                                        reader_ui_state::set_log_editor(&choice, cx);
+                                        cx.refresh_windows();
+                                    }),
+                            );
+                        }
+                        menu
+                    }),
+                cx,
+            ))
+            .when_some(custom.and(input), |controls, input| {
+                controls.child(setting_row(
+                    "Editor command",
+                    "Run without a shell; {file}, {line} and {col} are filled in.",
+                    div()
+                        .w(px(260.))
+                        .debug_selector(|| "settings-log-editor-command".into())
+                        .child(Input::new(&input).small()),
+                    cx,
+                ))
+            })
+            .into_any_element()
+    }
+
     fn template_controls(&self, cx: &mut Context<Self>) -> AnyElement {
         #[cfg(any(unix, windows))]
         {
@@ -669,6 +745,7 @@ impl Settings {
                             },
                         )
                         .child(self.template_controls(cx))
+                        .child(self.log_editor_controls(cx))
                         .children(self.vault(cx).map(|reader| {
                             #[cfg(any(unix, windows))]
                             {
@@ -684,6 +761,7 @@ impl Settings {
                 } else {
                     content
                         .child("Open a vault to change its file visibility.")
+                        .child(self.log_editor_controls(cx))
                         .into_any_element()
                 }
             }
@@ -836,6 +914,25 @@ impl Render for Settings {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(any(unix, windows))]
         self.refresh_template_folder(cx);
+        if self.editor_command.is_none() {
+            let command = match reader_ui_state::log_editor(cx) {
+                source_link::Editor::Custom(command) => command,
+                _ => String::new(),
+            };
+            let input = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("code --goto {file}:{line}:{col}")
+                    .default_value(command)
+            });
+            let subscription = cx.subscribe(&input, |_, input, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    let command = input.read(cx).value().to_string();
+                    reader_ui_state::set_log_editor(&source_link::Editor::Custom(command), cx);
+                    cx.notify();
+                }
+            });
+            self.editor_command = Some((input, subscription));
+        }
         let p = brand::palette(cx);
         let body = self.body(window, cx);
         h_flex()

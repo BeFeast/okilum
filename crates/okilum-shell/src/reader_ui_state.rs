@@ -126,6 +126,10 @@ struct Saved {
     code_soft_wrap: bool,
     /// JSON files show their raw text instead of a pretty-printed view (#1131).
     json_raw: bool,
+    /// Where log source locations open (#1165): vscode, cursor, zed,
+    /// jetbrains or custom, and the custom command line.
+    log_editor: String,
+    log_editor_command: String,
     /// Pane sizes of list/detail splits (#1156), by split key.
     split_sizes: BTreeMap<String, f32>,
     /// Recent log queries per log file, newest first (#1158).
@@ -158,6 +162,8 @@ impl Default for Saved {
             toolbar_labels: false,
             code_soft_wrap: false,
             json_raw: false,
+            log_editor: "vscode".into(),
+            log_editor_command: String::new(),
             split_sizes: Default::default(),
             log_queries: Default::default(),
             delimited_no_header: Default::default(),
@@ -184,6 +190,7 @@ struct Store {
     toolbar_labels_changed: bool,
     code_soft_wrap_changed: bool,
     json_raw_changed: bool,
+    log_editor_changed: bool,
     splits_changed: BTreeSet<String>,
     log_queries_changed: BTreeSet<String>,
     colors_changed: BTreeSet<PathBuf>,
@@ -260,6 +267,7 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         toolbar_labels_changed: false,
         code_soft_wrap_changed: false,
         json_raw_changed: false,
+        log_editor_changed: false,
         splits_changed: Default::default(),
         log_queries_changed: Default::default(),
         colors_changed: Default::default(),
@@ -477,6 +485,7 @@ struct WriteJob {
     toolbar_labels_changed: bool,
     code_soft_wrap_changed: bool,
     json_raw_changed: bool,
+    log_editor_changed: bool,
     splits_changed: BTreeSet<String>,
     log_queries_changed: BTreeSet<String>,
     colors_changed: BTreeSet<PathBuf>,
@@ -554,6 +563,10 @@ impl WriteJob {
         if self.json_raw_changed {
             latest.json_raw = self.saved.json_raw;
         }
+        if self.log_editor_changed {
+            latest.log_editor = self.saved.log_editor.clone();
+            latest.log_editor_command = self.saved.log_editor_command.clone();
+        }
         for key in &self.splits_changed {
             if let Some(size) = self.saved.split_sizes.get(key) {
                 latest.split_sizes.insert(key.clone(), *size);
@@ -627,6 +640,7 @@ fn job(cx: &App) -> Option<WriteJob> {
             && !state.toolbar_labels_changed
             && !state.code_soft_wrap_changed
             && !state.json_raw_changed
+            && !state.log_editor_changed
             && state.splits_changed.is_empty()
             && state.log_queries_changed.is_empty()
             && state.colors_changed.is_empty()
@@ -653,6 +667,7 @@ fn job(cx: &App) -> Option<WriteJob> {
         toolbar_labels_changed: state.toolbar_labels_changed,
         code_soft_wrap_changed: state.code_soft_wrap_changed,
         json_raw_changed: state.json_raw_changed,
+        log_editor_changed: state.log_editor_changed,
         splits_changed: state.splits_changed.clone(),
         log_queries_changed: state.log_queries_changed.clone(),
         colors_changed: state.colors_changed.clone(),
@@ -1239,6 +1254,42 @@ pub(crate) fn remember_log_query(path: &str, query: &str, cx: &mut App) {
     schedule(cx);
 }
 
+/// The editor log source locations open in (#1165).
+pub(crate) fn log_editor(cx: &App) -> okilum_core::log::source_link::Editor {
+    use okilum_core::log::source_link::Editor;
+    let Some(state) = cx.try_global::<Store>() else {
+        return Editor::default();
+    };
+    match state.saved.log_editor.as_str() {
+        "cursor" => Editor::Cursor,
+        "zed" => Editor::Zed,
+        "jetbrains" => Editor::JetBrains,
+        "custom" => Editor::Custom(state.saved.log_editor_command.clone()),
+        _ => Editor::VsCode,
+    }
+}
+
+pub(crate) fn set_log_editor(editor: &okilum_core::log::source_link::Editor, cx: &mut App) {
+    use okilum_core::log::source_link::Editor;
+    if !installed(cx) || log_editor(cx) == *editor {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.log_editor = match editor {
+        Editor::VsCode => "vscode",
+        Editor::Cursor => "cursor",
+        Editor::Zed => "zed",
+        Editor::JetBrains => "jetbrains",
+        Editor::Custom(_) => "custom",
+    }
+    .into();
+    if let Editor::Custom(command) = editor {
+        state.saved.log_editor_command = command.clone();
+    }
+    state.log_editor_changed = true;
+    schedule(cx);
+}
+
 pub(crate) fn set_json_raw(value: bool, cx: &mut App) {
     if !installed(cx) || json_raw(cx) == value {
         return;
@@ -1314,6 +1365,7 @@ fn mark_saved(generation: u64, cx: &mut App) {
         state.toolbar_labels_changed = false;
         state.code_soft_wrap_changed = false;
         state.json_raw_changed = false;
+        state.log_editor_changed = false;
         state.splits_changed.clear();
         state.log_queries_changed.clear();
         state.colors_changed.clear();
@@ -1595,6 +1647,7 @@ mod tests {
                 toolbar_labels_changed: false,
                 code_soft_wrap_changed: false,
                 json_raw_changed: false,
+                log_editor_changed: false,
                 splits_changed: Default::default(),
                 log_queries_changed: Default::default(),
                 colors_changed: Default::default(),
