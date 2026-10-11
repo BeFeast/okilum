@@ -2765,6 +2765,52 @@ mod tests {
     }
 
     #[gpui::test]
+    fn a_followed_stack_trace_grows_its_row_and_is_filtered_again(cx: &mut TestAppContext) {
+        use std::io::Write as _;
+        let line =
+            |level: &str, msg: &str| format!("{{\"level\":\"{level}\",\"msg\":\"{msg}\"}}\n");
+        let (directory, reader, visual) = open_log(&line("info", "start"), cx);
+        let path = directory.path().canonicalize().unwrap().join("app.jsonl");
+        let append = |text: &str| {
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
+            file.write_all(text.as_bytes()).unwrap();
+        };
+        let tick = |visual: &mut VisualTestContext| {
+            visual.executor().advance_clock(Duration::from_millis(600));
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+        };
+        let view = log_view(&reader, visual);
+        view.update(visual, |view, cx| view.toggle_follow(cx));
+        visual.run_until_parked();
+        tick(visual);
+        // The word is only in a frame that has not been written yet.
+        view.update(visual, |view, cx| view.set_text("Pool.java".into(), cx));
+        visual.run_until_parked();
+        append(
+            &(line("error", "request failed") + "\tat com.example.Handler.run(Handler.java:12)\n"),
+        );
+        tick(visual);
+        assert!(
+            shown(&view, visual).is_empty(),
+            "positive control: no match yet"
+        );
+        append("\tat com.example.Pool.take(Pool.java:88)\n");
+        tick(visual);
+        assert_eq!(shown(&view, visual), [1], "the grown record matches now");
+        view.update(visual, |view, cx| view.set_text(String::new(), cx));
+        visual.run_until_parked();
+        tick(visual);
+        assert_eq!(shown(&view, visual), [0, 1], "still two entries, not four");
+        view.read_with(visual, |view, _| {
+            assert_eq!(row_text(view.data().unwrap(), 1).lines, 3)
+        });
+    }
+
+    #[gpui::test]
     fn a_late_result_never_replaces_the_latest_filter(cx: &mut TestAppContext) {
         let mut text = String::new();
         for i in 0..40_000 {
