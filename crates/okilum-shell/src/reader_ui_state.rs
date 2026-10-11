@@ -139,6 +139,8 @@ struct Saved {
     log_queries: BTreeMap<String, Vec<String>>,
     /// Field columns per log file (#1167).
     log_columns: BTreeMap<String, Vec<String>>,
+    /// Widths the user dragged, per log file and column (#1167).
+    log_column_widths: BTreeMap<String, BTreeMap<String, f32>>,
     delimited_no_header: BTreeSet<PathBuf>,
     vaults: BTreeMap<PathBuf, Layout>,
     /// Per-vault accent preset key (#774), keyed like `vaults` by the
@@ -173,6 +175,7 @@ impl Default for Saved {
             split_sizes: Default::default(),
             log_queries: Default::default(),
             log_columns: Default::default(),
+            log_column_widths: Default::default(),
             delimited_no_header: Default::default(),
             vaults: Default::default(),
             vault_colors: Default::default(),
@@ -596,6 +599,10 @@ impl WriteJob {
             match self.saved.log_columns.get(key) {
                 Some(columns) => latest.log_columns.insert(key.clone(), columns.clone()),
                 None => latest.log_columns.remove(key),
+            };
+            match self.saved.log_column_widths.get(key) {
+                Some(widths) => latest.log_column_widths.insert(key.clone(), widths.clone()),
+                None => latest.log_column_widths.remove(key),
             };
         }
         for key in &self.log_queries_changed {
@@ -1272,10 +1279,40 @@ pub(crate) fn set_log_columns(path: &str, columns: Vec<String>, cx: &mut App) {
             break;
         };
         state.saved.log_columns.remove(&other);
+        state.saved.log_column_widths.remove(&other);
         state.log_columns_changed.insert(other);
     }
     schedule(cx);
     cx.refresh_windows();
+}
+
+/// The width the user gave column `column` of the log at `path` (#1167).
+pub(crate) fn log_column_width(path: &str, column: &str, cx: &App) -> Option<f32> {
+    cx.try_global::<Store>()
+        .and_then(|state| {
+            state
+                .saved
+                .log_column_widths
+                .get(path)?
+                .get(column)
+                .copied()
+        })
+        .filter(|width| width.is_finite() && *width > 0.)
+}
+
+pub(crate) fn set_log_column_width(path: &str, column: &str, width: f32, cx: &mut App) {
+    if !installed(cx) || !width.is_finite() || log_column_width(path, column, cx) == Some(width) {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state
+        .saved
+        .log_column_widths
+        .entry(path.into())
+        .or_default()
+        .insert(column.into(), width);
+    state.log_columns_changed.insert(path.into());
+    schedule(cx);
 }
 
 /// Queries kept per log file and log files with a history (#1158).

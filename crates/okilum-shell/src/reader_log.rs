@@ -33,6 +33,24 @@ const SOURCE_NAME_WIDTH: f32 = 140.;
 /// paths and URLs.
 const COLUMN_WIDTH: f32 = 96.;
 const WIDE_COLUMN_WIDTH: f32 = 240.;
+const MIN_COLUMN_WIDTH: f32 = 48.;
+const MAX_COLUMN_WIDTH: f32 = 640.;
+/// Records looked at for the Columns menu's field names.
+const COLUMN_MENU_SAMPLE: usize = 200;
+/// The row grid's gap and the widths before the first field column.
+const ROW_GAP: f32 = 12.;
+const TIME_WIDTH: f32 = 92.;
+const BADGE_WIDTH: f32 = 28.;
+
+/// A header handle being dragged to resize field column `.0` (#1167).
+#[derive(Clone)]
+struct ColumnDrag(usize);
+
+impl Render for ColumnDrag {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        Empty
+    }
+}
 const KEY_WIDTH: f32 = 168.;
 /// Characters of a row shaped per frame; longer rows end in an ellipsis and
 /// stay complete in the detail pane and the raw copy.
@@ -789,6 +807,63 @@ impl LogView {
             .unwrap_or_default()
     }
 
+    /// Column `key`'s width: the dragged one, or the default for its key.
+    fn width_of(&self, key: &str, cx: &App) -> f32 {
+        self.history_key()
+            .and_then(|file| reader_ui_state::log_column_width(&file, key, cx))
+            .unwrap_or_else(|| column_width(key))
+    }
+
+    /// Where field column `at` starts, from the left edge of a row: the
+    /// rows' fixed cells and the widths of the columns before it.
+    fn column_start(&self, at: usize, cx: &App) -> f32 {
+        let merged = self.merge.is_some();
+        let mut x = 12. + 2.;
+        if merged {
+            x += 3. + ROW_GAP;
+        }
+        x += TIME_WIDTH + ROW_GAP;
+        if merged {
+            x += SOURCE_NAME_WIDTH + ROW_GAP;
+        }
+        x += BADGE_WIDTH + ROW_GAP;
+        for key in self.columns(cx).iter().take(at) {
+            x += self.width_of(key, cx) + ROW_GAP;
+        }
+        x
+    }
+
+    fn resize_column(&mut self, at: usize, width: f32, cx: &mut Context<Self>) {
+        let (Some(file), Some(key)) = (self.history_key(), self.columns(cx).get(at).cloned())
+        else {
+            return;
+        };
+        let width = width.clamp(MIN_COLUMN_WIDTH, MAX_COLUMN_WIDTH);
+        reader_ui_state::set_log_column_width(&file, &key, width, cx);
+        cx.notify();
+    }
+
+    /// Field names of the first records of the shown files, in the order
+    /// first seen: the choices of the Columns menu (#1167).
+    fn field_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = Vec::new();
+        let total = self.total().min(COLUMN_MENU_SAMPLE);
+        for id in 0..total {
+            let Some((source, entry)) = self.locate(id) else {
+                continue;
+            };
+            let Some(record) = self.source(source).and_then(|data| data.record(entry)) else {
+                continue;
+            };
+            for field in record.fields {
+                if !names.contains(&field.key) {
+                    names.push(field.key);
+                }
+            }
+        }
+        names
+    }
+
     fn toggle_column(&mut self, key: &str, cx: &mut Context<Self>) {
         let Some(file) = self.history_key() else {
             return;
@@ -1540,6 +1615,7 @@ impl LogView {
         let this = &*self;
         let merged = this.merge.is_some();
         let columns = this.columns(cx);
+        let widths: Vec<f32> = columns.iter().map(|key| this.width_of(key, cx)).collect();
         let palette = brand::palette(cx);
         let faint = brand::reader_palette(cx).text_faint;
         let hover = brand::reader_palette(cx).hover;
@@ -1668,7 +1744,7 @@ impl LogView {
                                 div()
                                     .id(("log-cell", at))
                                     .flex_none()
-                                    .w(px(column_width(key)))
+                                    .w(px(widths[at]))
                                     .truncate()
                                     .text_size(px(12.))
                                     .when(numeric, |cell| {
@@ -2148,6 +2224,7 @@ impl LogView {
                     .on_click(cx.listener(|this, _, window, cx| this.request_back(window, cx)))
             }))
             .children(history)
+            .child(self.columns_button(cx))
             .child(self.files_button(cx))
             // A compressed log does not grow (#1164).
             .when(!self.compressed(), |bar| bar.child(self.follow_button(cx)))
@@ -2208,6 +2285,34 @@ impl LogView {
                     .item(PopupMenuItem::new("Add file…").on_click(move |_, _, cx| {
                         let _ = view.update(cx, |this, cx| this.prompt_add_files(cx));
                     }))
+            })
+            .into_any_element()
+    }
+
+    /// Fields of the first records as columns, with the shown ones checked.
+    fn columns_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
+        let view = cx.entity().downgrade();
+        let shown = self.columns(cx);
+        bar_button("log-columns-menu", !shown.is_empty())
+            .icon(IconName::LayoutDashboard)
+            .tooltip("Columns")
+            .debug_selector(|| "log-columns-menu".into())
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, cx| {
+                let Some(this) = view.upgrade() else {
+                    return menu;
+                };
+                let names = this.read(cx).field_names();
+                let mut menu = menu;
+                for name in names {
+                    let (view, checked) = (view.clone(), shown.contains(&name));
+                    menu = menu.item(PopupMenuItem::new(name.clone()).checked(checked).on_click(
+                        move |_, _, cx| {
+                            let _ = view.update(cx, |this, cx| this.toggle_column(&name, cx));
+                        },
+                    ));
+                }
+                menu
             })
             .into_any_element()
     }
@@ -2457,8 +2562,9 @@ impl Render for LogView {
                             let column = key.clone();
                             h_flex()
                                 .debug_selector(move || format!("log-column-{at}"))
+                                .relative()
                                 .flex_none()
-                                .w(px(column_width(key)))
+                                .w(px(self.width_of(key, cx)))
                                 .gap_1()
                                 .child(div().min_w_0().truncate().child(key.clone()))
                                 .child(
@@ -2471,8 +2577,32 @@ impl Render for LogView {
                                             this.toggle_column(&column, cx)
                                         })),
                                 )
+                                // Drag the right edge to resize (#1167).
+                                .child(
+                                    div()
+                                        .id(("log-column-resize", at))
+                                        .debug_selector(move || format!("log-column-resize-{at}"))
+                                        .absolute()
+                                        .top_0()
+                                        .bottom_0()
+                                        // Centred on the column edge, so the edge follows the pointer.
+                                        .right(px(-3.))
+                                        .w(px(6.))
+                                        .cursor_col_resize()
+                                        .on_drag(ColumnDrag(at), |drag, _, _, cx| {
+                                            cx.new(|_| drag.clone())
+                                        }),
+                                )
                         }))
-                        .child(div().flex_1().child("Message")),
+                        .child(div().flex_1().child("Message"))
+                        .on_drag_move(cx.listener(
+                            |this, event: &DragMoveEvent<ColumnDrag>, _, cx| {
+                                let at = event.drag(cx).0;
+                                let start = event.bounds.left() + px(this.column_start(at, cx));
+                                let width = f32::from(event.event.position.x - start);
+                                this.resize_column(at, width, cx);
+                            },
+                        )),
                 )
                 .child(list)
                 .into_any_element()
@@ -4629,6 +4759,64 @@ mod tests {
         view.read_with(visual, |view, cx| {
             assert_eq!(view.columns(cx), ["duration_us", "path", "client"]);
         });
+    }
+
+    /// #1167: a column is resized by dragging its header edge, rows follow,
+    /// and the width is kept; the Columns menu offers the records' fields.
+    #[gpui::test]
+    fn columns_resize_by_drag_and_the_menu_lists_fields(cx: &mut TestAppContext) {
+        let sample = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../okilum-core/tests/fixtures/log/samples/apache/apache-access.logfmt");
+        let text = std::fs::read_to_string(sample).unwrap();
+        let state = tempfile::tempdir().unwrap();
+        cx.update(|cx| reader_ui_state::install(state.path(), cx));
+        let (_directory, reader, visual) = open_log(&text, cx);
+        visual.simulate_resize(gpui::size(px(1440.), px(900.)));
+        visual.run_until_parked();
+        let view = log_view(&reader, visual);
+        let names = view.read_with(visual, |view, _| view.field_names());
+        for key in ["status", "duration_us", "path", "client", "req_id"] {
+            assert!(names.iter().any(|name| name == key), "{key} in {names:?}");
+        }
+        view.update(visual, |view, cx| {
+            for key in ["status", "path", "client"] {
+                view.toggle_column(key, cx);
+            }
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let before = visual.debug_bounds("log-column-1").unwrap();
+        assert!((before.size.width - px(WIDE_COLUMN_WIDTH)).abs() < px(1.));
+        let handle = visual.debug_bounds("log-column-resize-1").unwrap();
+        let from = handle.center();
+        let to = from + point(px(100.), px(0.));
+        visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            from + point(px(10.), px(0.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let after = visual.debug_bounds("log-column-1").unwrap();
+        assert!(
+            (after.size.width - before.size.width - px(100.)).abs() < px(6.),
+            "the column follows the drag: {before:?} -> {after:?}"
+        );
+        // The next column moved with it: the grid is shared with the rows.
+        let client = visual.debug_bounds("log-column-2").unwrap();
+        assert!(client.left() >= after.right());
+        // Kept for the file.
+        visual.executor().advance_clock(Duration::from_secs(1));
+        visual.run_until_parked();
+        let key = view.read_with(visual, |view, _| view.history_key().unwrap());
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(state.path().join("reader-ui.json")).unwrap())
+                .unwrap();
+        let width = saved["log_column_widths"][&key]["path"].as_f64().unwrap() as f32;
+        assert!((width - f32::from(after.size.width)).abs() < 1., "{width}");
     }
 
     #[gpui::test]
