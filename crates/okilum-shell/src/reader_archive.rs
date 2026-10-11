@@ -561,9 +561,11 @@ impl Render for ArchivePreview {
                     .text_align(TextAlign::Right),
             );
         let count = self.rows.len();
+        // At most 40% of the pane, so the selected entry keeps room (#1149).
         let table = v_flex()
             .mx_6()
             .h(px(ROW_HEIGHT * 12.))
+            .max_h(relative(0.4))
             .border_1()
             .border_color(palette.border_subtle)
             .child(header)
@@ -587,8 +589,17 @@ impl Render for ArchivePreview {
                 view.child(div().px_6().text_color(palette.text_muted).child(note))
             })
             .when_some(self.render_entry(cx), |view, entry| {
-                // A flex column, so the text and table viewers' `flex_1` gets the height (#1079).
-                view.child(v_flex().w_full().flex_1().min_h_0().child(entry))
+                // The slot takes the rest of the pane, like the PDF preview's; the
+                // inner full-height column lets the text, code and table viewers'
+                // `flex_1` fill it (#1079) instead of collapsing to a line (#1149).
+                view.child(
+                    div()
+                        .debug_selector(|| "archive-entry".into())
+                        .flex_1()
+                        .min_h_0()
+                        .w_full()
+                        .child(v_flex().size_full().child(entry)),
+                )
             })
     }
 }
@@ -597,6 +608,95 @@ impl Render for ArchivePreview {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    #[gpui::test]
+    fn a_selected_entry_fills_the_space_under_the_list(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("note.md"), "# Note\n").unwrap();
+        let mut zip =
+            zip::ZipWriter::new(std::fs::File::create(root.join("redesign.zip")).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        for i in 0..74 {
+            zip.start_file(format!("src/components/file{i:02}.tsx"), options)
+                .unwrap();
+            std::io::Write::write_all(&mut zip, b"export const C = () => null;\n").unwrap();
+        }
+        zip.start_file("src/types/empty-state.d.ts", options)
+            .unwrap();
+        for i in 0..40 {
+            std::io::Write::write_all(
+                &mut zip,
+                format!("export interface EmptyStateProps{i} {{\n  title: string;\n}}\n")
+                    .as_bytes(),
+            )
+            .unwrap();
+        }
+        zip.finish().unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let entity = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("note.md".into()),
+                        index_dir: Some(fixture.path().join("index")),
+                        session_directory: Some(fixture.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(entity.clone());
+            Root::new(entity, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.simulate_resize(size(px(1440.), px(900.)));
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            r.preview_file("redesign.zip", window, cx)
+        });
+        visual.run_until_parked();
+        let archive = reader.read_with(visual, |r, _| {
+            r.file_preview
+                .as_ref()
+                .unwrap()
+                .archive
+                .clone()
+                .expect("archive view")
+        });
+        let index = archive.read_with(visual, |a, _| {
+            a.listing
+                .as_ref()
+                .expect("listing")
+                .entries
+                .iter()
+                .position(|e| e.name.ends_with(".d.ts"))
+                .unwrap()
+        });
+        archive.update_in(visual, |a, window, cx| a.open_entry(index, window, cx));
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let slot = visual.debug_bounds("archive-entry").expect("entry slot");
+        let code = visual
+            .debug_bounds("reader-code-file")
+            .expect("code preview");
+        // 15 lines at the 13 px code size need well over 250 px.
+        assert!(
+            f32::from(code.size.height) > 300.,
+            "the code preview collapsed: {code:?} in {slot:?}"
+        );
+        assert!(
+            f32::from(code.size.height) >= f32::from(slot.size.height) - 1.,
+            "the code preview fills its slot: {code:?} in {slot:?}"
+        );
+    }
 
     #[test]
     fn only_zip_archives_are_eligible() {
