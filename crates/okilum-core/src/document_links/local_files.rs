@@ -142,7 +142,7 @@ pub(super) fn prepare(
         },
         Err(e)
             if e.kind() == ErrorKind::NotFound
-                && (path.is_absolute() || file_uri || vault.inventory_complete) =>
+                && (path.is_absolute() || file_uri || vault.paths_complete()) =>
         {
             // A root compatibility candidate that exists but is inaccessible
             // blocks a false missing claim, just like the document resolver.

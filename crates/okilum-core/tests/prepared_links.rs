@@ -371,3 +371,107 @@ fn block_references_land_on_the_marked_block() {
         Ok(1)
     );
 }
+
+/// #1120: one note that is not valid UTF-8 must not turn every link between the other
+/// notes into "the vault is loading". The file is listed under its real name, only its
+/// bytes are unusable, so what is known about paths stays true.
+#[test]
+fn a_non_utf8_note_leaves_links_between_readable_notes_working() {
+    let dir = tempfile::Builder::new()
+        .prefix("okilum-prepared-cp1251-")
+        .tempdir()
+        .unwrap();
+    std::fs::write(
+        dir.path().join("Target.md"),
+        "# Target\n\n[[Other vault]]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("Other vault.md"),
+        "# Other vault\n\n[[Target]]\n",
+    )
+    .unwrap();
+    // "# Legacy encoding\n\nПривет мир\n" in CP1251: 0xCF 0xF0 ... is not UTF-8.
+    let legacy: Vec<u8> = [
+        &b"# Legacy encoding\n\n"[..],
+        &[
+            0xCF, 0xF0, 0xE8, 0xE2, 0xE5, 0xF2, 0x20, 0xEC, 0xE8, 0xF0, 0x0A,
+        ],
+    ]
+    .concat();
+    assert!(
+        std::str::from_utf8(&legacy).is_err(),
+        "the fixture must really be non-UTF-8"
+    );
+    std::fs::write(dir.path().join("Non-UTF8.md"), &legacy).unwrap();
+
+    let (vault, sources) = Vault::scan_snapshot_with(dir.path(), &mut |_, _| Ok(())).unwrap();
+    // The report stays: the user is told about the unreadable note.
+    assert_eq!(
+        vault.unreadable.len(),
+        1,
+        "one item unreadable remains reported"
+    );
+    assert_eq!(vault.unreadable[0].path, dir.path().join("Non-UTF8.md"));
+    assert_eq!(
+        vault.unreadable[0].operation,
+        okilum_core::vault::DECODE_NOTE
+    );
+    assert!(vault.paths_complete());
+    assert!(
+        !vault.inventory_complete,
+        "the inventory is still reported as having a skipped file"
+    );
+    assert!(vault.inventory_scanned);
+    assert!(sources.contains_key("Target.md") && !sources.contains_key("Non-UTF8.md"));
+
+    let mut prep = LinkPreparation::new(&vault, "Target.md", |path| {
+        let source = std::fs::read_to_string(dir.path().join(path))
+            .map_err(|_| "Document source is unavailable.".to_owned())?;
+        Ok(target(&source))
+    });
+    let (resolved, state) = prep.link("Other vault", true);
+    assert_eq!(resolved.candidates, ["Other vault.md"]);
+    assert_eq!(
+        (state.status, state.reason.as_str()),
+        (LinkStatus::Resolved, "Open document"),
+        "a wikilink between two readable notes works"
+    );
+    // A link to a note that really is absent is reported as missing, not as loading.
+    assert_eq!(
+        prep.link("No such note", true).1.status,
+        LinkStatus::MissingDocument
+    );
+    // The unreadable note itself is not hidden or guessed: it is known, its source is not.
+    let (legacy_link, legacy_state) = prep.link("Non-UTF8", true);
+    assert_eq!(legacy_link.candidates, ["Non-UTF8.md"]);
+    assert_eq!(legacy_state.status, LinkStatus::Unknown);
+    assert_eq!(legacy_state.reason, "Document source is unavailable.");
+
+    // Positive control for the guard: a vault that is still being scanned (a cached,
+    // provisional snapshot) is loading, and its links stay unavailable.
+    let mut loading = Vault::scan_metadata(dir.path()).unwrap();
+    loading.inventory_scanned = false;
+    loading.inventory_complete = false;
+    let mut prep = LinkPreparation::new(&loading, "Target.md", |_| Ok(target("# Other vault")));
+    assert_eq!(
+        prep.link("Other vault", true).1.reason,
+        "Link unavailable while the vault is loading."
+    );
+
+    // And so is a vault whose enumeration lost an entry: absence cannot be claimed.
+    let mut partial = Vault::scan_metadata(dir.path()).unwrap();
+    partial.inventory_complete = false;
+    partial
+        .unreadable
+        .push(okilum_core::vault::UnreadableEntry {
+            path: dir.path().join("Hidden"),
+            operation: "enumerate entry",
+            error: "Permission denied".into(),
+        });
+    let mut prep = LinkPreparation::new(&partial, "Target.md", |_| Ok(target("# Other vault")));
+    assert_eq!(
+        prep.link("Other vault", true).1.reason,
+        "Link unavailable while the vault is loading."
+    );
+}

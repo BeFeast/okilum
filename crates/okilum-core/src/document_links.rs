@@ -376,7 +376,7 @@ fn attachment(target: &str, wiki: bool, vault: &Vault, from: &str) -> Option<Res
     if ext.eq_ignore_ascii_case("md") {
         return None;
     }
-    if (!vault.inventory_complete && !vault.single_file) || vault.graph_root.is_some() {
+    if (!vault.paths_complete() && !vault.single_file) || vault.graph_root.is_some() {
         return Some(ResolvedLink {
             url: format!("{}{}", render::UNRESOLVED_SCHEME, encode(target)),
             status: "unresolved",
@@ -464,7 +464,7 @@ fn attachment(target: &str, wiki: bool, vault: &Vault, from: &str) -> Option<Res
 pub fn resolve(target: &str, wiki: bool, vault: &Vault, from: &str) -> ResolvedLink {
     if !wiki {
         let path = decode(target.split('#').next().unwrap_or(target));
-        if vault.inventory_complete
+        if vault.paths_complete()
             && vault.graph_root.is_none()
             && markdown_path(vault, &path).is_none()
             && std::path::Path::new(&path).is_file()
