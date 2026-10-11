@@ -8,7 +8,10 @@ left over):
 - double-click a Latin word (positive control: a whole Latin word copies);
 - double-click the middle of the Hebrew row (expected: one whole Hebrew word);
 - drag across the Hebrew row, end to end (expected: the Hebrew text);
-- click the link's text (Reader) or Ctrl+click it (editor): the target opens.
+- Reader only: click the link's text, the target opens. The editor opens links
+  with the platform modifier, which xdotool cannot deliver on Xvfb (a Latin
+  link does not open either), so the editor link is covered by the gpui test
+  `command_click_opens_a_link_inside_a_hebrew_paragraph_in_both_editor_modes`.
 Exit 0: all hold; 1: a check failed; 2: the run proves nothing.
 """
 import os, shutil, subprocess, sys, time
@@ -157,10 +160,7 @@ def link(mode):
         at = link_centre(shot, b[-2])
         if not at:
             return {'link_at': None}
-        if mode == 'reader':
-            xd(env, 'mousemove', str(at[0]), str(at[1]), 'click', '1')
-        else:
-            xd(env, 'mousemove', str(at[0]), str(at[1]), 'keydown', 'ctrl', 'click', '1', 'keyup', 'ctrl')
+        xd(env, 'mousemove', str(at[0]), str(at[1]), 'click', '1')
         time.sleep(3)
         after = copy(env, True)
         return {'link_at': at, 'opened': 'Target page' in after or 'Arrived' in after}
@@ -171,7 +171,8 @@ def link(mode):
 
 failed = invalid = False
 for mode in ('reader', 'live', 'source'):
-    s, l = selections(mode), link(mode)
+    s = selections(mode)
+    l = link(mode) if mode == 'reader' else {'link_at': 'editor: gpui test', 'opened': True}
     print(label, mode, s, l, flush=True)
     if not s or 'latin_word' not in s or not l or not l.get('link_at'):
         invalid = True
