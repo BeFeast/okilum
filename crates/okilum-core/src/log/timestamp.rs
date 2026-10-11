@@ -5,13 +5,27 @@ use ::time::{Date, Month, PrimitiveDateTime, Time, UtcOffset};
 
 /// RFC 3339 and its common relaxations: a space or lower-case `t` separator,
 /// a comma before the fraction, `±HHMM`/`±HH` offsets. A value without an
-/// offset is read as UTC, which displays it exactly as written.
+/// offset is read as UTC, which displays it exactly as written. Two fixed
+/// text-log shapes are accepted as well: glog's `yyyymmdd hh:mm:ss.uuuuuu`
+/// and the access-log `dd/Mon/yyyy:hh:mm:ss ±hhmm`. Shapes without a year
+/// (syslog's `Oct 10 06:00:01`, glog's old `mmdd`) are not timestamps.
 pub fn parse_text(text: &[u8]) -> Option<i64> {
     let b = text.trim_ascii();
     // A number written as a string takes the epoch path at any length, e.g.
     // quill's 19-digit nanoseconds (#1157); RFC 3339 always has a ':'.
-    if b.len() < 19 || is_number(b) {
+    if b.len() < 17 || is_number(b) {
         return number_text(b);
+    }
+    match (b[2], b[8]) {
+        (b'/', _) => access_log(b),
+        (_, b' ') => glog(b),
+        _ => rfc3339(b),
+    }
+}
+
+fn rfc3339(b: &[u8]) -> Option<i64> {
+    if b.len() < 19 {
+        return None;
     }
     let year = digits(&b[0..4])?;
     let month = digits(&b[5..7])?;
@@ -27,7 +41,88 @@ pub fn parse_text(text: &[u8]) -> Option<i64> {
     {
         return None;
     }
-    let mut pos = 19;
+    let (nanos, pos) = fraction(b, 19)?;
+    let offset = match &b[pos..] {
+        [] => UtcOffset::UTC,
+        [b'Z' | b'z'] => UtcOffset::UTC,
+        [sign @ (b'+' | b'-'), rest @ ..] => {
+            let (h, m) = match rest {
+                [h1, h2] => (digits(&[*h1, *h2])?, 0),
+                [h1, h2, b':', m1, m2] | [h1, h2, m1, m2] => {
+                    (digits(&[*h1, *h2])?, digits(&[*m1, *m2])?)
+                }
+                _ => return None,
+            };
+            let sign = if *sign == b'-' { -1 } else { 1 };
+            UtcOffset::from_hms(sign * h as i8, sign * m as i8, 0).ok()?
+        }
+        _ => return None,
+    };
+    assemble([year, month, day, hour, minute, second], nanos, offset)
+}
+
+/// glog: `20261010 06:04:00.000279`, local time without an offset, read as
+/// UTC like any offset-less value.
+fn glog(b: &[u8]) -> Option<i64> {
+    if b[11] != b':' || b[14] != b':' {
+        return None;
+    }
+    let (nanos, pos) = fraction(b, 17)?;
+    if pos != b.len() {
+        return None;
+    }
+    let field = |range: std::ops::Range<usize>| digits(&b[range]);
+    assemble(
+        [
+            field(0..4)?,
+            field(4..6)?,
+            field(6..8)?,
+            field(9..11)?,
+            field(12..14)?,
+            field(15..17)?,
+        ],
+        nanos,
+        UtcOffset::UTC,
+    )
+}
+
+/// Apache/nginx `%t`: `10/Oct/2026:06:00:01 +0000`.
+fn access_log(b: &[u8]) -> Option<i64> {
+    let &[d1, d2, b'/', m1, m2, m3, b'/', y1, y2, y3, y4, b':', h1, h2, b':', n1, n2, b':', s1, s2, b' ', sign @ (b'+' | b'-'), o1, o2, o3, o4] =
+        b
+    else {
+        return None;
+    };
+    const MONTHS: [&[u8; 3]; 12] = [
+        b"Jan", b"Feb", b"Mar", b"Apr", b"May", b"Jun", b"Jul", b"Aug", b"Sep", b"Oct", b"Nov",
+        b"Dec",
+    ];
+    let month = MONTHS.iter().position(|m| **m == [m1, m2, m3])? as u32 + 1;
+    let sign = if sign == b'-' { -1 } else { 1 };
+    let offset = UtcOffset::from_hms(
+        sign * digits(&[o1, o2])? as i8,
+        sign * digits(&[o3, o4])? as i8,
+        0,
+    )
+    .ok()?;
+    assemble(
+        [
+            digits(&[y1, y2, y3, y4])?,
+            month,
+            digits(&[d1, d2])?,
+            digits(&[h1, h2])?,
+            digits(&[n1, n2])?,
+            digits(&[s1, s2])?,
+        ],
+        0,
+        offset,
+    )
+}
+
+/// An optional `.`/`,` fraction at `pos`: nanoseconds and the position after
+/// it. Digits past nanoseconds are consumed; a separator without digits is
+/// not a timestamp.
+fn fraction(b: &[u8], mut pos: usize) -> Option<(u32, usize)> {
     let mut nanos = 0u32;
     if matches!(b.get(pos), Some(b'.' | b',')) {
         pos += 1;
@@ -45,22 +140,14 @@ pub fn parse_text(text: &[u8]) -> Option<i64> {
             nanos *= 10;
         }
     }
-    let offset = match &b[pos..] {
-        [] => UtcOffset::UTC,
-        [b'Z' | b'z'] => UtcOffset::UTC,
-        [sign @ (b'+' | b'-'), rest @ ..] => {
-            let (h, m) = match rest {
-                [h1, h2] => (digits(&[*h1, *h2])?, 0),
-                [h1, h2, b':', m1, m2] | [h1, h2, m1, m2] => {
-                    (digits(&[*h1, *h2])?, digits(&[*m1, *m2])?)
-                }
-                _ => return None,
-            };
-            let sign = if *sign == b'-' { -1 } else { 1 };
-            UtcOffset::from_hms(sign * h as i8, sign * m as i8, 0).ok()?
-        }
-        _ => return None,
-    };
+    Some((nanos, pos))
+}
+
+fn assemble(
+    [year, month, day, hour, minute, second]: [u32; 6],
+    nanos: u32,
+    offset: UtcOffset,
+) -> Option<i64> {
     let date = Date::from_calendar_date(year as i32, Month::try_from(month as u8).ok()?, day as u8)
         .ok()?;
     let time = Time::from_hms_nano(hour as u8, minute as u8, second as u8, nanos).ok()?;
@@ -200,6 +287,22 @@ mod tests {
         assert_eq!(parse_text(b"2025-10-01T00:00:00 UTC"), None);
         assert_eq!(parse_text(b"yesterday"), None);
         assert_eq!(parse_text(b"1759276800"), Some(BASE));
+    }
+
+    #[test]
+    fn text_log_shapes() {
+        assert_eq!(
+            parse_text(b"20251001 00:00:00.000279"),
+            Some(BASE + 279_000)
+        );
+        assert_eq!(parse_text(b"20251001 00:00:00"), Some(BASE));
+        assert_eq!(parse_text(b"20251001 00:00:00.x"), None);
+        assert_eq!(parse_text(b"01/Oct/2025:02:00:00 +0200"), Some(BASE));
+        assert_eq!(parse_text(b"30/Sep/2025:23:00:00 -0100"), Some(BASE));
+        assert_eq!(parse_text(b"01/Okt/2025:00:00:00 +0000"), None);
+        // No year: shown as written, never guessed.
+        assert_eq!(parse_text(b"Oct  1 00:00:00"), None);
+        assert_eq!(parse_text(b"1001 00:00:00.000279"), None);
     }
 
     #[test]

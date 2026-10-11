@@ -1,6 +1,6 @@
 //! Format sniffing from the head of a file.
 
-use super::{json, logfmt};
+use super::{json, logfmt, text};
 
 /// Bytes read for detection.
 pub const SAMPLE_BYTES: usize = 64 * 1024;
@@ -13,6 +13,14 @@ pub enum Format {
     Logfmt,
     /// Both JSON and logfmt records, each at least a tenth of the sample.
     Mixed,
+    /// spdlog's default text pattern.
+    Spdlog,
+    /// glog's text lines and file header.
+    Glog,
+    /// Apache/nginx Common or Combined Log Format.
+    AccessLog,
+    /// syslog, RFC 5424 or the BSD form of RFC 3164.
+    Syslog,
     /// Less than half the sample parses as records; every line is raw text.
     Plain,
 }
@@ -23,14 +31,27 @@ impl Format {
             Format::JsonLines => "JSON lines",
             Format::Logfmt => "logfmt",
             Format::Mixed => "JSON lines and logfmt",
+            Format::Spdlog => "spdlog",
+            Format::Glog => "glog",
+            Format::AccessLog => "Access log",
+            Format::Syslog => "syslog",
             Format::Plain => "Plain text",
         }
     }
 }
 
+/// The built-in text line formats, in the order a line is tried.
+const TEXT: [Format; 4] = [
+    Format::Spdlog,
+    Format::Glog,
+    Format::AccessLog,
+    Format::Syslog,
+];
+
 /// Decides from the first lines of `data`. The verdict is a property of the
 /// file, so a stray non-record line later on becomes an unparsed row instead
-/// of flipping the format.
+/// of flipping the format. A text format wins when it parses more of the
+/// sample than JSON and logfmt together, and at least half of it.
 pub fn detect(data: &[u8]) -> Format {
     let mut sample = &data[..data.len().min(SAMPLE_BYTES)];
     if sample.len() < data.len() {
@@ -42,6 +63,7 @@ pub fn detect(data: &[u8]) -> Format {
         sample = &data[..end];
     }
     let (mut total, mut json_lines, mut logfmt_lines) = (0usize, 0usize, 0usize);
+    let mut text_lines = [0usize; TEXT.len()];
     for line in sample.split(|&b| b == b'\n') {
         let line = line.trim_ascii();
         if line.is_empty() {
@@ -50,6 +72,11 @@ pub fn detect(data: &[u8]) -> Format {
         total += 1;
         if json::scan(line, &mut |_, _| {}).is_ok() {
             json_lines += 1;
+        } else if let Some(at) = TEXT
+            .iter()
+            .position(|&format| text_scan(line, format).is_ok())
+        {
+            text_lines[at] += 1;
         } else if logfmt::scan(line, &mut |_, _| {}).is_ok() {
             logfmt_lines += 1;
         }
@@ -57,7 +84,20 @@ pub fn detect(data: &[u8]) -> Format {
             break;
         }
     }
-    if total == 0 || (json_lines + logfmt_lines) * 2 < total {
+    // The first format wins a tie, so the verdict never depends on chance.
+    let (text_format, text_count) =
+        TEXT.iter()
+            .zip(text_lines)
+            .fold((Format::Plain, 0), |best, (&format, count)| {
+                if count > best.1 {
+                    (format, count)
+                } else {
+                    best
+                }
+            });
+    if total > 0 && text_count > json_lines + logfmt_lines && text_count * 2 >= total {
+        text_format
+    } else if total == 0 || (json_lines + logfmt_lines) * 2 < total {
         Format::Plain
     } else if json_lines * 10 >= total && logfmt_lines * 10 >= total {
         Format::Mixed
@@ -65,6 +105,17 @@ pub fn detect(data: &[u8]) -> Format {
         Format::JsonLines
     } else {
         Format::Logfmt
+    }
+}
+
+fn text_scan(line: &[u8], format: Format) -> Result<(), ()> {
+    let visit = &mut |_: &[std::borrow::Cow<'_, str>], _| {};
+    match format {
+        Format::Spdlog => text::spdlog(line, visit),
+        Format::Glog => text::glog(line, visit),
+        Format::AccessLog => text::access(line, visit),
+        Format::Syslog => text::syslog(line, visit),
+        _ => Err(()),
     }
 }
 

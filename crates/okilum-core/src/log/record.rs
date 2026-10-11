@@ -3,7 +3,7 @@
 
 use std::borrow::Cow;
 
-use super::{json, logfmt, timestamp, Format, Level};
+use super::{json, logfmt, text, timestamp, Format, Level};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ValueKind {
@@ -143,7 +143,8 @@ fn path_eq(path: &[Cow<'_, str>], dotted: &str) -> bool {
 }
 
 /// Calls the scanner the format implies. `Mixed` tries JSON for lines that
-/// open with `{` and logfmt otherwise; `Plain` parses nothing.
+/// open with `{` and logfmt otherwise; `Plain` parses nothing. A text format
+/// reads only its own lines: a file is one format, decided up front.
 pub(crate) fn scan<'a>(
     line: &'a [u8],
     format: Format,
@@ -154,6 +155,10 @@ pub(crate) fn scan<'a>(
         Format::Logfmt => logfmt::scan(line, visit),
         Format::Mixed if line.trim_ascii_start().first() == Some(&b'{') => json::scan(line, visit),
         Format::Mixed => logfmt::scan(line, visit),
+        Format::Spdlog => text::spdlog(line, visit),
+        Format::Glog => text::glog(line, visit),
+        Format::AccessLog => text::access(line, visit),
+        Format::Syslog => text::syslog(line, visit),
         Format::Plain => Err(()),
     }
 }

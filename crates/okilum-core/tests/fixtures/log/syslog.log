@@ -1,0 +1,8 @@
+<30>1 2026-10-10T06:00:05.123595+00:00 db-02 systemd 1 - - Started postgresql@17-main.service - PostgreSQL Cluster 17-main.
+<29>1 2026-10-10T06:00:11.111725+00:00 db-02 chronyd 812 - - Selected source 192.0.2.123
+<86>1 2026-10-10T06:01:02.004211+00:00 db-02 sshd 23114 - [origin ip="198.51.100.7"] Failed password for root from 198.51.100.7 port 52114 ssh2
+<3>1 2026-10-10T06:02:40.551002+00:00 db-02 kernel - - - md/raid1:md0: Disk failure on sdb1, disabling device.
+<2>1 2026-10-10T06:02:40.551310+00:00 db-02 kernel - - - md/raid1:md0: Operation continuing on 1 devices.
+<78>Oct 10 06:03:01 web-01 CRON[23201]: (root) CMD (/usr/local/bin/backup.sh)
+<12>Oct 10 06:03:17 web-01 nginx: upstream timed out (110: Connection timed out)
+<0>Oct 10 06:04:00 web-01 kernel: Kernel panic - not syncing: Fatal exception

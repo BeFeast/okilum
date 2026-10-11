@@ -1,6 +1,7 @@
 //! Read-only structured log indexing (#602).
 //!
-//! JSON lines and logfmt are detected from the head of a file and indexed in
+//! JSON lines, logfmt and the text formats of text.rs (spdlog, glog, access
+//! logs, syslog) are detected from the head of a file and indexed in
 //! parallel chunks into compact entries (byte range, line, level, timestamp).
 //! Fields are decoded lazily per record and losslessly: keys keep their
 //! spelling, values their text, duplicates their place. A line that is not a
@@ -21,6 +22,7 @@ pub mod merge;
 pub mod query;
 mod record;
 pub mod tail;
+mod text;
 pub mod timestamp;
 
 use std::path::Path;
