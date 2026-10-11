@@ -14,6 +14,12 @@ const NAME_MIN: f32 = 240.;
 const NUMBER_WIDTH: f32 = 96.;
 const DATE_WIDTH: f32 = 140.;
 const MARK_WIDTH: f32 = 28.;
+/// With an entry open the list starts at 40% and the preview below it at 60%;
+/// the handle between them moves and is remembered (#1149).
+const ENTRY_SHARE: f32 = 0.6;
+/// The list keeps its header and three rows; the preview keeps a line.
+const LIST_MIN_ROWS: f32 = 4.;
+const ENTRY_MIN_HEIGHT: f32 = 48.;
 
 pub(crate) fn eligible(rel: &str) -> bool {
     Path::new(rel)
@@ -58,6 +64,7 @@ pub(crate) struct ArchivePreview {
     generation: u64,
     extracting: bool,
     scroll: UniformListScrollHandle,
+    entry_split: reader_split::Split,
     _filter: Subscription,
 }
 
@@ -99,6 +106,12 @@ impl ArchivePreview {
             generation: 0,
             extracting: false,
             scroll: UniformListScrollHandle::new(),
+            entry_split: reader_split::Split::new(
+                "zip-entry",
+                reader_split::Initial::Share(ENTRY_SHARE),
+                ENTRY_MIN_HEIGHT,
+                ROW_HEIGHT * LIST_MIN_ROWS,
+            ),
             _filter: subscription,
         }
     }
@@ -566,12 +579,9 @@ impl Render for ArchivePreview {
                     .text_align(TextAlign::Right),
             );
         let count = self.rows.len();
-        // At most 40% of the pane, so the selected entry keeps room (#1149).
         let table = v_flex()
             .debug_selector(|| "archive-table".into())
             .mx_6()
-            .h(px(ROW_HEIGHT * 12.))
-            .max_h(relative(0.4))
             .border_1()
             .border_color(palette.border_subtle)
             .child(header)
@@ -588,25 +598,40 @@ impl Render for ArchivePreview {
                     .size_full(),
                 ),
             );
-        view.child(toolbar)
-            .child(div().px_6().child(Input::new(&self.filter)))
-            .child(table)
-            .when_some(self.unsafe_note(&listing), |view, note| {
-                view.child(div().px_6().text_color(palette.text_muted).child(note))
-            })
-            .when_some(self.render_entry(cx), |view, entry| {
-                // The slot takes the rest of the pane, like the PDF preview's; the
-                // inner full-height column lets the text, code and table viewers'
-                // `flex_1` fill it (#1079) instead of collapsing to a line (#1149).
-                view.child(
-                    div()
-                        .debug_selector(|| "archive-entry".into())
-                        .flex_1()
-                        .min_h_0()
-                        .w_full()
-                        .child(v_flex().size_full().child(entry)),
-                )
-            })
+        let note = self
+            .unsafe_note(&listing)
+            .map(|note| div().px_6().text_color(palette.text_muted).child(note));
+        let view = view
+            .child(toolbar)
+            .child(div().px_6().child(Input::new(&self.filter)));
+        let Some(entry) = self.render_entry(cx) else {
+            // No entry open: at most 40% of the pane (#1149).
+            return view
+                .child(table.h(px(ROW_HEIGHT * 12.)).max_h(relative(0.4)))
+                .children(note);
+        };
+        let list = v_flex()
+            .flex_1()
+            .min_h_0()
+            .gap_2()
+            .child(table.flex_1().min_h_0())
+            .children(note);
+        // The slot takes the pane under the handle, like the PDF preview's;
+        // the inner full-height column lets the text, code and table viewers'
+        // `flex_1` fill it (#1079) instead of collapsing to a line (#1149).
+        let slot = div()
+            .debug_selector(|| "archive-entry".into())
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .child(v_flex().size_full().child(entry));
+        view.child(reader_split::vertical(
+            &self.entry_split,
+            |view: &mut Self| &mut view.entry_split,
+            list,
+            slot,
+            cx,
+        ))
     }
 }
 
@@ -640,9 +665,12 @@ mod tests {
             .unwrap();
         }
         zip.finish().unwrap();
+        let state = fixture.path().join("state");
+        std::fs::create_dir_all(&state).unwrap();
         cx.update(|cx| {
             gpui_component::init(cx);
             bind_keys(cx);
+            reader_ui_state::install(&state, cx);
         });
         let mut reader = None;
         let (_, visual) = cx.add_window_view(|window, cx| {
@@ -652,7 +680,7 @@ mod tests {
                         vault: Some(root.clone()),
                         note: Some("note.md".into()),
                         index_dir: Some(fixture.path().join("index")),
-                        session_directory: Some(fixture.path().join("state")),
+                        session_directory: Some(state.clone()),
                         ..Default::default()
                     },
                     window,
@@ -665,30 +693,33 @@ mod tests {
         let reader = reader.unwrap();
         visual.simulate_resize(gpui::size(px(1440.), px(900.)));
         visual.run_until_parked();
-        reader.update_in(visual, |r, window, cx| {
-            r.preview_file("redesign.zip", window, cx)
-        });
-        visual.run_until_parked();
-        let archive = reader.read_with(visual, |r, _| {
-            r.file_preview
-                .as_ref()
-                .unwrap()
-                .archive
-                .clone()
-                .expect("archive view")
-        });
-        let index = archive.read_with(visual, |a, _| {
-            a.listing
-                .as_ref()
-                .expect("listing")
-                .entries
-                .iter()
-                .position(|e| e.name.ends_with(".d.ts"))
-                .unwrap()
-        });
-        archive.update_in(visual, |a, window, cx| a.open_entry(index, window, cx));
-        visual.run_until_parked();
-        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let open = |visual: &mut VisualTestContext| {
+            reader.update_in(visual, |r, window, cx| {
+                r.preview_file("redesign.zip", window, cx)
+            });
+            visual.run_until_parked();
+            let archive = reader.read_with(visual, |r, _| {
+                r.file_preview
+                    .as_ref()
+                    .unwrap()
+                    .archive
+                    .clone()
+                    .expect("archive view")
+            });
+            let index = archive.read_with(visual, |a, _| {
+                a.listing
+                    .as_ref()
+                    .expect("listing")
+                    .entries
+                    .iter()
+                    .position(|e| e.name.ends_with(".d.ts"))
+                    .unwrap()
+            });
+            archive.update_in(visual, |a, window, cx| a.open_entry(index, window, cx));
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+        };
+        open(visual);
         let slot = visual.debug_bounds("archive-entry").expect("entry slot");
         let code = visual
             .debug_bounds("reader-code-file")
@@ -703,7 +734,59 @@ mod tests {
             "the code preview fills its slot: {code:?} in {slot:?}"
         );
 
-        // A small window: the table yields to the 40% cap, the preview keeps room.
+        // The list starts at 40% of the split, the preview at 60%.
+        let pane = visual.debug_bounds("zip-entry-pane").expect("entry pane");
+        let table = visual.debug_bounds("archive-table").expect("entry table");
+        let share = f32::from(pane.size.height) / f32::from(pane.size.height + table.size.height);
+        assert!(
+            (0.55..0.65).contains(&share),
+            "initial preview share {share}"
+        );
+        // A real drag of the handle moves the boundary, and it is remembered
+        // for the next archive view and the next launch (#1149).
+        let handle = visual.debug_bounds("zip-entry-handle").expect("handle");
+        let target = handle.center() + point(px(0.), px(150.));
+        visual.simulate_mouse_down(handle.center(), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            handle.center() + point(px(0.), px(20.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let dragged = visual.debug_bounds("zip-entry-pane").unwrap().size.height;
+        let expected = pane.size.height - px(150.);
+        assert!(
+            (dragged - expected).abs() < px(8.),
+            "the preview follows the handle: {dragged:?}, expected {expected:?}"
+        );
+        reader.update_in(visual, |r, window, cx| {
+            r.open_note("note.md", None, window, cx)
+        });
+        visual.run_until_parked();
+        open(visual);
+        let reopened = visual.debug_bounds("zip-entry-pane").unwrap().size.height;
+        assert!(
+            (reopened - dragged).abs() < px(1.),
+            "the next archive view keeps it: {reopened:?}"
+        );
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        visual.run_until_parked();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(state.join("reader-ui.json")).unwrap()).unwrap();
+        let saved = saved["split_sizes"]["zip-entry"].as_f64().unwrap() as f32;
+        assert!(
+            (saved - f32::from(dragged)).abs() < 1.,
+            "saved for the next launch: {saved}"
+        );
+        // Back to the initial share for the small-window check.
+        archive_split_reset(&reader, visual);
+
+        // A small window: the list starts at 40%, the preview keeps room.
         visual.simulate_resize(gpui::size(px(1000.), px(560.)));
         visual.run_until_parked();
         visual.update(|window, cx| window.draw(cx).clear(cx));
@@ -724,6 +807,21 @@ mod tests {
             f32::from(code.size.height) > 80.,
             "the preview keeps room: {code:?}"
         );
+    }
+
+    fn archive_split_reset(reader: &Entity<Reader>, visual: &mut VisualTestContext) {
+        let archive = reader.read_with(visual, |r, _| {
+            r.file_preview.as_ref().unwrap().archive.clone().unwrap()
+        });
+        archive.update(visual, |a, cx| {
+            a.entry_split = reader_split::Split::new(
+                "zip-entry-reset",
+                reader_split::Initial::Share(ENTRY_SHARE),
+                ENTRY_MIN_HEIGHT,
+                ROW_HEIGHT * LIST_MIN_ROWS,
+            );
+            cx.notify();
+        });
     }
 
     #[test]

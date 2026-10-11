@@ -117,7 +117,7 @@ impl LogView {
             text_input,
             detail_split: reader_split::Split::new(
                 "log-detail",
-                DETAIL_HEIGHT,
+                reader_split::Initial::Pixels(DETAIL_HEIGHT),
                 DETAIL_HEADER_HEIGHT,
                 ROW_HEIGHT * MIN_LIST_ROWS,
             ),
