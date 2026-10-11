@@ -141,6 +141,8 @@ struct Saved {
     log_columns: BTreeMap<String, Vec<String>>,
     /// Widths the user dragged, per log file and column (#1167).
     log_column_widths: BTreeMap<String, BTreeMap<String, f32>>,
+    /// Saved log filters, for every log (#1169).
+    log_saved: okilum_core::log::saved_query::SavedQueries,
     delimited_no_header: BTreeSet<PathBuf>,
     vaults: BTreeMap<PathBuf, Layout>,
     /// Per-vault accent preset key (#774), keyed like `vaults` by the
@@ -176,6 +178,7 @@ impl Default for Saved {
             log_queries: Default::default(),
             log_columns: Default::default(),
             log_column_widths: Default::default(),
+            log_saved: Default::default(),
             delimited_no_header: Default::default(),
             vaults: Default::default(),
             vault_colors: Default::default(),
@@ -205,6 +208,7 @@ struct Store {
     splits_changed: BTreeSet<String>,
     log_queries_changed: BTreeSet<String>,
     log_columns_changed: BTreeSet<String>,
+    log_saved_changed: BTreeSet<String>,
     colors_changed: BTreeSet<PathBuf>,
     trust_changed: BTreeSet<PathBuf>,
     delimited_changed: BTreeSet<PathBuf>,
@@ -284,6 +288,7 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         splits_changed: Default::default(),
         log_queries_changed: Default::default(),
         log_columns_changed: Default::default(),
+        log_saved_changed: Default::default(),
         colors_changed: Default::default(),
         trust_changed: Default::default(),
         delimited_changed: Default::default(),
@@ -504,6 +509,7 @@ struct WriteJob {
     splits_changed: BTreeSet<String>,
     log_queries_changed: BTreeSet<String>,
     log_columns_changed: BTreeSet<String>,
+    log_saved_changed: BTreeSet<String>,
     colors_changed: BTreeSet<PathBuf>,
     trust_changed: BTreeSet<PathBuf>,
     delimited_changed: BTreeSet<PathBuf>,
@@ -605,6 +611,18 @@ impl WriteJob {
                 None => latest.log_column_widths.remove(key),
             };
         }
+        // By name: a filter saved in another window stays, one deleted here
+        // is deleted there.
+        for name in &self.log_saved_changed {
+            match self.saved.log_saved.get(name) {
+                Some(query) => {
+                    latest.log_saved.upsert(query.clone());
+                }
+                None => {
+                    latest.log_saved.remove(name);
+                }
+            }
+        }
         for key in &self.log_queries_changed {
             match self.saved.log_queries.get(key) {
                 Some(queries) => latest.log_queries.insert(key.clone(), queries.clone()),
@@ -678,6 +696,7 @@ fn job(cx: &App) -> Option<WriteJob> {
             && state.splits_changed.is_empty()
             && state.log_queries_changed.is_empty()
             && state.log_columns_changed.is_empty()
+            && state.log_saved_changed.is_empty()
             && state.colors_changed.is_empty()
             && state.trust_changed.is_empty()
             && state.delimited_changed.is_empty()
@@ -707,6 +726,7 @@ fn job(cx: &App) -> Option<WriteJob> {
         splits_changed: state.splits_changed.clone(),
         log_queries_changed: state.log_queries_changed.clone(),
         log_columns_changed: state.log_columns_changed.clone(),
+        log_saved_changed: state.log_saved_changed.clone(),
         colors_changed: state.colors_changed.clone(),
         trust_changed: state.trust_changed.clone(),
         delimited_changed: state.delimited_changed.clone(),
@@ -1357,6 +1377,43 @@ pub(crate) fn remember_log_query(path: &str, query: &str, cx: &mut App) {
     schedule(cx);
 }
 
+/// The saved log filters (#1169), empty before the state is installed.
+pub(crate) fn saved_log_filters(cx: &App) -> okilum_core::log::saved_query::SavedQueries {
+    cx.try_global::<Store>()
+        .map(|state| state.saved.log_saved.clone())
+        .unwrap_or_default()
+}
+
+/// Saves `query` under its name, replacing one of the same name. `false` when
+/// nothing was saved: no state to keep it in, an unusable name, or a full list.
+pub(crate) fn save_log_filter(
+    query: okilum_core::log::saved_query::SavedQuery,
+    cx: &mut App,
+) -> bool {
+    if !installed(cx) {
+        return false;
+    }
+    let name = query.name.clone();
+    let state = cx.global_mut::<Store>();
+    if !state.saved.log_saved.upsert(query) {
+        return false;
+    }
+    state.log_saved_changed.insert(name);
+    schedule(cx);
+    true
+}
+
+pub(crate) fn delete_log_filter(name: &str, cx: &mut App) {
+    if !installed(cx) {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    if state.saved.log_saved.remove(name).is_some() {
+        state.log_saved_changed.insert(name.to_owned());
+        schedule(cx);
+    }
+}
+
 /// The editor log source locations open in (#1165).
 pub(crate) fn log_editor(cx: &App) -> okilum_core::log::source_link::Editor {
     use okilum_core::log::source_link::Editor;
@@ -1518,6 +1575,7 @@ fn mark_saved(generation: u64, cx: &mut App) {
         state.splits_changed.clear();
         state.log_queries_changed.clear();
         state.log_columns_changed.clear();
+        state.log_saved_changed.clear();
         state.colors_changed.clear();
         state.trust_changed.clear();
         state.delimited_changed.clear();
@@ -1569,6 +1627,68 @@ mod tests {
     }
     use ::core::prelude::v1::test;
     use gpui_component::WindowExt;
+
+    /// #1169: saved log filters are global, survive a restart, and merge by
+    /// name with another process: one saved there stays, one deleted here is
+    /// deleted there, one replaced here is replaced there.
+    #[gpui::test]
+    fn saved_log_filters_persist_and_merge_by_name(cx: &mut TestAppContext) {
+        use okilum_core::log::saved_query::SavedQuery;
+        let fixture = tempfile::tempdir().unwrap();
+        let directory = fixture.path().join("state");
+        let path = directory.join("reader-ui.json");
+        let query = |name: &str, text: &str| SavedQuery {
+            name: name.into(),
+            query: text.into(),
+            ..Default::default()
+        };
+        let names = |cx: &App| -> Vec<String> {
+            saved_log_filters(cx)
+                .sorted()
+                .iter()
+                .map(|query| query.name.clone())
+                .collect()
+        };
+        cx.update(|cx| {
+            assert!(
+                !save_log_filter(query("early", "level>=warn"), cx),
+                "no state to keep it in yet"
+            );
+            install(&directory, cx);
+            assert!(saved_log_filters(cx).is_empty());
+            assert!(save_log_filter(query("Slow 5xx", "status>=500"), cx));
+            assert!(save_log_filter(query("Errors", "level>=error"), cx));
+            assert!(
+                !save_log_filter(query("   ", "level>=error"), cx),
+                "no name"
+            );
+            flush(cx);
+            // Another process saves one filter.
+            let mut external = read(&path).unwrap();
+            assert!(external.log_saved.upsert(query("Remote", "exists(err)")));
+            std::fs::write(&path, serde_json::to_vec(&external).unwrap()).unwrap();
+            // This one deletes one (spelled differently) and replaces another.
+            delete_log_filter("  errors ", cx);
+            assert!(save_log_filter(query("slow  5xx", "status>=502"), cx));
+            flush(cx);
+            let merged = read(&path).unwrap();
+            let kept: Vec<_> = merged
+                .log_saved
+                .sorted()
+                .iter()
+                .map(|query| (query.name.clone(), query.query.clone()))
+                .collect();
+            assert_eq!(
+                kept,
+                [
+                    ("Remote".to_owned(), "exists(err)".to_owned()),
+                    ("slow 5xx".to_owned(), "status>=502".to_owned()),
+                ]
+            );
+            install(&directory, cx);
+            assert_eq!(names(cx), ["Remote", "slow 5xx"], "after a restart");
+        });
+    }
 
     /// #774: colours are per canonical root, survive a restart, and merge
     /// per root so another process's colour for a different vault (and an
@@ -1802,6 +1922,7 @@ mod tests {
                 splits_changed: Default::default(),
                 log_queries_changed: Default::default(),
                 log_columns_changed: Default::default(),
+                log_saved_changed: Default::default(),
                 colors_changed: Default::default(),
                 trust_changed: Default::default(),
                 delimited_changed: Default::default(),
