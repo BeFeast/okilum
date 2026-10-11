@@ -32,6 +32,9 @@ pub struct PlainSnippet {
     pub hidden_match: Option<MatchContext>,
     /// A match in confirmed leading frontmatter, formatted independently of prose.
     pub property_match: Option<MatchContext>,
+    /// A match only in the file name, when the displayed title (the first H1)
+    /// differs from it. Set by the presentation layer, never by the engine.
+    pub name_match: Option<MatchContext>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -198,6 +201,7 @@ fn plain_marked(raw: &str, marks: &[Range<usize>]) -> PlainSnippet {
         highlights,
         hidden_match,
         property_match: None,
+        name_match: None,
     }
 }
 
