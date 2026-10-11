@@ -1,0 +1,29 @@
+diff --git a/crates/base/src/input/attribution.rs b/crates/base/src/input/attribution.rs
+--- a/crates/base/src/input/attribution.rs
++++ b/crates/base/src/input/attribution.rs
+@@ -247,7 +247,14 @@
+         drop(Span::new("inner", identity));
+         drop(outer);
+         let dump = dump();
+-        let events = dump["events"].as_array().unwrap();
++        // The buffer is process-wide and other tests record editor spans while this one
++        // has recording on: judge only the spans this test made (unique identity).
++        let events: Vec<_> = dump["events"]
++            .as_array()
++            .unwrap()
++            .iter()
++            .filter(|e| e["identity"]["document"] == 7 && e["identity"]["epoch"] == 11)
++            .collect();
+         assert_eq!(events.len(), 2);
+         assert_eq!(events[0]["parent"], outer_id);
+         assert_eq!(events[0]["thread"], events[1]["thread"]);
+@@ -260,7 +267,8 @@
+         }
+         let full = super::dump();
+         assert_eq!(full["events"].as_array().unwrap().len(), CAPACITY);
+-        assert_eq!(full["overflow"], 1);
++        // At least this test's extra span overflowed; parallel tests may add more.
++        assert!(full["overflow"].as_u64().unwrap() >= 1);
+         assert!(full["overflow_first_ns"].as_u64().unwrap() > 0);
+         assert_eq!(super::dump()["overflow"], 0);
+         init(false);
