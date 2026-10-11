@@ -226,6 +226,42 @@ pub fn create_from_template(
     Ok(source)
 }
 
+/// Where typing starts in a newly created note: after its frontmatter and its
+/// first heading line, past blank lines; the end of the note when nothing
+/// follows (#1117). Never before the frontmatter.
+pub fn body_start(source: &str) -> usize {
+    let mut lines = source.split_inclusive('\n').peekable();
+    let mut at = 0;
+    let bare = |line: &str| line.trim_end_matches(['\n', '\r']).to_owned();
+    if lines.peek().map(|line| bare(line)).as_deref() == Some("---") {
+        at += lines.next().map_or(0, str::len);
+        let mut closed = false;
+        for line in lines.by_ref() {
+            at += line.len();
+            if matches!(bare(line).as_str(), "---" | "...") {
+                closed = true;
+                break;
+            }
+        }
+        if !closed {
+            return source.len();
+        }
+    }
+    let skip_blank = |lines: &mut std::iter::Peekable<std::str::SplitInclusive<'_, char>>,
+                      at: &mut usize| {
+        while let Some(line) = lines.peek().filter(|line| line.trim().is_empty()) {
+            *at += line.len();
+            lines.next();
+        }
+    };
+    skip_blank(&mut lines, &mut at);
+    if lines.peek().is_some_and(|line| line.starts_with('#')) {
+        at += lines.next().map_or(0, str::len);
+        skip_blank(&mut lines, &mut at);
+    }
+    at.min(source.len())
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
@@ -241,6 +277,26 @@ mod tests {
             selected.as_deref(),
         )
     }
+    #[test]
+    fn typing_in_a_new_note_starts_after_its_frontmatter_and_heading() {
+        fn at(source: &str) -> &str {
+            &source[..body_start(source)]
+        }
+        // The default note: the caret is on the line after the H1.
+        let note = "---\ntype: Note\ncreated: 2026-10-05\n---\n\n# Привет 🧠\n";
+        assert_eq!(body_start(note), note.len());
+        // A template body starts after the heading and its blank line.
+        let body = "---\ntype: Note\n---\n\n# T\n\nTemplate body\n";
+        assert!(body[body_start(body)..].starts_with("Template body"));
+        assert!(at(body).starts_with("---"));
+        // CRLF, no frontmatter, no heading, unclosed frontmatter.
+        let crlf = "---\r\na: 1\r\n---\r\n# T\r\nx";
+        assert_eq!(&crlf[body_start(crlf)..], "x");
+        assert_eq!(body_start("# T\n"), "# T\n".len());
+        assert_eq!(body_start("plain"), 0);
+        assert_eq!(body_start("---\nopen"), "---\nopen".len());
+    }
+
     #[test]
     fn configured_template_publication_is_lossless_and_create_only() {
         let dir = tempfile::tempdir().unwrap();

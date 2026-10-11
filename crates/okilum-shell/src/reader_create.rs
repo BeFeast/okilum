@@ -434,6 +434,14 @@ impl Reader {
                     cx,
                 );
                 self.toggle_source(window, cx);
+                // Typing starts in the body after the heading, never before
+                // the frontmatter (#1117).
+                let body = okilum_core::note_files::body_start(&source);
+                if let Some(editing) = &self.editing {
+                    editing
+                        .input()
+                        .update(cx, |input, cx| input.set_selected_range(body..body, cx));
+                }
                 self.announce_creation(&created, Some(source), window, cx);
                 self.queue_vault_mutation(
                     okilum_core::Changes {
@@ -916,6 +924,70 @@ mod tests {
             .iter()
             .any(|entry| entry.path == "Empty"
                 && entry.kind == okilum_core::vault::EntryKind::Directory));
+    }
+
+    /// #1117: typing right after creating a note writes into its body; the
+    /// file still starts with its frontmatter.
+    #[gpui::test]
+    fn typing_right_after_create_keeps_the_frontmatter_first(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_reduce_motion(true);
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let dir = std::env::temp_dir().join(format!("okilum-create-{}", uuid::Uuid::new_v4()));
+        let root = dir.join("notes");
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        std::fs::write(root.join("start.md"), "start\n").unwrap();
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        open_path: Some(root.join("start.md")),
+                        index_dir: Some(dir.join("index")),
+                        session_directory: Some(dir.join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        // As in the report: an existing note open in Source, then New note.
+        reader.update_in(visual, |reader, window, cx| {
+            reader.toggle_source(window, cx);
+            reader.new_note(None, window, cx);
+            let input = reader.creation.as_ref().unwrap().input.clone();
+            input.update(cx, |input, cx| {
+                input.set_value("Friend new note", window, cx)
+            });
+        });
+        visual.run_until_parked();
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        // Type at once, without clicking into the editor.
+        visual.simulate_input("Body");
+        visual.run_until_parked();
+        reader.update_in(visual, |r, _, cx| {
+            assert_eq!(r.current_rel, "Friend new note.md");
+            let value = r.editing.as_ref().unwrap().test_input().read(cx).value();
+            // Positive control: the keystrokes reached the new note's editor.
+            assert!(value.contains("Body"), "{value:?}");
+            assert!(value.starts_with("---\n"), "{value:?}");
+            assert!(value.ends_with("# Friend new note\nBody"), "{value:?}");
+            assert!(r.save_source(cx));
+        });
+        let saved = std::fs::read_to_string(root.join("Friend new note.md")).unwrap();
+        assert!(saved.starts_with("---\n"), "{saved:?}");
+        assert!(saved.ends_with("# Friend new note\nBody"), "{saved:?}");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[gpui::test]
