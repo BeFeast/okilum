@@ -130,6 +130,7 @@ impl LogData for LogTail {
 /// A copy of what a background filter run reads.
 enum Snapshot {
     File(Arc<LogFile>),
+    Segment(Arc<Segment>),
     Owned { index: LogIndex, bytes: Vec<u8> },
 }
 
@@ -137,6 +138,7 @@ impl Snapshot {
     fn parts(&self) -> (&LogIndex, &[u8]) {
         match self {
             Snapshot::File(file) => (file.index(), file.bytes()),
+            Snapshot::Segment(segment) => (segment.index(), segment.bytes()),
             Snapshot::Owned { index, bytes } => (index, bytes),
         }
     }
@@ -162,8 +164,56 @@ struct Follow {
 
 /// A file added to the view (#1160).
 struct ExtraSource {
-    file: Arc<LogFile>,
+    data: SourceData,
     enabled: bool,
+    /// The source a segment came from (its own index for an added file),
+    /// and the segment's place among that source's segments: a file's
+    /// earlier content comes before it when nothing else orders them.
+    owner: usize,
+    seq: usize,
+}
+
+enum SourceData {
+    File(Arc<LogFile>),
+    /// A file's content before follow mode saw it rotated or truncated
+    /// (#1159, #1160): kept, listed under its own name, never polled.
+    Segment(Arc<Segment>),
+    /// An added file while follow mode is on.
+    Tail(Box<LogTail>),
+}
+
+impl SourceData {
+    fn data(&self) -> &dyn LogData {
+        match self {
+            SourceData::File(file) => file.as_ref(),
+            SourceData::Segment(segment) => segment.as_ref(),
+            SourceData::Tail(tail) => tail.as_ref(),
+        }
+    }
+}
+
+/// The finished content of a followed file, under a label of its own.
+struct Segment {
+    path: PathBuf,
+    segment: okilum_core::log::tail::LogSegment,
+}
+
+impl LogData for Segment {
+    fn index(&self) -> &LogIndex {
+        self.segment.index()
+    }
+    fn bytes(&self) -> &[u8] {
+        self.segment.bytes()
+    }
+    fn raw(&self, index: usize) -> Option<&[u8]> {
+        self.segment.raw(index)
+    }
+    fn record(&self, index: usize) -> Option<Record> {
+        self.segment.record(index)
+    }
+    fn path(&self) -> &Path {
+        &self.path
+    }
 }
 
 /// Several shown sources in time order. Rows of the view are rows of `log`.
@@ -371,10 +421,14 @@ impl LogView {
                 bytes: follow.tail.bytes()[..follow.tail.index().bytes() as usize].to_vec(),
             }),
             (0, None) => self.file().cloned().map(Snapshot::File),
-            (n, _) => self
-                .extra
-                .get(n - 1)
-                .map(|extra| Snapshot::File(extra.file.clone())),
+            (n, _) => self.extra.get(n - 1).map(|extra| match &extra.data {
+                SourceData::File(file) => Snapshot::File(file.clone()),
+                SourceData::Segment(segment) => Snapshot::Segment(segment.clone()),
+                SourceData::Tail(tail) => Snapshot::Owned {
+                    index: tail.index().clone(),
+                    bytes: tail.bytes()[..tail.index().bytes() as usize].to_vec(),
+                },
+            }),
         }
     }
 
@@ -382,10 +436,7 @@ impl LogView {
     fn source(&self, source: usize) -> Option<&dyn LogData> {
         match source {
             0 => self.data(),
-            n => self
-                .extra
-                .get(n - 1)
-                .map(|extra| extra.file.as_ref() as &dyn LogData),
+            n => self.extra.get(n - 1).map(|extra| extra.data.data()),
         }
     }
 
@@ -400,10 +451,31 @@ impl LogView {
         }
     }
 
+    /// Shown sources in merge order: each file after its earlier segments.
     fn enabled_sources(&self) -> Vec<usize> {
-        (0..self.source_count())
+        let mut sources: Vec<usize> = (0..self.source_count())
             .filter(|&source| self.source_enabled(source) && self.source(source).is_some())
-            .collect()
+            .collect();
+        sources.sort_by_key(|&source| match source {
+            0 => (0, 1, 0),
+            n => {
+                let extra = &self.extra[n - 1];
+                let live = !matches!(extra.data, SourceData::Segment(_));
+                (extra.owner, usize::from(live), extra.seq)
+            }
+        });
+        sources
+    }
+
+    /// The newest timestamp of the shown sources: where a time window ends.
+    fn newest(&self) -> Option<i64> {
+        self.enabled_sources()
+            .into_iter()
+            .filter_map(|source| {
+                let index = self.source(source)?.index();
+                index.entries().iter().filter_map(|e| e.timestamp()).max()
+            })
+            .max()
     }
 
     fn source_name(&self, source: usize) -> String {
@@ -493,12 +565,9 @@ impl LogView {
         cx.notify();
     }
 
-    /// Indexes `paths` off the UI thread and adds them to the view (#1160).
-    /// Follow mode covers one file, so it stops first.
+    /// Indexes `paths` off the UI thread and adds them to the view (#1160);
+    /// while following, they are followed too.
     fn add_files(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
-        if let Some(follow) = self.follow.as_mut() {
-            follow.poll = None;
-        }
         cx.spawn(async move |this, cx| {
             let opened = cx
                 .background_executor()
@@ -517,9 +586,12 @@ impl LogView {
                                 this.source(source).map(LogData::path) == Some(file.path())
                             });
                             if !known {
+                                let owner = this.source_count();
                                 this.extra.push(ExtraSource {
-                                    file: Arc::new(file),
+                                    data: SourceData::File(Arc::new(file)),
                                     enabled: true,
+                                    owner,
+                                    seq: 0,
                                 });
                             }
                         }
@@ -530,6 +602,10 @@ impl LogView {
                 }
                 this.rebuild_merge();
                 this.refilter(cx);
+                // Following: the new files are followed too.
+                if this.following() {
+                    this.open_tails(cx);
+                }
                 cx.notify();
             });
         })
@@ -857,64 +933,99 @@ impl LogView {
         cx.notify();
     }
 
-    /// Follow on, off, or on again. The first time it reads the file afresh
-    /// with `LogTail`, off the UI thread.
+    /// Follow on, off, or on again. Every file of the view is followed: the
+    /// view's own file and the added ones, read afresh with `LogTail`.
     fn toggle_follow(&mut self, cx: &mut Context<Self>) {
-        if !self.extra.is_empty() {
-            return;
-        }
         match &mut self.follow {
             Some(follow) if follow.poll.is_some() => {
                 follow.poll = None;
                 cx.notify();
             }
-            Some(follow) => {
-                follow.pinned = true;
-                follow.unseen = 0;
-                follow.poll = Some(Self::start_poll(cx));
-                self.keep_pinned();
-                cx.notify();
-            }
-            None => {
-                let Some(path) = self.data().map(|data| data.path().to_owned()) else {
-                    return;
-                };
-                self.follow_failed = None;
-                self._follow_open = Some(cx.spawn(async move |this, cx| {
-                    let tail = cx
-                        .background_executor()
-                        .spawn(async move {
-                            let interval = okilum_core::log::tail::poll_interval_for(&path);
-                            LogTail::open(&path).map(|tail| tail.with_interval(interval))
-                        })
-                        .await;
-                    let _ = this.update(cx, |this, cx| {
-                        match tail {
-                            Ok(tail) => {
-                                this.follow = Some(Follow {
-                                    tail,
-                                    poll: Some(Self::start_poll(cx)),
-                                    pinned: true,
-                                    unseen: 0,
-                                    reset: None,
-                                    error: None,
-                                    last_full_run: None,
-                                });
-                                // Same bytes from the start: the selection keeps its entry.
-                                this.refilter(cx);
-                                this.keep_pinned();
-                            }
-                            Err(error) => this.follow_failed = Some(format!("{error:#}")),
-                        }
-                        cx.notify();
-                    });
-                }));
-            }
+            _ => self.open_tails(cx),
         }
     }
 
-    /// Polls at the tail's interval: the read runs in the background, the
-    /// new bytes are indexed here. Dropping the task stops it.
+    /// Opens a tail for the view's own file (the first time) and for each
+    /// added file not followed yet, off the UI thread, then polls them all.
+    fn open_tails(&mut self, cx: &mut Context<Self>) {
+        let primary = match &self.follow {
+            Some(_) => None,
+            None => match self.data() {
+                Some(data) => Some(data.path().to_owned()),
+                None => return,
+            },
+        };
+        let added: Vec<(usize, PathBuf)> = self
+            .extra
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, extra)| match &extra.data {
+                SourceData::File(file) => Some((slot, file.path().to_owned())),
+                _ => None,
+            })
+            .collect();
+        self.follow_failed = None;
+        self._follow_open = Some(cx.spawn(async move |this, cx| {
+            let (primary, added) = cx
+                .background_executor()
+                .spawn(async move {
+                    let open = |path: &Path| {
+                        let interval = okilum_core::log::tail::poll_interval_for(path);
+                        LogTail::open(path).map(|tail| tail.with_interval(interval))
+                    };
+                    let primary = primary.map(|path| open(&path));
+                    let added: Vec<_> = added
+                        .into_iter()
+                        .map(|(slot, path)| (slot, open(&path)))
+                        .collect();
+                    (primary, added)
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                match primary {
+                    Some(Ok(tail)) => {
+                        this.follow = Some(Follow {
+                            tail,
+                            poll: None,
+                            pinned: true,
+                            unseen: 0,
+                            reset: None,
+                            error: None,
+                            last_full_run: None,
+                        })
+                    }
+                    Some(Err(error)) => {
+                        this.follow_failed = Some(format!("{error:#}"));
+                        cx.notify();
+                        return;
+                    }
+                    None => {}
+                }
+                for (slot, tail) in added {
+                    match (tail, this.extra.get_mut(slot)) {
+                        (Ok(tail), Some(extra)) if matches!(extra.data, SourceData::File(_)) => {
+                            extra.data = SourceData::Tail(Box::new(tail))
+                        }
+                        (Err(error), _) => this.follow_failed = Some(format!("{error:#}")),
+                        _ => {}
+                    }
+                }
+                if let Some(follow) = this.follow.as_mut() {
+                    follow.pinned = true;
+                    follow.unseen = 0;
+                    follow.poll = Some(Self::start_poll(cx));
+                }
+                // Same bytes from the start: the selection keeps its record.
+                this.rebuild_merge();
+                this.refilter(cx);
+                this.keep_pinned();
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Polls at the view's tail interval: every followed file is read in the
+    /// background and indexed here. Dropping the task stops it.
     fn start_poll(cx: &mut Context<Self>) -> Task<()> {
         cx.spawn(async move |this, cx| loop {
             let Ok(Some(interval)) = this.update(cx, |this, _| {
@@ -923,17 +1034,23 @@ impl LogView {
                 return;
             };
             cx.background_executor().timer(interval).await;
-            let Ok(Some(request)) = this.update(cx, |this, _| {
-                this.follow.as_mut().map(|follow| follow.tail.begin_poll())
-            }) else {
+            let Ok(requests) = this.update(cx, |this, _| this.begin_polls()) else {
                 return;
             };
-            let read = cx
+            if requests.is_empty() {
+                return;
+            }
+            let reads = cx
                 .background_executor()
-                .spawn(async move { request.read() })
+                .spawn(async move {
+                    requests
+                        .into_iter()
+                        .map(|(source, request)| (source, request.read()))
+                        .collect::<Vec<_>>()
+                })
                 .await;
             if this
-                .update(cx, |this, cx| this.apply_poll(read, cx))
+                .update(cx, |this, cx| this.apply_polls(reads, cx))
                 .is_err()
             {
                 return;
@@ -941,27 +1058,73 @@ impl LogView {
         })
     }
 
+    fn begin_polls(&mut self) -> Vec<(usize, okilum_core::log::tail::PollRequest)> {
+        let Some(follow) = self.follow.as_mut() else {
+            return Vec::new();
+        };
+        let mut requests = vec![(0, follow.tail.begin_poll())];
+        for (slot, extra) in self.extra.iter_mut().enumerate() {
+            if let SourceData::Tail(tail) = &mut extra.data {
+                requests.push((slot + 1, tail.begin_poll()));
+            }
+        }
+        requests
+    }
+
+    fn tail_mut(&mut self, source: usize) -> Option<&mut LogTail> {
+        match source {
+            0 => self.follow.as_mut().map(|follow| &mut follow.tail),
+            n => match &mut self.extra.get_mut(n - 1)?.data {
+                SourceData::Tail(tail) => Some(tail.as_mut()),
+                _ => None,
+            },
+        }
+    }
+
+    fn apply_polls(
+        &mut self,
+        reads: Vec<(usize, anyhow::Result<okilum_core::log::tail::PollRead>)>,
+        cx: &mut Context<Self>,
+    ) {
+        for (source, read) in reads {
+            self.apply_poll(source, read, cx);
+        }
+        self.keep_pinned();
+        cx.notify();
+    }
+
     fn apply_poll(
         &mut self,
+        source: usize,
         read: anyhow::Result<okilum_core::log::tail::PollRead>,
         cx: &mut Context<Self>,
     ) {
-        let Some(follow) = self.follow.as_mut() else {
-            return;
-        };
         let event = match read {
             Ok(read) => {
-                follow.error = None;
-                follow.tail.apply(read)
+                if source == 0 {
+                    if let Some(follow) = self.follow.as_mut() {
+                        follow.error = None;
+                    }
+                }
+                match self.tail_mut(source) {
+                    Some(tail) => tail.apply(read),
+                    None => return,
+                }
             }
             Err(error) => {
-                follow.error = Some(format!("{error:#}"));
-                cx.notify();
+                let name = self.source_name(source);
+                if let Some(follow) = self.follow.as_mut() {
+                    follow.error = Some(if source == 0 {
+                        format!("{error:#}")
+                    } else {
+                        format!("{name}: {error:#}")
+                    });
+                }
                 return;
             }
         };
         match event {
-            TailEvent::Unchanged | TailEvent::Stale => return,
+            TailEvent::Unchanged | TailEvent::Stale => {}
             TailEvent::Appended {
                 entries,
                 reindexed,
@@ -973,24 +1136,33 @@ impl LogView {
                         .last_full_run
                         .is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(1))
                 });
-                if reindexed || (time_moves && due) {
+                let merged = self.merge.is_some();
+                if reindexed || (time_moves && due) || (grown && merged) {
                     // Every row may change: earlier entries were indexed
-                    // again, or the newest record moved the time window.
+                    // again, the newest record moved the time window, or a
+                    // merged record took new lines.
                     if let Some(follow) = self.follow.as_mut() {
                         follow.last_full_run = Some(std::time::Instant::now());
                     }
+                    if merged {
+                        self.rebuild_merge();
+                    }
                     self.refilter(cx);
                 } else {
-                    // An entry that took new lines (a stack trace written line
-                    // by line, #1161) is filtered again with them; it is not
-                    // a new row.
-                    let mut entries = entries;
-                    let mut regrown = 0;
-                    if grown && entries.start > 0 {
-                        entries.start -= 1;
-                        regrown = usize::from(self.drop_last_row(entries.start));
-                    }
-                    let added = self.extend_rows(entries).saturating_sub(regrown);
+                    let added = if merged {
+                        self.append_merged(source, entries, cx)
+                    } else {
+                        // An entry that took new lines (a stack trace written
+                        // line by line, #1161) is filtered again with them; it
+                        // is not a new row.
+                        let mut entries = entries;
+                        let mut regrown = 0;
+                        if grown && entries.start > 0 {
+                            entries.start -= 1;
+                            regrown = usize::from(self.drop_last_row(entries.start));
+                        }
+                        self.extend_rows(entries).saturating_sub(regrown)
+                    };
                     if let Some(follow) = self.follow.as_mut() {
                         if !follow.pinned {
                             follow.unseen += added;
@@ -1001,16 +1173,111 @@ impl LogView {
             TailEvent::Reset {
                 reason, previous, ..
             } => {
-                if let Some(follow) = self.follow.as_mut() {
-                    follow.reset = Some((reason, previous.index().len()));
-                    follow.unseen = 0;
+                // The earlier content stays in the view under its own name
+                // (#1160), before the new content of the same file.
+                let earlier = previous.index().len();
+                if source == 0 {
+                    if let Some(follow) = self.follow.as_mut() {
+                        follow.reset = Some((reason, earlier));
+                        follow.unseen = 0;
+                    }
+                }
+                if earlier > 0 {
+                    let what = match reason {
+                        ResetReason::Truncated => "before truncation",
+                        ResetReason::Rotated => "before rotation",
+                    };
+                    let name = self.source_name(source);
+                    let seq = self
+                        .extra
+                        .iter()
+                        .filter(|extra| extra.owner == source)
+                        .filter(|extra| matches!(extra.data, SourceData::Segment(_)))
+                        .count();
+                    self.extra.push(ExtraSource {
+                        data: SourceData::Segment(Arc::new(Segment {
+                            path: PathBuf::from(format!("{name} ({what})")),
+                            segment: previous,
+                        })),
+                        enabled: true,
+                        owner: source,
+                        seq,
+                    });
                 }
                 self.selected = None;
+                self.rebuild_merge();
                 self.refilter(cx);
             }
         }
-        self.keep_pinned();
-        cx.notify();
+    }
+
+    /// New entries `entries` of `source` in a merged view: placed at the end
+    /// in time order when they are the newest, then filtered into the rows.
+    /// Anything else rebuilds the merge and filters again.
+    fn append_merged(
+        &mut self,
+        source: usize,
+        entries: Range<usize>,
+        cx: &mut Context<Self>,
+    ) -> usize {
+        let Some(mut merge) = self.merge.take() else {
+            return 0;
+        };
+        let Some(file) = merge.sources.iter().position(|&s| s == source) else {
+            self.merge = Some(merge);
+            return 0;
+        };
+        let before = merge.log.len();
+        let update = {
+            let indexes: Vec<&LogIndex> = merge
+                .sources
+                .iter()
+                .filter_map(|&source| self.source(source).map(LogData::index))
+                .collect();
+            merge
+                .log
+                .append(&indexes, okilum_core::log::merge::FileId::new(file))
+        };
+        match update {
+            okilum_core::log::MergeUpdate::Appended(added)
+                if added == entries.len() && merge.positions[file].len() == entries.start =>
+            {
+                Arc::make_mut(&mut merge.positions)[file]
+                    .extend((before..before + added).map(|row| row as u32));
+                let positions = merge.positions.clone();
+                self.merge = Some(merge);
+                if self.rows.is_none() {
+                    return added;
+                }
+                let matched = match self.source(source) {
+                    Some(data) => {
+                        let filter = LogFilter {
+                            window_end: (self.filter.time != TimeWindow::All)
+                                .then(|| self.newest())
+                                .flatten(),
+                            ..self.filter.clone()
+                        };
+                        filter::evaluate_range(&filter, data.index(), data.bytes(), entries)
+                    }
+                    None => Vec::new(),
+                };
+                let rows: Vec<u32> = matched
+                    .into_iter()
+                    .map(|entry| positions[file][entry as usize])
+                    .collect();
+                let count = rows.len();
+                if let Some(shown) = self.rows.as_mut() {
+                    Arc::make_mut(shown).extend(rows);
+                }
+                count
+            }
+            _ => {
+                self.merge = Some(merge);
+                self.rebuild_merge();
+                self.refilter(cx);
+                0
+            }
+        }
     }
 
     /// Filters the appended entries `range` into the rows; returns how many
@@ -1450,7 +1717,7 @@ impl LogView {
             || self
                 .extra
                 .iter()
-                .any(|extra| extra.file.index().stats().timestamped > 0);
+                .any(|extra| extra.data.data().index().stats().timestamped > 0);
         let text = div()
             .flex_none()
             .w(px(TEXT_FILTER_WIDTH))
@@ -1614,11 +1881,8 @@ impl LogView {
             .child(query)
             .children(history)
             .child(self.files_button(cx))
-            // Follow mode covers one file, and a compressed log does not
-            // grow (#1164).
-            .when(self.extra.is_empty() && !self.compressed(), |bar| {
-                bar.child(self.follow_button(cx))
-            })
+            // A compressed log does not grow (#1164).
+            .when(!self.compressed(), |bar| bar.child(self.follow_button(cx)))
             .child(
                 div()
                     .flex_none()
@@ -1700,10 +1964,19 @@ impl LogView {
             ResetReason::Truncated => "The file was truncated",
             ResetReason::Rotated => "The file was rotated",
         };
+        // The earlier records stay listed as their own file (#1160).
+        let name = self.source_name(0);
+        let label = match reason {
+            ResetReason::Truncated => "before truncation",
+            ResetReason::Rotated => "before rotation",
+        };
         let earlier = match earlier {
             0 => String::new(),
-            1 => " · 1 earlier record is not shown".to_owned(),
-            n => format!(" · {} earlier records are not shown", grouped(n as u64)),
+            1 => format!(" · 1 earlier record is listed as “{name} ({label})”"),
+            n => format!(
+                " · {} earlier records are listed as “{name} ({label})”",
+                grouped(n as u64)
+            ),
         };
         Some(
             div()
@@ -3088,12 +3361,10 @@ mod tests {
         view.update(visual, |view, cx| view.set_query("level>=warn".into(), cx));
         visual.run_until_parked();
         let mut written = 1;
-        let mut since_rotation = 1;
         for poll in 0..600usize {
             if poll == 300 {
                 std::fs::rename(&path, path.with_extension("jsonl.1")).unwrap();
                 std::fs::write(&path, "").unwrap();
-                since_rotation = 0;
             }
             // 2–3 records per 250 ms: 10 records a second.
             let burst = if poll.is_multiple_of(2) { 3 } else { 2 };
@@ -3103,18 +3374,18 @@ mod tests {
                 .unwrap();
             for _ in 0..burst {
                 written += 1;
-                since_rotation += 1;
                 file.write_all(line(written).as_bytes()).unwrap();
             }
             drop(file);
             visual.executor().advance_clock(Duration::from_millis(250));
             visual.run_until_parked();
             if poll % 50 == 49 || poll == 299 || poll == 300 || poll == 599 {
-                // The rows are the warn records of the current file, in order.
-                let first = written - since_rotation + 1;
-                let expected: Vec<usize> = (first..=written)
+                // The rows are every warn record written so far, in order:
+                // after the rotation the earlier file is listed first under
+                // its own name (#1160), so record n is still row n - 1.
+                let expected: Vec<usize> = (1..=written)
                     .filter(|n| n.is_multiple_of(10))
-                    .map(|n| n - first)
+                    .map(|n| n - 1)
                     .collect();
                 assert_eq!(shown(&view, visual), expected, "poll {poll}");
                 view.read_with(visual, |view, _| {
@@ -3223,12 +3494,19 @@ mod tests {
         assert!(visual.debug_bounds("log-follow-new").is_none());
 
         // Rotation: move and recreate; the new file is followed and the
-        // earlier records are announced, not silently dropped.
+        // earlier records stay listed under their own name (#1160).
         std::fs::rename(&path, path.with_extension("jsonl.1")).unwrap();
         std::fs::write(&path, line("info", "fresh 1") + &line("warn", "fresh 2")).unwrap();
         tick(visual);
         tick(visual);
-        assert_eq!(len(visual), 2, "the new file's records");
+        assert_eq!(len(visual), 69, "67 earlier records and the new file's 2");
+        view.read_with(visual, |view, _| {
+            assert_eq!(view.source_count(), 2);
+            assert_eq!(view.source_name(1), "app.jsonl (before rotation)");
+            // The earlier records come first, then the new file's.
+            assert_eq!(view.locate(0).unwrap().0, 1);
+            assert_eq!(view.locate(68).unwrap(), (0, 1));
+        });
         let reset = visual
             .debug_bounds("log-follow-reset")
             .expect("a separator");
@@ -3240,10 +3518,13 @@ mod tests {
             );
         });
 
-        // Truncation of the followed file.
+        // Truncation of the followed file keeps its two records as well.
         std::fs::write(&path, line("info", "after truncate")).unwrap();
         tick(visual);
-        assert_eq!(len(visual), 1);
+        assert_eq!(len(visual), 70);
+        view.read_with(visual, |view, _| {
+            assert_eq!(view.source_name(2), "app.jsonl (before truncation)");
+        });
         view.read_with(visual, |view, _| {
             assert_eq!(
                 view.follow.as_ref().unwrap().reset.map(|r| r.0),
@@ -3255,10 +3536,111 @@ mod tests {
         view.update(visual, |view, cx| view.toggle_follow(cx));
         append(&line("info", "later"));
         tick(visual);
-        assert_eq!(len(visual), 1);
+        assert_eq!(len(visual), 70);
         view.update(visual, |view, cx| view.toggle_follow(cx));
+        visual.run_until_parked();
         tick(visual);
-        assert_eq!(len(visual), 2);
+        assert_eq!(len(visual), 71);
+    }
+
+    /// #1160: follow covers every file of a merged view. A newer record
+    /// lands at the end in place, an older one rebuilds the time order, the
+    /// query applies to both, and a rotated added file keeps its records.
+    #[gpui::test]
+    fn follow_covers_every_file_of_a_merged_view(cx: &mut TestAppContext) {
+        use std::io::Write as _;
+        let line = |second: u32, level: &str, msg: &str| {
+            format!(
+                "{{\"ts\":\"2025-10-01T00:00:{second:02}Z\",\"level\":\"{level}\",\"msg\":\"{msg}\"}}\n"
+            )
+        };
+        let (directory, reader, visual) =
+            open_log(&(line(1, "info", "a1") + &line(3, "warn", "a3")), cx);
+        let root = directory.path().canonicalize().unwrap();
+        let a = root.join("app.jsonl");
+        let b = root.join("b.jsonl");
+        std::fs::write(&b, line(2, "info", "b2") + &line(4, "error", "b4")).unwrap();
+        let append = |path: &Path, text: &str| {
+            let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+            file.write_all(text.as_bytes()).unwrap();
+        };
+        let tick = |visual: &mut VisualTestContext| {
+            visual.executor().advance_clock(Duration::from_millis(600));
+            visual.run_until_parked();
+        };
+        let messages = |visual: &mut VisualTestContext, view: &Entity<LogView>| {
+            view.read_with(visual, |view, _| {
+                (0..view.visible_len())
+                    .map(|row| {
+                        let id = view.entry_at(row).unwrap();
+                        let record = String::from_utf8_lossy(view.raw_at(id).unwrap()).into_owned();
+                        record
+                            .split("\"msg\":\"")
+                            .nth(1)
+                            .unwrap()
+                            .trim_end_matches("\"}")
+                            .to_owned()
+                    })
+                    .collect::<Vec<_>>()
+            })
+        };
+        let view = log_view(&reader, visual);
+        view.update(visual, |view, cx| view.add_files(vec![b.clone()], cx));
+        visual.run_until_parked();
+        assert_eq!(messages(visual, &view), ["a1", "b2", "a3", "b4"]);
+        view.update(visual, |view, cx| view.toggle_follow(cx));
+        visual.run_until_parked();
+        view.read_with(visual, |view, _| {
+            assert!(view.following());
+            assert!(
+                matches!(view.extra[0].data, SourceData::Tail(_)),
+                "b is followed too"
+            );
+        });
+
+        // Newer records in either file land at the end.
+        append(&b, &line(5, "warn", "b5"));
+        tick(visual);
+        append(&a, &line(6, "info", "a6"));
+        tick(visual);
+        assert_eq!(
+            messages(visual, &view),
+            ["a1", "b2", "a3", "b4", "b5", "a6"]
+        );
+
+        // The query applies to appended records of every file.
+        view.update(visual, |view, cx| view.set_query("level>=warn".into(), cx));
+        visual.run_until_parked();
+        assert_eq!(messages(visual, &view), ["a3", "b4", "b5"]);
+        append(&b, &line(7, "error", "b7"));
+        tick(visual);
+        assert_eq!(messages(visual, &view), ["a3", "b4", "b5", "b7"]);
+        // An older record is placed in time order, not at the end.
+        append(&a, &line(0, "warn", "a0 late"));
+        tick(visual);
+        assert_eq!(messages(visual, &view), ["a0 late", "a3", "b4", "b5", "b7"]);
+
+        // Rotation of the added file keeps its records under their own name.
+        view.update(visual, |view, cx| view.set_query(String::new(), cx));
+        visual.run_until_parked();
+        std::fs::rename(&b, b.with_extension("jsonl.1")).unwrap();
+        std::fs::write(&b, line(8, "info", "b8 new file")).unwrap();
+        tick(visual);
+        tick(visual);
+        view.read_with(visual, |view, _| {
+            let names: Vec<String> = (0..view.source_count())
+                .map(|s| view.source_name(s))
+                .collect();
+            assert!(
+                names.contains(&"b.jsonl (before rotation)".to_owned()),
+                "{names:?}"
+            );
+        });
+        let shown = messages(visual, &view);
+        for msg in ["b2", "b4", "b5", "b7", "b8 new file"] {
+            assert!(shown.contains(&msg.to_owned()), "{msg} in {shown:?}");
+        }
+        assert_eq!(shown.last().map(String::as_str), Some("b8 new file"));
     }
 
     /// #1160 acceptance over the sample pack: the Kubernetes stream plus the
