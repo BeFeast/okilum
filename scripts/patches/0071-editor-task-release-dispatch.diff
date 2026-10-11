@@ -1,0 +1,56 @@
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+index abb60d96..b45f7eb7 100644
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -5076,6 +5076,51 @@ mod tests {
+         assert_eq!(clicks.get(), 1, "a source change since the press cancels");
+     }
+ 
++    /// #1277: through real window dispatch, the release over the box still
++    /// toggles. The element's window-level mouse-up listener runs before the
++    /// input's own on_mouse_up; it must not cancel a release inside the input.
++    #[gpui::test]
++    fn task_box_toggles_through_window_dispatch(cx: &mut TestAppContext) {
++        use std::{cell::Cell, rc::Rc};
++        cx.update(crate::init);
++        let view = InputView::build_editor(cx, |state| state.folding(false).searchable(false)
++            .wrapping_indent(super::super::WrappingIndent::None));
++        let mut v = VisualTestContext::from_window(view.window_handle.into(), cx);
++        v.update(|window, cx| view.input.update(cx, |state, cx| {
++            state.set_value("- [ ] task\nnext\n", window, cx);
++            state.set_projection_provider(Some(Arc::new(PrefixRevealProvider)), cx);
++            window.activate_window();
++            state.focus(window, cx);
++        }));
++        v.run_until_parked();
++        let clicks = Rc::new(Cell::new(0));
++        let _watch = v.update(|_, cx| {
++            let clicks = clicks.clone();
++            cx.subscribe(&view.input, move |_, _: &crate::input::projection::MarkerClick, _| {
++                clicks.set(clicks.get() + 1)
++            })
++        });
++        let box_bounds = Bounds::new(point(px(20.), px(20.)), gpui::size(px(12.), px(12.)));
++        let inside = box_bounds.center();
++        let paint_box = |v: &mut VisualTestContext| v.update(|_, cx| view.input.update(cx, |state, _| {
++            *state.painted_tasks.borrow_mut() =
++                Some((state.source_stamp(), vec![(2..5, false, box_bounds)]));
++        }));
++        paint_box(&mut v);
++        v.simulate_mouse_down(inside, MouseButton::Left, Default::default());
++        v.update(|_, cx| assert!(view.input.read(cx).armed_task.is_some(),
++            "positive control: the dispatched press reached the box"));
++        v.simulate_mouse_up(inside, MouseButton::Left, Default::default());
++        assert_eq!(clicks.get(), 1, "a dispatched release over the box toggles");
++        // A release outside the input reaches only the window listener: cancel.
++        paint_box(&mut v);
++        v.simulate_mouse_down(inside, MouseButton::Left, Default::default());
++        v.update(|_, cx| assert!(view.input.read(cx).armed_task.is_some()));
++        v.simulate_mouse_up(point(px(-50.), px(-50.)), MouseButton::Left, Default::default());
++        v.update(|_, cx| assert!(view.input.read(cx).armed_task.is_none()));
++        assert_eq!(clicks.get(), 1, "a release outside the input cancels");
++    }
++
+     #[gpui::test]
+     fn projection_mouse_lease_releases_after_multi_click_window(cx: &mut TestAppContext) {
+         cx.update(crate::init);
