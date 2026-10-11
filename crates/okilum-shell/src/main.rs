@@ -55,6 +55,7 @@ mod reader_instance;
 mod reader_layout;
 mod reader_loading;
 mod reader_log;
+mod reader_mermaid;
 #[cfg(any(unix, windows))]
 mod reader_move;
 #[cfg(any(unix, windows))]
@@ -7028,6 +7029,7 @@ fn main() {
         cx.set_global(platform::ManagedClipboard(clipboard));
         let components_phase = diagnostics.phase("components_init");
         gpui_component::init(cx);
+        reader_mermaid::register();
         drop(components_phase);
         let services_phase = diagnostics.phase("menus_and_updater");
         bind_keys(cx);

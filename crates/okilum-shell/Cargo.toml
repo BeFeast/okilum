@@ -38,6 +38,10 @@ image = { version = "0.25", default-features = false }
 hayro = "=0.8.0"
 serde_json = "1"
 serde_yaml = "0.9"
+# Mermaid fences highlight as code (S7e, option C): rendered diagrams failed
+# the visual gate. Same ABI as the highlighter's tree-sitter.
+tree-sitter = "0.26"
+tree-sitter-mermaid = "=0.2.0"
 serde.workspace = true
 sha2 = "0.10"
 similar = { version = "=2.7.0", default-features = false }
