@@ -324,6 +324,13 @@ mod tests {
         visual.debug_bounds(id).is_some()
     }
 
+    /// The toast leaves with a short exit transition; give it that, far below its own lifetime.
+    fn gone(visual: &mut VisualTestContext, id: &'static str) -> bool {
+        visual.executor().advance_clock(Duration::from_secs(1));
+        visual.run_until_parked();
+        !shown(visual, id)
+    }
+
     fn click(visual: &mut VisualTestContext, id: &'static str) {
         visual.update(|window, cx| window.draw(cx).clear(cx));
         let bounds = visual
@@ -390,7 +397,7 @@ mod tests {
                 format!("\n{BLOCK_COMMENT}\n.okilum-index\n.okilum-save-*\n")
             );
             assert_eq!(status(&reader, visual), Some(Status::Covered));
-            assert!(!shown(visual, "stignore-add"), "the offer is closed");
+            assert!(gone(visual, "stignore-add"), "the offer is closed");
         }
         let written = ignore(&root);
         // A new launch finds the lines and offers nothing.
@@ -408,7 +415,7 @@ mod tests {
             let (reader, visual) = open(cx, &temp, &root);
             assert!(shown(visual, "stignore-decline"), "positive control");
             click(visual, "stignore-decline");
-            assert!(!shown(visual, "stignore-decline"), "the offer is closed");
+            assert!(gone(visual, "stignore-decline"), "the offer is closed");
             reader.read_with(visual, |r, _| assert!(r.sidebar.stignore_declined));
             assert_eq!(ignore(&root), BEFORE, "declining writes nothing");
             visual.run_until_parked();
