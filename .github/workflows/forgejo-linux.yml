@@ -49,6 +49,4 @@ jobs:
             target/
           key: cargo-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff') }}
       - name: Run full Linux gate
-        env:
-          OKILUM_VENDOR_TESTS: always  # TEMPORARY positive control for this PR; removed before merge
         run: bash scripts/ci/check-linux.sh
