@@ -845,7 +845,9 @@ mod tests {
             .flat_map(|r| (0..6).map(move |c| (r, c)))
             .filter(|&(r, c)| (r, c) != (1, 0))
             .find_map(|(r, c)| {
-                let bounds = visual.debug_bounds(&format!("delimited-cell-{r}-{c}"))?;
+                let bounds = visual.debug_bounds(Box::leak(
+                    format!("delimited-cell-{r}-{c}").into_boxed_str(),
+                ))?;
                 let inside = Bounds::new(
                     tooltip.origin + point(px(8.), px(8.)),
                     tooltip.size - size(px(16.), px(16.)),
