@@ -155,8 +155,9 @@ mod tests {
         (index, task)
     }
 
+    // `windows_` runs it on the native Windows CI lane too (#1127).
     #[test]
-    fn indexed_write_and_undo_preserve_occurrence_and_exact_source() {
+    fn windows_indexed_write_and_undo_preserve_occurrence_and_exact_source() {
         let (_temp, root, drafts, text) = fixture();
         // Identical labels still denote separate occurrences, never a bulk edit.
         let task_line = text.lines().last().unwrap();
@@ -330,6 +331,7 @@ mod tests {
             text + "External"
         );
     }
+    #[cfg(unix)]
     #[test]
     fn editor_binding_refuses_redirected_parents_and_hard_links() {
         let (_temp, root, drafts, text) = fixture();
@@ -345,6 +347,7 @@ mod tests {
         assert!(open_clean(&expected, &drafts).is_err());
         assert_eq!(std::fs::read_to_string(moved.join("a.md")).unwrap(), text);
     }
+    #[cfg(unix)]
     #[test]
     fn undo_refuses_later_edits_other_roots_and_symlink_replacements() {
         let (_temp, root, drafts, text) = fixture();

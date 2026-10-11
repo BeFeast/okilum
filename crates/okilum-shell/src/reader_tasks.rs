@@ -777,7 +777,7 @@ impl RenderOnce for TasksList {
             let expanded = results.expanded.contains(&task_key);
             let overdue = !task.checked && task.due.is_some_and(|d| d < now);
             let due_color = if overdue { cx.theme().danger } else { muted };
-            let writable = cfg!(unix) && self.native && (copies == 1 || expanded);
+            let writable = self.native && (copies == 1 || expanded);
             let displayed_index = results.index.clone();
             let displayed_task = task.clone();
             let action_root = root.clone();
