@@ -55,7 +55,7 @@ cargo "${cargo_args[@]}" "${SHARED[@]}" --test prepared_links a_non_utf8_note_le
     | tee "${RUNNER_TEMP}/macos-test-list.txt"
 grep -q ': test$' "${RUNNER_TEMP}/macos-test-list.txt"
 cargo "${cargo_args[@]}" "${SHARED[@]}" --test prepared_links a_non_utf8_note_leaves_links_between_readable_notes_working -- --test-threads=1 --exact
-run_tests okilum-shell --bins one_non_utf8_note_does_not_block_links_between_readable_notes --exact
+run_tests okilum-shell --bins document_link_landing_tests::one_non_utf8_note_does_not_block_links_between_readable_notes --exact
 # The shell has a single binary target; avoid example/test harnesses with zero matches.
 run_tests okilum-shell --bins platform::exact_macos_clipboard::native_tests
 run_tests okilum-shell --bins reader_replay::
