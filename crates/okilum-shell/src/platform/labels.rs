@@ -39,6 +39,28 @@ impl Os {
     };
 
     /// Action that shows a file selected in the system file manager.
+    /// The system bin: Trash on macOS and Linux, Recycle Bin on Windows.
+    pub const fn trash(self) -> &'static str {
+        match self {
+            Os::Windows => "Recycle Bin",
+            _ => "Trash",
+        }
+    }
+
+    pub const fn move_to_trash(self) -> &'static str {
+        match self {
+            Os::Windows => "Move to Recycle Bin",
+            _ => "Move to Trash",
+        }
+    }
+
+    pub const fn undo_move_to_trash(self) -> &'static str {
+        match self {
+            Os::Windows => "Undo Move to Recycle Bin",
+            _ => "Undo Move to Trash",
+        }
+    }
+
     pub const fn reveal(self) -> &'static str {
         match self {
             Os::Mac => "Reveal in Finder",
@@ -170,6 +192,15 @@ mod tests {
         assert_eq!(text, "New File ⌘N");
         #[cfg(not(target_os = "macos"))]
         assert_eq!(text, "New File Ctrl+N");
+    }
+
+    #[test]
+    fn trash_names_the_platform_bin() {
+        assert_eq!(Os::Windows.move_to_trash(), "Move to Recycle Bin");
+        assert_eq!(Os::Windows.undo_move_to_trash(), "Undo Move to Recycle Bin");
+        // Positive control: macOS and Linux keep Trash.
+        assert_eq!(Os::Mac.move_to_trash(), "Move to Trash");
+        assert_eq!(Os::Linux.trash(), "Trash");
     }
 
     #[test]
