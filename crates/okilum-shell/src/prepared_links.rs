@@ -969,6 +969,80 @@ mod tests {
     }
 
     #[gpui::test]
+    fn the_first_click_on_a_link_opens_it_after_a_word_selection(cx: &mut TestAppContext) {
+        // #1234: double-click a word, Escape, double-click another word, Escape, then one click on
+        // a link: the note stayed and only a second click opened the target.
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let root = std::env::temp_dir().join(format!("okilum-link-after-selection-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = "[Target control](target.md)\n\nAlpha beta gamma delta epsilon.\n";
+        std::fs::write(root.join("start.md"), source).unwrap();
+        std::fs::write(root.join("target.md"), "# Target").unwrap();
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("start.md".into()),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        let bounds = reader.read_with(visual, |v, cx| v.content.read(cx).bounds());
+        let link = bounds.origin + point(px(25.), px(10.));
+        let double_click = |visual: &mut VisualTestContext, at: Point<Pixels>| {
+            visual.simulate_event(MouseDownEvent {
+                position: at,
+                button: MouseButton::Left,
+                modifiers: Modifiers::default(),
+                click_count: 2,
+                first_mouse: false,
+            });
+            visual.simulate_event(MouseUpEvent {
+                position: at,
+                button: MouseButton::Left,
+                modifiers: Modifiers::default(),
+                click_count: 2,
+            });
+            visual.run_until_parked();
+        };
+        // The paragraph is the second block; its first row is a little below the link row.
+        let word = |dx: f32| bounds.origin + point(px(dx), px(50.));
+        double_click(visual, word(10.));
+        let first = reader.read_with(visual, |v, cx| v.content.read(cx).selected_text());
+        assert!(
+            !first.trim().is_empty() && first.trim().len() < 12,
+            "positive control: a word is selected: {first:?}"
+        );
+        visual.simulate_keystrokes("escape");
+        double_click(visual, word(70.));
+        let second = reader.read_with(visual, |v, cx| v.content.read(cx).selected_text());
+        assert!(
+            !second.trim().is_empty() && second != first,
+            "positive control: another word is selected: {second:?}"
+        );
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        visual.simulate_click(link, Modifiers::default());
+        visual.run_until_parked();
+        reader.read_with(visual, |v, _| {
+            assert_eq!(v.current_rel, "target.md", "the first click opens the link");
+        });
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[gpui::test]
     fn reader_refresh_updates_status_without_replacing_document_or_history(
         cx: &mut TestAppContext,
     ) {
