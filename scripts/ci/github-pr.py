@@ -9,7 +9,7 @@ spec = importlib.util.spec_from_file_location('transport', Path(__file__).with_n
 transport = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(transport)
 LANES = {
-    'linux': ('linux', 'Run full Linux gate', 3600),
+    'linux': ('linux', 'Run full Linux gate', 5400),
     'linux-binary': ('linux-binary', 'Build and package Linux QA binary', 5400),
     'brain': ('brain', 'Run Brain tests', 2700),
     'inbox': ('inbox', 'Run Inbox tests', 1800),

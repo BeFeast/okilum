@@ -11,7 +11,8 @@ concurrency:
 jobs:
   linux:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # The vendored gpui-kit tests (scripts/ci/vendor-tests.sh) add ~25 min when they run.
+    timeout-minutes: 90
     env:
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
