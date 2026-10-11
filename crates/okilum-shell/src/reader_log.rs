@@ -2511,7 +2511,7 @@ mod tests {
         visual.run_until_parked();
         let mut written = 1;
         let mut since_rotation = 1;
-        for poll in 0..600 {
+        for poll in 0..600usize {
             if poll == 300 {
                 std::fs::rename(&path, path.with_extension("jsonl.1")).unwrap();
                 std::fs::write(&path, "").unwrap();
