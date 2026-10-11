@@ -61,4 +61,15 @@ jobs:
           if (-not ($found -match ': test$')) { throw "the shell link test was not found: $shell" }
           cargo test --locked -p okilum-shell --bins $shell -- --nocapture --test-threads=1 --exact; if ($LASTEXITCODE) { exit $LASTEXITCODE }
         }
+        # #1248: the .stignore offer (CRLF files and paths are where Windows differs); list first.
+        foreach ($filter in @(
+          @('okilum-core', '--lib', 'syncthing_ignore::'),
+          @('okilum-shell', '--bins', 'reader_stignore::'),
+          @('okilum-shell', '--bins', 'reader_settings::tests::settings_files_shows_the_syncthing')
+        )) {
+          $found = & cargo test --locked -p $filter[0] $filter[1] $filter[2] -- --list 2>$null
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if (-not ($found -match ': test$')) { throw "no test matches $($filter[2])" }
+          cargo test --locked -p $filter[0] $filter[1] $filter[2] -- --nocapture --test-threads=1; if ($LASTEXITCODE) { exit $LASTEXITCODE }
+        }
       name: Run link tests with a non-UTF-8 note
