@@ -1,13 +1,16 @@
 //! Read-only structured log view (#602): virtualized one-line rows over a
 //! `okilum_core::log` index, a filter bar (text, level, time window and an
 //! hl-compatible query, #1158) evaluated off the UI thread, a detail pane for
-//! the selected record, and a raw-line copy. Follow mode is a later slice.
+//! the selected record, a raw-line copy, and follow mode (#1159): the file is
+//! polled with `okilum_core::log::tail`, appended records are filtered as they
+//! arrive, and a truncation or rotation is announced, not hidden.
 use super::*;
 use gpui_component::scroll::ScrollableElement as _;
 use okilum_core::log::query::{Expr, FieldRef, Literal, Test};
+use okilum_core::log::tail::{ResetReason, TailEvent};
 use okilum_core::log::{
-    filter, timestamp, FilterGenerations, Format, Level, LogFile, LogFilter, Query, Record, Role,
-    TimeWindow, ValueKind,
+    filter, timestamp, FilterGenerations, Format, Level, LogFile, LogFilter, LogIndex, LogTail,
+    Query, Record, Role, TimeWindow, ValueKind,
 };
 use std::ops::Range;
 
@@ -73,6 +76,84 @@ enum State {
     Failed(String),
 }
 
+/// What the view reads: the indexed file, or the followed file (#1159).
+pub(crate) trait LogData {
+    fn index(&self) -> &LogIndex;
+    fn bytes(&self) -> &[u8];
+    fn raw(&self, index: usize) -> Option<&[u8]>;
+    fn record(&self, index: usize) -> Option<Record>;
+    fn path(&self) -> &Path;
+}
+
+impl LogData for LogFile {
+    fn index(&self) -> &LogIndex {
+        LogFile::index(self)
+    }
+    fn bytes(&self) -> &[u8] {
+        LogFile::bytes(self)
+    }
+    fn raw(&self, index: usize) -> Option<&[u8]> {
+        LogFile::raw(self, index)
+    }
+    fn record(&self, index: usize) -> Option<Record> {
+        LogFile::record(self, index)
+    }
+    fn path(&self) -> &Path {
+        LogFile::path(self)
+    }
+}
+
+impl LogData for LogTail {
+    fn index(&self) -> &LogIndex {
+        LogTail::index(self)
+    }
+    fn bytes(&self) -> &[u8] {
+        LogTail::bytes(self)
+    }
+    fn raw(&self, index: usize) -> Option<&[u8]> {
+        LogTail::raw(self, index)
+    }
+    fn record(&self, index: usize) -> Option<Record> {
+        LogTail::record(self, index)
+    }
+    fn path(&self) -> &Path {
+        LogTail::path(self)
+    }
+}
+
+/// A copy of what a background filter run reads.
+enum Snapshot {
+    File(Arc<LogFile>),
+    Owned { index: LogIndex, bytes: Vec<u8> },
+}
+
+impl Snapshot {
+    fn parts(&self) -> (&LogIndex, &[u8]) {
+        match self {
+            Snapshot::File(file) => (file.index(), file.bytes()),
+            Snapshot::Owned { index, bytes } => (index, bytes),
+        }
+    }
+}
+
+/// The file once follow mode has opened it. Turning follow off keeps what
+/// was read, so the rows do not jump back to the older indexed file.
+struct Follow {
+    tail: LogTail,
+    /// Polling; `None` while follow is off.
+    poll: Option<Task<()>>,
+    /// The newest row stays in view until the user scrolls up.
+    pinned: bool,
+    /// Rows added while not pinned: the count on the "N new" pill.
+    unseen: usize,
+    /// The last truncation or rotation, shown above the rows.
+    reset: Option<(ResetReason, usize)>,
+    /// The poll could not read the file (it may be being rotated).
+    error: Option<String>,
+    /// When a full run last started for a time window that moves with appends.
+    last_full_run: Option<std::time::Instant>,
+}
+
 pub(crate) struct LogView {
     state: State,
     /// Entry index (into the log index) of the selected record.
@@ -93,6 +174,16 @@ pub(crate) struct LogView {
     /// Column (1-based, in characters) and message of the typed query's error.
     query_error: Option<(usize, String)>,
     detail_split: reader_split::Split,
+    follow: Option<Follow>,
+    /// Entries a background run covered; appends past it are filtered when
+    /// its result lands.
+    filtered_upto: usize,
+    /// A wheel event happened: the next frame decides whether the list is at
+    /// its bottom, pinning or pausing follow.
+    check_pin: bool,
+    /// Follow could not open the file.
+    follow_failed: Option<String>,
+    _follow_open: Option<Task<()>>,
     _text_input_events: Subscription,
     _query_input_events: Subscription,
     _filtering: Option<Task<()>>,
@@ -151,6 +242,11 @@ impl LogView {
                 DETAIL_HEADER_HEIGHT,
                 ROW_HEIGHT * MIN_LIST_ROWS,
             ),
+            follow: None,
+            filtered_upto: 0,
+            check_pin: false,
+            follow_failed: None,
+            _follow_open: None,
             _text_input_events: events,
             _query_input_events: query_events,
             _filtering: None,
@@ -214,11 +310,35 @@ impl LogView {
         }
     }
 
+    /// The records shown: the followed file once follow has opened it.
+    fn data(&self) -> Option<&dyn LogData> {
+        match &self.follow {
+            Some(follow) => Some(&follow.tail),
+            None => self.file().map(|file| file.as_ref() as &dyn LogData),
+        }
+    }
+
+    fn snapshot(&self) -> Option<Snapshot> {
+        match &self.follow {
+            Some(follow) => Some(Snapshot::Owned {
+                index: follow.tail.index().clone(),
+                bytes: follow.tail.bytes()[..follow.tail.index().bytes() as usize].to_vec(),
+            }),
+            None => self.file().cloned().map(Snapshot::File),
+        }
+    }
+
+    fn following(&self) -> bool {
+        self.follow
+            .as_ref()
+            .is_some_and(|follow| follow.poll.is_some())
+    }
+
     /// Rows currently listed.
     fn visible_len(&self) -> usize {
         match &self.rows {
             Some(rows) => rows.len(),
-            None => self.file().map_or(0, |file| file.index().len()),
+            None => self.data().map_or(0, |data| data.index().len()),
         }
     }
 
@@ -332,8 +452,8 @@ impl LogView {
     }
 
     fn history_key(&self) -> Option<String> {
-        self.file()
-            .map(|file| file.path().to_string_lossy().into_owned())
+        self.data()
+            .map(|data| data.path().to_string_lossy().into_owned())
     }
 
     fn remember_query(&mut self, cx: &mut Context<Self>) {
@@ -359,9 +479,10 @@ impl LogView {
     /// the new generation, and a result that arrives late is dropped.
     fn refilter(&mut self, cx: &mut Context<Self>) {
         let ticket = self.generations.next();
-        let Some(file) = self.file().cloned() else {
+        let Some(snapshot) = self.snapshot() else {
             return;
         };
+        self.filtered_upto = snapshot.parts().0.len();
         if !self.filter.is_active() {
             self.rows = None;
             self.filtering = false;
@@ -375,9 +496,10 @@ impl LogView {
         self._filtering = Some(cx.spawn(async move |this, cx| {
             let outcome = cx
                 .background_executor()
-                .spawn(
-                    async move { filter::evaluate(&filter, file.index(), file.bytes(), &ticket) },
-                )
+                .spawn(async move {
+                    let (index, bytes) = snapshot.parts();
+                    filter::evaluate(&filter, index, bytes, &ticket)
+                })
                 .await;
             let Some(outcome) = outcome else {
                 return;
@@ -388,11 +510,212 @@ impl LogView {
                 }
                 this.rows = Some(Arc::new(outcome.rows));
                 this.filtering = false;
+                // Follow mode appended while the run read its snapshot.
+                let appended = this.filtered_upto..this.data().map_or(0, |d| d.index().len());
+                this.extend_rows(appended);
                 this.after_rows_changed();
+                this.keep_pinned();
                 cx.notify();
             });
         }));
         cx.notify();
+    }
+
+    /// Follow on, off, or on again. The first time it reads the file afresh
+    /// with `LogTail`, off the UI thread.
+    fn toggle_follow(&mut self, cx: &mut Context<Self>) {
+        match &mut self.follow {
+            Some(follow) if follow.poll.is_some() => {
+                follow.poll = None;
+                cx.notify();
+            }
+            Some(follow) => {
+                follow.pinned = true;
+                follow.unseen = 0;
+                follow.poll = Some(Self::start_poll(cx));
+                self.keep_pinned();
+                cx.notify();
+            }
+            None => {
+                let Some(path) = self.data().map(|data| data.path().to_owned()) else {
+                    return;
+                };
+                self.follow_failed = None;
+                self._follow_open = Some(cx.spawn(async move |this, cx| {
+                    let tail = cx
+                        .background_executor()
+                        .spawn(async move {
+                            let interval = okilum_core::log::tail::poll_interval_for(&path);
+                            LogTail::open(&path).map(|tail| tail.with_interval(interval))
+                        })
+                        .await;
+                    let _ = this.update(cx, |this, cx| {
+                        match tail {
+                            Ok(tail) => {
+                                this.follow = Some(Follow {
+                                    tail,
+                                    poll: Some(Self::start_poll(cx)),
+                                    pinned: true,
+                                    unseen: 0,
+                                    reset: None,
+                                    error: None,
+                                    last_full_run: None,
+                                });
+                                // Same bytes from the start: the selection keeps its entry.
+                                this.refilter(cx);
+                                this.keep_pinned();
+                            }
+                            Err(error) => this.follow_failed = Some(format!("{error:#}")),
+                        }
+                        cx.notify();
+                    });
+                }));
+            }
+        }
+    }
+
+    /// Polls at the tail's interval: the read runs in the background, the
+    /// new bytes are indexed here. Dropping the task stops it.
+    fn start_poll(cx: &mut Context<Self>) -> Task<()> {
+        cx.spawn(async move |this, cx| loop {
+            let Ok(Some(interval)) = this.update(cx, |this, _| {
+                this.follow.as_ref().map(|follow| follow.tail.interval())
+            }) else {
+                return;
+            };
+            cx.background_executor().timer(interval).await;
+            let Ok(Some(request)) = this.update(cx, |this, _| {
+                this.follow.as_mut().map(|follow| follow.tail.begin_poll())
+            }) else {
+                return;
+            };
+            let read = cx
+                .background_executor()
+                .spawn(async move { request.read() })
+                .await;
+            if this
+                .update(cx, |this, cx| this.apply_poll(read, cx))
+                .is_err()
+            {
+                return;
+            }
+        })
+    }
+
+    fn apply_poll(
+        &mut self,
+        read: anyhow::Result<okilum_core::log::tail::PollRead>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(follow) = self.follow.as_mut() else {
+            return;
+        };
+        let event = match read {
+            Ok(read) => {
+                follow.error = None;
+                follow.tail.apply(read)
+            }
+            Err(error) => {
+                follow.error = Some(format!("{error:#}"));
+                cx.notify();
+                return;
+            }
+        };
+        match event {
+            TailEvent::Unchanged | TailEvent::Stale => return,
+            TailEvent::Appended { entries, reindexed } => {
+                let time_moves = self.filter.time != TimeWindow::All;
+                let due = self.follow.as_ref().is_some_and(|follow| {
+                    follow
+                        .last_full_run
+                        .is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(1))
+                });
+                if reindexed || (time_moves && due) {
+                    // Every row may change: earlier entries were indexed
+                    // again, or the newest record moved the time window.
+                    if let Some(follow) = self.follow.as_mut() {
+                        follow.last_full_run = Some(std::time::Instant::now());
+                    }
+                    self.refilter(cx);
+                } else {
+                    let added = self.extend_rows(entries);
+                    if let Some(follow) = self.follow.as_mut() {
+                        if !follow.pinned {
+                            follow.unseen += added;
+                        }
+                    }
+                }
+            }
+            TailEvent::Reset {
+                reason, previous, ..
+            } => {
+                if let Some(follow) = self.follow.as_mut() {
+                    follow.reset = Some((reason, previous.index().len()));
+                    follow.unseen = 0;
+                }
+                self.selected = None;
+                self.refilter(cx);
+            }
+        }
+        self.keep_pinned();
+        cx.notify();
+    }
+
+    /// Filters the appended entries `range` into the rows; returns how many
+    /// rows were added.
+    fn extend_rows(&mut self, range: Range<usize>) -> usize {
+        if range.is_empty() {
+            return 0;
+        }
+        if self.rows.is_none() {
+            return range.len();
+        }
+        let added = match self.data() {
+            Some(data) => filter::evaluate_range(&self.filter, data.index(), data.bytes(), range),
+            None => return 0,
+        };
+        let count = added.len();
+        if let Some(rows) = self.rows.as_mut() {
+            Arc::make_mut(rows).extend(added);
+        }
+        count
+    }
+
+    /// Following and pinned: the newest row stays in view.
+    fn keep_pinned(&mut self) {
+        let pinned = self.following() && self.follow.as_ref().is_some_and(|follow| follow.pinned);
+        let rows = self.visible_len();
+        if pinned && rows > 0 {
+            self.scroll.scroll_to_item(rows - 1, ScrollStrategy::Bottom);
+        }
+    }
+
+    /// The "N new" pill: back to the newest row, pinned again.
+    fn jump_to_newest(&mut self, cx: &mut Context<Self>) {
+        if let Some(follow) = self.follow.as_mut() {
+            follow.pinned = true;
+            follow.unseen = 0;
+        }
+        self.keep_pinned();
+        cx.notify();
+    }
+
+    /// After a wheel event: pinned at the bottom, paused anywhere above it.
+    fn update_pin(&mut self) {
+        if !std::mem::take(&mut self.check_pin) {
+            return;
+        }
+        let Some(follow) = self.follow.as_mut() else {
+            return;
+        };
+        let handle = self.scroll.0.borrow();
+        let offset = handle.base_handle.offset();
+        let max = handle.base_handle.max_offset();
+        let at_bottom = -offset.y >= max.y - px(2.);
+        follow.pinned = at_bottom;
+        if at_bottom {
+            follow.unseen = 0;
+        }
     }
 
     /// Keeps a selection the new rows still list, in view; otherwise drops
@@ -410,7 +733,7 @@ impl LogView {
     }
 
     fn focus_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.file().is_some_and(|file| !file.index().is_empty()) {
+        if self.data().is_some_and(|data| !data.index().is_empty()) {
             self.text_input
                 .update(cx, |input, cx| input.focus(window, cx));
         }
@@ -419,7 +742,7 @@ impl LogView {
     fn copy_raw(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(raw) = self
             .selected
-            .and_then(|index| self.file().and_then(|file| file.raw(index)))
+            .and_then(|index| self.data().and_then(|data| data.raw(index)))
         else {
             return;
         };
@@ -434,7 +757,8 @@ impl LogView {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
-        let Some(file) = self.file().cloned() else {
+        let this = &*self;
+        let Some(file) = this.data() else {
             return Vec::new();
         };
         let palette = brand::palette(cx);
@@ -451,8 +775,8 @@ impl LogView {
                     return div().into_any_element();
                 };
                 let level = entry.level();
-                let row = row_text(&file, index);
-                let selected = self.selected == Some(index);
+                let row = row_text(file, index);
+                let selected = this.selected == Some(index);
                 let text_color = if level == Level::Unparsed {
                     faint
                 } else {
@@ -535,14 +859,14 @@ impl LogView {
         let muted = cx.theme().muted_foreground;
         let mono = cx.theme().mono_font_family.clone();
         let pane = v_flex().size_full().min_h_0();
-        let (Some(file), Some(index)) = (self.file(), self.selected) else {
+        let (Some(file), Some(index)) = (self.data(), self.selected) else {
             return pane
                 .items_center()
                 .justify_center()
                 .text_sm()
                 .text_color(muted)
                 .child(
-                    if self.file().is_some_and(|file| !file.index().is_empty()) {
+                    if self.data().is_some_and(|data| !data.index().is_empty()) {
                         "Select a record to see its fields"
                     } else {
                         ""
@@ -837,7 +1161,7 @@ impl LogView {
             });
         let counter = match_counter(
             self.rows.as_ref().map(|rows| rows.len()),
-            self.file().map_or(0, |file| file.index().len()),
+            self.data().map_or(0, |data| data.index().len()),
             self.filtering,
         );
         h_flex()
@@ -853,6 +1177,7 @@ impl LogView {
             .children(time_button)
             .child(query)
             .children(history)
+            .child(self.follow_button(cx))
             .child(
                 div()
                     .flex_none()
@@ -869,11 +1194,97 @@ impl LogView {
             .into_any_element()
     }
 
+    fn follow_button(&self, cx: &mut Context<Self>) -> Button {
+        let following = self.following();
+        bar_button("log-follow", following)
+            .label(if following { "Following" } else { "Follow" })
+            .tooltip(if following {
+                "Stop following new records"
+            } else {
+                "Show records as they are written"
+            })
+            .debug_selector(|| "log-follow".into())
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_follow(cx)))
+    }
+
+    /// The truncation or rotation follow mode saw last, above the rows.
+    fn render_reset(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (reason, earlier) = self.follow.as_ref()?.reset?;
+        let what = match reason {
+            ResetReason::Truncated => "The file was truncated",
+            ResetReason::Rotated => "The file was rotated",
+        };
+        let earlier = match earlier {
+            0 => String::new(),
+            1 => " · 1 earlier record is not shown".to_owned(),
+            n => format!(" · {} earlier records are not shown", grouped(n as u64)),
+        };
+        Some(
+            div()
+                .debug_selector(|| "log-follow-reset".into())
+                .flex_none()
+                .px_3()
+                .py_1()
+                .border_b_1()
+                .border_color(brand::palette(cx).border_subtle)
+                .bg(brand::palette(cx).surface_raised)
+                .text_size(px(12.))
+                .text_color(cx.theme().muted_foreground)
+                .child(format!("{what}{earlier}; following the new content"))
+                .into_any_element(),
+        )
+    }
+
+    /// "N new" while following is paused by scrolling up.
+    fn render_unseen(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let follow = self.follow.as_ref()?;
+        if !self.following() || follow.pinned || follow.unseen == 0 {
+            return None;
+        }
+        let label = match follow.unseen {
+            1 => "1 new record".to_owned(),
+            n => format!("{} new records", grouped(n as u64)),
+        };
+        Some(
+            div()
+                .absolute()
+                .bottom_3()
+                .left_0()
+                .right_0()
+                .flex()
+                .justify_center()
+                .child(
+                    Button::new("log-follow-new")
+                        .debug_selector(|| "log-follow-new".into())
+                        .small()
+                        .primary()
+                        .label(label)
+                        .tooltip("Back to the newest record")
+                        .on_click(cx.listener(|this, _, _, cx| this.jump_to_newest(cx))),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn render_status(&self, cx: &mut Context<Self>) -> AnyElement {
-        let text = match &self.state {
-            State::Indexing => "Indexing…".to_owned(),
-            State::Failed(error) => format!("Cannot show this log: {error}"),
-            State::Ready(document) => status_text(document),
+        let text = match (&self.state, &self.follow) {
+            (State::Indexing, _) => "Indexing…".to_owned(),
+            (State::Failed(error), _) => format!("Cannot show this log: {error}"),
+            (State::Ready(_), Some(follow)) => {
+                let mut text = index_status(follow.tail.index());
+                if let Some(error) = &follow.error {
+                    text.push_str(&format!(" · Cannot read the file: {error}"));
+                } else if follow.tail.is_missing() {
+                    text.push_str(" · Waiting for the file");
+                } else if self.following() {
+                    text.push_str(" · Following");
+                }
+                text
+            }
+            (State::Ready(document), None) => match &self.follow_failed {
+                Some(error) => format!("{} · Cannot follow: {error}", status_text(document)),
+                None => status_text(document),
+            },
         };
         h_flex()
             .flex_none()
@@ -890,8 +1301,9 @@ impl LogView {
 
 impl Render for LogView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.update_pin();
         let count = self.visible_len();
-        let has_entries = self.file().is_some_and(|file| !file.index().is_empty());
+        let has_entries = self.data().is_some_and(|data| !data.index().is_empty());
         let list = div().relative().flex_1().min_h_0().w_full();
         let list = if count > 0 {
             list.child(
@@ -906,6 +1318,13 @@ impl Render for LogView {
                 .size_full(),
             )
             .vertical_scrollbar(&self.scroll)
+            .on_scroll_wheel(cx.listener(|this, _: &ScrollWheelEvent, _, cx| {
+                if this.follow.is_some() {
+                    this.check_pin = true;
+                    cx.notify();
+                }
+            }))
+            .children(self.render_unseen(cx))
         } else if has_entries {
             // Everything is filtered out: a quiet state with the way back.
             list.child(
@@ -939,11 +1358,18 @@ impl Render for LogView {
                 State::Indexing | State::Failed(_) => "",
             };
             list.flex()
+                .flex_col()
+                .gap_2()
                 .items_center()
                 .justify_center()
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
                 .child(message)
+                // An empty log can still be followed until records arrive.
+                .when(
+                    matches!(self.state, State::Ready(_)) && self.follow.is_none(),
+                    |list| list.child(self.follow_button(cx)),
+                )
         };
         v_flex()
             .id("reader-log")
@@ -962,7 +1388,10 @@ impl Render for LogView {
             .on_action(
                 cx.listener(|this, _: &FocusLogFilter, window, cx| this.focus_filter(window, cx)),
             )
-            .when(has_entries, |view| view.child(self.render_filter_bar(cx)))
+            .when(has_entries || self.follow.is_some(), |view| {
+                view.child(self.render_filter_bar(cx))
+            })
+            .children(self.render_reset(cx))
             .child(reader_split::vertical(
                 &self.detail_split,
                 |view: &mut Self| &mut view.detail_split,
@@ -1062,7 +1491,7 @@ pub(crate) struct RowText {
     pub muted: Vec<Range<usize>>,
 }
 
-pub(crate) fn row_text(file: &LogFile, index: usize) -> RowText {
+pub(crate) fn row_text(file: &dyn LogData, index: usize) -> RowText {
     let time = file
         .index()
         .get(index)
@@ -1162,7 +1591,10 @@ fn detail_rows(record: &Record, timestamp: Option<i64>) -> Vec<(String, String, 
 
 /// Facts about the file. Zero counts are left out rather than shown.
 fn status_text(document: &LogDocument) -> String {
-    let index = document.file.index();
+    index_status(document.file.index())
+}
+
+fn index_status(index: &LogIndex) -> String {
     let stats = index.stats();
     let format = index.format();
     let mut parts = vec![format.label().to_owned()];
@@ -2056,6 +2488,133 @@ mod tests {
             assert!(view.query_input.read(cx).value().is_empty());
             assert!(view.filter.query.is_none());
         });
+    }
+
+    /// #1159: follow mode shows appended records, filters them as they
+    /// arrive, pauses when scrolled up with an "N new" pill that resumes it,
+    /// and announces a rotation and a truncation instead of a silent reset.
+    #[gpui::test]
+    fn follow_mode_appends_filters_pauses_and_announces_resets(cx: &mut TestAppContext) {
+        use std::io::Write as _;
+        let line =
+            |level: &str, msg: &str| format!("{{\"level\":\"{level}\",\"msg\":\"{msg}\"}}\n");
+        let text: String = (0..60)
+            .map(|i| line("info", &format!("tick {i}")))
+            .collect();
+        let (directory, reader, visual) = open_log(&text, cx);
+        let path = directory.path().canonicalize().unwrap().join("app.jsonl");
+        let append = |text: &str| {
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
+            file.write_all(text.as_bytes()).unwrap();
+        };
+        let tick = |visual: &mut VisualTestContext| {
+            visual.executor().advance_clock(Duration::from_millis(600));
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+        };
+        let view = log_view(&reader, visual);
+        let len = |visual: &mut VisualTestContext| view.read_with(visual, |v, _| v.visible_len());
+
+        // Positive control: without follow, an append is not shown.
+        append(&line("error", "early"));
+        tick(visual);
+        assert_eq!(len(visual), 60);
+
+        view.update(visual, |view, cx| view.toggle_follow(cx));
+        visual.run_until_parked();
+        tick(visual);
+        assert_eq!(len(visual), 61, "follow reads the file afresh");
+        view.read_with(visual, |view, _| {
+            assert!(view.following());
+            assert!(view.follow.as_ref().unwrap().pinned);
+        });
+
+        // A query applies to records as they arrive.
+        view.update(visual, |view, cx| view.set_query("level>=warn".into(), cx));
+        visual.run_until_parked();
+        assert_eq!(shown(&view, visual), [60]);
+        append(&(line("warn", "w1") + &line("info", "quiet") + &line("error", "e1")));
+        tick(visual);
+        assert_eq!(
+            shown(&view, visual),
+            [60, 61, 63],
+            "appended rows are filtered"
+        );
+
+        // Scrolling up pauses; new records are counted on a pill.
+        view.update(visual, |view, cx| view.set_query(String::new(), cx));
+        visual.run_until_parked();
+        tick(visual);
+        assert_eq!(len(visual), 64);
+        let list = visual.debug_bounds("reader-log").unwrap();
+        visual.simulate_event(ScrollWheelEvent {
+            position: list.center(),
+            delta: ScrollDelta::Pixels(point(px(0.), px(600.))),
+            ..Default::default()
+        });
+        visual.run_until_parked();
+        tick(visual);
+        view.read_with(visual, |view, _| {
+            assert!(!view.follow.as_ref().unwrap().pinned, "scrolled up: paused")
+        });
+        append(&(line("info", "n1") + &line("info", "n2") + &line("info", "n3")));
+        tick(visual);
+        assert_eq!(len(visual), 67);
+        view.read_with(visual, |view, _| {
+            assert_eq!(view.follow.as_ref().unwrap().unseen, 3)
+        });
+        let pill = visual
+            .debug_bounds("log-follow-new")
+            .expect("the N new pill shows");
+        visual.simulate_click(pill.center(), Modifiers::default());
+        visual.run_until_parked();
+        tick(visual);
+        view.read_with(visual, |view, _| {
+            let follow = view.follow.as_ref().unwrap();
+            assert!(follow.pinned && follow.unseen == 0, "resumed");
+        });
+        assert!(visual.debug_bounds("log-follow-new").is_none());
+
+        // Rotation: move and recreate; the new file is followed and the
+        // earlier records are announced, not silently dropped.
+        std::fs::rename(&path, path.with_extension("jsonl.1")).unwrap();
+        std::fs::write(&path, line("info", "fresh 1") + &line("warn", "fresh 2")).unwrap();
+        tick(visual);
+        tick(visual);
+        assert_eq!(len(visual), 2, "the new file's records");
+        let reset = visual
+            .debug_bounds("log-follow-reset")
+            .expect("a separator");
+        assert!(reset.size.height > px(0.));
+        view.read_with(visual, |view, _| {
+            assert_eq!(
+                view.follow.as_ref().unwrap().reset,
+                Some((ResetReason::Rotated, 67))
+            );
+        });
+
+        // Truncation of the followed file.
+        std::fs::write(&path, line("info", "after truncate")).unwrap();
+        tick(visual);
+        assert_eq!(len(visual), 1);
+        view.read_with(visual, |view, _| {
+            assert_eq!(
+                view.follow.as_ref().unwrap().reset.map(|r| r.0),
+                Some(ResetReason::Truncated)
+            );
+        });
+
+        // Follow off: appends wait until it is on again.
+        view.update(visual, |view, cx| view.toggle_follow(cx));
+        append(&line("info", "later"));
+        tick(visual);
+        assert_eq!(len(visual), 1);
+        view.update(visual, |view, cx| view.toggle_follow(cx));
+        tick(visual);
+        assert_eq!(len(visual), 2);
     }
 
     #[gpui::test]

@@ -201,6 +201,22 @@ pub fn evaluate(
     })
 }
 
+/// The entries of `range` that pass `filter`, on the calling thread: for the
+/// few entries follow mode appends (#1159). The time window still measures
+/// from the newest timestamp in the whole index, and a line without its own
+/// timestamp inherits the one above it, even from before `range`.
+pub fn evaluate_range(
+    filter: &LogFilter,
+    index: &LogIndex,
+    data: &[u8],
+    range: std::ops::Range<usize>,
+) -> Vec<u32> {
+    let range = range.start.min(index.len())..range.end.min(index.len());
+    Plan::new(filter, index)
+        .run(index, data, range, &|| false)
+        .unwrap_or_default()
+}
+
 /// The run behind `evaluate`. `should_stop` is asked once per block of
 /// entries, before the block, by every worker.
 pub(crate) fn evaluate_with(
@@ -456,6 +472,44 @@ mod tests {
             );
         }
         rows
+    }
+
+    #[test]
+    fn a_range_matches_the_same_entries_as_the_whole_run() {
+        let index = index();
+        let filters = [
+            text("500"),
+            LogFilter {
+                level: LevelFilter {
+                    min: Some(Level::Warn),
+                    without_level: false,
+                },
+                ..Default::default()
+            },
+            LogFilter {
+                time: TimeWindow::Last5Minutes,
+                ..Default::default()
+            },
+            LogFilter {
+                query: Some(Query::parse("status>=500").unwrap()),
+                ..Default::default()
+            },
+        ];
+        for filter in &filters {
+            let whole = run(filter);
+            assert!(!whole.is_empty(), "positive control for {filter:?}");
+            for split in 0..=index.len() {
+                let mut parts = evaluate_range(filter, &index, DATA.as_bytes(), 0..split);
+                parts.extend(evaluate_range(
+                    filter,
+                    &index,
+                    DATA.as_bytes(),
+                    split..index.len(),
+                ));
+                assert_eq!(parts, whole, "{filter:?} split at {split}");
+            }
+        }
+        assert!(evaluate_range(&filters[0], &index, DATA.as_bytes(), 50..60).is_empty());
     }
 
     fn text(text: &str) -> LogFilter {
