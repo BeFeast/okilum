@@ -24,6 +24,11 @@ Every patch in `scripts/patches/` is a fix to `gpui-kit` that belongs upstream.
 `1f7f8c6` bump because gpui-kit now takes GPUI from crates.io as `gpui-pre-*`
 and the pin lives in our `Cargo.lock` instead.)
 
+Patches apply in file-name order, so each number is used once: a new patch takes
+the next free number after rebasing on main (`scripts/ci/test_patch_numbers.py`
+in the Linux gate fails on a repeated number). The 0023, 0024, 0042 and 0043
+pairs predate that check and stay as they are.
+
 Each file here is a ready-to-paste PR body with the reproduction that found the
 defect. Opening the PRs is a deliberate, attributed act — they go out under a
 real name to a real project — so it is not done by an unattended agent. The
