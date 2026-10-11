@@ -114,6 +114,190 @@ const ALIASES: [(Role, &[&str]); 4] = [
     ),
 ];
 
+/// A logger with its own vocabulary, recognised by keys only it writes
+/// (#1163). Its aliases win over the common ones, and its numeric levels are
+/// read on its own scale: journald's `PRIORITY` 3 is syslog's `err`, not a
+/// bunyan level.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Dialect {
+    Common,
+    /// `journalctl -o json`
+    Journald,
+    /// macOS `log show --style ndjson`
+    MacOs,
+    /// PowerShell `Get-WinEvent | ConvertTo-Json`
+    Windows,
+}
+
+const DIALECTS: usize = 4;
+
+/// Keys whose presence names the dialect. Matching is exact: these are
+/// spellings one tool writes, not conventions.
+const SIGNATURES: [(Dialect, &[&str]); 3] = [
+    (Dialect::Journald, &["__REALTIME_TIMESTAMP", "__CURSOR"]),
+    (Dialect::MacOs, &["eventMessage", "machTimestamp"]),
+    (
+        Dialect::Windows,
+        &["TimeCreated", "LevelDisplayName", "ProviderName"],
+    ),
+];
+
+/// How a level value reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Scale {
+    /// Names, and bunyan/pino numbers (`Level::from_text`, `from_number`).
+    Common,
+    /// syslog severities 0–7, or their names.
+    Syslog,
+    /// Windows event levels 1–5.
+    Windows,
+    /// `messageType`: Default, Info, Debug, Error, Fault.
+    MacOs,
+}
+
+/// Dialect aliases, in priority order per role. Exact spelling.
+const DIALECT_ALIASES: [(Dialect, Role, &str, Scale); 15] = [
+    (
+        Dialect::Journald,
+        Role::Time,
+        "__REALTIME_TIMESTAMP",
+        Scale::Common,
+    ),
+    (Dialect::Journald, Role::Level, "PRIORITY", Scale::Syslog),
+    (Dialect::Journald, Role::Message, "MESSAGE", Scale::Common),
+    (
+        Dialect::Journald,
+        Role::Logger,
+        "SYSLOG_IDENTIFIER",
+        Scale::Common,
+    ),
+    (
+        Dialect::Journald,
+        Role::Logger,
+        "_SYSTEMD_UNIT",
+        Scale::Common,
+    ),
+    (Dialect::MacOs, Role::Level, "messageType", Scale::MacOs),
+    (Dialect::MacOs, Role::Message, "eventMessage", Scale::Common),
+    (Dialect::MacOs, Role::Logger, "subsystem", Scale::Common),
+    (Dialect::MacOs, Role::Logger, "category", Scale::Common),
+    (
+        Dialect::MacOs,
+        Role::Logger,
+        "processImagePath",
+        Scale::Common,
+    ),
+    (Dialect::Windows, Role::Time, "TimeCreated", Scale::Common),
+    (
+        Dialect::Windows,
+        Role::Level,
+        "LevelDisplayName",
+        Scale::Common,
+    ),
+    (Dialect::Windows, Role::Level, "Level", Scale::Windows),
+    (Dialect::Windows, Role::Message, "Message", Scale::Common),
+    (
+        Dialect::Windows,
+        Role::Logger,
+        "ProviderName",
+        Scale::Common,
+    ),
+];
+
+/// The best candidate per dialect and role, and which dialects the record's
+/// keys name. One pass over the fields; the choice is made at the end, when
+/// every signature has been seen.
+struct Roles<T> {
+    best: [[Option<(usize, T)>; 4]; DIALECTS],
+    seen: [bool; DIALECTS],
+}
+
+impl<T: Copy> Roles<T> {
+    fn new() -> Self {
+        Roles {
+            best: [[None; 4]; DIALECTS],
+            seen: [false; DIALECTS],
+        }
+    }
+
+    /// Offers one field. `keep` gives what to remember for a role, read on
+    /// the alias's level scale.
+    fn offer(
+        &mut self,
+        path: &[Cow<'_, str>],
+        value: &RawValue<'_>,
+        mut keep: impl FnMut(Role, Scale) -> T,
+    ) {
+        let mut take = |dialect: Dialect, role: Role, rank: usize, scale: Scale| {
+            // An empty logger names nothing (macOS writes `"subsystem":""`).
+            if role == Role::Logger && value.raw.is_empty() {
+                return;
+            }
+            let slot = &mut self.best[dialect as usize][role as usize];
+            if slot.is_none_or(|(best, _)| rank < best) {
+                *slot = Some((rank, keep(role, scale)));
+            }
+        };
+        if let Some((role, rank)) = role_of(path) {
+            take(Dialect::Common, role, rank, Scale::Common);
+        }
+        let [key] = path else {
+            return;
+        };
+        for (dialect, keys) in SIGNATURES {
+            if keys.contains(&key.as_ref()) {
+                self.seen[dialect as usize] = true;
+            }
+        }
+        for (rank, (dialect, role, name, scale)) in DIALECT_ALIASES.iter().enumerate() {
+            if *name == key.as_ref() {
+                take(*dialect, *role, rank, *scale);
+            }
+        }
+    }
+
+    /// The named dialect's choice, else the common one.
+    fn pick(&self, role: Role) -> Option<T> {
+        let dialect = (1..DIALECTS).find(|&d| self.seen[d]);
+        dialect
+            .and_then(|d| self.best[d][role as usize])
+            .or(self.best[Dialect::Common as usize][role as usize])
+            .map(|(_, kept)| kept)
+    }
+}
+
+/// The level a value names on `scale`.
+fn level_on(value: &RawValue<'_>, scale: Scale) -> Level {
+    let text = value.text();
+    let text = text.trim();
+    match scale {
+        Scale::Common => value.level(),
+        Scale::Syslog => match text {
+            "0" | "1" | "2" => Level::Fatal,
+            "3" => Level::Error,
+            "4" => Level::Warn,
+            "5" | "6" => Level::Info,
+            "7" => Level::Debug,
+            _ => Level::from_text(text),
+        },
+        Scale::Windows => match text {
+            "1" => Level::Fatal,
+            "2" => Level::Error,
+            "3" => Level::Warn,
+            "4" => Level::Info,
+            "5" => Level::Trace,
+            _ => Level::Unknown,
+        },
+        Scale::MacOs => match text {
+            "Default" | "Info" => Level::Info,
+            "Debug" => Level::Debug,
+            "Error" => Level::Error,
+            "Fault" => Level::Fatal,
+            _ => Level::from_text(text),
+        },
+    }
+}
+
 /// The role and alias rank (lower wins) of a key path, if any.
 fn role_of(path: &[Cow<'_, str>]) -> Option<(Role, usize)> {
     ALIASES.iter().find_map(|(role, names)| {
@@ -166,21 +350,20 @@ pub(crate) fn scan<'a>(
 /// What the index keeps per line: level and timestamp, without allocating
 /// for fields that play no role.
 pub(crate) fn classify(line: &[u8], format: Format) -> (Level, Option<i64>) {
-    let mut level: Option<(usize, Level)> = None;
-    let mut time: Option<(usize, Option<i64>)> = None;
-    let parsed = scan(line, format, &mut |path, value| match role_of(path) {
-        Some((Role::Level, rank)) if level.is_none_or(|(best, _)| rank < best) => {
-            level = Some((rank, value.level()));
-        }
-        Some((Role::Time, rank)) if time.is_none_or(|(best, _)| rank < best) => {
-            time = Some((rank, value.timestamp()));
-        }
-        _ => {}
+    let mut roles = Roles::<(Level, Option<i64>)>::new();
+    let parsed = scan(line, format, &mut |path, value| {
+        roles.offer(path, &value, |role, scale| match role {
+            Role::Level => (level_on(&value, scale), None),
+            Role::Time => (Level::Missing, value.timestamp()),
+            Role::Message | Role::Logger => (Level::Missing, None),
+        })
     });
     match parsed {
         Ok(()) => (
-            level.map_or(Level::Missing, |(_, level)| level),
-            time.and_then(|(_, ts)| ts),
+            roles
+                .pick(Role::Level)
+                .map_or(Level::Missing, |(level, _)| level),
+            roles.pick(Role::Time).and_then(|(_, ts)| ts),
         ),
         Err(()) => (Level::Unparsed, None),
     }
@@ -213,16 +396,10 @@ impl Record {
     pub fn parse(line: &[u8], format: Format) -> Option<Record> {
         let line = block::head(line);
         let mut record = Record::default();
-        let mut ranks = [usize::MAX; 4];
+        let mut roles = Roles::<usize>::new();
         scan(line, format, &mut |path, value| {
             let index = record.fields.len();
-            if let Some((role, rank)) = role_of(path) {
-                let slot = role as usize;
-                if rank < ranks[slot] {
-                    ranks[slot] = rank;
-                    *record.role_mut(role) = Some(index);
-                }
-            }
+            roles.offer(path, &value, |_, _| index);
             record.fields.push(Field {
                 key: path.join("."),
                 value: value.text().into_owned(),
@@ -230,6 +407,9 @@ impl Record {
             });
         })
         .ok()?;
+        for role in [Role::Time, Role::Level, Role::Message, Role::Logger] {
+            *record.role_mut(role) = roles.pick(role);
+        }
         Some(record)
     }
 
@@ -321,6 +501,63 @@ mod tests {
             Format::JsonLines,
         );
         assert_eq!(ts, Some(1_791_612_242_497_259_677));
+    }
+
+    #[test]
+    fn dialects_are_named_by_their_own_keys() {
+        let at = |line: &str| classify(line.as_bytes(), Format::JsonLines);
+        // journald: PRIORITY is syslog, wherever the signature key sits.
+        assert_eq!(
+            at(r#"{"PRIORITY":"3","MESSAGE":"x","__CURSOR":"s=1"}"#).0,
+            Level::Error
+        );
+        assert_eq!(
+            at(r#"{"__REALTIME_TIMESTAMP":"1759276800000000","PRIORITY":"2"}"#),
+            (Level::Fatal, Some(1_759_276_800_000_000_000))
+        );
+        // Without the signature PRIORITY is just a field: no level, and
+        // never a bunyan number.
+        assert_eq!(at(r#"{"PRIORITY":"3","MESSAGE":"x"}"#).0, Level::Missing);
+        // The dialect's alias wins over a common one in the same record.
+        assert_eq!(
+            at(r#"{"level":50,"PRIORITY":"6","__CURSOR":"s=1"}"#).0,
+            Level::Info
+        );
+        // Windows: the display name first, then the numeric level on the
+        // Windows scale; .NET JSON dates.
+        assert_eq!(
+            at(r#"{"TimeCreated":"/Date(1759276800000)/","Level":2,"ProviderName":"p"}"#),
+            (Level::Error, Some(1_759_276_800_000_000_000))
+        );
+        assert_eq!(
+            at(r#"{"Level":2,"LevelDisplayName":"Warning","ProviderName":"p"}"#).0,
+            Level::Warn
+        );
+        assert_eq!(
+            at(r#"{"Level":2}"#).0,
+            Level::Unknown,
+            "a bare 2 is ambiguous"
+        );
+        // macOS
+        assert_eq!(
+            at(r#"{"eventMessage":"m","messageType":"Fault"}"#).0,
+            Level::Fatal
+        );
+        assert_eq!(
+            at(r#"{"eventMessage":"m","messageType":"Default"}"#).0,
+            Level::Info
+        );
+        let mac = Record::parse(
+            br#"{"eventMessage":"m","subsystem":"","category":"","processImagePath":"/usr/libexec/kernel"}"#,
+            Format::JsonLines,
+        )
+        .unwrap();
+        assert_eq!(mac.role(Role::Message).unwrap().value, "m");
+        assert_eq!(
+            mac.role(Role::Logger).unwrap().value,
+            "/usr/libexec/kernel",
+            "empty subsystem and category name nothing"
+        );
     }
 
     #[test]
