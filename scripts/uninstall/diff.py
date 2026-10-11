@@ -47,8 +47,9 @@ def below(path, root):
 
 
 def readable(path):
-    """Explorer stores UserAssist value names in ROT13; decode them for the check."""
-    key, sep, name = path.rpartition('\\')
+    """Explorer stores UserAssist value names in ROT13; decode them for the check.
+    A name may itself be a path, so everything after the Count key is decoded."""
+    key, sep, name = path.partition('\\Count\\')
     if sep and '\\UserAssist\\' in key:
         return key + sep + codecs.decode(name, 'rot13')
     return path

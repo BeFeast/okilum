@@ -59,6 +59,9 @@ class DiffTest(unittest.TestCase):
         # "com.befeast.okilum" in ROT13; another program's entry stays "other".
         code, out = self.run_diff([], [count.replace('K ', 'V ', 1) + r'\pbz.orsrnfg.bxvyhz'])
         self.assertEqual(code, 1, out)
+        # An executable path: C:\Users\qa\AppData\Local\BeFeast.Okilum\Update.exe
+        code, out = self.run_diff([], [count.replace('K ', 'V ', 1) + r'\P:\Hfref\dn\NccQngn\Ybpny\OrSrnfg.Bxvyhz\Hcqngr.rkr'])
+        self.assertEqual(code, 1, out)
         code, out = self.run_diff([], [count.replace('K ', 'V ', 1) + r'\Zvpebfbsg.Jvaqbjf.Rkcybere'])
         self.assertEqual(code, 0, out)
 
