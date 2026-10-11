@@ -17,6 +17,7 @@ LANES = {
     'windows-release': ('windows-release', 'Build and validate Windows package', 5400),
     'native-core': ('native', 'Run native tests', 3600),
     'native-sync': ('native', 'Run native tests', 3600),
+    'native-shell': ('native', 'Run native tests', 4500),
 }
 
 

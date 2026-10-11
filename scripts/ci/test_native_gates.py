@@ -15,7 +15,7 @@ def gate(job, **overrides):
     env = dict(os.environ, EVENT='pull_request', LINUX_RESULT='success',
                SCOPE_RESULT='success', MACOS_REQUIRED='true', MACOS_LANE='local',
                HOSTED_JOB='skipped', HOSTED_RESULT='', LOCAL_RESULT='success',
-               MACOS_RESULT='success')
+               MACOS_RESULT='success', WINDOWS_RESULT='success')
     env.update(overrides)
     return subprocess.run(['bash', '-c', script], env=env, capture_output=True).returncode == 0
 
@@ -42,7 +42,7 @@ class NativeGates(unittest.TestCase):
         # Ready PRs are unaffected.
         self.assertTrue(gate('macos', DRAFT='false'))
         workflow_if = re.findall(r'!github\.event\.pull_request\.draft', WORKFLOW)
-        self.assertEqual(len(workflow_if), 2, 'both native lanes skip draft PRs')
+        self.assertEqual(len(workflow_if), 3, 'macOS (hosted, local) and Windows skip draft PRs')
 
     def test_exactly_one_lane_must_execute_successfully(self):
         self.assertFalse(gate('macos', LOCAL_RESULT='skipped'))
@@ -71,11 +71,15 @@ class NativeGates(unittest.TestCase):
         self.assertTrue(gate('check'))
         for status in ('failure', 'cancelled', 'skipped', ''):
             self.assertFalse(gate('check', MACOS_RESULT=status))
+            # #1110: the Windows first-run lane is required wherever macOS is.
+            self.assertFalse(gate('check', WINDOWS_RESULT=status))
         self.assertFalse(gate('check', MACOS_REQUIRED=''))
 
     def test_main_and_docs_keep_linux_gate(self):
-        for case in ({'EVENT': 'push', 'MACOS_REQUIRED': '', 'MACOS_RESULT': 'skipped'},
-                     {'MACOS_REQUIRED': 'false', 'MACOS_RESULT': 'success'}):
+        for case in ({'EVENT': 'push', 'MACOS_REQUIRED': '', 'MACOS_RESULT': 'skipped',
+                      'WINDOWS_RESULT': 'skipped'},
+                     {'MACOS_REQUIRED': 'false', 'MACOS_RESULT': 'success',
+                      'WINDOWS_RESULT': 'skipped'}):
             self.assertTrue(gate('check', **case))
             self.assertFalse(gate('check', **case, LINUX_RESULT='failure'))
 
