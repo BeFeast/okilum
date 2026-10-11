@@ -284,6 +284,41 @@ fn url_path(path: &Path) -> String {
     out
 }
 
+/// One path mapping for builds made elsewhere (#1165): a location under
+/// `from` (as the log writes it) opens under `to` (a local checkout).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PathMap {
+    pub from: String,
+    pub to: PathBuf,
+}
+
+/// `path` with the longest matching `from` prefix replaced by its `to`.
+/// A prefix matches whole path components only (`/src/ord` does not match
+/// `/src/ordgw/a.cpp`), and `/` and `\` are the same separator. No match
+/// leaves the path as written.
+pub fn map(path: &str, maps: &[PathMap]) -> Option<PathBuf> {
+    let normal = |text: &str| text.replace('\\', "/");
+    let written = normal(path);
+    maps.iter()
+        .filter_map(|map| {
+            let from = normal(&map.from);
+            let from = from.trim_end_matches('/');
+            if from.is_empty() {
+                return None;
+            }
+            let rest = written.strip_prefix(from)?;
+            (rest.is_empty() || rest.starts_with('/')).then(|| (from.len(), map, rest.to_owned()))
+        })
+        .max_by_key(|(length, _, _)| *length)
+        .map(|(_, map, rest)| {
+            let mut local = map.to.clone();
+            for part in rest.split('/').filter(|part| !part.is_empty()) {
+                local.push(part);
+            }
+            local
+        })
+}
+
 /// Resolves a location's path: absolute paths as they are, relative ones
 /// against `base` (the log's folder) when that file exists there.
 pub fn resolve(path: &str, base: &Path) -> PathBuf {
@@ -387,6 +422,41 @@ mod tests {
         let found = in_record(&record);
         assert_eq!(record.fields[found[0].field].key, "src");
         assert_eq!(found[0].location.line, 97);
+    }
+
+    #[test]
+    fn mapped_paths_take_the_longest_whole_component_prefix() {
+        let maps = [
+            PathMap {
+                from: "/src/ordgw".into(),
+                to: PathBuf::from("/home/me/work/ordgw"),
+            },
+            PathMap {
+                from: "/src/ordgw/third_party/".into(),
+                to: PathBuf::from("/opt/vendor"),
+            },
+            PathMap {
+                from: r"C:\build\agent\ordgw".into(),
+                to: PathBuf::from("/home/me/work/ordgw"),
+            },
+        ];
+        assert_eq!(
+            map("/src/ordgw/src/md/order_book.cpp", &maps),
+            Some(PathBuf::from("/home/me/work/ordgw/src/md/order_book.cpp"))
+        );
+        assert_eq!(
+            map("/src/ordgw/third_party/gtest/gtest.cc", &maps),
+            Some(PathBuf::from("/opt/vendor/gtest/gtest.cc")),
+            "the longer prefix wins"
+        );
+        assert_eq!(
+            map(r"C:\build\agent\ordgw\src\fix.cpp", &maps),
+            Some(PathBuf::from("/home/me/work/ordgw/src/fix.cpp"))
+        );
+        // Whole components only, and no match leaves the path alone.
+        assert_eq!(map("/src/ordgw2/a.cpp", &maps), None);
+        assert_eq!(map("/usr/include/c++/vector", &maps), None);
+        assert_eq!(map("/src/ordgw/a.cpp", &[]), None);
     }
 
     #[test]

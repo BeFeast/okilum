@@ -130,6 +130,9 @@ struct Saved {
     /// jetbrains or custom, and the custom command line.
     log_editor: String,
     log_editor_command: String,
+    /// Per-vault path mappings for log source links (#1165), keyed like
+    /// `vaults` by the canonical root.
+    source_maps: BTreeMap<PathBuf, Vec<okilum_core::log::source_link::PathMap>>,
     /// Pane sizes of list/detail splits (#1156), by split key.
     split_sizes: BTreeMap<String, f32>,
     /// Recent log queries per log file, newest first (#1158).
@@ -164,6 +167,7 @@ impl Default for Saved {
             json_raw: false,
             log_editor: "vscode".into(),
             log_editor_command: String::new(),
+            source_maps: Default::default(),
             split_sizes: Default::default(),
             log_queries: Default::default(),
             delimited_no_header: Default::default(),
@@ -191,6 +195,7 @@ struct Store {
     code_soft_wrap_changed: bool,
     json_raw_changed: bool,
     log_editor_changed: bool,
+    source_maps_changed: BTreeSet<PathBuf>,
     splits_changed: BTreeSet<String>,
     log_queries_changed: BTreeSet<String>,
     colors_changed: BTreeSet<PathBuf>,
@@ -268,6 +273,7 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         code_soft_wrap_changed: false,
         json_raw_changed: false,
         log_editor_changed: false,
+        source_maps_changed: Default::default(),
         splits_changed: Default::default(),
         log_queries_changed: Default::default(),
         colors_changed: Default::default(),
@@ -486,6 +492,7 @@ struct WriteJob {
     code_soft_wrap_changed: bool,
     json_raw_changed: bool,
     log_editor_changed: bool,
+    source_maps_changed: BTreeSet<PathBuf>,
     splits_changed: BTreeSet<String>,
     log_queries_changed: BTreeSet<String>,
     colors_changed: BTreeSet<PathBuf>,
@@ -505,6 +512,7 @@ impl WriteJob {
             .chain(self.saved.vault_colors.keys())
             .chain(self.saved.untinted_vaults.iter())
             .chain(self.saved.link_trusted_vaults.iter())
+            .chain(self.saved.source_maps.keys())
         {
             anyhow::ensure!(
                 outside_vault(root, &self.path),
@@ -562,6 +570,12 @@ impl WriteJob {
         }
         if self.json_raw_changed {
             latest.json_raw = self.saved.json_raw;
+        }
+        for root in &self.source_maps_changed {
+            match self.saved.source_maps.get(root) {
+                Some(maps) => latest.source_maps.insert(root.clone(), maps.clone()),
+                None => latest.source_maps.remove(root),
+            };
         }
         if self.log_editor_changed {
             latest.log_editor = self.saved.log_editor.clone();
@@ -641,6 +655,7 @@ fn job(cx: &App) -> Option<WriteJob> {
             && !state.code_soft_wrap_changed
             && !state.json_raw_changed
             && !state.log_editor_changed
+            && state.source_maps_changed.is_empty()
             && state.splits_changed.is_empty()
             && state.log_queries_changed.is_empty()
             && state.colors_changed.is_empty()
@@ -668,6 +683,7 @@ fn job(cx: &App) -> Option<WriteJob> {
         code_soft_wrap_changed: state.code_soft_wrap_changed,
         json_raw_changed: state.json_raw_changed,
         log_editor_changed: state.log_editor_changed,
+        source_maps_changed: state.source_maps_changed.clone(),
         splits_changed: state.splits_changed.clone(),
         log_queries_changed: state.log_queries_changed.clone(),
         colors_changed: state.colors_changed.clone(),
@@ -1290,6 +1306,51 @@ pub(crate) fn set_log_editor(editor: &okilum_core::log::source_link::Editor, cx:
     schedule(cx);
 }
 
+/// Path mappings of the vault at `root` (#1165).
+pub(crate) fn source_maps(root: &Path, cx: &App) -> Vec<okilum_core::log::source_link::PathMap> {
+    cx.try_global::<Store>()
+        .and_then(|state| state.saved.source_maps.get(root).cloned())
+        .unwrap_or_default()
+}
+
+/// Path mappings for a log at `path`: those of the innermost vault that
+/// holds it.
+pub(crate) fn source_maps_for(
+    path: &Path,
+    cx: &App,
+) -> Vec<okilum_core::log::source_link::PathMap> {
+    cx.try_global::<Store>()
+        .and_then(|state| {
+            state
+                .saved
+                .source_maps
+                .iter()
+                .filter(|(root, _)| path.starts_with(root))
+                .max_by_key(|(root, _)| root.components().count())
+                .map(|(_, maps)| maps.clone())
+        })
+        .unwrap_or_default()
+}
+
+pub(crate) fn set_source_maps(
+    root: &Path,
+    maps: Vec<okilum_core::log::source_link::PathMap>,
+    cx: &mut App,
+) {
+    if !installed(cx) || source_maps(root, cx) == maps {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    if maps.is_empty() {
+        state.saved.source_maps.remove(root);
+    } else {
+        state.saved.source_maps.insert(root.to_owned(), maps);
+    }
+    state.source_maps_changed.insert(root.to_owned());
+    schedule(cx);
+    cx.refresh_windows();
+}
+
 pub(crate) fn set_json_raw(value: bool, cx: &mut App) {
     if !installed(cx) || json_raw(cx) == value {
         return;
@@ -1366,6 +1427,7 @@ fn mark_saved(generation: u64, cx: &mut App) {
         state.code_soft_wrap_changed = false;
         state.json_raw_changed = false;
         state.log_editor_changed = false;
+        state.source_maps_changed.clear();
         state.splits_changed.clear();
         state.log_queries_changed.clear();
         state.colors_changed.clear();
@@ -1648,6 +1710,7 @@ mod tests {
                 code_soft_wrap_changed: false,
                 json_raw_changed: false,
                 log_editor_changed: false,
+                source_maps_changed: Default::default(),
                 splits_changed: Default::default(),
                 log_queries_changed: Default::default(),
                 colors_changed: Default::default(),

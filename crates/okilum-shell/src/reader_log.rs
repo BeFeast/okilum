@@ -673,7 +673,10 @@ impl LogView {
             .and_then(|(source, _)| self.source(source))
             .and_then(|data| data.path().parent().map(Path::to_path_buf))
             .unwrap_or_default();
-        let path = source_link::resolve(&location.path, &base);
+        // A build made elsewhere opens in the local checkout (#1165).
+        let maps = reader_ui_state::source_maps_for(&base, cx);
+        let path = source_link::map(&location.path, &maps)
+            .unwrap_or_else(|| source_link::resolve(&location.path, &base));
         let editor = reader_ui_state::log_editor(cx);
         match source_link::open(&editor, &path, location.line, location.column) {
             Ok(open) => self.launch(open, window, cx),
@@ -4134,6 +4137,42 @@ mod tests {
                 .map(String::from)
                 .to_vec()
             ))
+        );
+        // A build made elsewhere: the vault maps /src/ordgw to a local
+        // checkout, and the frame opens there (#1165).
+        let checkout = _directory.path().canonicalize().unwrap().join("checkout");
+        let root = _directory.path().canonicalize().unwrap();
+        visual.update(|_, cx| {
+            reader_ui_state::set_log_editor(&source_link::Editor::VsCode, cx);
+            reader_ui_state::set_source_maps(
+                &root,
+                vec![source_link::PathMap {
+                    from: "/src/ordgw".into(),
+                    to: checkout.clone(),
+                }],
+                cx,
+            );
+        });
+        view.update_in(visual, |view, window, cx| {
+            view.open_location(&location, window, cx)
+        });
+        let expected = checkout.join("src/md/order_book.cpp");
+        assert_eq!(
+            view.read_with(visual, |view, _| view.last_open.clone()),
+            Some(Open::Url(format!(
+                "vscode://file{}:212:23",
+                expected.to_string_lossy()
+            )))
+        );
+        // Kept for the next launch.
+        visual.executor().advance_clock(Duration::from_secs(1));
+        visual.run_until_parked();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(state.path().join("reader-ui.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            saved["source_maps"][root.to_string_lossy().as_ref()][0]["from"],
+            "/src/ordgw"
         );
     }
 
