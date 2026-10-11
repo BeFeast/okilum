@@ -54,6 +54,17 @@ class DiffTest(unittest.TestCase):
         self.assertIn('export', out)
         self.assertIn('vault', out)
 
+    def test_user_assist_names_are_decoded_from_rot13(self):
+        count = r'K HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\UserAssist\{X}\Count'
+        # "com.befeast.okilum" in ROT13; another program's entry stays "other".
+        code, out = self.run_diff([], [count.replace('K ', 'V ', 1) + r'\pbz.orsrnfg.bxvyhz'])
+        self.assertEqual(code, 1, out)
+        # An executable path: C:\Users\qa\AppData\Local\BeFeast.Okilum\Update.exe
+        code, out = self.run_diff([], [count.replace('K ', 'V ', 1) + r'\P:\Hfref\dn\NccQngn\Ybpny\OrSrnfg.Bxvyhz\Hcqngr.rkr'])
+        self.assertEqual(code, 1, out)
+        code, out = self.run_diff([], [count.replace('K ', 'V ', 1) + r'\Zvpebfbsg.Jvaqbjf.Rkcybere'])
+        self.assertEqual(code, 0, out)
+
     def test_without_a_home_the_whole_path_is_checked(self):
         code, _ = self.run_diff([], ['K HKEY_CURRENT_USER\\Software\\Classes\\okilum'])
         self.assertEqual(code, 1)

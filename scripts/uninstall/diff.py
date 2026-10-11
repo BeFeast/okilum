@@ -4,13 +4,15 @@
     diff.py before.txt after.txt [--vault PATH ...] [--home PATH]
 
 Prints every added entry. Fails if an added entry belongs to Okilum (name
-contains okilum / BeFeast.Okilum / com.befeast.okilum) and is not under a
+contains okilum / BeFeast.Okilum / com.befeast.okilum, UserAssist names
+decoded from ROT13) and is not under a
 vault, the exported unsaved drafts, or the known residue owned by Windows or
 Velopack. Only the part of a path below the snapshot's home is checked for the
 name, so a QA home such as /home/qa/okilum-night/home is not app residue (#1088).
 The home comes from the snapshot's "# home" line or --home.
 """
 import argparse
+import codecs
 import re
 import sys
 from pathlib import Path
@@ -44,7 +46,17 @@ def below(path, root):
     return path
 
 
+def readable(path):
+    """Explorer stores UserAssist value names in ROT13; decode them for the check.
+    A name may itself be a path, so everything after the Count key is decoded."""
+    key, sep, name = path.partition('\\Count\\')
+    if sep and '\\UserAssist\\' in key:
+        return key + sep + codecs.decode(name, 'rot13')
+    return path
+
+
 def classify(path, vaults, home):
+    path = readable(path)
     lowered = path.lower()
     if any(lowered == v or lowered.startswith(v + '\\') or lowered.startswith(v + '/') for v in vaults):
         return 'vault'
