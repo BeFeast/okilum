@@ -23,7 +23,7 @@ text = open(sys.argv[1]).read().replace('@QA_PASSWORD@', escape(os.environ['PASS
 open(sys.argv[2], 'w').write(text)
 PY
 cp "$here/OKILUM-QA.CMD" "$here/provision.ps1" "$here/run-gui.ps1" "$here/authorized_keys" "$work/provision/"
-chmod -R a+rX "$work"
+# No chmod: the work tree stays owner-only (umask 077); the container runs as root and reads it.
 docker run --rm -v "$work:/w" -v "$out:/out" alpine:latest sh -c '
     apk add --no-cache xorriso >/dev/null &&
     xorriso -as mkisofs -quiet -J -r -V OKILUM_QA_ANSWER -o /out/okilum-win-qa-answer.iso /w/answer &&
