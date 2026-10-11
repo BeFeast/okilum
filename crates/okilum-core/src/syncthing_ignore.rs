@@ -106,7 +106,9 @@ fn split_line(line: &str) -> (bool, &str) {
         if let Some(after) = rest.strip_prefix('!') {
             negated = true;
             rest = after;
-        } else if let Some(after) = rest.strip_prefix("(?i)").or_else(|| rest.strip_prefix("(?d)"))
+        } else if let Some(after) = rest
+            .strip_prefix("(?i)")
+            .or_else(|| rest.strip_prefix("(?d)"))
         {
             rest = after;
         } else {
@@ -289,7 +291,10 @@ mod tests {
         let root = folder(Some(b"#include shared.txt\n"));
         let before = std::fs::read(root.path().join(IGNORE_FILE)).unwrap();
         assert!(add_block(root.path()).is_err());
-        assert_eq!(std::fs::read(root.path().join(IGNORE_FILE)).unwrap(), before);
+        assert_eq!(
+            std::fs::read(root.path().join(IGNORE_FILE)).unwrap(),
+            before
+        );
     }
 
     #[test]

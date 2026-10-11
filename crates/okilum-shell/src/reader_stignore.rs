@@ -48,9 +48,7 @@ impl Reader {
         let Some((root, Status::Missing(_))) = self.stignore.clone() else {
             return;
         };
-        if self.single_file
-            || self.sidebar.stignore_declined
-            || !self.stignore_offered.insert(root)
+        if self.single_file || self.sidebar.stignore_declined || !self.stignore_offered.insert(root)
         {
             return;
         }
@@ -82,9 +80,8 @@ impl Reader {
                                 .label("Add to .stignore")
                                 .on_click(move |_, window, cx| {
                                     close(&key, window, cx);
-                                    let _ = reader.update(cx, |this, cx| {
-                                        this.add_stignore_block(window, cx)
-                                    });
+                                    let _ = reader
+                                        .update(cx, |this, cx| this.add_stignore_block(window, cx));
                                 })
                         })
                         .child({
@@ -105,9 +102,8 @@ impl Reader {
             window,
             cx,
         );
-        if let Ok(mut slot) = key.lock() {
-            *slot = Some(pushed);
-        }
+        // A statement of its own: the guard must be gone before `key` is.
+        let _ = key.lock().map(|mut slot| *slot = Some(pushed));
     }
 
     /// Append the Okilum block to `.stignore` (the click on «Add to .stignore»), off the UI thread.
@@ -127,11 +123,9 @@ impl Reader {
             let _ = this.update_in(cx, |this, window, cx| {
                 this.stignore_busy = false;
                 match added {
-                    Ok(Added::Appended(_)) => reader_toast::transient(
-                        "Added Okilum's lines to .stignore",
-                        window,
-                        cx,
-                    ),
+                    Ok(Added::Appended(_)) => {
+                        reader_toast::transient("Added Okilum's lines to .stignore", window, cx)
+                    }
                     Ok(Added::AlreadyCovered) => {}
                     Err(error) => reader_toast::error(
                         format!("Could not update .stignore: {error:#}"),
@@ -422,7 +416,10 @@ mod tests {
         // The decline lives in the app state: a new launch does not offer, and still sees it missing.
         let (reader, visual) = open(cx, &temp, &root);
         assert!(matches!(status(&reader, visual), Some(Status::Missing(_))));
-        assert!(!shown(visual, "stignore-add"), "not offered after a decline");
+        assert!(
+            !shown(visual, "stignore-add"),
+            "not offered after a decline"
+        );
         reader.read_with(visual, |r, _| assert!(r.sidebar.stignore_declined));
         assert_eq!(ignore(&root), BEFORE);
     }

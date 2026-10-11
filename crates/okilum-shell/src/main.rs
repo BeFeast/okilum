@@ -77,8 +77,8 @@ mod reader_settings;
 mod reader_settings_sync;
 mod reader_shortcuts;
 mod reader_sidebar;
-mod reader_stignore;
 mod reader_split;
+mod reader_stignore;
 #[cfg(windows)]
 mod url_protocol;
 mod version_info;

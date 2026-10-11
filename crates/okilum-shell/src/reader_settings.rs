@@ -1608,7 +1608,9 @@ mod tests {
         );
         // A vault that is not a Syncthing folder has no such row.
         std::fs::remove_dir(root.join(".stfolder")).unwrap();
-        reader.update_in(visual, |reader, window, cx| reader.check_stignore(window, cx));
+        reader.update_in(visual, |reader, window, cx| {
+            reader.check_stignore(window, cx)
+        });
         visual.run_until_parked();
         visual.update(|window, cx| window.draw(cx).clear(cx));
         assert!(visual.debug_bounds("settings-stignore").is_none());
