@@ -7,6 +7,9 @@ use super::*;
 use gpui_component::input::{EditorState, RopeExt as _};
 use okilum_core::deep_link::Position;
 
+/// How long a landing highlight stays.
+const FLASH: std::time::Duration = std::time::Duration::from_millis(1200);
+
 /// The editor caret a link places once its note is open.
 pub(crate) struct EditLanding {
     /// The note preparation it waits for; `None` waits for the window's
@@ -142,6 +145,48 @@ impl Reader {
         }
     }
 
+    /// Highlight a Reader block once, fading out (#1049: a link's line
+    /// shows where it landed). Reduced motion keeps it still, then clears.
+    pub(crate) fn flash_block(&mut self, block: usize, cx: &mut Context<Self>) {
+        let serial = self.navigation.flash.map_or(0, |(_, s)| s.wrapping_add(1));
+        self.navigation.flash = Some((block, serial));
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(FLASH).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.navigation.flash.is_some_and(|(_, s)| s == serial) {
+                    this.navigation.flash = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// The highlight over the flashed block, drawn where the list put it.
+    pub(crate) fn render_landing_flash(&self, cx: &App) -> Option<AnyElement> {
+        let (block, serial) = self.navigation.flash?;
+        let bounds = self.content.read(cx).list_state().bounds_for_item(block)?;
+        let color = cx.theme().primary.opacity(0.18);
+        let mark = div()
+            .debug_selector(|| "reader-landing-flash".into())
+            .w(bounds.size.width)
+            .h(bounds.size.height)
+            .rounded(px(6.))
+            .bg(color);
+        let mark = if cx.reduce_motion() {
+            mark.into_any_element()
+        } else {
+            mark.with_animation(
+                ("reader-landing-flash", serial),
+                Animation::new(FLASH),
+                |mark, t| mark.opacity(1. - t),
+            )
+            .into_any_element()
+        };
+        Some(deferred(anchored().position(bounds.origin).child(mark)).into_any_element())
+    }
+
     /// «Copy link to line»: the caret's line and column in this note (#1049).
     pub(crate) fn copy_link_to_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(input) = self.source_input() else {
@@ -264,6 +309,20 @@ mod tests {
             assert!(v.editing.is_none(), "a link never enters the editor");
             assert!(v.link_notice.is_none());
             assert_eq!(top(v, cx), 39);
+            assert_eq!(
+                v.navigation.flash.map(|(block, _)| block),
+                Some(39),
+                "landed block flashes"
+            );
+        });
+        assert!(
+            visual.debug_bounds("reader-landing-flash").is_some(),
+            "the highlight is drawn"
+        );
+        visual.executor().advance_clock(Duration::from_millis(1500));
+        visual.run_until_parked();
+        reader.read_with(visual, |v, _| {
+            assert!(v.navigation.flash.is_none(), "it fades once")
         });
         // Positive control: the same note without a line opens at the top.
         reader.update_in(visual, |v, window, cx| {
@@ -274,7 +333,13 @@ mod tests {
             v.open_link("target.md", Position::default(), window, cx)
         });
         settle(visual);
-        reader.read_with(visual, |v, cx| assert_eq!(top(v, cx), 0));
+        reader.read_with(visual, |v, cx| {
+            assert_eq!(top(v, cx), 0);
+            assert!(
+                v.navigation.flash.is_none(),
+                "a bare link highlights nothing"
+            );
+        });
 
         // Editor, same note, unsaved edit: the caret moves, the edit stays.
         reader.update_in(visual, |v, window, cx| {
