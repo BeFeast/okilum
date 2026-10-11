@@ -100,12 +100,12 @@ pub(super) fn setting_row(
         .py_2()
         .child(
             v_flex().flex_1().min_w_0().gap_1().child(label).child(
+                // Help wraps: a cut-off sentence can hide the part that
+                // matters, such as the quiet hours (#957).
                 div()
+                    .debug_selector(move || format!("setting-help-{label}"))
                     .text_sm()
                     .text_color(brand::palette(cx).text_muted)
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .whitespace_nowrap()
                     .child(help),
             ),
         )
@@ -1162,6 +1162,73 @@ mod tests {
             reader.set_reminder_prefs(same, cx);
             assert!(reader.reminder_prefs_error.is_none());
         });
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    /// #957: at the default Settings width (half of a 1366 px screen) the
+    /// Reminder time help wraps instead of hiding the quiet hours.
+    #[cfg(any(unix, windows))]
+    #[gpui::test]
+    fn setting_help_wraps_instead_of_being_cut_off(cx: &mut TestAppContext) {
+        let temp = std::env::temp_dir().join(format!("okilum-settings-{}", uuid::Uuid::new_v4()));
+        let (root, state) = (temp.join("vault"), temp.join("state"));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(root.join("start.md"), "# Start\n").unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            reader_ui_state::install(&state, cx);
+        });
+        let mut reader = None;
+        cx.add_window(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("start.md".into()),
+                        session_directory: Some(state.clone()),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let weak = reader.unwrap().downgrade();
+        cx.run_until_parked();
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let settings = cx.new(|cx| {
+                let mut settings = Settings::new(Some(weak), cx);
+                settings.section = Section::Files;
+                settings
+            });
+            Root::new(settings, window, cx)
+        });
+        let mut measure = |width: f32| {
+            visual.simulate_resize(size(px(width), px(768.)));
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            let help = visual
+                .debug_bounds("setting-help-Reminder time")
+                .expect("Reminder time help shown");
+            let control = visual
+                .debug_bounds("reminder-earlier")
+                .expect("Reminder time control shown");
+            assert!(
+                help.right() <= control.left(),
+                "help {help:?} stays left of its control {control:?} at {width}"
+            );
+            help.size.height
+        };
+        let wide = measure(1600.);
+        let narrow = measure(683.);
+        assert!(wide > px(0.), "positive control: the help is laid out");
+        assert!(
+            narrow > wide,
+            "at 683 px the help wraps onto more lines ({narrow:?}) instead of being cut ({wide:?})"
+        );
         std::fs::remove_dir_all(temp).unwrap();
     }
 
