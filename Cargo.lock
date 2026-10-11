@@ -5320,183 +5320,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "okilum-brain"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "notify",
- "okilum-core",
- "regex",
- "reqwest",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2 0.10.9",
- "tar",
- "tempfile",
- "time",
- "tokio",
- "tungstenite",
- "uuid",
-]
-
-[[package]]
-name = "okilum-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "bzip2",
- "comrak",
- "crc32fast",
- "euclid",
- "flate2",
- "markdown",
- "memchr",
- "memmap2",
- "notify",
- "palette",
- "regex",
- "roughr",
- "rust-stemmers",
- "rustix",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2 0.10.9",
- "syntect",
- "tantivy",
- "tar",
- "tempfile",
- "time",
- "unicode-segmentation",
- "url",
- "uuid",
- "walkdir",
- "windows-sys 0.61.2",
- "zip",
- "zstd",
-]
-
-[[package]]
-name = "okilum-cored"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "okilum-brain",
- "okilum-core",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "tungstenite",
-]
-
-[[package]]
-name = "okilum-shell"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-channel",
- "base64 0.22.1",
- "chrono",
- "core-foundation-sys",
- "dirs 6.0.0",
- "embed-resource",
- "fsevent-sys",
- "futures",
- "gpui-base",
- "gpui-component",
- "gpui-kit-assets",
- "gpui-pre",
- "gpui-pre-platform",
- "gpui-pre-wgpu",
- "hayro",
- "image",
- "notify",
- "objc2 0.6.4",
- "objc2-app-kit 0.3.2",
- "objc2-foundation 0.3.2",
- "okilum-core",
- "okilum-sync-controller",
- "regex",
- "resvg 0.45.1",
- "rust-embed",
- "rustix",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2 0.10.9",
- "signal-hook-registry",
- "similar",
- "smallvec",
- "tempfile",
- "time",
- "tree-sitter",
- "tree-sitter-mermaid",
- "unicode-bidi",
- "unicode-linebreak",
- "unicode-segmentation",
- "url",
- "uuid",
- "velopack",
- "wayland-client",
- "wayland-protocols-wlr",
- "windows-sys 0.61.2",
- "zbus",
- "zip",
-]
-
-[[package]]
-name = "okilum-sync"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "reqwest",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "okilum-sync-controller"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "core-foundation-sys",
- "getrandom 0.3.4",
- "libc",
- "objc2 0.6.4",
- "objc2-foundation 0.3.2",
- "objc2-service-management",
- "okilum-sync",
- "reqwest",
- "rustix",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "url",
- "uuid",
- "windows 0.61.3",
- "xmltree",
-]
-
-[[package]]
-name = "okilum-sync-supervisor"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "embed-resource",
- "libc",
- "okilum-sync-controller",
- "sha2 0.10.9",
- "tempfile",
- "uuid",
-]
-
-[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8065,6 +7888,183 @@ dependencies = [
  "windows-sys 0.61.2",
 ]
 
+[[package]]
+name = "okilum-brain"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "notify",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2 0.10.9",
+ "tar",
+ "tempfile",
+ "okilum-core",
+ "time",
+ "tokio",
+ "tungstenite",
+ "uuid",
+]
+
+[[package]]
+name = "okilum-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "bzip2",
+ "comrak",
+ "crc32fast",
+ "euclid",
+ "flate2",
+ "markdown",
+ "memchr",
+ "memmap2",
+ "notify",
+ "palette",
+ "regex",
+ "roughr",
+ "rust-stemmers",
+ "rustix",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2 0.10.9",
+ "syntect",
+ "tantivy",
+ "tar",
+ "tempfile",
+ "time",
+ "unicode-segmentation",
+ "url",
+ "uuid",
+ "walkdir",
+ "windows-sys 0.61.2",
+ "zip",
+ "zstd",
+]
+
+[[package]]
+name = "okilum-cored"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "okilum-brain",
+ "okilum-core",
+ "tungstenite",
+]
+
+[[package]]
+name = "okilum-shell"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-channel",
+ "base64 0.22.1",
+ "chrono",
+ "core-foundation-sys",
+ "dirs 6.0.0",
+ "embed-resource",
+ "fsevent-sys",
+ "futures",
+ "gpui-base",
+ "gpui-component",
+ "gpui-kit-assets",
+ "gpui-pre",
+ "gpui-pre-platform",
+ "gpui-pre-wgpu",
+ "hayro",
+ "image",
+ "notify",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "okilum-core",
+ "okilum-sync-controller",
+ "regex",
+ "resvg 0.45.1",
+ "rust-embed",
+ "rustix",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2 0.10.9",
+ "signal-hook-registry",
+ "similar",
+ "smallvec",
+ "tempfile",
+ "time",
+ "tree-sitter",
+ "tree-sitter-mermaid",
+ "unicode-bidi",
+ "unicode-linebreak",
+ "unicode-segmentation",
+ "url",
+ "uuid",
+ "velopack",
+ "wayland-client",
+ "wayland-protocols-wlr",
+ "windows-sys 0.61.2",
+ "zbus",
+ "zip",
+]
+
+[[package]]
+name = "okilum-sync"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "reqwest",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "okilum-sync-controller"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "core-foundation-sys",
+ "getrandom 0.3.4",
+ "libc",
+ "objc2 0.6.4",
+ "objc2-foundation 0.3.2",
+ "objc2-service-management",
+ "reqwest",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "okilum-sync",
+ "url",
+ "uuid",
+ "windows 0.61.3",
+ "xmltree",
+]
+
+
+[[package]]
+name = "okilum-sync-supervisor"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "embed-resource",
+ "libc",
+ "okilum-sync-controller",
+ "sha2 0.10.9",
+ "tempfile",
+ "uuid",
+]
 [[package]]
 name = "thiserror"
 version = "1.0.69"
