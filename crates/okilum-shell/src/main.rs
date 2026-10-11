@@ -6067,7 +6067,7 @@ impl Reader {
             .child(
                 list(
                     self.outline_list.clone(),
-                    cx.processor(move |this, ix, _window, cx| {
+                    cx.processor(move |this, ix: usize, _window, cx| {
                         let Some(heading) = this.outline.get(ix) else {
                             return div().into_any_element();
                         };
@@ -7883,7 +7883,11 @@ mod document_link_landing_tests {
         });
         visual.run_until_parked();
         view.read_with(visual, |v, _| {
-            assert_eq!(v.outline.len(), HEADINGS, "positive control: all headings exist");
+            assert_eq!(
+                v.outline.len(),
+                HEADINGS,
+                "positive control: all headings exist"
+            );
             assert_eq!(v.outline_list.item_count(), HEADINGS);
         });
         // `debug_bounds` takes a `&'static str`.
@@ -7892,17 +7896,27 @@ mod document_link_landing_tests {
         };
         let built = |visual: &mut VisualTestContext| -> Vec<usize> {
             (0..HEADINGS)
-                .filter(|ix| visual.debug_bounds(name("reader-outline-row", *ix)).is_some())
+                .filter(|ix| {
+                    visual
+                        .debug_bounds(name("reader-outline-row", *ix))
+                        .is_some()
+                })
                 .collect()
         };
         let first = built(visual);
-        assert!(first.contains(&0), "positive control: the first row is drawn");
+        assert!(
+            first.contains(&0),
+            "positive control: the first row is drawn"
+        );
         assert!(
             (5..=40).contains(&first.len()),
             "{} of {HEADINGS} rows built for one screen",
             first.len()
         );
-        assert!(!first.contains(&(HEADINGS - 1)), "the last row is not built");
+        assert!(
+            !first.contains(&(HEADINGS - 1)),
+            "the last row is not built"
+        );
         let list = visual.debug_bounds("reader-outline-list").unwrap();
         assert!(
             list.size.height <= px(768. * 0.6 + 1.),
@@ -7918,12 +7932,17 @@ mod document_link_landing_tests {
         });
         visual.run_until_parked();
         let scrolled = built(visual);
-        assert!(!scrolled.is_empty() && !scrolled.contains(&0), "{scrolled:?}");
+        assert!(
+            !scrolled.is_empty() && !scrolled.contains(&0),
+            "{scrolled:?}"
+        );
         assert!(scrolled.len() <= 40);
 
         // A click on a row still jumps to its heading.
         let target = scrolled[scrolled.len() / 2];
-        let at = visual.debug_bounds(name("reader-outline-row", target)).unwrap();
+        let at = visual
+            .debug_bounds(name("reader-outline-row", target))
+            .unwrap();
         let block = view.read_with(visual, |v, _| v.outline[target].target.block);
         visual.simulate_click(at.center(), Modifiers::default());
         visual.run_until_parked();
@@ -7937,7 +7956,9 @@ mod document_link_landing_tests {
         });
 
         // Another note resets the list to its own headings.
-        view.update_in(visual, |v, window, cx| v.open_note("few.md", None, window, cx));
+        view.update_in(visual, |v, window, cx| {
+            v.open_note("few.md", None, window, cx)
+        });
         visual.run_until_parked();
         view.read_with(visual, |v, _| {
             assert_eq!(v.outline.len(), 2);
