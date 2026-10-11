@@ -1,0 +1,6 @@
+[2026-10-10 06:04:00.000] [ordgw] [[32minfo[m] ordgw 3.14.2 starting
+[2026-10-10 06:04:00.140] [cpu] [[33m[1mwarning[m] cpu5 scaling_governor is 'powersave'
+[2026-10-10 06:04:52.010] [risk] [[31m[1merror[m] order rejected by risk: ClOrdID=OKL1-77120
+[2026-10-10 06:04:58.900] [fix.session] [[31m[1merror[m] connection reset, see ]8;;https://runbook.example/fix\runbook]8;;\
+[2026-10-10 06:05:11.060] [ordgw] [[1m[41mcritical[m] caught signal 11 (SIGSEGV)
+[2026-10-10 06:05:11.061] [ordgw] [[36mdebug[m] core written to /var/crash

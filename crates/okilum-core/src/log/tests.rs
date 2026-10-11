@@ -538,3 +538,63 @@ fn journald_macos_and_windows_exports_have_their_roles() {
         .starts_with("Name resolution for the name wpad"));
     assert_eq!(logger.as_deref(), Some("Microsoft-Windows-DNS-Client"));
 }
+
+#[test]
+fn colour_codes_are_gone_for_parsing_and_matching_but_not_from_raw() {
+    // `kubectl logs` of an spdlog colour sink, codes as spdlog writes them.
+    let file = fixture("kubectl-colour.log");
+    let index = file.index();
+    assert_eq!(index.format(), Format::Spdlog);
+    assert_eq!(index.stats().unparsed(), 0);
+    assert_eq!(
+        levels(&file),
+        [
+            Level::Info,
+            Level::Warn,
+            Level::Error,
+            Level::Error,
+            Level::Fatal,
+            Level::Debug,
+        ]
+    );
+    let record = file.record(3).unwrap();
+    assert_eq!(record.role(Role::Level).unwrap().value, "error");
+    assert_eq!(
+        record.role(Role::Message).unwrap().value,
+        "connection reset, see runbook"
+    );
+    assert!(record.fields.iter().all(|f| !f.value.contains('\u{1b}')));
+    // Raw copy keeps every byte.
+    assert!(file.raw(3).unwrap().contains(&0x1b));
+    let hits = |text: &str| {
+        let filter = LogFilter {
+            text: text.to_owned(),
+            ..Default::default()
+        };
+        let ticket = FilterGenerations::default().next();
+        filter::evaluate(&filter, index, file.bytes(), &ticket)
+            .unwrap()
+            .rows
+    };
+    assert_eq!(hits("level=error"), [2, 3]);
+    // Positive control: a hyperlink code sits between the words in the raw
+    // bytes, so only the stripped text can match.
+    assert!(memchr::memmem::find(file.bytes(), b"see runbook").is_none());
+    assert_eq!(hits("see runbook"), [3]);
+}
+
+#[test]
+fn colour_codes_inside_json_strings_are_gone_too() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("zap.jsonl");
+    std::fs::write(
+        &path,
+        "{\"level\":\"\\u001b[31mERROR\\u001b[0m\",\"msg\":\"\\u001b[1mboom\\u001b[0m\"}\n\u{1b}[33mplain warning\u{1b}[0m\n",
+    )
+    .unwrap();
+    let file = LogFile::open(&path).unwrap();
+    assert_eq!(levels(&file), [Level::Error, Level::Unparsed]);
+    let record = file.record(0).unwrap();
+    assert_eq!(record.role(Role::Message).unwrap().value, "boom");
+    assert_eq!(record.role(Role::Level).unwrap().value, "ERROR");
+}

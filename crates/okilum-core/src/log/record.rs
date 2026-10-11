@@ -3,7 +3,7 @@
 
 use std::borrow::Cow;
 
-use super::{block, json, logfmt, text, timestamp, Format, Level};
+use super::{ansi, block, json, logfmt, text, timestamp, Format, Level};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ValueKind {
@@ -32,13 +32,14 @@ pub(crate) struct RawValue<'a> {
 }
 
 impl<'a> RawValue<'a> {
-    /// Display text: strings decoded, everything else exactly as written.
+    /// Display text: strings decoded, everything else exactly as written,
+    /// without the colour codes a JSON `\u001b` escape can carry (#1164).
     pub fn text(&self) -> Cow<'a, str> {
-        match self.escape {
+        ansi::strip_text(match self.escape {
             Escape::None => String::from_utf8_lossy(self.raw),
             Escape::Json => Cow::Owned(json::unescape(self.raw)),
             Escape::Logfmt => Cow::Owned(logfmt::unescape(self.raw)),
-        }
+        })
     }
 
     fn level(&self) -> Level {
@@ -347,11 +348,17 @@ pub(crate) fn scan<'a>(
     }
 }
 
+/// Whether `line` is a record in `format`, colour codes aside.
+pub(crate) fn is_record(line: &[u8], format: Format) -> bool {
+    scan(&ansi::strip(line), format, &mut |_, _| {}).is_ok()
+}
+
 /// What the index keeps per line: level and timestamp, without allocating
 /// for fields that play no role.
 pub(crate) fn classify(line: &[u8], format: Format) -> (Level, Option<i64>) {
+    let line = ansi::strip(line);
     let mut roles = Roles::<(Level, Option<i64>)>::new();
-    let parsed = scan(line, format, &mut |path, value| {
+    let parsed = scan(&line, format, &mut |path, value| {
         roles.offer(path, &value, |role, scale| match role {
             Role::Level => (level_on(&value, scale), None),
             Role::Time => (Level::Missing, value.timestamp()),
@@ -394,10 +401,10 @@ impl Record {
     /// the entry's first line; its continuation lines (block.rs) are not
     /// fields.
     pub fn parse(line: &[u8], format: Format) -> Option<Record> {
-        let line = block::head(line);
+        let line = ansi::strip(block::head(line));
         let mut record = Record::default();
         let mut roles = Roles::<usize>::new();
-        scan(line, format, &mut |path, value| {
+        scan(&line, format, &mut |path, value| {
             let index = record.fields.len();
             roles.offer(path, &value, |_, _| index);
             record.fields.push(Field {

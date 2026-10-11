@@ -9,7 +9,7 @@ use gpui_component::scroll::ScrollableElement as _;
 use okilum_core::log::query::{Expr, FieldRef, Literal, Test};
 use okilum_core::log::tail::{ResetReason, TailEvent};
 use okilum_core::log::{
-    block, filter, timestamp, FilterGenerations, Format, Level, LogFile, LogFilter, LogIndex,
+    ansi, block, filter, timestamp, FilterGenerations, Format, Level, LogFile, LogFilter, LogIndex,
     LogTail, Query, Record, Role, TimeWindow, ValueKind,
 };
 use std::ops::Range;
@@ -1048,7 +1048,7 @@ impl LogView {
                     div()
                         .font_family(mono.clone())
                         .text_size(px(12.))
-                        .child(String::from_utf8_lossy(raw).into_owned()),
+                        .child(String::from_utf8_lossy(&ansi::strip(raw)).into_owned()),
                 ),
         };
         // A record's continuation lines, frame by frame as written; an entry
@@ -1062,7 +1062,7 @@ impl LogView {
                         .pt_2()
                         .font_family(mono)
                         .text_size(px(12.))
-                        .child(String::from_utf8_lossy(rest).into_owned()),
+                        .child(String::from_utf8_lossy(&ansi::strip(rest)).into_owned()),
                 )
             },
         );
@@ -1584,7 +1584,10 @@ pub(crate) fn row_text(file: &dyn LogData, index: usize) -> RowText {
                 row.push(&format!("{}={}", field.key, field.value), true);
             }
         }
-        None => row.push(&String::from_utf8_lossy(block::head(raw)), false),
+        None => row.push(
+            &String::from_utf8_lossy(&ansi::strip(block::head(raw))),
+            false,
+        ),
     }
     RowText {
         time,

@@ -11,6 +11,7 @@
 //! level normalisation and parallel chunked scanning. No hl code is used; see
 //! docs/research/602-hl-log-viewer.md.
 
+pub mod ansi;
 pub mod block;
 mod detect;
 mod file;

@@ -222,7 +222,7 @@ impl LogIndex {
 fn is_block(data: &[u8], entry: &LogEntry, format: Format) -> bool {
     let raw = &data[entry.offset as usize..];
     entry.level == block::LEVEL
-        && record::scan(block::head(raw), format, &mut |_, _| {}).is_err()
+        && !record::is_record(block::head(raw), format)
         && block::block_kind(raw).is_some()
 }
 
@@ -244,7 +244,7 @@ fn next_record(span: &[u8], mut pos: usize, format: Format) -> usize {
         let line_end = memchr::memchr(b'\n', &span[pos..]).map_or(span.len(), |at| pos + at);
         let line = &span[pos..line_end];
         let line = line.strip_suffix(b"\r").unwrap_or(line);
-        if !line.trim_ascii().is_empty() && record::scan(line, format, &mut |_, _| {}).is_ok() {
+        if !line.trim_ascii().is_empty() && record::is_record(line, format) {
             return pos;
         }
         pos = line_end + 1;
