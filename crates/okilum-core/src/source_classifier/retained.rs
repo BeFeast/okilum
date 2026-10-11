@@ -263,14 +263,34 @@ impl RetainedPresentation {
             return None;
         }
         let affected = &source_regions[first..=last];
-        // Between accepted blocks only whitespace and quote prefixes may remain;
-        // anything else is an unsupported block that this parse cannot prove.
+        // Reparse whole blocks: a container's parsed end can stop short of its
+        // last block's (a different list type following directly), and a
+        // fragment cut inside a block cannot be classified (#1094).
+        let dirty = dirty.start.min(affected[0].block().start)
+            ..dirty.end.max(affected[affected.len() - 1].block().end);
+        // Between accepted blocks only whitespace, quote prefixes and bare
+        // list markers (an empty item) may remain; anything else is an
+        // unsupported block that this parse cannot prove.
         let container_gap = |gap: Option<&str>| {
-            gap.is_some_and(|gap| gap.chars().all(|c| c.is_whitespace() || c == '>'))
+            gap.is_some_and(|gap| {
+                gap.split('\n').all(|line| {
+                    let line = line.trim_start_matches(|c: char| c.is_whitespace() || c == '>');
+                    line.is_empty() || bare_list_marker(line)
+                })
+            })
+        };
+        // A Source block inside a container the run reparses whole is decided
+        // again by that parse (an unclosed `**` while typing, #1094); outside
+        // one it may be an unsupported block this parse cannot prove.
+        let in_container = |r: &Range<usize>| {
+            self.contexts
+                .iter()
+                .zip(&included)
+                .any(|(c, &included)| included && c.start <= r.start && r.end <= c.end)
         };
         if affected
             .iter()
-            .any(|r| !matches!(r, Region::Conceal { .. }))
+            .any(|r| !matches!(r, Region::Conceal { .. }) && !in_container(r.block()))
             || !container_gap(old.get(dirty.start..affected[0].block().start))
             || !container_gap(old.get(affected[affected.len() - 1].block().end..dirty.end))
             || affected
@@ -385,11 +405,27 @@ impl RetainedPresentation {
             .strip_prefix("\r\n")
             .or_else(|| after.strip_prefix('\n'))
             .unwrap_or(after);
-        let next_blank = after
+        let next = after
             .split('\n')
             .next()
-            .is_none_or(|line| line.trim().is_empty());
+            .map(|line| line.trim_end_matches('\r'));
+        let next_blank = next.is_none_or(|line| line.trim().is_empty());
+        // A line that interrupts a paragraph cannot continue it lazily: an ATX
+        // heading, or a list item of another type that may start a new list
+        // (a bullet, or ordered from 1) (#1094).
+        let last_marker = fragment
+            .lines()
+            .rfind(|line| !line.starts_with([' ', '\t']) && opens_list_item(line))
+            .map(list_marker_kind);
+        let interrupts = next.is_some_and(|line| {
+            atx_heading(line)
+                || (opens_list_item(line)
+                    && !line.starts_with([' ', '\t'])
+                    && starts_new_list(line)
+                    && last_marker.is_some_and(|kind| kind != list_marker_kind(line)))
+        });
         let lazy = !next_blank
+            && !interrupts
             && classified
                 .as_ref()
                 .is_some_and(|c| c.contexts.iter().any(|ctx| ctx.end == fragment.len()));
@@ -729,6 +765,33 @@ fn container_content(line: &str) -> &str {
     }
 }
 
+/// The kind of a list item's marker: its bullet, or an ordered delimiter.
+fn list_marker_kind(line: &str) -> u8 {
+    let plain = line.trim_start_matches(' ');
+    let digits = plain.bytes().take_while(u8::is_ascii_digit).count();
+    plain.as_bytes().get(digits).copied().unwrap_or(0) | if digits > 0 { 0x80 } else { 0 }
+}
+
+/// Whether a list item line may start a list after a paragraph: a bullet,
+/// or an ordered item numbered 1.
+fn starts_new_list(line: &str) -> bool {
+    let plain = line.trim_start_matches(' ');
+    let digits = plain.bytes().take_while(u8::is_ascii_digit).count();
+    digits == 0 || &plain[..digits] == "1"
+}
+
+/// Only list item markers, nested empty items included (`-`, `- *`, `1.`).
+fn bare_list_marker(line: &str) -> bool {
+    let marker = |token: &str| {
+        matches!(token, "-" | "*" | "+")
+            || token.strip_suffix(['.', ')']).is_some_and(|n| {
+                (1..=9).contains(&n.len()) && n.bytes().all(|b| b.is_ascii_digit())
+            })
+    };
+    let mut tokens = line.split_whitespace().peekable();
+    tokens.peek().is_some() && tokens.all(marker)
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -1007,6 +1070,63 @@ mod tests {
                     .is_none(),
                 "{after:?}"
             );
+        }
+    }
+
+    #[test]
+    fn list_edits_and_undo_stay_local_instead_of_the_whole_note_raw() {
+        // #1094's sequence on its fixture's list: End of the first item,
+        // Enter, type **x**, Enter, Backspace twice, then Undo four times.
+        let original = "# L1 containers\n\nIntro paragraph with **bold** and [[Target|alias]].\n\n\
+            ## Lists\n\n- top **bold** and *em*\n  - nested `code` with [[Target|alias]]\n\
+            \x20   - third level [ref link][Id] and ~~gone~~\n      > quote at depth four **q**\n\
+            - second top item\n1. ordered *one*\n2. ordered **two**\n10. wide ordered marker **ten**\n\n\
+            ## Tail\n\n> quote **strong** line\n\n[Id]: https://example.com/id\n";
+        let at = original.find("*em*").unwrap() + "*em*".len();
+        let mut texts = vec![original.to_string()];
+        let mut text = original.to_string();
+        let mut caret = at;
+        for step in ["\n- ", "*", "*", "x", "*", "*", "\n- "] {
+            text.insert_str(caret, step);
+            caret += step.len();
+            texts.push(text.clone());
+        }
+        for _ in 0..2 {
+            caret -= 1;
+            text.remove(caret);
+            texts.push(text.clone());
+        }
+        let undo: Vec<_> = texts.iter().rev().skip(1).take(4).cloned().collect();
+        texts.extend(undo);
+        let mut retained = RetainedPresentation::new(&classify(&snapshot(1, &texts[0])));
+        for (i, text) in texts.iter().enumerate().skip(1) {
+            let current = snapshot(i as u64 + 1, text);
+            // Before the async classifier returns, the edit maps locally: the
+            // rest of the note keeps its presentation (no whole-note raw).
+            let local = retained
+                .remap(&current)
+                .unwrap_or_else(|| panic!("step {i} fell back to the whole note raw"));
+            let shown = local
+                .project(&Active::default())
+                .unwrap()
+                .display()
+                .to_owned();
+            let fresh = RetainedPresentation::new(&classify(&current));
+            let expected = fresh
+                .project(&Active::default())
+                .unwrap()
+                .display()
+                .to_owned();
+            // A local result may keep the line being edited raw until the
+            // fresh parse; every other line matches it.
+            let edited = text[..caret.min(text.len())].matches('\n').count();
+            for (n, (a, b)) in shown.lines().zip(expected.lines()).enumerate() {
+                if n != edited && n + 1 != edited {
+                    assert_eq!(a, b, "step {i}, line {n}");
+                }
+            }
+            assert_eq!(shown.lines().count(), expected.lines().count(), "step {i}");
+            retained = local;
         }
     }
 
