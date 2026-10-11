@@ -1794,12 +1794,12 @@ mod tests {
             (
                 "kubernetes.pod_name",
                 "checkout-api-85b4",
-                "kubernetes.pod_name=checkout-api-85b4",
+                "kubernetes.pod_name = checkout-api-85b4",
             ),
-            ("status", "500", r#"status="500""#),
-            ("level", "NOTICE", r#""level"=NOTICE"#),
-            ("msg", "a \"b\"\nc", r#""msg"="a \"b\"\nc""#),
-            ("symbol", "FDAX Z6", r#"symbol="FDAX Z6""#),
+            ("status", "500", r#"status = "500""#),
+            ("level", "NOTICE", r#""level" = NOTICE"#),
+            ("msg", "a \"b\"\nc", r#""msg" = "a \"b\"\nc""#),
+            ("symbol", "FDAX Z6", r#"symbol = "FDAX Z6""#),
         ] {
             let term = field_term(key, value);
             assert_eq!(term.to_string(), text);
@@ -2011,7 +2011,7 @@ mod tests {
         view.read_with(visual, |view, cx| {
             assert_eq!(
                 view.query_input.read(cx).value().as_ref(),
-                "level>=error and pod=payments-1"
+                "level >= error and pod = payments-1"
             );
             assert!(view.query_error.is_none());
         });
@@ -2022,7 +2022,7 @@ mod tests {
         view.read_with(visual, |view, cx| {
             assert_eq!(
                 view.query_input.read(cx).value().as_ref(),
-                "level>=error and pod=payments-1"
+                "level >= error and pod = payments-1"
             );
         });
 
@@ -2032,7 +2032,10 @@ mod tests {
         view.update(visual, |view, cx| view.remember_query(cx));
         let key = view.read_with(visual, |view, _| view.history_key().unwrap());
         let history = visual.update(|_, cx| reader_ui_state::log_queries(&key, cx));
-        assert_eq!(history, ["status=200", "level>=error and pod=payments-1"]);
+        assert_eq!(
+            history,
+            ["status = 200", "level >= error and pod = payments-1"]
+        );
         view.update_in(visual, |view, window, cx| {
             view.replace_query(history[1].clone(), window, cx)
         });
@@ -2043,7 +2046,7 @@ mod tests {
         let saved: serde_json::Value =
             serde_json::from_slice(&std::fs::read(state.path().join("reader-ui.json")).unwrap())
                 .unwrap();
-        assert_eq!(saved["log_queries"][&key][0], "status=200");
+        assert_eq!(saved["log_queries"][&key][0], "status = 200");
 
         // Clear filters empties the query and its error.
         view.update_in(visual, |view, window, cx| view.clear_filters(window, cx));
