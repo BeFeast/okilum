@@ -1,0 +1,35 @@
+{"time":"2026-10-10T06:04:00.000635+00:00","level":"info","logger":"ordgw","pid":4411,"tid":4411,"src":"main.cpp:61","func":"main","msg":"ordgw 3.14.2 (git 9c41e7a, clang 20.1.8, -O2 -march=x86-64-v3) starting"}
+{"time":"2026-10-10T06:04:00.002182+00:00","level":"info","logger":"config","pid":4411,"tid":4411,"src":"config.cpp:118","func":"load","msg":"config loaded from /etc/ordgw/ordgw.toml (venue=XEUR, sessions=2, risk_limits=strict)"}
+{"time":"2026-10-10T06:04:00.003966+00:00","level":"debug","logger":"alloc","pid":4411,"tid":4411,"src":"arena.cpp:44","func":"reserve","msg":"reserved 512 MiB hugepage arena at 0x7f3a40000000"}
+{"time":"2026-10-10T06:04:00.010326+00:00","level":"info","logger":"cpu","pid":4411,"tid":4411,"src":"affinity.cpp:29","func":"pin_threads","msg":"pinned md-feed->cpu3, fix-io->cpu5, risk->cpu7 (isolcpus=3,5,7)"}
+{"time":"2026-10-10T06:04:00.140966+00:00","level":"warning","logger":"cpu","pid":4411,"tid":4411,"src":"affinity.cpp:52","func":"check_governor","msg":"cpu5 scaling_governor is 'powersave', expected 'performance'"}
+{"time":"2026-10-10T06:04:00.410837+00:00","level":"info","logger":"md.feed","pid":4411,"tid":4412,"src":"mcast_rx.cpp:203","func":"join","msg":"joined 239.1.1.18:31018 on ens2f0 (A-side), 239.1.2.18:31018 (B-side)"}
+{"time":"2026-10-10T06:04:00.911843+00:00","level":"info","logger":"fix.session","pid":4411,"tid":4413,"src":"fix_session.cpp:212","func":"on_logon","msg":"Logon accepted: SenderCompID=OKL1 TargetCompID=XEUR HeartBtInt=30 MsgSeqNum=1"}
+{"time":"2026-10-10T06:04:01.204914+00:00","level":"info","logger":"risk","pid":4411,"tid":4414,"src":"risk_engine.cpp:88","func":"start","msg":"risk engine ready: 1840 instruments, max_order_qty=500, max_notional=2500000 EUR"}
+{"time":"2026-10-10T06:04:12.880556+00:00","level":"warning","logger":"md.feed","pid":4411,"tid":4412,"src":"mcast_rx.cpp:341","func":"on_packet","msg":"sequence gap on A-side: expected 18822410, got 18822417 (7 packets), recovered from B-side"}
+{"time":"2026-10-10T06:04:30.100701+00:00","level":"debug","logger":"fix.session","pid":4411,"tid":4413,"src":"fix_session.cpp:390","func":"heartbeat","msg":"Heartbeat sent MsgSeqNum=212"}
+{"time":"2026-10-10T06:04:41.730061+00:00","level":"warning","logger":"fix.io","pid":4411,"tid":4413,"src":"tcp_conn.cpp:155","func":"send","msg":"tick-to-trade p99=38.4us over 1s window exceeds budget 25us (p50=6.1us, max=412us)"}
+{"time":"2026-10-10T06:04:41.740312+00:00","level":"trace","logger":"fix.io","pid":4411,"tid":4413,"src":"tcp_conn.cpp:171","func":"send","msg":"send() wrote 212 of 212 bytes, EAGAIN=0, sndbuf=4194304"}
+{"time":"2026-10-10T06:04:52.010299+00:00","level":"error","logger":"risk","pid":4411,"tid":4414,"src":"risk_engine.cpp:241","func":"check","msg":"order rejected by risk: ClOrdID=OKL1-77120 FDAX qty=900 exceeds max_order_qty=500"}
+{"time":"2026-10-10T06:04:52.400123+00:00","level":"warning","logger":"md.book","pid":4411,"tid":4412,"src":"order_book.cpp:97","func":"apply","msg":"crossed book on FESX Z6: bid 5321.0 >= ask 5320.5, waiting for snapshot"}
+{"time":"2026-10-10T06:04:52.410986+00:00","level":"error","logger":"md.book","pid":4411,"tid":4412,"src":"order_book.cpp:104","func":"apply","msg":"snapshot request failed: venue said "SecurityID 4128899 unknown""}
+{"time":"2026-10-10T06:04:58.900321+00:00","level":"error","logger":"fix.session","pid":4411,"tid":4413,"src":"fix_session.cpp:455","func":"on_disconnect","msg":"connection reset by peer (ECONNRESET) after 58.9s, last inbound MsgSeqNum=1904"}
+{"time":"2026-10-10T06:04:58.910263+00:00","level":"info","logger":"fix.session","pid":4411,"tid":4413,"src":"fix_session.cpp:470","func":"reconnect","msg":"reconnecting in 250ms (attempt 1/10)"}
+{"time":"2026-10-10T06:04:59.200221+00:00","level":"info","logger":"fix.session","pid":4411,"tid":4413,"src":"fix_session.cpp:212","func":"on_logon","msg":"Logon accepted: SenderCompID=OKL1 TargetCompID=XEUR HeartBtInt=30 MsgSeqNum=1905"}
+{"time":"2026-10-10T06:04:59.210825+00:00","level":"warning","logger":"fix.session","pid":4411,"tid":4413,"src":"fix_session.cpp:512","func":"on_resend_request","msg":"ResendRequest BeginSeqNo=1898 EndSeqNo=0, replaying 7 messages from journal"}
+{"time":"2026-10-10T06:05:11.050893+00:00","level":"error","logger":"alloc","pid":4411,"tid":4414,"src":"arena.cpp:91","func":"allocate","msg":"arena exhausted (512 MiB used), falling back to operator new"}
+{"time":"2026-10-10T06:05:11.060437+00:00","level":"critical","logger":"ordgw","pid":4411,"tid":4414,"src":"crash_handler.cpp:33","func":"on_signal","msg":"caught signal 11 (SIGSEGV), fault address 0x0000000000000018, writing core to /var/crash"}
+Stack trace (most recent call last) in thread 4414:
+#7    Object "/usr/lib/x86_64-linux-gnu/libc.so.6", at 0x7f3a5f22a1c9, in __clone3
+#6    Object "/usr/lib/x86_64-linux-gnu/libc.so.6", at 0x7f3a5f1b2a93, in start_thread
+#5    Source "/src/ordgw/src/risk/risk_thread.cpp", line 64, in okl::risk::RiskThread::run()
+#4    Source "/src/ordgw/src/risk/risk_engine.cpp", line 233, in okl::risk::RiskEngine::check(okl::Order const&)
+        230:   const auto& limits = limits_for(order.instrument_id);
+        231:   if (order.qty > limits.max_order_qty) return Verdict::Reject;
+        232:   // position is looked up lazily for new instruments
+      > 233:   const Position& pos = *positions_.find(order.instrument_id);
+#3    Source "/src/ordgw/src/risk/position_map.hpp", line 41, in okl::PositionMap::find(unsigned int) const
+#2    Source "/src/ordgw/src/risk/position_map.hpp", line 41, in ...
+#1    Object "/opt/ordgw/bin/ordgw", at 0x55c1e04b2f18, in okl::crash::on_signal(int, siginfo_t*, void*)
+#0    Object "/usr/lib/x86_64-linux-gnu/libc.so.6", at 0x7f3a5f142520, in 
+Segmentation fault (Address not mapped to object [0x18])

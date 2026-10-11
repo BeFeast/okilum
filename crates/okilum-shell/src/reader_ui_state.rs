@@ -128,6 +128,8 @@ struct Saved {
     json_raw: bool,
     /// Pane sizes of list/detail splits (#1156), by split key.
     split_sizes: BTreeMap<String, f32>,
+    /// Recent log queries per log file, newest first (#1158).
+    log_queries: BTreeMap<String, Vec<String>>,
     delimited_no_header: BTreeSet<PathBuf>,
     vaults: BTreeMap<PathBuf, Layout>,
     /// Per-vault accent preset key (#774), keyed like `vaults` by the
@@ -157,6 +159,7 @@ impl Default for Saved {
             code_soft_wrap: false,
             json_raw: false,
             split_sizes: Default::default(),
+            log_queries: Default::default(),
             delimited_no_header: Default::default(),
             vaults: Default::default(),
             vault_colors: Default::default(),
@@ -182,6 +185,7 @@ struct Store {
     code_soft_wrap_changed: bool,
     json_raw_changed: bool,
     splits_changed: BTreeSet<String>,
+    log_queries_changed: BTreeSet<String>,
     colors_changed: BTreeSet<PathBuf>,
     trust_changed: BTreeSet<PathBuf>,
     delimited_changed: BTreeSet<PathBuf>,
@@ -257,6 +261,7 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         code_soft_wrap_changed: false,
         json_raw_changed: false,
         splits_changed: Default::default(),
+        log_queries_changed: Default::default(),
         colors_changed: Default::default(),
         trust_changed: Default::default(),
         delimited_changed: Default::default(),
@@ -473,6 +478,7 @@ struct WriteJob {
     code_soft_wrap_changed: bool,
     json_raw_changed: bool,
     splits_changed: BTreeSet<String>,
+    log_queries_changed: BTreeSet<String>,
     colors_changed: BTreeSet<PathBuf>,
     trust_changed: BTreeSet<PathBuf>,
     delimited_changed: BTreeSet<PathBuf>,
@@ -553,6 +559,12 @@ impl WriteJob {
                 latest.split_sizes.insert(key.clone(), *size);
             }
         }
+        for key in &self.log_queries_changed {
+            match self.saved.log_queries.get(key) {
+                Some(queries) => latest.log_queries.insert(key.clone(), queries.clone()),
+                None => latest.log_queries.remove(key),
+            };
+        }
         // Per root, like layouts: a colour removed here is removed there.
         for root in &self.colors_changed {
             match self.saved.vault_colors.get(root) {
@@ -616,6 +628,7 @@ fn job(cx: &App) -> Option<WriteJob> {
             && !state.code_soft_wrap_changed
             && !state.json_raw_changed
             && state.splits_changed.is_empty()
+            && state.log_queries_changed.is_empty()
             && state.colors_changed.is_empty()
             && state.trust_changed.is_empty()
             && state.delimited_changed.is_empty()
@@ -641,6 +654,7 @@ fn job(cx: &App) -> Option<WriteJob> {
         code_soft_wrap_changed: state.code_soft_wrap_changed,
         json_raw_changed: state.json_raw_changed,
         splits_changed: state.splits_changed.clone(),
+        log_queries_changed: state.log_queries_changed.clone(),
         colors_changed: state.colors_changed.clone(),
         trust_changed: state.trust_changed.clone(),
         delimited_changed: state.delimited_changed.clone(),
@@ -1183,6 +1197,48 @@ pub(crate) fn set_split_size(key: &str, size: f32, cx: &mut App) {
     schedule(cx);
 }
 
+/// Queries kept per log file and log files with a history (#1158).
+const LOG_QUERIES_PER_FILE: usize = 10;
+const LOG_QUERY_FILES: usize = 64;
+
+/// Recent queries for the log at `path`, newest first.
+pub(crate) fn log_queries(path: &str, cx: &App) -> Vec<String> {
+    cx.try_global::<Store>()
+        .and_then(|state| state.saved.log_queries.get(path).cloned())
+        .unwrap_or_default()
+}
+
+pub(crate) fn remember_log_query(path: &str, query: &str, cx: &mut App) {
+    let query = query.trim();
+    if !installed(cx)
+        || query.is_empty()
+        || log_queries(path, cx).first().map(String::as_str) == Some(query)
+    {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    let queries = state.saved.log_queries.entry(path.into()).or_default();
+    queries.retain(|known| known != query);
+    queries.insert(0, query.into());
+    queries.truncate(LOG_QUERIES_PER_FILE);
+    state.log_queries_changed.insert(path.into());
+    // Small and local: past the cap, drop other files' histories.
+    while state.saved.log_queries.len() > LOG_QUERY_FILES {
+        let Some(other) = state
+            .saved
+            .log_queries
+            .keys()
+            .find(|key| *key != path)
+            .cloned()
+        else {
+            break;
+        };
+        state.saved.log_queries.remove(&other);
+        state.log_queries_changed.insert(other);
+    }
+    schedule(cx);
+}
+
 pub(crate) fn set_json_raw(value: bool, cx: &mut App) {
     if !installed(cx) || json_raw(cx) == value {
         return;
@@ -1259,6 +1315,7 @@ fn mark_saved(generation: u64, cx: &mut App) {
         state.code_soft_wrap_changed = false;
         state.json_raw_changed = false;
         state.splits_changed.clear();
+        state.log_queries_changed.clear();
         state.colors_changed.clear();
         state.trust_changed.clear();
         state.delimited_changed.clear();
@@ -1539,6 +1596,7 @@ mod tests {
                 code_soft_wrap_changed: false,
                 json_raw_changed: false,
                 splits_changed: Default::default(),
+                log_queries_changed: Default::default(),
                 colors_changed: Default::default(),
                 trust_changed: Default::default(),
                 delimited_changed: Default::default(),
