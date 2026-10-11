@@ -62,9 +62,24 @@ pub enum TimeWindow {
     Last5Minutes,
     LastHour,
     Last24Hours,
+    /// An absolute window, both ends inclusive, in Unix nanoseconds: what a
+    /// brush over the histogram selects (#1168). Unlike the presets it does
+    /// not move with the newest record.
+    Range {
+        from: i64,
+        to: i64,
+    },
 }
 
 impl TimeWindow {
+    /// The absolute window between two times, given in either order.
+    pub fn range(a: i64, b: i64) -> Self {
+        TimeWindow::Range {
+            from: a.min(b),
+            to: a.max(b),
+        }
+    }
+
     pub const ALL: [TimeWindow; 4] = [
         TimeWindow::All,
         TimeWindow::Last5Minutes,
@@ -78,14 +93,22 @@ impl TimeWindow {
             TimeWindow::Last5Minutes => "Last 5 minutes",
             TimeWindow::LastHour => "Last hour",
             TimeWindow::Last24Hours => "Last 24 hours",
+            TimeWindow::Range { .. } => "Selected range",
         }
     }
 
-    /// Window length in nanoseconds; `None` for no limit.
+    /// Whether the window ends at the newest record, so that it moves when a
+    /// followed log grows. A range does not.
+    pub fn follows_newest(self) -> bool {
+        self.nanos().is_some()
+    }
+
+    /// Window length in nanoseconds; `None` for no limit, and for a range,
+    /// which has fixed ends instead of a length.
     pub fn nanos(self) -> Option<i64> {
         const MINUTE: i64 = 60_000_000_000;
         match self {
-            TimeWindow::All => None,
+            TimeWindow::All | TimeWindow::Range { .. } => None,
             TimeWindow::Last5Minutes => Some(5 * MINUTE),
             TimeWindow::LastHour => Some(60 * MINUTE),
             TimeWindow::Last24Hours => Some(24 * 60 * MINUTE),
@@ -276,15 +299,18 @@ struct Plan<'f> {
 
 impl<'f> Plan<'f> {
     fn new(filter: &'f LogFilter, index: &LogIndex) -> Self {
-        let window = filter.time.nanos().and_then(|length| {
-            // No timestamp anywhere: there is nothing to measure a window
-            // against, so the preset cannot restrict. The viewer does not
-            // offer it for such a file.
-            let newest = filter
-                .window_end
-                .or_else(|| index.entries().iter().filter_map(|e| e.timestamp()).max())?;
-            Some((newest.saturating_sub(length), newest))
-        });
+        let window = match filter.time {
+            TimeWindow::Range { from, to } => Some((from, to)),
+            time => time.nanos().and_then(|length| {
+                // No timestamp anywhere: there is nothing to measure a window
+                // against, so the preset cannot restrict. The viewer does not
+                // offer it for such a file.
+                let newest = filter
+                    .window_end
+                    .or_else(|| index.entries().iter().filter_map(|e| e.timestamp()).max())?;
+                Some((newest.saturating_sub(length), newest))
+            }),
+        };
         Self {
             level: filter.level,
             needle: Needle::new(&filter.text),
@@ -731,6 +757,43 @@ mod tests {
         )
         .unwrap();
         assert_eq!(rows, [0, 1]);
+    }
+
+    #[test]
+    fn a_range_is_absolute_inclusive_and_does_not_follow_the_newest() {
+        let filter = |time| LogFilter {
+            time,
+            ..Default::default()
+        };
+        let at = |text: &str| crate::log::timestamp::parse_text(text.as_bytes()).unwrap();
+        // 00:30 .. 00:59 inclusive: entries 1 (00:30), 2 (00:50), 3 (00:59) and the
+        // panic line that rides with 00:59; the debug record at 23:50 the day
+        // before and everything from 01:00 on are out.
+        let window = TimeWindow::range(at("2025-10-01T00:59:00Z"), at("2025-10-01T00:30:00Z"));
+        assert_eq!(
+            window,
+            TimeWindow::Range {
+                from: at("2025-10-01T00:30:00Z"),
+                to: at("2025-10-01T00:59:00Z")
+            },
+            "given in either order"
+        );
+        assert_eq!(run(&filter(window)), [1, 2, 3, 4]);
+        // Both ends are inclusive.
+        let exact = TimeWindow::range(at("2025-10-01T00:50:00Z"), at("2025-10-01T00:50:00Z"));
+        assert_eq!(run(&filter(exact)), [2]);
+        // A range is a time filter like the presets: it counts as active, and it
+        // does not end at the newest record.
+        assert!(filter(window).is_active());
+        assert!(!window.follows_newest() && TimeWindow::LastHour.follows_newest());
+        assert!(!TimeWindow::All.follows_newest());
+        assert_eq!(window.nanos(), None);
+        // A window end set by a merged view changes nothing for a range.
+        let moved = LogFilter {
+            window_end: Some(at("2030-01-01T00:00:00Z")),
+            ..filter(window)
+        };
+        assert_eq!(run(&moved), [1, 2, 3, 4]);
     }
 
     #[test]
