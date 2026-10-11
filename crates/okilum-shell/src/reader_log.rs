@@ -3,9 +3,13 @@
 //! hl-compatible query, #1158) evaluated off the UI thread, a detail pane for
 //! the selected record, a raw-line copy, and follow mode (#1159): the file is
 //! polled with `okilum_core::log::tail`, appended records are filtered as they
-//! arrive, and a truncation or rotation is announced, not hidden.
+//! arrive, and a truncation or rotation is announced, not hidden. More files
+//! can join the view (#1160): their records interleave in time order through
+//! `okilum_core::log::merge`, each with its colour and name, and any file can
+//! be hidden without indexing anything again.
 use super::*;
 use gpui_component::scroll::ScrollableElement as _;
+use okilum_core::log::merge::MergedLog;
 use okilum_core::log::query::{Expr, FieldRef, Literal, Test};
 use okilum_core::log::tail::{ResetReason, TailEvent};
 use okilum_core::log::{
@@ -21,6 +25,8 @@ const DETAIL_HEIGHT: f32 = 240.;
 /// The detail pane keeps its header; the rows keep five lines.
 const DETAIL_HEADER_HEIGHT: f32 = 36.;
 const MIN_LIST_ROWS: f32 = 5.;
+/// The file name column of a view over several files (#1160).
+const SOURCE_NAME_WIDTH: f32 = 140.;
 const KEY_WIDTH: f32 = 168.;
 /// Characters of a row shaped per frame; longer rows end in an ellipsis and
 /// stay complete in the detail pane and the raw copy.
@@ -154,6 +160,33 @@ struct Follow {
     last_full_run: Option<std::time::Instant>,
 }
 
+/// A file added to the view (#1160).
+struct ExtraSource {
+    file: Arc<LogFile>,
+    enabled: bool,
+}
+
+/// Several shown sources in time order. Rows of the view are rows of `log`.
+struct Merge {
+    log: MergedLog,
+    /// The source behind each merged file.
+    sources: Vec<usize>,
+    /// For each merged file, the row of each of its entries.
+    positions: Arc<Vec<Vec<u32>>>,
+}
+
+/// Per-file stripe colours, from the theme's chart series.
+fn source_color(source: usize, cx: &App) -> Hsla {
+    let theme = cx.theme();
+    [
+        theme.chart_1,
+        theme.chart_2,
+        theme.chart_3,
+        theme.chart_4,
+        theme.chart_5,
+    ][source % 5]
+}
+
 pub(crate) struct LogView {
     state: State,
     /// Entry index (into the log index) of the selected record.
@@ -184,6 +217,12 @@ pub(crate) struct LogView {
     /// Follow could not open the file.
     follow_failed: Option<String>,
     _follow_open: Option<Task<()>>,
+    /// Files added to this view (#1160); the view's own file is source 0.
+    extra: Vec<ExtraSource>,
+    /// Source 0 is shown.
+    primary_enabled: bool,
+    /// The time order of the shown sources, when there is more than one.
+    merge: Option<Merge>,
     _text_input_events: Subscription,
     _query_input_events: Subscription,
     _filtering: Option<Task<()>>,
@@ -247,6 +286,9 @@ impl LogView {
             check_pin: false,
             follow_failed: None,
             _follow_open: None,
+            extra: Vec::new(),
+            primary_enabled: true,
+            merge: None,
             _text_input_events: events,
             _query_input_events: query_events,
             _filtering: None,
@@ -318,14 +360,191 @@ impl LogView {
         }
     }
 
-    fn snapshot(&self) -> Option<Snapshot> {
-        match &self.follow {
-            Some(follow) => Some(Snapshot::Owned {
+    fn snapshot_of(&self, source: usize) -> Option<Snapshot> {
+        match (source, &self.follow) {
+            (0, Some(follow)) => Some(Snapshot::Owned {
                 index: follow.tail.index().clone(),
                 bytes: follow.tail.bytes()[..follow.tail.index().bytes() as usize].to_vec(),
             }),
-            None => self.file().cloned().map(Snapshot::File),
+            (0, None) => self.file().cloned().map(Snapshot::File),
+            (n, _) => self
+                .extra
+                .get(n - 1)
+                .map(|extra| Snapshot::File(extra.file.clone())),
         }
+    }
+
+    /// Source `source`: 0 is the view's own file (or its followed copy).
+    fn source(&self, source: usize) -> Option<&dyn LogData> {
+        match source {
+            0 => self.data(),
+            n => self
+                .extra
+                .get(n - 1)
+                .map(|extra| extra.file.as_ref() as &dyn LogData),
+        }
+    }
+
+    fn source_count(&self) -> usize {
+        1 + self.extra.len()
+    }
+
+    fn source_enabled(&self, source: usize) -> bool {
+        match source {
+            0 => self.primary_enabled,
+            n => self.extra.get(n - 1).is_some_and(|extra| extra.enabled),
+        }
+    }
+
+    fn enabled_sources(&self) -> Vec<usize> {
+        (0..self.source_count())
+            .filter(|&source| self.source_enabled(source) && self.source(source).is_some())
+            .collect()
+    }
+
+    fn source_name(&self, source: usize) -> String {
+        self.source(source)
+            .and_then(|data| data.path().file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    }
+
+    /// Rows of the view before any filter: every record of the shown sources.
+    fn total(&self) -> usize {
+        match &self.merge {
+            Some(merge) => merge.log.len(),
+            None => self
+                .enabled_sources()
+                .first()
+                .and_then(|&source| self.source(source))
+                .map_or(0, |data| data.index().len()),
+        }
+    }
+
+    /// Source and entry of row id `id`.
+    fn locate(&self, id: usize) -> Option<(usize, usize)> {
+        match &self.merge {
+            Some(merge) => merge
+                .log
+                .get(id)
+                .map(|row| (merge.sources[row.file().index()], row.entry())),
+            None => {
+                let source = *self.enabled_sources().first()?;
+                (id < self.source(source)?.index().len()).then_some((source, id))
+            }
+        }
+    }
+
+    /// The row id of `entry` of `source`, if that source is shown.
+    fn id_of(&self, source: usize, entry: usize) -> Option<usize> {
+        match &self.merge {
+            Some(merge) => {
+                let file = merge.sources.iter().position(|&s| s == source)?;
+                merge.positions[file].get(entry).map(|row| *row as usize)
+            }
+            None => (self.enabled_sources().first() == Some(&source)).then_some(entry),
+        }
+    }
+
+    fn raw_at(&self, id: usize) -> Option<&[u8]> {
+        let (source, entry) = self.locate(id)?;
+        self.source(source)?.raw(entry)
+    }
+
+    /// Orders the shown sources again; entries are not indexed again. The
+    /// selection keeps its record when that record is still shown.
+    fn rebuild_merge(&mut self) {
+        let selected = self.selected.and_then(|id| self.locate(id));
+        let sources = self.enabled_sources();
+        self.merge = (sources.len() > 1).then(|| {
+            let indexes: Vec<&LogIndex> = sources
+                .iter()
+                .filter_map(|&source| self.source(source).map(LogData::index))
+                .collect();
+            let log = MergedLog::build(&indexes);
+            let mut positions: Vec<Vec<u32>> =
+                indexes.iter().map(|index| vec![0; index.len()]).collect();
+            for (row, merged) in log.rows().iter().enumerate() {
+                positions[merged.file().index()][merged.entry()] = row as u32;
+            }
+            Merge {
+                log,
+                sources,
+                positions: Arc::new(positions),
+            }
+        });
+        self.selected = selected.and_then(|(source, entry)| self.id_of(source, entry));
+    }
+
+    fn set_source_enabled(&mut self, source: usize, enabled: bool, cx: &mut Context<Self>) {
+        match source {
+            0 => self.primary_enabled = enabled,
+            n => match self.extra.get_mut(n - 1) {
+                Some(extra) => extra.enabled = enabled,
+                None => return,
+            },
+        }
+        self.rebuild_merge();
+        self.refilter(cx);
+        cx.notify();
+    }
+
+    /// Indexes `paths` off the UI thread and adds them to the view (#1160).
+    /// Follow mode covers one file, so it stops first.
+    fn add_files(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        if let Some(follow) = self.follow.as_mut() {
+            follow.poll = None;
+        }
+        cx.spawn(async move |this, cx| {
+            let opened = cx
+                .background_executor()
+                .spawn(async move {
+                    paths
+                        .into_iter()
+                        .map(|path| LogFile::open(&path).map_err(|error| (path, error)))
+                        .collect::<Vec<_>>()
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                for file in opened {
+                    match file {
+                        Ok(file) => {
+                            let known = (0..this.source_count()).any(|source| {
+                                this.source(source).map(LogData::path) == Some(file.path())
+                            });
+                            if !known {
+                                this.extra.push(ExtraSource {
+                                    file: Arc::new(file),
+                                    enabled: true,
+                                });
+                            }
+                        }
+                        Err((path, error)) => {
+                            this.follow_failed = Some(format!("{}: {error:#}", path.display()));
+                        }
+                    }
+                }
+                this.rebuild_merge();
+                this.refilter(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn prompt_add_files(&mut self, cx: &mut Context<Self>) {
+        let paths = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some("Add to this log view".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = paths.await {
+                let _ = this.update(cx, |this, cx| this.add_files(paths, cx));
+            }
+        })
+        .detach();
     }
 
     fn following(&self) -> bool {
@@ -338,7 +557,7 @@ impl LogView {
     fn visible_len(&self) -> usize {
         match &self.rows {
             Some(rows) => rows.len(),
-            None => self.data().map_or(0, |data| data.index().len()),
+            None => self.total(),
         }
     }
 
@@ -478,8 +697,19 @@ impl LogView {
     /// Starts a run for the current filter. Every earlier run is cancelled by
     /// the new generation, and a result that arrives late is dropped.
     fn refilter(&mut self, cx: &mut Context<Self>) {
+        if self.merge.is_some() {
+            return self.refilter_merged(cx);
+        }
         let ticket = self.generations.next();
-        let Some(snapshot) = self.snapshot() else {
+        let Some(snapshot) = self
+            .enabled_sources()
+            .first()
+            .and_then(|&source| self.snapshot_of(source))
+        else {
+            self.rows = None;
+            self.filtering = false;
+            self._filtering = None;
+            cx.notify();
             return;
         };
         self.filtered_upto = snapshot.parts().0.len();
@@ -521,9 +751,88 @@ impl LogView {
         cx.notify();
     }
 
+    /// The run over several files (#1160): each file is filtered on its own,
+    /// with the time window ending at the newest record of all of them, and
+    /// its matches are placed at their rows of the merged view.
+    fn refilter_merged(&mut self, cx: &mut Context<Self>) {
+        let ticket = self.generations.next();
+        if !self.filter.is_active() {
+            self.rows = None;
+            self.filtering = false;
+            self._filtering = None;
+            self.after_rows_changed();
+            cx.notify();
+            return;
+        }
+        let Some(merge) = &self.merge else {
+            return;
+        };
+        let snapshots: Vec<Snapshot> = merge
+            .sources
+            .iter()
+            .filter_map(|&source| self.snapshot_of(source))
+            .collect();
+        let positions = merge.positions.clone();
+        self.filtering = true;
+        let filter = self.filter.clone();
+        self._filtering = Some(cx.spawn(async move |this, cx| {
+            let generation = ticket.generation();
+            let rows = cx
+                .background_executor()
+                .spawn(async move {
+                    let window_end = snapshots
+                        .iter()
+                        .filter_map(|snapshot| {
+                            snapshot
+                                .parts()
+                                .0
+                                .entries()
+                                .iter()
+                                .filter_map(|e| e.timestamp())
+                                .max()
+                        })
+                        .max();
+                    let filter = LogFilter {
+                        window_end,
+                        ..filter
+                    };
+                    let mut rows = Vec::new();
+                    for (file, snapshot) in snapshots.iter().enumerate() {
+                        let (index, bytes) = snapshot.parts();
+                        let outcome = filter::evaluate(&filter, index, bytes, &ticket)?;
+                        rows.extend(
+                            outcome
+                                .rows
+                                .into_iter()
+                                .map(|entry| positions[file][entry as usize]),
+                        );
+                    }
+                    rows.sort_unstable();
+                    Some(rows)
+                })
+                .await;
+            let Some(rows) = rows else {
+                return;
+            };
+            let _ = this.update(cx, |this, cx| {
+                if !this.generations.is_current(generation) {
+                    return;
+                }
+                this.rows = Some(Arc::new(rows));
+                this.filtering = false;
+                this.after_rows_changed();
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
     /// Follow on, off, or on again. The first time it reads the file afresh
     /// with `LogTail`, off the UI thread.
     fn toggle_follow(&mut self, cx: &mut Context<Self>) {
+        if !self.extra.is_empty() {
+            return;
+        }
         match &mut self.follow {
             Some(follow) if follow.poll.is_some() => {
                 follow.poll = None;
@@ -765,10 +1074,7 @@ impl LogView {
     }
 
     fn copy_raw(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(raw) = self
-            .selected
-            .and_then(|index| self.data().and_then(|data| data.raw(index)))
-        else {
+        let Some(raw) = self.selected.and_then(|index| self.raw_at(index)) else {
             return;
         };
         let text = String::from_utf8_lossy(raw).into_owned();
@@ -783,9 +1089,7 @@ impl LogView {
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let this = &*self;
-        let Some(file) = this.data() else {
-            return Vec::new();
-        };
+        let merged = this.merge.is_some();
         let palette = brand::palette(cx);
         let faint = brand::reader_palette(cx).text_faint;
         let hover = brand::reader_palette(cx).hover;
@@ -793,14 +1097,17 @@ impl LogView {
         let mono = cx.theme().mono_font_family.clone();
         range
             .map(|row| {
-                let Some((index, entry)) = self
-                    .entry_at(row)
-                    .and_then(|index| Some((index, file.index().get(index)?)))
+                let Some((index, source, file, local, entry)) =
+                    this.entry_at(row).and_then(|index| {
+                        let (source, local) = this.locate(index)?;
+                        let file = this.source(source)?;
+                        Some((index, source, file, local, file.index().get(local)?))
+                    })
                 else {
                     return div().into_any_element();
                 };
                 let level = entry.level();
-                let row = row_text(file, index);
+                let row = row_text(file, local);
                 let lines = row.lines;
                 let selected = this.selected == Some(index);
                 let text_color = if level == Level::Unparsed {
@@ -839,6 +1146,17 @@ impl LogView {
                     })
                     .when(selected, |row| row.bg(palette.selected))
                     .when(!selected, |row| row.hover(move |style| style.bg(hover)))
+                    // Several files: a colour stripe and the file's name (#1160).
+                    .when(merged, |row| {
+                        row.child(
+                            div()
+                                .flex_none()
+                                .w(px(3.))
+                                .h(px(ROW_HEIGHT - 6.))
+                                .rounded(px(1.5))
+                                .bg(source_color(source, cx)),
+                        )
+                    })
                     .child(
                         div()
                             .flex_none()
@@ -848,6 +1166,17 @@ impl LogView {
                             .text_color(muted)
                             .child(row.time),
                     )
+                    .when(merged, |row| {
+                        row.child(
+                            div()
+                                .flex_none()
+                                .w(px(SOURCE_NAME_WIDTH))
+                                .truncate()
+                                .text_size(px(12.))
+                                .text_color(muted)
+                                .child(this.source_name(source)),
+                        )
+                    })
                     .child(
                         div()
                             .flex_none()
@@ -897,19 +1226,21 @@ impl LogView {
         let muted = cx.theme().muted_foreground;
         let mono = cx.theme().mono_font_family.clone();
         let pane = v_flex().size_full().min_h_0();
-        let (Some(file), Some(index)) = (self.data(), self.selected) else {
+        let located = self.selected.and_then(|id| {
+            let (source, entry) = self.locate(id)?;
+            Some((id, self.source(source)?, entry))
+        });
+        let Some((id, file, index)) = located else {
             return pane
                 .items_center()
                 .justify_center()
                 .text_sm()
                 .text_color(muted)
-                .child(
-                    if self.data().is_some_and(|data| !data.index().is_empty()) {
-                        "Select a record to see its fields"
-                    } else {
-                        ""
-                    },
-                )
+                .child(if self.total() > 0 {
+                    "Select a record to see its fields"
+                } else {
+                    ""
+                })
                 .into_any_element();
         };
         let Some(entry) = file.index().get(index) else {
@@ -930,9 +1261,13 @@ impl LogView {
                     .text_sm()
                     .text_color(muted)
                     .child(format!(
-                        "Record {} of {} · {}",
-                        grouped(self.row_of(index).unwrap_or(index) as u64 + 1),
+                        "Record {} of {} · {}{}",
+                        grouped(self.row_of(id).unwrap_or(id) as u64 + 1),
                         grouped(self.visible_len() as u64),
+                        match self.merge.as_ref().and(file.path().file_name()) {
+                            Some(name) => format!("{} ", name.to_string_lossy()),
+                            None => String::new(),
+                        },
                         match lines {
                             1 => format!("line {}", grouped(entry.line())),
                             n => format!(
@@ -1081,7 +1416,11 @@ impl LogView {
         let time = self.filter.time;
         let timestamped = self
             .file()
-            .is_some_and(|file| file.index().stats().timestamped > 0);
+            .is_some_and(|file| file.index().stats().timestamped > 0)
+            || self
+                .extra
+                .iter()
+                .any(|extra| extra.file.index().stats().timestamped > 0);
         let text = div()
             .flex_none()
             .w(px(TEXT_FILTER_WIDTH))
@@ -1228,7 +1567,7 @@ impl LogView {
             });
         let counter = match_counter(
             self.rows.as_ref().map(|rows| rows.len()),
-            self.data().map_or(0, |data| data.index().len()),
+            self.total(),
             self.filtering,
         );
         h_flex()
@@ -1244,7 +1583,11 @@ impl LogView {
             .children(time_button)
             .child(query)
             .children(history)
-            .child(self.follow_button(cx))
+            .child(self.files_button(cx))
+            // Follow mode covers one file.
+            .when(self.extra.is_empty(), |bar| {
+                bar.child(self.follow_button(cx))
+            })
             .child(
                 div()
                     .flex_none()
@@ -1258,6 +1601,51 @@ impl LogView {
                     .when(!self.filter.is_active(), |button| button.invisible())
                     .on_click(cx.listener(|this, _, window, cx| this.clear_filters(window, cx))),
             )
+            .into_any_element()
+    }
+
+    /// The files of this view: show or hide each, or add more (#1160).
+    fn files_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
+        let view = cx.entity().downgrade();
+        let sources: Vec<(usize, String, bool)> = (0..self.source_count())
+            .map(|source| {
+                (
+                    source,
+                    self.source_name(source),
+                    self.source_enabled(source),
+                )
+            })
+            .collect();
+        let several = sources.len() > 1;
+        let hidden = sources.iter().any(|(_, _, enabled)| !enabled);
+        bar_button("log-files", several && hidden)
+            .label(if several {
+                format!("{} files", sources.len())
+            } else {
+                "Files".to_owned()
+            })
+            .dropdown_caret(true)
+            .tooltip("Files in this view")
+            .debug_selector(|| "log-files".into())
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
+                let mut menu = menu;
+                for (source, name, enabled) in &sources {
+                    let (view, source, enabled) = (view.clone(), *source, *enabled);
+                    menu = menu.item(PopupMenuItem::new(name.clone()).checked(enabled).on_click(
+                        move |_, _, cx| {
+                            let _ = view.update(cx, |this, cx| {
+                                this.set_source_enabled(source, !enabled, cx)
+                            });
+                        },
+                    ));
+                }
+                let view = view.clone();
+                menu.separator()
+                    .item(PopupMenuItem::new("Add file…").on_click(move |_, _, cx| {
+                        let _ = view.update(cx, |this, cx| this.prompt_add_files(cx));
+                    }))
+            })
             .into_any_element()
     }
 
@@ -1348,6 +1736,23 @@ impl LogView {
                 }
                 text
             }
+            (State::Ready(_), None) if !self.extra.is_empty() => {
+                let records: usize = (0..self.source_count())
+                    .filter_map(|source| self.source(source))
+                    .map(|data| data.index().len())
+                    .sum();
+                let shown = self.enabled_sources().len();
+                let mut text = format!(
+                    "{} files, {} shown · {} records",
+                    self.source_count(),
+                    shown,
+                    grouped(records as u64)
+                );
+                if let Some(error) = &self.follow_failed {
+                    text.push_str(&format!(" · Cannot open {error}"));
+                }
+                text
+            }
             (State::Ready(document), None) => match &self.follow_failed {
                 Some(error) => format!("{} · Cannot follow: {error}", status_text(document)),
                 None => status_text(document),
@@ -1370,7 +1775,11 @@ impl Render for LogView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.update_pin();
         let count = self.visible_len();
-        let has_entries = self.data().is_some_and(|data| !data.index().is_empty());
+        // Any file with records keeps the bar, even with every file hidden.
+        let has_entries = (0..self.source_count()).any(|source| {
+            self.source(source)
+                .is_some_and(|data| !data.index().is_empty())
+        });
         let list = div().relative().flex_1().min_h_0().w_full();
         let list = if count > 0 {
             list.child(
@@ -2762,6 +3171,181 @@ mod tests {
         view.update(visual, |view, cx| view.toggle_follow(cx));
         tick(visual);
         assert_eq!(len(visual), 2);
+    }
+
+    /// #1160 acceptance over the sample pack: the Kubernetes stream plus the
+    /// kubelet and Apache logs read in one time order, a query covers every
+    /// file, hiding a file keeps the selection when its record stays shown,
+    /// and a time window ends at the newest record of all files.
+    #[gpui::test]
+    fn several_files_read_in_time_order_and_filter_together(cx: &mut TestAppContext) {
+        let samples =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../okilum-core/tests/fixtures/log/samples");
+        let names = [
+            "kubernetes/kubernetes-fluentbit.ndjson",
+            "kubernetes/kubelet.jsonl",
+            "apache/apache-access.logfmt",
+            "apache/apache-error.jsonl",
+        ];
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let paths: Vec<PathBuf> = names
+            .iter()
+            .map(|name| {
+                let target = root.join(Path::new(name).file_name().unwrap());
+                std::fs::copy(samples.join(name), &target).unwrap();
+                target
+            })
+            .collect();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::bind_keys(cx);
+        });
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        open_path: Some(paths[0].clone()),
+                        session_directory: Some(root.join(".state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        visual.run_until_parked();
+        let view = log_view(&reader, visual);
+        let alone = view.read_with(visual, |view, _| view.total());
+        view.update(visual, |view, cx| view.add_files(paths[1..].to_vec(), cx));
+        visual.run_until_parked();
+        let files: Vec<LogFile> = paths
+            .iter()
+            .map(|path| LogFile::open(path).unwrap())
+            .collect();
+        let records: usize = files.iter().map(|file| file.index().len()).sum();
+        view.read_with(visual, |view, _| {
+            assert_eq!(view.source_count(), 4);
+            assert_eq!(view.total(), records);
+            assert!(records > alone, "positive control: the files joined");
+            // Time order across files: no timestamped row is older than one above it.
+            let mut last = i64::MIN;
+            let mut from_each = [false; 4];
+            for id in 0..view.total() {
+                let (source, entry) = view.locate(id).unwrap();
+                from_each[source] = true;
+                if let Some(ts) = view
+                    .source(source)
+                    .unwrap()
+                    .index()
+                    .get(entry)
+                    .unwrap()
+                    .timestamp()
+                {
+                    assert!(ts >= last, "row {id} goes back in time");
+                    last = ts;
+                }
+            }
+            assert_eq!(from_each, [true; 4], "rows of every file");
+        });
+
+        // A query over every file: the union of each file's own matches.
+        let per_file = |filter: &LogFilter| -> usize {
+            files
+                .iter()
+                .map(|file| {
+                    filter::evaluate_range(
+                        filter,
+                        file.index(),
+                        file.bytes(),
+                        0..file.index().len(),
+                    )
+                    .len()
+                })
+                .sum()
+        };
+        view.update(visual, |view, cx| view.set_query("level>=error".into(), cx));
+        visual.run_until_parked();
+        let errors = per_file(&LogFilter {
+            query: Some(Query::parse("level>=error").unwrap()),
+            ..Default::default()
+        });
+        assert!(errors > 0);
+        assert_eq!(view.read_with(visual, |view, _| view.visible_len()), errors);
+        let shown = shown(&view, visual);
+        assert!(
+            shown.windows(2).all(|pair| pair[0] < pair[1]),
+            "rows stay in time order"
+        );
+
+        // Hiding a file keeps the selection when its record stays shown.
+        let kubelet_row = view.read_with(visual, |view, _| {
+            (0..view.total())
+                .find(|&id| view.locate(id).unwrap().0 == 1)
+                .unwrap()
+        });
+        view.update(visual, |view, cx| view.set_query(String::new(), cx));
+        visual.run_until_parked();
+        view.update_in(visual, |view, window, cx| {
+            view.select(kubelet_row, true, window, cx)
+        });
+        let access = files[2].index().len();
+        view.update(visual, |view, cx| view.set_source_enabled(2, false, cx));
+        visual.run_until_parked();
+        view.read_with(visual, |view, _| {
+            assert_eq!(view.total(), records - access);
+            let selected = view.selected.expect("the kubelet record stays selected");
+            assert_eq!(view.locate(selected).unwrap().0, 1);
+        });
+        // Hiding the selected record's file drops the selection.
+        view.update(visual, |view, cx| view.set_source_enabled(1, false, cx));
+        visual.run_until_parked();
+        view.read_with(visual, |view, _| assert_eq!(view.selected, None));
+        view.update(visual, |view, cx| {
+            view.set_source_enabled(1, true, cx);
+            view.set_source_enabled(2, true, cx);
+        });
+        visual.run_until_parked();
+
+        // The time window ends at the newest record of all files.
+        let newest = files
+            .iter()
+            .filter_map(|file| {
+                file.index()
+                    .entries()
+                    .iter()
+                    .filter_map(|e| e.timestamp())
+                    .max()
+            })
+            .max();
+        view.update(visual, |view, cx| {
+            view.update_filter(|filter| filter.time = TimeWindow::Last5Minutes, cx)
+        });
+        visual.run_until_parked();
+        let windowed = per_file(&LogFilter {
+            time: TimeWindow::Last5Minutes,
+            window_end: newest,
+            ..Default::default()
+        });
+        assert_eq!(
+            view.read_with(visual, |view, _| view.visible_len()),
+            windowed
+        );
+        assert!(
+            windowed < records,
+            "positive control: the window hides older rows"
+        );
+
+        // One stripe and file name per row while several files are shown.
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        view.read_with(visual, |view, _| {
+            assert!(view.merge.is_some());
+            assert!(!view.following() && view.extra.len() == 3);
+        });
     }
 
     #[gpui::test]

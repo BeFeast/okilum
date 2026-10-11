@@ -113,6 +113,10 @@ pub struct LogFilter {
     pub chips: Vec<FieldChip>,
     /// A parsed query; `None` or a blank query passes everything.
     pub query: Option<Query>,
+    /// Where the time window ends instead of this index's newest record:
+    /// the newest record of all files in a merged view (#1160). Set per run
+    /// by the caller, never part of what the user chose.
+    pub window_end: Option<i64>,
 }
 
 impl LogFilter {
@@ -276,7 +280,9 @@ impl<'f> Plan<'f> {
             // No timestamp anywhere: there is nothing to measure a window
             // against, so the preset cannot restrict. The viewer does not
             // offer it for such a file.
-            let newest = index.entries().iter().filter_map(|e| e.timestamp()).max()?;
+            let newest = filter
+                .window_end
+                .or_else(|| index.entries().iter().filter_map(|e| e.timestamp()).max())?;
             Some((newest.saturating_sub(length), newest))
         });
         Self {
@@ -514,6 +520,36 @@ mod tests {
             }
         }
         assert!(evaluate_range(&filters[0], &index, DATA.as_bytes(), 50..60).is_empty());
+    }
+
+    #[test]
+    fn a_shared_window_end_measures_from_another_files_newest_record() {
+        let five = LogFilter {
+            time: TimeWindow::Last5Minutes,
+            ..Default::default()
+        };
+        // This index alone: the window ends at its own 01:00:00.
+        assert!(!run(&five).is_empty(), "positive control");
+        // A merged view whose newest record is an hour later: nothing here
+        // is within its last five minutes.
+        let later = 1_759_280_400_000_000_000 + 3_600_000_000_000;
+        let shared = LogFilter {
+            window_end: Some(later),
+            ..five.clone()
+        };
+        assert!(run(&shared).is_empty());
+        // Ending at this index's own newest record is the same as no override.
+        let own = LogFilter {
+            window_end: Some(1_759_280_400_000_000_000),
+            ..five
+        };
+        assert_eq!(
+            run(&own),
+            run(&LogFilter {
+                time: TimeWindow::Last5Minutes,
+                ..Default::default()
+            })
+        );
     }
 
     fn text(text: &str) -> LogFilter {
