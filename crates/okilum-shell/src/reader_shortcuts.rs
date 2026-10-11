@@ -49,6 +49,8 @@ fn catalog() -> Vec<Entry> {
         entry::<HistoryForward>("Forward", Navigation),
         entry::<reader_log::SelectPreviousRecord>("Previous log record", Navigation),
         entry::<reader_log::SelectNextRecord>("Next log record", Navigation),
+        entry::<reader_log::ExtendPreviousRecord>("Extend log selection up", Navigation),
+        entry::<reader_log::ExtendNextRecord>("Extend log selection down", Navigation),
         entry::<ListNext>("Next note in list", Navigation),
         entry::<ListPrev>("Previous note in list", Navigation),
         entry::<ReaderScrollDown>("Scroll down", Navigation),
