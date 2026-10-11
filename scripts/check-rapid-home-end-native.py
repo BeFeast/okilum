@@ -10,6 +10,8 @@ typed directly after the second End, and Undo.
 Each record carries `cursor` (state) and `painted_cursor` (the offset the drawn
 caret was laid out for). Only a record whose two offsets agree describes one
 paint; a mixed record is counted and read again on the next frame.
+A record is read again until it holds the keystroke (the X, then its Undo);
+otherwise a record taken before X is processed reads as a wrong insertion.
 Positive control: the checks must reject a stale record (the state from before
 the key), so a pass is not a detector that never fires.
 Exit 0: all hold; 1: a check failed; 2: the run proves nothing.
@@ -68,8 +70,8 @@ for live in (True, False):
         def lines():
             return [json.loads(l) for l in log.read_text().splitlines() if l.startswith('{')]
 
-        def record():
-            """The next record that describes one paint."""
+        def record(until=lambda state: True):
+            """The next record that describes one paint (and satisfies `until`)."""
             global mixed
             for _ in range(20):
                 count = len(lines())
@@ -80,7 +82,10 @@ for live in (True, False):
                     time.sleep(.01)
                 state = lines()[-1]
                 if state['painted_cursor'] == state['cursor'] and state['caret']:
-                    return state
+                    if until(state):
+                        return state
+                    time.sleep(.016)
+                    continue
                 mixed += 1
                 time.sleep(.016)
             raise AssertionError(f'{name}: no single-paint record in 20 tries')
@@ -122,12 +127,13 @@ for live in (True, False):
                         # X directly after the second End, no reset: it lands at the caret.
                         xd('type', 'X')
                         time.sleep(CADENCE)
-                        typed = record()
+                        # The record must already hold the keystroke, wherever it landed.
+                        typed = record(lambda state: state['source'] != text)
                         at = end2['cursor']
                         if typed['source'].encode() != source[:at] + b'X' + source[at:]:
                             failed.append(f'X not at the caret {at}')
                         key('ctrl+z')
-                        if record()['source'] != text:
+                        if record(lambda state: 'X' not in state['source'])['source'] != text:
                             failed.append('Undo not exact')
                         case = dict(mode=name, width=width, repeat=repeat, row=row, home=home['cursor'],
                                     end=end['cursor'], y=home['caret'][1], failed=failed)
@@ -147,6 +153,6 @@ for live in (True, False):
 print('cases', len(results), 'failed', len(failures), 'mixed records re-read', mixed, flush=True)
 for case in failures:
     print('FAIL', case, flush=True)
-if len(results) != 48:
+if len(results) != 72:
     sys.exit(2)
 sys.exit(1 if failures else 0)
