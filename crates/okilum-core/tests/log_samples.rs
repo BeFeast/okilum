@@ -79,6 +79,19 @@ const NATIVE: &[(&str, &str, usize)] = &[
     ("native-formats/cpp/ordgw.glog.log", "level>=warn", 11),
     ("native-formats/cpp/ordgw.glog.log", "tid=4414", 4),
     ("native-formats/cpp/ordgw.glog.log", "src~=risk_engine", 2),
+    // #1163: journald PRIORITY (syslog 0-7), macOS messageType, Windows
+    // LevelDisplayName; counts from a Python mapping of the same files.
+    (
+        "native-formats/linux-journalctl-o-json.jsonl",
+        "level>=error",
+        2,
+    ),
+    ("native-formats/macos-log-show.ndjson", "level>=error", 3),
+    (
+        "native-formats/windows-get-winevent.jsonl",
+        "level>=error",
+        2,
+    ),
 ];
 
 fn matches(file: &LogFile, query: &str) -> usize {

@@ -1,0 +1,4 @@
+{"TimeCreated":"2026-10-10T06:00:51.2569640+03:00","Id":7036,"LevelDisplayName":"Information","ProviderName":"Service Control Manager","Message":"The Windows Update service entered the running state."}
+{"TimeCreated":"2026-10-10T06:01:03.2187660+03:00","Id":1014,"LevelDisplayName":"Warning","ProviderName":"Microsoft-Windows-DNS-Client","Message":"Name resolution for the name wpad timed out after none of the configured DNS servers responded."}
+{"TimeCreated":"2026-10-10T06:01:14.2078530+03:00","Id":7034,"LevelDisplayName":"Error","ProviderName":"Service Control Manager","Message":"The Print Spooler service terminated unexpectedly.  It has done this 3 time(s)."}
+{"TimeCreated":"2026-10-10T06:01:18.4287650+03:00","Id":41,"LevelDisplayName":"Critical","ProviderName":"Microsoft-Windows-Kernel-Power","Message":"The system has rebooted without cleanly shutting down first."}

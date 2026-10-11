@@ -471,3 +471,70 @@ fn text_finds_words_inside_a_crash_and_a_trace() {
     assert_eq!(hits(&java, "Pool.java:88"), [0]);
     assert!(hits(&java, "no such frame").is_empty());
 }
+
+#[test]
+fn journald_macos_and_windows_exports_have_their_roles() {
+    fn roles(file: &LogFile, index: usize) -> [Option<String>; 3] {
+        let record = file.record(index).unwrap();
+        [Role::Level, Role::Message, Role::Logger]
+            .map(|role| record.role(role).map(|field| field.value.clone()))
+    }
+    let journal = sample("linux-journalctl-o-json.jsonl");
+    assert_eq!(
+        levels(&journal),
+        [Level::Info, Level::Warn, Level::Error, Level::Fatal]
+    );
+    assert_eq!(journal.index().stats().timestamped, 4);
+    assert_eq!(
+        journal.index().get(0).unwrap().timestamp(),
+        Some(1_791_612_010_915_171_000),
+        "__REALTIME_TIMESTAMP is microseconds"
+    );
+    assert_eq!(
+        roles(&journal, 0),
+        [
+            Some("6".into()),
+            Some("Started nginx.service - A high performance web server.".into()),
+            Some("systemd".into()),
+        ]
+    );
+
+    let mac = sample("macos-log-show.ndjson");
+    assert_eq!(
+        levels(&mac),
+        [
+            Level::Info,
+            Level::Error,
+            Level::Info,
+            Level::Fatal,
+            Level::Debug,
+            Level::Error,
+        ]
+    );
+    assert_eq!(mac.index().stats().timestamped, 6);
+    assert_eq!(
+        mac.index().get(0).unwrap().timestamp(),
+        timestamp::parse_text(b"2026-10-10T03:00:00.583433Z")
+    );
+    let [level, message, logger] = roles(&mac, 1);
+    assert_eq!(level.as_deref(), Some("Error"));
+    assert_eq!(message.as_deref(), Some("Security error has occurred."));
+    assert_eq!(logger.as_deref(), Some("com.apple.securityd"));
+
+    let windows = sample("windows-get-winevent.jsonl");
+    assert_eq!(
+        levels(&windows),
+        [Level::Info, Level::Warn, Level::Error, Level::Fatal]
+    );
+    assert_eq!(windows.index().stats().timestamped, 4);
+    assert_eq!(
+        windows.index().get(0).unwrap().timestamp(),
+        timestamp::parse_text(b"2026-10-10T03:00:51.256964Z")
+    );
+    let [level, message, logger] = roles(&windows, 1);
+    assert_eq!(level.as_deref(), Some("Warning"));
+    assert!(message
+        .unwrap()
+        .starts_with("Name resolution for the name wpad"));
+    assert_eq!(logger.as_deref(), Some("Microsoft-Windows-DNS-Client"));
+}

@@ -9,7 +9,8 @@ ranges and hosts and users are made up.
 Its expected counts come from a separate Python evaluation of the same
 queries, not from the Rust evaluator.
 
-`native-formats/` holds the pack's text-format files (spdlog default
-pattern, glog, Apache combined access log), also unchanged; they exercise
-the built-in text formats of #1162. `../syslog.log` is hand-written: the
+`native-formats/` holds the pack's native-format files, also unchanged:
+spdlog default pattern, glog and Apache combined access log for the text
+formats of #1162; journald, macOS `log show` and Windows `Get-WinEvent` JSON
+for the field mapping of #1163. `../syslog.log` is hand-written: the
 pack has syslog only as rsyslog JSON.

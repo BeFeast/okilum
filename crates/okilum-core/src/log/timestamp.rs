@@ -11,6 +11,9 @@ use ::time::{Date, Month, PrimitiveDateTime, Time, UtcOffset};
 /// (syslog's `Oct 10 06:00:01`, glog's old `mmdd`) are not timestamps.
 pub fn parse_text(text: &[u8]) -> Option<i64> {
     let b = text.trim_ascii();
+    if let Some(ms) = dotnet_date(b) {
+        return Some(ms);
+    }
     // A number written as a string takes the epoch path at any length, e.g.
     // quill's 19-digit nanoseconds (#1157); RFC 3339 always has a ':'.
     if b.len() < 17 || is_number(b) {
@@ -21,6 +24,22 @@ pub fn parse_text(text: &[u8]) -> Option<i64> {
         (_, b' ') => glog(b),
         _ => rfc3339(b),
     }
+}
+
+/// .NET's JSON date, as PowerShell's `ConvertTo-Json` writes `DateTime`:
+/// `/Date(1791612051256)/`, milliseconds since the epoch, sometimes with a
+/// `+0300` that only records the writer's zone.
+fn dotnet_date(b: &[u8]) -> Option<i64> {
+    let inner = b.strip_prefix(b"/Date(")?.strip_suffix(b")/")?;
+    let digits = inner.len()
+        - inner
+            .iter()
+            .rev()
+            .position(|c| matches!(c, b'+' | b'-'))
+            .filter(|&at| at == 4 && inner.len() > 5)
+            .map_or(0, |_| 5);
+    let ms: i64 = std::str::from_utf8(&inner[..digits]).ok()?.parse().ok()?;
+    ms.checked_mul(1_000_000)
 }
 
 fn rfc3339(b: &[u8]) -> Option<i64> {
@@ -287,6 +306,17 @@ mod tests {
         assert_eq!(parse_text(b"2025-10-01T00:00:00 UTC"), None);
         assert_eq!(parse_text(b"yesterday"), None);
         assert_eq!(parse_text(b"1759276800"), Some(BASE));
+    }
+
+    #[test]
+    fn dotnet_json_dates() {
+        assert_eq!(parse_text(b"/Date(1759276800000)/"), Some(BASE));
+        assert_eq!(
+            parse_text(b"/Date(1759276800250+0300)/"),
+            Some(BASE + 250_000_000)
+        );
+        assert_eq!(parse_text(b"/Date(-1000)/"), Some(-1_000_000_000));
+        assert_eq!(parse_text(b"/Date(soon)/"), None);
     }
 
     #[test]
