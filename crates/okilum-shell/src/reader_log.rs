@@ -10,6 +10,7 @@
 use super::*;
 use gpui_component::scroll::ScrollableElement as _;
 use okilum_core::log::correlation;
+use okilum_core::log::histogram::Histogram;
 use okilum_core::log::merge::MergedLog;
 use okilum_core::log::query::{Expr, FieldRef, Literal, Test};
 use okilum_core::log::source_link::{self, Open, SourceLocation};
@@ -41,6 +42,12 @@ const COLUMN_MENU_SAMPLE: usize = 200;
 const ROW_GAP: f32 = 12.;
 const TIME_WIDTH: f32 = 92.;
 const BADGE_WIDTH: f32 = 28.;
+/// The level histogram above the rows (#1168).
+const HISTOGRAM_HEIGHT: f32 = 56.;
+/// A press that moves less than this is a click on a bar, not a range.
+const HISTOGRAM_DRAG_MIN: f32 = 4.;
+/// While a log is followed the bars are counted again at most this often.
+const HISTOGRAM_FOLLOW_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// A header handle being dragged to resize field column `.0` (#1167).
 #[derive(Clone)]
@@ -156,6 +163,21 @@ enum Snapshot {
     File(Arc<LogFile>),
     Segment(Arc<Segment>),
     Owned { index: LogIndex, bytes: Vec<u8> },
+}
+
+/// The index of a source for a background count, without its bytes.
+enum IndexCopy {
+    Held(Snapshot),
+    Copied(LogIndex),
+}
+
+impl IndexCopy {
+    fn get(&self) -> &LogIndex {
+        match self {
+            IndexCopy::Held(snapshot) => snapshot.parts().0,
+            IndexCopy::Copied(index) => index,
+        }
+    }
 }
 
 impl Snapshot {
@@ -299,6 +321,17 @@ pub(crate) struct LogView {
     merge: Option<Merge>,
     /// Showing one request (#1166): the query text to go back to.
     request_back: Option<String>,
+    /// Records per level over time for the shown rows (#1168), the rows it
+    /// was counted for, and where the bars were last drawn.
+    histogram: Option<Arc<Histogram>>,
+    histogram_for: Option<(usize, usize)>,
+    histogram_at: Option<std::time::Instant>,
+    histogram_bounds: Rc<std::cell::Cell<Bounds<Pixels>>>,
+    /// A press on the bars: where it started and where the pointer is.
+    histogram_press: Option<(Pixels, Pixels)>,
+    _histogram: Option<Task<()>>,
+    /// A count that waits for the next second of a followed log.
+    _histogram_wait: Option<Task<()>>,
     /// What the last source-link click asked for, instead of launching (#1165).
     #[cfg(test)]
     last_open: Option<Open>,
@@ -369,6 +402,13 @@ impl LogView {
             primary_enabled: true,
             merge: None,
             request_back: None,
+            histogram: None,
+            histogram_for: None,
+            histogram_at: None,
+            histogram_bounds: Rc::default(),
+            histogram_press: None,
+            _histogram: None,
+            _histogram_wait: None,
             #[cfg(test)]
             last_open: None,
             _text_input_events: events,
@@ -879,6 +919,314 @@ impl LogView {
         cx.notify();
     }
 
+    /// Counts the shown rows per level over time off the UI thread when they
+    /// changed since the last count (#1168). While a log is followed a count
+    /// starts at most once a second, like a time window that moves with it.
+    fn recount(&mut self, cx: &mut Context<Self>) {
+        let signature = (self.visible_len(), self.total());
+        if self.histogram_for == Some(signature) || self._histogram_wait.is_some() {
+            return;
+        }
+        if let Some(last) = self.histogram_at.filter(|_| self.following()) {
+            let wait = HISTOGRAM_FOLLOW_EVERY.saturating_sub(last.elapsed());
+            if !wait.is_zero() {
+                self._histogram_wait = Some(cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(wait).await;
+                    let _ = this.update(cx, |this, cx| {
+                        // The wait is over, whatever the wall clock says.
+                        this._histogram_wait = None;
+                        this.histogram_at = None;
+                        this.recount(cx);
+                    });
+                }));
+                return;
+            }
+        }
+        self.histogram_for = Some(signature);
+        self.histogram_at = Some(std::time::Instant::now());
+        let sources: Vec<usize> = match &self.merge {
+            Some(merge) => merge.sources.clone(),
+            None => self.enabled_sources().into_iter().take(1).collect(),
+        };
+        let indexes: Vec<IndexCopy> = sources
+            .iter()
+            .filter_map(|&source| self.index_copy(source))
+            .collect();
+        let merged = self.merge.as_ref().map(|merge| merge.log.clone());
+        let rows = self.rows.clone();
+        self._histogram = Some(cx.spawn(async move |this, cx| {
+            let counted = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut histogram = Histogram::new();
+                    match (&rows, &merged) {
+                        (None, _) => {
+                            for index in &indexes {
+                                histogram.add_index(index.get(), None);
+                            }
+                        }
+                        (Some(rows), None) => {
+                            if let Some(index) = indexes.first() {
+                                histogram.add_index(index.get(), Some(rows.as_slice()));
+                            }
+                        }
+                        (Some(rows), Some(log)) => {
+                            // The rows of a merged view are placed by time;
+                            // the histogram wants each file's entries in order.
+                            let mut entries: Vec<Vec<u32>> = vec![Vec::new(); indexes.len()];
+                            for &id in rows.iter() {
+                                if let Some(row) = log.get(id as usize) {
+                                    if let Some(file) = entries.get_mut(row.file().index()) {
+                                        file.push(row.entry() as u32);
+                                    }
+                                }
+                            }
+                            for (index, mut file) in indexes.iter().zip(entries) {
+                                file.sort_unstable();
+                                histogram.add_index(index.get(), Some(&file));
+                            }
+                        }
+                    }
+                    histogram
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.histogram_for == Some(signature) {
+                    this.histogram = (!counted.is_empty()).then(|| Arc::new(counted));
+                    cx.notify();
+                }
+            });
+        }));
+    }
+
+    /// The index of `source` for a background count: shared where the source
+    /// is a file, a copy of the index (not of the bytes) where it grows.
+    fn index_copy(&self, source: usize) -> Option<IndexCopy> {
+        let tail = match (source, &self.follow) {
+            (0, Some(follow)) => Some(&follow.tail),
+            (0, None) => None,
+            (n, _) => match self.extra.get(n - 1).map(|extra| &extra.data) {
+                Some(SourceData::Tail(tail)) => Some(tail.as_ref()),
+                _ => None,
+            },
+        };
+        match tail {
+            Some(tail) => Some(IndexCopy::Copied(tail.index().clone())),
+            None => self.snapshot_of(source).map(IndexCopy::Held),
+        }
+    }
+
+    /// The bar under `x`, or `None` before the first count.
+    fn histogram_bucket(&self, x: Pixels) -> Option<usize> {
+        let histogram = self.histogram.as_ref()?;
+        let bounds = self.histogram_bounds.get();
+        if bounds.size.width <= px(0.) || histogram.is_empty() {
+            return None;
+        }
+        let fraction = ((x - bounds.left()) / bounds.size.width).clamp(0., 1.);
+        Some(((fraction * histogram.len() as f32) as usize).min(histogram.len() - 1))
+    }
+
+    /// A press on the bars ended: a drag selects the time the bars it covers
+    /// span, a click jumps to the first shown row of the bar under it.
+    fn release_histogram(&mut self, x: Pixels, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((start, _)) = self.histogram_press.take() else {
+            return;
+        };
+        cx.notify();
+        let (Some(a), Some(b), Some(histogram)) = (
+            self.histogram_bucket(start),
+            self.histogram_bucket(x),
+            self.histogram.clone(),
+        ) else {
+            return;
+        };
+        if (x - start).abs() >= px(HISTOGRAM_DRAG_MIN) {
+            if let Some((from, to)) = histogram.window(a, b) {
+                self.update_filter(|filter| filter.time = TimeWindow::range(from, to), cx);
+            }
+        } else if let Some(bucket) = histogram.bucket(b) {
+            self.jump_to_time(bucket.from, window, cx);
+        }
+    }
+
+    /// Selects the first shown row whose own time is at or after `ts`.
+    fn jump_to_time(&mut self, ts: i64, window: &mut Window, cx: &mut Context<Self>) {
+        let single = match self.merge {
+            Some(_) => None,
+            None => self
+                .enabled_sources()
+                .first()
+                .and_then(|&source| self.source(source))
+                .map(LogData::index),
+        };
+        let target = (0..self.visible_len()).find_map(|row| {
+            let id = self.entry_at(row)?;
+            let time = match single {
+                Some(index) => index.get(id)?.timestamp()?,
+                None => {
+                    let (source, entry) = self.locate(id)?;
+                    self.source(source)?.index().get(entry)?.timestamp()?
+                }
+            };
+            (time >= ts).then_some(id)
+        });
+        if let Some(id) = target {
+            self.select(id, true, window, cx);
+        }
+    }
+
+    fn render_histogram(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        self.recount(cx);
+        let histogram = self.histogram.clone()?;
+        let tallest = histogram.max_total().max(1);
+        let order = [
+            Level::Fatal,
+            Level::Error,
+            Level::Warn,
+            Level::Info,
+            Level::Debug,
+            Level::Trace,
+            Level::Unknown,
+            Level::Missing,
+            Level::Unparsed,
+        ];
+        let bounds = self.histogram_bounds.clone();
+        let selection = self.histogram_press.map(|(a, b)| (a.min(b), (a - b).abs()));
+        let origin = self.histogram_bounds.get().left();
+        let range_label = match self.filter.time {
+            TimeWindow::Range { from, to } => Some(format!(
+                "{} – {}",
+                timestamp::datetime_utc(from),
+                timestamp::clock_utc(to)
+            )),
+            _ => None,
+        };
+        let untimed = histogram.untimed();
+        let accent = brand::palette(cx).accent;
+        let muted = cx.theme().muted_foreground;
+        Some(
+            v_flex()
+                .flex_none()
+                .px_3()
+                .pt_1()
+                .gap_1()
+                .border_b_1()
+                .border_color(brand::palette(cx).border_subtle)
+                .child(
+                    div()
+                        .id("log-histogram")
+                        .debug_selector(|| "log-histogram".into())
+                        .relative()
+                        .h(px(HISTOGRAM_HEIGHT))
+                        .w_full()
+                        .flex()
+                        .items_end()
+                        .gap(px(1.))
+                        .cursor_crosshair()
+                        .children(histogram.buckets().enumerate().map(|(at, bucket)| {
+                            let total = bucket.total();
+                            let height = HISTOGRAM_HEIGHT * total as f32 / tallest as f32;
+                            v_flex()
+                                .id(("log-bar", at))
+                                .flex_1()
+                                .h(px(height))
+                                .children(order.iter().filter_map(|level| {
+                                    let count = bucket.counts[*level as usize];
+                                    (count > 0).then(|| {
+                                        div()
+                                            .w_full()
+                                            .h(px(height * count as f32 / total.max(1) as f32))
+                                            .bg(level_color(*level, cx))
+                                    })
+                                }))
+                        }))
+                        .child(
+                            canvas(move |area, _, _| bounds.set(area), |_, _, _, _| {})
+                                .absolute()
+                                .size_full(),
+                        )
+                        .when_some(selection, |bars, (left, width)| {
+                            bars.child(
+                                div()
+                                    .absolute()
+                                    .top_0()
+                                    .bottom_0()
+                                    .left(left - origin)
+                                    .w(width)
+                                    .bg(accent.opacity(0.2)),
+                            )
+                        })
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                                this.histogram_press = Some((event.position.x, event.position.x));
+                                cx.notify();
+                            }),
+                        )
+                        .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                            if let Some((start, _)) = this.histogram_press {
+                                if event.dragging() {
+                                    this.histogram_press = Some((start, event.position.x));
+                                    cx.notify();
+                                }
+                            }
+                        }))
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(|this, event: &MouseUpEvent, window, cx| {
+                                this.release_histogram(event.position.x, window, cx)
+                            }),
+                        ),
+                )
+                .child(
+                    h_flex()
+                        .h(px(18.))
+                        .gap_2()
+                        .text_size(px(11.))
+                        .text_color(muted)
+                        .child(
+                            histogram
+                                .start()
+                                .map(timestamp::datetime_utc)
+                                .unwrap_or_default(),
+                        )
+                        .child(div().flex_1())
+                        .children(range_label.map(|label| {
+                            h_flex()
+                                .gap_1()
+                                .debug_selector(|| "log-histogram-range".into())
+                                .child(format!("Selected {label}"))
+                                .child(
+                                    Button::new("log-histogram-clear")
+                                        .debug_selector(|| "log-histogram-clear".into())
+                                        .ghost()
+                                        .xsmall()
+                                        .icon(IconName::Close)
+                                        .tooltip("Clear the time range")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.update_filter(
+                                                |filter| filter.time = TimeWindow::All,
+                                                cx,
+                                            )
+                                        })),
+                                )
+                        }))
+                        .child(div().flex_1())
+                        .when(untimed > 0, |row| {
+                            row.child(format!("{untimed} without a time"))
+                        })
+                        .child(
+                            histogram
+                                .end()
+                                .map(|end| timestamp::clock_utc(end - 1))
+                                .unwrap_or_default(),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn following(&self) -> bool {
         self.follow
             .as_ref()
@@ -1357,7 +1705,7 @@ impl LogView {
                 reindexed,
                 grown,
             } => {
-                let time_moves = self.filter.time != TimeWindow::All;
+                let time_moves = self.filter.time.follows_newest();
                 let due = self.follow.as_ref().is_some_and(|follow| {
                     follow
                         .last_full_run
@@ -1479,7 +1827,10 @@ impl LogView {
                 let matched = match self.source(source) {
                     Some(data) => {
                         let filter = LogFilter {
-                            window_end: (self.filter.time != TimeWindow::All)
+                            window_end: self
+                                .filter
+                                .time
+                                .follows_newest()
                                 .then(|| self.newest())
                                 .flatten(),
                             ..self.filter.clone()
@@ -1579,6 +1930,7 @@ impl LogView {
     /// Keeps a selection the new rows still list, in view; otherwise drops
     /// it and returns to the top.
     fn after_rows_changed(&mut self) {
+        self.histogram_for = None;
         match self.selected.and_then(|index| self.row_of(index)) {
             Some(row) => self.scroll.scroll_to_item(row, ScrollStrategy::Nearest),
             None => {
@@ -2634,6 +2986,7 @@ impl Render for LogView {
             .when(has_entries || self.follow.is_some(), |view| {
                 view.child(self.render_filter_bar(cx))
             })
+            .children(self.render_histogram(cx))
             .children(self.render_reset(cx))
             .child(reader_split::vertical(
                 &self.detail_split,
@@ -4817,6 +5170,279 @@ mod tests {
                 .unwrap();
         let width = saved["log_column_widths"][&key]["path"].as_f64().unwrap() as f32;
         assert!((width - f32::from(after.size.width)).abs() < 1., "{width}");
+    }
+
+    /// #1168 acceptance on the Kibana sample: the Elasticsearch outage
+    /// (05:57:35-38, seven errors) is a red cluster on the bars apart from the
+    /// startup FATAL at 05:57:00; dragging over it filters the rows to that
+    /// window, Clear brings every row back, and a click on a bar jumps to it.
+    #[gpui::test]
+    fn kibana_outage_is_a_red_cluster_and_dragging_selects_it(cx: &mut TestAppContext) {
+        let sample = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../okilum-core/tests/fixtures/log/samples/kibana/kibana.ndjson");
+        let text = std::fs::read_to_string(sample).unwrap();
+        let (_directory, reader, visual) = open_log(&text, cx);
+        visual.simulate_resize(gpui::size(px(1440.), px(900.)));
+        visual.run_until_parked();
+        let view = log_view(&reader, visual);
+        let settle = |visual: &mut VisualTestContext| {
+            for _ in 0..2 {
+                visual.update(|window, cx| window.draw(cx).clear(cx));
+                visual.run_until_parked();
+            }
+        };
+        settle(visual);
+        let histogram = view
+            .read_with(visual, |view, _| view.histogram.clone())
+            .expect("the bars are counted");
+        let total = view.read_with(visual, |view, _| view.total());
+        let red = |counts: &[u32; Level::COUNT]| {
+            counts[Level::Error as usize] + counts[Level::Fatal as usize]
+        };
+        let errors: u32 = histogram.buckets().map(|bucket| red(bucket.counts)).sum();
+        assert_eq!(errors, 8, "the sample's level>=error records");
+        let red_buckets: Vec<usize> = (0..histogram.len())
+            .filter(|&at| red(histogram.bucket(at).unwrap().counts) > 0)
+            .collect();
+        // The startup FATAL stands alone in the first bucket; the outage is
+        // one cluster of seven errors after it.
+        assert_eq!(red_buckets.first(), Some(&0), "{red_buckets:?}");
+        let cluster = &red_buckets[1..];
+        let (first, last) = (cluster[0], *cluster.last().unwrap());
+        assert!(
+            last - first < histogram.len() / 4,
+            "a cluster, not spread out: buckets {red_buckets:?}"
+        );
+        let in_cluster: u32 = (first..=last)
+            .map(|at| red(histogram.bucket(at).unwrap().counts))
+            .sum();
+        assert_eq!(in_cluster, 7, "the outage's errors");
+        // Drag over the cluster on the bars, from the middle of its first
+        // bar to the middle of its last.
+        let bars = visual
+            .debug_bounds("log-histogram")
+            .expect("the bars are drawn");
+        let n = histogram.len() as f32;
+        let x = |bucket: f32| bars.left() + bars.size.width * (bucket / n);
+        let y = bars.center().y;
+        let from = point(x(first as f32 + 0.5), y);
+        let to = point(x(last as f32 + 0.5), y);
+        visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            from + point(px(5.), px(0.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let (time, shown) = view.read_with(visual, |view, _| {
+            let shown: Vec<(Option<i64>, Level)> = (0..view.visible_len())
+                .map(|row| {
+                    let id = view.entry_at(row).unwrap();
+                    let (source, entry) = view.locate(id).unwrap();
+                    let entry = *view.source(source).unwrap().index().get(entry).unwrap();
+                    (entry.timestamp(), entry.level())
+                })
+                .collect();
+            (view.filter.time, shown)
+        });
+        let (start, end) = histogram.window(first, last).unwrap();
+        assert_eq!(
+            time,
+            TimeWindow::Range {
+                from: start,
+                to: end
+            }
+        );
+        assert!(shown.len() < total, "the window hides other rows");
+        assert!(shown
+            .iter()
+            .all(|(ts, _)| ts.is_none_or(|ts| (start..=end).contains(&ts))));
+        let shown_red = shown
+            .iter()
+            .filter(|(_, level)| matches!(level, Level::Error | Level::Fatal))
+            .count();
+        assert_eq!(
+            shown_red, 7,
+            "the outage is inside the window, the startup FATAL is not"
+        );
+        settle(visual);
+        assert!(visual.debug_bounds("log-histogram-range").is_some());
+        let clear = visual.debug_bounds("log-histogram-clear").unwrap();
+        visual.simulate_click(clear.center(), Modifiers::default());
+        visual.run_until_parked();
+        view.read_with(visual, |view, _| {
+            assert_eq!(view.filter.time, TimeWindow::All);
+            assert_eq!(view.visible_len(), total);
+        });
+        settle(visual);
+        let again = view
+            .read_with(visual, |view, _| view.histogram.clone())
+            .expect("the bars are counted again");
+        assert_eq!(*again, *histogram, "Clear brings the same bars back");
+        // A click on a bar selects the first row at or after its start.
+        let bucket = histogram.bucket(first).unwrap();
+        visual.simulate_click(point(x(first as f32 + 0.5), y), Modifiers::default());
+        visual.run_until_parked();
+        let selected = view.read_with(visual, |view, _| {
+            let (source, entry) = view.locate(view.selected?)?;
+            view.source(source)?.index().get(entry)?.timestamp()
+        });
+        assert!(
+            selected.is_some_and(|ts| (bucket.from..bucket.to).contains(&ts)),
+            "{selected:?} not in {}..{}",
+            bucket.from,
+            bucket.to
+        );
+    }
+
+    /// #1168: in a view of several files the bars count every file, and with a
+    /// query only the rows it shows.
+    #[gpui::test]
+    fn the_bars_count_every_file_of_a_merged_view(cx: &mut TestAppContext) {
+        let samples =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../okilum-core/tests/fixtures/log/samples");
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let paths: Vec<PathBuf> = ["kubernetes/kubelet.jsonl", "apache/apache-error.jsonl"]
+            .iter()
+            .map(|name| {
+                let target = root.join(Path::new(name).file_name().unwrap());
+                std::fs::copy(samples.join(name), &target).unwrap();
+                target
+            })
+            .collect();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::bind_keys(cx);
+        });
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        open_path: Some(paths[0].clone()),
+                        session_directory: Some(root.join(".state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        visual.run_until_parked();
+        let view = log_view(&reader, visual);
+        let settle = |visual: &mut VisualTestContext| {
+            for _ in 0..2 {
+                visual.update(|window, cx| window.draw(cx).clear(cx));
+                visual.run_until_parked();
+            }
+        };
+        let counted = |visual: &mut VisualTestContext| {
+            view.read_with(visual, |view, _| {
+                view.histogram
+                    .as_ref()
+                    .map(|histogram| (histogram.timed() + histogram.untimed()) as usize)
+            })
+        };
+        settle(visual);
+        let alone = view.read_with(visual, |view, _| view.total());
+        assert_eq!(counted(visual), Some(alone), "one file");
+        view.update(visual, |view, cx| view.add_files(paths[1..].to_vec(), cx));
+        visual.run_until_parked();
+        settle(visual);
+        let total = view.read_with(visual, |view, _| view.total());
+        assert!(total > alone, "positive control: the files joined");
+        assert_eq!(counted(visual), Some(total), "every record of both files");
+        view.update(visual, |view, cx| view.set_query("level>=error".into(), cx));
+        visual.run_until_parked();
+        settle(visual);
+        let shown = view.read_with(visual, |view, _| view.visible_len());
+        assert!(shown > 0 && shown < total, "{shown} of {total}");
+        assert_eq!(
+            counted(visual),
+            Some(shown),
+            "only the rows the query shows"
+        );
+    }
+
+    /// #1168: while a log is followed the bars count what arrives, and a
+    /// chosen time range stays put as newer records come in.
+    #[gpui::test]
+    fn the_bars_follow_appends_and_a_range_stays_put(cx: &mut TestAppContext) {
+        use std::io::Write as _;
+        let line = |second: u32, level: &str| {
+            format!(
+                "{{\"ts\":\"2025-10-01T00:{:02}:{:02}Z\",\"level\":\"{level}\"}}\n",
+                second / 60,
+                second % 60
+            )
+        };
+        let at = |second: i64| (1_759_276_800 + second) * 1_000_000_000;
+        let text: String = (0..30).map(|second| line(second, "info")).collect();
+        let (directory, reader, visual) = open_log(&text, cx);
+        let path = directory.path().canonicalize().unwrap().join("app.jsonl");
+        let append = |text: &str| {
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
+            file.write_all(text.as_bytes()).unwrap();
+        };
+        // A count started by a draw waits for the next second of a followed
+        // log, so every step lets more than a second pass.
+        let tick = |visual: &mut VisualTestContext| {
+            visual.executor().advance_clock(Duration::from_millis(1200));
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            visual.run_until_parked();
+        };
+        let view = log_view(&reader, visual);
+        let len = |visual: &mut VisualTestContext| view.read_with(visual, |v, _| v.visible_len());
+        let counted = |visual: &mut VisualTestContext| {
+            view.read_with(visual, |view, _| {
+                view.histogram
+                    .as_ref()
+                    .map(|histogram| (histogram.timed() + histogram.untimed()) as usize)
+            })
+        };
+        tick(visual);
+        assert_eq!(counted(visual), Some(30));
+        view.update(visual, |view, cx| view.toggle_follow(cx));
+        visual.run_until_parked();
+        tick(visual);
+        append(&(line(30, "error") + &line(31, "info")));
+        tick(visual);
+        tick(visual);
+        assert_eq!(len(visual), 32, "follow shows the appended records");
+        assert_eq!(counted(visual), Some(32), "and the bars count them");
+
+        // A range is not a window that ends at the newest record.
+        view.update(visual, |view, cx| {
+            view.update_filter(|f| f.time = TimeWindow::range(at(10), at(20)), cx)
+        });
+        visual.run_until_parked();
+        tick(visual);
+        assert_eq!(len(visual), 11, "seconds 10 to 20, both ends included");
+        append(&line(50, "info"));
+        tick(visual);
+        tick(visual);
+        assert_eq!(len(visual), 11, "a newer record is outside a fixed range");
+        append(&line(15, "error"));
+        tick(visual);
+        tick(visual);
+        assert_eq!(len(visual), 12, "one inside the range is shown");
+        assert_eq!(counted(visual), Some(12), "the bars count what is shown");
+        view.read_with(visual, |view, _| {
+            assert!(
+                view.follow.as_ref().unwrap().last_full_run.is_none(),
+                "a range never asks for a full run when records arrive"
+            );
+        });
     }
 
     #[gpui::test]
