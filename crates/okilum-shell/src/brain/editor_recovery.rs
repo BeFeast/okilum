@@ -121,6 +121,9 @@ fn snapshot_text(v: &Value, workspace: &Value) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|_| "Only exact UTF-8 editor drafts are recoverable.".into())
 }
 
+/// How long a recovery update waits for a transient lock holder before reporting contention.
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
+
 impl EditorRecovery {
     pub fn open(workspace: &Value) -> Result<Self, String> {
         let home = std::env::var_os("XDG_CONFIG_HOME")
@@ -186,10 +189,24 @@ impl EditorRecovery {
         let lock = options
             .open(self.root.join("recovery.lock"))
             .map_err(|e| e.to_string())?;
-        lock.try_lock().map_err(|_| {
-            "Another editor is updating recovery. Draft remains unprotected; retry.".to_string()
-        })?;
-        Ok(lock)
+        // flock belongs to the open file description, and a process forked anywhere in this
+        // app (a helper, a git call) holds a copy of it until it execs. Such a holder, like
+        // another window's short update, goes away within milliseconds: wait briefly.
+        let deadline = std::time::Instant::now() + LOCK_WAIT;
+        loop {
+            match lock.try_lock() {
+                Ok(()) => return Ok(lock),
+                Err(_) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(10))
+                }
+                Err(_) => {
+                    return Err(
+                        "Another editor is updating recovery. Draft remains unprotected; retry."
+                            .to_string(),
+                    )
+                }
+            }
+        }
     }
     fn validate(&self, d: &Draft) -> Result<(), String> {
         self.path(&d.id)?;

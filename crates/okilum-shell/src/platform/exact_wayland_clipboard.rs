@@ -446,38 +446,35 @@ mod linux {
             writer.write_all(bytes).unwrap();
             input
         }
+        /// Drain to EOF the way the reader does, polling until the deadline. A process that
+        /// another test forks inherits the write end until it execs, so EOF can arrive a
+        /// moment after the writer here is dropped.
+        fn drain_to_eof(pipe: &OwnedFd, bytes: &mut Vec<u8>) -> Result<bool, Error> {
+            let deadline = Instant::now() + TIMEOUT;
+            loop {
+                if drain_pipe(
+                    pipe,
+                    bytes,
+                    deadline,
+                    &ClipboardReadRequest::default(),
+                    MAX_BYTES,
+                )? {
+                    return Ok(true);
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
         #[test]
         fn exact_clipboard_pipe_preserves_bytes_empty_invalid_and_limit() {
             let expected = "\u{feff}A e\u{301} 👩\u{200d}💻 🇮🇱\r\nB\nC\rD".as_bytes();
             let mut bytes = Vec::new();
-            assert!(drain_pipe(
-                &pipe_bytes(expected),
-                &mut bytes,
-                Instant::now() + TIMEOUT,
-                &ClipboardReadRequest::default(),
-                MAX_BYTES
-            )
-            .unwrap());
+            assert!(drain_to_eof(&pipe_bytes(expected), &mut bytes).unwrap());
             assert_eq!(decode(bytes).unwrap().unwrap().as_bytes(), expected);
             let mut bytes = Vec::new();
-            assert!(drain_pipe(
-                &pipe_bytes(b""),
-                &mut bytes,
-                Instant::now() + TIMEOUT,
-                &ClipboardReadRequest::default(),
-                MAX_BYTES
-            )
-            .unwrap());
+            assert!(drain_to_eof(&pipe_bytes(b""), &mut bytes).unwrap());
             assert_eq!(decode(bytes).unwrap(), Some(String::new()));
             let mut bytes = Vec::new();
-            drain_pipe(
-                &pipe_bytes(&[0xff]),
-                &mut bytes,
-                Instant::now() + TIMEOUT,
-                &ClipboardReadRequest::default(),
-                MAX_BYTES,
-            )
-            .unwrap();
+            drain_to_eof(&pipe_bytes(&[0xff]), &mut bytes).unwrap();
             assert_eq!(decode(bytes), Err(Error::InvalidUtf8));
             assert!(matches!(
                 drain_pipe(
