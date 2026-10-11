@@ -388,19 +388,18 @@ impl Reader {
                     if !is_file {
                         menu = menu.menu("Open in new window", Box::new(reader_open::NewWindow));
                     }
-                    #[cfg(unix)]
+                    #[cfg(any(unix, windows))]
                     {
                         let reader = reader.clone();
                         let rel = rel.clone();
-                        menu = menu
-                            .separator()
-                            .item(PopupMenuItem::new("Move to Trash").on_click(
-                                move |_, window, cx| {
+                        menu = menu.separator().item(
+                            PopupMenuItem::new(platform::labels::Os::CURRENT.move_to_trash())
+                                .on_click(move |_, window, cx| {
                                     let _ = reader.update(cx, |this, cx| {
                                         this.delete_path(rel.clone(), window, cx);
                                     });
-                                },
-                            ));
+                                }),
+                        );
                     }
                     menu.separator().menu(
                         if is_file { "Close file" } else { "Close note" },

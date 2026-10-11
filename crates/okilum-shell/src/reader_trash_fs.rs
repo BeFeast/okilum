@@ -35,6 +35,17 @@ fn parent(root: &Path, relative: &Path) -> Result<(rustix::fd::OwnedFd, std::ffi
     Ok((fd, parts.last().unwrap().as_os_str().to_owned()))
 }
 
+/// What the confirmation inventory compares: identity, size and mtime.
+pub fn stamp(_path: &Path, meta: &fs::Metadata) -> (u64, u64, u64, i64, i64) {
+    (
+        meta.dev(),
+        meta.ino(),
+        meta.len(),
+        meta.mtime(),
+        meta.mtime_nsec(),
+    )
+}
+
 pub fn move_to_trash(root: &Path, relative: &Path) -> Result<Trashed> {
     let root = root.canonicalize()?;
     let (source_parent, source_name) = parent(&root, relative)?;

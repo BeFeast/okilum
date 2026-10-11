@@ -2,7 +2,6 @@
 use super::*;
 use gpui_component::{notification::Notification, WindowExt};
 use okilum_core::file_editor::FileEditor;
-use std::os::unix::fs::MetadataExt;
 
 #[derive(Default)]
 pub(super) struct UndoHistory {
@@ -25,14 +24,8 @@ fn inventory(path: &Path) -> anyhow::Result<Inventory> {
                 pending.push(entry?.path());
             }
         }
-        entries.push((
-            path,
-            meta.dev(),
-            meta.ino(),
-            meta.len(),
-            meta.mtime(),
-            meta.mtime_nsec(),
-        ));
+        let (volume, index, len, seconds, nanos) = reader_trash_fs::stamp(&path, &meta);
+        entries.push((path, volume, index, len, seconds, nanos));
     }
     entries.sort();
     Ok(entries)
@@ -100,6 +93,10 @@ impl Reader {
         self.delete_path_guarded(relative, None, window, cx);
     }
 
+    /// Windows undoes a creation through `windows_files::undo_created`
+    /// (`reader_creation_undo_windows`), which removes the unchanged item
+    /// instead of filling the Recycle Bin.
+    #[cfg(unix)]
     pub(super) fn delete_created_path(
         &mut self,
         item: Arc<reader_create::CreatedUndo>,
@@ -170,7 +167,10 @@ impl Reader {
         window.push_notification(
             Notification::new()
                 .id::<TrashToast>()
-                .message("Preparing to move to Trash…")
+                .message(format!(
+                    "Preparing to move to the {}…",
+                    platform::labels::Os::CURRENT.trash()
+                ))
                 .placement(Anchor::BottomRight)
                 .py_2()
                 .autohide(false),
@@ -216,7 +216,7 @@ impl Reader {
                     }
                     anyhow::ensure!(
                         inventory(&scan_root.join(&scan_relative))? == before,
-                        "The item changed while preparing Trash. Try again"
+                        "The item changed while preparing to move it. Try again"
                     );
                     Ok::<_, anyhow::Error>((count, locks, before))
                 })
@@ -229,7 +229,10 @@ impl Reader {
                         window.push_notification(
                             Notification::new()
                                 .id::<TrashToast>()
-                                .message(format!("Cannot move to Trash: {error:#}"))
+                                .message(format!(
+                                    "Cannot move to the {}: {error:#}",
+                                    platform::labels::Os::CURRENT.trash()
+                                ))
                                 .placement(Anchor::BottomRight)
                                 .py_2()
                                 .autohide(false),
@@ -274,7 +277,7 @@ impl Reader {
                             let close = send.clone();
                             let p = brand::palette(cx);
                             dialog
-                                .title("Move to Trash")
+                                .title(platform::labels::Os::CURRENT.move_to_trash())
                                 .width(px(440.))
                                 .child(
                                     v_flex()
@@ -324,7 +327,7 @@ impl Reader {
                                             reader_icon_button(
                                                 "confirm-trash",
                                                 Icon::default().path("icons/trash.svg"),
-                                                "Move to Trash",
+                                                platform::labels::Os::CURRENT.move_to_trash(),
                                                 cx,
                                             )
                                             .danger()
@@ -370,7 +373,10 @@ impl Reader {
                 window.push_notification(
                     Notification::new()
                         .id::<TrashToast>()
-                        .message("Moving to Trash…")
+                        .message(format!(
+                            "Moving to the {}…",
+                            platform::labels::Os::CURRENT.trash()
+                        ))
                         .placement(Anchor::BottomRight)
                         .py_2()
                         .autohide(false),
@@ -448,7 +454,10 @@ impl Reader {
                         window.push_notification(
                             Notification::new()
                                 .id::<TrashToast>()
-                                .message(format!("Cannot move to Trash: {error:#}"))
+                                .message(format!(
+                                    "Cannot move to the {}: {error:#}",
+                                    platform::labels::Os::CURRENT.trash()
+                                ))
                                 .placement(Anchor::BottomRight)
                                 .py_2()
                                 .autohide(false),
@@ -473,7 +482,10 @@ impl Reader {
         window.push_notification(
             Notification::new()
                 .id::<TrashToast>()
-                .message("Moved to Trash")
+                .message(format!(
+                    "Moved to the {}",
+                    platform::labels::Os::CURRENT.trash()
+                ))
                 .autohide(false)
                 .py_2()
                 .placement(Anchor::BottomRight)
@@ -591,7 +603,14 @@ impl Reader {
                     Ok(_) => {
                         // `trash_pending` blocked every history change meanwhile.
                         this.trash_undo.items.remove(index);
-                        reader_toast::transient("Restored from Trash", window, cx);
+                        reader_toast::transient(
+                            format!(
+                                "Restored from the {}",
+                                platform::labels::Os::CURRENT.trash()
+                            ),
+                            window,
+                            cx,
+                        );
                     }
                     Err(error) => {
                         reader_toast::error(format!("Cannot Undo: {error:#}"), window, cx)
@@ -625,7 +644,7 @@ impl Reader {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;

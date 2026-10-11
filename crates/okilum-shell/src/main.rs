@@ -106,9 +106,12 @@ mod reader_thumbnail;
 #[cfg(any(unix, windows))]
 mod reader_timeline;
 mod reader_toast;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod reader_trash;
 #[cfg(unix)]
+mod reader_trash_fs;
+#[cfg(windows)]
+#[path = "reader_trash_fs_windows.rs"]
 mod reader_trash_fs;
 mod reader_tree;
 mod reader_tree_preview;
@@ -388,7 +391,7 @@ fn bind_keys(cx: &mut App) {
         #[cfg(any(unix, windows))]
         KeyBinding::new("f2", RenameNote, Some("ReaderSource > Input")),
         KeyBinding::new("secondary-n", NewNote, ctx),
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         KeyBinding::new("secondary-backspace", DeleteNote, Some("Reader && !Input")),
         #[cfg(any(unix, windows))]
         KeyBinding::new("secondary-z", UndoTrash, Some("Reader && !Input")),
@@ -1310,7 +1313,7 @@ struct Reader {
     move_applying: bool,
     #[cfg(any(unix, windows))]
     trash_pending: bool,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     trash_undo: reader_trash::UndoHistory,
     #[cfg(any(unix, windows))]
     move_index: Option<Arc<okilum_core::link_rewrite::CandidateIndex>>,
@@ -1643,7 +1646,7 @@ impl Reader {
             move_applying: false,
             #[cfg(any(unix, windows))]
             trash_pending: false,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             trash_undo: reader_trash::UndoHistory::default(),
             #[cfg(any(unix, windows))]
             move_index: None,
@@ -6513,8 +6516,8 @@ impl Render for Reader {
             .on_action(cx.listener(|this, _: &HistoryVersionPrevious, window, cx| {
                 this.step_timeline(false, window, cx)
             }))
-            .when(cfg!(unix), |view| {
-                #[cfg(unix)]
+            .when(cfg!(any(unix, windows)), |view| {
+                #[cfg(any(unix, windows))]
                 let view = view.on_action(
                     cx.listener(|this, _: &DeleteNote, window, cx| this.delete_note(window, cx)),
                 );
@@ -6569,7 +6572,7 @@ impl Render for Reader {
                 if this.tree_focus.contains_focused(window, cx) && this.creation_undo.is_some() {
                     this.undo_creation(None, window, cx);
                 } else {
-                    #[cfg(unix)]
+                    #[cfg(any(unix, windows))]
                     this.undo_last_trash(window, cx);
                 }
             }))
@@ -10327,17 +10330,18 @@ fn reader_item_menu(
                     ),
                 )
             });
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             let menu = {
                 let reader = reader.downgrade();
                 menu.separator().item(
-                    gpui_component::menu::PopupMenuItem::new("Move to Trash").on_click(
-                        move |_, window, cx| {
-                            let _ = reader.update(cx, |this, cx| {
-                                this.delete_path(relative.clone(), window, cx)
-                            });
-                        },
-                    ),
+                    gpui_component::menu::PopupMenuItem::new(
+                        crate::platform::labels::Os::CURRENT.move_to_trash(),
+                    )
+                    .on_click(move |_, window, cx| {
+                        let _ = reader.update(cx, |this, cx| {
+                            this.delete_path(relative.clone(), window, cx)
+                        });
+                    }),
                 )
             };
             menu
