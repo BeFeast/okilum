@@ -8,7 +8,9 @@ use ::time::{Date, Month, PrimitiveDateTime, Time, UtcOffset};
 /// offset is read as UTC, which displays it exactly as written.
 pub fn parse_text(text: &[u8]) -> Option<i64> {
     let b = text.trim_ascii();
-    if b.len() < 19 {
+    // A number written as a string takes the epoch path at any length, e.g.
+    // quill's 19-digit nanoseconds (#1157); RFC 3339 always has a ':'.
+    if b.len() < 19 || is_number(b) {
         return number_text(b);
     }
     let year = digits(&b[0..4])?;
@@ -117,11 +119,14 @@ fn float_number(text: &str) -> Option<i64> {
     (nanos.abs() < 9.2e18).then_some(nanos as i64)
 }
 
-fn number_text(b: &[u8]) -> Option<i64> {
-    let numeric = !b.is_empty()
+fn is_number(b: &[u8]) -> bool {
+    !b.is_empty()
         && b.iter()
-            .all(|c| c.is_ascii_digit() || matches!(c, b'.' | b'-'));
-    if numeric {
+            .all(|c| c.is_ascii_digit() || matches!(c, b'.' | b'-'))
+}
+
+fn number_text(b: &[u8]) -> Option<i64> {
+    if is_number(b) {
         parse_number(b)
     } else {
         None
@@ -195,6 +200,21 @@ mod tests {
         assert_eq!(parse_text(b"2025-10-01T00:00:00 UTC"), None);
         assert_eq!(parse_text(b"yesterday"), None);
         assert_eq!(parse_text(b"1759276800"), Some(BASE));
+    }
+
+    #[test]
+    fn epoch_strings_of_any_length() {
+        // quill's JsonFileSink: Unix nanoseconds as a 19-digit string (#1157).
+        assert_eq!(
+            parse_text(b"1791612242497259677"),
+            Some(1_791_612_242_497_259_677)
+        );
+        assert_eq!(parse_text(b"1759276800000000000"), Some(BASE));
+        assert_eq!(parse_text(b"1759276800000000.5"), Some(BASE + 500));
+        // Same magnitude rules as numbers; still strict about other text.
+        assert_eq!(parse_text(b"1759276800000"), Some(BASE));
+        assert_eq!(parse_text(b"99999999999999999999999"), None);
+        assert_eq!(parse_text(b"2025-10-01-00-00-00-000"), None);
     }
 
     #[test]
