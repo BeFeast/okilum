@@ -17,6 +17,7 @@ pub mod correlation;
 mod detect;
 mod file;
 pub mod filter;
+pub mod histogram;
 mod index;
 mod json;
 mod level;
@@ -37,6 +38,7 @@ pub use file::{LogFile, MAP_THRESHOLD_BYTES, MAX_LOG_BYTES};
 pub use filter::{
     FieldChip, FilterGenerations, FilterOutcome, FilterTicket, LevelFilter, LogFilter, TimeWindow,
 };
+pub use histogram::Histogram;
 pub use index::{LogEntry, LogIndex, LogStats};
 pub use level::Level;
 pub use merge::{FileId, MergeUpdate, MergedLog, MergedRow};
