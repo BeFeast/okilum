@@ -13,6 +13,7 @@
 
 pub mod ansi;
 pub mod block;
+pub mod correlation;
 mod detect;
 mod file;
 pub mod filter;

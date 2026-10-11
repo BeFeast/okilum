@@ -1,0 +1,3 @@
+{"time": "2026-10-10T06:02:00.100Z", "level": "info", "msg": "GET /cart 200", "request_id": "7b1c2f", "upstream": "checkout-api:8080", "status": 200}
+{"time": "2026-10-10T06:02:01.100Z", "level": "info", "msg": "POST /checkout 502", "request_id": "9e40aa", "upstream": "checkout-api:8080", "status": 502}
+{"time": "2026-10-10T06:02:02.100Z", "level": "info", "msg": "GET /orders 200", "request_id": "c3d17e", "upstream": "checkout-api:8080", "status": 200}
