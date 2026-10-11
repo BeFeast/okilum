@@ -1072,6 +1072,100 @@ mod tests {
     }
 
     #[gpui::test]
+    fn a_drag_selection_that_ends_over_a_link_does_not_open_it(cx: &mut TestAppContext) {
+        // #1234 review: the link handler is registered on every frame now, so the event-time
+        // selection check alone keeps a drag that ends on a link from navigating. Both with a
+        // frame between the events and without one.
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let root = std::env::temp_dir()
+            .join(format!("okilum-drag-over-link-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = "[Target control](target.md)\n\nUnique selectable paragraph for the drag.\n";
+        std::fs::write(root.join("start.md"), source).unwrap();
+        std::fs::write(root.join("target.md"), "# Target").unwrap();
+        for frames_between in [true, false] {
+            let mut reader = None;
+            let (_, visual) = cx.add_window_view(|window, cx| {
+                let view = cx.new(|cx| {
+                    Reader::new(
+                        Opts {
+                            vault: Some(root.clone()),
+                            note: Some("start.md".into()),
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    )
+                });
+                reader = Some(view.clone());
+                Root::new(view, window, cx)
+            });
+            let reader = reader.unwrap();
+            visual.run_until_parked();
+            let bounds = reader.read_with(visual, |v, cx| v.content.read(cx).bounds());
+            let link = bounds.origin + point(px(25.), px(10.));
+            let start = bounds.origin + point(px(5.), px(50.));
+            let events = [
+                PlatformInput::MouseMove(MouseMoveEvent {
+                    position: start,
+                    pressed_button: None,
+                    modifiers: Modifiers::default(),
+                }),
+                PlatformInput::MouseDown(MouseDownEvent {
+                    position: start,
+                    button: MouseButton::Left,
+                    modifiers: Modifiers::default(),
+                    click_count: 1,
+                    first_mouse: false,
+                }),
+                PlatformInput::MouseMove(MouseMoveEvent {
+                    position: link,
+                    pressed_button: Some(MouseButton::Left),
+                    modifiers: Modifiers::default(),
+                }),
+                PlatformInput::MouseUp(MouseUpEvent {
+                    position: link,
+                    button: MouseButton::Left,
+                    modifiers: Modifiers::default(),
+                    click_count: 1,
+                }),
+            ];
+            if frames_between {
+                for event in events {
+                    visual.update(|window, cx| {
+                        window.dispatch_event(event, cx);
+                    });
+                    visual.run_until_parked();
+                }
+            } else {
+                visual.update(|window, cx| {
+                    for event in events {
+                        window.dispatch_event(event, cx);
+                    }
+                });
+                visual.run_until_parked();
+            }
+            reader.read_with(visual, |v, cx| {
+                let selected = v.content.read(cx).selected_text();
+                assert!(
+                    !selected.trim().is_empty(),
+                    "frames_between={frames_between}: positive control, the drag selected text"
+                );
+                assert_eq!(
+                    v.current_rel, "start.md",
+                    "frames_between={frames_between}: a drag ending on a link must not open it"
+                );
+            });
+            visual.update(|window, _| window.remove_window());
+            visual.run_until_parked();
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[gpui::test]
     fn reader_refresh_updates_status_without_replacing_document_or_history(
         cx: &mut TestAppContext,
     ) {
