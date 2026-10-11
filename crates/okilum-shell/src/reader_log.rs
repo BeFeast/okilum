@@ -11,6 +11,7 @@ use super::*;
 use gpui_component::scroll::ScrollableElement as _;
 use okilum_core::log::merge::MergedLog;
 use okilum_core::log::query::{Expr, FieldRef, Literal, Test};
+use okilum_core::log::source_link::{self, Open, SourceLocation};
 use okilum_core::log::tail::{ResetReason, TailEvent};
 use okilum_core::log::{
     ansi, block, filter, timestamp, FilterGenerations, Format, Level, LogFile, LogFilter, LogIndex,
@@ -273,6 +274,9 @@ pub(crate) struct LogView {
     primary_enabled: bool,
     /// The time order of the shown sources, when there is more than one.
     merge: Option<Merge>,
+    /// What the last source-link click asked for, instead of launching (#1165).
+    #[cfg(test)]
+    last_open: Option<Open>,
     _text_input_events: Subscription,
     _query_input_events: Subscription,
     _filtering: Option<Task<()>>,
@@ -339,6 +343,8 @@ impl LogView {
             extra: Vec::new(),
             primary_enabled: true,
             merge: None,
+            #[cfg(test)]
+            last_open: None,
             _text_input_events: events,
             _query_input_events: query_events,
             _filtering: None,
@@ -651,6 +657,103 @@ impl LogView {
             }
         })
         .detach();
+    }
+
+    /// Opens a source location of the selected record in the chosen editor
+    /// (#1165). A relative path is looked up next to the log first.
+    fn open_location(
+        &mut self,
+        location: &SourceLocation,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let base = self
+            .selected
+            .and_then(|id| self.locate(id))
+            .and_then(|(source, _)| self.source(source))
+            .and_then(|data| data.path().parent().map(Path::to_path_buf))
+            .unwrap_or_default();
+        let path = source_link::resolve(&location.path, &base);
+        let editor = reader_ui_state::log_editor(cx);
+        match source_link::open(&editor, &path, location.line, location.column) {
+            Ok(open) => self.launch(open, window, cx),
+            Err(error) => reader_toast::error(error, window, cx),
+        }
+    }
+
+    #[cfg(test)]
+    fn launch(&mut self, open: Open, _: &mut Window, _: &mut Context<Self>) {
+        self.last_open = Some(open);
+    }
+
+    #[cfg(not(test))]
+    fn launch(&mut self, open: Open, window: &mut Window, cx: &mut Context<Self>) {
+        match open {
+            Open::Url(url) => cx.open_url(&url),
+            Open::Command(words) => {
+                let (program, args) = words.split_first().expect("a non-empty command");
+                if let Err(error) = std::process::Command::new(program)
+                    .args(args)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                {
+                    reader_toast::error(format!("Could not start {program}: {error}"), window, cx);
+                }
+            }
+        }
+    }
+
+    /// `text` with its source locations as links (#1165).
+    fn linked(
+        &self,
+        id: impl Into<ElementId>,
+        text: String,
+        locations: Vec<SourceLocation>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if locations.is_empty() {
+            return text.into_any_element();
+        }
+        let link = brand::palette(cx).link;
+        let highlights = locations
+            .iter()
+            .map(|location| {
+                (
+                    location.span.clone(),
+                    HighlightStyle {
+                        color: Some(link),
+                        underline: Some(UnderlineStyle {
+                            thickness: px(1.),
+                            color: Some(link),
+                            wavy: false,
+                        }),
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        let ranges = locations.iter().map(|l| l.span.clone()).collect();
+        let view = cx.entity().downgrade();
+        let tips = locations.clone();
+        InteractiveText::new(id, StyledText::new(text).with_highlights(highlights))
+            .on_click(ranges, move |ix, window, cx| {
+                cx.stop_propagation();
+                let location = locations[ix].clone();
+                let _ = view.update(cx, |this, cx| this.open_location(&location, window, cx));
+            })
+            .tooltip(move |ix, window, cx| {
+                let location = tips.iter().find(|l| l.span.contains(&ix))?;
+                Some(
+                    gpui_component::tooltip::Tooltip::new(format!(
+                        "Open {}:{} in the editor",
+                        location.path, location.line
+                    ))
+                    .build(window, cx),
+                )
+            })
+            .into_any_element()
     }
 
     fn following(&self) -> bool {
@@ -1596,6 +1699,10 @@ impl LogView {
         let faint = brand::reader_palette(cx).text_faint;
         let record = file.record(index);
         let is_record = record.is_some();
+        let links = record
+            .as_ref()
+            .map(source_link::in_record)
+            .unwrap_or_default();
         let body = match record {
             Some(record) => body.children(
                 detail_rows(&record, entry.timestamp())
@@ -1606,6 +1713,11 @@ impl LogView {
                         let group = SharedString::from(format!("log-field-{position}"));
                         let term = field_term(&field.key, &field.value);
                         let present = self.has_term(&term);
+                        let field_links: Vec<SourceLocation> = links
+                            .iter()
+                            .filter(|found| found.field == position && value == field.value)
+                            .map(|found| found.location.clone())
+                            .collect();
                         let (field_key, field_value) = (field.key.clone(), field.value.clone());
                         h_flex()
                             .group(group.clone())
@@ -1629,7 +1741,12 @@ impl LogView {
                                     .when(kind != ValueKind::String, |value| {
                                         value.font_family(mono.clone()).text_size(px(12.))
                                     })
-                                    .child(value),
+                                    .child(self.linked(
+                                        ("log-field-value", position),
+                                        value,
+                                        field_links,
+                                        cx,
+                                    )),
                             )
                             // A fixed slot, shown on hover, so rows never shift.
                             .child(
@@ -1676,25 +1793,31 @@ impl LogView {
                         (None, format) => format!("Not a {} record", format.label()),
                     },
                 ))
-                .child(
+                .child({
+                    let text = String::from_utf8_lossy(&ansi::strip(raw)).into_owned();
+                    let found = source_link::find(&text);
                     div()
+                        .debug_selector(|| "log-detail-raw".into())
                         .font_family(mono.clone())
                         .text_size(px(12.))
-                        .child(String::from_utf8_lossy(&ansi::strip(raw)).into_owned()),
-                ),
+                        .child(self.linked("log-detail-raw", text, found, cx))
+                }),
         };
         // A record's continuation lines, frame by frame as written; an entry
         // that is no record shows all its lines above.
         let body = body.when_some(
             block::continuation(raw).filter(|_| is_record),
             |body, rest| {
+                let text = String::from_utf8_lossy(&ansi::strip(rest)).into_owned();
+                let found = source_link::find(&text);
                 body.child(
                     div()
                         .id("log-detail-continuation")
+                        .debug_selector(|| "log-detail-frames".into())
                         .pt_2()
                         .font_family(mono)
                         .text_size(px(12.))
-                        .child(String::from_utf8_lossy(&ansi::strip(rest)).into_owned()),
+                        .child(self.linked("log-detail-frames", text, found, cx)),
                 )
             },
         );
@@ -3937,6 +4060,81 @@ mod tests {
         view.read_with(visual, |view, _| {
             assert_eq!(row_text(view.data().unwrap(), 1).lines, 3)
         });
+    }
+
+    /// #1165 acceptance on the sample pack's AddressSanitizer log: the
+    /// frame `order_book.cpp:212:23` is a link in the selected entry, and
+    /// opening it asks the chosen editor for that file, line and column.
+    #[gpui::test]
+    fn asan_frames_open_in_the_chosen_editor(cx: &mut TestAppContext) {
+        let sample = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../okilum-core/tests/fixtures/log/samples/cpp/ordgw_tests-asan.log");
+        let text = std::fs::read_to_string(sample).unwrap();
+        let state = tempfile::tempdir().unwrap();
+        cx.update(|cx| reader_ui_state::install(state.path(), cx));
+        let (_directory, reader, visual) = open_log(&text, cx);
+        let view = log_view(&reader, visual);
+        // The entry holding the frame, whether a record's continuation or a
+        // raw block (#1161).
+        let (id, location) = view.read_with(visual, |view, _| {
+            (0..view.total())
+                .find_map(|id| {
+                    let raw = String::from_utf8_lossy(view.raw_at(id)?).into_owned();
+                    let text = String::from_utf8_lossy(&ansi::strip(raw.as_bytes())).into_owned();
+                    source_link::find(&text)
+                        .into_iter()
+                        .find(|l| l.path.ends_with("order_book.cpp") && l.line == 212)
+                        .map(|location| (id, location))
+                })
+                .expect("the ASan frame is found")
+        });
+        assert_eq!(location.column, Some(23));
+        assert_eq!(location.path, "/src/ordgw/src/md/order_book.cpp");
+        view.update_in(visual, |view, window, cx| view.select(id, true, window, cx));
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        // The detail pane draws the frames as links.
+        assert!(
+            visual.debug_bounds("log-detail-frames").is_some()
+                || visual.debug_bounds("log-detail-raw").is_some(),
+            "the frames are shown"
+        );
+        // Positive control: nothing was opened yet.
+        assert_eq!(
+            view.read_with(visual, |view, _| view.last_open.clone()),
+            None
+        );
+        view.update_in(visual, |view, window, cx| {
+            view.open_location(&location, window, cx)
+        });
+        assert_eq!(
+            view.read_with(visual, |view, _| view.last_open.clone()),
+            Some(Open::Url(
+                "vscode://file/src/ordgw/src/md/order_book.cpp:212:23".into()
+            ))
+        );
+        // A custom command gets the same place, word by word.
+        visual.update(|_, cx| {
+            reader_ui_state::set_log_editor(
+                &source_link::Editor::Custom("myedit --goto {file}:{line}:{col}".into()),
+                cx,
+            )
+        });
+        view.update_in(visual, |view, window, cx| {
+            view.open_location(&location, window, cx)
+        });
+        assert_eq!(
+            view.read_with(visual, |view, _| view.last_open.clone()),
+            Some(Open::Command(
+                [
+                    "myedit",
+                    "--goto",
+                    "/src/ordgw/src/md/order_book.cpp:212:23"
+                ]
+                .map(String::from)
+                .to_vec()
+            ))
+        );
     }
 
     #[gpui::test]
