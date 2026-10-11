@@ -20,8 +20,6 @@ A composition may change no more of the screen than typing `x` at the same spot
 (an edited block is redrawn as Markdown until it is classified again). Light and dark, at 1366 and 700 px wide.
 Positive controls: the candidate window follows the caret (its top on the
 after-bold spot is below the list spot's), and the screen diff sees the preedit.
-Known: #1241 scrolls the column when the quote line is edited on Wayland; the
-screen checks are skipped there (reported as scrolled_1241), the byte checks run.
 Exit 0: all hold; 1: a check failed; 2: the run proves nothing.
 """
 import json, os, shutil, subprocess, sys, time
@@ -214,14 +212,10 @@ def run(theme, width):
                 case['window_under_preedit'] = (window is not None and row is not None
                                                 and -4 <= window[1] - row[3] <= 30
                                                 and row[0] - 4 <= window[0] <= row[2])
-                # #1241: on Wayland, an edit on the quote line under the list scrolls the
-                # whole column. Screen checks are void then; the byte checks still hold.
-                case['scrolled_1241'] = any(b[3] - b[1] > 300 for b in boxes)
                 plain = control.get(spot)
                 case['nothing_else_changed'] = len(boxes) == 1 or (plain is not None and len(boxes) <= plain)
                 results.append(case)
-                screen = () if case['scrolled_1241'] else ('window_under_preedit', 'nothing_else_changed')
-                for key in ('preedit_seen', *screen, 'cancelled_exact', 'committed_once', 'in_spot_line', 'undo_exact'):
+                for key in ('preedit_seen', 'window_under_preedit', 'nothing_else_changed', 'cancelled_exact', 'committed_once', 'in_spot_line', 'undo_exact'):
                     if not case[key]:
                         failed.append(f'{tag}: {key}')
                 if not (case['committed_once'] and case['undo_exact'] and case['cancelled_exact']):
