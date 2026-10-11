@@ -530,6 +530,17 @@ impl Reader {
             .p_8()
             .gap_4()
             .child(div().text_xl().child(name))
+            // A vault without notes yet is new, not broken (#1123).
+            .when(
+                self.vault.notes.is_empty() && self.vault.inventory_scanned,
+                |view| {
+                    view.child(
+                        div()
+                            .debug_selector(|| "reader-empty-vault-new".into())
+                            .child("This folder has no notes yet. Create the first one."),
+                    )
+                },
+            )
             .child(
                 div()
                     .text_color(brand::palette(cx).text_muted)
@@ -653,6 +664,57 @@ mod tests {
             }
             reader.read_with(visual, |this, cx| assert!(this.source_is_dirty(cx)));
         }
+    }
+
+    /// #1123: a folder without notes opens as an empty vault that invites
+    /// the first note, not as a failure with Retry.
+    #[gpui::test]
+    fn an_empty_folder_opens_as_a_new_vault(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("Fresh");
+        std::fs::create_dir_all(&root).unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+            cx.set_global(reader_history::TestSessionDirectory(
+                fixture.path().join("state"),
+            ));
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let entity = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        index_dir: Some(fixture.path().join("index")),
+                        session_directory: Some(fixture.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(entity.clone());
+            Root::new(entity, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        reader.read_with(visual, |v, _| {
+            assert!(v.document_ready(), "the empty vault is published");
+            assert!(v.current_rel.is_empty());
+            let load = v.loading.as_ref().unwrap();
+            assert!(!load.phase.contains("no readable"), "{}", load.phase);
+        });
+        assert!(visual.debug_bounds("reader-empty-vault").is_some());
+        assert!(visual.debug_bounds("reader-empty-vault-new").is_some());
+        // Positive control: a vault with a note does not say it has none.
+        std::fs::write(root.join("First.md"), "# First").unwrap();
+        reader.update_in(visual, |v, window, cx| {
+            v.refresh_inventory(okilum_core::Changes::default(), window, cx)
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |v, _| assert!(!v.vault.notes.is_empty()));
+        assert!(visual.debug_bounds("reader-empty-vault-new").is_none());
     }
 
     #[gpui::test]

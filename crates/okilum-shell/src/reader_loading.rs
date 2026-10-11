@@ -381,7 +381,13 @@ fn prepare_first_with_last_document(
             match hint {
                 Some(note) => Some(note),
                 None if explicitly_empty => Some(String::new()),
-                None => Vault::discover_document(&intent.root, &mut || cancel.check())?,
+                // A folder with no notes opens as an empty vault, inviting
+                // the first note; unreadable Markdown stays a failure (#1123).
+                None => match Vault::discover(&intent.root, &mut || cancel.check())? {
+                    okilum_core::vault::Discovery::Found(rel) => Some(rel),
+                    okilum_core::vault::Discovery::Empty => Some(String::new()),
+                    okilum_core::vault::Discovery::Unreadable => None,
+                },
             }
         }
     };
@@ -2964,6 +2970,9 @@ mod tests {
         });
         let empty = temp.path().join("empty");
         std::fs::create_dir(&empty).unwrap();
+        // A folder whose only note cannot be read is a failed candidate; an
+        // empty folder now opens as a new vault (#1123).
+        std::fs::write(empty.join("bad.md"), [0xff, 0xfe]).unwrap();
         let empty = empty.canonicalize().unwrap();
         let opts = opts_for(&empty);
         let unused_cache = reader_open::cache_path_for(&empty, &opts).unwrap();
@@ -4047,6 +4056,9 @@ mod tests {
         for name in ["a", "b", "empty"] {
             std::fs::create_dir(temp.path().join(name)).unwrap();
         }
+        // A folder whose only note cannot be read is a failed candidate; an
+        // empty folder now opens as a new vault (#1123).
+        std::fs::write(temp.path().join("empty/bad.md"), [0xff, 0xfe]).unwrap();
         std::fs::write(
             temp.path().join("a/shared.md"),
             format!(
@@ -6568,6 +6580,9 @@ mod tests {
         });
         assert_eq!(source_manifest(&root), before);
         std::fs::create_dir_all(fixture.join("empty")).unwrap();
+        // A folder whose only note cannot be read is a failed candidate; an
+        // empty folder now opens as a new vault (#1123).
+        std::fs::write(fixture.join("empty/bad.md"), [0xff, 0xfe]).unwrap();
         reader.update_in(visual, |v, window, cx| {
             v.start_loading(
                 Opts {
