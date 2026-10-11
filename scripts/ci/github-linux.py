@@ -25,7 +25,7 @@ def main():
         api = transport.GitHub(token)
         transport.push_head(branch, sha, token)
         result, message = transport.wait_for_run(api, branch, sha, workflow=WORKFLOW,
-            job_name='linux', build_step=BUILD_STEP, queue_timeout=900, run_timeout=3600)
+            job_name='linux', build_step=BUILD_STEP, queue_timeout=900, run_timeout=5400)
         print(message)
     except transport.Unavailable as error:
         print(f'Hosted Linux unavailable; no fallback success: {error}')

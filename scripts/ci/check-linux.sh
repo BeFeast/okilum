@@ -19,3 +19,5 @@ python3 scripts/test-maintenance-matrix.py
 cargo test -p okilum-core -p okilum-shell -p okilum-sync
 cargo check -p okilum-shell --no-default-features
 cargo test -p okilum-core --no-default-features --test portable_reader
+# Vendored gpui-kit tests when the patch stack changes (otherwise a skip line).
+bash scripts/ci/vendor-tests.sh

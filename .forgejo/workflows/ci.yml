@@ -65,7 +65,8 @@ jobs:
       (vars.OKILUM_LINUX_LANE != 'hosted' &&
        vars.OKILUM_LINUX_LANE != format('pr-{0}', github.event.pull_request.number))
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Vendored gpui-kit tests (vendor-tests.sh) add ~25 min when the patch stack changes.
+    timeout-minutes: 80
     # Shared sccache on the LAN S3 backend (private runner operations runbook,
     # "CI pool expansion 2026-10-04"). The secrets are BeFeast org secrets; when
     # they are absent (fork PRs) the build simply runs without the wrapper.
@@ -161,7 +162,8 @@ jobs:
        vars.OKILUM_LINUX_LANE == format('pr-{0}', github.event.pull_request.number)) &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: bridge
-    timeout-minutes: 80
+    # Must exceed github-linux.py queue_timeout + run_timeout (15 + 90 min).
+    timeout-minutes: 110
     outputs:
       result: ${{ steps.remote.outputs.result }}
     steps:
