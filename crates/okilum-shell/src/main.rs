@@ -8339,6 +8339,148 @@ mod document_link_landing_tests {
     }
 
     #[gpui::test]
+    fn hover_and_navigation_agree_in_a_vault_with_a_non_utf8_note_also_on_a_warm_start(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        // #1188: in a vault with one CP1251 note the hover said «Link unavailable.» while the
+        // click opened the other note. The hover reads the prepared state of the link and the
+        // tooltip reads the presentation state, so both are checked, on the note opened first and
+        // on the one the click lands on, on a cold start and again on the warm start that follows.
+        use okilum_core::document_links::prepared::LinkStatus;
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        // The shape of the vault of the report: front matter everywhere, a note per folder entry
+        // linking both Alpha and Beta, so each of them is linked from thousands of places.
+        let note = |body: &str| format!("---\ntype: Note\n---\n# {body}\n");
+        std::fs::write(root.join("Alpha.md"), note("Alpha\n\n[[Beta]]")).unwrap();
+        std::fs::write(root.join("Beta.md"), note("Beta\n\n[[Alpha]]")).unwrap();
+        std::fs::write(
+            root.join("_index.md"),
+            note("Gate home\n\n[[Alpha]] [[Beta]]"),
+        )
+        .unwrap();
+        for ix in 0..300 {
+            let folder = root.join("Notes").join(format!("Group {:02}", ix / 100));
+            std::fs::create_dir_all(&folder).unwrap();
+            std::fs::write(
+                folder.join(format!("Note {ix:04}.md")),
+                note(&format!(
+                    "Note {ix:04}\n\nMeeting {ix}. [[Alpha]] [[Beta]]\n\nMeeting content."
+                )),
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            root.join("Non-UTF8.md"),
+            [
+                &b"# Legacy\n\n"[..],
+                &[0xCF, 0xF0, 0xE8, 0xE2, 0xE5, 0xF2, 0x0A],
+            ]
+            .concat(),
+        )
+        .unwrap();
+        for launch in ["cold", "warm"] {
+            let mut reader = None;
+            let (window, visual) = cx.add_window_view(|window, cx| {
+                let view = cx.new(|cx| {
+                    Reader::new(
+                        Opts {
+                            vault: Some(root.clone()),
+                            note: Some("Alpha.md".into()),
+                            index_dir: Some(fixture.path().join("index")),
+                            session_directory: Some(fixture.path().join("state")),
+                            ..Opts::default()
+                        },
+                        window,
+                        cx,
+                    )
+                });
+                reader = Some(view.clone());
+                Root::new(view, window, cx)
+            });
+            let _ = window;
+            let view = reader.unwrap();
+            visual.run_until_parked();
+            view.read_with(visual, |v, _| {
+                assert_eq!(v.vault.unreadable.len(), 1, "{launch}: one item unreadable");
+                let link = v
+                    .link_identities
+                    .iter()
+                    .find(|link| link.target == "Beta")
+                    .unwrap_or_else(|| panic!("{launch}: the link is prepared"));
+                let state = v
+                    .prepared_links
+                    .get(&link.url)
+                    .unwrap_or_else(|| panic!("{launch}: no state for the link"));
+                assert_eq!(
+                    (state.status, state.reason.as_str()),
+                    (LinkStatus::Resolved, "Open document"),
+                    "{launch}: the state the hover reads"
+                );
+                assert!(
+                    reader_hover::resolved_target(&link.url, &v.prepared_links, &v.current_rel)
+                        .is_some(),
+                    "{launch}: the hover has a note to preview"
+                );
+            });
+            // The tooltip is painted from the presentation states, the click reads the
+            // prepared ones: both must agree, on the note the click lands on as well.
+            let first = view.read_with(visual, |v, _| {
+                let link = v
+                    .link_identities
+                    .iter()
+                    .find(|l| l.target == "Beta")
+                    .unwrap();
+                let shown = v.link_presentations.get(&link.url);
+                assert_eq!(
+                    shown.map(|s| (s.status, s.reason.clone())),
+                    Some((LinkStatus::Resolved, "Open document".into())),
+                    "{launch}: the tooltip state in Alpha"
+                );
+                link.url.clone()
+            });
+            let entity = view.downgrade();
+            visual.update(|window, cx| {
+                reader_link_navigation::handle_link(&entity, &first, window, cx)
+            });
+            visual.run_until_parked();
+            view.read_with(visual, |v, _| {
+                assert_eq!(v.current_rel, "Beta.md", "{launch}: the click opened Beta");
+                let link = v
+                    .link_identities
+                    .iter()
+                    .find(|l| l.target == "Alpha")
+                    .unwrap_or_else(|| panic!("{launch}: Beta's link is prepared"));
+                for (name, states) in [
+                    ("tooltip", &v.link_presentations),
+                    ("click", &v.prepared_links),
+                ] {
+                    let state = states
+                        .get(&link.url)
+                        .unwrap_or_else(|| panic!("{launch}: no {name} state in Beta"));
+                    assert_eq!(
+                        (state.status, state.reason.as_str()),
+                        (LinkStatus::Resolved, "Open document"),
+                        "{launch}: the {name} state in Beta"
+                    );
+                }
+                assert!(
+                    reader_hover::resolved_target(&link.url, &v.prepared_links, &v.current_rel)
+                        .is_some(),
+                    "{launch}: Beta's hover has a note to preview"
+                );
+            });
+            visual.update(|window, _| window.remove_window());
+            visual.run_until_parked();
+        }
+    }
+
+    #[gpui::test]
     fn empty_sidebar_sections_show_no_zero_count(cx: &mut gpui::TestAppContext) {
         use reader_sidebar::Section;
         cx.update(|cx| {
