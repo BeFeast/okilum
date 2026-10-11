@@ -365,6 +365,23 @@ mod tests {
                 "positive control: a paragraph"
             );
         });
+        // #943: over a link inside the heading, only the link's menu opens.
+        reader.update_in(visual, |v, _, cx| {
+            v.pointer_link = Some((
+                "okilum://open/Other.md".into(),
+                v.navigation.preparation_generation,
+            ));
+            assert_eq!(
+                v.heading_at(heading, cx),
+                None,
+                "a link claims the right-click"
+            );
+            v.pointer_link = None;
+            assert!(
+                v.heading_at(heading, cx).is_some(),
+                "positive control: off the link"
+            );
+        });
         reader.update_in(visual, |v, window, cx| {
             v.copy_heading_link("Next steps & risks".into(), window, cx);
             let link = cx.read_from_clipboard().unwrap().text().unwrap();
