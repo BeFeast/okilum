@@ -896,13 +896,17 @@ mod tests {
     ];
 
     /// Production code only: drop each `#[cfg(test)] mod … { … }` block, which
-    /// may sit anywhere in a file. Braces inside string and char literals are
-    /// skipped so `format!("{x}")` does not unbalance the match.
+    /// may sit anywhere in a file. Braces inside string, raw string and char
+    /// literals are skipped so `format!("{x}")` or `r#"{"a":1}"#` does not
+    /// unbalance the match.
     fn strip_test_modules(text: &str) -> String {
         let bytes = text.as_bytes();
         let mut out = String::new();
         let mut start = 0;
-        while let Some(found) = text[start..].find("#[cfg(test)]\nmod ") {
+        while let Some(found) = text
+            .get(start..)
+            .and_then(|rest| rest.find("#[cfg(test)]\nmod "))
+        {
             let module = start + found;
             out.push_str(&text[start..module]);
             let Some(open) = text[module..].find('{').map(|i| module + i) else {
@@ -911,6 +915,22 @@ mod tests {
             let (mut depth, mut at) = (0usize, open);
             while at < bytes.len() {
                 match bytes[at] {
+                    // r"…", r#"…"#: no escapes; ends at a quote and as many #.
+                    b'r' if at == 0
+                        || !(bytes[at - 1].is_ascii_alphanumeric() || bytes[at - 1] == b'_') =>
+                    {
+                        let hashes = bytes[at + 1..].iter().take_while(|&&b| b == b'#').count();
+                        if bytes.get(at + 1 + hashes) == Some(&b'"') {
+                            let close: Vec<u8> = std::iter::once(b'"')
+                                .chain(std::iter::repeat_n(b'#', hashes))
+                                .collect();
+                            let body = at + 2 + hashes;
+                            at = bytes[body..]
+                                .windows(close.len())
+                                .position(|w| w == close.as_slice())
+                                .map_or(bytes.len(), |i| body + i + close.len() - 1);
+                        }
+                    }
                     b'"' => {
                         at += 1;
                         while at < bytes.len() && bytes[at] != b'"' {
@@ -933,6 +953,17 @@ mod tests {
         }
         out.push_str(&text[start.min(text.len())..]);
         out
+    }
+
+    #[test]
+    fn strip_test_modules_skips_braces_and_quotes_in_raw_strings() {
+        let text = "a dirs::x\n#[cfg(test)]\nmod tests {\n const J: &str = r#\"{\"z\":1,\"a\":{}}\"#;\n const R: &str = r\"}\";\n fn f() { dirs::y }\n}\nb dirs::z\n";
+        let production = strip_test_modules(text);
+        assert_eq!(production.matches("dirs::").count(), 2, "{production}");
+        assert!(production.contains("b dirs::z"), "{production}");
+        // An unterminated module at the end must not slice out of bounds.
+        let open = "x\n#[cfg(test)]\nmod t { r#\"";
+        assert_eq!(strip_test_modules(open), "x\n");
     }
 
     #[test]

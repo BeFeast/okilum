@@ -72,6 +72,7 @@ pub use search::{SearchHit, Searcher};
 pub use vault::{Backlink, Note, Resolution, Vault};
 pub use watch::{Changes, VaultWatcher};
 
+pub mod json_view;
 pub mod recycle_bin;
 #[cfg(windows)]
 pub mod windows_files;

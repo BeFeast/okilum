@@ -734,6 +734,86 @@ mod tests {
     use ::core::prelude::v1::test;
 
     #[gpui::test]
+    fn json_files_show_pretty_or_raw_without_touching_the_file(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("note.md"), "# Note\n").unwrap();
+        let raw = r#"{"key":"ABC-1","fields":{"labels":["a","b"],"empty":{}}}"#;
+        std::fs::write(root.join("ticket.json"), raw).unwrap();
+        std::fs::write(root.join("broken.json"), "{\n  \"a\": 1,\n}").unwrap();
+        std::fs::write(root.join("tool.py"), "print(1)\n").unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let entity = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("note.md".into()),
+                        index_dir: Some(fixture.path().join("index")),
+                        session_directory: Some(fixture.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(entity.clone());
+            Root::new(entity, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        let shown = |visual: &mut VisualTestContext| {
+            reader.update_in(visual, |r, _, cx| {
+                r.code_view_input(cx)
+                    .expect("code view loaded")
+                    .read(cx)
+                    .value()
+                    .to_string()
+            })
+        };
+        let open = |visual: &mut VisualTestContext, rel: &'static str| {
+            reader.update_in(visual, |r, window, cx| r.preview_file(rel, window, cx));
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+        };
+
+        // Pretty by default: indented, keys in file order.
+        open(visual, "ticket.json");
+        let pretty = okilum_core::json_view::pretty(raw).unwrap();
+        assert_eq!(shown(visual), pretty);
+        assert!(shown(visual).starts_with("{\n  \"key\": \"ABC-1\",\n  \"fields\": {"));
+        // Raw shows the original line.
+        let raw_button = visual.debug_bounds("json-raw").expect("Raw button");
+        visual.simulate_click(raw_button.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(shown(visual), raw);
+        let pretty_button = visual.debug_bounds("json-pretty").expect("Pretty button");
+        visual.simulate_click(pretty_button.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(shown(visual), pretty);
+        // Viewing never writes.
+        assert_eq!(
+            std::fs::read_to_string(root.join("ticket.json")).unwrap(),
+            raw
+        );
+
+        // Invalid JSON stays raw and says where.
+        open(visual, "broken.json");
+        assert_eq!(shown(visual), "{\n  \"a\": 1,\n}");
+        assert!(visual.debug_bounds("json-note").is_some());
+
+        // Positive control: other code files get no Pretty/Raw switch.
+        open(visual, "tool.py");
+        assert_eq!(shown(visual), "print(1)\n");
+        assert!(visual.debug_bounds("json-raw").is_none());
+    }
+
+    #[gpui::test]
     fn code_file_view_is_read_only_finds_and_edits_within_the_cap(cx: &mut TestAppContext) {
         let fixture = tempfile::tempdir().unwrap();
         let root = fixture.path().join("vault");
