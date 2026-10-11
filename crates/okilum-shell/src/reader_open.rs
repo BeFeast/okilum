@@ -1277,7 +1277,7 @@ impl Render for LinkVaultChoice {
                 .child(
                     v_flex()
                         .min_w_0()
-                        .child(okilum_core::vault::display_path(&root))
+                        .child(okilum_core::vault::display_path(root))
                         .when(opts.is_none(), |row| {
                             row.child(
                                 div()
