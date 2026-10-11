@@ -13,6 +13,7 @@ use okilum_core::log::correlation;
 use okilum_core::log::histogram::Histogram;
 use okilum_core::log::merge::MergedLog;
 use okilum_core::log::query::{Expr, FieldRef, Literal, Test};
+use okilum_core::log::saved_query::SavedQuery;
 use okilum_core::log::source_link::{self, Open, SourceLocation};
 use okilum_core::log::tail::{ResetReason, TailEvent};
 use okilum_core::log::{
@@ -163,6 +164,13 @@ enum Snapshot {
     File(Arc<LogFile>),
     Segment(Arc<Segment>),
     Owned { index: LogIndex, bytes: Vec<u8> },
+}
+
+/// The name being typed to save the shown filter (#1169).
+struct SavingFilter {
+    input: Entity<InputState>,
+    error: Option<String>,
+    _subscription: Subscription,
 }
 
 /// The index of a source for a background count, without its bytes.
@@ -332,6 +340,8 @@ pub(crate) struct LogView {
     _histogram: Option<Task<()>>,
     /// A count that waits for the next second of a followed log.
     _histogram_wait: Option<Task<()>>,
+    /// Naming the shown filter to save it (#1169).
+    saving: Option<SavingFilter>,
     /// What the last source-link click asked for, instead of launching (#1165).
     #[cfg(test)]
     last_open: Option<Open>,
@@ -409,6 +419,7 @@ impl LogView {
             histogram_press: None,
             _histogram: None,
             _histogram_wait: None,
+            saving: None,
             #[cfg(test)]
             last_open: None,
             _text_input_events: events,
@@ -2576,6 +2587,7 @@ impl LogView {
                     .on_click(cx.listener(|this, _, window, cx| this.request_back(window, cx)))
             }))
             .children(history)
+            .child(self.saved_button(cx))
             .child(self.columns_button(cx))
             .child(self.files_button(cx))
             // A compressed log does not grow (#1164).
@@ -2593,6 +2605,265 @@ impl LogView {
                     .when(!self.filter.is_active(), |button| button.invisible())
                     .on_click(cx.listener(|this, _, window, cx| this.clear_filters(window, cx))),
             )
+            .into_any_element()
+    }
+
+    /// Starts naming the shown filter to save it (#1169).
+    fn begin_saving(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Name this filter"));
+        let subscription =
+            cx.subscribe_in(&input, window, |this, _, event, window, cx| match event {
+                InputEvent::PressEnter { .. } => this.commit_saving(window, cx),
+                InputEvent::Change => {
+                    if let Some(saving) = this.saving.as_mut() {
+                        saving.error = None;
+                        cx.notify();
+                    }
+                }
+                _ => {}
+            });
+        input.update(cx, |input, cx| input.focus(window, cx));
+        self.saving = Some(SavingFilter {
+            input,
+            error: None,
+            _subscription: subscription,
+        });
+        cx.notify();
+    }
+
+    /// Escape closes the name row; `false` when it was not open.
+    pub(crate) fn dismiss_saving(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let open = self.saving.is_some();
+        self.cancel_saving(window, cx);
+        open
+    }
+
+    fn cancel_saving(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.saving.take().is_some() {
+            self.focus.focus(window, cx);
+            cx.notify();
+        }
+    }
+
+    /// Saves the shown filter under the typed name, for every log. A time
+    /// range from the histogram is not saved, and the toast says so.
+    fn commit_saving(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(saving) = self.saving.as_ref() else {
+            return;
+        };
+        let name = saving.input.read(cx).value().to_string();
+        let fail = |this: &mut Self, message: String, cx: &mut Context<Self>| {
+            if let Some(saving) = this.saving.as_mut() {
+                saving.error = Some(message);
+            }
+            cx.notify();
+        };
+        let query = match SavedQuery::capture(&name, &self.filter) {
+            Ok(query) => query,
+            Err(error) => return fail(self, error.to_string(), cx),
+        };
+        if !reader_ui_state::installed(cx) {
+            return fail(
+                self,
+                "Saved filters need the app's settings file".into(),
+                cx,
+            );
+        }
+        let replaced = reader_ui_state::saved_log_filters(cx)
+            .get(&query.name)
+            .is_some();
+        let name = query.name.clone();
+        if !reader_ui_state::save_log_filter(query, cx) {
+            return fail(
+                self,
+                format!(
+                    "At most {} filters can be saved; delete one first",
+                    okilum_core::log::saved_query::MAX_QUERIES
+                ),
+                cx,
+            );
+        }
+        let mut note = format!("Saved “{name}”");
+        if replaced {
+            note.push_str(", replacing the one of that name");
+        }
+        if matches!(self.filter.time, TimeWindow::Range { .. }) {
+            note.push_str("; the selected time range is not saved");
+        }
+        if self.query_error.is_some() {
+            note.push_str("; the query field has an error, the last valid query was saved");
+        }
+        self.saving = None;
+        self.focus.focus(window, cx);
+        reader_toast::transient(note, window, cx);
+        cx.notify();
+    }
+
+    /// Makes a saved filter the shown one: its text, query, levels, time and
+    /// chips replace the current ones. A query this version cannot read is
+    /// reported, not guessed at.
+    fn apply_saved(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(saved) = reader_ui_state::saved_log_filters(cx).get(name).cloned() else {
+            return;
+        };
+        let filter = match saved.to_filter() {
+            Ok(filter) => filter,
+            Err(error) => {
+                reader_toast::error(
+                    format!(
+                        "“{}” cannot be applied: its query does not parse ({})",
+                        saved.name, error.message
+                    ),
+                    window,
+                    cx,
+                );
+                return;
+            }
+        };
+        self.request_back = None;
+        let query_text = filter
+            .query
+            .as_ref()
+            .map(|query| query.to_string())
+            .unwrap_or_default();
+        self.text_input.update(cx, |input, cx| {
+            input.set_value(filter.text.clone(), window, cx)
+        });
+        self.query_input.update(cx, |input, cx| {
+            input.set_value(query_text.clone(), window, cx)
+        });
+        self.query_text = query_text;
+        self.query_error = None;
+        self.update_filter(|current| *current = filter, cx);
+        self.remember_query(cx);
+        cx.notify();
+    }
+
+    fn render_saving(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let saving = self.saving.as_ref()?;
+        let palette = brand::palette(cx);
+        let muted = cx.theme().muted_foreground;
+        Some(
+            h_flex()
+                .id("log-saving")
+                .debug_selector(|| "log-saving".into())
+                .flex_none()
+                .h(px(BAR_HEIGHT))
+                .px_3()
+                .gap_2()
+                .border_b_1()
+                .border_color(palette.border_subtle)
+                .key_context("LogSaving")
+                .child(
+                    div()
+                        .flex_none()
+                        .text_size(px(12.))
+                        .text_color(muted)
+                        .child("Save the shown filter for every log as"),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .w(px(260.))
+                        .h(px(BAR_CONTROL_HEIGHT))
+                        .flex()
+                        .items_center()
+                        .rounded(px(6.))
+                        .bg(palette.surface_raised)
+                        .debug_selector(|| "log-saving-name".into())
+                        .child(Input::new(&saving.input).appearance(false).small()),
+                )
+                .child(
+                    Button::new("log-saving-save")
+                        .primary()
+                        .small()
+                        .label("Save")
+                        .debug_selector(|| "log-saving-save".into())
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.commit_saving(window, cx)),
+                        ),
+                )
+                .child(
+                    Button::new("log-saving-cancel")
+                        .ghost()
+                        .small()
+                        .label("Cancel")
+                        .debug_selector(|| "log-saving-cancel".into())
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.cancel_saving(window, cx)),
+                        ),
+                )
+                .children(saving.error.clone().map(|message| {
+                    div()
+                        .id("log-saving-error")
+                        .debug_selector(|| "log-saving-error".into())
+                        .truncate()
+                        .text_size(px(12.))
+                        .text_color(palette.danger)
+                        .child(message)
+                }))
+                .into_any_element(),
+        )
+    }
+
+    /// The saved filters: apply one, save the shown filter, delete one.
+    fn saved_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
+        let view = cx.entity().downgrade();
+        let names: Vec<String> = reader_ui_state::saved_log_filters(cx)
+            .sorted()
+            .iter()
+            .map(|query| query.name.clone())
+            .collect();
+        let can_save = self.filter.is_active();
+        bar_button("log-saved", false)
+            .icon(IconName::Star)
+            .tooltip("Saved filters")
+            .debug_selector(|| "log-saved".into())
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, window, cx| {
+                let mut menu = menu;
+                for name in &names {
+                    let (view, name) = (view.clone(), name.clone());
+                    menu = menu.item(PopupMenuItem::new(name.clone()).on_click(
+                        move |_, window, cx| {
+                            let _ = view.update(cx, |this, cx| this.apply_saved(&name, window, cx));
+                        },
+                    ));
+                }
+                if names.is_empty() {
+                    menu = menu.item(PopupMenuItem::new("No saved filters yet").disabled(true));
+                }
+                let save_view = view.clone();
+                menu = menu.separator().item(
+                    PopupMenuItem::new("Save the shown filter…")
+                        .disabled(!can_save)
+                        .on_click(move |_, window, cx| {
+                            let _ = save_view.update(cx, |this, cx| this.begin_saving(window, cx));
+                        }),
+                );
+                if !names.is_empty() {
+                    let (view, names) = (view.clone(), names.clone());
+                    menu = menu.submenu("Delete", window, cx, move |menu, _, _| {
+                        let mut menu = menu;
+                        for name in &names {
+                            let (view, name) = (view.clone(), name.clone());
+                            menu = menu.item(PopupMenuItem::new(name.clone()).on_click(
+                                move |_, window, cx| {
+                                    reader_ui_state::delete_log_filter(&name, cx);
+                                    reader_toast::transient(
+                                        format!("Deleted “{name}”"),
+                                        window,
+                                        cx,
+                                    );
+                                    let _ = view.update(cx, |_, cx| cx.notify());
+                                },
+                            ));
+                        }
+                        menu
+                    });
+                }
+                menu
+            })
             .into_any_element()
     }
 
@@ -2986,6 +3257,7 @@ impl Render for LogView {
             .when(has_entries || self.follow.is_some(), |view| {
                 view.child(self.render_filter_bar(cx))
             })
+            .children(self.render_saving(cx))
             .children(self.render_histogram(cx))
             .children(self.render_reset(cx))
             .child(reader_split::vertical(
@@ -5443,6 +5715,137 @@ mod tests {
                 "a range never asks for a full run when records arrive"
             );
         });
+    }
+
+    /// #1169 acceptance: a filter saved on one log (name, query, levels) is
+    /// listed for every log and applies to another file; a name is required,
+    /// Enter saves and Escape cancels, and a saved query this version cannot
+    /// read is reported without changing the rows.
+    #[gpui::test]
+    fn a_saved_filter_applies_to_another_log(cx: &mut TestAppContext) {
+        let first = concat!(
+            r#"{"level":"info","msg":"boot","status":200}"#,
+            "\n",
+            r#"{"level":"warn","msg":"slow","status":200}"#,
+            "\n",
+            r#"{"level":"error","msg":"upstream","status":503}"#,
+            "\n",
+            r#"{"level":"error","msg":"bad gateway","status":502}"#,
+            "\n",
+        );
+        let second = concat!(
+            r#"{"level":"info","msg":"ok","status":500}"#,
+            "\n",
+            r#"{"level":"warn","msg":"slow","status":504}"#,
+            "\n",
+            r#"{"level":"error","msg":"missing","status":404}"#,
+            "\n",
+            r#"{"level":"error","msg":"down","status":500}"#,
+            "\n",
+            r#"{"level":"fatal","msg":"no status"}"#,
+            "\n",
+        );
+        let state = tempfile::tempdir().unwrap();
+        cx.update(|cx| reader_ui_state::install(state.path(), cx));
+        let query = "level>=warn and status>=500";
+        {
+            let (_directory, reader, visual) = open_log(first, cx);
+            let view = log_view(&reader, visual);
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            assert!(
+                visual.debug_bounds("log-saved").is_some(),
+                "the Saved button"
+            );
+            view.update_in(visual, |view, window, cx| {
+                view.query_input
+                    .update(cx, |input, cx| input.set_value(query, window, cx));
+                view.set_query(query.into(), cx);
+            });
+            visual.run_until_parked();
+            assert_eq!(shown(&view, visual), [2, 3], "positive control");
+            // The level menu's choice is part of what is saved, too.
+            view.update(visual, |view, cx| {
+                view.update_filter(|filter| filter.level.min = Some(Level::Warn), cx)
+            });
+            visual.run_until_parked();
+            assert_eq!(shown(&view, visual), [2, 3]);
+
+            // A name is required; the row stays open and says why.
+            view.update_in(visual, |view, window, cx| view.begin_saving(window, cx));
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            assert!(visual.debug_bounds("log-saving-name").is_some());
+            view.update_in(visual, |view, window, cx| view.commit_saving(window, cx));
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            assert!(visual.debug_bounds("log-saving-error").is_some());
+            assert!(visual.update(|_, cx| reader_ui_state::saved_log_filters(cx).is_empty()));
+
+            // Escape cancels.
+            visual.simulate_keystrokes("escape");
+            visual.run_until_parked();
+            view.read_with(visual, |view, _| {
+                assert!(view.saving.is_none(), "cancelled")
+            });
+
+            // Enter saves under the typed name.
+            view.update_in(visual, |view, window, cx| {
+                view.begin_saving(window, cx);
+                let input = view.saving.as_ref().unwrap().input.clone();
+                input.update(cx, |input, cx| input.set_value("Server errors", window, cx));
+            });
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            visual.simulate_keystrokes("enter");
+            visual.run_until_parked();
+            view.read_with(visual, |view, _| assert!(view.saving.is_none(), "saved"));
+            let saved = visual.update(|_, cx| reader_ui_state::saved_log_filters(cx));
+            let saved = saved
+                .get("server errors")
+                .expect("saved under the typed name");
+            assert_eq!(saved.min_level, "warn");
+            assert_eq!(saved.name, "Server errors");
+        }
+        // Another log: the filter is listed there and applies to its rows.
+        let (_directory, reader, visual) = open_named("other.jsonl", second.as_bytes(), cx);
+        let view = log_view(&reader, visual);
+        assert_eq!(shown(&view, visual), [0, 1, 2, 3, 4], "positive control");
+        view.update_in(visual, |view, window, cx| {
+            view.apply_saved("Server errors", window, cx)
+        });
+        visual.run_until_parked();
+        assert_eq!(shown(&view, visual), [1, 3]);
+        assert_eq!(counter(&view, visual).as_deref(), Some("2 of 5"));
+        // The query shows in its canonical spelling, in its field too.
+        let canonical = Query::parse(query).unwrap().to_string();
+        view.read_with(visual, |view, cx| {
+            assert_eq!(view.query_text, canonical);
+            assert_eq!(view.query_input.read(cx).value().as_ref(), canonical);
+            assert_eq!(view.filter.level.min, Some(Level::Warn));
+        });
+
+        // A saved query this version cannot read: reported, rows unchanged.
+        visual.update(|_, cx| {
+            let broken = SavedQuery {
+                name: "Broken".into(),
+                query: "status >=".into(),
+                ..Default::default()
+            };
+            assert!(reader_ui_state::save_log_filter(broken, cx));
+        });
+        view.update_in(visual, |view, window, cx| {
+            view.apply_saved("Broken", window, cx)
+        });
+        visual.run_until_parked();
+        assert_eq!(shown(&view, visual), [1, 3], "unchanged");
+
+        // Deleted filters are gone for every log.
+        visual.update(|_, cx| reader_ui_state::delete_log_filter("server  ERRORS", cx));
+        let left: Vec<String> = visual.update(|_, cx| {
+            reader_ui_state::saved_log_filters(cx)
+                .sorted()
+                .iter()
+                .map(|query| query.name.clone())
+                .collect()
+        });
+        assert_eq!(left, ["Broken"]);
     }
 
     #[gpui::test]

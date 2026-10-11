@@ -387,6 +387,7 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("up", PalettePrevious, Some("Reader > QuickOpen > Input")),
         KeyBinding::new("escape", Dismiss, Some("Reader > QuickOpen > Input")),
         KeyBinding::new("escape", Dismiss, Some("InlineCreate > Input")),
+        KeyBinding::new("escape", Dismiss, Some("LogSaving > Input")),
         #[cfg(any(unix, windows))]
         KeyBinding::new("escape", Dismiss, Some("InlineRename > Input")),
         #[cfg(any(unix, windows))]
@@ -2376,6 +2377,13 @@ impl Reader {
         #[cfg(any(unix, windows))]
         if self.creation.is_some() {
             self.cancel_creation(window, cx);
+            return;
+        }
+        let log = self
+            .file_preview
+            .as_ref()
+            .and_then(|preview| preview.log.clone());
+        if log.is_some_and(|log| log.update(cx, |log, cx| log.dismiss_saving(window, cx))) {
             return;
         }
         if self.hover_preview.is_active() {
