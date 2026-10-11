@@ -3146,6 +3146,95 @@ mod tests {
     }
 
     #[gpui::test]
+    fn command_click_hands_an_external_link_to_the_system_in_both_editor_modes(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let directory =
+            std::env::temp_dir().join(format!("okilum-external-link-{}", uuid::Uuid::new_v4()));
+        let root = directory.join("notes");
+        std::fs::create_dir_all(&root).unwrap();
+        let url = "https://example.com/okilum-1237?q=a&b=c";
+        let original = format!("Plain words, then [the external site]({url}) and more.\n");
+        std::fs::write(root.join("start.md"), &original).unwrap();
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        open_path: Some(root.join("start.md")),
+                        index_dir: Some(directory.join("index")),
+                        session_directory: Some(directory.join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        for live in [false, true] {
+            reader.update_in(visual, |reader, window, cx| {
+                if live {
+                    reader.open_live_preview(window, cx);
+                } else {
+                    reader.toggle_source(window, cx);
+                }
+            });
+            visual.run_until_parked();
+            let input = reader.read_with(visual, |reader, _| {
+                reader.editing.as_ref().unwrap().input.clone()
+            });
+            let offset = original.find("external site").unwrap();
+            let position = input.read_with(visual, |input, _| {
+                input
+                    .range_to_bounds(&(offset..offset + 1))
+                    .unwrap()
+                    .center()
+            });
+            // A plain click places the caret; it never leaves the app.
+            let before = visual.opened_url();
+            visual.simulate_click(position, gpui::Modifiers::default());
+            visual.run_until_parked();
+            assert_eq!(
+                visual.opened_url(),
+                before,
+                "plain click, live preview: {live}"
+            );
+            visual.simulate_click(
+                position,
+                gpui::Modifiers {
+                    platform: true,
+                    ..Default::default()
+                },
+            );
+            visual.run_until_parked();
+            assert_eq!(
+                visual.opened_url().as_deref(),
+                Some(url),
+                "live preview: {live}"
+            );
+            reader.read_with(visual, |reader, _| {
+                assert_eq!(reader.current_rel, "start.md")
+            });
+            assert_eq!(
+                std::fs::read_to_string(root.join("start.md")).unwrap(),
+                original
+            );
+            // Reset the recorded URL for the next pass.
+            visual.update(|_, cx| cx.open_url(""));
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[gpui::test]
     fn command_click_opens_a_link_inside_a_hebrew_paragraph_in_both_editor_modes(
         cx: &mut TestAppContext,
     ) {
