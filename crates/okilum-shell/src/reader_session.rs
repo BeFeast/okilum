@@ -186,7 +186,7 @@ impl Reader {
             self.reminder_tick(cx);
         }
         self.backlink_titles = published.titles.clone();
-        self.set_backlinks(self.vault.backlinks(&self.current_rel));
+        self.set_backlinks(self.vault.backlinks(&self.current_rel), true);
         self.quick_open.inventory = Some(Arc::new(self.vault.notes.clone()));
         self.sync_tree();
         reader_drawing::invalidate(&self.vault_root, cx);

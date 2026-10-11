@@ -2109,7 +2109,7 @@ impl Reader {
         self.record_usable_document(cx);
         self.refresh_link_preparation(cx);
         self.current_title = self.note_label(rel);
-        self.set_backlinks(self.vault.backlinks(rel));
+        self.set_backlinks(self.vault.backlinks(rel), true);
         window.set_window_title(&format!("Okilum — {}", self.current_title));
         if request.history_index.is_none()
             && (heading.is_some()
@@ -2701,7 +2701,11 @@ impl Reader {
 
     /// Replace the notes that link here. The groups (one card each) and the list that shows
     /// them are rebuilt together, so the list can never count cards that are not there (#1135).
-    fn set_backlinks(&mut self, backlinks: Vec<Backlink>) {
+    ///
+    /// A background refresh that finds the same notes linking here (an unrelated file was edited,
+    /// the inventory was reconciled) keeps the scroll position and only measures the cards
+    /// again; opening another note (`new_note`) or a changed set starts from the top.
+    fn set_backlinks(&mut self, backlinks: Vec<Backlink>, new_note: bool) {
         let mut groups: Vec<std::ops::Range<usize>> = Vec::new();
         for (ix, b) in backlinks.iter().enumerate() {
             match groups.last_mut() {
@@ -2709,11 +2713,20 @@ impl Reader {
                 _ => groups.push(ix..ix + 1),
             }
         }
+        let same_cards = !new_note
+            && groups.len() == self.backlink_groups.len()
+            && groups.iter().zip(&self.backlink_groups).all(|(new, old)| {
+                new.len() == old.len() && backlinks[new.start].path == self.backlinks[old.start].path
+            });
         self.backlinks = backlinks;
-        // About one source note with a place or two: a first estimate for the scroll extent;
-        // the real height replaces it once a card has been in view.
-        self.backlinks_list
-            .reset_with_uniform_height(groups.len(), px(58.));
+        if same_cards {
+            self.backlinks_list.remeasure();
+        } else {
+            // About one source note with a place or two: a first estimate for the scroll extent;
+            // the real height replaces it once a card has been in view.
+            self.backlinks_list
+                .reset_with_uniform_height(groups.len(), px(58.));
+        }
         self.backlink_groups = groups;
     }
 
@@ -8206,6 +8219,24 @@ mod document_link_landing_tests {
             "{scrolled:?}"
         );
         assert!(scrolled.len() <= 40);
+
+        // A background refresh that finds the same notes keeps the position; another note starts
+        // from the top.
+        view.update(visual, |v, cx| {
+            let same = v.backlinks.clone();
+            v.set_backlinks(same, false);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let kept = built(visual);
+        assert!(!kept.is_empty() && !kept.contains(&0), "scroll lost by a refresh: {kept:?}");
+        view.update(visual, |v, cx| {
+            let same = v.backlinks.clone();
+            v.set_backlinks(same, true);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert!(built(visual).contains(&0), "a new note starts at the top");
 
         // «Show 2 more» on a card makes that card taller without building the others.
         // The card sits at the foot of the first screen: bring it to the top so its «Show 2 more»
