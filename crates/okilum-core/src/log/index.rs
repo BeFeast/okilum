@@ -1,14 +1,16 @@
 //! Parallel chunked line indexing. The index is derived data: it holds byte
 //! ranges into the file plus what filtering and rows need first (level,
-//! timestamp), and is rebuilt from the file whenever it is needed.
+//! timestamp), and is rebuilt from the file whenever it is needed. An entry
+//! can span several lines (block.rs).
 
-use super::{detect, record, Format, Level};
+use super::{block, detect, record, Format, Level};
 
 /// Below this many bytes per thread, another thread costs more than it saves.
 const MIN_CHUNK_BYTES: usize = 1024 * 1024;
 const NO_TIMESTAMP: i64 = i64::MIN;
 
-/// One non-blank line. 32 bytes; the file bytes stay in the file.
+/// One non-blank line and the continuation lines it took (block.rs). 32
+/// bytes; the file bytes stay in the file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LogEntry {
     offset: u64,
@@ -19,18 +21,19 @@ pub struct LogEntry {
 }
 
 impl LogEntry {
-    /// Byte offset of the line in the file.
+    /// Byte offset of the first line in the file.
     pub fn offset(&self) -> u64 {
         self.offset
     }
-    /// Line length in bytes, without the line ending.
+    /// Length in bytes from the first line to the end of the last, without
+    /// the last line ending.
     pub fn len(&self) -> usize {
         self.len as usize
     }
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
-    /// One-based line number in the file, blank lines included.
+    /// One-based number of the first line in the file, blank lines included.
     pub fn line(&self) -> u64 {
         u64::from(self.line) + 1
     }
@@ -53,6 +56,8 @@ pub struct LogStats {
     pub timestamped: u64,
     /// All lines, blank ones included.
     pub lines: u64,
+    /// Entries that are a crash block rather than a record (block.rs).
+    pub blocks: u64,
 }
 
 impl LogStats {
@@ -62,13 +67,15 @@ impl LogStats {
     pub fn unparsed(&self) -> u64 {
         self.count(Level::Unparsed)
     }
-    /// Records that carry a level field, mapped or not.
+    /// Records that carry a level field, mapped or not. A block's level is
+    /// not a field.
     pub fn with_level_field(&self) -> u64 {
         Level::ALL
             .iter()
             .filter(|level| level.is_severity() || **level == Level::Unknown)
             .map(|level| self.count(*level))
-            .sum()
+            .sum::<u64>()
+            - self.blocks
     }
     fn add(&mut self, other: &LogStats) {
         for (mine, theirs) in self.levels.iter_mut().zip(other.levels) {
@@ -76,6 +83,7 @@ impl LogStats {
         }
         self.timestamped += other.timestamped;
         self.lines += other.lines;
+        self.blocks += other.blocks;
     }
 }
 
@@ -108,19 +116,25 @@ impl LogIndex {
 
     /// Indexes `data[self.bytes()..end]` and appends it, keeping the format
     /// verdict. `data` is the byte sequence this index was built over, grown;
-    /// entries already indexed are not parsed again. Follow mode (tail.rs)
-    /// passes an `end` just after a newline, or the end of a finished file.
-    pub(super) fn extend(&mut self, data: &[u8], end: usize) {
+    /// entries already indexed are not parsed again, except the last, which
+    /// new lines may continue. Follow mode (tail.rs) passes an `end` just
+    /// after a newline, or the end of a finished file. Returns whether the
+    /// last entry took new lines.
+    pub(super) fn extend(&mut self, data: &[u8], end: usize) -> bool {
         let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
-        self.extend_with_threads(data, end, threads);
+        self.extend_with_threads(data, end, threads)
     }
 
-    fn extend_with_threads(&mut self, data: &[u8], end: usize, threads: usize) {
+    fn extend_with_threads(&mut self, data: &[u8], end: usize, threads: usize) -> bool {
+        let reopened = self.reopen_last(data);
         let start = self.bytes as usize;
         let format = self.format;
         let span = &data[start..end];
         let threads = threads.clamp(1, (span.len() / MIN_CHUNK_BYTES).max(1));
-        let bounds = chunk_bounds(span, threads);
+        let mut bounds = chunk_bounds(span, threads);
+        if format != Format::Plain {
+            settle_bounds(span, &mut bounds, format);
+        }
         let chunks: Vec<Chunk> = if bounds.len() <= 2 {
             vec![index_chunk(data, start, end, format)]
         } else {
@@ -150,6 +164,25 @@ impl LogIndex {
             self.stats.add(&chunk.stats);
         }
         self.bytes = end as u64;
+        reopened.is_some_and(|(at, last)| self.entries.get(at) != Some(&last))
+    }
+
+    /// Takes the last entry back out of the index, so the lines that follow
+    /// it can be read as its continuation, and returns it with its position.
+    /// Indexing restarts at its first line; that line was the start of an
+    /// entry, so nothing before it decides how it is read.
+    fn reopen_last(&mut self, data: &[u8]) -> Option<(usize, LogEntry)> {
+        if self.format == Format::Plain {
+            return None;
+        }
+        let last = self.entries.pop()?;
+        let stats = &mut self.stats;
+        stats.levels[last.level as usize] -= 1;
+        stats.timestamped -= u64::from(last.timestamp().is_some());
+        stats.blocks -= u64::from(is_block(data, &last, self.format));
+        stats.lines = u64::from(last.line);
+        self.bytes = last.offset;
+        Some((self.entries.len(), last))
     }
 
     pub fn format(&self) -> Format {
@@ -185,6 +218,40 @@ impl LogIndex {
     }
 }
 
+/// Whether `entry` is a block: its head is no record but opens one.
+fn is_block(data: &[u8], entry: &LogEntry, format: Format) -> bool {
+    let raw = &data[entry.offset as usize..];
+    entry.level == block::LEVEL
+        && record::scan(block::head(raw), format, &mut |_, _| {}).is_err()
+        && block::block_kind(raw).is_some()
+}
+
+/// Moves each chunk start after the first forward to the next record line.
+/// A record always starts an entry, so a worker starting there reads the
+/// lines exactly as one reading from the top would; any other line may
+/// continue an entry in the previous chunk.
+fn settle_bounds(span: &[u8], bounds: &mut Vec<usize>, format: Format) {
+    let last = bounds.len() - 1;
+    for k in 1..last {
+        let from = bounds[k].max(bounds[k - 1]);
+        bounds[k] = next_record(span, from, format);
+    }
+    bounds.dedup();
+}
+
+fn next_record(span: &[u8], mut pos: usize, format: Format) -> usize {
+    while pos < span.len() {
+        let line_end = memchr::memchr(b'\n', &span[pos..]).map_or(span.len(), |at| pos + at);
+        let line = &span[pos..line_end];
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        if !line.trim_ascii().is_empty() && record::scan(line, format, &mut |_, _| {}).is_ok() {
+            return pos;
+        }
+        pos = line_end + 1;
+    }
+    span.len()
+}
+
 /// Chunk starts sit just after a newline, so no line is split between workers.
 fn chunk_bounds(data: &[u8], threads: usize) -> Vec<usize> {
     let mut bounds = vec![0];
@@ -206,10 +273,14 @@ struct Chunk {
 }
 
 fn index_chunk(data: &[u8], start: usize, end: usize, format: Format) -> Chunk {
-    let mut entries = Vec::with_capacity((end - start) / 160);
+    let mut entries: Vec<LogEntry> = Vec::with_capacity((end - start) / 160);
     let mut stats = LogStats::default();
     let mut pos = start;
     let mut line = 0u32;
+    // Whether the last entry takes continuation lines, and if it is a block,
+    // every following line up to the next record.
+    let mut open: Option<bool> = None;
+    let grouping = format != Format::Plain;
     while pos < end {
         let line_end = memchr::memchr(b'\n', &data[pos..end]).map_or(end, |at| pos + at);
         let mut text_end = line_end;
@@ -219,15 +290,35 @@ fn index_chunk(data: &[u8], start: usize, end: usize, format: Format) -> Chunk {
         let text = &data[pos..text_end];
         if !text.trim_ascii().is_empty() {
             let (level, ts) = record::classify(text, format);
-            stats.levels[level as usize] += 1;
-            stats.timestamped += u64::from(ts.is_some());
-            entries.push(LogEntry {
-                offset: pos as u64,
-                ts: ts.unwrap_or(NO_TIMESTAMP),
-                line,
-                len: (text_end - pos) as u32,
-                level,
-            });
+            let continues = level == Level::Unparsed
+                && open.is_some_and(|block| block || block::is_continuation(text))
+                && entries
+                    .last()
+                    .is_some_and(|entry| line - entry.line < block::MAX_LINES);
+            if continues {
+                let entry = entries.last_mut().expect("an open entry");
+                entry.len = (text_end - entry.offset as usize) as u32;
+            } else {
+                let opens_block = grouping
+                    && level == Level::Unparsed
+                    && block::block_kind(&data[pos..end]).is_some();
+                let (level, ts) = if opens_block {
+                    (block::LEVEL, None)
+                } else {
+                    (level, ts)
+                };
+                stats.levels[level as usize] += 1;
+                stats.timestamped += u64::from(ts.is_some());
+                stats.blocks += u64::from(opens_block);
+                entries.push(LogEntry {
+                    offset: pos as u64,
+                    ts: ts.unwrap_or(NO_TIMESTAMP),
+                    line,
+                    len: (text_end - pos) as u32,
+                    level,
+                });
+                open = grouping.then_some(opens_block);
+            }
         }
         line += 1;
         pos = line_end + 1;
@@ -276,6 +367,161 @@ mod tests {
         assert_eq!(index.stats().timestamped, 1);
         assert!(index.has_level_field());
         assert!(LogIndex::build(b"").is_empty());
+    }
+
+    #[test]
+    fn continuation_lines_and_blocks_join_their_entry() {
+        let data = concat!(
+            "{\"level\":\"info\",\"msg\":\"a\"}\n\tat one\n\n  at two\n",
+            "not json\n\tat three\n",
+            "{\"level\":\"info\"}\n",
+            "panic: boom\n\ngoroutine 1 [running]:\nmain.main()\n",
+            "{\"level\":\"warn\"}\n",
+        )
+        .as_bytes();
+        let index = LogIndex::build_with_threads(data, 1);
+        let summary: Vec<_> = (0..index.len())
+            .map(|i| {
+                let entry = index.get(i).unwrap();
+                (
+                    entry.line(),
+                    entry.level(),
+                    std::str::from_utf8(index.raw(data, i).unwrap()).unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                (
+                    1,
+                    Level::Info,
+                    "{\"level\":\"info\",\"msg\":\"a\"}\n\tat one\n\n  at two"
+                ),
+                (5, Level::Unparsed, "not json\n\tat three"),
+                (7, Level::Info, "{\"level\":\"info\"}"),
+                (
+                    8,
+                    Level::Error,
+                    "panic: boom\n\ngoroutine 1 [running]:\nmain.main()"
+                ),
+                (12, Level::Warn, "{\"level\":\"warn\"}"),
+            ]
+        );
+        let stats = index.stats();
+        assert_eq!((stats.blocks, stats.unparsed(), stats.lines), (1, 1, 12));
+        assert_eq!(stats.with_level_field(), 3, "a block's level is no field");
+        // Fields come from the first line only.
+        assert_eq!(
+            record::Record::parse(index.raw(data, 0).unwrap(), Format::JsonLines)
+                .unwrap()
+                .fields
+                .len(),
+            2
+        );
+        // A plain file keeps one entry per line: there is no record to anchor
+        // a continuation or to end a block.
+        let plain = LogIndex::build_with_threads(b"a\n\tb\npanic: c\nd\n", 1);
+        assert_eq!(plain.format(), Format::Plain);
+        assert_eq!(plain.len(), 4);
+        assert_eq!(plain.stats().blocks, 0);
+    }
+
+    #[test]
+    fn a_block_ends_at_its_size_limit() {
+        let mut data = b"{\"level\":\"info\"}\npanic: boom\n".to_vec();
+        for _ in 0..block::MAX_LINES + 5 {
+            data.extend_from_slice(b"frame\n");
+        }
+        let index = LogIndex::build_with_threads(&data, 1);
+        assert_eq!(index.len(), 2 + 6);
+        assert_eq!(
+            block::line_count(index.raw(&data, 1).unwrap()),
+            block::MAX_LINES as usize
+        );
+        assert_eq!(index.get(2).unwrap().level(), Level::Unparsed);
+    }
+
+    /// Records with crash blocks and stack traces between them, so that chunk
+    /// starts land inside both.
+    fn traced(records: usize) -> Vec<u8> {
+        let mut data = Vec::new();
+        for i in 0..records {
+            data.extend_from_slice(
+                format!(
+                    "{{\"ts\":{},\"level\":\"info\",\"msg\":\"m{i}\"}}\n",
+                    1_759_276_800 + i
+                )
+                .as_bytes(),
+            );
+            match i % 40 {
+                0 => {
+                    data.extend_from_slice(b"panic: boom\n\ngoroutine 1 [running]:\n");
+                    for f in 0..300 {
+                        data.extend_from_slice(
+                            format!("main.f{f}()\n\t/src/main.go:{f}\n").as_bytes(),
+                        );
+                    }
+                }
+                1 => {
+                    for f in 0..200 {
+                        data.extend_from_slice(
+                            format!("\tat com.example.F.f{f}(F.java:{f})\n").as_bytes(),
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+        data
+    }
+
+    #[test]
+    fn chunk_starts_inside_a_block_give_the_same_index() {
+        let data = traced(10_000);
+        let one = LogIndex::build_with_threads(&data, 1);
+        assert!(data.len() > 4 * MIN_CHUNK_BYTES, "the parallel path runs");
+        assert_eq!(one.len(), 10_000 + 250);
+        assert_eq!(one.stats().blocks, 250);
+        // Positive control: an unsettled chunk start would split an entry.
+        let raw = chunk_bounds(&data, 16);
+        let mut settled = raw.clone();
+        settle_bounds(&data, &mut settled, one.format());
+        assert_ne!(raw, settled, "some chunk start falls inside an entry");
+        for threads in [2, 3, 4, 16] {
+            assert_eq!(
+                LogIndex::build_with_threads(&data, threads),
+                one,
+                "{threads}"
+            );
+        }
+    }
+
+    #[test]
+    fn extending_reopens_the_last_entry() {
+        fn json_index() -> LogIndex {
+            LogIndex {
+                format: Format::JsonLines,
+                entries: Vec::new(),
+                stats: LogStats::default(),
+                bytes: 0,
+            }
+        }
+        let data = traced(41);
+        // Cut after every line: each step equals a fresh index of its prefix.
+        let mut index = json_index();
+        let mut grew = 0;
+        for (at, _) in data.iter().enumerate().filter(|(_, &b)| b == b'\n') {
+            let before = index.len();
+            if index.extend_with_threads(&data, at + 1, 1) {
+                grew += 1;
+                assert_eq!(index.len(), before, "a continuation adds no entry");
+            }
+            let mut full = json_index();
+            full.extend_with_threads(&data[..at + 1], at + 1, 1);
+            assert_eq!(index, full, "after byte {at}");
+        }
+        assert!(grew > 1_000, "{grew} growths");
     }
 
     #[test]

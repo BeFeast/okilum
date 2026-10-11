@@ -1,0 +1,45 @@
+{"level":"info","ts":1791612360.13646,"caller":"cmd/server/main.go:58","msg":"starting checkout-api","version":"1.42.0","commit":"a91f3c2"}
+{"level":"info","ts":1791612360.564613,"caller":"config/load.go:77","msg":"config loaded","source":"/etc/checkout/config.yaml"}
+{"level":"info","ts":1791612361.34409,"caller":"db/pool.go:133","msg":"connected to postgres","host":"pg-primary.shop.svc.cluster.local:5432","pool_max":10}
+{"level":"info","ts":1791612361.476697,"caller":"http/server.go:61","msg":"listening","addr":":8080"}
+{"level":"info","ts":1791612361.885592,"caller":"http/server.go:212","msg":"request served","method":"GET","route":"/healthz","status":200,"latency_ms":1}
+{"level":"info","ts":1791612362.205159,"caller":"http/server.go:212","msg":"request served","method":"POST","route":"/v1/checkout","status":200,"latency_ms":31}
+{"level":"info","ts":1791612362.538697,"caller":"http/server.go:212","msg":"request served","method":"GET","route":"/v1/cart","status":200,"latency_ms":30}
+{"level":"info","ts":1791612362.897227,"caller":"http/server.go:212","msg":"request served","method":"GET","route":"/healthz","status":200,"latency_ms":129}
+{"level":"info","ts":1791612363.074605,"caller":"http/server.go:212","msg":"request served","method":"POST","route":"/v1/cart/items","status":200,"latency_ms":65}
+{"level":"info","ts":1791612363.469774,"caller":"http/server.go:212","msg":"request served","method":"POST","route":"/v1/checkout","status":200,"latency_ms":101}
+{"level":"info","ts":1791612364.17605,"caller":"http/server.go:212","msg":"request served","method":"GET","route":"/v1/cart","status":200,"latency_ms":149}
+{"level":"info","ts":1791612364.994716,"caller":"http/server.go:212","msg":"request served","method":"GET","route":"/healthz","status":200,"latency_ms":7}
+{"level":"info","ts":1791612365.569726,"caller":"http/server.go:212","msg":"request served","method":"POST","route":"/v1/cart/items","status":200,"latency_ms":74}
+{"level":"info","ts":1791612365.673711,"caller":"http/server.go:212","msg":"request served","method":"POST","route":"/v1/checkout","status":200,"latency_ms":87}
+{"level":"info","ts":1791612366.490095,"caller":"http/server.go:212","msg":"request served","method":"GET","route":"/v1/cart","status":200,"latency_ms":90}
+{"level":"info","ts":1791612366.522388,"caller":"http/server.go:212","msg":"request served","method":"GET","route":"/healthz","status":200,"latency_ms":55}
+{"level":"info","ts":1791612366.616918,"caller":"http/server.go:212","msg":"request served","method":"POST","route":"/v1/cart/items","status":200,"latency_ms":10}
+{"level":"info","ts":1791612367.299677,"caller":"http/server.go:212","msg":"request served","method":"POST","route":"/v1/checkout","status":200,"latency_ms":83}
+{"level":"info","ts":1791612368.072943,"caller":"http/server.go:212","msg":"request served","method":"GET","route":"/v1/cart","status":200,"latency_ms":119}
+{"level":"info","ts":1791612368.394606,"caller":"http/server.go:212","msg":"request served","method":"GET","route":"/healthz","status":200,"latency_ms":160}
+{"level":"info","ts":1791612368.8942,"caller":"http/server.go:212","msg":"request served","method":"POST","route":"/v1/cart/items","status":200,"latency_ms":12}
+{"level":"info","ts":1791612369.469866,"caller":"http/server.go:212","msg":"request served","method":"POST","route":"/v1/checkout","status":200,"latency_ms":90}
+{"level":"info","ts":1791612369.917112,"caller":"http/server.go:212","msg":"request served","method":"GET","route":"/v1/cart","status":200,"latency_ms":75}
+{"level":"info","ts":1791612369.974017,"caller":"http/server.go:212","msg":"request served","method":"GET","route":"/healthz","status":200,"latency_ms":147}
+{"level":"info","ts":1791612370.698066,"caller":"http/server.go:212","msg":"request served","method":"POST","route":"/v1/cart/items","status":200,"latency_ms":34}
+{"level":"info","ts":1791612370.716678,"caller":"http/server.go:212","msg":"request served","method":"POST","route":"/v1/checkout","status":200,"latency_ms":26}
+{"level":"info","ts":1791612371.552649,"caller":"http/server.go:212","msg":"request served","method":"GET","route":"/v1/cart","status":200,"latency_ms":58}
+{"level":"info","ts":1791612372.259675,"caller":"http/server.go:212","msg":"request served","method":"GET","route":"/healthz","status":200,"latency_ms":96}
+{"level":"info","ts":1791612372.989924,"caller":"http/server.go:212","msg":"request served","method":"POST","route":"/v1/cart/items","status":200,"latency_ms":14}
+{"level":"warn","ts":1791612373.224304,"caller":"tax/engine.go:204","msg":"tax rule missing for region, falling back to default","region":"IE","sku":"SHOE-4471"}
+{"level":"error","ts":1791612373.397619,"caller":"http/server.go:230","msg":"request failed","method":"POST","route":"/v1/checkout","status":500,"error":"tax: nil rate table"}
+panic: runtime error: invalid memory address or nil pointer dereference
+[signal SIGSEGV: segmentation violation code=0x1 addr=0x18 pc=0x9a3f12]
+
+goroutine 1187 [running]:
+github.com/example/checkout-api/internal/tax.(*Engine).Rate(0x0, {0xc0004a2f40, 0x2})
+	/src/internal/tax/engine.go:231 +0x32
+github.com/example/checkout-api/internal/checkout.(*Service).Total(0xc000188000, {0xbd4e60, 0xc0005f2a50}, 0xc00071c000)
+	/src/internal/checkout/service.go:144 +0x1c7
+github.com/example/checkout-api/internal/http.(*Server).handleCheckout(0xc0001a6000, {0xbd2b40, 0xc0006e00e0}, 0xc000716000)
+	/src/internal/http/checkout.go:52 +0x2b8
+net/http.HandlerFunc.ServeHTTP(...)
+	/usr/local/go/src/net/http/server.go:2294
+created by net/http.(*Server).Serve in goroutine 1
+	/usr/local/go/src/net/http/server.go:3454 +0x485

@@ -11,7 +11,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use super::{Format, Level, LogIndex, Query, Record};
+use super::{block, Format, Level, LogIndex, Query, Record};
 
 /// Entries checked between two looks at the cancellation flag.
 const BLOCK: usize = 2048;
@@ -105,8 +105,9 @@ pub struct FieldChip {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LogFilter {
     pub level: LevelFilter,
-    /// Case-insensitive; matched against each field as `key=value`, or the
-    /// whole line when it is not a record. Surrounding whitespace is ignored.
+    /// Case-insensitive; matched against each field as `key=value` and a
+    /// record's continuation lines, or the whole entry when it is not a
+    /// record. Surrounding whitespace is ignored.
     pub text: String,
     pub time: TimeWindow,
     pub chips: Vec<FieldChip>,
@@ -366,6 +367,8 @@ impl<'f> Plan<'f> {
                 .iter()
                 .any(|field| field.key == chip.key && field.value == chip.value)
         });
+        // Text also finds what a record's continuation lines say (#1161): a
+        // stack trace is where the interesting words usually are.
         chips_match
             && self.needle.as_ref().is_none_or(|needle| {
                 let mut pair = String::new();
@@ -375,7 +378,8 @@ impl<'f> Plan<'f> {
                     pair.push('=');
                     pair.push_str(&field.value);
                     needle.found_in(&pair)
-                })
+                }) || block::continuation(raw)
+                    .is_some_and(|rest| needle.found_in(&String::from_utf8_lossy(rest)))
             })
     }
 }

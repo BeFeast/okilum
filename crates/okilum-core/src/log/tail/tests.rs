@@ -24,6 +24,7 @@ fn appended(event: TailEvent) -> Range<usize> {
         TailEvent::Appended {
             entries,
             reindexed: false,
+            grown: false,
         } => entries,
         other => panic!("expected a plain append, got {other:?}"),
     }
@@ -274,6 +275,7 @@ fn the_format_verdict_follows_a_short_file() {
         TailEvent::Appended {
             entries,
             reindexed: true,
+            grown: false,
         } => assert_eq!(entries, 1..4),
         other => panic!("expected a reindex, got {other:?}"),
     }
@@ -290,6 +292,7 @@ fn the_format_verdict_follows_a_short_file() {
         TailEvent::Appended {
             entries,
             reindexed: true,
+            grown: false,
         } => assert_eq!(entries, 4..4 + SAMPLE_LINES),
         other => panic!("expected a reindex, got {other:?}"),
     }
@@ -309,6 +312,32 @@ fn the_format_verdict_follows_a_short_file() {
     );
     assert_eq!(tail.index().format(), Format::Plain);
     assert_eq!(tail.index().stats().unparsed(), tail.index().len() as u64);
+    assert_matches_full_build(&tail);
+}
+
+#[test]
+fn a_stack_trace_written_line_by_line_grows_its_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("app.jsonl");
+    std::fs::write(&path, json("error", "failed")).unwrap();
+    let mut tail = LogTail::open(&path).unwrap();
+    append(&path, b"\tat com.example.Main.run(Main.java:3)\n");
+    match tail.poll().unwrap() {
+        TailEvent::Appended {
+            entries,
+            reindexed: false,
+            grown: true,
+        } => assert_eq!(entries, 1..1),
+        other => panic!("expected the record to grow, got {other:?}"),
+    }
+    assert_eq!(tail.index().len(), 1);
+    assert_eq!(
+        crate::log::block::line_count(tail.index().raw(tail.bytes(), 0).unwrap()),
+        2
+    );
+    // A record ends the trace; nothing grows.
+    append(&path, json("info", "next").as_bytes());
+    assert_eq!(appended(tail.poll().unwrap()), 1..2);
     assert_matches_full_build(&tail);
 }
 

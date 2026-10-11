@@ -265,9 +265,10 @@ fn spdlog_default_pattern_has_times_levels_and_loggers() {
     let index = file.index();
     assert_eq!(index.format(), Format::Spdlog);
     assert_eq!(index.format().label(), "spdlog");
-    assert_eq!(index.len(), 35);
-    // The backward-cpp trace after the crash stays raw until #1161.
-    assert_eq!(index.stats().unparsed(), 14);
+    // 21 records and the backward-cpp trace after the crash, as one block.
+    assert_eq!(index.len(), 22);
+    assert_eq!(index.stats().unparsed(), 0);
+    assert_eq!(index.stats().blocks, 1);
     assert_eq!(index.stats().timestamped, 21);
     let first = file.record(0).unwrap();
     assert_eq!(role(&first, Role::Time), Some("2026-10-10 06:04:00.000"));
@@ -289,9 +290,10 @@ fn glog_lines_and_header_are_records() {
     let file = sample("cpp/ordgw.glog.log");
     let index = file.index();
     assert_eq!(index.format(), Format::Glog);
-    assert_eq!(index.len(), 29);
-    // Four header lines and 21 log lines; the check-failure trace is raw.
-    assert_eq!(index.stats().unparsed(), 4);
+    // Four header lines, 21 log lines and the check-failure trace.
+    assert_eq!(index.len(), 26);
+    assert_eq!(index.stats().unparsed(), 0);
+    assert_eq!(index.stats().blocks, 1);
     assert_eq!(index.stats().timestamped, 21);
     assert_eq!(levels(&file)[..4], [Level::Missing; 4]);
     let header = file.record(1).unwrap();
@@ -393,4 +395,70 @@ fn a_plain_file_is_not_claimed_by_a_text_format() {
         detect(b"[2026-10-10 06:04:00.000] [x] [info] a\nnoise\nmore noise\n"),
         Format::Plain
     );
+}
+
+#[test]
+fn crashes_are_one_entry_each_and_copy_exactly() {
+    for (name, before, kind, lines) in [
+        (
+            "kubernetes/checkout-api-previous.log",
+            31,
+            BlockKind::GoPanic,
+            14,
+        ),
+        ("cpp/ordgw.spdlog.jsonl", 21, BlockKind::StackTrace, 14),
+        (
+            "cpp/ordgw_tests-asan.log",
+            35,
+            BlockKind::SanitizerReport,
+            27,
+        ),
+    ] {
+        let file = fixture(&format!("samples/{name}"));
+        let index = file.index();
+        assert_eq!(index.format(), Format::JsonLines, "{name}");
+        // The crash is the last entry, right after the records before it.
+        assert_eq!(index.len(), before + 1, "{name}");
+        assert_eq!(index.stats().blocks, 1, "{name}");
+        let entry = *index.get(before).unwrap();
+        assert_eq!(entry.level(), Level::Error, "{name}");
+        assert_eq!(entry.timestamp(), None, "{name}");
+        let raw = file.raw(before).unwrap();
+        assert_eq!(block::block_kind(raw), Some(kind), "{name}");
+        assert_eq!(block::line_count(raw), lines, "{name}");
+        // Raw copy: the file's own bytes, every line, blank ones included.
+        let rest = &file.bytes()[entry.offset() as usize..];
+        assert_eq!(raw, rest.strip_suffix(b"\n").unwrap_or(rest), "{name}");
+        assert!(file.record(before).is_none(), "{name}");
+    }
+}
+
+#[test]
+fn text_finds_words_inside_a_crash_and_a_trace() {
+    fn hits(file: &LogFile, text: &str) -> Vec<u32> {
+        let filter = LogFilter {
+            text: text.to_owned(),
+            ..Default::default()
+        };
+        let ticket = FilterGenerations::default().next();
+        filter::evaluate(&filter, file.index(), file.bytes(), &ticket)
+            .unwrap()
+            .rows
+    }
+    let go = fixture("samples/kubernetes/checkout-api-previous.log");
+    assert_eq!(hits(&go, "tax.(*Engine).Rate"), [31]);
+    let spdlog = fixture("samples/cpp/ordgw.spdlog.jsonl");
+    assert_eq!(hits(&spdlog, "PositionMap::find"), [21]);
+    // A record's own continuation lines are searched too.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("java.jsonl");
+    std::fs::write(
+        &path,
+        "{\"level\":\"error\",\"msg\":\"request failed\"}\n\tat com.example.Pool.take(Pool.java:88)\n{\"level\":\"info\",\"msg\":\"ok\"}\n",
+    )
+    .unwrap();
+    let java = LogFile::open(&path).unwrap();
+    assert_eq!(java.index().len(), 2);
+    assert_eq!(hits(&java, "Pool.java:88"), [0]);
+    assert!(hits(&java, "no such frame").is_empty());
 }

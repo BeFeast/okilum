@@ -9,8 +9,8 @@ use gpui_component::scroll::ScrollableElement as _;
 use okilum_core::log::query::{Expr, FieldRef, Literal, Test};
 use okilum_core::log::tail::{ResetReason, TailEvent};
 use okilum_core::log::{
-    filter, timestamp, FilterGenerations, Format, Level, LogFile, LogFilter, LogIndex, LogTail,
-    Query, Record, Role, TimeWindow, ValueKind,
+    block, filter, timestamp, FilterGenerations, Format, Level, LogFile, LogFilter, LogIndex,
+    LogTail, Query, Record, Role, TimeWindow, ValueKind,
 };
 use std::ops::Range;
 
@@ -623,7 +623,11 @@ impl LogView {
         };
         match event {
             TailEvent::Unchanged | TailEvent::Stale => return,
-            TailEvent::Appended { entries, reindexed } => {
+            TailEvent::Appended {
+                entries,
+                reindexed,
+                grown,
+            } => {
                 let time_moves = self.filter.time != TimeWindow::All;
                 let due = self.follow.as_ref().is_some_and(|follow| {
                     follow
@@ -638,7 +642,16 @@ impl LogView {
                     }
                     self.refilter(cx);
                 } else {
-                    let added = self.extend_rows(entries);
+                    // An entry that took new lines (a stack trace written line
+                    // by line, #1161) is filtered again with them; it is not
+                    // a new row.
+                    let mut entries = entries;
+                    let mut regrown = 0;
+                    if grown && entries.start > 0 {
+                        entries.start -= 1;
+                        regrown = usize::from(self.drop_last_row(entries.start));
+                    }
+                    let added = self.extend_rows(entries).saturating_sub(regrown);
                     if let Some(follow) = self.follow.as_mut() {
                         if !follow.pinned {
                             follow.unseen += added;
@@ -679,6 +692,18 @@ impl LogView {
             Arc::make_mut(rows).extend(added);
         }
         count
+    }
+
+    /// Removes the last row if it shows entry `index`; returns whether it did.
+    fn drop_last_row(&mut self, index: usize) -> bool {
+        let Some(rows) = self.rows.as_mut() else {
+            return false;
+        };
+        if rows.last().is_some_and(|&last| last as usize == index) {
+            Arc::make_mut(rows).pop();
+            return true;
+        }
+        false
     }
 
     /// Following and pinned: the newest row stays in view.
@@ -776,6 +801,7 @@ impl LogView {
                 };
                 let level = entry.level();
                 let row = row_text(file, index);
+                let lines = row.lines;
                 let selected = this.selected == Some(index);
                 let text_color = if level == Level::Unparsed {
                     faint
@@ -845,6 +871,18 @@ impl LogView {
                             })
                             .child(StyledText::new(row.text).with_highlights(highlights)),
                     )
+                    // A multi-line entry (a stack trace, a crash report) is
+                    // one folded row; the detail pane shows every line.
+                    .when(lines > 1, |row| {
+                        row.child(
+                            div()
+                                .flex_none()
+                                .font_family(mono.clone())
+                                .text_size(px(12.))
+                                .text_color(muted)
+                                .child(format!("▸ {} lines", grouped(lines as u64))),
+                        )
+                    })
                     .on_click(
                         cx.listener(move |this, _, window, cx| {
                             this.select(index, false, window, cx)
@@ -877,6 +915,8 @@ impl LogView {
         let Some(entry) = file.index().get(index) else {
             return pane.into_any_element();
         };
+        let raw = file.raw(index).unwrap_or_default();
+        let lines = block::line_count(raw);
         let header = h_flex()
             .flex_none()
             .h(px(DETAIL_HEADER_HEIGHT))
@@ -890,10 +930,17 @@ impl LogView {
                     .text_sm()
                     .text_color(muted)
                     .child(format!(
-                        "Record {} of {} · line {}",
+                        "Record {} of {} · {}",
                         grouped(self.row_of(index).unwrap_or(index) as u64 + 1),
                         grouped(self.visible_len() as u64),
-                        grouped(entry.line())
+                        match lines {
+                            1 => format!("line {}", grouped(entry.line())),
+                            n => format!(
+                                "lines {}–{}",
+                                grouped(entry.line()),
+                                grouped(entry.line() + n as u64 - 1)
+                            ),
+                        }
                     )),
             )
             .child(
@@ -915,7 +962,9 @@ impl LogView {
             .pb_3()
             .text_sm();
         let faint = brand::reader_palette(cx).text_faint;
-        let body = match file.record(index) {
+        let record = file.record(index);
+        let is_record = record.is_some();
+        let body = match record {
             Some(record) => body.children(
                 detail_rows(&record, entry.timestamp())
                     .into_iter()
@@ -986,19 +1035,37 @@ impl LogView {
                     }),
             ),
             None => body
+                .child(div().text_color(muted).pb_1().child(
+                    match (block::block_kind(raw), file.index().format()) {
+                        (Some(kind), _) => {
+                            format!("{} · {} lines", kind.label(), grouped(lines as u64))
+                        }
+                        (None, Format::Plain) => "Plain text line".to_owned(),
+                        (None, format) => format!("Not a {} record", format.label()),
+                    },
+                ))
                 .child(
                     div()
-                        .text_color(muted)
-                        .pb_1()
-                        .child(match file.index().format() {
-                            Format::Plain => "Plain text line".to_owned(),
-                            format => format!("Not a {} record", format.label()),
-                        }),
-                )
-                .child(div().font_family(mono).text_size(px(12.)).child(
-                    String::from_utf8_lossy(file.raw(index).unwrap_or_default()).into_owned(),
-                )),
+                        .font_family(mono.clone())
+                        .text_size(px(12.))
+                        .child(String::from_utf8_lossy(raw).into_owned()),
+                ),
         };
+        // A record's continuation lines, frame by frame as written; an entry
+        // that is no record shows all its lines above.
+        let body = body.when_some(
+            block::continuation(raw).filter(|_| is_record),
+            |body, rest| {
+                body.child(
+                    div()
+                        .id("log-detail-continuation")
+                        .pt_2()
+                        .font_family(mono)
+                        .text_size(px(12.))
+                        .child(String::from_utf8_lossy(rest).into_owned()),
+                )
+            },
+        );
         pane.child(header).child(body).into_any_element()
     }
 
@@ -1489,9 +1556,12 @@ pub(crate) struct RowText {
     pub time: String,
     pub text: String,
     pub muted: Vec<Range<usize>>,
+    /// Lines the entry spans; more than one is shown folded.
+    pub lines: usize,
 }
 
 pub(crate) fn row_text(file: &dyn LogData, index: usize) -> RowText {
+    let raw = file.raw(index).unwrap_or_default();
     let time = file
         .index()
         .get(index)
@@ -1514,15 +1584,13 @@ pub(crate) fn row_text(file: &dyn LogData, index: usize) -> RowText {
                 row.push(&format!("{}={}", field.key, field.value), true);
             }
         }
-        None => row.push(
-            &String::from_utf8_lossy(file.raw(index).unwrap_or_default()),
-            false,
-        ),
+        None => row.push(&String::from_utf8_lossy(block::head(raw)), false),
     }
     RowText {
         time,
         text: row.text,
         muted: row.muted,
+        lines: block::line_count(raw),
     }
 }
 
@@ -1734,6 +1802,19 @@ mod tests {
             row_text(&file, 2).text,
             "phase=warm_cache  details.found=false"
         );
+    }
+
+    #[test]
+    fn a_multi_line_entry_is_one_row_with_its_first_line() {
+        let (_dir, file) = log(concat!(
+            r#"{"level":"error","msg":"request failed"}"#,
+            "\n\tat com.example.Pool.take(Pool.java:88)\n",
+            "panic: boom\n\ngoroutine 1 [running]:\n",
+        ));
+        let record = row_text(&file, 0);
+        assert_eq!((record.text.as_str(), record.lines), ("request failed", 2));
+        let crash = row_text(&file, 1);
+        assert_eq!((crash.text.as_str(), crash.lines), ("panic: boom", 3));
     }
 
     #[test]

@@ -6,6 +6,9 @@ use std::path::Path;
 
 use okilum_core::log::{filter, FilterGenerations, LogFile, LogFilter, Query};
 
+/// Since #1161 a crash after the last record (a backward-cpp trace, an ASan
+/// report) is one entry at level error, so `level>=warn` counts it once on
+/// top of the README's records.
 const TRY: &[(&str, &str, usize)] = &[
     ("kibana/kibana.ndjson", "level>=error", 8),
     ("kibana/kibana.ndjson", "http.response.status_code>=500", 4),
@@ -33,19 +36,20 @@ const TRY: &[(&str, &str, usize)] = &[
         6,
     ),
     ("os/linux-rsyslog.jsonl", "severity=alert", 1),
-    ("cpp/ordgw.spdlog.jsonl", "level>=warn", 9),
+    ("cpp/ordgw.spdlog.jsonl", "level>=warn", 10),
     ("cpp/ordgw.spdlog.jsonl", "logger=fix.session", 6),
     ("cpp/ordgw.spdlog.jsonl", "tid=4414", 4),
     ("cpp/ordgw.spdlog.jsonl", "src~=risk_engine", 2),
     ("cpp/ordgw.quill.jsonl", "symbol=\"FDAX Z6\"", 6),
     ("cpp/ordgw.quill.jsonl", "exposure_eur>2000000", 1),
-    ("cpp/ordgw_tests-asan.log", "level>=warn", 1),
+    ("cpp/ordgw_tests-asan.log", "level>=warn", 2),
     ("os/windows-winlogbeat.ndjson", "winlog.event_id=4625", 6),
     ("os/windows-winlogbeat.ndjson", "winlog.channel=Security", 8),
 ];
 
 /// The text-format files of the pack (`native-formats/`, #1162). Counts are
-/// from grep and awk over the same files, independent of the Rust scanners.
+/// from grep and awk over the same files, independent of the Rust scanners;
+/// `level>=warn` includes each file's crash block (#1161).
 const NATIVE: &[(&str, &str, usize)] = &[
     (
         "native-formats/apache-access-combined.log",
@@ -65,14 +69,14 @@ const NATIVE: &[(&str, &str, usize)] = &[
     (
         "native-formats/cpp/ordgw.spdlog-default.log",
         "level>=warn",
-        10,
+        11,
     ),
     (
         "native-formats/cpp/ordgw.spdlog-default.log",
         "logger=fix.session",
         6,
     ),
-    ("native-formats/cpp/ordgw.glog.log", "level>=warn", 10),
+    ("native-formats/cpp/ordgw.glog.log", "level>=warn", 11),
     ("native-formats/cpp/ordgw.glog.log", "tid=4414", 4),
     ("native-formats/cpp/ordgw.glog.log", "src~=risk_engine", 2),
 ];
