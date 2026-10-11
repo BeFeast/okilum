@@ -61,10 +61,20 @@ pub fn run<C: PeerCheck>(
         &peer_check,
     );
     // Whatever ended the loop, the hint must not outlive the supervisor.
-    let cleared = store.clear_hint(Instant::now() + settings.store);
+    let cleared = close_and_clear(endpoint, &store, Instant::now() + settings.store);
     let exit = outcome?;
     cleared.context("clearing the generation hint failed")?;
     Ok(exit)
+}
+
+/// The endpoint goes before the hint. A controller that takes the state lock right after
+/// the Stop reply may still be connecting to this generation (it finds the hint, and the
+/// socket) while holding that lock; a listener nobody accepts from any more keeps that
+/// attempt waiting for its whole budget, and the hint cannot be cleared until it is over
+/// (#1083). Closing the listener ends the attempt at once.
+fn close_and_clear(endpoint: UnixEndpoint, store: &UnixStore, deadline: Instant) -> Result<()> {
+    drop(endpoint);
+    store.clear_hint(deadline)
 }
 
 fn serve<C: PeerCheck>(
@@ -107,5 +117,58 @@ fn serve<C: PeerCheck>(
         if server.has_stopped() {
             return Ok(Exit::Stopped);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use okilum_sync_controller::sidecar::supervisor::ipc::Scope;
+    use std::{io::Read, os::unix::{fs::PermissionsExt, net::UnixStream}, time::Duration};
+
+    /// #1083: the controller holds the state lock and is connected to the generation that
+    /// has just stopped. The supervisor must close its endpoint first, so that attempt ends
+    /// by itself and the lock is released before the hint is cleared. The lock is taken
+    /// before the supervisor starts, so the order of the two is not left to the scheduler.
+    #[test]
+    fn a_connection_pending_under_the_state_lock_does_not_block_clearing_the_hint() {
+        let root = tempfile::tempdir().unwrap();
+        let state = std::fs::canonicalize(root.path()).unwrap().join("state");
+        std::fs::create_dir(&state).unwrap();
+        std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let store = UnixStore::open_existing(&state).unwrap();
+        let scope = Scope {
+            installation: Uuid::from_u128(1),
+            instance: Uuid::from_u128(2),
+            generation: Uuid::from_u128(3),
+        };
+        let endpoint = UnixEndpoint::create(&state, &scope).unwrap();
+        let path = endpoint.path().to_owned();
+        let lock = store.begin(Instant::now() + Duration::from_secs(5)).unwrap();
+        // Connected, never accepted: the state of a controller's `Status` exchange.
+        let mut pending = UnixStream::connect(&path).unwrap();
+        pending
+            .set_read_timeout(Some(Duration::from_secs(8)))
+            .unwrap();
+        let supervisor = {
+            let store = store.clone();
+            std::thread::spawn(move || {
+                close_and_clear(endpoint, &store, Instant::now() + Duration::from_secs(3))
+            })
+        };
+        let started = Instant::now();
+        let mut byte = [0u8; 1];
+        let read = pending.read(&mut byte);
+        let waited = started.elapsed();
+        // Positive control: this wait is what the old order made as long as the controller's
+        // budget. A timeout here means the listener was still open.
+        assert!(
+            !matches!(&read, Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut)),
+            "the pending connection was not ended by the supervisor: {read:?}"
+        );
+        assert!(waited < Duration::from_secs(2), "it took {waited:?}");
+        drop(lock);
+        supervisor.join().unwrap().unwrap();
+        assert!(!path.exists(), "the socket node is gone");
     }
 }
