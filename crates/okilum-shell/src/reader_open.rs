@@ -171,30 +171,54 @@ mod tests {
             assert_ne!(path, intent(root).cache_path(&os_base));
         }
 
+        // Retention orders caches by the modification time of their `.usage/<hash>.opened`
+        // marker. Set explicit times instead of waiting for the clock to tick: how far apart two
+        // writes land depends on the filesystem's timestamp granularity and on how loaded the
+        // machine is, and a test that relies on it fails now and then (#1171).
+        let opened_at = |path: &Path, seconds: u64| {
+            let name = path.file_name().unwrap().to_str().unwrap().to_owned();
+            let marker = path
+                .parent()
+                .unwrap()
+                .join(".usage")
+                .join(format!("{name}.opened"));
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(marker)
+                .unwrap()
+                .set_modified(
+                    std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(seconds),
+                )
+                .unwrap();
+        };
         // The user's own Reader holds three registered vault caches in the shared base.
         let mut theirs = Vec::new();
-        for n in 0..3 {
+        for n in 0..3u64 {
             let root = vault(&format!("theirs-{n}"));
             let path = intent(&root).cache_path(&shared);
             let lease = Lease::acquire(path.clone(), &root).unwrap();
             lease.mark_published().unwrap();
+            opened_at(&path, 1_000 + n);
             std::fs::write(path.join("reader-startup.json"), "derived cache").unwrap();
             theirs.push(path);
         }
-        // The isolated instance opens four vaults; retention (three kept) must evict among its own.
+        // The isolated instance opens four vaults, the first the least recently opened;
+        // retention (three kept) must evict exactly that one, among its own caches.
         let mut evicted = Vec::new();
-        for n in 0..4 {
+        let mut mine = Vec::new();
+        for n in 0..4u64 {
             let root = vault(&format!("mine-{n}"));
             let path = intent(&root).cache_path(&isolated);
-            let lease = Lease::acquire(path, &root).unwrap();
+            let lease = Lease::acquire(path.clone(), &root).unwrap();
             lease.mark_published().unwrap();
-            std::thread::sleep(std::time::Duration::from_millis(30));
+            opened_at(&path, 2_000 + n);
             evicted.extend(lease.prune().unwrap().removed);
+            mine.push(path);
         }
         assert_eq!(
-            evicted.len(),
-            1,
-            "positive control: retention really ran and evicted"
+            evicted,
+            [mine[0].clone()],
+            "positive control: retention ran, and evicted the oldest of its own caches"
         );
         assert!(evicted[0].starts_with(state.join("cache")), "{evicted:?}");
         for path in theirs {
