@@ -16,7 +16,7 @@
 //! exactly. Fields come from the head alone. A `Plain` file has no records to
 //! anchor anything to and keeps one entry per line.
 
-use super::Level;
+use super::{ansi, Level};
 
 /// Lines one entry takes at most. A longer run starts a new entry, so a
 /// runaway tail cannot become one row the size of the file.
@@ -69,16 +69,17 @@ pub fn line_count(raw: &[u8]) -> usize {
 /// The block an entry starts, judged from its first two lines: a sanitizer
 /// report opens with a rule of `=` that means nothing on its own.
 pub fn block_kind(raw: &[u8]) -> Option<BlockKind> {
-    let first = head(raw);
-    if is_rule(first) {
-        let second = continuation(raw).map(head)?;
-        return is_sanitizer(second).then_some(BlockKind::SanitizerReport);
+    let first = ansi::strip(head(raw));
+    if is_rule(&first) {
+        let second = ansi::strip(continuation(raw).map(head)?);
+        return is_sanitizer(&second).then_some(BlockKind::SanitizerReport);
     }
-    starts_block(first)
+    starts_block(&first)
 }
 
 /// A line that a preceding entry takes as its own.
 pub(super) fn is_continuation(line: &[u8]) -> bool {
+    let line = ansi::strip(line);
     matches!(line.first(), Some(b' ' | b'\t')) || line.starts_with(b"Caused by: ")
 }
 

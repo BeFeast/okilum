@@ -1,6 +1,6 @@
 //! Format sniffing from the head of a file.
 
-use super::{block, json, logfmt, text};
+use super::{ansi, block, json, logfmt, text};
 
 /// Bytes read for detection.
 pub const SAMPLE_BYTES: usize = 64 * 1024;
@@ -74,7 +74,7 @@ pub fn detect(data: &[u8]) -> Format {
         let (raw, tail) = (&rest[..end], rest.get(end + 1..).unwrap_or_default());
         let lines = rest;
         rest = tail;
-        let raw = raw.strip_suffix(b"\r").unwrap_or(raw);
+        let raw = ansi::strip(raw.strip_suffix(b"\r").unwrap_or(raw));
         let line = raw.trim_ascii();
         if line.is_empty() {
             continue;
@@ -96,7 +96,7 @@ pub fn detect(data: &[u8]) -> Format {
         };
         if record {
             in_block = false;
-        } else if (seen && (in_block || block::is_continuation(raw)))
+        } else if (seen && (in_block || block::is_continuation(&raw)))
             || block::block_kind(lines).is_some()
         {
             in_block |= block::block_kind(lines).is_some();

@@ -11,7 +11,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use super::{block, Format, Level, LogIndex, Query, Record};
+use super::{ansi, block, Format, Level, LogIndex, Query, Record};
 
 /// Entries checked between two looks at the cancellation flag.
 const BLOCK: usize = 2048;
@@ -356,10 +356,9 @@ impl<'f> Plan<'f> {
             // Not a record: no field can match a chip, and text is matched
             // against the line as written.
             return self.chips.is_empty()
-                && self
-                    .needle
-                    .as_ref()
-                    .is_some_and(|needle| needle.found_in(&String::from_utf8_lossy(raw)));
+                && self.needle.as_ref().is_some_and(|needle| {
+                    needle.found_in(&String::from_utf8_lossy(&ansi::strip(raw)))
+                });
         };
         let chips_match = self.chips.iter().all(|chip| {
             record
@@ -378,8 +377,9 @@ impl<'f> Plan<'f> {
                     pair.push('=');
                     pair.push_str(&field.value);
                     needle.found_in(&pair)
-                }) || block::continuation(raw)
-                    .is_some_and(|rest| needle.found_in(&String::from_utf8_lossy(rest)))
+                }) || block::continuation(raw).is_some_and(|rest| {
+                    needle.found_in(&String::from_utf8_lossy(&ansi::strip(rest)))
+                })
             })
     }
 }
@@ -410,11 +410,12 @@ impl Needle {
     /// A cheap proof of absence on the undecoded line. Without escapes,
     /// every key segment and value is spelled verbatim in the line, so a term
     /// that cannot span a `.` joint or the `=` between key and value and is
-    /// missing from the line is missing from every field too.
+    /// missing from the line is missing from every field too. A colour code
+    /// can split a word, so a line with one is always parsed.
     fn absent_from_unescaped(&self, raw: &[u8]) -> bool {
         self.ascii
             && !self.lower.contains(['.', '='])
-            && memchr::memchr(b'\\', raw).is_none()
+            && memchr::memchr2(b'\\', 0x1b, raw).is_none()
             && !contains_ascii_ci(raw, self.lower.as_bytes())
     }
 }
