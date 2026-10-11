@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Native #1237: memory does not grow across repeated rapid edits in Live
-Preview. Run on an exclusive X11 display (never maestro).
+"""Native #1237/#1256: memory does not grow across repeated rapid edits in Live
+Preview. Run on an exclusive X11 display (never maestro); the hosted Arch
+package job runs it on the installed package.
 Usage: DISPLAY=:1034 python3 scripts/check-edit-memory-native.py OKILUM_BINARY WORK_DIR LABEL [CYCLES] [live|source]
 Run it in Source as well: the same cycles without Live Preview's projection
 separate growth that belongs to Live Preview from the editor's own.
