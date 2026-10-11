@@ -660,6 +660,8 @@ struct Opts {
     /// be a good way to index the wrong directory.
     vault: Option<PathBuf>,
     open_path: Option<PathBuf>,
+    /// More log files opened with `open_path`, in one view (#1160).
+    extra_logs: Vec<PathBuf>,
     single_file: bool,
     defer_loading: bool,
     reusable_roots: Vec<PathBuf>,
@@ -4791,16 +4793,42 @@ impl Reader {
                                 let file_rel = row.path.clone();
                                 return d
                                     .context_menu(move |menu, window, cx| {
-                                        if let Some(view) = file_entity.upgrade() {
-                                            reader_item_menu(
-                                                menu,
-                                                &view,
-                                                file_rel.clone(),
-                                                window,
-                                                cx,
-                                            )
-                                        } else {
-                                            menu
+                                        let Some(view) = file_entity.upgrade() else {
+                                            return menu;
+                                        };
+                                        let menu = reader_item_menu(
+                                            menu,
+                                            &view,
+                                            file_rel.clone(),
+                                            window,
+                                            cx,
+                                        );
+                                        // A log file joins the open log view (#1160).
+                                        let reader = view.read(cx);
+                                        let path = reader.vault_root.join(&file_rel);
+                                        match reader
+                                            .file_preview
+                                            .as_ref()
+                                            .and_then(|preview| preview.log.clone())
+                                        {
+                                            Some(log)
+                                                if okilum_core::log::is_log_path(&path)
+                                                    && !log.read(cx).has_file(&path) =>
+                                            {
+                                                menu.separator().item(
+                                                    PopupMenuItem::new("Add to log view").on_click(
+                                                        move |_, _, cx| {
+                                                            log.update(cx, |log, cx| {
+                                                                log.add_file_paths(
+                                                                    vec![path.clone()],
+                                                                    cx,
+                                                                )
+                                                            });
+                                                        },
+                                                    ),
+                                                )
+                                            }
+                                            _ => menu,
                                         }
                                     })
                                     .into_any_element();
@@ -7129,6 +7157,7 @@ fn main() {
         for value in [&mut opts.vault, &mut opts.open_path, &mut opts.index_dir]
             .into_iter()
             .flatten()
+            .chain(opts.extra_logs.iter_mut())
         {
             if value.is_relative() {
                 *value = cwd.join(&*value);

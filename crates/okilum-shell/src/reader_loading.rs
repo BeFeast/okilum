@@ -1609,6 +1609,20 @@ impl Reader {
             }
         } else if let Some(log) = pending.log {
             self.mount_log(log, window, cx);
+            // More log files from the command line join the view (#1160).
+            let extra = self
+                .loading
+                .as_ref()
+                .map(|load| load.opts.extra_logs.clone())
+                .unwrap_or_default();
+            if let (false, Some(view)) = (
+                extra.is_empty(),
+                self.file_preview
+                    .as_ref()
+                    .and_then(|preview| preview.log.clone()),
+            ) {
+                view.update(cx, |view, cx| view.add_file_paths(extra, cx));
+            }
         } else if let Some(rel) = plain_file {
             self.preview_file(&rel, window, cx);
         } else if let Some(position) = first_link {

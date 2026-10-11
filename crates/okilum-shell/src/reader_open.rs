@@ -444,8 +444,19 @@ pub(crate) fn parse_args(
             Some(a) if !literal && has_scheme(a, "file:") => file_url_path(a)?.into_os_string(),
             _ => arg,
         };
-        if positional.replace(PathBuf::from(arg)).is_some() {
-            bail!("Open one file or folder per CLI invocation");
+        // Several log files open together in one view (#1160); anything
+        // else is one path per invocation.
+        let path = PathBuf::from(arg);
+        match &positional {
+            None => positional = Some(path),
+            Some(first)
+                if okilum_core::log::is_log_path(first) && okilum_core::log::is_log_path(&path) =>
+            {
+                opts.extra_logs.push(path)
+            }
+            Some(_) => {
+                bail!("Open one file or folder per CLI invocation; several log files open together")
+            }
         }
     }
     #[cfg(not(all(unix, feature = "brain")))]
@@ -1499,6 +1510,23 @@ mod entry_tests {
         let name = parse(&["öööö.md"]).unwrap();
         assert_eq!(name.open_path.as_deref(), Some(Path::new("öööö.md")));
         assert!(name.link.is_none());
+    }
+
+    /// #1160: several log files open together; any other second path is
+    /// still refused.
+    #[test]
+    fn several_log_paths_open_together() {
+        let opts = parse(&["a.jsonl", "logs/b.log", "c.ndjson"]).unwrap();
+        assert_eq!(opts.open_path.as_deref(), Some(Path::new("a.jsonl")));
+        assert_eq!(
+            opts.extra_logs,
+            [PathBuf::from("logs/b.log"), PathBuf::from("c.ndjson")]
+        );
+        assert!(parse(&["a.jsonl", "notes.md"]).is_err());
+        assert!(parse(&["notes.md", "a.jsonl"]).is_err());
+        // Positive control: one path still opens alone.
+        let single = parse(&["notes.md"]).unwrap();
+        assert!(single.extra_logs.is_empty());
     }
 
     #[test]
