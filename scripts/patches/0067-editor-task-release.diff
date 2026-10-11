@@ -1,0 +1,175 @@
+diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -583,6 +583,8 @@ impl<M: InputModeKind> TextElement<M> {
+                 state.update(cx, |state, cx| {
+                     state.auto_scroll.stop();
+                     state.drag_anchors.clear();
++                    // Released outside the input: an armed task box cancels (#1051).
++                    state.armed_task = None;
+                     if state.selecting {
+                         // Released outside the input: end the gesture as
+                         // on_mouse_up does, or the lease would never expire.
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -358,6 +358,14 @@ pub struct InputBaseState<M: InputModeKind> {
+     projection_mouse_hold: bool,
+     projection_lease_release: Option<Task<()>>,
+     pub(super) projection_pending_click: Option<(MouseDownEvent, bool)>,
++    /// A press on a task checkbox, committed by a release over the same box
++    /// (#1051): (source stamp, source range, checked, window bounds).
++    pub(super) armed_task: Option<(
++        SourceStamp,
++        std::ops::Range<usize>,
++        bool,
++        gpui::Bounds<gpui::Pixels>,
++    )>,
+     pub(super) projection_pending_vertical: Option<super::movement::PendingVertical>,
+     pub(super) projection_ime_bounds: Option<Bounds<Pixels>>,
+     pub(super) display_map: DisplayMap,
+@@ -735,6 +743,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+             projection_mouse_hold: false,
+             projection_lease_release: None,
+             projection_pending_click: None,
++            armed_task: None,
+             projection_pending_vertical: None,
+             projection_ime_bounds: None,
+             display_map: DisplayMap::new(text_style.font(), window.rem_size(), None),
+@@ -2317,10 +2326,12 @@ impl<M: InputModeKind> InputBaseState<M> {
+             Vec::new()
+         };
+ 
+-        // A plain click on a drawn task checkbox toggles it through the app; the
+-        // caret and selection stay put. Every press toggles, so a quick second
+-        // click toggles back. Never during an IME composition, and a read-only
++        // A plain press on a drawn task checkbox arms it; the release over the
++        // same box toggles it through the app, a release elsewhere cancels
++        // (#1051). The caret and selection stay put, so a quick second click
++        // toggles back. Never during an IME composition, and a read-only
+         // editor treats the click as an ordinary one (S5, #1034).
++        self.armed_task = None;
+         if self.projection.enabled
+             && self.is_editable()
+             && self.ime_marked_range.as_ref().is_none_or(|marked| marked.len() == 0)
+@@ -2336,19 +2347,14 @@ impl<M: InputModeKind> InputBaseState<M> {
+                     tasks
+                         .iter()
+                         .find(|(_, _, bounds)| bounds.dilate(px(2.)).contains(&event.position))
+-                        .map(|(range, checked, _)| (range.clone(), *checked))
++                        .map(|(range, checked, bounds)| (range.clone(), *checked, *bounds))
+                 })?
+             });
+-            if let Some((range, checked)) = task {
++            if let Some((range, checked, bounds)) = task {
+                 self.selecting = false;
+                 self.drag_anchors.clear();
+                 self.projection_mouse_hold = false;
+-                cx.emit(crate::input::projection::MarkerClick {
+-                    stamp: self.source_stamp(),
+-                    range: crate::input::projection::SourceByte(range.start)
+-                        ..crate::input::projection::SourceByte(range.end),
+-                    kind: crate::input::projection::MarkerKind::Task { checked },
+-                });
++                self.armed_task = Some((current, range, checked, bounds));
+                 cx.notify();
+                 return;
+             }
+@@ -2436,6 +2442,23 @@ impl<M: InputModeKind> InputBaseState<M> {
+         if let Some((_, released)) = &mut self.projection_pending_click {
+             *released = true;
+         }
++        // An armed task box toggles only when released over the same box and
++        // the source has not changed since the press (#1051).
++        if let Some((stamp, range, checked, bounds)) = self.armed_task.take() {
++            if event.button == MouseButton::Left
++                && stamp == self.source_stamp()
++                && bounds.dilate(px(2.)).contains(&event.position)
++            {
++                cx.emit(crate::input::projection::MarkerClick {
++                    stamp,
++                    range: crate::input::projection::SourceByte(range.start)
++                        ..crate::input::projection::SourceByte(range.end),
++                    kind: crate::input::projection::MarkerKind::Task { checked },
++                });
++            }
++            cx.notify();
++            return;
++        }
+         if event.button == MouseButton::Right {
+             if let Some((position, offset)) = self.pending_context_menu.take() {
+                 self.handle_right_click_menu(position, offset, window, cx);
+@@ -4980,6 +5003,73 @@ mod tests {
+         }));
+     }
+ 
++    /// #1051: a task box toggles on release over the same box; a release
++    /// elsewhere, or after the source changed, cancels.
++    #[gpui::test]
++    fn task_box_toggles_on_release_over_the_same_box(cx: &mut TestAppContext) {
++        use std::{cell::Cell, rc::Rc};
++        cx.update(crate::init);
++        let view = InputView::build_editor(cx, |state| state.folding(false).searchable(false)
++            .wrapping_indent(super::super::WrappingIndent::None));
++        let mut v = VisualTestContext::from_window(view.window_handle.into(), cx);
++        v.update(|window, cx| view.input.update(cx, |state, cx| {
++            state.set_value("- [ ] task\nnext\n", window, cx);
++            state.set_projection_provider(Some(Arc::new(PrefixRevealProvider)), cx);
++            window.activate_window();
++            state.focus(window, cx);
++        }));
++        v.run_until_parked();
++        let clicks = Rc::new(Cell::new(0));
++        let _watch = v.update(|_, cx| {
++            let clicks = clicks.clone();
++            cx.subscribe(&view.input, move |_, _: &crate::input::projection::MarkerClick, _| {
++                clicks.set(clicks.get() + 1)
++            })
++        });
++        let box_bounds = Bounds::new(point(px(20.), px(20.)), size(px(12.), px(12.)));
++        let inside = box_bounds.center();
++        let away = point(px(300.), px(200.));
++        let down = |position| MouseDownEvent {
++            button: MouseButton::Left,
++            position,
++            modifiers: Default::default(),
++            click_count: 1,
++            first_mouse: false,
++        };
++        let up = |position| MouseUpEvent {
++            button: MouseButton::Left,
++            position,
++            modifiers: Default::default(),
++            click_count: 1,
++        };
++        let paint_box = |state: &mut InputBaseState<EditorMode>| {
++            *state.painted_tasks.borrow_mut() =
++                Some((state.source_stamp(), vec![(2..5, false, box_bounds)]));
++        };
++        v.update(|window, cx| view.input.update(cx, |state, cx| {
++            paint_box(state);
++            // Press arms, nothing toggles yet; release on the box commits.
++            state.on_mouse_down(&down(inside), window, cx);
++            assert!(state.armed_task.is_some(), "positive control: the press hit the box");
++            state.on_mouse_up(&up(inside), window, cx);
++        }));
++        assert_eq!(clicks.get(), 1, "release over the box toggles");
++        v.update(|window, cx| view.input.update(cx, |state, cx| {
++            paint_box(state);
++            state.on_mouse_down(&down(inside), window, cx);
++            state.on_mouse_up(&up(away), window, cx);
++            assert!(state.armed_task.is_none());
++        }));
++        assert_eq!(clicks.get(), 1, "release elsewhere cancels");
++        v.update(|window, cx| view.input.update(cx, |state, cx| {
++            paint_box(state);
++            state.on_mouse_down(&down(inside), window, cx);
++            state.set_value("- [x] task\nnext\n", window, cx);
++            state.on_mouse_up(&up(inside), window, cx);
++        }));
++        assert_eq!(clicks.get(), 1, "a source change since the press cancels");
++    }
++
+     #[gpui::test]
+     fn projection_mouse_lease_releases_after_multi_click_window(cx: &mut TestAppContext) {
+         cx.update(crate::init);
