@@ -13,6 +13,12 @@ import sys
 import time
 
 binary, work = sys.argv[1], Path(sys.argv[2])
+# A binary built together with an example carries GPUI test-support
+# and fails falsely: refuse it as an INVALID run (#1043).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from native_binary_guard import require_app_binary  # noqa: E402
+
+require_app_binary(binary)
 END = 'END-OF-NOTE-914'
 lines = ['# Long note for #914', '']
 for s in range(1, 41):

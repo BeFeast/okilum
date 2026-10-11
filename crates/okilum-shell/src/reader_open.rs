@@ -328,6 +328,8 @@ pub(crate) enum Command {
     UninstallData {
         assume_yes: bool,
     },
+    /// Print what the binary was built with, for QA tooling (#1043).
+    BuildInfo,
 }
 
 pub(crate) fn parse_args(
@@ -345,6 +347,12 @@ pub(crate) fn parse_args(
         }
         if !literal && (arg == "--help" || arg == "-h") {
             return Ok(Command::Help);
+        }
+        if !literal && arg == "--build-info" {
+            if args.next().is_some() {
+                bail!("--build-info takes no other arguments");
+            }
+            return Ok(Command::BuildInfo);
         }
         if !literal && arg == "--uninstall-data" {
             // Standalone: never combined with a document or vault launch.
@@ -1462,6 +1470,7 @@ mod entry_tests {
             Command::Launch(opts) => Ok(*opts),
             Command::Help => bail!("Unexpected help"),
             Command::UninstallData { .. } => bail!("Unexpected uninstall"),
+            Command::BuildInfo => bail!("Unexpected build info"),
         }
     }
     /// #1049: a clicked link arrives as the argument; a `%u` file arrives
@@ -1490,6 +1499,23 @@ mod entry_tests {
         let name = parse(&["öööö.md"]).unwrap();
         assert_eq!(name.open_path.as_deref(), Some(Path::new("öööö.md")));
         assert!(name.link.is_none());
+    }
+
+    #[test]
+    fn build_info_is_a_standalone_command() {
+        let command = |args: &[&str]| {
+            parse_args(
+                args.iter().map(std::ffi::OsString::from),
+                super::super::Opts::default(),
+            )
+        };
+        assert!(matches!(command(&["--build-info"]), Ok(Command::BuildInfo)));
+        assert!(command(&["--build-info", "--vault", "/notes"]).is_err());
+        // Positive control: after `--` it is a file name.
+        assert!(matches!(
+            command(&["--", "--build-info"]),
+            Ok(Command::Launch(_))
+        ));
     }
 
     #[test]
