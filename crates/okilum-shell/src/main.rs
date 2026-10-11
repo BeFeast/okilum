@@ -5260,13 +5260,7 @@ impl Reader {
             .when(is_current, |s| s.bg(current_bg))
             .hover(move |s| s.bg(hover_bg))
             .on_click(cx.listener(move |this, _, window, cx| {
-                this.select_panel_note(
-                    reader_layout::Panel::Backlinks,
-                    &card_rel,
-                    None,
-                    window,
-                    cx,
-                )
+                this.select_panel_note(reader_layout::Panel::Backlinks, &card_rel, None, window, cx)
             }))
             // Only the icon and title preview the note (#1101): the
             // rest of the card and its places scroll and read freely.
@@ -5423,9 +5417,9 @@ impl Reader {
                 .tooltip(move |ix, window, cx| {
                     let (_, url) = tooltip_links.iter().find(|(r, _)| r.contains(&ix))?;
                     Some(
-                        gpui_component::tooltip::Tooltip::new(
-                            prepared_links::external_tooltip(url)?,
-                        )
+                        gpui_component::tooltip::Tooltip::new(prepared_links::external_tooltip(
+                            url,
+                        )?)
                         .build(window, cx),
                     )
                 });
@@ -5452,35 +5446,33 @@ impl Reader {
                     .child(text)
             })
             .collect::<Vec<_>>();
-        let card = v_flex()
-            .child(header)
-            .child(
-                v_flex()
-                    .ml(px(15.))
-                    .pl_2()
-                    .border_l_2()
-                    .border_color(p.border_subtle)
-                    .children(rows)
-                    .when(shown < count, |places| {
-                        places.child(
-                            div()
-                                .id(SharedString::from(format!("bl-more-{gx}")))
-                                .debug_selector(move || format!("bl-more-{gx}"))
-                                .px_2()
-                                .py_0p5()
-                                .text_xs()
-                                .text_color(faint)
-                                .cursor_pointer()
-                                .hover(move |s| s.text_color(muted))
-                                .child(format!("Show {} more", count - shown))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.backlinks_expanded.insert(more_rel.clone());
-                                    this.backlinks_list.remeasure_items(gx..gx + 1);
-                                    cx.notify();
-                                })),
-                        )
-                    }),
-            );
+        let card = v_flex().child(header).child(
+            v_flex()
+                .ml(px(15.))
+                .pl_2()
+                .border_l_2()
+                .border_color(p.border_subtle)
+                .children(rows)
+                .when(shown < count, |places| {
+                    places.child(
+                        div()
+                            .id(SharedString::from(format!("bl-more-{gx}")))
+                            .debug_selector(move || format!("bl-more-{gx}"))
+                            .px_2()
+                            .py_0p5()
+                            .text_xs()
+                            .text_color(faint)
+                            .cursor_pointer()
+                            .hover(move |s| s.text_color(muted))
+                            .child(format!("Show {} more", count - shown))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.backlinks_expanded.insert(more_rel.clone());
+                                this.backlinks_list.remeasure_items(gx..gx + 1);
+                                cx.notify();
+                            })),
+                    )
+                }),
+        );
         // A list measures the element, not its margins: the spacing is the item's padding.
         div()
             .debug_selector(move || format!("bl-card-{gx}"))
@@ -8180,9 +8172,13 @@ mod document_link_landing_tests {
             groups, NOTES,
             "one card per linking note, counted before drawing"
         );
+        // `debug_bounds` takes a `&'static str`.
+        let name = |prefix: &str, ix: usize| -> &'static str {
+            Box::leak(format!("{prefix}-{ix}").into_boxed_str())
+        };
         let built = |visual: &mut VisualTestContext| -> Vec<usize> {
             (0..groups)
-                .filter(|ix| visual.debug_bounds(&format!("bl-card-{ix}")).is_some())
+                .filter(|ix| visual.debug_bounds(name("bl-card", *ix)).is_some())
                 .collect()
         };
         let first = built(visual);
