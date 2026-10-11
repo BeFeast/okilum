@@ -5063,8 +5063,20 @@ impl Reader {
                                     this.file_link_menu(&url, event.position, window, cx);
                                 }),
                             )
-                            .context_menu(move |menu, _, cx| {
-                                reader_reminder::menu(menu, &menu_entity, cx)
+                            .context_menu(move |menu, window, cx| {
+                                let menu = reader_reminder::menu(menu, &menu_entity, cx);
+                                // A right-click on a heading offers its link (#1049).
+                                let heading = menu_entity.upgrade().and_then(|reader| {
+                                    reader.read(cx).heading_at(window.mouse_position(), cx)
+                                });
+                                match heading {
+                                    Some(text) => reader_deep_link::heading_link_item(
+                                        menu,
+                                        &menu_entity,
+                                        text,
+                                    ),
+                                    None => menu,
+                                }
                             })
                             .children(self.render_landing_flash(cx))
                             .child(
@@ -6034,6 +6046,7 @@ impl Reader {
         }
         let hover = brand::reader_palette(cx).hover;
         let current = self.current_section(cx);
+        let entity = cx.entity().downgrade();
         let base = self.outline.iter().map(|h| h.level).min().unwrap_or(1);
         v_flex()
             .id("reader-outline")
@@ -6077,6 +6090,13 @@ impl Reader {
                         let focus = this.content.read(cx).focus_handle().clone();
                         focus.focus(window, cx);
                     }))
+                    .context_menu({
+                        let entity = entity.clone();
+                        let text = heading.text.clone();
+                        move |menu, _, _| {
+                            reader_deep_link::heading_link_item(menu, &entity, text.clone())
+                        }
+                    })
             }))
             .into_any_element()
     }
