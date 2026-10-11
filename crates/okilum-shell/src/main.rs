@@ -239,6 +239,7 @@ actions!(
         RecoverUnsavedNotes,
         ToggleSource,
         OpenLivePreview,
+        ToggleTask,
         SaveSource,
         RevealFile,
         CopyVaultPath,
@@ -408,6 +409,8 @@ fn bind_keys(cx: &mut App) {
         // #916: straight to Live Preview from Reader, Edit or Source.
         KeyBinding::new(LIVE_PREVIEW_KEY, OpenLivePreview, ctx),
         KeyBinding::new(LIVE_PREVIEW_KEY, OpenLivePreview, Some("Reader > Input")),
+        // Obsidian's «Toggle checkbox status» key (#1051).
+        KeyBinding::new("secondary-l", ToggleTask, Some("Reader > Input")),
         KeyBinding::new("secondary-s", SaveSource, Some("Reader > Input")),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-f", FindInNote, ctx),
@@ -6647,6 +6650,11 @@ impl Render for Reader {
             .on_action(cx.listener(|this, _: &ToggleSoftWrap, window, cx| {
                 this.toggle_code_soft_wrap(window, cx)
             }))
+            .on_action(
+                cx.listener(|this, _: &ToggleTask, window, cx| {
+                    this.toggle_task_at_caret(window, cx)
+                }),
+            )
             .on_action(cx.listener(|this, _: &OpenLivePreview, window, cx| {
                 this.open_live_preview(window, cx)
             }))

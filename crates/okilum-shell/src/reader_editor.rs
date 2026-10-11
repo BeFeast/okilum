@@ -1298,6 +1298,57 @@ fn direction_exempt_lines(source: &str) -> Vec<std::ops::Range<usize>> {
     lines
 }
 
+/// The task toggle for the line holding `caret`: a bullet or ordered task,
+/// possibly indented or quoted (#1051). The same edit as a click on its box.
+fn caret_task_toggle(source: &str, caret: usize) -> Option<(std::ops::Range<usize>, &'static str)> {
+    let caret = caret.min(source.len());
+    let start = source.get(..caret)?.rfind('\n').map_or(0, |at| at + 1);
+    let end = source[start..]
+        .find('\n')
+        .map_or(source.len(), |at| start + at);
+    let line = &source[start..end];
+    let mut at = 0;
+    let bytes = line.as_bytes();
+    // Indentation and quote markers.
+    while at < bytes.len() && matches!(bytes[at], b' ' | b'\t' | b'>') {
+        at += 1;
+    }
+    let marker = at;
+    let digits = bytes[at..]
+        .iter()
+        .take_while(|b| b.is_ascii_digit())
+        .count();
+    at += match bytes.get(at) {
+        Some(b'-' | b'+' | b'*') => 1,
+        Some(b'0'..=b'9') if matches!(bytes.get(at + digits), Some(b'.' | b')')) => digits + 1,
+        _ => return None,
+    };
+    let gap = bytes[at..]
+        .iter()
+        .take_while(|b| matches!(b, b' ' | b'\t'))
+        .count();
+    if gap == 0 || bytes.get(at + gap) != Some(&b'[') {
+        return None;
+    }
+    task_toggle(source, start + marker..start + at + gap + 3)
+}
+
+impl Reader {
+    /// «Toggle task» (⌘L / Ctrl+L): flips the checkbox of the caret's task
+    /// line, one source edit and one undo step, like a click on the box.
+    pub(super) fn toggle_task_at_caret(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(input) = self.source_input() else {
+            return;
+        };
+        input.update(cx, |state, cx| {
+            let source = state.value().to_string();
+            if let Some((range, text)) = caret_task_toggle(&source, state.cursor()) {
+                state.replace_source_range(range, text, window, cx);
+            }
+        });
+    }
+}
+
 /// The edit that toggles the task checkbox whose marker (`- [ ]`) is at
 /// `marker`: the byte between the brackets becomes `x` or a space.
 fn task_toggle(
@@ -1767,6 +1818,135 @@ mod tests {
         assert_eq!(super::task_toggle(source, 22..27), Some((25..26, " ")));
         assert_eq!(super::task_toggle(source, 32..37), None, "not a task box");
         assert_eq!(super::task_toggle(source, 0..99), None, "stale range");
+    }
+
+    #[test]
+    fn caret_task_toggle_finds_the_box_on_the_caret_line() {
+        let source = "# Plan\n- [ ] one\n  1. [x] two\n> 3) [ ] quoted\nplain line\n- [ ]tight\n";
+        let at = |needle: &str| source.find(needle).unwrap();
+        // Anywhere on the line, including inside the task text.
+        assert_eq!(
+            super::caret_task_toggle(source, at("one") + 2),
+            Some((10..11, "x"))
+        );
+        assert_eq!(
+            super::caret_task_toggle(source, at("- [ ] one")),
+            Some((10..11, "x"))
+        );
+        // Ordered and indented, and inside a quote.
+        let two = at("[x] two") + 1;
+        assert_eq!(
+            super::caret_task_toggle(source, at("two")),
+            Some((two..two + 1, " "))
+        );
+        let quoted = at("[ ] quoted") + 1;
+        assert_eq!(
+            super::caret_task_toggle(source, at("quoted")),
+            Some((quoted..quoted + 1, "x"))
+        );
+        // Positive controls: not a task line.
+        assert_eq!(super::caret_task_toggle(source, at("plain")), None);
+        assert_eq!(super::caret_task_toggle(source, at("# Plan")), None);
+        assert_eq!(
+            super::caret_task_toggle(source, source.len()),
+            None,
+            "end of text"
+        );
+    }
+
+    /// #1051: «Toggle task» from the keyboard flips the caret's box as one
+    /// undo step, in an ordered list too.
+    #[gpui::test]
+    fn toggle_task_shortcut_flips_the_caret_line_in_one_undo_step(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("vault");
+        let state = dir.path().join("state");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        let original = "# Tasks\n\n1. [ ] first\n2. [ ] second\n";
+        std::fs::write(root.join("note.md"), original).unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+            reader_ui_state::install(&state, cx);
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        open_path: Some(root.join("note.md")),
+                        session_directory: Some(state.clone()),
+                        index_dir: Some(dir.path().join("index")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
+        visual.run_until_parked();
+        let value = |visual: &mut gpui::VisualTestContext| {
+            reader.read_with(visual, |r, cx| {
+                r.source_input().unwrap().read(cx).value().to_string()
+            })
+        };
+        assert_eq!(
+            value(visual),
+            original,
+            "positive control: editing the note"
+        );
+        reader.update_in(visual, |r, window, cx| {
+            let input = r.source_input().unwrap();
+            input.update(cx, |input, cx| {
+                input.focus_handle(cx).focus(window, cx);
+                input.set_cursor_position(
+                    gpui_component::input::Position {
+                        line: 3,
+                        character: 9,
+                    },
+                    window,
+                    cx,
+                );
+            });
+        });
+        let key = if cfg!(target_os = "macos") {
+            "cmd-l"
+        } else {
+            "ctrl-l"
+        };
+        visual.simulate_keystrokes(key);
+        visual.run_until_parked();
+        assert_eq!(value(visual), "# Tasks\n\n1. [ ] first\n2. [x] second\n");
+        visual.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-z"
+        } else {
+            "ctrl-z"
+        });
+        visual.run_until_parked();
+        assert_eq!(value(visual), original, "one undo step restores it");
+        // The caret on a non-task line changes nothing.
+        reader.update_in(visual, |r, window, cx| {
+            r.source_input().unwrap().update(cx, |input, cx| {
+                input.set_cursor_position(
+                    gpui_component::input::Position {
+                        line: 0,
+                        character: 2,
+                    },
+                    window,
+                    cx,
+                )
+            });
+        });
+        visual.simulate_keystrokes(key);
+        visual.run_until_parked();
+        assert_eq!(value(visual), original);
     }
 
     /// #873: «Open in ▸» never hands an editor a stale file — a dirty draft
