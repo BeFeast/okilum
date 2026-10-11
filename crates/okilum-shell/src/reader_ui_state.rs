@@ -137,6 +137,8 @@ struct Saved {
     split_sizes: BTreeMap<String, f32>,
     /// Recent log queries per log file, newest first (#1158).
     log_queries: BTreeMap<String, Vec<String>>,
+    /// Field columns per log file (#1167).
+    log_columns: BTreeMap<String, Vec<String>>,
     delimited_no_header: BTreeSet<PathBuf>,
     vaults: BTreeMap<PathBuf, Layout>,
     /// Per-vault accent preset key (#774), keyed like `vaults` by the
@@ -170,6 +172,7 @@ impl Default for Saved {
             source_maps: Default::default(),
             split_sizes: Default::default(),
             log_queries: Default::default(),
+            log_columns: Default::default(),
             delimited_no_header: Default::default(),
             vaults: Default::default(),
             vault_colors: Default::default(),
@@ -198,6 +201,7 @@ struct Store {
     source_maps_changed: BTreeSet<PathBuf>,
     splits_changed: BTreeSet<String>,
     log_queries_changed: BTreeSet<String>,
+    log_columns_changed: BTreeSet<String>,
     colors_changed: BTreeSet<PathBuf>,
     trust_changed: BTreeSet<PathBuf>,
     delimited_changed: BTreeSet<PathBuf>,
@@ -276,6 +280,7 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         source_maps_changed: Default::default(),
         splits_changed: Default::default(),
         log_queries_changed: Default::default(),
+        log_columns_changed: Default::default(),
         colors_changed: Default::default(),
         trust_changed: Default::default(),
         delimited_changed: Default::default(),
@@ -495,6 +500,7 @@ struct WriteJob {
     source_maps_changed: BTreeSet<PathBuf>,
     splits_changed: BTreeSet<String>,
     log_queries_changed: BTreeSet<String>,
+    log_columns_changed: BTreeSet<String>,
     colors_changed: BTreeSet<PathBuf>,
     trust_changed: BTreeSet<PathBuf>,
     delimited_changed: BTreeSet<PathBuf>,
@@ -586,6 +592,12 @@ impl WriteJob {
                 latest.split_sizes.insert(key.clone(), *size);
             }
         }
+        for key in &self.log_columns_changed {
+            match self.saved.log_columns.get(key) {
+                Some(columns) => latest.log_columns.insert(key.clone(), columns.clone()),
+                None => latest.log_columns.remove(key),
+            };
+        }
         for key in &self.log_queries_changed {
             match self.saved.log_queries.get(key) {
                 Some(queries) => latest.log_queries.insert(key.clone(), queries.clone()),
@@ -658,6 +670,7 @@ fn job(cx: &App) -> Option<WriteJob> {
             && state.source_maps_changed.is_empty()
             && state.splits_changed.is_empty()
             && state.log_queries_changed.is_empty()
+            && state.log_columns_changed.is_empty()
             && state.colors_changed.is_empty()
             && state.trust_changed.is_empty()
             && state.delimited_changed.is_empty()
@@ -686,6 +699,7 @@ fn job(cx: &App) -> Option<WriteJob> {
         source_maps_changed: state.source_maps_changed.clone(),
         splits_changed: state.splits_changed.clone(),
         log_queries_changed: state.log_queries_changed.clone(),
+        log_columns_changed: state.log_columns_changed.clone(),
         colors_changed: state.colors_changed.clone(),
         trust_changed: state.trust_changed.clone(),
         delimited_changed: state.delimited_changed.clone(),
@@ -1228,6 +1242,42 @@ pub(crate) fn set_split_size(key: &str, size: f32, cx: &mut App) {
     schedule(cx);
 }
 
+/// Field columns of the log at `path` (#1167).
+pub(crate) fn log_columns(path: &str, cx: &App) -> Vec<String> {
+    cx.try_global::<Store>()
+        .and_then(|state| state.saved.log_columns.get(path).cloned())
+        .unwrap_or_default()
+}
+
+pub(crate) fn set_log_columns(path: &str, columns: Vec<String>, cx: &mut App) {
+    if !installed(cx) || log_columns(path, cx) == columns {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    if columns.is_empty() {
+        state.saved.log_columns.remove(path);
+    } else {
+        state.saved.log_columns.insert(path.into(), columns);
+    }
+    state.log_columns_changed.insert(path.into());
+    // Small and local, like the query history: past the cap, drop others.
+    while state.saved.log_columns.len() > LOG_QUERY_FILES {
+        let Some(other) = state
+            .saved
+            .log_columns
+            .keys()
+            .find(|key| *key != path)
+            .cloned()
+        else {
+            break;
+        };
+        state.saved.log_columns.remove(&other);
+        state.log_columns_changed.insert(other);
+    }
+    schedule(cx);
+    cx.refresh_windows();
+}
+
 /// Queries kept per log file and log files with a history (#1158).
 const LOG_QUERIES_PER_FILE: usize = 10;
 const LOG_QUERY_FILES: usize = 64;
@@ -1430,6 +1480,7 @@ fn mark_saved(generation: u64, cx: &mut App) {
         state.source_maps_changed.clear();
         state.splits_changed.clear();
         state.log_queries_changed.clear();
+        state.log_columns_changed.clear();
         state.colors_changed.clear();
         state.trust_changed.clear();
         state.delimited_changed.clear();
@@ -1713,6 +1764,7 @@ mod tests {
                 source_maps_changed: Default::default(),
                 splits_changed: Default::default(),
                 log_queries_changed: Default::default(),
+                log_columns_changed: Default::default(),
                 colors_changed: Default::default(),
                 trust_changed: Default::default(),
                 delimited_changed: Default::default(),

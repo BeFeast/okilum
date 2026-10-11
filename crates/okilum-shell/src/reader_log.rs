@@ -29,6 +29,10 @@ const DETAIL_HEADER_HEIGHT: f32 = 36.;
 const MIN_LIST_ROWS: f32 = 5.;
 /// The file name column of a view over several files (#1160).
 const SOURCE_NAME_WIDTH: f32 = 140.;
+/// Field columns (#1167): narrow for numbers and short values, wide for
+/// paths and URLs.
+const COLUMN_WIDTH: f32 = 96.;
+const WIDE_COLUMN_WIDTH: f32 = 240.;
 const KEY_WIDTH: f32 = 168.;
 /// Characters of a row shaped per frame; longer rows end in an ellipsis and
 /// stay complete in the detail pane and the raw copy.
@@ -778,6 +782,28 @@ impl LogView {
         }
     }
 
+    /// Field columns of this view (#1167), remembered per file.
+    fn columns(&self, cx: &App) -> Vec<String> {
+        self.history_key()
+            .map(|key| reader_ui_state::log_columns(&key, cx))
+            .unwrap_or_default()
+    }
+
+    fn toggle_column(&mut self, key: &str, cx: &mut Context<Self>) {
+        let Some(file) = self.history_key() else {
+            return;
+        };
+        let mut columns = reader_ui_state::log_columns(&file, cx);
+        match columns.iter().position(|column| column == key) {
+            Some(at) => {
+                columns.remove(at);
+            }
+            None => columns.push(key.to_owned()),
+        }
+        reader_ui_state::set_log_columns(&file, columns, cx);
+        cx.notify();
+    }
+
     fn following(&self) -> bool {
         self.follow
             .as_ref()
@@ -1513,6 +1539,7 @@ impl LogView {
     ) -> Vec<AnyElement> {
         let this = &*self;
         let merged = this.merge.is_some();
+        let columns = this.columns(cx);
         let palette = brand::palette(cx);
         let faint = brand::reader_palette(cx).text_faint;
         let hover = brand::reader_palette(cx).hover;
@@ -1530,6 +1557,23 @@ impl LogView {
                     return div().into_any_element();
                 };
                 let level = entry.level();
+                let cells: Vec<Option<String>> = if columns.is_empty() {
+                    Vec::new()
+                } else {
+                    let record = file.record(local);
+                    columns
+                        .iter()
+                        .map(|key| {
+                            record.as_ref().and_then(|record| {
+                                record
+                                    .fields
+                                    .iter()
+                                    .find(|field| &field.key == key)
+                                    .map(|field| field.value.clone())
+                            })
+                        })
+                        .collect()
+                };
                 let row = row_text(file, local);
                 let lines = row.lines;
                 let selected = this.selected == Some(index);
@@ -1612,6 +1656,32 @@ impl LogView {
                             })
                             .child(level.badge()),
                     )
+                    // Field columns (#1167), before the message.
+                    .children(
+                        columns
+                            .iter()
+                            .zip(cells)
+                            .enumerate()
+                            .map(|(at, (key, value))| {
+                                let value = value.unwrap_or_default();
+                                let numeric = !value.is_empty() && value.parse::<f64>().is_ok();
+                                div()
+                                    .id(("log-cell", at))
+                                    .flex_none()
+                                    .w(px(column_width(key)))
+                                    .truncate()
+                                    .text_size(px(12.))
+                                    .when(numeric, |cell| {
+                                        cell.text_align(TextAlign::Right).font_family(mono.clone())
+                                    })
+                                    .text_color(match column_tone(key, &value) {
+                                        Some(Tone::Danger) => palette.danger,
+                                        Some(Tone::Warning) => palette.warning,
+                                        None => palette.text,
+                                    })
+                                    .child(value)
+                            }),
+                    )
                     .child(
                         div()
                             .flex_1()
@@ -1646,6 +1716,7 @@ impl LogView {
     }
 
     fn render_detail(&self, cx: &mut Context<Self>) -> AnyElement {
+        let columns = self.columns(cx);
         let muted = cx.theme().muted_foreground;
         let mono = cx.theme().mono_font_family.clone();
         let pane = v_flex().size_full().min_h_0();
@@ -1790,9 +1861,13 @@ impl LogView {
                             )
                             // A fixed slot, shown on hover, so rows never shift.
                             .child(
-                                div()
+                                h_flex()
                                     .flex_none()
-                                    .opacity(if present { 1. } else { 0. })
+                                    .opacity(if present || columns.contains(&field.key) {
+                                        1.
+                                    } else {
+                                        0.
+                                    })
                                     .group_hover(group, |s| s.opacity(1.))
                                     .child(
                                         Button::new(("log-add-chip", position))
@@ -1819,7 +1894,29 @@ impl LogView {
                                                     cx,
                                                 )
                                             })),
-                                    ),
+                                    )
+                                    .child({
+                                        let key = field.key.clone();
+                                        let shown = columns.contains(&field.key);
+                                        Button::new(("log-toggle-column", position))
+                                            .debug_selector(move || {
+                                                format!("log-toggle-column-{position}")
+                                            })
+                                            .ghost()
+                                            .xsmall()
+                                            .icon(
+                                                Icon::new(IconName::LayoutDashboard)
+                                                    .text_color(faint),
+                                            )
+                                            .tooltip(if shown {
+                                                "Hide this column"
+                                            } else {
+                                                "Show as a column"
+                                            })
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.toggle_column(&key, cx)
+                                            }))
+                                    }),
                             )
                     }),
             ),
@@ -2256,6 +2353,7 @@ impl Render for LogView {
                 .is_some_and(|data| !data.index().is_empty())
         });
         let list = div().relative().flex_1().min_h_0().w_full();
+        let columns = self.columns(cx);
         let list = if count > 0 {
             list.child(
                 uniform_list(
@@ -2323,6 +2421,61 @@ impl Render for LogView {
                         && !self.compressed(),
                     |list| list.child(self.follow_button(cx)),
                 )
+        };
+        // Column titles above the rows, on the rows' grid (#1167).
+        let list = if columns.is_empty() || count == 0 {
+            list.into_any_element()
+        } else {
+            let merged = self.merge.is_some();
+            let muted = cx.theme().muted_foreground;
+            let faint = brand::reader_palette(cx).text_faint;
+            v_flex()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .child(
+                    h_flex()
+                        .debug_selector(|| "log-columns".into())
+                        .flex_none()
+                        .h(px(ROW_HEIGHT))
+                        .w_full()
+                        .pl_3()
+                        .pr_4()
+                        .gap_3()
+                        .border_l_2()
+                        .border_color(transparent_black())
+                        .border_b_1()
+                        .text_size(px(12.))
+                        .text_color(muted)
+                        .when(merged, |row| row.child(div().flex_none().w(px(3.))))
+                        .child(div().flex_none().w(px(92.)).child("Time"))
+                        .when(merged, |row| {
+                            row.child(div().flex_none().w(px(SOURCE_NAME_WIDTH)).child("File"))
+                        })
+                        .child(div().flex_none().w(px(28.)))
+                        .children(columns.iter().enumerate().map(|(at, key)| {
+                            let column = key.clone();
+                            h_flex()
+                                .debug_selector(move || format!("log-column-{at}"))
+                                .flex_none()
+                                .w(px(column_width(key)))
+                                .gap_1()
+                                .child(div().min_w_0().truncate().child(key.clone()))
+                                .child(
+                                    Button::new(("log-remove-column", at))
+                                        .ghost()
+                                        .xsmall()
+                                        .icon(Icon::new(IconName::Close).text_color(faint))
+                                        .tooltip("Hide this column")
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.toggle_column(&column, cx)
+                                        })),
+                                )
+                        }))
+                        .child(div().flex_1().child("Message")),
+                )
+                .child(list)
+                .into_any_element()
         };
         v_flex()
             .id("reader-log")
@@ -2414,6 +2567,74 @@ fn level_label(level: filter::LevelFilter) -> String {
 
 /// `key = value` on one line, cut short for the bar; the chip filters on
 /// the whole value.
+/// Column width by key (#1167): paths, URLs and messages get room.
+fn column_width(key: &str) -> f32 {
+    let key = key.to_ascii_lowercase();
+    if [
+        "path",
+        "url",
+        "uri",
+        "msg",
+        "message",
+        "ua",
+        "user_agent",
+        "referer",
+    ]
+    .iter()
+    .any(|wide| {
+        key == *wide || key.ends_with(&format!(".{wide}")) || key.ends_with(&format!("_{wide}"))
+    }) {
+        WIDE_COLUMN_WIDTH
+    } else {
+        COLUMN_WIDTH
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Tone {
+    Warning,
+    Danger,
+}
+
+/// A column value that wants attention (#1167): an HTTP status of 4xx or
+/// 5xx, or a duration over a second (the unit from the key: `_ns`, `_us`,
+/// `_ms`, seconds otherwise).
+fn column_tone(key: &str, value: &str) -> Option<Tone> {
+    let key = key.to_ascii_lowercase();
+    let number: f64 = value.trim().parse().ok()?;
+    let last = key.rsplit(['.', '_']).next().unwrap_or(&key);
+    if key.ends_with("status")
+        || key.ends_with("status_code")
+        || last == "code" && key.contains("status")
+    {
+        return match number as i64 {
+            500..=599 => Some(Tone::Danger),
+            400..=499 => Some(Tone::Warning),
+            _ => None,
+        };
+    }
+    if [
+        "duration",
+        "latency",
+        "elapsed",
+        "took",
+        "time_taken",
+        "response_time",
+    ]
+    .iter()
+    .any(|word| key.contains(word))
+    {
+        let second = match last {
+            "ns" => 1e9,
+            "us" | "micros" => 1e6,
+            "ms" | "millis" => 1e3,
+            _ => 1.,
+        };
+        return (number > second).then_some(Tone::Warning);
+    }
+    None
+}
+
 /// The query term a detail-pane field adds: the raw key equals the value as
 /// text, which is what the field shows (#1158).
 fn field_term(key: &str, value: &str) -> Expr {
@@ -4296,6 +4517,117 @@ mod tests {
         view.read_with(visual, |view, cx| {
             assert!(view.request_back.is_none());
             assert_eq!(view.query_input.read(cx).value().as_ref(), "level>=info");
+        });
+    }
+
+    #[test]
+    fn column_tones_and_widths() {
+        assert_eq!(column_tone("status", "502"), Some(Tone::Danger));
+        assert_eq!(
+            column_tone("http.response.status_code", "404"),
+            Some(Tone::Warning)
+        );
+        assert_eq!(column_tone("status", "200"), None);
+        assert_eq!(column_tone("duration_us", "1500000"), Some(Tone::Warning));
+        assert_eq!(column_tone("duration_us", "900000"), None);
+        assert_eq!(column_tone("latency_ms", "1200"), Some(Tone::Warning));
+        assert_eq!(column_tone("duration", "0.4"), None);
+        assert_eq!(column_tone("duration", "2.5"), Some(Tone::Warning));
+        assert_eq!(column_tone("path", "/v1/orders"), None);
+        assert_eq!(column_width("path"), WIDE_COLUMN_WIDTH);
+        assert_eq!(column_width("http.request.url"), WIDE_COLUMN_WIDTH);
+        assert_eq!(column_width("status"), COLUMN_WIDTH);
+    }
+
+    /// #1167 acceptance: the Apache access sample with columns status,
+    /// duration_us, path and client is readable at 1440 px, without the
+    /// detail pane, and the columns are kept for the file.
+    #[gpui::test]
+    fn apache_access_reads_in_columns_at_1440(cx: &mut TestAppContext) {
+        let sample = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../okilum-core/tests/fixtures/log/samples/apache/apache-access.logfmt");
+        let text = std::fs::read_to_string(sample).unwrap();
+        let state = tempfile::tempdir().unwrap();
+        cx.update(|cx| reader_ui_state::install(state.path(), cx));
+        let (_directory, reader, visual) = open_log(&text, cx);
+        visual.simulate_resize(gpui::size(px(1440.), px(900.)));
+        visual.run_until_parked();
+        let view = log_view(&reader, visual);
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            visual.debug_bounds("log-columns").is_none(),
+            "positive control: no columns yet"
+        );
+        // One column from the detail pane with a real click, the rest by key.
+        view.update_in(visual, |view, window, cx| view.select(0, true, window, cx));
+        visual.run_until_parked();
+        let status_field = view.read_with(visual, |view, _| {
+            let record = view.data().unwrap().record(0).unwrap();
+            record
+                .fields
+                .iter()
+                .position(|f| f.key == "status")
+                .unwrap()
+        });
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let toggle = visual
+            .debug_bounds(Box::leak(
+                format!("log-toggle-column-{status_field}").into_boxed_str(),
+            ))
+            .expect("the field offers a column");
+        visual.simulate_click(toggle.center(), Modifiers::default());
+        visual.run_until_parked();
+        view.update(visual, |view, cx| {
+            for key in ["duration_us", "path", "client"] {
+                view.toggle_column(key, cx);
+            }
+        });
+        // Without the detail pane.
+        view.update(visual, |view, cx| {
+            view.detail_split.toggle_collapsed();
+            cx.notify();
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let titles: Vec<_> = (0..4)
+            .map(|at| {
+                visual
+                    .debug_bounds(Box::leak(format!("log-column-{at}").into_boxed_str()))
+                    .unwrap()
+            })
+            .collect();
+        let log = visual.debug_bounds("reader-log").unwrap();
+        // In order, inside the view, with room left for the message.
+        assert!(titles
+            .windows(2)
+            .all(|pair| pair[0].right() <= pair[1].left()));
+        assert!(
+            titles[3].right() + px(200.) < log.right(),
+            "the message keeps room: {:?} in {log:?}",
+            titles[3]
+        );
+        view.read_with(visual, |view, cx| {
+            assert_eq!(
+                view.columns(cx),
+                ["status", "duration_us", "path", "client"]
+            );
+        });
+        // Kept for the file, for the next launch.
+        visual.executor().advance_clock(Duration::from_secs(1));
+        visual.run_until_parked();
+        let key = view.read_with(visual, |view, _| view.history_key().unwrap());
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(state.path().join("reader-ui.json")).unwrap())
+                .unwrap();
+        assert_eq!(saved["log_columns"][&key][2], "path");
+        // Hiding from the header.
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let remove = visual.debug_bounds("log-column-0").unwrap();
+        view.update(visual, |view, cx| view.toggle_column("status", cx));
+        visual.run_until_parked();
+        let _ = remove;
+        view.read_with(visual, |view, cx| {
+            assert_eq!(view.columns(cx), ["duration_us", "path", "client"]);
         });
     }
 
