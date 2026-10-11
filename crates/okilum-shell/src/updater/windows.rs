@@ -92,7 +92,11 @@ pub(super) fn restart(expected: Option<&str>, cx: &mut gpui::App) {
 }
 
 fn manager() -> Result<UpdateManager, velopack::Error> {
-    let (url, channel) = super::windows_feed::endpoint(beta());
+    manager_for(beta())
+}
+
+fn manager_for(beta: bool) -> Result<UpdateManager, velopack::Error> {
+    let (url, channel) = super::windows_feed::endpoint(beta);
     UpdateManager::new(
         HttpSource::new_with_options(
             url,
@@ -110,25 +114,34 @@ fn manager() -> Result<UpdateManager, velopack::Error> {
     )
 }
 
-pub(super) fn start() {
-    BETA.store(super::windows_feed::default_beta(), Ordering::Relaxed);
-    let installed = manager().is_ok_and(|m| !m.get_is_portable());
-    AVAILABLE.get_or_init(|| installed);
-    if let Ok(root) = crate::reader_history::state_directory() {
-        if let Ok(value) = std::fs::read_to_string(root.join("windows-update-channel")) {
-            BETA.store(value.trim() != "stable", Ordering::Relaxed);
+/// Whether this copy is installed and which channel it follows. Read on first
+/// use, so the diagnostic line written before `start` already says how Okilum
+/// was installed (#1273).
+fn settings() -> bool {
+    *AVAILABLE.get_or_init(|| {
+        let mut beta = super::windows_feed::default_beta();
+        if let Ok(root) = crate::reader_history::state_directory() {
+            if let Ok(value) = std::fs::read_to_string(root.join("windows-update-channel")) {
+                beta = value.trim() != "stable";
+            }
         }
-    }
-    if installed {
+        BETA.store(beta, Ordering::Relaxed);
+        manager_for(beta).is_ok_and(|m| !m.get_is_portable())
+    })
+}
+
+pub(super) fn start() {
+    if settings() {
         check(false);
     }
 }
 
 pub(super) fn available() -> bool {
-    AVAILABLE.get().copied().unwrap_or(false)
+    settings()
 }
 
 pub(super) fn beta() -> bool {
+    settings();
     BETA.load(Ordering::Relaxed)
 }
 
@@ -143,7 +156,10 @@ pub(super) fn set_beta(value: bool) {
         Ok(())
     })();
     match result {
-        Ok(()) => BETA.store(value, Ordering::Relaxed),
+        Ok(()) => {
+            settings();
+            BETA.store(value, Ordering::Relaxed)
+        }
         Err(error) => message(&format!("Could not save update channel: {error}")),
     }
 }
