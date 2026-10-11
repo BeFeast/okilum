@@ -86,3 +86,18 @@ class NativeGates(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class MacosLaneOnceTests(unittest.TestCase):
+    """PR #1214: the lane flips at 03:05 and 09:00; one run must read it exactly once."""
+
+    def test_only_native_scope_reads_the_lane_and_lanes_are_exclusive(self):
+        import re
+        workflow = (Path(__file__).resolve().parents[2] / '.forgejo/workflows/ci.yml').read_text()
+        self.assertEqual(workflow.count('vars.OKILUM_MACOS_LANE'), 1)
+        scope = re.search(r'^  native-scope:\n(.*?)(?=^  [\w-]+:)', workflow, re.M | re.S)[1]
+        self.assertIn('vars.OKILUM_MACOS_LANE', scope)
+        self.assertIn('echo local || echo hosted', scope)
+        for job, lane in [('macos-github', 'hosted'), ('macos-local', 'local')]:
+            block = re.search(rf'^  {job}:\n(.*?)(?=^  [\w-]+:)', workflow, re.M | re.S)[1]
+            self.assertIn(f"needs.native-scope.outputs.macos_lane == '{lane}'", block)
