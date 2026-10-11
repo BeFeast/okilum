@@ -194,6 +194,35 @@ mod tests {
         visual.update(|window, cx| set_theme(brand::ThemeId::Okilum, None, window, cx));
     }
 
+    /// #956: a start after a crash (safe startup) keeps the saved appearance
+    /// and theme; only the layout is reset.
+    #[gpui::test]
+    fn saved_appearance_survives_a_crash_restart(cx: &mut gpui::TestAppContext) {
+        let state = tempfile::tempdir().unwrap();
+        // A non-default theme, so keeping it is distinguishable from a reset.
+        let theme = brand::ThemeId::ALL[brand::ThemeId::ALL.len() - 1];
+        std::fs::write(
+            state.path().join("reader-ui.json"),
+            serde_json::json!({ "version": 1, "appearance": "light", "theme": theme.key() })
+                .to_string(),
+        )
+        .unwrap();
+        cx.update(|cx| {
+            crate::reader_ui_state::install(state.path(), cx);
+            cx.set_global(crate::reader_recovery::RecoveryStartup(true));
+            assert!(
+                crate::reader_recovery::is_recovering(cx),
+                "positive control"
+            );
+            let (mode, choice) = crate::load_appearance(cx);
+            assert!(
+                mode.0 == Some(ThemeMode::Light),
+                "saved Light kept after a crash"
+            );
+            assert_eq!(choice.0, theme, "saved theme kept");
+        });
+    }
+
     #[test]
     fn appearance_settings_round_trip_theme_and_accept_older_files() {
         for theme in brand::ThemeId::ALL {
