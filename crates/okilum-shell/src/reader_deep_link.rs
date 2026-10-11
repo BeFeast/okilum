@@ -7,6 +7,23 @@ use super::*;
 use gpui_component::input::{EditorState, RopeExt as _};
 use okilum_core::deep_link::Position;
 
+/// The «Copy link to heading» menu item for `heading` in this Reader's note.
+pub(crate) fn heading_link_item(
+    menu: gpui_component::menu::PopupMenu,
+    reader: &WeakEntity<Reader>,
+    heading: String,
+) -> gpui_component::menu::PopupMenu {
+    let reader = reader.clone();
+    menu.item(
+        gpui_component::menu::PopupMenuItem::new("Copy link to heading").on_click(
+            move |_, window, cx| {
+                let heading = heading.clone();
+                let _ = reader.update(cx, |this, cx| this.copy_heading_link(heading, window, cx));
+            },
+        ),
+    )
+}
+
 /// How long a landing highlight stays.
 const FLASH: std::time::Duration = std::time::Duration::from_millis(1200);
 
@@ -187,6 +204,41 @@ impl Reader {
         Some(deferred(anchored().position(bounds.origin).child(mark)).into_any_element())
     }
 
+    /// The heading under `position` in the Reader, by the list's real block
+    /// bounds; `None` off a heading.
+    pub(crate) fn heading_at(&self, position: Point<Pixels>, cx: &App) -> Option<String> {
+        if self.editing.is_some() || self.file_preview.is_some() {
+            return None;
+        }
+        let list = self.content.read(cx).list_state();
+        self.outline
+            .iter()
+            .find(|heading| {
+                list.bounds_for_item(heading.target.block)
+                    .is_some_and(|bounds| bounds.contains(&position))
+            })
+            .map(|heading| heading.text.clone())
+    }
+
+    /// «Copy link to heading»: this note at `#heading` (#1049).
+    pub(crate) fn copy_heading_link(
+        &mut self,
+        heading: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let link = crate::reader_files::okilum_link(
+            &self.vault_root,
+            &self.current_rel,
+            &Position {
+                heading: Some(heading),
+                ..Default::default()
+            },
+        );
+        cx.write_to_clipboard(ClipboardItem::new_string(link));
+        crate::reader_toast::transient("Link copied", window, cx);
+    }
+
     /// «Copy link to line»: the caret's line and column in this note (#1049).
     pub(crate) fn copy_link_to_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(input) = self.source_input() else {
@@ -253,6 +305,75 @@ mod tests {
             column,
             ..Default::default()
         }
+    }
+
+    #[gpui::test]
+    fn copy_link_to_heading_names_the_heading_under_the_pointer(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("Notes");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(
+            root.join("Plan.md"),
+            "# Plan\n\nIntro paragraph.\n\n## Next steps & risks\n\nBody.\n",
+        )
+        .unwrap();
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("Plan.md".into()),
+                        index_dir: Some(temp.path().join("cache")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.simulate_resize(size(px(1000.), px(600.)));
+        visual.run_until_parked();
+        let (heading, paragraph) = reader.read_with(visual, |v, cx| {
+            let list = v.content.read(cx).list_state();
+            let heading = v
+                .outline
+                .iter()
+                .find(|h| h.text == "Next steps & risks")
+                .unwrap();
+            (
+                list.bounds_for_item(heading.target.block).unwrap().center(),
+                list.bounds_for_item(1).unwrap().center(),
+            )
+        });
+        reader.read_with(visual, |v, cx| {
+            assert_eq!(
+                v.heading_at(heading, cx).as_deref(),
+                Some("Next steps & risks")
+            );
+            assert_eq!(
+                v.heading_at(paragraph, cx),
+                None,
+                "positive control: a paragraph"
+            );
+        });
+        reader.update_in(visual, |v, window, cx| {
+            v.copy_heading_link("Next steps & risks".into(), window, cx);
+            let link = cx.read_from_clipboard().unwrap().text().unwrap();
+            assert_eq!(link, "okilum://v/Notes/Plan.md#Next%20steps%20%26%20risks");
+            let parsed = okilum_core::deep_link::parse(&link).unwrap();
+            assert_eq!(
+                parsed.position.heading.as_deref(),
+                Some("Next steps & risks")
+            );
+        });
     }
 
     #[gpui::test]
