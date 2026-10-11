@@ -1,0 +1,29 @@
+Log file created at: 2026/10/10 06:04:00
+Running on machine: trade-gw-01
+Running duration (h:mm:ss): 0:00:00
+Log line format: [IWEF]yyyymmdd hh:mm:ss.uuuuuu threadid file:line] msg
+I20261010 06:04:00.000279   4411 main.cc:61] ordgw 3.14.2 (git 9c41e7a, clang 20.1.8, -O2 -march=x86-64-v3) starting
+I20261010 06:04:00.002560   4411 config.cc:118] config loaded from /etc/ordgw/ordgw.toml (venue=XEUR, sessions=2, risk_limits=strict)
+I20261010 06:04:00.003671   4411 arena.cc:44] reserved 512 MiB hugepage arena at 0x7f3a40000000
+I20261010 06:04:00.010359   4411 affinity.cc:29] pinned md-feed->cpu3, fix-io->cpu5, risk->cpu7 (isolcpus=3,5,7)
+W20261010 06:04:00.140930   4411 affinity.cc:52] cpu5 scaling_governor is 'powersave', expected 'performance'
+I20261010 06:04:00.410283   4412 mcast_rx.cc:203] joined 239.1.1.18:31018 on ens2f0 (A-side), 239.1.2.18:31018 (B-side)
+I20261010 06:04:00.911553   4413 fix_session.cc:212] Logon accepted: SenderCompID=OKL1 TargetCompID=XEUR HeartBtInt=30 MsgSeqNum=1
+I20261010 06:04:01.204853   4414 risk_engine.cc:88] risk engine ready: 1840 instruments, max_order_qty=500, max_notional=2500000 EUR
+W20261010 06:04:12.880796   4412 mcast_rx.cc:341] sequence gap on A-side: expected 18822410, got 18822417 (7 packets), recovered from B-side
+I20261010 06:04:30.100084   4413 fix_session.cc:390] Heartbeat sent MsgSeqNum=212
+W20261010 06:04:41.730231   4413 tcp_conn.cc:155] tick-to-trade p99=38.4us over 1s window exceeds budget 25us (p50=6.1us, max=412us)
+I20261010 06:04:41.740915   4413 tcp_conn.cc:171] send() wrote 212 of 212 bytes, EAGAIN=0, sndbuf=4194304
+E20261010 06:04:52.010398   4414 risk_engine.cc:241] order rejected by risk: ClOrdID=OKL1-77120 FDAX qty=900 exceeds max_order_qty=500
+W20261010 06:04:52.400919   4412 order_book.cc:97] crossed book on FESX Z6: bid 5321.0 >= ask 5320.5, waiting for snapshot
+E20261010 06:04:52.410480   4412 order_book.cc:104] snapshot request failed: venue said "SecurityID 4128899 unknown"
+E20261010 06:04:58.900845   4413 fix_session.cc:455] connection reset by peer (ECONNRESET) after 58.9s, last inbound MsgSeqNum=1904
+I20261010 06:04:58.910784   4413 fix_session.cc:470] reconnecting in 250ms (attempt 1/10)
+I20261010 06:04:59.200771   4413 fix_session.cc:212] Logon accepted: SenderCompID=OKL1 TargetCompID=XEUR HeartBtInt=30 MsgSeqNum=1905
+W20261010 06:04:59.210660   4413 fix_session.cc:512] ResendRequest BeginSeqNo=1898 EndSeqNo=0, replaying 7 messages from journal
+E20261010 06:05:11.050967   4414 arena.cc:91] arena exhausted (512 MiB used), falling back to operator new
+F20261010 06:05:11.060215   4414 crash_handler.cc:33] caught signal 11 (SIGSEGV), fault address 0x0000000000000018, writing core to /var/crash
+*** Check failure stack trace: ***
+    @     0x55c1e04b2f18  okl::risk::RiskEngine::check()
+    @     0x55c1e04a1c02  okl::risk::RiskThread::run()
+    @     0x7f3a5f1b2a93  start_thread

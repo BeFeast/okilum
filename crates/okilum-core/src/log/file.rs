@@ -42,6 +42,15 @@ impl LogFile {
 
     fn open_with(path: &Path, map_threshold: u64) -> Result<Self> {
         let file = std::fs::File::open(path).context("The log file cannot be opened")?;
+        if let Some(ext) = super::compression(path) {
+            let bytes = decompress(file, ext)?;
+            let index = LogIndex::build(&bytes);
+            return Ok(Self {
+                path: path.to_owned(),
+                bytes: Bytes::Owned(bytes),
+                index,
+            });
+        }
         let len = file
             .metadata()
             .context("The log file cannot be inspected")?
@@ -101,6 +110,11 @@ impl LogFile {
     pub fn index(&self) -> &LogIndex {
         &self.index
     }
+    /// Whether the bytes were decoded from a compressed file, which does not
+    /// grow and cannot be followed.
+    pub fn is_compressed(&self) -> bool {
+        super::compression(&self.path).is_some()
+    }
     pub fn is_mapped(&self) -> bool {
         matches!(self.bytes, Bytes::Mapped { .. })
     }
@@ -112,6 +126,34 @@ impl LogFile {
     pub fn record(&self, index: usize) -> Option<Record> {
         Record::parse(self.raw(index)?, self.index.format())
     }
+}
+
+/// The decoded bytes of a compressed log, in memory, up to the viewer's
+/// size limit. Concatenated gzip and bzip2 members (what `cat a.gz b.gz`
+/// and some rotators write) are read to the end.
+fn decompress(file: std::fs::File, ext: &str) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let file = std::io::BufReader::new(file);
+    let reader: Box<dyn Read> = match ext.to_ascii_lowercase().as_str() {
+        "gz" => Box::new(flate2::read::MultiGzDecoder::new(file)),
+        "zst" => Box::new(
+            zstd::stream::read::Decoder::with_buffer(file)
+                .context("The compressed log cannot be read")?,
+        ),
+        "bz2" => Box::new(bzip2::read::MultiBzDecoder::new(file)),
+        other => anyhow::bail!("`.{other}` logs cannot be decoded"),
+    };
+    let mut bytes = Vec::new();
+    reader
+        .take(MAX_LOG_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .context("The compressed log cannot be decoded")?;
+    ensure!(
+        bytes.len() as u64 <= MAX_LOG_BYTES,
+        "The decompressed log is larger than the viewer's {} GiB limit",
+        MAX_LOG_BYTES >> 30
+    );
+    Ok(bytes)
 }
 
 #[cfg(test)]

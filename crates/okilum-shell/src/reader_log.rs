@@ -303,6 +303,10 @@ impl LogView {
         &self.focus
     }
 
+    fn compressed(&self) -> bool {
+        self.file().is_some_and(|file| file.is_compressed())
+    }
+
     fn file(&self) -> Option<&Arc<LogFile>> {
         match &self.state {
             State::Ready(document) => Some(&document.file),
@@ -1244,7 +1248,8 @@ impl LogView {
             .children(time_button)
             .child(query)
             .children(history)
-            .child(self.follow_button(cx))
+            // A compressed log does not grow (#1164).
+            .when(!self.compressed(), |bar| bar.child(self.follow_button(cx)))
             .child(
                 div()
                     .flex_none()
@@ -1434,7 +1439,9 @@ impl Render for LogView {
                 .child(message)
                 // An empty log can still be followed until records arrive.
                 .when(
-                    matches!(self.state, State::Ready(_)) && self.follow.is_none(),
+                    matches!(self.state, State::Ready(_))
+                        && self.follow.is_none()
+                        && !self.compressed(),
                     |list| list.child(self.follow_button(cx)),
                 )
         };
@@ -2327,20 +2334,29 @@ mod tests {
         text: &str,
         cx: &'a mut TestAppContext,
     ) -> (tempfile::TempDir, Entity<Reader>, &'a mut VisualTestContext) {
+        open_named("app.jsonl", text.as_bytes(), cx)
+    }
+
+    /// Opens a file named `name` holding `bytes`, as a path given on launch.
+    fn open_named<'a>(
+        name: &str,
+        bytes: &[u8],
+        cx: &'a mut TestAppContext,
+    ) -> (tempfile::TempDir, Entity<Reader>, &'a mut VisualTestContext) {
         cx.update(|cx| {
             gpui_component::init(cx);
             crate::bind_keys(cx);
         });
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().canonicalize().unwrap();
-        std::fs::write(root.join("app.jsonl"), text).unwrap();
+        std::fs::write(root.join(name), bytes).unwrap();
         let state = root.join(".state");
         let mut entity = None;
         let (_, visual) = cx.add_window_view(|window, cx| {
             let reader = cx.new(|cx| {
                 Reader::new(
                     Opts {
-                        open_path: Some(root.join("app.jsonl")),
+                        open_path: Some(root.join(name)),
                         session_directory: Some(state.clone()),
                         ..Default::default()
                     },
@@ -2353,6 +2369,42 @@ mod tests {
         });
         visual.run_until_parked();
         (directory, entity.unwrap(), visual)
+    }
+
+    #[gpui::test]
+    fn a_rotated_gzip_log_opens_decoded_and_without_follow(cx: &mut TestAppContext) {
+        // Packed by the system gzip; the text is the pack's 649-line access log.
+        let packed = include_bytes!("../../okilum-core/tests/fixtures/log/names/access.log.1.gz");
+        let (_directory, reader, visual) = open_named("app.log.1.gz", packed, cx);
+        let view = log_view(&reader, visual);
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        view.read_with(visual, |view, _| {
+            let file = view.file().unwrap();
+            assert!(file.is_compressed());
+            assert_eq!(file.index().format(), Format::AccessLog);
+            assert_eq!(view.visible_len(), 649);
+        });
+        assert!(
+            visual.debug_bounds("log-follow").is_none(),
+            "a compressed log is not followed"
+        );
+    }
+
+    #[gpui::test]
+    fn a_glog_file_name_opens_in_the_log_view(cx: &mut TestAppContext) {
+        let name = "ordgw.trade-gw-01.god.log.INFO.20261010-060400.4411";
+        let text = include_bytes!(
+            "../../okilum-core/tests/fixtures/log/names/ordgw.trade-gw-01.god.log.INFO.20261010-060400.4411"
+        );
+        let (_directory, reader, visual) = open_named(name, text, cx);
+        let view = log_view(&reader, visual);
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        view.read_with(visual, |view, _| {
+            assert_eq!(view.file().unwrap().index().format(), Format::Glog);
+            assert_eq!(view.visible_len(), 26);
+        });
+        // Positive control for the test above: an uncompressed log has Follow.
+        assert!(visual.debug_bounds("log-follow").is_some());
     }
 
     fn shown(view: &Entity<LogView>, visual: &mut VisualTestContext) -> Vec<usize> {

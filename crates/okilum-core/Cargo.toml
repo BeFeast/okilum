@@ -33,6 +33,12 @@ unicode-segmentation = "1.13.3"
 # Log viewer indexing (#602): line splitting and large-file mapping. Both
 # are already in Cargo.lock through tantivy and gpui.
 memchr = "2"
+# Compressed logs (#1164), read-only. The same crates and versions the
+# lockfile already builds (flate2 with the zlib-rs backend zip uses, zstd
+# through tantivy, bzip2 on the pure-Rust libbz2-rs-sys backend).
+flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
+zstd = "0.13"
+bzip2 = "0.6"
 memmap2 = "0.9"
 
 # Exact source snapshots and durable operation receipts (AI Brain POC).

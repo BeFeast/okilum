@@ -147,10 +147,43 @@ fn logfmt_and_plain_text() {
 
 #[test]
 fn log_extensions() {
-    for name in ["a.log", "b.JSONL", "c.ndjson", "d.logfmt"] {
+    for name in [
+        "a.log",
+        "b.JSONL",
+        "c.ndjson",
+        "d.logfmt",
+        // Rotated (#1164): numbered, dated, logrotate dateext.
+        "app.log.1",
+        "app.log.2026-10-10",
+        "app.log.20261010",
+        "app.log-20261010",
+        "events.jsonl.3",
+        // glog's file and its newest-file link.
+        "ordgw.trade-gw-01.god.log.INFO.20261010-060400.4411",
+        "ordgw.WARNING",
+        // Compressed, by the name inside.
+        "app.log.gz",
+        "app.log.1.gz",
+        "app.log-20261010.bz2",
+        "events.jsonl.zst",
+        "APP.LOG.GZ",
+    ] {
         assert!(is_log_path(Path::new(name)), "{name}");
     }
-    for name in ["a.md", "log", "a.log.1", "a.log.gz", "a.json"] {
+    for name in [
+        "a.md",
+        "log",
+        "a.json",
+        "a.log.bak",
+        "a.log.1.tmp",
+        "release.1",
+        "app-20261010",
+        "site.tar.gz",
+        "a.gz",
+        ".log",
+        "info.INFO.md",
+        "x.log.INFO.2026",
+    ] {
         assert!(!is_log_path(Path::new(name)), "{name}");
     }
 }
@@ -597,4 +630,49 @@ fn colour_codes_inside_json_strings_are_gone_too() {
     let record = file.record(0).unwrap();
     assert_eq!(record.role(Role::Message).unwrap().value, "boom");
     assert_eq!(record.role(Role::Level).unwrap().value, "ERROR");
+}
+
+#[test]
+fn compressed_logs_decode_to_the_index_of_their_text() {
+    // Packed by the system gzip, zstd and bzip2, not by the crates that read
+    // them; one gzip file is two members back to back.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/log");
+    for (packed, plain) in [
+        (
+            "names/access.log.1.gz",
+            "samples/native-formats/apache-access-combined.log",
+        ),
+        (
+            "names/ordgw.log.2026-10-10.zst",
+            "samples/native-formats/cpp/ordgw.spdlog-default.log",
+        ),
+        ("names/syslog.log-20261010.bz2", "syslog.log"),
+        ("names/two-members.log.gz", "syslog.log"),
+    ] {
+        let path = root.join(packed);
+        assert!(is_log_path(&path), "{packed}");
+        let file = LogFile::open(&path).unwrap();
+        let text = fixture(plain);
+        // Positive control: the file on disk is not the text.
+        assert_ne!(std::fs::read(&path).unwrap(), text.bytes(), "{packed}");
+        assert!(file.is_compressed() && !text.is_compressed(), "{packed}");
+        assert_eq!(file.bytes(), text.bytes(), "{packed}");
+        assert_eq!(file.index(), text.index(), "{packed}");
+        let error = LogTail::open(&path)
+            .err()
+            .expect("a compressed log is not followed");
+        assert!(error.to_string().contains("cannot be followed"), "{packed}");
+    }
+    let broken = tempfile::tempdir().unwrap();
+    let path = broken.path().join("app.log.gz");
+    std::fs::write(&path, b"not gzip at all").unwrap();
+    let error = LogFile::open(&path).err().expect("garbage is refused");
+    assert!(format!("{error:#}").contains("cannot be decoded"));
+}
+
+#[test]
+fn a_glog_file_name_opens_as_glog() {
+    let file = fixture("names/ordgw.trade-gw-01.god.log.INFO.20261010-060400.4411");
+    assert_eq!(file.index().format(), Format::Glog);
+    assert_eq!(file.index().len(), 26);
 }
