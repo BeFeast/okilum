@@ -7973,6 +7973,7 @@ dependencies = [
  "chrono",
  "core-foundation-sys",
  "dirs 6.0.0",
+ "dunce",
  "embed-resource",
  "fsevent-sys",
  "futures",

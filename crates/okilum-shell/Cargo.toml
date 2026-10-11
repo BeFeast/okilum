@@ -28,6 +28,8 @@ gpui-kit-assets.workspace = true
 # The Windows HLSL profile uses debug assertions; icons must still be portable.
 rust-embed = { version = "8.12.0", features = ["debug-embed"] }
 anyhow = "1"
+# Plain C:\ paths from canonicalize where people read them or compare them (#1270).
+dunce = "1"
 async-channel = "2"
 notify = "7"
 url = "2"

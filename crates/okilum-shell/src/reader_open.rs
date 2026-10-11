@@ -280,6 +280,20 @@ mod tests {
         assert_eq!(OpenIntent::validate(&f.0, None, None).unwrap().root, f.0);
     }
     #[test]
+    fn known_roots_are_canonical_without_the_windows_verbatim_prefix() {
+        let f = Fixture::new();
+        let root = plain_root(f.0.join("."));
+        assert!(
+            !root.to_string_lossy().starts_with(r"\\?\"),
+            "{}",
+            root.display()
+        );
+        assert_eq!(root.canonicalize().unwrap(), f.0.canonicalize().unwrap());
+        // A root that no longer exists stays as recorded.
+        let gone = f.0.join("gone");
+        assert_eq!(plain_root(gone.clone()), gone);
+    }
+    #[test]
     fn log_files_open_without_utf8_and_other_files_still_refuse() {
         let f = Fixture::new();
         let names = ["service.log", "events.JSONL", "events.ndjson", "app.logfmt"];
@@ -777,10 +791,13 @@ fn known_roots(cx: &App) -> Vec<PathBuf> {
             }
         }
     }
-    roots
-        .into_iter()
-        .map(|root| root.canonicalize().unwrap_or(root))
-        .collect()
+    roots.into_iter().map(plain_root).collect()
+}
+
+/// The canonical root without Windows' `\\?\` prefix: it is shown in the
+/// link prompt and compared with the roots of open windows (#1270).
+fn plain_root(root: PathBuf) -> PathBuf {
+    dunce::canonicalize(&root).unwrap_or(root)
 }
 
 /// Open an external `okilum:` link (#1049). Links only navigate: they open a
