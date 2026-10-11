@@ -999,7 +999,8 @@ fn reader_plugins_at(
     };
     let hover_entity = entity.clone();
     let tasks_entity = entity.clone();
-    let view = markdown_plugins(
+    let view = markdown_plugins_at(
+        fold_base,
         view,
         Arc::new(move |url, event, window, cx| {
             if matches!(event, ClickEvent::Mouse(e) if e.up.button == MouseButton::Right) {
@@ -1066,6 +1067,17 @@ type MarkdownImageResolver = Arc<dyn Fn(&str) -> Option<MarkdownImage> + Send + 
 /// The same recursive Markdown plugins serve local Reader paths and remote
 /// Brain image bytes. The caller supplies navigation and image authority.
 fn markdown_plugins(
+    view: TextView,
+    link_handler: MarkdownLinkHandler,
+    image_resolver: MarkdownImageResolver,
+    sel_format: SelectionFormat,
+) -> TextView {
+    markdown_plugins_at(0, view, link_handler, image_resolver, sel_format)
+}
+
+/// [`markdown_plugins`] for one part of a note; see [`reader_plugins_at`].
+fn markdown_plugins_at(
+    fold_base: usize,
     view: TextView,
     link_handler: MarkdownLinkHandler,
     image_resolver: MarkdownImageResolver,
