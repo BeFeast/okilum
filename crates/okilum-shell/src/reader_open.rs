@@ -562,7 +562,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
     button::{Button, ButtonVariants as _},
-    h_flex, v_flex, ActiveTheme as _, Root, Sizable, TitleBar,
+    h_flex, v_flex, ActiveTheme as _, Disableable as _, Root, Sizable, TitleBar,
 };
 
 #[derive(Default)]
