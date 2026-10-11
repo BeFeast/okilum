@@ -124,6 +124,8 @@ struct Saved {
     toolbar_labels: bool,
     /// Soft wrap in code files (#998); off means horizontal scroll.
     code_soft_wrap: bool,
+    /// JSON files show their raw text instead of a pretty-printed view (#1131).
+    json_raw: bool,
     delimited_no_header: BTreeSet<PathBuf>,
     vaults: BTreeMap<PathBuf, Layout>,
     /// Per-vault accent preset key (#774), keyed like `vaults` by the
@@ -151,6 +153,7 @@ impl Default for Saved {
             typed_views: Default::default(),
             toolbar_labels: false,
             code_soft_wrap: false,
+            json_raw: false,
             delimited_no_header: Default::default(),
             vaults: Default::default(),
             vault_colors: Default::default(),
@@ -174,6 +177,7 @@ struct Store {
     typed_views_changed: bool,
     toolbar_labels_changed: bool,
     code_soft_wrap_changed: bool,
+    json_raw_changed: bool,
     colors_changed: BTreeSet<PathBuf>,
     trust_changed: BTreeSet<PathBuf>,
     delimited_changed: BTreeSet<PathBuf>,
@@ -247,6 +251,7 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         typed_views_changed: false,
         toolbar_labels_changed: false,
         code_soft_wrap_changed: false,
+        json_raw_changed: false,
         colors_changed: Default::default(),
         trust_changed: Default::default(),
         delimited_changed: Default::default(),
@@ -461,6 +466,7 @@ struct WriteJob {
     typed_views_changed: bool,
     toolbar_labels_changed: bool,
     code_soft_wrap_changed: bool,
+    json_raw_changed: bool,
     colors_changed: BTreeSet<PathBuf>,
     trust_changed: BTreeSet<PathBuf>,
     delimited_changed: BTreeSet<PathBuf>,
@@ -533,6 +539,9 @@ impl WriteJob {
         if self.code_soft_wrap_changed {
             latest.code_soft_wrap = self.saved.code_soft_wrap;
         }
+        if self.json_raw_changed {
+            latest.json_raw = self.saved.json_raw;
+        }
         // Per root, like layouts: a colour removed here is removed there.
         for root in &self.colors_changed {
             match self.saved.vault_colors.get(root) {
@@ -594,6 +603,7 @@ fn job(cx: &App) -> Option<WriteJob> {
             && !state.typed_views_changed
             && !state.toolbar_labels_changed
             && !state.code_soft_wrap_changed
+            && !state.json_raw_changed
             && state.colors_changed.is_empty()
             && state.trust_changed.is_empty()
             && state.delimited_changed.is_empty()
@@ -617,6 +627,7 @@ fn job(cx: &App) -> Option<WriteJob> {
         typed_views_changed: state.typed_views_changed,
         toolbar_labels_changed: state.toolbar_labels_changed,
         code_soft_wrap_changed: state.code_soft_wrap_changed,
+        json_raw_changed: state.json_raw_changed,
         colors_changed: state.colors_changed.clone(),
         trust_changed: state.trust_changed.clone(),
         delimited_changed: state.delimited_changed.clone(),
@@ -1136,6 +1147,23 @@ pub(crate) fn set_code_soft_wrap(value: bool, cx: &mut App) {
     cx.refresh_windows();
 }
 
+/// Pretty-printed JSON is the default (#1131); this remembers Raw.
+pub(crate) fn json_raw(cx: &App) -> bool {
+    cx.try_global::<Store>()
+        .is_some_and(|state| state.saved.json_raw)
+}
+
+pub(crate) fn set_json_raw(value: bool, cx: &mut App) {
+    if !installed(cx) || json_raw(cx) == value {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.json_raw = value;
+    state.json_raw_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
 pub(crate) fn delimited_header(path: &Path, cx: &App) -> bool {
     !cx.try_global::<Store>()
         .is_some_and(|state| state.saved.delimited_no_header.contains(path))
@@ -1199,6 +1227,7 @@ fn mark_saved(generation: u64, cx: &mut App) {
         state.typed_views_changed = false;
         state.toolbar_labels_changed = false;
         state.code_soft_wrap_changed = false;
+        state.json_raw_changed = false;
         state.colors_changed.clear();
         state.trust_changed.clear();
         state.delimited_changed.clear();
@@ -1477,6 +1506,7 @@ mod tests {
                 typed_views_changed: true,
                 toolbar_labels_changed: false,
                 code_soft_wrap_changed: false,
+                json_raw_changed: false,
                 colors_changed: Default::default(),
                 trust_changed: Default::default(),
                 delimited_changed: Default::default(),

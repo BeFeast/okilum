@@ -74,10 +74,32 @@ pub(crate) struct CodePreview {
     root: PathBuf,
     rel: String,
     state: State,
+    /// A `.json` file's raw text and its display-only pretty form (#1131).
+    json: Option<JsonText>,
+}
+
+/// Above this a JSON file opens raw; Pretty formats it on a worker on request.
+const PRETTY_BYTES: usize = 1024 * 1024;
+
+type Pretty = Result<String, okilum_core::json_view::Invalid>;
+
+struct JsonText {
+    raw: String,
+    /// None until formatted: large files wait for Pretty.
+    pretty: Option<Pretty>,
+    showing_pretty: bool,
+    formatting: bool,
+}
+
+/// `.json` only: JSONC allows comments and is never reformatted.
+fn is_json(rel: &str) -> bool {
+    Path::new(rel)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
 }
 
 enum Loaded {
-    Text(String),
+    Text(String, Option<Pretty>),
     TooLarge,
     Unsupported,
 }
@@ -91,12 +113,18 @@ impl CodePreview {
         cx: &mut Context<Self>,
     ) -> Self {
         let started = Instant::now();
+        let json = is_json(&rel);
         let task = cx.background_executor().spawn(async move {
             if std::fs::metadata(&path)?.len() > MAX_BYTES {
                 return anyhow::Ok(Loaded::TooLarge);
             }
             Ok(match String::from_utf8(std::fs::read(&path)?) {
-                Ok(text) => Loaded::Text(text),
+                Ok(text) => {
+                    // Formatting runs here, off the UI thread, within a budget.
+                    let pretty = (json && text.len() <= PRETTY_BYTES)
+                        .then(|| okilum_core::json_view::pretty(&text));
+                    Loaded::Text(text, pretty)
+                }
                 Err(_) => Loaded::Unsupported,
             })
         });
@@ -106,8 +134,21 @@ impl CodePreview {
             let result = task.await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.state = match result {
-                    Ok(Loaded::Text(text)) => {
-                        let input = cx.new(|cx| editor(language, &text, window, cx));
+                    Ok(Loaded::Text(text, pretty)) => {
+                        let shown = if json {
+                            let showing_pretty =
+                                !reader_ui_state::json_raw(cx) && matches!(pretty, Some(Ok(_)));
+                            let json = this.json.insert(JsonText {
+                                raw: text,
+                                pretty,
+                                showing_pretty,
+                                formatting: false,
+                            });
+                            json.shown().to_owned()
+                        } else {
+                            text
+                        };
+                        let input = cx.new(|cx| editor(language, &shown, window, cx));
                         timing(&input, started, cx);
                         State::Content(input)
                     }
@@ -125,7 +166,106 @@ impl CodePreview {
             root,
             rel,
             state: State::Loading,
+            json: None,
         }
+    }
+
+    /// Pretty or Raw for this JSON file; Raw is remembered for the next one.
+    fn show_json(&mut self, pretty: bool, window: &mut Window, cx: &mut Context<Self>) {
+        reader_ui_state::set_json_raw(!pretty, cx);
+        let Some(json) = &mut self.json else {
+            return;
+        };
+        if pretty && json.pretty.is_none() {
+            // A large file: format on a worker, then show it.
+            if json.formatting {
+                return;
+            }
+            json.formatting = true;
+            let raw = json.raw.clone();
+            let task = cx
+                .background_executor()
+                .spawn(async move { okilum_core::json_view::pretty(&raw) });
+            cx.spawn_in(window, async move |this, cx| {
+                let pretty = task.await;
+                let _ = this.update_in(cx, |this, window, cx| {
+                    if let Some(json) = &mut this.json {
+                        json.formatting = false;
+                        json.pretty = Some(pretty);
+                    }
+                    this.show_json(true, window, cx);
+                });
+            })
+            .detach();
+            cx.notify();
+            return;
+        }
+        json.showing_pretty = pretty && matches!(json.pretty, Some(Ok(_)));
+        let shown = json.shown().to_owned();
+        if let State::Content(input) = &self.state {
+            input.update(cx, |input, cx| {
+                input.set_value(shown, window, cx);
+                input.prepare_highlighting(window, cx);
+            });
+        }
+        cx.notify();
+    }
+
+    /// The Pretty / Raw switch and why a file stays raw.
+    fn json_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let json = self.json.as_ref()?;
+        let note = match &json.pretty {
+            _ if json.formatting => Some("Formatting…".to_owned()),
+            Some(Err(invalid)) => Some(format!(
+                "Not valid JSON — showing raw (line {}, column {})",
+                invalid.line, invalid.column
+            )),
+            None => Some("Large file — showing raw".to_owned()),
+            Some(Ok(_)) => None,
+        };
+        let entity = cx.entity().downgrade();
+        let raw_entity = entity.clone();
+        Some(
+            h_flex()
+                .gap_1()
+                .pb_2()
+                .items_center()
+                .child(
+                    Button::new("json-pretty")
+                        .xsmall()
+                        .label(if json.pretty.is_none() && !json.showing_pretty {
+                            "Pretty-print anyway"
+                        } else {
+                            "Pretty"
+                        })
+                        .selected(json.showing_pretty)
+                        .disabled(matches!(json.pretty, Some(Err(_))))
+                        .debug_selector(|| "json-pretty".into())
+                        .on_click(move |_, window, cx| {
+                            let _ = entity.update(cx, |this, cx| this.show_json(true, window, cx));
+                        }),
+                )
+                .child(
+                    Button::new("json-raw")
+                        .xsmall()
+                        .label("Raw")
+                        .selected(!json.showing_pretty)
+                        .debug_selector(|| "json-raw".into())
+                        .on_click(move |_, window, cx| {
+                            let _ =
+                                raw_entity.update(cx, |this, cx| this.show_json(false, window, cx));
+                        }),
+                )
+                .children(note.map(|note| {
+                    div()
+                        .pl_2()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .debug_selector(|| "json-note".into())
+                        .child(note)
+                }))
+                .into_any_element(),
+        )
     }
 
     /// Edit mode is offered once the text loaded within the size cap.
@@ -209,6 +349,15 @@ fn timing(input: &Entity<EditorState>, started: Instant, cx: &mut Context<CodePr
     .detach();
 }
 
+impl JsonText {
+    fn shown(&self) -> &str {
+        match &self.pretty {
+            Some(Ok(pretty)) if self.showing_pretty => pretty,
+            _ => &self.raw,
+        }
+    }
+}
+
 impl Render for CodePreview {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let view = v_flex()
@@ -257,7 +406,7 @@ impl Render for CodePreview {
                         ),
                 )
             }
-            State::Content(input) => view.child(
+            State::Content(input) => view.children(self.json_bar(cx)).child(
                 // The element applies its own flag to the state on every render.
                 Editor::new(input)
                     .readonly(true)
