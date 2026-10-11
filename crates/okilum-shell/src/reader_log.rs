@@ -10,6 +10,7 @@
 use super::*;
 use gpui_component::scroll::ScrollableElement as _;
 use okilum_core::log::correlation;
+use okilum_core::log::export::{self, ExportFormat};
 use okilum_core::log::histogram::Histogram;
 use okilum_core::log::merge::MergedLog;
 use okilum_core::log::query::{Expr, FieldRef, Literal, Test};
@@ -47,6 +48,8 @@ const BADGE_WIDTH: f32 = 28.;
 const HISTOGRAM_HEIGHT: f32 = 56.;
 /// A press that moves less than this is a click on a bar, not a range.
 const HISTOGRAM_DRAG_MIN: f32 = 4.;
+/// The most rows one copy takes; a longer selection is exported instead.
+const COPY_ROWS_MAX: usize = 20_000;
 /// While a log is followed the bars are counted again at most this often.
 const HISTOGRAM_FOLLOW_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -86,6 +89,8 @@ actions!(
     [
         SelectPreviousRecord,
         SelectNextRecord,
+        ExtendPreviousRecord,
+        ExtendNextRecord,
         CopyRawLine,
         FocusLogFilter
     ]
@@ -95,6 +100,8 @@ pub(crate) fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("up", SelectPreviousRecord, Some(CONTEXT)),
         KeyBinding::new("down", SelectNextRecord, Some(CONTEXT)),
+        KeyBinding::new("shift-up", ExtendPreviousRecord, Some(CONTEXT)),
+        KeyBinding::new("shift-down", ExtendNextRecord, Some(CONTEXT)),
         KeyBinding::new(COPY_KEY, CopyRawLine, Some(CONTEXT)),
         KeyBinding::new(FILTER_KEY, FocusLogFilter, Some(CONTEXT)),
     ]);
@@ -171,6 +178,82 @@ struct SavingFilter {
     input: Entity<InputState>,
     error: Option<String>,
     _subscription: Subscription,
+}
+
+/// Which rows an export takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExportScope {
+    /// Every row the filters show.
+    Shown,
+    /// The selected rows.
+    Selected,
+}
+
+/// The rows of an export, as the view held them when it was asked for.
+enum ExportIds {
+    All(usize),
+    List(Arc<Vec<u32>>),
+    Picked(Vec<u32>),
+}
+
+/// What a background export reads: copies of the shown files and the rows to
+/// write, so a followed log growing meanwhile changes nothing (#1169).
+struct ExportJob {
+    /// Each shown file with its name, in the order of the merged view.
+    files: Vec<(Snapshot, String)>,
+    merged: Option<MergedLog>,
+    ids: ExportIds,
+}
+
+impl ExportJob {
+    fn count(&self) -> usize {
+        match &self.ids {
+            ExportIds::All(count) => *count,
+            ExportIds::List(rows) => rows.len(),
+            ExportIds::Picked(rows) => rows.len(),
+        }
+    }
+
+    /// File and entry of row `id`.
+    fn locate(&self, id: usize) -> Option<(usize, usize)> {
+        match &self.merged {
+            Some(log) => log.get(id).map(|row| (row.file().index(), row.entry())),
+            None => Some((0, id)),
+        }
+    }
+
+    /// Writes every row in order; returns how many.
+    fn write(&self, out: &mut dyn std::io::Write, format: ExportFormat) -> std::io::Result<usize> {
+        let several = self.merged.is_some();
+        let mut written = 0;
+        let mut one = |id: usize| -> std::io::Result<()> {
+            let Some((file, entry)) = self.locate(id) else {
+                return Ok(());
+            };
+            let Some((snapshot, name)) = self.files.get(file) else {
+                return Ok(());
+            };
+            let (index, data) = snapshot.parts();
+            let Some(entry) = index.get(entry) else {
+                return Ok(());
+            };
+            let row = export::Row {
+                data,
+                entry,
+                format: index.format(),
+                source: several.then_some(name.as_str()),
+            };
+            export::write_row(out, &row, format)?;
+            written += 1;
+            Ok(())
+        };
+        match &self.ids {
+            ExportIds::All(count) => (0..*count).try_for_each(&mut one)?,
+            ExportIds::List(rows) => rows.iter().try_for_each(|&id| one(id as usize))?,
+            ExportIds::Picked(rows) => rows.iter().try_for_each(|&id| one(id as usize))?,
+        }
+        Ok(written)
+    }
 }
 
 /// The index of a source for a background count, without its bytes.
@@ -295,6 +378,10 @@ pub(crate) struct LogView {
     state: State,
     /// Entry index (into the log index) of the selected record.
     selected: Option<usize>,
+    /// Where a range of selected rows started (#1169); `selected` is its other end.
+    anchor: Option<usize>,
+    /// An export is being chosen or written; one at a time.
+    exporting: bool,
     scroll: UniformListScrollHandle,
     focus: FocusHandle,
     filter: LogFilter,
@@ -387,6 +474,8 @@ impl LogView {
         Self {
             state,
             selected: None,
+            anchor: None,
+            exporting: false,
             scroll: UniformListScrollHandle::new(),
             focus: cx.focus_handle(),
             filter: LogFilter::default(),
@@ -633,6 +722,7 @@ impl LogView {
             }
         });
         self.selected = selected.and_then(|(source, entry)| self.id_of(source, entry));
+        self.anchor = None;
     }
 
     fn set_source_enabled(&mut self, source: usize, enabled: bool, cx: &mut Context<Self>) {
@@ -1270,6 +1360,7 @@ impl LogView {
 
     fn select(&mut self, index: usize, reveal: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.selected = Some(index);
+        self.anchor = None;
         if let Some(row) = self.row_of(index).filter(|_| reveal) {
             self.scroll.scroll_to_item(row, ScrollStrategy::Nearest);
         }
@@ -1277,7 +1368,37 @@ impl LogView {
         cx.notify();
     }
 
+    /// Moves the end of the selected rows to `index`, keeping the other end
+    /// where it was (shift-click, shift-arrows).
+    fn extend_to(
+        &mut self,
+        index: usize,
+        reveal: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(anchor) = self.anchor.or(self.selected) else {
+            return self.select(index, reveal, window, cx);
+        };
+        self.select(index, reveal, window, cx);
+        self.anchor = (anchor != index).then_some(anchor);
+    }
+
+    /// The list positions of the selected rows: one, or the range between the
+    /// anchor and the selected record.
+    fn selection(&self) -> Option<Range<usize>> {
+        let cursor = self.row_of(self.selected?)?;
+        match self.anchor.and_then(|anchor| self.row_of(anchor)) {
+            Some(anchor) => Some(anchor.min(cursor)..anchor.max(cursor) + 1),
+            None => Some(cursor..cursor + 1),
+        }
+    }
+
     fn step(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        self.step_by(delta, false, window, cx)
+    }
+
+    fn step_by(&mut self, delta: isize, extend: bool, window: &mut Window, cx: &mut Context<Self>) {
         let count = self.visible_len();
         if count == 0 {
             return;
@@ -1288,7 +1409,11 @@ impl LogView {
             None => 0,
         };
         if let Some(index) = self.entry_at(next) {
-            self.select(index, true, window, cx);
+            if extend {
+                self.extend_to(index, true, window, cx);
+            } else {
+                self.select(index, true, window, cx);
+            }
         }
     }
 
@@ -1791,6 +1916,7 @@ impl LogView {
                     });
                 }
                 self.selected = None;
+                self.anchor = None;
                 self.rebuild_merge();
                 self.refilter(cx);
             }
@@ -1942,10 +2068,17 @@ impl LogView {
     /// it and returns to the top.
     fn after_rows_changed(&mut self) {
         self.histogram_for = None;
+        if self
+            .anchor
+            .is_some_and(|anchor| self.row_of(anchor).is_none())
+        {
+            self.anchor = None;
+        }
         match self.selected.and_then(|index| self.row_of(index)) {
             Some(row) => self.scroll.scroll_to_item(row, ScrollStrategy::Nearest),
             None => {
                 self.selected = None;
+                self.anchor = None;
                 if self.visible_len() > 0 {
                     self.scroll.scroll_to_item(0, ScrollStrategy::Top);
                 }
@@ -1960,13 +2093,59 @@ impl LogView {
         }
     }
 
+    /// Copies the selected record's raw lines; several records are copied as
+    /// they are in the file, one after another.
     fn copy_raw(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(raw) = self.selected.and_then(|index| self.raw_at(index)) else {
+        let Some(range) = self.selection() else {
             return;
         };
-        let text = String::from_utf8_lossy(raw).into_owned();
-        cx.write_to_clipboard(ClipboardItem::new_string(text));
-        reader_toast::transient("Copied raw line", window, cx);
+        if range.len() == 1 {
+            let Some(raw) = self.selected.and_then(|index| self.raw_at(index)) else {
+                return;
+            };
+            let text = String::from_utf8_lossy(raw).into_owned();
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+            reader_toast::transient("Copied raw line", window, cx);
+            return;
+        }
+        if range.len() > COPY_ROWS_MAX {
+            reader_toast::error(
+                format!(
+                    "Too many rows to copy ({} selected, at most {}): export them instead",
+                    grouped(range.len() as u64),
+                    grouped(COPY_ROWS_MAX as u64)
+                ),
+                window,
+                cx,
+            );
+            return;
+        }
+        let mut bytes = Vec::new();
+        let mut ending = 0;
+        for row in range.clone() {
+            let Some((file, entry)) = self
+                .entry_at(row)
+                .and_then(|id| self.locate(id))
+                .and_then(|(source, local)| Some((self.source(source)?, local)))
+                .and_then(|(file, local)| Some((file, file.index().get(local)?)))
+            else {
+                continue;
+            };
+            let (raw, line_ending) = export::raw_with_ending(file.bytes(), entry);
+            bytes.extend_from_slice(raw);
+            bytes.extend_from_slice(line_ending);
+            ending = line_ending.len();
+        }
+        // Lines, not a file: no ending after the last one.
+        bytes.truncate(bytes.len() - ending);
+        cx.write_to_clipboard(ClipboardItem::new_string(
+            String::from_utf8_lossy(&bytes).into_owned(),
+        ));
+        reader_toast::transient(
+            format!("Copied {} records", grouped(range.len() as u64)),
+            window,
+            cx,
+        );
     }
 
     fn render_rows(
@@ -1984,10 +2163,11 @@ impl LogView {
         let hover = brand::reader_palette(cx).hover;
         let muted = cx.theme().muted_foreground;
         let mono = cx.theme().mono_font_family.clone();
+        let chosen = this.selection();
         range
-            .map(|row| {
+            .map(|position| {
                 let Some((index, source, file, local, entry)) =
-                    this.entry_at(row).and_then(|index| {
+                    this.entry_at(position).and_then(|index| {
                         let (source, local) = this.locate(index)?;
                         let file = this.source(source)?;
                         Some((index, source, file, local, file.index().get(local)?))
@@ -2015,7 +2195,7 @@ impl LogView {
                 };
                 let row = row_text(file, local);
                 let lines = row.lines;
-                let selected = this.selected == Some(index);
+                let selected = chosen.as_ref().is_some_and(|rows| rows.contains(&position));
                 let text_color = if level == Level::Unparsed {
                     faint
                 } else {
@@ -2144,11 +2324,13 @@ impl LogView {
                                 .child(format!("▸ {} lines", grouped(lines as u64))),
                         )
                     })
-                    .on_click(
-                        cx.listener(move |this, _, window, cx| {
+                    .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                        if event.modifiers().shift {
+                            this.extend_to(index, false, window, cx)
+                        } else {
                             this.select(index, false, window, cx)
-                        }),
-                    )
+                        }
+                    }))
                     .into_any_element()
             })
             .collect()
@@ -2588,6 +2770,7 @@ impl LogView {
             }))
             .children(history)
             .child(self.saved_button(cx))
+            .child(self.export_button(cx))
             .child(self.columns_button(cx))
             .child(self.files_button(cx))
             // A compressed log does not grow (#1164).
@@ -2861,6 +3044,179 @@ impl LogView {
                         }
                         menu
                     });
+                }
+                menu
+            })
+            .into_any_element()
+    }
+
+    /// The files and rows an export would write now, or `None` when a file
+    /// of the view cannot be read.
+    fn export_job(&self, scope: ExportScope) -> Option<ExportJob> {
+        let sources: Vec<usize> = match &self.merge {
+            Some(merge) => merge.sources.clone(),
+            None => self.enabled_sources().into_iter().take(1).collect(),
+        };
+        let files: Vec<(Snapshot, String)> = sources
+            .iter()
+            .map(|&source| Some((self.snapshot_of(source)?, self.source_name(source))))
+            .collect::<Option<_>>()?;
+        let ids = match scope {
+            ExportScope::Shown => match &self.rows {
+                Some(rows) => ExportIds::List(rows.clone()),
+                None => ExportIds::All(self.total()),
+            },
+            ExportScope::Selected => ExportIds::Picked(
+                self.selection()?
+                    .filter_map(|row| self.entry_at(row).map(|id| id as u32))
+                    .collect(),
+            ),
+        };
+        Some(ExportJob {
+            files,
+            merged: self.merge.as_ref().map(|merge| merge.log.clone()),
+            ids,
+        })
+    }
+
+    /// Asks where to save, then writes the rows as they were when this was
+    /// asked: raw lines exactly as in the file, or one JSON object per row.
+    /// The file appears whole or not at all, and never replaces a log being
+    /// read.
+    fn export_rows(
+        &mut self,
+        scope: ExportScope,
+        format: ExportFormat,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.exporting {
+            reader_toast::error("An export is still running", window, cx);
+            return;
+        }
+        let Some(job) = self.export_job(scope) else {
+            reader_toast::error(
+                "Cannot export: a file of this view cannot be read",
+                window,
+                cx,
+            );
+            return;
+        };
+        if job.count() == 0 {
+            reader_toast::error("Nothing to export: no row is shown", window, cx);
+            return;
+        }
+        let logs: Vec<PathBuf> = self
+            .enabled_sources()
+            .into_iter()
+            .filter_map(|source| Some(self.source(source)?.path().to_path_buf()))
+            .collect();
+        let first = logs.first().cloned().unwrap_or_default();
+        let directory = first.parent().map(Path::to_path_buf).unwrap_or_default();
+        let stem = first
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "log".into());
+        let suggested = match format {
+            ExportFormat::Raw => format!(
+                "{stem}-{}.{}",
+                if scope == ExportScope::Shown {
+                    "filtered"
+                } else {
+                    "selected"
+                },
+                first
+                    .extension()
+                    .map_or("log".into(), |ext| ext.to_string_lossy())
+            ),
+            ExportFormat::JsonLines => format!(
+                "{stem}-{}.jsonl",
+                if scope == ExportScope::Shown {
+                    "filtered"
+                } else {
+                    "selected"
+                }
+            ),
+        };
+        let picker = cx.prompt_for_new_path(&directory, Some(&suggested));
+        self.exporting = true;
+        cx.spawn_in(window, async move |this, cx| {
+            let chosen = picker.await;
+            let outcome = match chosen {
+                Ok(Ok(Some(path))) => {
+                    let counted = job.count();
+                    let result = cx
+                        .background_executor()
+                        .spawn(async move {
+                            write_export(&job, &logs, &path, format).map(|n| (n, path))
+                        })
+                        .await;
+                    Some((counted, result))
+                }
+                _ => None,
+            };
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.exporting = false;
+                match outcome {
+                    Some((_, Ok((written, path)))) => {
+                        let name = path
+                            .file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        reader_toast::transient(
+                            format!("Exported {} rows to {name}", grouped(written as u64)),
+                            window,
+                            cx,
+                        );
+                    }
+                    Some((_, Err(error))) => {
+                        reader_toast::error(format!("Cannot export: {error:#}"), window, cx)
+                    }
+                    None => {}
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Export of the shown rows, or of a selection of several.
+    fn export_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
+        let view = cx.entity().downgrade();
+        let shown = self.visible_len();
+        let selected = self.selection().map_or(0, |rows| rows.len());
+        bar_button("log-export", false)
+            .icon(IconName::ArrowDown)
+            .tooltip("Export rows")
+            .debug_selector(|| "log-export".into())
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
+                let mut menu = menu;
+                let mut scopes = vec![(ExportScope::Shown, shown, "shown")];
+                if selected > 1 {
+                    scopes.push((ExportScope::Selected, selected, "selected"));
+                }
+                for (at, (scope, count, what)) in scopes.into_iter().enumerate() {
+                    if at > 0 {
+                        menu = menu.separator();
+                    }
+                    for (format, how) in [
+                        (ExportFormat::Raw, "raw lines"),
+                        (ExportFormat::JsonLines, "JSON lines"),
+                    ] {
+                        let view = view.clone();
+                        menu = menu.item(
+                            PopupMenuItem::new(format!(
+                                "Export {} {what} as {how}…",
+                                grouped(count as u64)
+                            ))
+                            .disabled(count == 0)
+                            .on_click(move |_, window, cx| {
+                                let _ = view.update(cx, |this, cx| {
+                                    this.export_rows(scope, format, window, cx)
+                                });
+                            }),
+                        );
+                    }
                 }
                 menu
             })
@@ -3243,6 +3599,12 @@ impl Render for LogView {
             .on_action(
                 cx.listener(|this, _: &SelectPreviousRecord, window, cx| this.step(-1, window, cx)),
             )
+            .on_action(cx.listener(|this, _: &ExtendNextRecord, window, cx| {
+                this.step_by(1, true, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ExtendPreviousRecord, window, cx| {
+                this.step_by(-1, true, window, cx)
+            }))
             .on_action(cx.listener(|this, _: &CopyRawLine, window, cx| this.copy_raw(window, cx)))
             .on_action(
                 cx.listener(|this, _: &FocusLogFilter, window, cx| this.focus_filter(window, cx)),
@@ -3306,6 +3668,39 @@ fn bar_button(id: &'static str, active: bool) -> Button {
         .h(px(BAR_CONTROL_HEIGHT))
         .rounded(px(6.))
         .selected(active)
+}
+
+/// Writes `job` to `path` through a temporary file next to it, so the file
+/// appears whole or not at all; returns how many rows. A log being read is
+/// never the destination.
+fn write_export(
+    job: &ExportJob,
+    logs: &[PathBuf],
+    path: &Path,
+    format: ExportFormat,
+) -> anyhow::Result<usize> {
+    use anyhow::Context as _;
+    use std::io::Write as _;
+    let target = path.canonicalize().ok();
+    anyhow::ensure!(
+        !logs
+            .iter()
+            .any(|log| log == path || (target.is_some() && log.canonicalize().ok() == target)),
+        "choose a file other than the log itself"
+    );
+    let directory = path
+        .parent()
+        .filter(|directory| !directory.as_os_str().is_empty())
+        .context("the destination has no folder")?;
+    let mut file = tempfile::NamedTempFile::new_in(directory)?;
+    let written = {
+        let mut out = std::io::BufWriter::new(file.as_file_mut());
+        let written = job.write(&mut out, format)?;
+        out.flush()?;
+        written
+    };
+    file.persist(path)?;
+    Ok(written)
 }
 
 fn level_label(level: filter::LevelFilter) -> String {
@@ -5846,6 +6241,239 @@ mod tests {
                 .collect()
         });
         assert_eq!(left, ["Broken"]);
+    }
+
+    /// #1169 acceptance: the 21 shown rows of the Apache sample export as
+    /// exactly those raw lines; JSON lines carry the decoded records in file
+    /// order; nothing is written over the log itself, and with no rows shown
+    /// there is nothing to ask for.
+    #[gpui::test]
+    fn export_writes_exactly_the_shown_rows_and_never_over_the_log(cx: &mut TestAppContext) {
+        let sample = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../okilum-core/tests/fixtures/log/samples/apache/apache-access.logfmt");
+        let text = std::fs::read_to_string(sample).unwrap();
+        let (directory, reader, visual) = open_named("apache-access.logfmt", text.as_bytes(), cx);
+        let root = directory.path().canonicalize().unwrap();
+        let view = log_view(&reader, visual);
+        view.update(visual, |view, cx| view.set_query("status>=500".into(), cx));
+        visual.run_until_parked();
+        assert_eq!(view.read_with(visual, |view, _| view.visible_len()), 21);
+        let status = |line: &str| {
+            line.split(' ')
+                .find_map(|token| token.strip_prefix("status=")?.parse::<u32>().ok())
+        };
+        let expected: String = text
+            .lines()
+            .filter(|line| status(line).is_some_and(|status| status >= 500))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        assert_eq!(expected.lines().count(), 21, "positive control");
+        let export = |visual: &mut VisualTestContext, format: ExportFormat, out: PathBuf| {
+            view.update_in(visual, |view, window, cx| {
+                view.export_rows(ExportScope::Shown, format, window, cx)
+            });
+            assert!(visual.did_prompt_for_new_path(), "asks where to save");
+            visual.simulate_new_path_selection(move |_| Some(out));
+            visual.run_until_parked();
+        };
+        let raw = root.join("errors.log");
+        export(visual, ExportFormat::Raw, raw.clone());
+        assert_eq!(std::fs::read_to_string(&raw).unwrap(), expected);
+
+        let json = root.join("errors.jsonl");
+        export(visual, ExportFormat::JsonLines, json.clone());
+        let rows: Vec<serde_json::Value> = std::fs::read_to_string(&json)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(rows.len(), 21);
+        let status_of = |row: &serde_json::Value| {
+            let field = &row["fields"]["status"];
+            field.as_i64().or_else(|| field.as_str()?.parse().ok())
+        };
+        assert!(
+            rows.iter()
+                .all(|row| status_of(row).is_some_and(|s| s >= 500)),
+            "{}",
+            rows[0]
+        );
+        assert!(
+            rows.windows(2)
+                .all(|pair| pair[0]["line"].as_u64() < pair[1]["line"].as_u64()),
+            "in file order"
+        );
+        assert!(rows[0].get("source").is_none(), "one file has no source");
+        assert!(std::fs::read_dir(&root).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".tmp")));
+
+        // Never over the log being read.
+        let log = root.join("apache-access.logfmt");
+        let before = std::fs::read(&log).unwrap();
+        export(visual, ExportFormat::Raw, log.clone());
+        assert_eq!(std::fs::read(&log).unwrap(), before, "the log is untouched");
+
+        // No rows shown: nothing to ask for.
+        view.update(visual, |view, cx| view.set_query("status>=999".into(), cx));
+        visual.run_until_parked();
+        view.update_in(visual, |view, window, cx| {
+            view.export_rows(ExportScope::Shown, ExportFormat::Raw, window, cx)
+        });
+        assert!(!visual.did_prompt_for_new_path());
+    }
+
+    /// #1169: shift-click and shift-arrows select a run of records, which
+    /// copy as their lines and export on their own.
+    #[gpui::test]
+    fn shift_selection_copies_several_records_and_exports_them(cx: &mut TestAppContext) {
+        let lines: Vec<String> = (0..6)
+            .map(|i| format!(r#"{{"level":"info","msg":"row {i}"}}"#))
+            .collect();
+        let text = lines.join("\n") + "\n";
+        let (directory, reader, visual) = open_log(&text, cx);
+        let root = directory.path().canonicalize().unwrap();
+        let view = log_view(&reader, visual);
+        let selection =
+            |visual: &mut VisualTestContext| view.read_with(visual, |v, _| v.selection());
+        let copied = |visual: &mut VisualTestContext| {
+            view.update_in(visual, |view, window, cx| view.copy_raw(window, cx));
+            visual.read(|cx| cx.read_from_clipboard().unwrap().text().unwrap())
+        };
+        assert_eq!(selection(visual), None, "positive control");
+        view.update_in(visual, |view, window, cx| view.select(1, true, window, cx));
+        assert_eq!(selection(visual), Some(1..2));
+        assert_eq!(copied(visual), lines[1], "one record: its line, as before");
+
+        // Shift-click on a row further down.
+        view.update_in(visual, |view, window, cx| {
+            view.extend_to(3, false, window, cx)
+        });
+        assert_eq!(selection(visual), Some(1..4));
+        assert_eq!(copied(visual), lines[1..4].join("\n"), "lines, not a file");
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+
+        // Shift-arrows move the end that is not the anchor, past it too.
+        visual.simulate_keystrokes("shift-up");
+        assert_eq!(selection(visual), Some(1..3));
+        visual.simulate_keystrokes("shift-up");
+        assert_eq!(
+            selection(visual),
+            Some(1..2),
+            "back to the anchor: one record"
+        );
+        visual.simulate_keystrokes("shift-up");
+        assert_eq!(selection(visual), Some(0..2), "and beyond it");
+        visual.simulate_keystrokes("shift-down shift-down shift-down");
+        assert_eq!(selection(visual), Some(1..4));
+
+        // A plain arrow or click goes back to one record.
+        visual.simulate_keystrokes("down");
+        assert_eq!(selection(visual), Some(4..5));
+        view.update_in(visual, |view, window, cx| view.select(2, false, window, cx));
+        assert_eq!(selection(visual), Some(2..3));
+
+        // The selected records export on their own.
+        view.update_in(visual, |view, window, cx| {
+            view.extend_to(4, false, window, cx);
+            view.export_rows(ExportScope::Selected, ExportFormat::Raw, window, cx)
+        });
+        let out = root.join("selected.log");
+        let target = out.clone();
+        visual.simulate_new_path_selection(move |_| Some(target));
+        visual.run_until_parked();
+        assert_eq!(
+            std::fs::read_to_string(&out).unwrap(),
+            lines[2..5]
+                .iter()
+                .map(|line| format!("{line}\n"))
+                .collect::<String>()
+        );
+    }
+
+    /// #1169: exporting a view of several files writes its rows in the order
+    /// shown, each JSON line saying which file it came from.
+    #[gpui::test]
+    fn export_of_a_merged_view_names_each_source(cx: &mut TestAppContext) {
+        let samples =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../okilum-core/tests/fixtures/log/samples");
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let names = ["kubernetes/kubelet.jsonl", "apache/apache-error.jsonl"];
+        let paths: Vec<PathBuf> = names
+            .iter()
+            .map(|name| {
+                let target = root.join(Path::new(name).file_name().unwrap());
+                std::fs::copy(samples.join(name), &target).unwrap();
+                target
+            })
+            .collect();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::bind_keys(cx);
+        });
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        open_path: Some(paths[0].clone()),
+                        session_directory: Some(root.join(".state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        visual.run_until_parked();
+        let view = log_view(&reader, visual);
+        view.update(visual, |view, cx| view.add_files(paths[1..].to_vec(), cx));
+        visual.run_until_parked();
+        let total = view.read_with(visual, |view, _| view.total());
+        let expected: Vec<(String, u64)> = view.read_with(visual, |view, _| {
+            (0..view.visible_len())
+                .map(|row| {
+                    let (source, entry) = view.locate(view.entry_at(row).unwrap()).unwrap();
+                    let line = view
+                        .source(source)
+                        .unwrap()
+                        .index()
+                        .get(entry)
+                        .unwrap()
+                        .line();
+                    (view.source_name(source), line)
+                })
+                .collect()
+        });
+        assert_eq!(expected.len(), total);
+        view.update_in(visual, |view, window, cx| {
+            view.export_rows(ExportScope::Shown, ExportFormat::JsonLines, window, cx)
+        });
+        let out = root.join("both.jsonl");
+        let target = out.clone();
+        visual.simulate_new_path_selection(move |_| Some(target));
+        visual.run_until_parked();
+        let written: Vec<(String, u64)> = std::fs::read_to_string(&out)
+            .unwrap()
+            .lines()
+            .map(|line| {
+                let row: serde_json::Value = serde_json::from_str(line).unwrap();
+                (
+                    row["source"].as_str().expect("a source").to_owned(),
+                    row["line"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(written, expected, "every row, in the order shown");
+        let sources: std::collections::BTreeSet<_> =
+            written.iter().map(|(s, _)| s.clone()).collect();
+        assert_eq!(sources.len(), 2, "both files are named");
     }
 
     #[gpui::test]
