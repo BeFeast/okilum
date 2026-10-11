@@ -318,12 +318,23 @@ fn count_badge(results: &Results, cx: &App) -> impl IntoElement {
         .rounded_md()
         .bg(cx.theme().muted_foreground.opacity(0.08))
         .debug_selector(move || format!("tasks-count-{count}"))
-        .child(format!(
-            "{} · {} in notes",
-            crate::count_label::count_label(count, "task", "tasks"),
-            results.tasks.len()
-        ))
+        .child(count_text(count, &results.tasks))
         .into_any_element()
+}
+
+/// «2 tasks · 1 note»: the rows shown and the distinct notes they come
+/// from. The second number used to be the task total, read as notes (#1082).
+fn count_text(rows: usize, tasks: &[Task]) -> String {
+    let notes = tasks
+        .iter()
+        .map(|task| task.path.as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    format!(
+        "{} · {}",
+        crate::count_label::count_label(rows, "task", "tasks"),
+        crate::count_label::count_label(notes, "note", "notes")
+    )
 }
 
 #[derive(IntoElement)]
@@ -1107,6 +1118,22 @@ impl Reader {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    #[test]
+    fn count_badge_counts_distinct_notes_not_tasks() {
+        // #1082: two tasks in one note read «2 tasks · 1 note».
+        let one = okilum_core::tasks::parse("Reminders.md", "- [ ] Call Dana\n- [ ] Pay rent\n");
+        assert_eq!(one.len(), 2, "positive control: both tasks parsed");
+        assert_eq!(count_text(2, &one), "2 tasks · 1 note");
+        let mut two = one.clone();
+        two.extend(okilum_core::tasks::parse("Work.md", "- [ ] Ship\n"));
+        assert_eq!(count_text(3, &two), "3 tasks · 2 notes");
+        // Equal file names in different folders are different notes.
+        let mut same_stem = okilum_core::tasks::parse("a/Plan.md", "- [ ] One\n");
+        same_stem.extend(okilum_core::tasks::parse("b/Plan.md", "- [ ] Two\n"));
+        assert_eq!(count_text(2, &same_stem), "2 tasks · 2 notes");
+        assert_eq!(count_text(1, &same_stem[..1]), "1 task · 1 note");
+    }
 
     #[test]
     fn presentation_preserves_source_and_groups_without_merging_equal_stems() {
