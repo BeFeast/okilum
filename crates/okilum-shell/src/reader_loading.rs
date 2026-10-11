@@ -2954,11 +2954,15 @@ mod tests {
             std::fs::write(&locked, "# Locked").unwrap();
             std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
         }
-        let open = |cx: &mut TestAppContext, root: &Path| {
+        fn open<'a>(
+            cx: &'a mut TestAppContext,
+            root: &Path,
+            temp: &Path,
+        ) -> (Entity<Reader>, &'a mut gpui::VisualTestContext) {
             let opts = Opts {
                 vault: Some(root.canonicalize().unwrap()),
-                cache_base_override: Some(temp.path().join("os-cache")),
-                session_directory: Some(temp.path().join("state")),
+                cache_base_override: Some(temp.join("os-cache")),
+                session_directory: Some(temp.join("state")),
                 ..Default::default()
             };
             let mut reader = None;
@@ -2969,8 +2973,8 @@ mod tests {
             });
             visual.run_until_parked();
             (reader.unwrap(), visual)
-        };
-        let (reader, visual) = open(cx, &empty);
+        }
+        let (reader, visual) = open(cx, &empty, temp.path());
         reader.read_with(visual, |v, _| {
             let load = v.loading.as_ref().unwrap();
             assert!(load.empty, "a complete, note-free folder is a new vault");
@@ -2987,7 +2991,7 @@ mod tests {
         assert_eq!(visual.window_title().as_deref(), Some("Okilum — Fresh"));
         #[cfg(unix)]
         if !nix_is_root() {
-            let (reader, visual) = open(cx, &other);
+            let (reader, visual) = open(cx, &other, temp.path());
             reader.read_with(visual, |v, _| {
                 let load = v.loading.as_ref().unwrap();
                 assert!(!load.empty, "unreadable notes are never an empty vault");
