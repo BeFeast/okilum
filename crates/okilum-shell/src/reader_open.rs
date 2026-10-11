@@ -562,7 +562,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
     button::{Button, ButtonVariants as _},
-    h_flex, v_flex, ActiveTheme as _, Root, Sizable, TitleBar,
+    h_flex, v_flex, ActiveTheme as _, Disableable as _, Root, Sizable, TitleBar,
 };
 
 #[derive(Default)]
@@ -767,13 +767,19 @@ fn known_roots(cx: &App) -> Vec<PathBuf> {
 /// Open an external `okilum:` link (#1049). Links only navigate: they open a
 /// vault the user already opened and a note in it, never create anything.
 pub(crate) fn open_deep_link(link: &str, cx: &mut App) {
+    let known = known_roots(cx);
+    open_deep_link_among(link, &known, cx);
+}
+
+/// `open_deep_link` against an explicit list of known vault roots.
+fn open_deep_link_among(link: &str, known: &[PathBuf], cx: &mut App) {
     use okilum_core::deep_link::{parse, resolve, Resolution};
     super::reader_startup::supersede(cx);
     let link = match parse(link) {
         Ok(link) => link,
         Err(refused) => return show_error(anyhow::anyhow!(refused.message()), cx),
     };
-    match resolve(&link, &known_roots(cx), &|path| path.is_file()) {
+    match resolve(&link, known, &|path| path.is_file()) {
         Resolution::Open {
             root,
             rel,
@@ -798,18 +804,12 @@ pub(crate) fn open_deep_link(link: &str, cx: &mut App) {
                 confirm_link_vault(root, opts, cx);
             }
         }
-        // A chooser follows; until then the user is told, never guessed for.
-        Resolution::Choose { vault, roots, .. } => show_error(
-            anyhow::anyhow!(
-                "Several vaults are named \u{201c}{vault}\u{201d}:\n{}\nOpen the one you want first, then use the link again.",
-                roots
-                    .iter()
-                    .map(|r| r.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            ),
-            cx,
-        ),
+        // Several vaults share the name: the user picks, never a guess.
+        Resolution::Choose {
+            vault,
+            roots,
+            position,
+        } => choose_link_vault(vault, roots, position, cx),
         Resolution::Unavailable(message) => show_error(anyhow::anyhow!(message), cx),
     }
 }
@@ -1153,6 +1153,12 @@ fn answer_link_vault(root: &Path, open: bool, window: &mut Window, cx: &mut App)
         window.remove_window();
         return;
     };
+    open_from_prompt(root, opts, window, cx);
+}
+
+/// Open a vault the user just chose in a prompt window: choosing it is the
+/// consent, so links may open it from now on.
+fn open_from_prompt(root: &Path, opts: super::Opts, window: &mut Window, cx: &mut App) {
     super::reader_ui_state::trust_for_links(root, cx);
     if let Err(error) = open_window(opts, cx) {
         window.remove_window();
@@ -1176,6 +1182,112 @@ fn answer_link_vault(root: &Path, open: bool, window: &mut Window, cx: &mut App)
         let _ = prompt.update(cx, |_, window, _| window.remove_window());
     })
     .detach();
+}
+
+/// The chooser window for a link whose vault name several known vaults
+/// share; a newer link replaces it, so there is one at a time.
+#[derive(Default)]
+struct LinkChooser(Option<AnyWindowHandle>);
+impl Global for LinkChooser {}
+
+fn choose_link_vault(
+    vault: String,
+    roots: Vec<(PathBuf, Option<String>)>,
+    position: okilum_core::deep_link::Position,
+    cx: &mut App,
+) {
+    if let Some(old) = cx.default_global::<LinkChooser>().0.take() {
+        let _ = old.update(cx, |_, window, _| window.remove_window());
+    }
+    let choices = roots
+        .into_iter()
+        .map(|(root, rel)| {
+            let opts = rel.map(|rel| super::Opts {
+                vault: Some(root.clone()),
+                note: Some(rel),
+                landing: Some(position.clone()),
+                ..Default::default()
+            });
+            (root, opts)
+        })
+        .collect::<Vec<_>>();
+    let options = WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(super::window_state::default_bounds(
+            size(px(620.), px(160. + 44. * choices.len() as f32)),
+            cx,
+        ))),
+        window_min_size: Some(size(px(420.), px(200.))),
+        ..window_options(cx)
+    };
+    let result = cx.open_window(options, |window, cx| {
+        window.set_window_title("Okilum — Open link");
+        let view = cx.new(|_| LinkVaultChoice { vault, choices });
+        cx.new(|cx| Root::new(view, window, cx))
+    });
+    match result {
+        Ok(handle) => cx.global_mut::<LinkChooser>().0 = Some(handle.into()),
+        Err(error) => show_error(error, cx),
+    }
+}
+
+struct LinkVaultChoice {
+    vault: String,
+    /// Each known vault with this name; `None` when the note is not there.
+    choices: Vec<(PathBuf, Option<super::Opts>)>,
+}
+impl Render for LinkVaultChoice {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let muted = cx.theme().muted_foreground;
+        let rows = self.choices.iter().enumerate().map(|(ix, (root, opts))| {
+            let button = Button::new(("link-vault-choice", ix)).label("Open");
+            let button = match opts.clone() {
+                Some(opts) => {
+                    let root = root.clone();
+                    button.primary().on_click(move |_, window, cx| {
+                        cx.default_global::<LinkChooser>().0 = None;
+                        let mut opts = opts.clone();
+                        opts.reusable_roots = reusable_roots(cx);
+                        open_from_prompt(&root, opts, window, cx)
+                    })
+                }
+                None => button.disabled(true),
+            };
+            h_flex()
+                .gap_3()
+                .justify_between()
+                .child(v_flex().min_w_0().child(root.display().to_string()).when(
+                    opts.is_none(),
+                    |row| {
+                        row.child(
+                            div()
+                                .text_sm()
+                                .text_color(muted)
+                                .child("The note is not in this vault."),
+                        )
+                    },
+                ))
+                .child(button)
+        });
+        v_flex()
+            .p_4()
+            .gap_3()
+            .child(TitleBar::new().child("Open link"))
+            .child(format!(
+                "Several vaults are named \u{201c}{}\u{201d}. Choose the one this link is for.",
+                self.vault
+            ))
+            .children(rows)
+            .child(
+                h_flex().justify_end().child(
+                    Button::new("link-vault-choice-cancel")
+                        .label("Cancel")
+                        .on_click(|_, window, cx| {
+                            cx.default_global::<LinkChooser>().0 = None;
+                            window.remove_window()
+                        }),
+                ),
+            )
+    }
 }
 
 struct LinkConfirm {
@@ -1713,6 +1825,93 @@ mod entry_tests {
         cx.update(reader_startup::reopen);
         cx.run_until_parked();
         assert_eq!(cx.windows().len(), 1);
+    }
+
+    /// #1049: a link to a vault name that two known vaults share opens a
+    /// chooser listing both (the one without the note cannot be chosen); a
+    /// newer link replaces it; choosing opens that vault on the note.
+    #[gpui::test]
+    fn same_name_vaults_ask_which_one_and_open_the_choice(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let home = fixture.path().join("home/Notes");
+        let work = fixture.path().join("work/Notes");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::write(home.join("Plan.md"), "# Plan").unwrap();
+        let home = home.canonicalize().unwrap();
+        let work = work.canonicalize().unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            install(cx);
+            super::super::reader_ui_state::install(&fixture.path().join("ui-state"), cx);
+            open_deep_link_among(
+                "okilum://v/Notes/Plan.md",
+                &[home.clone(), work.clone()],
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        let chooser = cx.update(|cx| {
+            assert_eq!(cx.windows().len(), 1, "the chooser, nothing opened yet");
+            assert!(cx.global::<Readers>().0.is_empty());
+            cx.global::<LinkChooser>().0.expect("a chooser is shown")
+        });
+        let choices = cx.update(|cx| {
+            chooser
+                .downcast::<Root>()
+                .unwrap()
+                .update(cx, |root, _, cx| {
+                    root.view()
+                        .clone()
+                        .downcast::<LinkVaultChoice>()
+                        .ok()
+                        .unwrap()
+                        .read(cx)
+                        .choices
+                        .iter()
+                        .map(|(root, opts)| (root.clone(), opts.is_some()))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap()
+        });
+        assert_eq!(choices, vec![(home.clone(), true), (work.clone(), false)]);
+        // A newer link replaces the chooser: still one window.
+        cx.update(|cx| {
+            open_deep_link_among(
+                "okilum://v/Notes/Plan.md",
+                &[home.clone(), work.clone()],
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        let chooser = cx.update(|cx| {
+            assert_eq!(cx.windows().len(), 1, "one chooser at a time");
+            cx.global::<LinkChooser>().0.unwrap()
+        });
+        // Choosing the home vault opens it on the note and trusts it.
+        let _ = cx.update(|cx| {
+            chooser.update(cx, |_, window, cx| {
+                cx.default_global::<LinkChooser>().0 = None;
+                open_from_prompt(
+                    &home,
+                    super::super::Opts {
+                        vault: Some(home.clone()),
+                        note: Some("Plan.md".into()),
+                        index_dir: Some(fixture.path().join("index")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            })
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let readers = &cx.global::<Readers>().0;
+            assert_eq!(readers.len(), 1);
+            assert_eq!(readers[0].1, home);
+            assert!(super::super::reader_ui_state::link_trusted(&home, cx));
+        });
     }
 
     /// #1110: on a clean first run, choosing a vault folder on the start

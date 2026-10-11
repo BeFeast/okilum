@@ -70,11 +70,12 @@ pub enum Resolution {
         rel: String,
         position: Position,
     },
-    /// Several known vaults have this name: the user picks one (never guessed).
+    /// Several known vaults have this name: the user picks one (never
+    /// guessed). Each root carries the note's path there, or `None` when the
+    /// note is not in that vault.
     Choose {
         vault: String,
-        roots: Vec<std::path::PathBuf>,
-        rel: String,
+        roots: Vec<(std::path::PathBuf, Option<String>)>,
         position: Position,
     },
     /// A clear, user-facing refusal.
@@ -134,8 +135,13 @@ pub fn resolve(
                 },
                 _ => Resolution::Choose {
                     vault: vault.clone(),
-                    roots,
-                    rel: path.clone(),
+                    roots: roots
+                        .into_iter()
+                        .map(|root| {
+                            let rel = pick(&root, path);
+                            (root, rel)
+                        })
+                        .collect(),
                     position,
                 },
             }
@@ -572,10 +578,17 @@ mod tests {
         // Two known vaults named Notes: a choice, never a guess.
         let mut two = known.clone();
         two.push("/work/Notes".into());
-        assert!(matches!(
-            r("okilum://v/Notes/Plan.md", &two),
-            Resolution::Choose { roots, .. } if roots.len() == 2
-        ));
+        match r("okilum://v/Notes/Plan.md", &two) {
+            Resolution::Choose { vault, roots, .. } => {
+                assert_eq!(vault, "Notes");
+                assert_eq!(roots.len(), 2);
+                // Each choice says whether the note is there: the home vault
+                // has only Projects/Plan.md, the work vault has Plan.md.
+                assert_eq!(roots[0], ("/home/me/Notes".into(), None));
+                assert_eq!(roots[1], ("/work/Notes".into(), Some("Plan.md".into())));
+            }
+            other => panic!("{other:?}"),
+        }
         // file/: the deepest known vault that contains it.
         assert!(matches!(
             r("okilum://file//home/me/Notes/Sub/Vault/Deep.md", &known),
