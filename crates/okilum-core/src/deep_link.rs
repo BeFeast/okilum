@@ -582,9 +582,10 @@ mod tests {
             Resolution::Choose { vault, roots, .. } => {
                 assert_eq!(vault, "Notes");
                 assert_eq!(roots.len(), 2);
-                // Each choice says whether the note is there.
-                assert_eq!(roots[0].1.as_deref(), Some("Plan.md"));
-                assert_eq!(roots[1].1, None, "Plan.md exists only in the first");
+                // Each choice says whether the note is there: the home vault
+                // has only Projects/Plan.md, the work vault has Plan.md.
+                assert_eq!(roots[0], ("/home/me/Notes".into(), None));
+                assert_eq!(roots[1], ("/work/Notes".into(), Some("Plan.md".into())));
             }
             other => panic!("{other:?}"),
         }
