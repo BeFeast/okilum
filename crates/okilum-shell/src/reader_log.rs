@@ -2490,6 +2490,72 @@ mod tests {
         });
     }
 
+    /// #1159 acceptance, simulated: a writer appends every poll interval for
+    /// 600 polls (150 s at 4 polls/s) while a query is active, and the file
+    /// is moved and recreated halfway, as logrotate does. Every poll the
+    /// rows are exactly the matching records written so far, in file order,
+    /// none twice and none missing, and the view stays pinned.
+    #[gpui::test]
+    fn follow_mode_stays_exact_over_many_polls_and_a_rotation(cx: &mut TestAppContext) {
+        use std::io::Write as _;
+        let line = |n: usize| {
+            let level = if n % 10 == 0 { "warn" } else { "info" };
+            format!("{{\"level\":\"{level}\",\"msg\":\"tick {n}\"}}\n")
+        };
+        let (directory, reader, visual) = open_log(&line(1), cx);
+        let path = directory.path().canonicalize().unwrap().join("app.jsonl");
+        let view = log_view(&reader, visual);
+        view.update(visual, |view, cx| view.toggle_follow(cx));
+        visual.run_until_parked();
+        view.update(visual, |view, cx| view.set_query("level>=warn".into(), cx));
+        visual.run_until_parked();
+        let mut written = 1;
+        let mut since_rotation = 1;
+        for poll in 0..600 {
+            if poll == 300 {
+                std::fs::rename(&path, path.with_extension("jsonl.1")).unwrap();
+                std::fs::write(&path, "").unwrap();
+                since_rotation = 0;
+            }
+            // 2–3 records per 250 ms: 10 records a second.
+            let burst = if poll % 2 == 0 { 3 } else { 2 };
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
+            for _ in 0..burst {
+                written += 1;
+                since_rotation += 1;
+                file.write_all(line(written).as_bytes()).unwrap();
+            }
+            drop(file);
+            visual.executor().advance_clock(Duration::from_millis(250));
+            visual.run_until_parked();
+            if poll % 50 == 49 || poll == 299 || poll == 300 || poll == 599 {
+                // The rows are the warn records of the current file, in order.
+                let first = written - since_rotation + 1;
+                let expected: Vec<usize> = (first..=written)
+                    .filter(|n| n % 10 == 0)
+                    .map(|n| n - first)
+                    .collect();
+                assert_eq!(shown(&view, visual), expected, "poll {poll}");
+                view.read_with(visual, |view, _| {
+                    let follow = view.follow.as_ref().unwrap();
+                    assert!(follow.pinned && follow.unseen == 0, "poll {poll}");
+                    assert_eq!(
+                        follow.reset.map(|reset| reset.0),
+                        (poll >= 300).then_some(ResetReason::Rotated),
+                        "poll {poll}"
+                    );
+                });
+            }
+        }
+        assert!(
+            written > 1_200,
+            "positive control: {written} records written"
+        );
+    }
+
     /// #1159: follow mode shows appended records, filters them as they
     /// arrive, pauses when scrolled up with an "N new" pill that resumes it,
     /// and announces a rotation and a truncation instead of a silent reset.
