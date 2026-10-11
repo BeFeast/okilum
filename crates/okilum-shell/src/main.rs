@@ -2716,7 +2716,8 @@ impl Reader {
         let same_cards = !new_note
             && groups.len() == self.backlink_groups.len()
             && groups.iter().zip(&self.backlink_groups).all(|(new, old)| {
-                new.len() == old.len() && backlinks[new.start].path == self.backlinks[old.start].path
+                new.len() == old.len()
+                    && backlinks[new.start].path == self.backlinks[old.start].path
             });
         self.backlinks = backlinks;
         if same_cards {
@@ -8229,7 +8230,10 @@ mod document_link_landing_tests {
         });
         visual.run_until_parked();
         let kept = built(visual);
-        assert!(!kept.is_empty() && !kept.contains(&0), "scroll lost by a refresh: {kept:?}");
+        assert!(
+            !kept.is_empty() && !kept.contains(&0),
+            "scroll lost by a refresh: {kept:?}"
+        );
         view.update(visual, |v, cx| {
             let same = v.backlinks.clone();
             v.set_backlinks(same, true);
