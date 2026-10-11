@@ -1,0 +1,35 @@
+[2026-10-10 06:04:00.000] [ordgw] [info] ordgw 3.14.2 (git 9c41e7a, clang 20.1.8, -O2 -march=x86-64-v3) starting
+[2026-10-10 06:04:00.002] [config] [info] config loaded from /etc/ordgw/ordgw.toml (venue=XEUR, sessions=2, risk_limits=strict)
+[2026-10-10 06:04:00.003] [alloc] [debug] reserved 512 MiB hugepage arena at 0x7f3a40000000
+[2026-10-10 06:04:00.010] [cpu] [info] pinned md-feed->cpu3, fix-io->cpu5, risk->cpu7 (isolcpus=3,5,7)
+[2026-10-10 06:04:00.140] [cpu] [warning] cpu5 scaling_governor is 'powersave', expected 'performance'
+[2026-10-10 06:04:00.410] [md.feed] [info] joined 239.1.1.18:31018 on ens2f0 (A-side), 239.1.2.18:31018 (B-side)
+[2026-10-10 06:04:00.911] [fix.session] [info] Logon accepted: SenderCompID=OKL1 TargetCompID=XEUR HeartBtInt=30 MsgSeqNum=1
+[2026-10-10 06:04:01.204] [risk] [info] risk engine ready: 1840 instruments, max_order_qty=500, max_notional=2500000 EUR
+[2026-10-10 06:04:12.880] [md.feed] [warning] sequence gap on A-side: expected 18822410, got 18822417 (7 packets), recovered from B-side
+[2026-10-10 06:04:30.100] [fix.session] [debug] Heartbeat sent MsgSeqNum=212
+[2026-10-10 06:04:41.730] [fix.io] [warning] tick-to-trade p99=38.4us over 1s window exceeds budget 25us (p50=6.1us, max=412us)
+[2026-10-10 06:04:41.740] [fix.io] [trace] send() wrote 212 of 212 bytes, EAGAIN=0, sndbuf=4194304
+[2026-10-10 06:04:52.010] [risk] [error] order rejected by risk: ClOrdID=OKL1-77120 FDAX qty=900 exceeds max_order_qty=500
+[2026-10-10 06:04:52.400] [md.book] [warning] crossed book on FESX Z6: bid 5321.0 >= ask 5320.5, waiting for snapshot
+[2026-10-10 06:04:52.410] [md.book] [error] snapshot request failed: venue said "SecurityID 4128899 unknown"
+[2026-10-10 06:04:58.900] [fix.session] [error] connection reset by peer (ECONNRESET) after 58.9s, last inbound MsgSeqNum=1904
+[2026-10-10 06:04:58.910] [fix.session] [info] reconnecting in 250ms (attempt 1/10)
+[2026-10-10 06:04:59.200] [fix.session] [info] Logon accepted: SenderCompID=OKL1 TargetCompID=XEUR HeartBtInt=30 MsgSeqNum=1905
+[2026-10-10 06:04:59.210] [fix.session] [warning] ResendRequest BeginSeqNo=1898 EndSeqNo=0, replaying 7 messages from journal
+[2026-10-10 06:05:11.050] [alloc] [error] arena exhausted (512 MiB used), falling back to operator new
+[2026-10-10 06:05:11.060] [ordgw] [critical] caught signal 11 (SIGSEGV), fault address 0x0000000000000018, writing core to /var/crash
+Stack trace (most recent call last) in thread 4414:
+#7    Object "/usr/lib/x86_64-linux-gnu/libc.so.6", at 0x7f3a5f22a1c9, in __clone3
+#6    Object "/usr/lib/x86_64-linux-gnu/libc.so.6", at 0x7f3a5f1b2a93, in start_thread
+#5    Source "/src/ordgw/src/risk/risk_thread.cpp", line 64, in okl::risk::RiskThread::run()
+#4    Source "/src/ordgw/src/risk/risk_engine.cpp", line 233, in okl::risk::RiskEngine::check(okl::Order const&)
+        230:   const auto& limits = limits_for(order.instrument_id);
+        231:   if (order.qty > limits.max_order_qty) return Verdict::Reject;
+        232:   // position is looked up lazily for new instruments
+      > 233:   const Position& pos = *positions_.find(order.instrument_id);
+#3    Source "/src/ordgw/src/risk/position_map.hpp", line 41, in okl::PositionMap::find(unsigned int) const
+#2    Source "/src/ordgw/src/risk/position_map.hpp", line 41, in ...
+#1    Object "/opt/ordgw/bin/ordgw", at 0x55c1e04b2f18, in okl::crash::on_signal(int, siginfo_t*, void*)
+#0    Object "/usr/lib/x86_64-linux-gnu/libc.so.6", at 0x7f3a5f142520, in 
+Segmentation fault (Address not mapped to object [0x18])

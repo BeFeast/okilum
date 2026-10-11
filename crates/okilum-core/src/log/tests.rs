@@ -245,3 +245,152 @@ fn throughput_100mb_with_known_counts() {
         (index.len() * std::mem::size_of::<LogEntry>()) as f64 / (1024.0 * 1024.0),
     );
 }
+
+fn sample(name: &str) -> LogFile {
+    fixture(&format!("samples/native-formats/{name}"))
+}
+
+fn first_with(file: &LogFile, level: Level) -> Record {
+    let at = levels(file).iter().position(|l| *l == level).unwrap();
+    file.record(at).unwrap()
+}
+
+fn role<'r>(record: &'r Record, role: Role) -> Option<&'r str> {
+    record.role(role).map(|field| field.value.as_str())
+}
+
+#[test]
+fn spdlog_default_pattern_has_times_levels_and_loggers() {
+    let file = sample("cpp/ordgw.spdlog-default.log");
+    let index = file.index();
+    assert_eq!(index.format(), Format::Spdlog);
+    assert_eq!(index.format().label(), "spdlog");
+    assert_eq!(index.len(), 35);
+    // The backward-cpp trace after the crash stays raw until #1161.
+    assert_eq!(index.stats().unparsed(), 14);
+    assert_eq!(index.stats().timestamped, 21);
+    let first = file.record(0).unwrap();
+    assert_eq!(role(&first, Role::Time), Some("2026-10-10 06:04:00.000"));
+    assert_eq!(
+        index.get(0).unwrap().timestamp(),
+        timestamp::parse_text(b"2026-10-10T06:04:00Z")
+    );
+    assert_eq!(role(&first, Role::Logger), Some("ordgw"));
+    assert!(role(&first, Role::Message)
+        .unwrap()
+        .starts_with("ordgw 3.14.2"));
+    let crash = first_with(&file, Level::Fatal);
+    assert_eq!(role(&crash, Role::Level), Some("critical"));
+    assert!(levels(&file).contains(&Level::Trace));
+}
+
+#[test]
+fn glog_lines_and_header_are_records() {
+    let file = sample("cpp/ordgw.glog.log");
+    let index = file.index();
+    assert_eq!(index.format(), Format::Glog);
+    assert_eq!(index.len(), 29);
+    // Four header lines and 21 log lines; the check-failure trace is raw.
+    assert_eq!(index.stats().unparsed(), 4);
+    assert_eq!(index.stats().timestamped, 21);
+    assert_eq!(levels(&file)[..4], [Level::Missing; 4]);
+    let header = file.record(1).unwrap();
+    assert_eq!(
+        role(&header, Role::Message),
+        Some("Running on machine: trade-gw-01")
+    );
+    let fatal = first_with(&file, Level::Fatal);
+    assert_eq!(role(&fatal, Role::Level), Some("FATAL"));
+    let rest: Vec<_> = fatal
+        .rest()
+        .map(|f| (f.key.as_str(), f.value.as_str(), f.kind))
+        .collect();
+    assert_eq!(
+        rest,
+        [
+            ("tid", "4414", ValueKind::Number),
+            ("src", "crash_handler.cc:33", ValueKind::String),
+        ]
+    );
+    assert_eq!(
+        index.get(4).unwrap().timestamp(),
+        timestamp::parse_text(b"2026-10-10T06:04:00.000279Z")
+    );
+}
+
+#[test]
+fn combined_access_log_has_fields_and_no_guessed_level() {
+    let file = sample("apache-access-combined.log");
+    let index = file.index();
+    assert_eq!(index.format(), Format::AccessLog);
+    assert_eq!(index.len(), 649);
+    assert_eq!(index.stats().unparsed(), 0);
+    assert_eq!(index.stats().timestamped, 649);
+    // An access log has no severity; a status code is not turned into one.
+    assert!(!index.has_level_field());
+    let record = file.record(1).unwrap();
+    let keys: Vec<_> = record.fields.iter().map(|f| f.key.as_str()).collect();
+    assert_eq!(
+        keys,
+        ["client", "time", "method", "path", "proto", "status", "referer", "ua"]
+    );
+    assert_eq!(record.fields[5].kind, ValueKind::Number);
+    assert_eq!(
+        index.get(0).unwrap().timestamp(),
+        timestamp::parse_text(b"2026-10-10T06:00:01Z")
+    );
+}
+
+#[test]
+fn syslog_priority_becomes_the_level() {
+    let file = fixture("syslog.log");
+    let index = file.index();
+    assert_eq!(index.format(), Format::Syslog);
+    assert_eq!(index.stats().unparsed(), 0);
+    assert_eq!(
+        levels(&file),
+        [
+            Level::Info,
+            Level::Info,
+            Level::Info,
+            Level::Error,
+            Level::Fatal,
+            Level::Info,
+            Level::Warn,
+            Level::Fatal,
+        ]
+    );
+    // BSD times carry no year and stay as written.
+    assert_eq!(index.stats().timestamped, 5);
+    let sshd = file.record(2).unwrap();
+    assert_eq!(role(&sshd, Role::Level), Some("info"));
+    let keys: Vec<_> = sshd.fields.iter().map(|f| f.key.as_str()).collect();
+    assert_eq!(
+        keys,
+        [
+            "facility",
+            "severity",
+            "time",
+            "host",
+            "programname",
+            "procid",
+            "sd",
+            "msg"
+        ]
+    );
+    assert_eq!(sshd.fields[0].value, "authpriv");
+}
+
+#[test]
+fn a_plain_file_is_not_claimed_by_a_text_format() {
+    assert_eq!(fixture("plain.log").index().format(), Format::Plain);
+    // Half the sample in one text format is enough; the rest stays raw.
+    assert_eq!(
+        detect(b"[2026-10-10 06:04:00.000] [x] [info] a\nnoise\n"),
+        Format::Spdlog
+    );
+    assert_eq!(
+        detect(b"[2026-10-10 06:04:00.000] [x] [info] a\nnoise\nmore noise\n"),
+        Format::Plain
+    );
+}

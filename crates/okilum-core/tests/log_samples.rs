@@ -44,6 +44,39 @@ const TRY: &[(&str, &str, usize)] = &[
     ("os/windows-winlogbeat.ndjson", "winlog.channel=Security", 8),
 ];
 
+/// The text-format files of the pack (`native-formats/`, #1162). Counts are
+/// from grep and awk over the same files, independent of the Rust scanners.
+const NATIVE: &[(&str, &str, usize)] = &[
+    (
+        "native-formats/apache-access-combined.log",
+        "status>=500",
+        21,
+    ),
+    (
+        "native-formats/apache-access-combined.log",
+        "status>=400 and status<500",
+        41,
+    ),
+    (
+        "native-formats/apache-access-combined.log",
+        "method=POST",
+        132,
+    ),
+    (
+        "native-formats/cpp/ordgw.spdlog-default.log",
+        "level>=warn",
+        10,
+    ),
+    (
+        "native-formats/cpp/ordgw.spdlog-default.log",
+        "logger=fix.session",
+        6,
+    ),
+    ("native-formats/cpp/ordgw.glog.log", "level>=warn", 10),
+    ("native-formats/cpp/ordgw.glog.log", "tid=4414", 4),
+    ("native-formats/cpp/ordgw.glog.log", "src~=risk_engine", 2),
+];
+
 fn matches(file: &LogFile, query: &str) -> usize {
     let filter = LogFilter {
         query: Some(Query::parse(query).unwrap_or_else(|error| panic!("{query}: {error}"))),
@@ -65,6 +98,22 @@ fn every_try_query_returns_the_independently_counted_records() {
             LogFile::open(&root.join(name)).unwrap_or_else(|error| panic!("{name}: {error}"));
         // Positive control: the file has more records than the query keeps,
         // so a filter that passed everything could not meet the count.
+        assert!(file.index().len() > *expected, "{name} is too small");
+        let got = matches(&file, query);
+        if got != *expected {
+            wrong.push(format!("{name}: `{query}` -> {got}, expected {expected}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+#[test]
+fn text_format_files_answer_queries_on_their_fields() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/log/samples");
+    let mut wrong = Vec::new();
+    for (name, query, expected) in NATIVE {
+        let file =
+            LogFile::open(&root.join(name)).unwrap_or_else(|error| panic!("{name}: {error}"));
         assert!(file.index().len() > *expected, "{name} is too small");
         let got = matches(&file, query);
         if got != *expected {
