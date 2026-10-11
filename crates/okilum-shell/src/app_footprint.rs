@@ -437,10 +437,12 @@ fn enrollment_lock() -> Option<PathBuf> {
 
 /// What macOS keeps outside the app roots, removed after the app has quit:
 /// preferences go through `defaults` (cfprefsd caches them), and AppKit
-/// writes Saved Application State on quit. Arguments: bundle path, pid.
+/// writes Saved Application State on quit, and Okilum logs its own quit to
+/// the state folder after the purge (#1284). Arguments: bundle path, pid,
+/// state folder.
 #[cfg(any(target_os = "macos", test))]
 const MACOS_CLEANUP: &str = r#"
-app=$1; pid=$2
+app=$1; pid=$2; state=$3
 while kill -0 "$pid" 2>/dev/null; do sleep 0.5; done
 sleep 1
 # Only a real Okilum bundle names what to clean: no bundle, no guess.
@@ -448,6 +450,12 @@ case "$app" in *.app) ;; *) exit 0 ;; esac
 id=$(defaults read "$app/Contents/Info" CFBundleIdentifier 2>/dev/null) || exit 0
 case "$id" in com.befeast.okilum|com.befeast.okilum.*) ;; *) exit 0 ;; esac
 defaults delete "$id" >/dev/null 2>&1
+# The quit line written after the purge: only the log, and the folder only if
+# nothing else is in it.
+if [ -n "$state" ]; then
+    rm -f "$state/reader-diagnostic.log" "$state/reader-diagnostic.log.previous"
+    rmdir "$state" 2>/dev/null
+fi
 lib="$HOME/Library"
 rm -rf "$lib/Preferences/$id.plist" "$lib/Saved Application State/$id.savedState"     "$lib/HTTPStorages/$id" "$lib/HTTPStorages/$id.binarycookies"     "$lib/Caches/$id" "$lib/WebKit/$id"
 find "$lib/Logs/DiagnosticReports" -maxdepth 1 -iname 'okilum*' -exec rm -f {} + 2>/dev/null
@@ -521,6 +529,7 @@ pub(crate) fn uninstall_from_settings(window: &mut gpui::Window, cx: &mut gpui::
                 .args(["-c", MACOS_CLEANUP, "okilum-uninstall"])
                 .arg(&app)
                 .arg(std::process::id().to_string())
+                .arg(state.as_deref().unwrap_or(Path::new("")))
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
@@ -799,10 +808,17 @@ mod tests {
         let pid = exited.id();
         let mut exited = exited;
         exited.wait().unwrap();
+        // #1284: the quit line written after the purge.
+        let state = lib.join("Application Support/com.befeast.okilum");
+        write(
+            &state.join("reader-diagnostic.log"),
+            "{\"phase\":\"app_quit\"}\n",
+        );
         let status = std::process::Command::new("/bin/sh")
             .args(["-c", MACOS_CLEANUP, "okilum-uninstall"])
             .arg(&app)
             .arg(pid.to_string())
+            .arg(&state)
             .env("HOME", &home)
             .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
             .status()
@@ -828,6 +844,7 @@ mod tests {
             lib.join("Preferences/com.other.app.plist").exists(),
             "positive control"
         );
+        assert!(!state.exists(), "the quit log and its now empty folder");
         assert!(!app.exists(), "the app moved to the Trash");
         let trash: Vec<_> = std::fs::read_dir(home.join(".Trash"))
             .unwrap()
@@ -835,6 +852,28 @@ mod tests {
             .collect();
         assert_eq!(trash.len(), 1);
         assert!(trash[0].path().join("Contents/Info.plist").exists());
+
+        // A state folder holding anything besides the log keeps it (a vault
+        // there is never touched); only the log goes.
+        let app = fixture.path().join("Applications/Okilum.app");
+        write(&app.join("Contents/Info.plist"), "plist");
+        write(&state.join("reader-diagnostic.log"), "x");
+        write(&state.join("Notes/note.md"), "keep");
+        let status = std::process::Command::new("/bin/sh")
+            .args(["-c", MACOS_CLEANUP, "okilum-uninstall"])
+            .arg(&app)
+            .arg(pid.to_string())
+            .arg(&state)
+            .env("HOME", &home)
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(!state.join("reader-diagnostic.log").exists());
+        assert_eq!(
+            std::fs::read_to_string(state.join("Notes/note.md")).unwrap(),
+            "keep"
+        );
 
         // An executable outside an app bundle (a development build) must not
         // fall back to the production id: nothing is cleaned.
