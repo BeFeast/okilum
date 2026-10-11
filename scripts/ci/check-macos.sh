@@ -69,6 +69,8 @@ for name in \
     reopen_without_windows_restores_the_last_vault_or_the_start_screen; do
     run_tests okilum-shell --bins "reader_open::entry_tests::$name" --exact
 done
+# #912: Tasks labels keep letter descenders with macOS font metrics too.
+run_tests okilum-shell --bins reader_tasks::tests::task_labels_fit_descenders --exact
 
 # #588: the managed-sidecar library is compiled into the shell, but its tests only ran on
 # Linux and Windows. These cover the Unix state store (flock, atomic replace), the
