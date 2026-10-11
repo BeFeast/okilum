@@ -1,6 +1,7 @@
 //! Filters over a `LogIndex` (#602, slice 3): level with an explicit
 //! "without level" choice, case-insensitive text, time windows relative to the
-//! newest record, and `field = value` chips. All active parts combine with AND.
+//! newest record, `field = value` chips and a query (#1158, the language in
+//! `query`). All active parts combine with AND.
 //!
 //! Evaluation is meant for a background thread. Every run carries a ticket
 //! from `FilterGenerations`; a run whose ticket went stale stops early and
@@ -10,7 +11,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use super::{Format, Level, LogIndex, Record};
+use super::{Format, Level, LogIndex, Query, Record};
 
 /// Entries checked between two looks at the cancellation flag.
 const BLOCK: usize = 2048;
@@ -101,7 +102,7 @@ pub struct FieldChip {
     pub value: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct LogFilter {
     pub level: LevelFilter,
     /// Case-insensitive; matched against each field as `key=value`, or the
@@ -109,6 +110,8 @@ pub struct LogFilter {
     pub text: String,
     pub time: TimeWindow,
     pub chips: Vec<FieldChip>,
+    /// A parsed query; `None` or a blank query passes everything.
+    pub query: Option<Query>,
 }
 
 impl LogFilter {
@@ -118,6 +121,7 @@ impl LogFilter {
             || !self.text.trim().is_empty()
             || self.time != TimeWindow::All
             || !self.chips.is_empty()
+            || self.query.as_ref().is_some_and(|query| !query.is_empty())
     }
 
     /// Adds `chip` unless an equal one is there already.
@@ -245,6 +249,7 @@ struct Plan<'f> {
     /// `[from, to]` in nanoseconds, when the time window restricts anything.
     window: Option<(i64, i64)>,
     chips: &'f [FieldChip],
+    query: Option<&'f Query>,
     format: Format,
 }
 
@@ -262,6 +267,7 @@ impl<'f> Plan<'f> {
             needle: Needle::new(&filter.text),
             window,
             chips: &filter.chips,
+            query: filter.query.as_ref().filter(|query| !query.is_empty()),
             format: index.format(),
         }
     }
@@ -303,7 +309,11 @@ impl<'f> Plan<'f> {
                     }
                 }
                 let raw = data.get(entry.range()).unwrap_or_default();
-                if self.content_matches(raw, entry.level()) {
+                if self.content_matches(raw, entry.level())
+                    && self
+                        .query
+                        .is_none_or(|query| query.matches_line(entry, raw, self.format))
+                {
                     rows.push((block_start + offset) as u32);
                 }
             }

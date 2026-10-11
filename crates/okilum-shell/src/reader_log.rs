@@ -1,12 +1,13 @@
 //! Read-only structured log view (#602): virtualized one-line rows over a
-//! `okilum_core::log` index, a filter bar (level, text, time window, field
-//! chips) evaluated off the UI thread, a detail pane for the selected record,
-//! and a raw-line copy. Query and follow mode are later slices.
+//! `okilum_core::log` index, a filter bar (text, level, time window and an
+//! hl-compatible query, #1158) evaluated off the UI thread, a detail pane for
+//! the selected record, and a raw-line copy. Follow mode is a later slice.
 use super::*;
 use gpui_component::scroll::ScrollableElement as _;
+use okilum_core::log::query::{Expr, FieldRef, Literal, Test};
 use okilum_core::log::{
-    filter, timestamp, FieldChip, FilterGenerations, Format, Level, LogFile, LogFilter, Record,
-    Role, TimeWindow, ValueKind,
+    filter, timestamp, FilterGenerations, Format, Level, LogFile, LogFilter, Query, Record, Role,
+    TimeWindow, ValueKind,
 };
 use std::ops::Range;
 
@@ -27,7 +28,8 @@ const FILTER_KEY: &str = "secondary-f";
 const BAR_CONTROL_HEIGHT: f32 = 28.;
 const BAR_HEIGHT: f32 = 40.;
 const TEXT_FILTER_WIDTH: f32 = 220.;
-const CHIP_MAX_WIDTH: f32 = 240.;
+const QUERY_MIN_WIDTH: f32 = 200.;
+const QUERY_ERROR_MAX_WIDTH: f32 = 260.;
 /// Level menu choices: the lowest severity shown.
 const LEVEL_CHOICES: [(Option<Level>, &str); 6] = [
     (None, "All levels"),
@@ -84,8 +86,15 @@ pub(crate) struct LogView {
     /// A run for the latest filter is under way; the previous rows stay up.
     filtering: bool,
     text_input: Entity<InputState>,
+    query_input: Entity<InputState>,
+    /// The query field's text as typed; the filter keeps the last one that
+    /// parsed, so a typo never clears the rows.
+    query_text: String,
+    /// Column (1-based, in characters) and message of the typed query's error.
+    query_error: Option<(usize, String)>,
     detail_split: reader_split::Split,
     _text_input_events: Subscription,
+    _query_input_events: Subscription,
     _filtering: Option<Task<()>>,
     _indexing: Option<Task<()>>,
 }
@@ -105,6 +114,24 @@ impl LogView {
                 _ => {}
             },
         );
+        let query_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Query: level>=warn and status>=500")
+        });
+        let query_events = cx.subscribe_in(
+            &query_input,
+            window,
+            |this: &mut Self, input, event: &InputEvent, window, cx| match event {
+                InputEvent::Change => {
+                    let text = input.read(cx).value().to_string();
+                    this.set_query(text, cx);
+                }
+                InputEvent::PressEnter { .. } => {
+                    this.remember_query(cx);
+                    this.focus.focus(window, cx);
+                }
+                _ => {}
+            },
+        );
         Self {
             state,
             selected: None,
@@ -115,6 +142,9 @@ impl LogView {
             rows: None,
             filtering: false,
             text_input,
+            query_input,
+            query_text: String::new(),
+            query_error: None,
             detail_split: reader_split::Split::new(
                 "log-detail",
                 reader_split::Initial::Pixels(DETAIL_HEIGHT),
@@ -122,6 +152,7 @@ impl LogView {
                 ROW_HEIGHT * MIN_LIST_ROWS,
             ),
             _text_input_events: events,
+            _query_input_events: query_events,
             _filtering: None,
             _indexing: None,
         }
@@ -243,17 +274,84 @@ impl LogView {
         self.update_filter(|filter| filter.text = text, cx);
     }
 
-    fn add_chip(&mut self, chip: FieldChip, cx: &mut Context<Self>) {
-        self.update_filter(|filter| _ = filter.add_chip(chip), cx);
+    /// A query that parses replaces the filter's; one that does not leaves
+    /// the last valid query (and its rows) in place and shows where it fails.
+    fn set_query(&mut self, text: String, cx: &mut Context<Self>) {
+        match Query::parse(&text) {
+            Ok(query) => {
+                self.query_error = None;
+                self.update_filter(
+                    |filter| filter.query = (!query.is_empty()).then_some(query),
+                    cx,
+                );
+            }
+            Err(error) => {
+                self.query_error = Some((error.column(&text) + 1, error.message.clone()));
+            }
+        }
+        self.query_text = text;
+        cx.notify();
     }
 
-    fn remove_chip(&mut self, index: usize, cx: &mut Context<Self>) {
-        self.update_filter(|filter| _ = filter.remove_chip(index), cx);
+    fn replace_query(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.query_input
+            .update(cx, |input, cx| input.set_value(text.clone(), window, cx));
+        self.set_query(text, cx);
+    }
+
+    /// A field from the detail pane narrows the query: the same model as
+    /// typing `key = "value"` (#1158).
+    fn add_field_term(
+        &mut self,
+        key: &str,
+        value: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let term = field_term(key, value);
+        if self.has_term(&term) {
+            return;
+        }
+        let text = match (&self.query_error, &self.filter.query) {
+            (None, Some(query)) => Expr::And(vec![query.expr().clone(), term]).to_string(),
+            (None, None) => term.to_string(),
+            // Keep what is being typed; the user fixes the typo.
+            (Some(_), _) => format!("{} and {term}", self.query_text.trim_end()),
+        };
+        self.replace_query(text, window, cx);
+        self.remember_query(cx);
+    }
+
+    /// True when the applied query already requires `term`.
+    fn has_term(&self, term: &Expr) -> bool {
+        match self.filter.query.as_ref().map(Query::expr) {
+            Some(Expr::And(items)) => items.contains(term),
+            Some(expr) => expr == term,
+            None => false,
+        }
+    }
+
+    fn history_key(&self) -> Option<String> {
+        self.file()
+            .map(|file| file.path().to_string_lossy().into_owned())
+    }
+
+    fn remember_query(&mut self, cx: &mut Context<Self>) {
+        if self.query_error.is_some() {
+            return;
+        }
+        if let (Some(key), Some(query)) = (self.history_key(), &self.filter.query) {
+            reader_ui_state::remember_log_query(&key, &query.to_string(), cx);
+        }
     }
 
     fn clear_filters(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.text_input
             .update(cx, |input, cx| input.set_value("", window, cx));
+        self.query_input
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.query_text.clear();
+        self.query_error = None;
         self.update_filter(|filter| *filter = LogFilter::default(), cx);
     }
 
@@ -501,11 +599,9 @@ impl LogView {
                     .enumerate()
                     .map(|(position, ((key, value, kind), field))| {
                         let group = SharedString::from(format!("log-field-{position}"));
-                        let chip = FieldChip {
-                            key: field.key.clone(),
-                            value: field.value.clone(),
-                        };
-                        let present = self.filter.chips.contains(&chip);
+                        let term = field_term(&field.key, &field.value);
+                        let present = self.has_term(&term);
+                        let (field_key, field_value) = (field.key.clone(), field.value.clone());
                         h_flex()
                             .group(group.clone())
                             .items_start()
@@ -553,8 +649,13 @@ impl LogView {
                                             } else {
                                                 "Show only records with this value"
                                             })
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.add_chip(chip.clone(), cx)
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.add_field_term(
+                                                    &field_key,
+                                                    &field_value,
+                                                    window,
+                                                    cx,
+                                                )
                                             })),
                                     ),
                             )
@@ -583,7 +684,6 @@ impl LogView {
     fn render_filter_bar(&self, cx: &mut Context<Self>) -> AnyElement {
         use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
         let palette = brand::palette(cx);
-        let faint = brand::reader_palette(cx).text_faint;
         let muted = cx.theme().muted_foreground;
         let view = cx.entity().downgrade();
         let level = self.filter.level;
@@ -670,40 +770,71 @@ impl LogView {
                     menu
                 })
         });
-        let chips = h_flex()
+        let danger = palette.danger;
+        let error = self.query_error.clone();
+        let query = div()
             .flex_1()
-            .min_w_0()
-            .overflow_hidden()
-            .gap_1()
-            .children(
-                self.filter
-                    .chips
-                    .iter()
-                    .enumerate()
-                    .map(|(position, chip)| {
-                        h_flex()
-                            .id(("log-chip", position))
-                            .flex_none()
-                            .max_w(px(CHIP_MAX_WIDTH))
-                            .h(px(24.))
-                            .pl_2()
-                            .gap_1()
-                            .rounded(px(6.))
-                            .bg(palette.selected)
-                            .text_size(px(12.))
-                            .child(div().min_w_0().truncate().child(chip_label(chip)))
-                            .child(
-                                Button::new(("log-chip-remove", position))
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(Icon::new(IconName::Close).text_color(faint))
-                                    .tooltip("Remove filter")
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.remove_chip(position, cx)
-                                    })),
-                            )
+            .min_w(px(QUERY_MIN_WIDTH))
+            .h(px(BAR_CONTROL_HEIGHT))
+            .flex()
+            .items_center()
+            .rounded(px(6.))
+            .bg(palette.surface_raised)
+            .debug_selector(|| "log-query".into())
+            .child(
+                Input::new(&self.query_input)
+                    .appearance(false)
+                    .cleanable(true)
+                    .small()
+                    .when_some(error, |input, (column, message)| {
+                        // The error sits inside the field, so the bar keeps
+                        // its height; the rows keep the last valid query.
+                        input.suffix(
+                            div()
+                                .id("log-query-error")
+                                .debug_selector(|| "log-query-error".into())
+                                .max_w(px(QUERY_ERROR_MAX_WIDTH))
+                                .truncate()
+                                .text_size(px(12.))
+                                .text_color(danger)
+                                .child(format!("Column {column}: {message}"))
+                                .tooltip(move |window, cx| {
+                                    gpui_component::tooltip::Tooltip::new(format!(
+                                        "Column {column}: {message}"
+                                    ))
+                                    .build(window, cx)
+                                }),
+                        )
                     }),
             );
+        let history = self
+            .history_key()
+            .map(|key| reader_ui_state::log_queries(&key, cx))
+            .filter(|queries| !queries.is_empty())
+            .map(|queries| {
+                let view = view.clone();
+                bar_button("log-query-history", false)
+                    .icon(Icon::default().path(brand::READER_CLOCK_ICON))
+                    .tooltip("Recent queries for this log")
+                    .debug_selector(|| "log-query-history".into())
+                    .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
+                        let mut menu = menu;
+                        for query in &queries {
+                            let view = view.clone();
+                            let text = query.clone();
+                            menu = menu.item(PopupMenuItem::new(query.clone()).on_click(
+                                move |_, window, cx| {
+                                    let text = text.clone();
+                                    let _ = view.update(cx, |this, cx| {
+                                        this.replace_query(text, window, cx);
+                                        this.remember_query(cx);
+                                    });
+                                },
+                            ));
+                        }
+                        menu
+                    })
+            });
         let counter = match_counter(
             self.rows.as_ref().map(|rows| rows.len()),
             self.file().map_or(0, |file| file.index().len()),
@@ -720,7 +851,8 @@ impl LogView {
             .child(text)
             .child(level_button)
             .children(time_button)
-            .child(chips)
+            .child(query)
+            .children(history)
             .child(
                 div()
                     .flex_none()
@@ -893,17 +1025,17 @@ fn level_label(level: filter::LevelFilter) -> String {
 
 /// `key = value` on one line, cut short for the bar; the chip filters on
 /// the whole value.
-fn chip_label(chip: &FieldChip) -> String {
-    const LIMIT: usize = 80;
-    let mut label = format!("{} = ", chip.key);
-    for (count, c) in chip.value.chars().enumerate() {
-        if count == LIMIT {
-            label.push('…');
-            break;
-        }
-        label.push(if c.is_control() { ' ' } else { c });
+/// The query term a detail-pane field adds: the raw key equals the value as
+/// text, which is what the field shows (#1158).
+fn field_term(key: &str, value: &str) -> Expr {
+    Expr::Field {
+        field: FieldRef::Key(key.to_owned()),
+        test: Test::Eq(Literal {
+            text: value.to_owned(),
+            number: None,
+        }),
+        include_absent: false,
     }
-    label
 }
 
 /// "N of M" once a filter has produced rows. Nothing while no filter runs,
@@ -1652,13 +1784,27 @@ mod tests {
             "Error and above, with a level"
         );
         assert_eq!(level_label(level(None, false)), "Records with a level");
-        let chip = FieldChip {
-            key: "msg".into(),
-            value: format!("a\nb{}", "x".repeat(200)),
-        };
-        let label = chip_label(&chip);
-        assert!(label.starts_with("msg = a b"));
-        assert!(label.ends_with('…'));
+    }
+
+    /// #1158: a detail-pane field becomes canonical query text that parses
+    /// back to the same term, quoting what a bare word cannot carry.
+    #[test]
+    fn field_terms_are_query_text() {
+        for (key, value, text) in [
+            (
+                "kubernetes.pod_name",
+                "checkout-api-85b4",
+                "kubernetes.pod_name = checkout-api-85b4",
+            ),
+            ("status", "500", r#"status = "500""#),
+            ("level", "NOTICE", r#""level" = NOTICE"#),
+            ("msg", "a \"b\"\nc", r#""msg" = "a \"b\"\nc""#),
+            ("symbol", "FDAX Z6", r#"symbol = "FDAX Z6""#),
+        ] {
+            let term = field_term(key, value);
+            assert_eq!(term.to_string(), text);
+            assert_eq!(Query::parse(text).unwrap().expr(), &term, "{text}");
+        }
     }
 
     fn open_log<'a>(
@@ -1767,14 +1913,8 @@ mod tests {
         });
         visual.run_until_parked();
         view.update_in(visual, |view, window, cx| view.select(3, true, window, cx));
-        view.update(visual, |view, cx| {
-            view.add_chip(
-                FieldChip {
-                    key: "status".into(),
-                    value: "500".into(),
-                },
-                cx,
-            )
+        view.update_in(visual, |view, window, cx| {
+            view.add_field_term("status", "500", window, cx)
         });
         visual.run_until_parked();
         assert_eq!(shown(&view, visual), [1, 3]);
@@ -1800,7 +1940,9 @@ mod tests {
         visual.run_until_parked();
         assert!(shown(&view, visual).is_empty());
         assert_eq!(counter(&view, visual), None);
-        view.update(visual, |view, cx| view.remove_chip(0, cx));
+        view.update_in(visual, |view, window, cx| {
+            view.replace_query(String::new(), window, cx)
+        });
         view.update(visual, |view, cx| view.set_text(String::new(), cx));
         visual.run_until_parked();
         assert_eq!(shown(&view, visual), [3], "only the time window is left");
@@ -1808,6 +1950,112 @@ mod tests {
             std::fs::read_to_string(directory.path().join("app.jsonl")).unwrap(),
             text
         );
+    }
+
+    /// #1158: the query bar filters in the background, a typo shows its
+    /// column and keeps the last valid rows, a detail-pane field narrows the
+    /// same query, and applied queries are kept per file.
+    #[gpui::test]
+    fn query_bar_filters_reports_typos_and_remembers_queries(cx: &mut TestAppContext) {
+        let text = concat!(
+            r#"{"level":"info","msg":"boot","status":200,"pod":"checkout-1"}"#,
+            "\n",
+            r#"{"level":"warn","msg":"slow","status":200,"pod":"checkout-2"}"#,
+            "\n",
+            r#"{"level":"error","msg":"upstream","status":503,"pod":"checkout-2","err":"timeout"}"#,
+            "\n",
+            r#"{"level":"error","msg":"bad gateway","status":502,"pod":"payments-1"}"#,
+            "\n",
+        );
+        let state = tempfile::tempdir().unwrap();
+        cx.update(|cx| reader_ui_state::install(state.path(), cx));
+        let (_directory, reader, visual) = open_log(text, cx);
+        let view = log_view(&reader, visual);
+        let type_query = |visual: &mut VisualTestContext, query: &str| {
+            view.update_in(visual, |view, window, cx| {
+                view.query_input
+                    .update(cx, |input, cx| input.set_value(query, window, cx));
+                view.set_query(query.into(), cx);
+            });
+            visual.run_until_parked();
+        };
+        assert_eq!(shown(&view, visual), [0, 1, 2, 3], "positive control");
+        type_query(visual, "level>=warn and status>=500");
+        assert_eq!(shown(&view, visual), [2, 3]);
+        assert_eq!(counter(&view, visual).as_deref(), Some("2 of 4"));
+        type_query(visual, "exists(err)");
+        assert_eq!(shown(&view, visual), [2]);
+
+        // A typo: the error names its column, the rows stay as they were.
+        type_query(visual, "exists(err) and pod ~ checkout");
+        view.read_with(visual, |view, _| {
+            let (column, _) = view.query_error.clone().expect("a parse error");
+            assert_eq!(column, 21, "{:?}", view.query_error);
+        });
+        assert_eq!(shown(&view, visual), [2], "the last valid query stays");
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let error = visual
+            .debug_bounds("log-query-error")
+            .expect("the error shows in the query field");
+        let field = visual.debug_bounds("log-query").expect("query field");
+        assert!(field.contains(&error.center()), "inside the field");
+
+        // A detail-pane field narrows the same query.
+        type_query(visual, "level>=error");
+        assert_eq!(shown(&view, visual), [2, 3]);
+        view.update_in(visual, |view, window, cx| {
+            view.add_field_term("pod", "payments-1", window, cx)
+        });
+        visual.run_until_parked();
+        assert_eq!(shown(&view, visual), [3]);
+        view.read_with(visual, |view, cx| {
+            assert_eq!(
+                view.query_input.read(cx).value().as_ref(),
+                "level >= error and pod = payments-1"
+            );
+            assert!(view.query_error.is_none());
+        });
+        // The same field again changes nothing.
+        view.update_in(visual, |view, window, cx| {
+            view.add_field_term("pod", "payments-1", window, cx)
+        });
+        view.read_with(visual, |view, cx| {
+            assert_eq!(
+                view.query_input.read(cx).value().as_ref(),
+                "level >= error and pod = payments-1"
+            );
+        });
+
+        // History: newest first, applied by the menu, kept for the file.
+        view.update(visual, |view, cx| view.remember_query(cx));
+        type_query(visual, "status=200");
+        view.update(visual, |view, cx| view.remember_query(cx));
+        let key = view.read_with(visual, |view, _| view.history_key().unwrap());
+        let history = visual.update(|_, cx| reader_ui_state::log_queries(&key, cx));
+        assert_eq!(
+            history,
+            ["status = 200", "level >= error and pod = payments-1"]
+        );
+        view.update_in(visual, |view, window, cx| {
+            view.replace_query(history[1].clone(), window, cx)
+        });
+        visual.run_until_parked();
+        assert_eq!(shown(&view, visual), [3]);
+        visual.executor().advance_clock(Duration::from_secs(1));
+        visual.run_until_parked();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(state.path().join("reader-ui.json")).unwrap())
+                .unwrap();
+        assert_eq!(saved["log_queries"][&key][0], "status = 200");
+
+        // Clear filters empties the query and its error.
+        view.update_in(visual, |view, window, cx| view.clear_filters(window, cx));
+        visual.run_until_parked();
+        assert_eq!(shown(&view, visual), [0, 1, 2, 3]);
+        view.read_with(visual, |view, cx| {
+            assert!(view.query_input.read(cx).value().is_empty());
+            assert!(view.filter.query.is_none());
+        });
     }
 
     #[gpui::test]

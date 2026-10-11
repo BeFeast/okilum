@@ -1,0 +1,62 @@
+{"time":"2026-10-10T03:00:00.229489+00:00","level":"info","logger":"test","pid":90112,"tid":90112,"src":"test_main.cpp:12","msg":"Running 214 tests from 31 test suites (ordgw_tests, ASan+UBSan build)"}
+{"time":"2026-10-10T03:00:00.484830+00:00","level":"debug","logger":"test","pid":90112,"tid":90112,"src":"position_map_test.cpp:40","msg":"PositionMapTest.FindMissingReturnsEnd: 3 instruments seeded"}
+{"time":"2026-10-10T03:00:00.705188+00:00","level":"info","logger":"test","pid":90112,"tid":90112,"src":"position_map_test.cpp:58","msg":"PositionMapTest.FindMissingReturnsEnd passed in 0.4ms"}
+{"time":"2026-10-10T03:00:00.872466+00:00","level":"debug","logger":"test","pid":90112,"tid":90112,"src":"order_book_test.cpp:121","msg":"OrderBookTest.ReplaceAfterSnapshot: applying 1200 updates"}
+{"time":"2026-10-10T03:00:00.903916+00:00","level":"info","logger":"test","pid":90112,"tid":90112,"src":"fixparser_test.cpp:51","msg":"FixParserTest.Basic passed in 22.3ms"}
+{"time":"2026-10-10T03:00:00.947634+00:00","level":"info","logger":"test","pid":90112,"tid":90112,"src":"fixparser_test.cpp:24","msg":"FixParserTest.Empty passed in 38.5ms"}
+{"time":"2026-10-10T03:00:01.229656+00:00","level":"info","logger":"test","pid":90112,"tid":90112,"src":"fixparser_test.cpp:163","msg":"FixParserTest.Overflow passed in 14.8ms"}
+{"time":"2026-10-10T03:00:01.378798+00:00","level":"info","logger":"test","pid":90112,"tid":90112,"src":"fixparser_test.cpp:217","msg":"FixParserTest.Replay passed in 11.4ms"}
+{"time":"2026-10-10T03:00:01.586803+00:00","level":"info","logger":"test","pid":90112,"tid":90112,"src":"fixparser_test.cpp:247","msg":"FixParserTest.Concurrent passed in 13.2ms"}
+{"time":"2026-10-10T03:00:01.839943+00:00","level":"info","logger":"test","pid":90112,"tid":90112,"src":"fixsession_test.cpp:214","msg":"FixSessionTest.Basic passed in 4.7ms"}
+{"time":"2026-10-10T03:00:02.002038+00:00","level":"info","logger":"test","pid":90112,"tid":90112,"src":"fixsession_test.cpp:110","msg":"FixSessionTest.Empty passed in 31.5ms"}
+{"time":"2026-10-10T03:00:02.079906+00:00","level":"info","logger":"test","pid":90112,"tid":90112,"src":"fixsession_test.cpp:210","msg":"FixSessionTest.Overflow passed in 8.8ms"}
+{"time":"2026-10-10T03:00:02.320478+00:00","level":"info","logger":"test","pid":90112,"tid":90112,"src":"fixsession_test.cpp:118","msg":"FixSessionTest.Replay passed in 37.5ms"}
+{"time":"2026-10-10T03:00:02.329143+00:00","level":"info","logger":"test","pid":90112,"tid":90112,"src":"fixsession_test.cpp:159","msg":"FixSessionTest.Concurrent passed in 26.0ms"}
+{"time":"2026-10-10T03:00:02.610004+00:00","level":"info","logger":"test","pid":90112,"tid":90112,"src":"riskengine_test.cpp:39","msg":"RiskEngineTest.Basic passed in 35.7ms"}
+{"time":"2026-10-10T03:00:02.679120+00:00","level":"info","logger":"test","pid":90112,"tid":90112,"src":"riskengine_test.cpp:197","msg":"RiskEngineTest.Empty passed in 38.3ms"}
+{"time":"2026-10-10T03:00:02.752519+00:00","level":"info","logger":"test","pid":90112,"tid":90112,"src":"riskengine_test.cpp:213","msg":"RiskEngineTest.Overflow passed in 7.4ms"}
+{"time":"2026-10-10T03:00:02.891070+00:00","level":"info","logger":"test","pid":90112,"tid":90112,"src":"riskengine_test.cpp:103","msg":"RiskEngineTest.Replay passed in 6.7ms"}
+{"time":"2026-10-10T03:00:03.033928+00:00","level":"info","logger":"test","pid":90112,"tid":90112,"src":"riskengine_test.cpp:45","msg":"RiskEngineTest.Concurrent passed in 25.3ms"}
+{"time":"2026-10-10T03:00:03.194988+00:00","level":"info","logger":"test","pid":90112,"tid":90112,"src":"positionmap_test.cpp:139","msg":"PositionMapTest.Basic passed in 4.6ms"}
+{"time":"2026-10-10T03:00:03.384261+00:00","level":"info","logger":"test","pid":90112,"tid":90112,"src":"positionmap_test.cpp:125","msg":"PositionMapTest.Empty passed in 5.1ms"}
+{"time":"2026-10-10T03:00:03.523719+00:00","level":"info","logger":"test","pid":90112,"tid":90112,"src":"positionmap_test.cpp:240","msg":"PositionMapTest.Overflow passed in 23.2ms"}
+{"time":"2026-10-10T03:00:03.603435+00:00","level":"info","logger":"test","pid":90112,"tid":90112,"src":"positionmap_test.cpp:273","msg":"PositionMapTest.Replay passed in 1.9ms"}
+{"time":"2026-10-10T03:00:03.749474+00:00","level":"info","logger":"test","pid":90112,"tid":90112,"src":"positionmap_test.cpp:73","msg":"PositionMapTest.Concurrent passed in 29.1ms"}
+{"time":"2026-10-10T03:00:03.852730+00:00","level":"info","logger":"test","pid":90112,"tid":90112,"src":"mcastrx_test.cpp:220","msg":"McastRxTest.Basic passed in 30.2ms"}
+{"time":"2026-10-10T03:00:04.082068+00:00","level":"info","logger":"test","pid":90112,"tid":90112,"src":"mcastrx_test.cpp:296","msg":"McastRxTest.Empty passed in 18.5ms"}
+{"time":"2026-10-10T03:00:04.221533+00:00","level":"info","logger":"test","pid":90112,"tid":90112,"src":"mcastrx_test.cpp:254","msg":"McastRxTest.Overflow passed in 14.4ms"}
+{"time":"2026-10-10T03:00:04.418454+00:00","level":"info","logger":"test","pid":90112,"tid":90112,"src":"mcastrx_test.cpp:132","msg":"McastRxTest.Replay passed in 30.5ms"}
+{"time":"2026-10-10T03:00:04.572611+00:00","level":"info","logger":"test","pid":90112,"tid":90112,"src":"mcastrx_test.cpp:130","msg":"McastRxTest.Concurrent passed in 17.2ms"}
+{"time":"2026-10-10T03:00:04.756524+00:00","level":"info","logger":"test","pid":90112,"tid":90112,"src":"arena_test.cpp:33","msg":"ArenaTest.Basic passed in 7.6ms"}
+{"time":"2026-10-10T03:00:05.009151+00:00","level":"info","logger":"test","pid":90112,"tid":90112,"src":"arena_test.cpp:254","msg":"ArenaTest.Empty passed in 12.2ms"}
+{"time":"2026-10-10T03:00:05.250036+00:00","level":"info","logger":"test","pid":90112,"tid":90112,"src":"arena_test.cpp:114","msg":"ArenaTest.Overflow passed in 33.4ms"}
+{"time":"2026-10-10T03:00:05.292547+00:00","level":"info","logger":"test","pid":90112,"tid":90112,"src":"arena_test.cpp:260","msg":"ArenaTest.Replay passed in 1.0ms"}
+{"time":"2026-10-10T03:00:05.363270+00:00","level":"info","logger":"test","pid":90112,"tid":90112,"src":"arena_test.cpp:230","msg":"ArenaTest.Concurrent passed in 25.2ms"}
+{"time":"2026-10-10T03:00:05.422192+00:00","level":"warning","logger":"test","pid":90112,"tid":90112,"src":"order_book.cpp:97","msg":"crossed book on TEST: bid 101.0 >= ask 100.5, waiting for snapshot"}
+=================================================================
+==90112==ERROR: AddressSanitizer: heap-use-after-free on address 0x60b0000003a8 at pc 0x55e2b1c4e8d1 bp 0x7ffd5b1e2a70 sp 0x7ffd5b1e2a68
+READ of size 8 at 0x60b0000003a8 thread T0
+    #0 0x55e2b1c4e8d0 in okl::OrderBook::Level::front() const /src/ordgw/src/md/order_book.hpp:58:12
+    #1 0x55e2b1c4f1e2 in okl::OrderBook::replace(okl::OrderId, okl::Price, okl::Qty) /src/ordgw/src/md/order_book.cpp:212:23
+    #2 0x55e2b1bf0a4c in OrderBookTest_ReplaceAfterSnapshot_Test::TestBody() /src/ordgw/tests/order_book_test.cpp:139:3
+    #3 0x55e2b1d8e6f0 in testing::Test::Run() /src/third_party/googletest/src/gtest.cc:2687:5
+
+0x60b0000003a8 is located 88 bytes inside of 112-byte region [0x60b000000350,0x60b0000003c0)
+freed by thread T0 here:
+    #0 0x55e2b1bb9e3d in operator delete(void*) (/build/asan/tests/ordgw_tests+0x1a2e3d)
+    #1 0x55e2b1c4d77a in okl::OrderBook::erase_level(okl::Price) /src/ordgw/src/md/order_book.cpp:171:5
+    #2 0x55e2b1c4f19b in okl::OrderBook::replace(okl::OrderId, okl::Price, okl::Qty) /src/ordgw/src/md/order_book.cpp:209:7
+
+previously allocated by thread T0 here:
+    #0 0x55e2b1bb95fd in operator new(unsigned long) (/build/asan/tests/ordgw_tests+0x1a25fd)
+    #1 0x55e2b1c4c3a0 in okl::OrderBook::add_level(okl::Price) /src/ordgw/src/md/order_book.cpp:150:18
+
+SUMMARY: AddressSanitizer: heap-use-after-free /src/ordgw/src/md/order_book.hpp:58:12 in okl::OrderBook::Level::front() const
+Shadow bytes around the buggy address:
+  0x60b000000300: fa fa fa fa fa fa fa fa fd fd fd fd fd fd fd fd
+=>0x60b000000380: fd fd fd fd fd[fd]fd fd fa fa fa fa fa fa fa fa
+Shadow byte legend (one shadow byte represents 8 application bytes):
+  Addressable:           00
+  Freed heap region:       fd
+  Heap left redzone:       fa
+==90112==ABORTING
