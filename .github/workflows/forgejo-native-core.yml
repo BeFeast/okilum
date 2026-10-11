@@ -52,6 +52,9 @@ jobs:
         # --exact needs the module path; a name that matches nothing would "pass" with zero tests.
         # #1188: the hover and the click must agree in such a vault (the test reads the same states).
         foreach ($shell in @(
+          # #848: Enter and paste in a CRLF note insert CRLF; Undo restores the bytes.
+          'input_newline_tests::crlf_enter_paste_and_undo_preserve_document_bytes',
+          'input_newline_tests::crlf_exact_clipboard_and_undo_preserve_document_bytes',
           'document_link_landing_tests::one_non_utf8_note_does_not_block_links_between_readable_notes',
           'document_link_landing_tests::hover_and_navigation_agree_in_a_vault_with_a_non_utf8_note_also_on_a_warm_start',
           'prepared_links::tests::the_first_click_on_a_link_opens_it_after_a_word_selection',
