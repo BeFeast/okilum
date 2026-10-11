@@ -126,7 +126,7 @@ diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/st
 +                clicks.set(clicks.get() + 1)
 +            })
 +        });
-+        let box_bounds = Bounds::new(point(px(20.), px(20.)), size(px(12.), px(12.)));
++        let box_bounds = Bounds::new(point(px(20.), px(20.)), gpui::size(px(12.), px(12.)));
 +        let inside = box_bounds.center();
 +        let away = point(px(300.), px(200.));
 +        let down = |position| MouseDownEvent {
