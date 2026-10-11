@@ -494,6 +494,34 @@ pub fn rewrite_footnotes(text: &str) -> String {
     out
 }
 
+/// The Markdown of `block` (a byte range of `note`) with its footnote
+/// references numbered as in the whole note, as the Reader numbers them, and
+/// no footnote list under it. None when the block has no footnote syntax.
+/// A Live Preview block is rendered on its own; this keeps its `[^id]` and
+/// `^[inline]` references from showing raw or restarting at 1 (#1067).
+pub fn block_footnotes(note: &str, block: std::ops::Range<usize>) -> Option<String> {
+    const START: char = '\u{E000}';
+    const END: char = '\u{E001}';
+    let text = note.get(block.clone())?;
+    if (!text.contains("[^") && !text.contains("^[")) || note.contains([START, END]) {
+        return None;
+    }
+    let marked = format!(
+        "{}\n\n{START}\n\n{text}\n\n{END}\n\n{}",
+        &note[..block.start],
+        &note[block.end..]
+    );
+    let rewritten = rewrite_footnotes(&marked);
+    let start = rewritten.find(START)? + START.len_utf8();
+    let end = rewritten.find(END)?;
+    Some(
+        rewritten
+            .get(start..end)?
+            .trim_matches(['\n', '\r'])
+            .to_string(),
+    )
+}
+
 /// `(number, id)` from a [`FOOTNOTE_LANG`] fence's info string after the tag.
 pub fn parse_footnote_info(meta: &str) -> Option<(usize, String)> {
     let mut parts = meta.split_whitespace();
@@ -668,6 +696,30 @@ pub fn footnote_reference_block(source: &str, id: &str) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_block_numbers_its_footnotes_as_the_whole_note_does() {
+        let note = "Intro^[first] and [^a].\n\n| Name | Note |\n|---|---|\n| x | see [^b] and ^[inline] |\n\nAfter [^b].\n\n[^a]: Alpha.\n[^b]: Beta.\n";
+        let start = note.find("| Name").unwrap();
+        let end = note.find("\n\nAfter").unwrap();
+        let block = super::block_footnotes(note, start..end).unwrap();
+        // ^[first] is 1, [^a] is 2, so the table's [^b] is 3 and ^[inline] 4,
+        // as in the Reader; no footnote list is appended to the block.
+        assert!(block.starts_with("| Name |"), "{block}");
+        assert!(
+            block.contains(&format!("[{}]({FOOTNOTE_SCHEME}b)", super::superscript(3))),
+            "{block}"
+        );
+        assert!(block.contains(&super::superscript(4)), "{block}");
+        assert!(!block.contains("---\n\n"), "{block}");
+        assert!(
+            !block.contains("[^b]") && !block.contains("^[inline]"),
+            "{block}"
+        );
+        // Control: a block without footnote syntax is left to the caller.
+        let plain = note.find("After").unwrap();
+        assert_eq!(super::block_footnotes(note, plain..plain + 5), None);
+    }
+
     use super::*;
 
     #[test]
