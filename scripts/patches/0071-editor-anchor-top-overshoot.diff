@@ -1,0 +1,109 @@
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -82,6 +82,21 @@
+     (requested, (viewport - requested - natural).max(px(0.)))
+ }
+ 
++// The same, remembering what the document top clamps away (#1241). Rows above
++// the anchor can shrink for one frame and grow back on the next (an edit
++// drawn raw before its classification returns). At the top the first
++// correction cannot scroll up, and applying the second in full scrolled the
++// note down by its amount, with a temporary tail to allow it. `overshoot` is
++// the clamped part, and counts only while the view is still at the top.
++fn anchored_scroll_y_at_top(scroll: Pixels, overshoot: Pixels, delta: Pixels, content: Pixels,
++    viewport: Pixels) -> (Pixels, Pixels, Pixels)
++{
++    let from = if scroll == px(0.) { overshoot } else { px(0.) };
++    let wanted = scroll + from + delta;
++    let (offset, tail) = anchored_scroll_y(scroll + from, delta, content, viewport);
++    (offset, tail, wanted.max(px(0.)))
++}
++
+ fn compose_decorations(
+     mut styles: Vec<(Range<usize>, HighlightStyle)>,
+     decorations: impl IntoIterator<Item = (Range<usize>, HighlightStyle)>,
+@@ -2135,9 +2150,11 @@
+                     let extra = empty_bottom_height(state.is_code_editor(), state.scroll_beyond_last_line,
+                         bounds.size.height, window.line_height());
+                     let height = rows.rows_height(state.display_map.wrap_row_count()) + extra;
+-                    let (offset, tail) = anchored_scroll_y(scroll.y, delta, height, bounds.size.height);
++                    let (offset, tail, overshoot) = anchored_scroll_y_at_top(scroll.y,
++                        state.projection_anchor_overshoot, delta, height, bounds.size.height);
+                     scroll.y = offset;
+                     state.projection_anchor_tail = tail;
++                    state.projection_anchor_overshoot = overshoot;
+                     state.scroll_handle.set_offset(scroll);
+                     // A no-op caret-follow target must not overwrite this
+                     // presentation correction later in layout_cursor.
+@@ -2145,6 +2162,7 @@
+                 }
+             } else if !state.projection.enabled {
+                 state.projection_anchor_tail = px(0.);
++                state.projection_anchor_overshoot = px(0.);
+             }
+             // User scroll toward the natural extent retires the lease. Never
+             // grow it from scroll alone or retain it after disabling projection.
+@@ -3205,6 +3223,34 @@
+         assert_eq!(anchored_scroll_y(px(0.), px(192.), px(408.), px(624.)), (px(0.), px(0.)));
+     }
+ 
++    #[test]
++    fn a_correction_clamped_at_the_top_is_cancelled_by_its_reverse() {
++        // #1241, as traced on Wayland: typing on a quote line under a list draws
++        // the note raw for one frame (rows above the caret 21.5 px shorter),
++        // then rendered again. Before: 0 -> 0, then -21.5 with a 21.5 px tail.
++        let (v, h) = (px(658.), px(435.5));
++        let (offset, tail, over) = anchored_scroll_y_at_top(px(0.), px(0.), px(21.5), px(437.), v);
++        assert_eq!((offset, tail, over), (px(0.), px(0.), px(21.5)));
++        let (offset, tail, over) = anchored_scroll_y_at_top(offset, over, px(-21.5), h, v);
++        assert_eq!((offset, tail, over), (px(0.), px(0.), px(0.)), "no net scroll");
++        // Undo replays the same pair: still nothing.
++        let (offset, _, over) = anchored_scroll_y_at_top(offset, over, px(21.5), px(437.), v);
++        assert_eq!(anchored_scroll_y_at_top(offset, over, px(-21.5), h, v),
++            (px(0.), px(0.), px(0.)));
++        // Positive control: without the remembered part the reverse scrolls.
++        assert_eq!(anchored_scroll_y(px(0.), px(-21.5), h, v), (px(-21.5), px(21.5)));
++        // Away from the top a stale overshoot is ignored and corrections apply
++        // as before, both ways.
++        assert_eq!(anchored_scroll_y_at_top(px(-100.), px(21.5), px(-21.5), px(2000.), v),
++            (px(-121.5), px(0.), px(0.)));
++        assert_eq!(anchored_scroll_y_at_top(px(-121.5), px(0.), px(21.5), px(2000.), v),
++            (px(-100.), px(0.), px(0.)));
++        // A genuine growth above the caret at the top, with nothing clamped
++        // before, keeps the caret's row where it was, as before.
++        assert_eq!(anchored_scroll_y_at_top(px(0.), px(0.), px(-40.), px(2000.), v),
++            (px(-40.), px(0.), px(0.)));
++    }
++
+     #[test]
+     fn source_anchor_maps_unicode_insert_delete_and_replacement() {
+         assert_eq!(super::previous_source_anchor("abc", "abשc", 4), Some(2));
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -398,6 +398,10 @@
+     pub(super) projection_anchor_layout: Option<LastLayout>,
+     // Temporary scroll extent required by a presentation anchor, never source rows.
+     pub(super) projection_anchor_tail: Pixels,
++    // The part of an anchor correction the document top clamped away, kept
++    // while the view stays at the top so the reverse correction cancels it
++    // instead of scrolling (#1241).
++    pub(super) projection_anchor_overshoot: Pixels,
+     pub(super) last_cursor: Option<usize>,
+     /// The input container bounds
+     pub(super) input_bounds: Bounds<Pixels>,
+@@ -788,6 +792,7 @@
+             last_layout: None,
+             projection_anchor_layout: None,
+             projection_anchor_tail: px(0.),
++            projection_anchor_overshoot: px(0.),
+             last_bounds: None,
+             last_selected_range: None,
+             last_cursor: None,
+@@ -1420,6 +1425,7 @@
+         // override the cursor-follow scroll for the next painted frame to keep
+         // the start visible; the deferred offset is consumed during that paint.
+         self.scroll_handle.set_offset(point(px(0.), px(0.)));
++        self.projection_anchor_overshoot = px(0.);
+         if self.is_single_line() {
+             self.deferred_scroll_offset = Some(point(px(0.), px(0.)));
+         }
