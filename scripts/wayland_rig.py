@@ -1,7 +1,7 @@
 """Headless Wayland rig for native checks: sway (wlroots, like Hyprland), a
 virtual keyboard, and fcitx5 with the requested input methods. Nothing reaches
 a real screen. Used by check-ime-native.py and check-external-link-native.py.
-Needs: sway, wtype, grim, fcitx5, gdbus, dbus-launch."""
+Needs: sway, wtype, wlrctl, grim, fcitx5, gdbus, dbus-launch."""
 import os, shutil, subprocess, time
 from pathlib import Path
 
@@ -84,16 +84,15 @@ class Rig:
 
     def click(self, x, y, hold=None):
         """A left click at output pixel (x, y), optionally with a modifier held
-        (wtype names: logo, ctrl, shift, alt). sway moves the seat's cursor."""
-        swaymsg = lambda *a: subprocess.run(['swaymsg', 'seat', '-', 'cursor', *map(str, a)], env=self.env,
-                                            capture_output=True, check=True)
-        swaymsg('set', x, y)
+        (wtype names: logo, ctrl, shift, alt). The headless seat has no pointer
+        device, so wlrctl's virtual pointer moves (relative: to the corner first)."""
+        wlr = lambda *a: subprocess.run(['wlrctl', 'pointer', *map(str, a)], env=self.env, check=True)
+        wlr('move', -10000, -10000)
+        wlr('move', x, y)
         time.sleep(.3)
         holder = subprocess.Popen(['wtype', '-M', hold, '-s', '2500', '-m', hold], env=self.env) if hold else None
         time.sleep(.6 if hold else 0)
-        swaymsg('press', 'button1')
-        time.sleep(.08)
-        swaymsg('release', 'button1')
+        wlr('click', 'left')
         if holder:
             holder.wait(timeout=10)
         time.sleep(.6)
