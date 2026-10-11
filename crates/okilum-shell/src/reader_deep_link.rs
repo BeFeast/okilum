@@ -142,6 +142,25 @@ impl Reader {
         }
     }
 
+    /// «Copy link to line»: the caret's line and column in this note (#1049).
+    pub(crate) fn copy_link_to_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(input) = self.source_input() else {
+            return;
+        };
+        let caret = input.read(cx).cursor_position();
+        let link = crate::reader_files::okilum_link(
+            &self.vault_root,
+            self.selected_file(),
+            &Position {
+                line: Some(caret.line + 1),
+                column: Some(caret.character + 1),
+                ..Default::default()
+            },
+        );
+        cx.write_to_clipboard(ClipboardItem::new_string(link));
+        crate::reader_toast::transient("Link copied", window, cx);
+    }
+
     /// Caret at a 1-based `line:column` (column in characters), scrolled into
     /// view. Out of range clamps to the last line or column.
     fn move_caret(

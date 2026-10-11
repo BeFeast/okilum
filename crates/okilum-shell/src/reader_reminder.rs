@@ -9,7 +9,7 @@ use gpui_component::{notification::Notification, WindowExt};
 use okilum_core::reminder_append::write::{self, Receipt};
 use okilum_core::{reminder_context, reminder_dates, reminder_task};
 
-gpui::actions!(reader_reminder, [RemindOnSelection]);
+gpui::actions!(reader_reminder, [RemindOnSelection, CopyLinkToLine]);
 
 /// The default reminders note; Settings can choose another per vault.
 #[cfg(test)]
@@ -73,6 +73,7 @@ enum Command {
     Copy,
     Paste,
     SelectAll,
+    CopyLinkToLine,
     Remind,
 }
 
@@ -126,6 +127,8 @@ fn editor_entries(
     entries.push(item("Paste", !(editable && clipboard), Command::Paste));
     entries.push(Entry::Separator);
     entries.push(item("Select All", false, Command::SelectAll));
+    entries.push(Entry::Separator);
+    entries.push(item("Copy link to line", false, Command::CopyLinkToLine));
     if let Some(date) = date {
         entries.push(Entry::Separator);
         entries.push(item(
@@ -221,6 +224,7 @@ pub(super) fn editor_menu(menu: NativeMenu, facts: &MenuFacts, cx: &App) -> Nati
                     Command::Copy => Box::new(Copy),
                     Command::Paste => Box::new(Paste),
                     Command::SelectAll => Box::new(SelectAll),
+                    Command::CopyLinkToLine => Box::new(CopyLinkToLine),
                     Command::Remind => Box::new(RemindOnSelection),
                 };
                 menu.menu_with_disabled(label, disabled, action)
@@ -814,7 +818,10 @@ mod menu_tests {
         let editor = Capabilities::new().code_editor(true).selection(true);
         let plain = labels(&editor_entries(&editor, true, None));
         let names: Vec<_> = plain.iter().map(|(label, _)| label.as_str()).collect();
-        assert_eq!(names, ["Cut", "Copy", "Paste", "Select All"]);
+        assert_eq!(
+            names,
+            ["Cut", "Copy", "Paste", "Select All", "Copy link to line"]
+        );
         assert_ne!(
             editor_entries(&editor, true, None).first(),
             Some(&Entry::Separator),
@@ -832,7 +839,8 @@ mod menu_tests {
                 "Cut",
                 "Copy",
                 "Paste",
-                "Select All"
+                "Select All",
+                "Copy link to line"
             ]
         );
         assert!(served.contains(&("Go to Definition".into(), false)));

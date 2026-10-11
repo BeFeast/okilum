@@ -266,6 +266,51 @@ fn strip_scheme(link: &str) -> Option<&str> {
     scheme.eq_ignore_ascii_case("okilum").then_some(rest)
 }
 
+/// The canonical external link to `rel` in the vault folder named `vault`
+/// («Copy Okilum link»): `okilum://v/<vault>/<path>`, every segment
+/// percent-encoded as UTF-8 with `/` kept, then `line`/`column`/`page` and a
+/// `#heading` or `#^block` fragment. `parse` reads it back exactly.
+pub fn build(vault: &str, rel: &str, position: &Position) -> String {
+    let path = rel.split('/').map(encode).collect::<Vec<_>>().join("/");
+    let mut link = format!("okilum://v/{}/{path}", encode(vault));
+    let mut query = Vec::new();
+    if let Some(line) = position.line {
+        query.push(format!("line={line}"));
+        if let Some(column) = position.column {
+            query.push(format!("column={column}"));
+        }
+    }
+    if let Some(page) = position.page {
+        query.push(format!("page={page}"));
+    }
+    if !query.is_empty() {
+        link.push('?');
+        link.push_str(&query.join("&"));
+    }
+    if let Some(heading) = &position.heading {
+        link.push('#');
+        link.push_str(&encode(heading));
+    } else if let Some(block) = &position.block {
+        link.push_str("#^");
+        link.push_str(&encode(block));
+    }
+    link
+}
+
+/// RFC 3986 unreserved characters stay; everything else is `%XX` per UTF-8
+/// byte, so spaces are `%20` and Hebrew or `#` never break the link.
+fn encode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for b in value.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
 /// Percent-decoding as UTF-8; unencoded non-ASCII (pasted from chat) passes
 /// through. Invalid escapes are kept literally.
 fn decode(value: &str) -> String {
@@ -370,6 +415,54 @@ mod tests {
         // Positive control: a rewrite that changes the block count is refused.
         assert_eq!(reader_block(source, "# Plan\n", 6), None);
         assert_eq!(reader_block("", "", 1), None);
+    }
+
+    #[test]
+    fn built_links_parse_back_exactly() {
+        let at = |line, column, heading: Option<&str>, block: Option<&str>| Position {
+            line,
+            column,
+            heading: heading.map(str::to_owned),
+            block: block.map(str::to_owned),
+            ..Default::default()
+        };
+        for (vault, rel, position) in [
+            ("Notes", "Projects/Launch plan.md", Position::default()),
+            (
+                "My Brain",
+                "תכנון/שבוע 1.md",
+                at(Some(12), Some(4), None, None),
+            ),
+            ("Заметки", "a#b?c%d&e+f.md", at(Some(3), None, None, None)),
+            (
+                "Notes",
+                "Plan.md",
+                at(None, None, Some("Next steps & risks"), None),
+            ),
+            ("Notes", "Plan.md", at(None, None, None, Some("abc-1"))),
+        ] {
+            let link = build(vault, rel, &position);
+            assert!(link.is_ascii(), "{link}");
+            assert!(!link.contains(' ') && !link.contains('+'), "{link}");
+            let parsed = parse(&link).unwrap();
+            assert_eq!(
+                parsed.address,
+                Address::Vault {
+                    vault: vault.into(),
+                    path: rel.into()
+                },
+                "{link}"
+            );
+            assert_eq!(parsed.position, position, "{link}");
+        }
+        assert_eq!(
+            build(
+                "Notes",
+                "Projects/Launch plan.md",
+                &at(Some(12), Some(4), None, None)
+            ),
+            "okilum://v/Notes/Projects/Launch%20plan.md?line=12&column=4"
+        );
     }
 
     #[test]

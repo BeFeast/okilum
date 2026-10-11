@@ -10,6 +10,8 @@ pub(crate) enum FileAction {
     Absolute,
     Relative,
     Wiki,
+    /// `okilum://v/…` for this file (#1049).
+    OkilumLink,
     Open,
     QuickLook,
 }
@@ -64,16 +66,36 @@ pub(crate) fn run(action: FileAction, root: &Path, rel: &str, window: &mut Windo
             FileAction::Absolute => Some(path.to_string_lossy().into_owned()),
             FileAction::Relative => Some(rel.to_owned()),
             FileAction::Wiki => Some(format!("[[{rel}|{}]]", Vault::title_of(rel))),
+            FileAction::OkilumLink => Some(okilum_link(root, rel, &Default::default())),
         };
         if let Some(text) = copied {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
-            reader_toast::transient("Copied", window, cx);
+            let done = if matches!(action, FileAction::OkilumLink) {
+                "Link copied"
+            } else {
+                "Copied"
+            };
+            reader_toast::transient(done, window, cx);
         }
         Ok(())
     })();
     if let Err(error) = result {
         reader_toast::error(format!("File action failed: {error}"), window, cx);
     }
+}
+
+/// The external link to `rel` in the vault at `root`: the vault is named by
+/// its folder, as links resolve it (docs/deep-links.md).
+pub(crate) fn okilum_link(
+    root: &Path,
+    rel: &str,
+    position: &okilum_core::deep_link::Position,
+) -> String {
+    let vault = root
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    okilum_core::deep_link::build(&vault, rel, position)
 }
 
 /// Shows the item in the platform file manager; a failure of every route is
@@ -105,6 +127,7 @@ pub(crate) fn menu(
         ("Copy absolute path", FileAction::Absolute),
         ("Copy vault path", FileAction::Relative),
         ("Copy wikilink", FileAction::Wiki),
+        ("Copy Okilum link", FileAction::OkilumLink),
         ("Open with default app", FileAction::Open),
     ];
     for (label, action) in actions {
@@ -1003,6 +1026,22 @@ mod tests {
             assert_eq!(
                 cx.read_from_clipboard().unwrap().text().unwrap(),
                 "[[diagram.svg|diagram]]"
+            );
+            // #1049: the external link names the vault by its folder.
+            reader.file_action(FileAction::OkilumLink, window, cx);
+            let link = cx.read_from_clipboard().unwrap().text().unwrap();
+            assert_eq!(link, "okilum://v/vault/diagram.svg");
+            let parsed = okilum_core::deep_link::parse(&link).unwrap();
+            assert_eq!(
+                okilum_core::deep_link::resolve(&parsed, &[reader.vault_root.clone()], &|path| {
+                    path.is_file()
+                }),
+                okilum_core::deep_link::Resolution::Open {
+                    root: reader.vault_root.clone(),
+                    rel: "diagram.svg".into(),
+                    position: Default::default(),
+                },
+                "the copied link opens this file"
             );
             reader.preview_file("report.pdf", window, cx);
             assert!(!reader.file_preview.as_ref().unwrap().image);
