@@ -69,7 +69,9 @@ class HostedPRTests(unittest.TestCase):
                 expr = re.search(r'    if: (?:>-\n      )?([^\n]+)', block)[1]
                 replacements = {'github.event.pull_request.head.repo.full_name': 'fork/repo' if fork else 'BeFeast/okilum',
                     'github.repository': 'BeFeast/okilum', 'github.event_name': event, 'vars.OKILUM_PR_LANE': setting,
-                    'needs.select.outputs.build': 'true'}
+                    'needs.select.outputs.build': 'true',
+                    # Ordinary builds: no re-sign (#1104) is requested.
+                    'needs.select.outputs.resign': ''}
                 for key, value in replacements.items():
                     expr = expr.replace(key, repr(value))
                 return eval(expr.replace('&&', ' and ').replace('||', ' or '), {'__builtins__': {}})

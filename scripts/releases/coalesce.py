@@ -84,6 +84,16 @@ def explicit_source(value, platform, ref, event):
     return value
 
 
+def check_resign(resign, requested, platform):
+    """Re-sign (#1104): the bytes of the published Windows build of this commit, signed and
+    published under a new build number; nothing is compiled. Only that exact build qualifies."""
+    if platform != 'windows' or not requested or not resign.isdigit():
+        raise ValueError('Re-signing needs the Windows lane, an explicit source and a build number')
+    published = descriptor(requested, 'windows')
+    if published is None or published['build'] != int(resign):
+        raise ValueError(f'Build {resign} is not the published Windows build of {requested}')
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('platform', choices=['macos', 'windows', 'linux'])
@@ -91,7 +101,12 @@ if __name__ == '__main__':
     event, source = os.environ['GITHUB_EVENT_NAME'], os.environ['GITHUB_SHA']
     requested = explicit_source(os.environ.get('OKILUM_SOURCE'), args.platform,
                                 os.environ.get('GITHUB_REF', ''), event)
-    if requested:
+    resign = (os.environ.get('OKILUM_RESIGN_BUILD') or '').strip()
+    if resign:
+        check_resign(resign, requested, args.platform)
+        build, source = True, requested
+        print(f'Re-sign Windows build {resign} of {requested}')
+    elif requested:
         # An older main commit: build it unless its platform build already exists.
         build = descriptor(requested, args.platform) is None
         source = requested
@@ -107,3 +122,4 @@ if __name__ == '__main__':
     with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
         output.write(f'build={str(build).lower()}\n')
         output.write(f'source={source}\n')
+        output.write(f'resign={resign}\n')

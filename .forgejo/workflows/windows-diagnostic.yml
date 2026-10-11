@@ -28,6 +28,10 @@ on:
         description: 'Older main commit to build for the archive (#1040); empty builds the branch tip'
         required: false
         default: ''
+      resign_build:
+        description: 'With source: re-sign this existing Windows build of that commit (no compile; needs an open SimplySign session)'
+        required: false
+        default: ''
 
 concurrency:
   group: windows-build-${{ github.ref }}
@@ -40,6 +44,7 @@ jobs:
     outputs:
       build: ${{ steps.select.outputs.build }}
       source: ${{ steps.select.outputs.source }}
+      resign: ${{ steps.select.outputs.resign }}
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
@@ -49,11 +54,12 @@ jobs:
         id: select
         env:
           OKILUM_SOURCE: ${{ inputs.source }}
+          OKILUM_RESIGN_BUILD: ${{ inputs.resign_build }}
         run: python3 scripts/releases/coalesce.py windows
 
   release:
     needs: select
-    if: needs.select.outputs.build == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || vars.OKILUM_PR_LANE == 'local')
+    if: needs.select.outputs.build == 'true' && needs.select.outputs.resign == '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || vars.OKILUM_PR_LANE == 'local')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     outputs:
@@ -197,11 +203,47 @@ jobs:
           FORGEJO_URL: ${{ github.server_url }}
         run: python3 scripts/releases/publication.py dispatch windows
 
+  # Re-sign (#1104): stage the exact payload of an already published build (from its full
+  # package) for the package job, so a stable candidate built unsigned is signed in minutes
+  # once the owner opens a SimplySign session. Refuses when the signer is not ready.
+  resign:
+    needs: select
+    if: needs.select.outputs.build == 'true' && needs.select.outputs.resign != ''
+    runs-on: publish
+    timeout-minutes: 10
+    outputs:
+      signed: 'true'
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          ref: ${{ needs.select.outputs.source }}
+          persist-credentials: false
+      - name: Require an open signing session
+        env:
+          READY: ${{ vars.OKILUM_WINDOWS_SIGNER_READY }}
+        run: |
+          age=$(( $(date +%s) - ${READY:-0} ))
+          if [ "${READY:-0}" -eq 0 ] || [ "$age" -ge 900 ]; then
+            echo "Signer not ready (heartbeat ${age}s old): log in to SimplySign first, wait for the heartbeat, rerun" >&2
+            exit 1
+          fi
+      - name: Stage the payload of build ${{ needs.select.outputs.resign }}
+        run: |
+          python3 scripts/windows/payload-from-release.py target/windows-dist "0.1.${{ needs.select.outputs.resign }}"
+          # The portable ZIP carries the diagnostic README; the package's copy is the delivery one.
+          cp docs/windows-diagnostic.md target/windows-dist/README.md
+      - name: Hand the payload to the signer
+        uses: https://code.forgejo.org/actions/upload-artifact@v3
+        with:
+          name: windows-payload
+          path: target/windows-dist/
+          retention-days: 1
+
   # Signed main build (#1104): the payload from `release` is signed, packaged, verified and
   # handed to publication here. Only main reaches this runner; sign.sh refuses pull requests.
   package:
-    needs: [select, release]
-    if: needs.release.outputs.signed == 'true'
+    needs: [select, release, resign]
+    if: always() && (needs.release.outputs.signed == 'true' || needs.resign.result == 'success')
     runs-on: windows-signer
     # The signer runner has capacity 1, so signing jobs never overlap. Signing takes about a
     # minute; the timeouts in sign.sh fall back to an unsigned beta well before this limit.
@@ -212,7 +254,8 @@ jobs:
       OKILUM_WINDOWS_SIGN_ALIAS: ${{ vars.OKILUM_WINDOWS_SIGN_ALIAS }}
       OKILUM_WINDOWS_SIGN_CERT_SHA256: ${{ vars.OKILUM_WINDOWS_SIGN_CERT_SHA256 }}
       OKILUM_WINDOWS_SIGN_SUBJECT: ${{ vars.OKILUM_WINDOWS_SIGN_SUBJECT }}
-      OKILUM_WINDOWS_UNSIGNED_POLICY: ${{ vars.OKILUM_WINDOWS_UNSIGNED_POLICY }}
+      # A re-sign exists only to sign: without a key it fails instead of republishing unsigned.
+      OKILUM_WINDOWS_UNSIGNED_POLICY: ${{ needs.select.outputs.resign != '' && 'fail' || vars.OKILUM_WINDOWS_UNSIGNED_POLICY }}
       DOTNET_SYSTEM_GLOBALIZATION_INVARIANT: "1"
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
