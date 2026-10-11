@@ -2,6 +2,7 @@
 //! read-only editor, the engine Markdown code blocks already use; edit mode
 //! opens the same file in a writable editor with the same language.
 use super::*;
+use gpui_component::button::ButtonGroup;
 use gpui_component::input::{Editor, EditorState, WrappingIndent};
 use std::time::Instant;
 
@@ -230,31 +231,38 @@ impl CodePreview {
                 .gap_1()
                 .pb_2()
                 .items_center()
+                // The dashboard filter chips' style, so the shown mode reads as selected.
                 .child(
-                    Button::new("json-pretty")
-                        .xsmall()
-                        .label(if json.pretty.is_none() && !json.showing_pretty {
-                            "Pretty-print anyway"
-                        } else {
-                            "Pretty"
-                        })
-                        .selected(json.showing_pretty)
-                        .disabled(matches!(json.pretty, Some(Err(_))))
-                        .debug_selector(|| "json-pretty".into())
-                        .on_click(move |_, window, cx| {
-                            let _ = entity.update(cx, |this, cx| this.show_json(true, window, cx));
-                        }),
-                )
-                .child(
-                    Button::new("json-raw")
-                        .xsmall()
-                        .label("Raw")
-                        .selected(!json.showing_pretty)
-                        .debug_selector(|| "json-raw".into())
-                        .on_click(move |_, window, cx| {
-                            let _ =
-                                raw_entity.update(cx, |this, cx| this.show_json(false, window, cx));
-                        }),
+                    ButtonGroup::new("json-mode")
+                        .child(
+                            Button::new("json-pretty")
+                                .small()
+                                .ghost()
+                                .label(if json.pretty.is_none() && !json.showing_pretty {
+                                    "Pretty-print anyway"
+                                } else {
+                                    "Pretty"
+                                })
+                                .selected(json.showing_pretty)
+                                .disabled(matches!(json.pretty, Some(Err(_))))
+                                .debug_selector(|| "json-pretty".into())
+                                .on_click(move |_, window, cx| {
+                                    let _ = entity
+                                        .update(cx, |this, cx| this.show_json(true, window, cx));
+                                }),
+                        )
+                        .child(
+                            Button::new("json-raw")
+                                .small()
+                                .ghost()
+                                .label("Raw")
+                                .selected(!json.showing_pretty)
+                                .debug_selector(|| "json-raw".into())
+                                .on_click(move |_, window, cx| {
+                                    let _ = raw_entity
+                                        .update(cx, |this, cx| this.show_json(false, window, cx));
+                                }),
+                        ),
                 )
                 .children(note.map(|note| {
                     div()
