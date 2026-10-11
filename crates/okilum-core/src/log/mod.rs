@@ -11,6 +11,7 @@
 //! level normalisation and parallel chunked scanning. No hl code is used; see
 //! docs/research/602-hl-log-viewer.md.
 
+pub mod block;
 mod detect;
 mod file;
 pub mod filter;
@@ -27,6 +28,7 @@ pub mod timestamp;
 
 use std::path::Path;
 
+pub use block::BlockKind;
 pub use detect::{detect, Format};
 pub use file::{LogFile, MAP_THRESHOLD_BYTES, MAX_LOG_BYTES};
 pub use filter::{

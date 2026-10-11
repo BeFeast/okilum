@@ -3,7 +3,7 @@
 
 use std::borrow::Cow;
 
-use super::{json, logfmt, text, timestamp, Format, Level};
+use super::{block, json, logfmt, text, timestamp, Format, Level};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ValueKind {
@@ -207,8 +207,11 @@ pub struct Record {
 }
 
 impl Record {
-    /// `None` when the line is not a record in `format`.
+    /// `None` when the entry is not a record in `format`. Fields come from
+    /// the entry's first line; its continuation lines (block.rs) are not
+    /// fields.
     pub fn parse(line: &[u8], format: Format) -> Option<Record> {
+        let line = block::head(line);
         let mut record = Record::default();
         let mut ranks = [usize::MAX; 4];
         scan(line, format, &mut |path, value| {

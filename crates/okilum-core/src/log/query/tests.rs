@@ -350,15 +350,16 @@ fn nesting_is_bounded() {
 #[test]
 fn json_records_including_missing_fields() {
     let file = Fixture::new(SERVICE_JSONL);
-    // Line 4 is an unparsed panic line, line 6 is blank, line 9 says NOTICE.
+    // Line 4 is a Rust panic line, a block at level error since #1161; line
+    // 6 is blank, line 9 says NOTICE.
     let cases: &[(&str, &[u64])] = &[
         ("", &[1, 2, 3, 4, 5, 7, 8, 9]),
-        ("level>=warn", &[1, 2, 8]),
+        ("level>=warn", &[1, 2, 4, 8]),
         ("level=info", &[3, 9]),
         ("level in (debug, trace)", &[5, 7]),
-        ("level?<info", &[4, 5, 7]),
-        ("exists(level)", &[1, 2, 3, 5, 7, 8, 9]),
-        ("not exists(level)", &[4]),
+        ("level?<info", &[5, 7]),
+        ("exists(level)", &[1, 2, 3, 4, 5, 7, 8, 9]),
+        ("not exists(level)", &[]),
         ("status>=500", &[1, 2]),
         ("status=200", &[5]),
         ("status!=500", &[2, 5]),
@@ -384,7 +385,10 @@ fn json_records_including_missing_fields() {
         ("\"level\"=fatal", &[8]),
         ("Level=shadowed", &[8]),
         ("ts>=\"2025-10-01T00:00:00.262Z\"", &[5, 7, 8, 9]),
-        ("level>=error or (logger=reader and status=200)", &[1, 5, 8]),
+        (
+            "level>=error or (logger=reader and status=200)",
+            &[1, 4, 5, 8],
+        ),
         ("(level>=error or logger=reader) and status=200", &[5]),
     ];
     for (source, expected) in cases {

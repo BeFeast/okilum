@@ -118,9 +118,12 @@ pub enum TailEvent {
     /// `entries` are new. With `reindexed`, the format verdict changed while
     /// the file was still shorter than the detection sample, and every earlier
     /// entry was indexed again (the entry count before `entries` is unchanged).
+    /// With `grown`, the entry just before `entries` took new lines as its
+    /// continuation (block.rs): its range and row changed, its place did not.
     Appended {
         entries: Range<usize>,
         reindexed: bool,
+        grown: bool,
     },
     /// The previous content was finished and handed back; the index restarted
     /// at byte 0 and `entries` are what the file holds now.
@@ -309,20 +312,24 @@ impl LogTail {
             return TailEvent::Unchanged;
         };
         let before = self.index.len();
-        let reindexed = self.index_to(start + at + 1) && before > 0;
-        if self.index.len() == before && !reindexed {
+        let (rebuilt, grown) = self.index_to(start + at + 1);
+        let reindexed = rebuilt && before > 0;
+        if self.index.len() == before && !reindexed && !grown {
             return TailEvent::Unchanged;
         }
         TailEvent::Appended {
             entries: before..self.index.len(),
             reindexed,
+            grown,
         }
     }
 
     /// Indexes the held bytes up to `end`. Returns whether the whole index
-    /// was rebuilt because the format verdict changed.
-    fn index_to(&mut self, end: usize) -> bool {
+    /// was rebuilt because the format verdict changed, and whether the last
+    /// entry took new lines.
+    fn index_to(&mut self, end: usize) -> (bool, bool) {
         let mut rebuilt = false;
+        let mut grown = false;
         if !self.settled {
             // The verdict reads at most the first SAMPLE_LINES non-blank lines
             // or SAMPLE_BYTES, so re-detecting here touches only a short file.
@@ -333,10 +340,10 @@ impl LogTail {
             }
         }
         if !rebuilt {
-            self.index.extend(&self.bytes, end);
+            grown = self.index.extend(&self.bytes, end);
         }
         self.settled = end >= SAMPLE_BYTES || self.index.len() >= SAMPLE_LINES;
-        rebuilt
+        (rebuilt, grown)
     }
 
     fn reset(
