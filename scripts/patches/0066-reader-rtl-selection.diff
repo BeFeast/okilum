@@ -1,0 +1,372 @@
+diff --git a/crates/base/src/input/bidi_geometry.rs b/crates/base/src/input/bidi_geometry.rs
+index 401a81ec..085f89ca 100644
+--- a/crates/base/src/input/bidi_geometry.rs
++++ b/crates/base/src/input/bidi_geometry.rs
+@@ -66,7 +66,14 @@ pub(crate) struct Geometry {
+ 
+ impl Geometry {
+     pub(crate) fn new(line: &ShapedLine) -> Self {
+-        let text = line.text.as_ref();
++        Self::from_layout(line.text.as_ref(), line)
++    }
++
++    /// Cells of an unwrapped gpui line layout of `text` (the Reader's text
++    /// rows, #1208). Coordinates are the layout's own x.
++    // Okilum compiles this file by `#[path]` without the Reader's text views.
++    #[allow(dead_code)]
++    pub(crate) fn from_layout(text: &str, line: &gpui::LineLayout) -> Self {
+         let bidi = BidiInfo::new(text, None);
+         let boundaries: Vec<_> = text
+             .grapheme_indices(true)
+diff --git a/crates/base/src/text/inline.rs b/crates/base/src/text/inline.rs
+index 05b8afd7..0afa9f89 100644
+--- a/crates/base/src/text/inline.rs
++++ b/crates/base/src/text/inline.rs
+@@ -410,19 +410,16 @@ impl Inline {
+         let mut offset = 0;
+         let mut chars = text.chars().peekable();
+         while let Some(c) = chars.next() {
+-            let Some(pos) = positions.position_for_index(offset) else {
+-                offset += c.len_utf8();
++            let next_offset = offset + c.len_utf8();
++            // A right-to-left character's drawn span, not the distance to the
++            // next character's position, which runs leftwards (#1208).
++            let Some((pos, char_width)) =
++                positions.char_box(offset, next_offset, line_height.half())
++            else {
++                offset = next_offset;
+                 continue;
+             };
+ 
+-            let next_offset = offset + c.len_utf8();
+-            let mut char_width = line_height.half();
+-            if let Some(next_pos) = positions.position_for_index(next_offset) {
+-                if next_pos.y == pos.y {
+-                    char_width = next_pos.x - pos.x;
+-                }
+-            }
+-
+             if point_in_text_selection(pos, char_width, selection_start, selection_end, line_height)
+             {
+                 if selection.is_none() {
+@@ -453,18 +450,13 @@ impl Inline {
+ 
+         for c in self.text.chars() {
+             let next_offset = offset + c.len_utf8();
+-            let Some(pos) = text_layout.position_for_index(offset) else {
++            let Some((pos, char_width)) =
++                text_layout.char_box(offset, next_offset, line_height.half())
++            else {
+                 offset = next_offset;
+                 continue;
+             };
+ 
+-            let mut char_width = line_height.half();
+-            if let Some(next_pos) = text_layout.position_for_index(next_offset) {
+-                if next_pos.y == pos.y {
+-                    char_width = next_pos.x - pos.x;
+-                }
+-            }
+-
+             let bounds = Bounds::from_corners(pos, point(pos.x + char_width, pos.y + line_height))
+                 .intersect(&mask_bounds);
+             if bounds.size.width > px(0.) && bounds.size.height > px(0.) {
+@@ -504,6 +496,20 @@ impl Inline {
+         if end < start {
+             std::mem::swap(&mut start, &mut end);
+         }
++        // Right-to-left lines paint the selected characters' drawn spans.
++        if let Some(rects) = text_layout.rtl_selection_rects(start..end) {
++            for rect in rects {
++                window.paint_quad(quad(
++                    rect,
++                    px(0.),
++                    color,
++                    Edges::default(),
++                    gpui::transparent_black(),
++                    BorderStyle::default(),
++                ));
++            }
++            return;
++        }
+         let Some(start_position) = text_layout.position_for_index(start) else {
+             return;
+         };
+diff --git a/crates/base/src/text/inline_geometry.rs b/crates/base/src/text/inline_geometry.rs
+index 050e7a96..e4b4da44 100644
+--- a/crates/base/src/text/inline_geometry.rs
++++ b/crates/base/src/text/inline_geometry.rs
+@@ -9,11 +9,165 @@ use gpui::{Bounds, Pixels, Point, TextAlign, TextLayout, WrappedLineLayout, poin
+ pub(crate) struct AlignedLayout {
+     layout: TextLayout,
+     align: TextAlign,
++    rtl: std::rc::Rc<std::cell::OnceCell<std::rc::Rc<Vec<RtlLine>>>>,
++}
++
++/// A hard line with right-to-left text: its grapheme cells in the unwrapped
++/// layout's x, and its wrapped rows. gpui's hit-testing and positions assume x
++/// grows with the byte index, which right-to-left runs reverse; these cells
++/// give each character its drawn span instead (#1208).
++pub(crate) struct RtlLine {
++    start: usize,
++    len: usize,
++    top: Pixels,
++    left: Pixels,
++    line_height: Pixels,
++    geometry: crate::input::bidi_geometry::Geometry,
++    /// `(first x, end x, alignment offset)` of each wrapped row.
++    rows: Vec<(Pixels, Pixels, Pixels)>,
++}
++
++impl RtlLine {
++    fn row_of_x(&self, x: Pixels) -> usize {
++        self.rows
++            .iter()
++            .position(|(x0, x1, _)| *x0 <= x && x < *x1)
++            .unwrap_or(self.rows.len().saturating_sub(1))
++    }
++
++    /// The window-space box `(left, top, width)` of the cell starting at
++    /// `local`, the line-relative byte offset of a grapheme.
++    fn cell_box(&self, local: usize) -> Option<(Pixels, Pixels, Pixels)> {
++        let cell = self.geometry.cells.iter().find(|c| c.source.start == local)?;
++        let row = self.row_of_x(cell.left);
++        let (x0, _, offset) = self.rows[row];
++        Some((
++            self.left + offset + cell.left - x0,
++            self.top + self.line_height * row,
++            cell.right - cell.left,
++        ))
++    }
++
++    fn contains_y(&self, y: Pixels) -> bool {
++        self.top <= y && y < self.top + self.line_height * self.rows.len()
++    }
++
++    /// The cell under a window-space point, as a line-relative byte offset.
++    fn index_at(&self, point: Point<Pixels>) -> usize {
++        let row = (((point.y - self.top) / self.line_height).floor().max(0.) as usize)
++            .min(self.rows.len().saturating_sub(1));
++        let (x0, x1, offset) = self.rows[row];
++        let x = (point.x - self.left - offset + x0).clamp(x0, x1);
++        self.geometry
++            .cells
++            .iter()
++            .filter(|c| self.row_of_x(c.left) == row)
++            .min_by(|a, b| {
++                let distance = |c: &&crate::input::bidi_geometry::Cell| {
++                    if c.left <= x && x < c.right {
++                        gpui::px(0.)
++                    } else {
++                        (c.left - x).abs().min((c.right - x).abs())
++                    }
++                };
++                distance(a)
++                    .partial_cmp(&distance(b))
++                    .unwrap_or(std::cmp::Ordering::Equal)
++            })
++            .map_or(0, |c| c.source.start)
++    }
+ }
+ 
+ impl AlignedLayout {
+     pub(crate) fn new(layout: TextLayout, align: TextAlign) -> Self {
+-        Self { layout, align }
++        Self {
++            layout,
++            align,
++            rtl: Default::default(),
++        }
++    }
++
++    /// The hard lines with right-to-left text (computed once per layout).
++    pub(crate) fn rtl_lines(&self) -> std::rc::Rc<Vec<RtlLine>> {
++        self.rtl
++            .get_or_init(|| {
++                let bounds = self.layout.bounds();
++                let line_height = self.layout.line_height();
++                let text = self.layout.text();
++                let mut out = Vec::new();
++                let mut top = bounds.origin.y;
++                let mut start = 0;
++                for (line, line_text) in self.layout.line_layouts().iter().zip(text.split('\n')) {
++                    let height = line.size(line_height).height;
++                    if unicode_bidi::BidiInfo::new(line_text, None).has_rtl()
++                        && line_text.len() == line.len()
++                    {
++                        let layout = &line.unwrapped_layout;
++                        let x_at = |b: &gpui::WrapBoundary| {
++                            layout.runs[b.run_ix].glyphs[b.glyph_ix].position.x
++                        };
++                        let mut rows = Vec::new();
++                        let mut x0 = gpui::px(0.);
++                        for x1 in line.wrap_boundaries.iter().map(x_at).chain([layout.width]) {
++                            let width = x1 - x0;
++                            let offset = match self.align {
++                                TextAlign::Right => bounds.size.width - width,
++                                TextAlign::Center => (bounds.size.width - width) / 2.,
++                                TextAlign::Left => gpui::px(0.),
++                            };
++                            rows.push((x0, x1, offset));
++                            x0 = x1;
++                        }
++                        out.push(RtlLine {
++                            start,
++                            len: line.len(),
++                            top,
++                            left: bounds.origin.x,
++                            line_height,
++                            geometry: crate::input::bidi_geometry::Geometry::from_layout(
++                                line_text, layout,
++                            ),
++                            rows,
++                        });
++                    }
++                    top += height;
++                    start += line.len() + 1;
++                }
++                std::rc::Rc::new(out)
++            })
++            .clone()
++    }
++
++    /// The window-space box `(left, top, width)` of the character at `index`
++    /// when it sits on a right-to-left line.
++    pub(crate) fn rtl_char_box(&self, index: usize) -> Option<(Pixels, Pixels, Pixels)> {
++        self.rtl_lines()
++            .iter()
++            .find(|l| l.start <= index && index < l.start + l.len)
++            .and_then(|l| l.cell_box(index - l.start))
++    }
++
++    /// Selection rectangles for `range` over right-to-left lines, one per
++    /// visual span; None when the range touches no such line.
++    pub(crate) fn rtl_selection_rects(&self, range: std::ops::Range<usize>) -> Option<Vec<Bounds<Pixels>>> {
++        let lines = self.rtl_lines();
++        let mut rects = Vec::new();
++        let mut touched = false;
++        for line in lines.iter() {
++            let lo = range.start.max(line.start);
++            let hi = range.end.min(line.start + line.len);
++            if lo >= hi {
++                continue;
++            }
++            let local = lo - line.start..hi - line.start;
++            touched = true;
++            for cell in line.geometry.cells.iter().filter(|c| local.start <= c.source.start && c.source.end <= local.end) {
++                if let Some((x, y, w)) = line.cell_box(cell.source.start) {
++                    rects.push(Bounds::new(point(x, y), gpui::size(w, line.line_height)));
++                }
++            }
++        }
++        touched.then_some(rects)
+     }
+ 
+     pub(crate) fn line_height(&self) -> Pixels {
+@@ -61,12 +215,18 @@ impl AlignedLayout {
+     }
+ 
+     pub(crate) fn index_for_position(&self, position: Point<Pixels>) -> Result<usize, usize> {
++        if let Some(line) = self.rtl_lines().iter().find(|l| l.contains_y(position.y)) {
++            return Ok(line.start + line.index_at(position));
++        }
+         let offset = Self::offset_at(&self.row_offsets(), position.y);
+         self.layout
+             .index_for_position(point(position.x - offset, position.y))
+     }
+ 
+     pub(crate) fn position_for_index(&self, index: usize) -> Option<Point<Pixels>> {
++        if let Some((x, y, _)) = self.rtl_char_box(index) {
++            return Some(point(x, y));
++        }
+         let position = self.layout.position_for_index(index)?;
+         Some(point(position.x + Self::offset_at(&self.row_offsets(), position.y), position.y))
+     }
+@@ -121,6 +281,8 @@ pub(super) struct InlineGeometry {
+     lines: FirstAtOrAfter<IndexedLine>,
+     /// Per-row alignment offsets; empty when left aligned.
+     offsets: Vec<(Pixels, Pixels)>,
++    /// Right-to-left lines, positioned by their cells (#1208).
++    rtl: std::rc::Rc<Vec<RtlLine>>,
+ }
+ 
+ impl InlineGeometry {
+@@ -131,6 +293,7 @@ impl InlineGeometry {
+             layout.line_height(),
+         );
+         geometry.offsets = layout.row_offsets();
++        geometry.rtl = layout.rtl_lines();
+         geometry
+     }
+ 
+@@ -181,10 +344,44 @@ impl InlineGeometry {
+         Self {
+             lines,
+             offsets: Vec::new(),
++            rtl: Default::default(),
++        }
++    }
++
++    /// The window-space box `(top-left, width)` of the character at `index`
++    /// that ends at `next`: its drawn span on a right-to-left line, else the
++    /// distance to the next character's position (or `fallback` at a row end).
++    pub(super) fn char_box(
++        &self,
++        index: usize,
++        next: usize,
++        fallback: Pixels,
++    ) -> Option<(Point<Pixels>, Pixels)> {
++        if let Some((x, y, width)) = self
++            .rtl
++            .iter()
++            .find(|l| l.start <= index && index < l.start + l.len)
++            .and_then(|l| l.cell_box(index - l.start))
++        {
++            return Some((point(x, y), width));
+         }
++        let position = self.position_for_index(index)?;
++        let width = self
++            .position_for_index(next)
++            .filter(|next| next.y == position.y)
++            .map_or(fallback, |next| next.x - position.x);
++        Some((position, width))
+     }
+ 
+     pub(super) fn position_for_index(&self, index: usize) -> Option<Point<Pixels>> {
++        if let Some((x, y, _)) = self
++            .rtl
++            .iter()
++            .find(|l| l.start <= index && index < l.start + l.len)
++            .and_then(|l| l.cell_box(index - l.start))
++        {
++            return Some(point(x, y));
++        }
+         let line = self.lines.get(index)?;
+         let local = index.checked_sub(line.start)?;
+         let row = line.rows.get(local)?;
+diff --git a/crates/base/src/text/selection.rs b/crates/base/src/text/selection.rs
+index 1f035a17..00ee0b20 100644
+--- a/crates/base/src/text/selection.rs
++++ b/crates/base/src/text/selection.rs
+@@ -26,6 +26,10 @@ fn is_word_char(c: char) -> bool {
+         // Vietnamese
+         || matches!(c, '\u{1E00}'..='\u{1EFF}')
+         || matches!(c, '\u{0300}'..='\u{036F}')
++        // Hebrew letters and points, as the editor counts them
++        // (`text_boundary`): a double-click selects a Hebrew word (#1208).
++        || matches!(c, '\u{05D0}'..='\u{05EA}' | '\u{05EF}'..='\u{05F2}' | '\u{0591}'..='\u{05BD}')
++        || matches!(c, '\u{05BF}' | '\u{05C1}'..='\u{05C2}' | '\u{05C4}'..='\u{05C5}' | '\u{05C7}')
+ }
+ 
+ impl From<char> for CharType {
+@@ -137,6 +141,10 @@ mod tests {
+         assert_eq!(CharType::from('ö'), CharType::Word);
+         assert_eq!(CharType::from('ü'), CharType::Word);
+         assert_eq!(CharType::from('д'), CharType::Word);
++        assert_eq!(CharType::from('ש'), CharType::Word);
++        assert_eq!(CharType::from('ם'), CharType::Word);
++        assert_eq!(CharType::from('\u{05B8}'), CharType::Word, "a Hebrew vowel point");
++        assert_eq!(word_range_at("שלום עולם", "שלום ע".len()), Some("שלום ".len().."שלום עולם".len()));
+     }
+ 
+     #[test]

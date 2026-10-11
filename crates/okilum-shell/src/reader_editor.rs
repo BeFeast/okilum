@@ -2966,6 +2966,92 @@ mod tests {
     }
 
     #[gpui::test]
+    fn command_click_opens_a_link_inside_a_hebrew_paragraph_in_both_editor_modes(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let directory =
+            std::env::temp_dir().join(format!("okilum-rtl-link-{}", uuid::Uuid::new_v4()));
+        let root = directory.join("notes");
+        std::fs::create_dir_all(&root).unwrap();
+        let original = "שלום עולם זה טקסט\n\nקישור אל [[target|היעד]] כאן\n";
+        std::fs::write(root.join("start.md"), original).unwrap();
+        std::fs::write(root.join("target.md"), "# Target page").unwrap();
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        open_path: Some(root.join("start.md")),
+                        index_dir: Some(directory.join("index")),
+                        session_directory: Some(directory.join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        for live in [false, true] {
+            reader.update_in(visual, |reader, window, cx| {
+                // The previous pass navigated while editing: leave it first.
+                if reader.editing.is_some() {
+                    reader.toggle_source(window, cx);
+                }
+            });
+            visual.run_until_parked();
+            reader.update_in(visual, |reader, window, cx| {
+                reader.open_note_at("start.md", None, None, window, cx)
+            });
+            visual.run_until_parked();
+            reader.update_in(visual, |reader, window, cx| {
+                assert_eq!(reader.current_rel, "start.md");
+                if live {
+                    reader.open_live_preview(window, cx);
+                } else {
+                    reader.toggle_source(window, cx);
+                }
+            });
+            visual.run_until_parked();
+            let input = reader.read_with(visual, |reader, _| {
+                reader.editing.as_ref().unwrap().input.clone()
+            });
+            let offset = original.find("היעד").unwrap();
+            input.read_with(visual, |input, _| assert_eq!(input.value(), original));
+            let position = input.read_with(visual, |input, _| {
+                input
+                    .range_to_bounds(&(offset..offset + "ה".len()))
+                    .unwrap()
+                    .center()
+            });
+            visual.simulate_click(
+                position,
+                gpui::Modifiers {
+                    platform: true,
+                    ..Default::default()
+                },
+            );
+            visual.run_until_parked();
+            reader.read_with(visual, |reader, _| {
+                assert_eq!(reader.current_rel, "target.md", "live preview: {live}")
+            });
+        }
+        assert_eq!(
+            std::fs::read_to_string(root.join("start.md")).unwrap(),
+            original
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[gpui::test]
     fn reader_round_trip_keeps_undo_history_for_unchanged_text(cx: &mut TestAppContext) {
         cx.update(|cx| {
             gpui_component::init(cx);
