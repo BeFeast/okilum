@@ -4599,6 +4599,72 @@ mod tests {
         });
     }
 
+    /// #932 on 0.1.10993: one non-UTF-8 note in the vault kept every block
+    /// embed on "Loading embedded block…", even after reopening (night QA on
+    /// Windows and macOS). Since #1120 an unreadable note no longer holds the
+    /// inventory open; this pins that for block embeds.
+    #[gpui::test]
+    fn block_embeds_resolve_on_first_open_despite_a_non_utf8_note(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = TestDirectory::new();
+        let root = temp.path().join("source");
+        std::fs::create_dir_all(root.join("Archive")).unwrap();
+        std::fs::write(
+            root.join("embeds.md"),
+            "# Embeds\n\n![[block-src#^qa0909a]]\n\n![[block-src#^missing0909]]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("block-src.md"),
+            "# Block source\n\nQuietBlock932 ^qa0909a\n",
+        )
+        .unwrap();
+        // Windows-1252 bytes that are not UTF-8, as in the night QA fixture.
+        std::fs::write(root.join("legacy.md"), b"# Legacy\n\nCaf\xe9 \xff\xfe\n").unwrap();
+        std::fs::write(root.join("Archive/old.md"), b"# Old\n\n\x80\x81\n").unwrap();
+        let (release, hold) = async_channel::bounded(1);
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("embeds.md".into()),
+                        index_dir: Some(temp.path().join("cache")),
+                        preparation_hold: Some(hold),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        visual.run_until_parked();
+        reader.read_with(visual, |v, _| {
+            // Positive control: the first render waits on the inventory.
+            assert!(okilum_core::render::has_pending_embeds(&v.note_source));
+            assert!(!v.note_source.contains("QuietBlock932"));
+        });
+        release.try_send(()).unwrap();
+        visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_millis(300));
+        visual.run_until_parked();
+        reader.read_with(visual, |v, _| {
+            assert_eq!(v.current_rel, "embeds.md");
+            assert!(
+                !okilum_core::render::has_pending_embeds(&v.note_source),
+                "no embed may stay on Loading"
+            );
+            assert!(v.note_source.contains("QuietBlock932"));
+        });
+    }
+
     /// #1126: in a fresh vault, the first note's local image is drawn once the
     /// inventory completes, without navigating away and back.
     #[gpui::test]
