@@ -1033,9 +1033,11 @@ mod tests {
             assert_eq!(link, "okilum://v/vault/diagram.svg");
             let parsed = okilum_core::deep_link::parse(&link).unwrap();
             assert_eq!(
-                okilum_core::deep_link::resolve(&parsed, &[reader.vault_root.clone()], &|path| {
-                    path.is_file()
-                }),
+                okilum_core::deep_link::resolve(
+                    &parsed,
+                    std::slice::from_ref(&reader.vault_root),
+                    &|path| { path.is_file() }
+                ),
                 okilum_core::deep_link::Resolution::Open {
                     root: reader.vault_root.clone(),
                     rel: "diagram.svg".into(),
