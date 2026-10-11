@@ -266,6 +266,10 @@ fn cell_tooltip(value: String, window: &mut Window, cx: &mut App) -> AnyView {
         div()
             .id("delimited-cell-tooltip")
             .debug_selector(|| "delimited-cell-tooltip".into())
+            // The popup covers neighbouring cells: they must not count as
+            // hovered (their tooltip would replace this one) nor take the
+            // wheel (the table would scroll underneath) (#946).
+            .occlude()
             .w(px(width))
             .max_h(px(height))
             .overflow_y_scroll()
@@ -782,6 +786,103 @@ mod tests {
             }
         }
         assert_eq!(std::fs::read(path).unwrap(), source.as_bytes());
+    }
+
+    /// #946: over an open tooltip, the cells it covers neither replace it nor
+    /// scroll; another cell's tooltip still opens once the pointer rests on
+    /// that cell.
+    #[gpui::test]
+    fn an_open_cell_tooltip_keeps_the_cells_it_covers_quiet(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().join("dense.csv");
+        let long = "Long value ".repeat(120);
+        let mut source = String::from("a,b,c,d,e,f,g,h\n");
+        for row in 0..30 {
+            let cells: Vec<String> = (0..8)
+                .map(|col| {
+                    if row == 0 && col == 0 {
+                        format!("\"{long}\"")
+                    } else {
+                        format!("r{row}c{col}")
+                    }
+                })
+                .collect();
+            source.push_str(&cells.join(","));
+            source.push('\n');
+        }
+        std::fs::write(&path, &source).unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let preview = cx.new(|cx| TablePreview::new(path.clone(), cx));
+            let surface = cx.new(|_| TableSurface(preview));
+            Root::new(surface, window, cx)
+        });
+        visual.simulate_resize(size(px(1200.), px(800.)));
+        visual.run_until_parked();
+        let settle = |visual: &mut gpui::VisualTestContext| {
+            visual.executor().advance_clock(Duration::from_millis(1500));
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+        };
+        let long_rows = |visual: &mut gpui::VisualTestContext| {
+            visual
+                .debug_bounds("delimited-cell-tooltip-row-3")
+                .is_some()
+        };
+        let cell = visual.debug_bounds("delimited-cell-1-0").unwrap();
+        visual.simulate_mouse_move(cell.center(), None, Modifiers::default());
+        settle(visual);
+        let tooltip = visual.debug_bounds("delimited-cell-tooltip").unwrap();
+        assert!(
+            long_rows(visual),
+            "positive control: the long value's tooltip is open"
+        );
+        // A point inside the tooltip that lies over another cell.
+        let over = (1..20)
+            .flat_map(|r| (0..6).map(move |c| (r, c)))
+            .filter(|&(r, c)| (r, c) != (1, 0))
+            .find_map(|(r, c)| {
+                let bounds = visual.debug_bounds(&format!("delimited-cell-{r}-{c}"))?;
+                let inside = Bounds::new(
+                    tooltip.origin + point(px(8.), px(8.)),
+                    tooltip.size - size(px(16.), px(16.)),
+                );
+                [bounds.center()].into_iter().find(|p| inside.contains(p))
+            })
+            .expect("positive control: the tooltip covers another cell");
+        let before = visual.debug_bounds("delimited-cell-1-1").unwrap();
+        visual.simulate_mouse_move(over, None, Modifiers::default());
+        settle(visual);
+        assert!(
+            long_rows(visual),
+            "the covered cell does not replace the open tooltip"
+        );
+        visual.simulate_event(ScrollWheelEvent {
+            position: over,
+            delta: ScrollDelta::Pixels(point(px(-300.), px(0.))),
+            ..Default::default()
+        });
+        settle(visual);
+        assert_eq!(
+            visual.debug_bounds("delimited-cell-1-1").unwrap(),
+            before,
+            "the wheel over the tooltip does not scroll the table"
+        );
+        // Positive control: resting on another cell outside the tooltip
+        // shows that cell's own (short) value.
+        let far = visual.debug_bounds("delimited-cell-20-5").unwrap();
+        assert!(!tooltip.contains(&far.center()));
+        visual.simulate_mouse_move(far.center(), None, Modifiers::default());
+        settle(visual);
+        settle(visual);
+        assert!(visual.debug_bounds("delimited-cell-tooltip").is_some());
+        assert!(
+            !long_rows(visual),
+            "another cell's tooltip opens after resting there"
+        );
     }
 
     #[gpui::test]
