@@ -2116,6 +2116,10 @@ mod entry_tests {
         let mut visual = gpui::VisualTestContext::from_window(window, cx);
         visual.simulate_keystrokes("enter");
         cx.run_until_parked();
+        // The prompt closes once the vault's window exists (a 50 ms poll).
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(500));
+        cx.run_until_parked();
         assert_eq!(
             state(cx, window),
             (false, 1, true),
