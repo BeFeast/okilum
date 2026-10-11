@@ -976,7 +976,10 @@ mod tests {
             gpui_component::init(cx);
             bind_keys(cx);
         });
-        let root = std::env::temp_dir().join(format!("okilum-link-after-selection-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!(
+            "okilum-link-after-selection-{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&root).unwrap();
         let source = "[Target control](target.md)\n\nAlpha beta gamma delta epsilon.\n";
         std::fs::write(root.join("start.md"), source).unwrap();
@@ -1080,8 +1083,8 @@ mod tests {
             gpui_component::init(cx);
             bind_keys(cx);
         });
-        let root = std::env::temp_dir()
-            .join(format!("okilum-drag-over-link-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("okilum-drag-over-link-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let source = "[Target control](target.md)\n\nUnique selectable paragraph for the drag.\n";
         std::fs::write(root.join("start.md"), source).unwrap();
