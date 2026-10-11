@@ -4226,12 +4226,20 @@ mod tests {
             std::fs::read_to_string(&path).unwrap()
         );
         std::fs::write(&path, updated).unwrap();
-        std::thread::sleep(Duration::from_millis(40));
-        reader.update_in(visual, |v, window, cx| v.poll_vault(window, cx));
-        visual.run_until_parked();
-        std::thread::sleep(Duration::from_millis(350));
-        reader.update_in(visual, |v, window, cx| v.poll_vault(window, cx));
-        visual.run_until_parked();
+        // Poll as the app does until the change arrives: a fixed 390 ms missed it on a
+        // busy CI runner (main run 6634). The deadline still fails a dead watcher.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            std::thread::sleep(Duration::from_millis(40));
+            reader.update_in(visual, |v, window, cx| v.poll_vault(window, cx));
+            visual.run_until_parked();
+            let arrived = reader.read_with(visual, |v, _| {
+                v.note_source.contains("WatcherSurvivedPositiveControl")
+            });
+            if arrived || std::time::Instant::now() > deadline {
+                break;
+            }
+        }
         reader.read_with(visual, |v, _| {
             assert!(
                 v.note_source.contains("WatcherSurvivedPositiveControl"),
@@ -5402,7 +5410,9 @@ mod tests {
         let searcher = searcher.unwrap();
         assert!(searcher.search("oldcanary", 10).unwrap().is_empty());
         assert_eq!(searcher.search("newcanary", 10).unwrap().len(), 1);
-        std::fs::remove_dir_all(temp).unwrap();
+        // Best effort: background indexing may still be writing here (main run 6557 failed
+        // only in this cleanup, with every assertion above passing).
+        let _ = std::fs::remove_dir_all(temp);
     }
 
     #[test]

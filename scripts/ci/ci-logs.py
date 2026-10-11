@@ -68,9 +68,6 @@ def summary(log, workflow='', job=''):
     if (workflow, job) in AGGREGATES:
         return 'aggregate: a job it needs failed (see that job)'
     text = PREFIX.sub('', log)
-    if 'Hosted CI unavailable' in text:
-        reason = re.search(r'Hosted CI unavailable[^\n]*', text).group(0)
-        return f'infrastructure: {reason[:160]}'
     github = GITHUB_RUN.search(text)
     if github:
         return 'hosted lane: the failure is in the GitHub run (log saved as .github.log)'
@@ -82,6 +79,10 @@ def summary(log, workflow='', job=''):
     error = re.search(r'^(error(\[E\d+\])?: .*)$', text, re.M)
     if error:
         return error.group(1)[:200]
+    # After tests and compiler errors: the CI-script tests print this marker as output.
+    if 'Hosted CI unavailable' in text:
+        reason = re.search(r'Hosted CI unavailable[^\n]*', text).group(0)
+        return f'infrastructure: {reason[:160]}'
     if not re.search(r'^\s*(Compiling|Checking|Finished|Running) ', text, re.M):
         return 'no build or test output (infrastructure?)'
     return '-'
