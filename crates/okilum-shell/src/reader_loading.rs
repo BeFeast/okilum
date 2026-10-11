@@ -2504,6 +2504,7 @@ impl Reader {
                                 this.loading.as_mut().unwrap().active = false;
                                 this.loading.as_mut().unwrap().warnings = warnings;
                                 this.refresh_quick_open(cx);
+                                this.check_stignore(window, cx);
                                 this.loading.as_mut().unwrap().phase = "Ready".into();
                                 if let Some(trace) = &this.loading.as_ref().unwrap().opts.diagnostics { trace.event("vault_ready", serde_json::json!({ "notes": this.vault.notes.len(), "unreadable": this.vault.unreadable.len() })); }
                             }

@@ -96,6 +96,9 @@ pub struct State {
     pub first_seen: BTreeMap<String, u64>,
     #[serde(default)]
     pub baseline_taken: bool,
+    /// «Don't ask for this vault»: no offer to add Okilum's lines to `.stignore` (#1248).
+    #[serde(default)]
+    pub stignore_declined: bool,
 }
 
 impl State {

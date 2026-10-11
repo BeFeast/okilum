@@ -77,6 +77,7 @@ mod reader_settings;
 mod reader_settings_sync;
 mod reader_shortcuts;
 mod reader_sidebar;
+mod reader_stignore;
 mod reader_split;
 #[cfg(windows)]
 mod url_protocol;
@@ -1442,6 +1443,11 @@ struct Reader {
     backlink_groups: Vec<std::ops::Range<usize>>,
     /// The «Linked from» list renders only the cards in view: a hub note has thousands.
     backlinks_list: ListState,
+    /// The Syncthing `.stignore` state of the open vault root (#1248), for Settings → Files.
+    stignore: Option<(PathBuf, okilum_core::syncthing_ignore::Status)>,
+    /// Roots the offer was shown for in this launch: once per vault.
+    stignore_offered: std::collections::HashSet<PathBuf>,
+    stignore_busy: bool,
     /// The «On this page» rows; only the ones in view are built (#1004).
     outline_list: ListState,
     use_html: bool,
@@ -1726,6 +1732,9 @@ impl Reader {
             backlinks: Vec::new(),
             backlink_groups: Vec::new(),
             backlinks_list: ListState::new(0, ListAlignment::Top, px(200.)),
+            stignore: None,
+            stignore_offered: Default::default(),
+            stignore_busy: false,
             outline_list: ListState::new(0, ListAlignment::Top, px(200.)),
             use_html,
             sel_format,

@@ -641,6 +641,7 @@ impl Settings {
                                 ),
                             cx,
                         ))
+                        .children(reader_stignore::settings_row(&reader, cx))
                         .child(setting_row(
                             "Vault colour",
                             "A dot by the name and a line along the top.",
@@ -1535,6 +1536,84 @@ mod tests {
             assert!(reader.tree.show_hidden());
         });
     }
+    #[gpui::test]
+    fn settings_files_shows_the_syncthing_ignore_state_and_its_button(cx: &mut TestAppContext) {
+        // #1248: the same state and the same button as the offer when the vault opens.
+        cx.update(|cx| {
+            cx.set_reduce_motion(true);
+            gpui_component::init(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir_all(root.join(".stfolder")).unwrap();
+        let root = root.canonicalize().unwrap();
+        std::fs::write(root.join("Note.md"), "# Note\n").unwrap();
+        let before: &[u8] = b".tessera-index\n// kept as it is\n";
+        std::fs::write(root.join(".stignore"), before).unwrap();
+        let (window_root, visual) = cx.add_window_view(|window, cx| {
+            let settings = cx.new(|cx| Settings::new(None, cx));
+            Root::new(settings, window, cx)
+        });
+        let settings = window_root.read_with(visual, |root, _| {
+            root.view().clone().downcast::<Settings>().unwrap()
+        });
+        let reader = visual.update(|window, cx| {
+            cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("Note.md".into()),
+                        index_dir: Some(temp.path().join("index")),
+                        session_directory: Some(temp.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            })
+        });
+        visual.run_until_parked();
+        settings.update(visual, |settings, cx| {
+            settings.set_reader(Some(reader.downgrade()), cx);
+            settings.section = Section::Files;
+        });
+        visual.run_until_parked();
+        // The offer's own toast goes away first, so the button clicked is the Settings one.
+        visual.executor().advance_clock(Duration::from_secs(25));
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            visual.debug_bounds("settings-stignore-add").is_some(),
+            "the row is shown for a Syncthing vault without the lines"
+        );
+        assert_eq!(
+            std::fs::read(root.join(".stignore")).unwrap(),
+            before,
+            "showing the row writes nothing"
+        );
+        let button = visual.debug_bounds("settings-stignore-add").unwrap();
+        visual.simulate_click(button.center(), Modifiers::default());
+        visual.run_until_parked();
+        let after = std::fs::read(root.join(".stignore")).unwrap();
+        assert!(after.starts_with(before), "every other byte stays");
+        assert!(String::from_utf8(after).unwrap().contains(".okilum-save-*"));
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            visual.debug_bounds("settings-stignore-add").is_none(),
+            "nothing left to add"
+        );
+        assert!(
+            visual.debug_bounds("settings-stignore").is_some(),
+            "the row now says the lines are ignored"
+        );
+        // A vault that is not a Syncthing folder has no such row.
+        std::fs::remove_dir(root.join(".stfolder")).unwrap();
+        reader.update_in(visual, |reader, window, cx| reader.check_stignore(window, cx));
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(visual.debug_bounds("settings-stignore").is_none());
+    }
+
     #[gpui::test]
     fn application_menu_finds_active_reader_and_reuses_settings_window(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
