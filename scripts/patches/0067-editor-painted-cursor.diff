@@ -1,0 +1,70 @@
+diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
+index c4bf0e44..e929103b 100644
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -2223,6 +2223,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+             line_number_width,
+             lines: Rc::new(vec![]),
+             cursor_bounds: None,
++            painted_cursor: state.cursor(),
+             text_align: state.text_align,
+             content_width: bounds.size.width,
+         };
+diff --git a/crates/base/src/input/base/layout.rs b/crates/base/src/input/base/layout.rs
+index 5636a622..9abbca2d 100644
+--- a/crates/base/src/input/base/layout.rs
++++ b/crates/base/src/input/base/layout.rs
+@@ -419,6 +419,8 @@ pub(super) struct LastLayout {
+     pub(super) wrapping_indent: WrappingIndent,
+     pub(super) line_number_width: Pixels,
+     pub(super) cursor_bounds: Option<Bounds<Pixels>>,
++    /// The cursor offset this layout placed `cursor_bounds` for (#859).
++    pub(super) painted_cursor: usize,
+     pub(super) text_align: TextAlign,
+     pub(super) content_width: Pixels,
+ }
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+index 0c199629..ebdee482 100644
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -580,6 +580,12 @@ impl<M: InputModeKind> InputBaseState<M> {
+         Some((layout.cursor_bounds?, layout.line_height))
+     }
+ 
++    /// The cursor offset the last layout drew its caret for. It differs from
++    /// `cursor()` between a cursor move and the next paint (#859).
++    pub fn painted_cursor(&self) -> Option<usize> {
++        Some(self.last_layout.as_ref()?.painted_cursor)
++    }
++
+     pub fn input_bounds(&self) -> Bounds<Pixels> {
+         self.input_bounds
+     }
+@@ -5430,6 +5436,7 @@ mod tests {
+                     wrapping_indent: super::super::WrappingIndent::None,
+                     line_number_width: px(0.),
+                     cursor_bounds: None,
++                    painted_cursor: 0,
+                     text_align: TextAlign::Left,
+                     content_width: px(100.),
+                 });
+diff --git a/crates/base/src/input/editor/display_map/text_wrapper.rs b/crates/base/src/input/editor/display_map/text_wrapper.rs
+index 876616bb..376a51ba 100644
+--- a/crates/base/src/input/editor/display_map/text_wrapper.rs
++++ b/crates/base/src/input/editor/display_map/text_wrapper.rs
+@@ -1577,6 +1577,7 @@ mod tests {
+             wrapping_indent: WrappingIndent::default(),
+             line_number_width: px(0.),
+             cursor_bounds: None,
++            painted_cursor: 0,
+             text_align: TextAlign::Left,
+             content_width: px(0.),
+         }
+@@ -1904,6 +1905,7 @@ mod tests {
+             wrapping_indent: WrappingIndent::Same,
+             line_number_width: px(0.),
+             cursor_bounds: None,
++            painted_cursor: 0,
+             text_align: TextAlign::Left,
+             content_width: px(0.),
+         };
