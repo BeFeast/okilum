@@ -360,6 +360,7 @@ impl Reader {
                         for (label, action) in [
                             (Os::CURRENT.reveal(), reader_files::FileAction::Reveal),
                             ("Copy path", reader_files::FileAction::Absolute),
+                            ("Copy Okilum link", reader_files::FileAction::OkilumLink),
                         ] {
                             let root = root.clone();
                             let rel = rel.clone();

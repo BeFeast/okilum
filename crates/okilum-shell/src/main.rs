@@ -6469,6 +6469,11 @@ impl Render for Reader {
             )
             .track_focus(&self.focus_handle)
             .on_action(
+                cx.listener(|this, _: &reader_reminder::CopyLinkToLine, window, cx| {
+                    this.copy_link_to_line(window, cx)
+                }),
+            )
+            .on_action(
                 cx.listener(|this, _: &reader_reminder::RemindOnSelection, window, cx| {
                     #[cfg(any(unix, windows))]
                     this.remind_on_editor_selection(window, cx);
