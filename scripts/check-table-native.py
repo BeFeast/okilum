@@ -13,6 +13,12 @@ import os, shutil, subprocess, sys, time
 from pathlib import Path
 
 binary, work, label = sys.argv[1], Path(sys.argv[2]), sys.argv[3]
+# A binary built together with an example carries GPUI test-support
+# and fails falsely: refuse it as an INVALID run (#1043).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from native_binary_guard import require_app_binary  # noqa: E402
+
+require_app_binary(binary)
 NOTE = ('Intro line above the table.\n\n'
         '| Name | Count | Note |\n|---|---|---|\n| apple | 3 | crisp |\n| שלום | 5 | עברית |\n'
         '| pear | 12 | a much longer cell that still fits |\n\n'

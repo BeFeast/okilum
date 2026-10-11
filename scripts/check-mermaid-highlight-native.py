@@ -12,6 +12,12 @@ import os, shutil, subprocess, sys, time
 from pathlib import Path
 
 binary, work, label = sys.argv[1], Path(sys.argv[2]), sys.argv[3]
+# A binary built together with an example carries GPUI test-support
+# and fails falsely: refuse it as an INVALID run (#1043).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from native_binary_guard import require_app_binary  # noqa: E402
+
+require_app_binary(binary)
 NOTE = ('# Diagram\n\n```mermaid\nflowchart TD\n  A[Start] -->|yes| B{Decision}\n'
         '  B --> C[Finish]\n  %% a comment\n```\n\n```rust\nfn main() { let x = 1; }\n```\n')
 

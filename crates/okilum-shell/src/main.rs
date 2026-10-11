@@ -12,6 +12,7 @@ mod app_footprint;
 #[cfg(all(unix, feature = "brain"))]
 mod brain;
 mod brand;
+mod build_info;
 #[cfg(all(unix, feature = "brain"))]
 mod connectors;
 mod count_label;
@@ -7005,6 +7006,7 @@ OPTIONS:
     --copy-source        Copy selections as Markdown source instead of plain text
     --html               Render the content pane as HTML instead of Markdown
     --uninstall-data     Remove this user's Okilum data, keeping your notes (Linux)
+    --build-info         Print version and build facts for QA tools, then exit
     -h, --help           Print this help
 ";
 
@@ -7032,6 +7034,11 @@ fn main() {
         std::process::exit(code);
     }
     let diagnostics = reader_diagnostics::Trace::new_at(None, None, process_start);
+    // A QA binary built with GPUI test-support behaves differently (#1043).
+    diagnostics.event(
+        "build_info",
+        serde_json::json!({ "gpui_test_support": build_info::gpui_test_support() }),
+    );
     diagnostics.event(
         "local_offset_init",
         serde_json::json!({ "duration_ms": offset_elapsed.as_secs_f64() * 1000. }),
@@ -7045,6 +7052,10 @@ fn main() {
     let opts = match reader_open::parse_args(std::env::args_os().skip(1), defaults) {
         Ok(reader_open::Command::Help) => {
             print!("{USAGE}");
+            return;
+        }
+        Ok(reader_open::Command::BuildInfo) => {
+            print!("{}", build_info::report());
             return;
         }
         Ok(reader_open::Command::Launch(opts)) => *opts,
