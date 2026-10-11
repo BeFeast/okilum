@@ -274,7 +274,7 @@ mod tests {
     use ::core::prelude::v1::test;
     use okilum_core::syncthing_ignore::{BLOCK_COMMENT, MARKER};
 
-    const BEFORE: &[u8] = b".tessera-index\n// kept as it is\n/.claude/worktrees\n";
+    const BEFORE: &[u8] = b".archive-index\n// kept as it is\n/.claude/worktrees\n";
 
     /// A vault in a temporary directory; `ignore` is the `.stignore` it starts with.
     fn vault(syncthing: bool, ignore: Option<&[u8]>) -> (tempfile::TempDir, PathBuf) {

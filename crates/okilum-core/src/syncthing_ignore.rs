@@ -232,7 +232,7 @@ mod tests {
 
     #[test]
     fn missing_lines_are_offered_and_present_ones_are_not() {
-        let none = folder(Some(b".tessera-index\n"));
+        let none = folder(Some(b".archive-index\n"));
         assert_eq!(status(none.path()), Status::Missing(PATTERNS.to_vec()));
         let absent = folder(None);
         assert_eq!(status(absent.path()), Status::Missing(PATTERNS.to_vec()));
@@ -245,8 +245,8 @@ mod tests {
     #[test]
     fn the_owners_hand_edited_block_counts_as_covered() {
         let owner = folder(Some(
-            b"// Tessera search index: derived data, per-machine, rebuilt on demand. Never sync.\n\
-.tessera-index\n\
+            b"// Archive search index: derived data, per-machine, rebuilt on demand. Never sync.\n\
+.archive-index\n\
 // Okilum: derived index and in-flight safe-save temp files are per-machine. Never sync.\n\
 .okilum-index\n\
 .okilum-save-*\n\
@@ -301,9 +301,9 @@ mod tests {
     fn the_block_is_appended_and_every_other_byte_stays() {
         // LF, a missing final newline, CRLF, and bytes that are not UTF-8.
         let cases: [&[u8]; 5] = [
-            b".tessera-index\n",
-            b".tessera-index",
-            b".tessera-index\r\n// c\r\n",
+            b".archive-index\n",
+            b".archive-index",
+            b".archive-index\r\n// c\r\n",
             b"caf\xE9\n\xFF\xFE\n",
             b"\n",
         ];
@@ -339,11 +339,11 @@ mod tests {
 
     #[test]
     fn the_appended_block_is_the_owners_format() {
-        let root = folder(Some(b".tessera-index\n"));
+        let root = folder(Some(b".archive-index\n"));
         add_block(root.path()).unwrap();
         assert_eq!(
             std::fs::read_to_string(root.path().join(IGNORE_FILE)).unwrap(),
-            ".tessera-index\n\n\
+            ".archive-index\n\n\
 // Okilum: derived index and in-flight safe-save temp files are per-machine. Never sync.\n\
 .okilum-index\n\
 .okilum-save-*\n"

@@ -1548,7 +1548,7 @@ mod tests {
         std::fs::create_dir_all(root.join(".stfolder")).unwrap();
         let root = root.canonicalize().unwrap();
         std::fs::write(root.join("Note.md"), "# Note\n").unwrap();
-        let before: &[u8] = b".tessera-index\n// kept as it is\n";
+        let before: &[u8] = b".archive-index\n// kept as it is\n";
         std::fs::write(root.join(".stignore"), before).unwrap();
         let (window_root, visual) = cx.add_window_view(|window, cx| {
             let settings = cx.new(|cx| Settings::new(None, cx));
