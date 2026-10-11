@@ -233,6 +233,8 @@ struct Settings {
     /// The custom editor command line for log source links (#1165), made
     /// on first render because an input needs the window.
     editor_command: Option<(Entity<InputState>, Subscription)>,
+    /// The build path of a new source-link mapping (#1165).
+    map_from: Option<Entity<InputState>>,
 }
 impl Settings {
     fn new(reader: Option<WeakEntity<Reader>>, cx: &mut Context<Self>) -> Self {
@@ -254,6 +256,7 @@ impl Settings {
             focus: cx.focus_handle(),
             _reader_changes: observer,
             editor_command: None,
+            map_from: None,
             #[cfg(any(unix, windows))]
             template_root: None,
             #[cfg(any(unix, windows))]
@@ -494,6 +497,112 @@ impl Settings {
             .into_any_element()
     }
 
+    /// Build paths of this vault's logs that open in a local checkout (#1165).
+    fn source_map_controls(&self, root: &Path, cx: &mut Context<Self>) -> AnyElement {
+        let maps = reader_ui_state::source_maps(root, cx);
+        let muted = brand::palette(cx).text_muted;
+        let rows = maps.iter().enumerate().map(|(position, map)| {
+            let root = root.to_owned();
+            h_flex()
+                .debug_selector(move || format!("settings-source-map-{position}"))
+                .gap_2()
+                .text_sm()
+                .child(
+                    div()
+                        .font_family(cx.theme().mono_font_family.clone())
+                        .child(map.from.clone()),
+                )
+                .child(div().text_color(muted).child("→"))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(map.to.to_string_lossy().into_owned()),
+                )
+                .child(
+                    Button::new(("settings-source-map-remove", position))
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::Close)
+                        .accessibility_label("Remove mapping")
+                        .tooltip("Remove mapping")
+                        .on_click(move |_, _, cx| {
+                            let mut maps = reader_ui_state::source_maps(&root, cx);
+                            if position < maps.len() {
+                                maps.remove(position);
+                            }
+                            reader_ui_state::set_source_maps(&root, maps, cx);
+                        }),
+                )
+        });
+        let input = self.map_from.clone();
+        let add_root = root.to_owned();
+        v_flex()
+            .gap_2()
+            .child(setting_row(
+                "Log source paths",
+                "Stack frames from a build made elsewhere open in your local checkout.",
+                h_flex()
+                    .gap_2()
+                    .children(input.as_ref().map(|input| {
+                        div()
+                            .w(px(200.))
+                            .debug_selector(|| "settings-source-map-from".into())
+                            .child(Input::new(input).small())
+                    }))
+                    .child(
+                        Button::new("settings-source-map-add")
+                            .debug_selector(|| "settings-source-map-add".into())
+                            .ghost()
+                            .icon(IconName::FolderOpen)
+                            .accessibility_label("Choose local folder")
+                            .tooltip("Choose the local folder for this build path")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.add_source_map(add_root.clone(), cx)
+                            })),
+                    ),
+                cx,
+            ))
+            .children(rows)
+            .into_any_element()
+    }
+
+    /// The typed build path maps to a folder the user picks.
+    fn add_source_map(&mut self, root: PathBuf, cx: &mut Context<Self>) {
+        let Some(input) = self.map_from.clone() else {
+            return;
+        };
+        let from = input.read(cx).value().trim().to_owned();
+        if from.is_empty() {
+            return;
+        }
+        let folder = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Local checkout".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = folder.await else {
+                return;
+            };
+            let Some(to) = paths.into_iter().next() else {
+                return;
+            };
+            let _ = this.update(cx, |this, cx| this.push_source_map(&root, from, to, cx));
+        })
+        .detach();
+    }
+
+    fn push_source_map(&mut self, root: &Path, from: String, to: PathBuf, cx: &mut Context<Self>) {
+        let mut maps = reader_ui_state::source_maps(root, cx);
+        maps.retain(|map| map.from != from);
+        maps.push(source_link::PathMap { from, to });
+        reader_ui_state::set_source_maps(root, maps, cx);
+        cx.notify();
+    }
+
     fn template_controls(&self, cx: &mut Context<Self>) -> AnyElement {
         #[cfg(any(unix, windows))]
         {
@@ -636,6 +745,7 @@ impl Settings {
                     let state = reader.read(cx);
                     let hidden = state.sidebar.show_hidden;
                     let root = state.vault_root.clone();
+                    let map_root = root.clone();
                     let name = root
                         .file_name()
                         .unwrap_or_default()
@@ -746,6 +856,7 @@ impl Settings {
                         )
                         .child(self.template_controls(cx))
                         .child(self.log_editor_controls(cx))
+                        .child(self.source_map_controls(&map_root, cx))
                         .children(self.vault(cx).map(|reader| {
                             #[cfg(any(unix, windows))]
                             {
@@ -932,6 +1043,12 @@ impl Render for Settings {
                 }
             });
             self.editor_command = Some((input, subscription));
+        }
+        if self.map_from.is_none() {
+            self.map_from =
+                Some(cx.new(|cx| {
+                    InputState::new(window, cx).placeholder("Build path, e.g. /src/ordgw")
+                }));
         }
         let p = brand::palette(cx);
         let body = self.body(window, cx);
