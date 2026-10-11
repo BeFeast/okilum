@@ -6,7 +6,10 @@ the Linux app has no **Check for Updates** menu. A desktop entry
 and icon are included. The Markdown MIME association is available through
 **Open With**, but installation does not replace your default application.
 
-## Install beta
+## Install
+
+This installs the stable channel, the releases offered on okilum.app. For a build
+of every merge to `main`, see [Beta channel](#beta-channel).
 
 Download the public signing key and verify its full fingerprint against the
 value below **before** trusting it:
@@ -33,9 +36,9 @@ sudo pacman-key --lsign-key 7FFE9F27ECC8E253E45BAEA08AACBFB2C9E47882
 Append to `/etc/pacman.conf`:
 
 ```ini
-[okilum-beta]
+[okilum-stable]
 SigLevel = Required DatabaseRequired
-Server = https://updates.befeast.com/okilum/arch/beta/$arch
+Server = https://updates.befeast.com/okilum/arch/stable/$arch
 ```
 
 Then install. The command depends on the distribution.
@@ -49,7 +52,7 @@ pacman -Q okilum
 okilum
 ```
 
-Subsequent builds arrive through `sudo pacman -Syu`.
+Subsequent releases arrive through `sudo pacman -Syu`.
 
 **Omarchy:** Omarchy blocks direct `pacman -Syu` with its update guard and asks
 for `omarchy update`, which also takes a snapshot and runs its migrations. Upgrade
@@ -64,25 +67,26 @@ okilum
 ```
 
 `pacman -S` without `-u` installs only Okilum, and the guard allows it. Subsequent
-builds arrive through `omarchy update`. Do not bypass the guard
+releases arrive through `omarchy update`. Do not bypass the guard
 (`OMARCHY_ALLOW_DIRECT_PACMAN=1`) to install Okilum.
 
 A compatible Vulkan driver is required by GPUI; Omarchy normally already has one.
 Open a vault using the app's folder picker, or `okilum /path/to/vault`.
 
-## Stable channel
+## Beta channel
 
-After a build is promoted, use this **instead of** the beta stanza:
+Beta carries every merge to `main` and is for testing. To follow it, use this
+**instead of** the stable stanza:
 
 ```ini
-[okilum-stable]
+[okilum-beta]
 SigLevel = Required DatabaseRequired
-Server = https://updates.befeast.com/okilum/arch/stable/$arch
+Server = https://updates.befeast.com/okilum/arch/beta/$arch
 ```
 
-Stable becomes available with its first promotion. Do not enable both channels.
-Switching from a newer beta to an older stable does not automatically downgrade;
-wait for stable to catch up. Each channel refuses backwards publication.
+Do not enable both channels. Switching from a newer beta back to an older
+stable does not automatically downgrade; wait for stable to catch up. Each
+channel refuses backwards publication.
 
 ## Release and promotion
 
@@ -115,7 +119,7 @@ and verifying the new fingerprint before changing the configured signer.
 
 ## Owner acceptance
 
-On Omarchy, install beta N as above (`omarchy update`, then `sudo pacman -S okilum`)
+On Omarchy, with the beta stanza from «Beta channel», install beta N as above (`omarchy update`, then `sudo pacman -S okilum`)
 and confirm `pacman -Q okilum`, application launch, and opening your vault. After
 the next merge publishes N+1, run `omarchy update`, confirm the higher version,
 relaunch and reopen the vault. CI package installation
