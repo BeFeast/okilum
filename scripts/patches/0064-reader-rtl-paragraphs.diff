@@ -1,0 +1,254 @@
+diff --git a/crates/base/src/text/inline.rs b/crates/base/src/text/inline.rs
+index d8bb3966..05b8afd7 100644
+--- a/crates/base/src/text/inline.rs
++++ b/crates/base/src/text/inline.rs
+@@ -1,4 +1,4 @@
+-use super::inline_geometry::InlineGeometry;
++use super::inline_geometry::{AlignedLayout, InlineGeometry};
+ use gpui::{AppContext, Corners, ParentElement, Styled};
+ 
+ pub(super) struct LinkTooltip(pub(super) SharedString);
+@@ -33,7 +33,7 @@ use gpui::{
+     App, BorderStyle, Bounds, ClickEvent, CursorStyle, Edges, Element, ElementId, GlobalElementId,
+     Half, HighlightStyle, Hitbox, HitboxBehavior, InspectorElementId, IntoElement, LayoutId,
+     MouseButton, MouseClickEvent, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
+-    SharedString, StyledText, TextLayout, TextRun, TextStyle, Window, point, px, quad,
++    SharedString, StyledText, TextRun, TextStyle, Window, point, px, quad,
+ };
+ 
+ use crate::{
+@@ -294,7 +294,7 @@ impl Inline {
+ 
+     /// Get link at given mouse position.
+     fn link_for_position(
+-        layout: &TextLayout,
++        layout: &AlignedLayout,
+         links: &Vec<(Range<usize>, LinkMark)>,
+         position: Point<Pixels>,
+     ) -> Option<LinkMark> {
+@@ -323,7 +323,7 @@ impl Inline {
+ 
+     fn layout_selections(
+         &self,
+-        text_layout: &TextLayout,
++        text_layout: &AlignedLayout,
+         geometry: &OnceCell<InlineGeometry>,
+         bounds: &Bounds<Pixels>,
+         window: &mut Window,
+@@ -494,7 +494,7 @@ impl Inline {
+     /// Paint the selection background.
+     fn paint_selection(
+         selection: &Selection,
+-        text_layout: &TextLayout,
++        text_layout: &AlignedLayout,
+         bounds: &Bounds<Pixels>,
+         window: &mut Window,
+         color: gpui::Hsla,
+@@ -616,7 +616,8 @@ impl Element for Inline {
+         self.styled_text
+             .prepaint(id, inspector_id, bounds, &mut (), window, cx);
+ 
+-        let text_layout = self.styled_text.layout().clone();
++        let text_layout =
++            AlignedLayout::new(self.styled_text.layout().clone(), window.text_style().text_align);
+         if let Some(view) = GlobalState::global(cx).text_view_state().cloned() {
+             let horizontal = self
+                 .search_scroll
+@@ -690,7 +691,8 @@ impl Element for Inline {
+             return;
+         };
+ 
+-        let text_layout = self.styled_text.layout().clone();
++        let text_layout =
++            AlignedLayout::new(self.styled_text.layout().clone(), window.text_style().text_align);
+         self.styled_text
+             .paint(global_id, None, bounds, &mut (), &mut (), window, cx);
+ 
+@@ -957,7 +959,7 @@ impl Element for Inline {
+ 
+ fn selection_for_multi_click(
+     text: &str,
+-    text_layout: &TextLayout,
++    text_layout: &AlignedLayout,
+     bounds: Bounds<Pixels>,
+     pos: Point<Pixels>,
+     kind: TextViewMultiClickKind,
+diff --git a/crates/base/src/text/inline_geometry.rs b/crates/base/src/text/inline_geometry.rs
+index c5bdf476..050e7a96 100644
+--- a/crates/base/src/text/inline_geometry.rs
++++ b/crates/base/src/text/inline_geometry.rs
+@@ -1,5 +1,76 @@
+ //! Per-paint lookup of GPUI's existing geometry, without repeated glyph-prefix scans.
+-use gpui::{Pixels, Point, TextLayout, WrappedLineLayout, point};
++use gpui::{Bounds, Pixels, Point, TextAlign, TextLayout, WrappedLineLayout, point};
++
++/// A laid-out Inline's text with the alignment it is painted with. gpui paints
++/// each wrapped row at its alignment offset but hit-tests every row as if it
++/// were left aligned; this applies the same per-row offset both ways, so a
++/// right-aligned (RTL) paragraph selects and clicks where it is drawn (#1053).
++#[derive(Clone)]
++pub(crate) struct AlignedLayout {
++    layout: TextLayout,
++    align: TextAlign,
++}
++
++impl AlignedLayout {
++    pub(crate) fn new(layout: TextLayout, align: TextAlign) -> Self {
++        Self { layout, align }
++    }
++
++    pub(crate) fn line_height(&self) -> Pixels {
++        self.layout.line_height()
++    }
++
++    pub(crate) fn bounds(&self) -> Bounds<Pixels> {
++        self.layout.bounds()
++    }
++
++    /// `(row top, x offset)` of every wrapped row, top to bottom, as gpui's
++    /// paint computes it: the row's width is from its first glyph to the next
++    /// wrap boundary (or the line's end), aligned within the bounds' width.
++    pub(crate) fn row_offsets(&self) -> Vec<(Pixels, Pixels)> {
++        if self.align == TextAlign::Left {
++            return Vec::new();
++        }
++        let bounds = self.layout.bounds();
++        let line_height = self.layout.line_height();
++        let mut out = Vec::new();
++        let mut y = bounds.origin.y;
++        for line in self.layout.line_layouts() {
++            let layout = &line.unwrapped_layout;
++            let x_at = |b: &gpui::WrapBoundary| layout.runs[b.run_ix].glyphs[b.glyph_ix].position.x;
++            let mut start = gpui::px(0.);
++            let ends = line.wrap_boundaries.iter().map(x_at).chain([layout.width]);
++            for (row, end) in ends.enumerate() {
++                let width = end - start;
++                let offset = match self.align {
++                    TextAlign::Right => bounds.size.width - width,
++                    TextAlign::Center => (bounds.size.width - width) / 2.,
++                    TextAlign::Left => gpui::px(0.),
++                };
++                out.push((y + line_height * row, offset));
++                start = end;
++            }
++            y += line.size(line_height).height;
++        }
++        out
++    }
++
++    fn offset_at(offsets: &[(Pixels, Pixels)], y: Pixels) -> Pixels {
++        let at = offsets.partition_point(|(top, _)| *top <= y);
++        at.checked_sub(1).map_or(gpui::px(0.), |i| offsets[i].1)
++    }
++
++    pub(crate) fn index_for_position(&self, position: Point<Pixels>) -> Result<usize, usize> {
++        let offset = Self::offset_at(&self.row_offsets(), position.y);
++        self.layout
++            .index_for_position(point(position.x - offset, position.y))
++    }
++
++    pub(crate) fn position_for_index(&self, index: usize) -> Option<Point<Pixels>> {
++        let position = self.layout.position_for_index(index)?;
++        Some(point(position.x + Self::offset_at(&self.row_offsets(), position.y), position.y))
++    }
++}
+ 
+ /// GPUI returns the first glyph whose byte index is >= the requested index.
+ /// Keeping only strict prefix maxima preserves that rule even for bidi glyphs
+@@ -48,15 +119,19 @@ struct IndexedLine {
+ /// It owns no font, shaping cache, source mapping, or state across frames.
+ pub(super) struct InlineGeometry {
+     lines: FirstAtOrAfter<IndexedLine>,
++    /// Per-row alignment offsets; empty when left aligned.
++    offsets: Vec<(Pixels, Pixels)>,
+ }
+ 
+ impl InlineGeometry {
+-    pub(super) fn new(layout: &TextLayout) -> Self {
+-        Self::from_lines(
+-            layout.line_layouts().iter().map(|line| line.as_ref()),
++    pub(super) fn new(layout: &AlignedLayout) -> Self {
++        let mut geometry = Self::from_lines(
++            layout.layout.line_layouts().iter().map(|line| line.as_ref()),
+             layout.bounds().origin,
+             layout.line_height(),
+-        )
++        );
++        geometry.offsets = layout.row_offsets();
++        geometry
+     }
+ 
+     pub(super) fn from_lines<'a>(
+@@ -103,7 +178,10 @@ impl InlineGeometry {
+             start += layout.len() + 1;
+             origin.y += layout.size(line_height).height;
+         }
+-        Self { lines }
++        Self {
++            lines,
++            offsets: Vec::new(),
++        }
+     }
+ 
+     pub(super) fn position_for_index(&self, index: usize) -> Option<Point<Pixels>> {
+@@ -111,7 +189,11 @@ impl InlineGeometry {
+         let local = index.checked_sub(line.start)?;
+         let row = line.rows.get(local)?;
+         let x = line.glyph_x.get(local).copied().unwrap_or(line.width);
+-        Some(line.origin + point(x - row.x, row.y))
++        let position = line.origin + point(x - row.x, row.y);
++        Some(point(
++            position.x + AlignedLayout::offset_at(&self.offsets, position.y),
++            position.y,
++        ))
+     }
+ }
+ 
+diff --git a/crates/base/src/text/node.rs b/crates/base/src/text/node.rs
+index e752c979..25814c02 100644
+--- a/crates/base/src/text/node.rs
++++ b/crates/base/src/text/node.rs
+@@ -2198,6 +2198,12 @@ impl BlockNode {
+     }
+ }
+ 
++/// Whether a block's text is a right-to-left paragraph: its first strong
++/// character is R or AL, the rule the editor aligns by (S6c, #1053).
++fn rtl(text: &str) -> bool {
++    crate::input::bidi_geometry::paragraph_is_rtl(text)
++}
++
+ impl BlockNode {
+     fn render_list_item_row(
+         content: AnyElement,
+@@ -2830,6 +2836,9 @@ impl BlockNode {
+             BlockNode::Paragraph(paragraph) => div()
+                 .id(("p", ix))
+                 .pb(mb)
++                // A right-to-left paragraph aligns right, as in the editor
++                // (S6c); list items wait for a bullet-side decision (#1053).
++                .when(!options.in_list && rtl(&paragraph.text()), |d| d.text_right())
+                 .child(paragraph.render(node_cx, window, cx))
+                 .into_any_element(),
+             BlockNode::Heading {
+@@ -2854,6 +2863,7 @@ impl BlockNode {
+                     .id(SharedString::from(format!("h{}-{}", level, ix)))
+                     .pb(rems(0.3))
+                     .whitespace_normal()
++                    .when(rtl(&children.text()), |d| d.text_right())
+                     .text_size(text_size)
+                     .font_weight(font_weight)
+                     .child(children.render(node_cx, window, cx))
+diff --git a/crates/base/src/text/state.rs b/crates/base/src/text/state.rs
+index aa55a074..4a9777a2 100644
+--- a/crates/base/src/text/state.rs
++++ b/crates/base/src/text/state.rs
+@@ -366,7 +366,7 @@ impl TextViewState {
+         segment: usize,
+         source_offset: usize,
+         text_len: usize,
+-        layout: &gpui::TextLayout,
++        layout: &super::inline_geometry::AlignedLayout,
+         horizontal: Option<&gpui::ScrollHandle>,
+     ) {
+         if !self.search_geometry_pending || self.search_reveal_pending {
