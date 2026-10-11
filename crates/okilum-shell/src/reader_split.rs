@@ -122,7 +122,7 @@ pub(super) fn vertical<V: 'static>(
                 .debug_selector(move || format!("{key}-pane"))
                 .flex()
                 .flex_col()
-                .flex_shrink()
+                .flex_shrink(1.)
                 .h(px(split.height(cx)))
                 .min_h(px(split.min_pane))
                 .w_full()
