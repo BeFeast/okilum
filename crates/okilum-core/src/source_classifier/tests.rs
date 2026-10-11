@@ -87,7 +87,6 @@ fn unsupported_and_malformed_blocks_have_positive_neighbor() {
         "**bold** [broken",
         "**bold** `broken",
         "**bold** ~single~",
-        "**bold** [ref][id]",
         "**bold** [label](dest \"title\")",
         "**bold** [label](a(b)c)",
         "**bold** [label](a\\)b)",
@@ -173,12 +172,13 @@ fn resolved_references_and_wrapped_labels_project_and_definitions_stay_quiet() {
     let source = "[full][Id] [Id][] [Id] [raw][nope]\n[wrapped\nlabel](dest)\n\n[Id]: /x \"t\"\n   [two]: y\n";
     let current = snapshot(source);
     let result = classify(&current);
-    // The unresolved reference keeps its whole paragraph raw.
+    // The unresolved reference stays as written; its resolved neighbours
+    // render (#1092).
     assert_eq!(
         project(&current, result.plan(), &Active::default())
             .unwrap()
             .display(),
-        source
+        "full Id Id [raw][nope]\nwrapped\nlabel\n\n[Id]: /x \"t\"\n   [two]: y\n"
     );
     let source =
         "[full][Id] [Id][] [Id]\n[wrapped\r\nlabel](dest)\r\n\r\n[Id]: /x \"t\"\r\n   [two]: y\r\n";
@@ -205,6 +205,42 @@ fn resolved_references_and_wrapped_labels_project_and_definitions_stay_quiet() {
     // A wrapped label must not style the next quote prefix.
     assert_eq!(display("> [a\n> b](d)"), "> [a\n> b](d)");
     assert_eq!(display("- [a\n  b](d)"), "- a\n  b");
+}
+
+#[test]
+fn an_unresolved_reference_does_not_keep_its_resolved_neighbours_raw() {
+    // The #1092 minimal note: every resolved use renders, the unresolved one
+    // stays as written, before or after the definition.
+    let source = "[docs][Id], [Id][], [Id], [docs][ID]\n[nothing][Missing]\n\n[Id]: https://example.com/after\n\n[again][Id]\n\nControl **bold**\n";
+    let current = snapshot(source);
+    let result = classify(&current);
+    assert_eq!(
+        project(&current, result.plan(), &Active::default())
+            .unwrap()
+            .display(),
+        "docs, Id, Id, docs\n[nothing][Missing]\n\n[Id]: https://example.com/after\n\nagain\n\nControl bold\n"
+    );
+    let targets: Vec<_> = result
+        .links_for(&current)
+        .unwrap()
+        .iter()
+        .map(|link| link.target.clone())
+        .collect();
+    assert_eq!(targets, ["https://example.com/after"; 5]);
+    // Next to an unresolved reference, formatting renders and the reference
+    // stays as written: plain text, as in CommonMark and Obsidian.
+    assert_eq!(display("**bold** [ref][id]"), "bold [ref][id]");
+    // Control: a malformed inline link, a footnote, an embed or a wikilink
+    // left as text still keeps its whole block Source, formatting included.
+    for raw in [
+        "[docs](http://x **bold**\n",
+        "see [a](b c) **bold**\n",
+        "[^1] **bold**\n",
+        "![[embed]] **bold**\n",
+        "[[unclosed **bold**\n",
+    ] {
+        assert_eq!(display(raw), raw, "{raw:?}");
+    }
 }
 
 #[test]

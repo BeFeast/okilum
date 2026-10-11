@@ -513,6 +513,47 @@ impl<'s> Context<'s> {
         for child in node.children() {
             self.inline(child, candidate)?;
         }
+        // Brackets left as text are an unresolved reference (`[a][missing]`):
+        // plain text, shown as written, as in CommonMark and Obsidian. A
+        // malformed inline link, a footnote, or an embed or wikilink left as
+        // text still keeps the block Source. The parser may split brackets
+        // across text nodes, so look at the block's own text as a whole (#1092).
+        let mut text = String::new();
+        self.loose_text(node, &mut text)?;
+        if ["](", "[^", "[["]
+            .iter()
+            .any(|syntax| text.contains(syntax))
+        {
+            return None;
+        }
+        // An unresolved reference is whole bracket pairs; a lone or nested
+        // bracket (`[broken`) is malformed.
+        let mut open = false;
+        for byte in text.bytes() {
+            match (byte, open) {
+                (b'[', false) => open = true,
+                (b']', true) => open = false,
+                (b'[' | b']', _) => return None,
+                _ => {}
+            }
+        }
+        if open {
+            return None;
+        }
+        Some(())
+    }
+    /// The text of `node` outside links, images and code, in source order.
+    fn loose_text<'a>(&self, node: &'a AstNode<'a>, text: &mut String) -> Option<()> {
+        for child in node.children() {
+            match &child.data.borrow().value {
+                NodeValue::Text(_) => text.push_str(self.source.get(self.range(child)?)?),
+                NodeValue::Link(_)
+                | NodeValue::WikiLink(_)
+                | NodeValue::Image(_)
+                | NodeValue::Code(_) => text.push('\u{0}'),
+                _ => self.loose_text(child, text)?,
+            }
+        }
         Some(())
     }
     fn inline<'a>(&self, node: &'a AstNode<'a>, candidate: &mut Candidate) -> Option<()> {
@@ -713,6 +754,11 @@ impl<'s> Context<'s> {
 
 /// Keep authored escapes/entities. Unclassified markup-looking text makes the
 /// containing block Source, including valid formatting next to a malformed link.
+/// Brackets are the exception: the parser leaves an unresolved reference
+/// (`[ref][id]`, `[id][]`, `[id]`) as text, and like CommonMark and Obsidian
+/// Live Preview shows it as written while its neighbours render. A malformed
+/// inline link (`](`), a footnote (`[^`), and an embed or wikilink left as
+/// text (`[[`, `![[`) still make the block Source (`Context::block`, #1092).
 fn plain(raw: &str) -> Option<()> {
     let mut bytes = raw.bytes();
     while let Some(byte) = bytes.next() {
@@ -721,7 +767,7 @@ fn plain(raw: &str) -> Option<()> {
             if !next.is_ascii_punctuation() {
                 return None;
             }
-        } else if b"*_[]~`=$".contains(&byte) {
+        } else if b"*_~`=$".contains(&byte) {
             return None;
         }
     }
