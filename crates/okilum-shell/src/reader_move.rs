@@ -825,6 +825,10 @@ impl Reader {
                     self.queue_vault_mutation(changes, cx);
                 }
                 self.tree.note_moved(&pending.from, &pending.to);
+                #[cfg(any(unix, windows))]
+                if self.vault_root == pending.root {
+                    self.follow_moved_reminder_note(&pending.from, &pending.to, cx);
+                }
                 drop(pending.guard);
                 drop(pending.destination_guard);
                 for path in &mut self.navigation.history {

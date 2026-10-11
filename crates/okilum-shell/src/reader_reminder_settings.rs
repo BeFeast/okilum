@@ -146,6 +146,25 @@ impl Reader {
         cx.notify();
     }
 
+    /// A move or rename inside this vault takes the reminders note along
+    /// (#954), the way links follow it. The rename re-imports its tasks
+    /// silently (their ids include the path), so nothing pending is
+    /// announced again.
+    pub(super) fn follow_moved_reminder_note(
+        &mut self,
+        from: &str,
+        to: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let note = okilum_core::link_rewrite::moved_path(&self.reminder_prefs.note, from, to);
+        if note == self.reminder_prefs.note || !valid_note(&note) {
+            return;
+        }
+        let mut preferences = self.reminder_prefs.clone();
+        preferences.note = note;
+        self.set_reminder_prefs(preferences, cx);
+    }
+
     fn change_reminder_time(&mut self, direction: i32, cx: &mut Context<Self>) {
         let mut preferences = self.reminder_prefs.clone();
         preferences.notify_at = step(preferences.notify_at, direction);
@@ -217,6 +236,8 @@ pub(super) fn controls(reader: &Entity<Reader>, cx: &App) -> AnyElement {
         .file_stem()
         .map(|stem| stem.to_string_lossy().into_owned())
         .unwrap_or_default();
+    // Moved or deleted outside Okilum, or not written yet: say so (#954).
+    let missing = !state.vault_root.join(&preferences.note).is_file();
     let at = preferences.notify_at;
     let (earlier, later) = (reader.clone(), reader.clone());
     let chooser = reader.clone();
@@ -289,6 +310,18 @@ pub(super) fn controls(reader: &Entity<Reader>, cx: &App) -> AnyElement {
                 ),
             cx,
         ))
+        .when(missing, |view| {
+            view.child(
+                div()
+                    .debug_selector(|| "reminder-note-missing".into())
+                    .text_sm()
+                    .text_color(brand::palette(cx).text_muted)
+                    .child(format!(
+                        "{} is not in this vault. \u{201c}Remind me on\u{2026}\u{201d} will create it there.",
+                        preferences.note
+                    )),
+            )
+        })
         .children(state.reminder_prefs_error.as_ref().map(|error| {
             div()
                 .text_sm()

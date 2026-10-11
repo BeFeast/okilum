@@ -1074,6 +1074,92 @@ mod tests {
     }
 
     #[cfg(any(unix, windows))]
+    /// #954: the reminders note follows a rename or folder move inside the
+    /// vault, persisted; a note that is not there is said in Settings.
+    #[gpui::test]
+    fn reminders_note_follows_moves_and_a_missing_note_is_said(cx: &mut TestAppContext) {
+        let temp = tempfile::tempdir().unwrap();
+        let (root, state) = (temp.path().join("vault"), temp.path().join("state"));
+        std::fs::create_dir_all(root.join("Inbox")).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(root.join("start.md"), "# Start\n").unwrap();
+        std::fs::write(root.join("Inbox/Remind.md"), "- [ ] Call Dana\n").unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            reader_ui_state::install(&state, cx);
+        });
+        let mut reader = None;
+        cx.add_window(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("start.md".into()),
+                        session_directory: Some(state.clone()),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        cx.run_until_parked();
+        let weak = reader.downgrade();
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let settings = cx.new(|cx| {
+                let mut settings = Settings::new(Some(weak), cx);
+                settings.section = Section::Files;
+                settings
+            });
+            Root::new(settings, window, cx)
+        });
+        let note = |visual: &mut gpui::VisualTestContext| {
+            reader.read_with(visual, |r, _| r.reminder_prefs.note.clone())
+        };
+        let missing = |visual: &mut gpui::VisualTestContext| {
+            visual.update(|window, _| window.refresh());
+            visual.run_until_parked();
+            visual.debug_bounds("reminder-note-missing").is_some()
+        };
+        reader.update(visual, |r, cx| {
+            let mut prefs = r.reminder_prefs.clone();
+            prefs.note = "Inbox/Remind.md".into();
+            r.set_reminder_prefs(prefs, cx);
+        });
+        assert!(!missing(visual), "positive control: the note exists");
+
+        // Rename: the setting follows, persisted.
+        std::fs::rename(root.join("Inbox/Remind.md"), root.join("Inbox/Todo.md")).unwrap();
+        reader.update(visual, |r, cx| {
+            r.follow_moved_reminder_note("Inbox/Remind.md", "Inbox/Todo.md", cx)
+        });
+        assert_eq!(note(visual), "Inbox/Todo.md");
+        assert_eq!(
+            reader_reminder_settings::load(&state, &root).note,
+            "Inbox/Todo.md"
+        );
+        assert!(!missing(visual));
+        // A folder move carries the note inside it.
+        std::fs::create_dir_all(root.join("Old")).unwrap();
+        std::fs::rename(root.join("Inbox"), root.join("Old/Inbox")).unwrap();
+        reader.update(visual, |r, cx| {
+            r.follow_moved_reminder_note("Inbox", "Old/Inbox", cx)
+        });
+        assert_eq!(note(visual), "Old/Inbox/Todo.md");
+        // An unrelated move leaves it alone.
+        reader.update(visual, |r, cx| {
+            r.follow_moved_reminder_note("start.md", "Begin.md", cx)
+        });
+        assert_eq!(note(visual), "Old/Inbox/Todo.md");
+        // Deleted outside Okilum: Settings says so.
+        std::fs::remove_file(root.join("Old/Inbox/Todo.md")).unwrap();
+        assert!(missing(visual), "a note that is gone is said");
+    }
+
+    #[cfg(any(unix, windows))]
     #[gpui::test]
     fn reminder_rows_step_the_time_inside_waking_hours_and_persist(cx: &mut TestAppContext) {
         use time::Time;
