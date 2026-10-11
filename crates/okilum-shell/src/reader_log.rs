@@ -4453,6 +4453,15 @@ mod tests {
             visual.run_until_parked();
             visual.update(|window, cx| window.draw(cx).clear(cx));
         };
+        // Exactly one poll: the one that reads the new records. A writer that
+        // never stops leaves no quiet poll after it to pin the view again.
+        let poll = |visual: &mut VisualTestContext| {
+            visual
+                .executor()
+                .advance_clock(okilum_core::log::tail::LOCAL_POLL_INTERVAL);
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+        };
         let view = log_view(&reader, visual);
         // (the list overflows, it is scrolled to the end)
         let place = |visual: &mut VisualTestContext| {
@@ -4475,12 +4484,10 @@ mod tests {
         tick(visual);
 
         // Appends to both files, interleaved in time so the merge is rebuilt
-        // and refiltered: far more matches than fit. Each check follows the
-        // poll that brought data, as a writer that never stops would; a
-        // quiet poll afterwards would pin again and hide the jump (#1282).
+        // and refiltered: far more matches than fit.
         append(&a, &lines(10, 2, 60, "warn"));
         append(&b, &lines(11, 2, 60, "error"));
-        tick(visual);
+        poll(visual);
         assert_eq!(view.read_with(visual, |view, _| view.visible_len()), 120);
         assert_eq!(
             place(visual),
@@ -4495,7 +4502,7 @@ mod tests {
         tick(visual);
         append(&a, &lines(211, 2, 5, "warn"));
         append(&b, &lines(210, 2, 5, "error"));
-        tick(visual);
+        poll(visual);
         assert_eq!(view.read_with(visual, |view, _| view.visible_len()), 135);
         view.read_with(visual, |view, _| {
             assert!(view.following() && view.follow.as_ref().unwrap().pinned)
