@@ -536,6 +536,32 @@ impl LogView {
         .detach();
     }
 
+    /// Log files dropped on the view join it (#1160); other files are
+    /// named and left out.
+    fn drop_files(&mut self, paths: &ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
+        let (logs, others): (Vec<PathBuf>, Vec<PathBuf>) = paths
+            .paths()
+            .iter()
+            .cloned()
+            .partition(|path| okilum_core::log::is_log_path(path));
+        if let Some(other) = others.first() {
+            let name = other.file_name().unwrap_or_default().to_string_lossy();
+            reader_toast::transient(format!("Not a log file: {name}"), window, cx);
+        }
+        if !logs.is_empty() {
+            self.add_files(logs, cx);
+        }
+    }
+
+    /// The file is already a source of this view.
+    pub(crate) fn has_file(&self, path: &Path) -> bool {
+        (0..self.source_count()).any(|source| self.source(source).map(LogData::path) == Some(path))
+    }
+
+    pub(crate) fn add_file_paths(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        self.add_files(paths, cx);
+    }
+
     fn prompt_add_files(&mut self, cx: &mut Context<Self>) {
         let paths = cx.prompt_for_paths(PathPromptOptions {
             files: true,
@@ -1871,6 +1897,13 @@ impl Render for LogView {
             .on_action(
                 cx.listener(|this, _: &FocusLogFilter, window, cx| this.focus_filter(window, cx)),
             )
+            // Log files dropped from the system join the view (#1160).
+            .drag_over::<ExternalPaths>(|style, _, _, cx| {
+                style.bg(brand::palette(cx).selected.opacity(0.35))
+            })
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                this.drop_files(paths, window, cx)
+            }))
             .when(has_entries || self.follow.is_some(), |view| {
                 view.child(self.render_filter_bar(cx))
             })
@@ -3400,6 +3433,81 @@ mod tests {
         view.read_with(visual, |view, _| {
             assert!(view.merge.is_some());
             assert!(!view.following() && view.extra.len() == 3);
+        });
+    }
+
+    /// #1160: log files dropped on the view join it and other files are
+    /// named, not opened; extra log paths from the command line open with
+    /// the first.
+    #[gpui::test]
+    fn dropped_and_command_line_logs_join_the_view(cx: &mut TestAppContext) {
+        let line = |msg: &str| {
+            format!(
+                "{{\"ts\":\"2025-10-01T00:00:0{}Z\",\"msg\":\"{msg}\"}}\n",
+                msg.len() % 10
+            )
+        };
+        let (directory, reader, visual) = open_log(&line("first"), cx);
+        let root = directory.path().canonicalize().unwrap();
+        std::fs::write(root.join("second.jsonl"), line("second") + &line("again")).unwrap();
+        std::fs::write(root.join("notes.md"), "# Notes\n").unwrap();
+        let view = log_view(&reader, visual);
+        assert_eq!(view.read_with(visual, |view, _| view.source_count()), 1);
+        let center = visual.debug_bounds("reader-log").unwrap().center();
+        let paths = ExternalPaths(
+            [root.join("second.jsonl"), root.join("notes.md")]
+                .into_iter()
+                .collect(),
+        );
+        visual.simulate_event(FileDropEvent::Entered {
+            position: center,
+            paths,
+        });
+        visual.simulate_event(FileDropEvent::Submit { position: center });
+        visual.run_until_parked();
+        view.read_with(visual, |view, _| {
+            assert_eq!(view.source_count(), 2, "the log joined, the note did not");
+            assert!(view.has_file(&root.join("second.jsonl")));
+            assert_eq!(view.total(), 3);
+        });
+        // Dropping it again adds nothing.
+        visual.simulate_event(FileDropEvent::Entered {
+            position: center,
+            paths: ExternalPaths([root.join("second.jsonl")].into_iter().collect()),
+        });
+        visual.simulate_event(FileDropEvent::Submit { position: center });
+        visual.run_until_parked();
+        assert_eq!(view.read_with(visual, |view, _| view.source_count()), 2);
+        drop(directory);
+
+        // Command line: `okilum a.jsonl b.jsonl` opens both in one view.
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        std::fs::write(root.join("a.jsonl"), line("a")).unwrap();
+        std::fs::write(root.join("b.jsonl"), line("bb") + &line("bbb")).unwrap();
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        open_path: Some(root.join("a.jsonl")),
+                        extra_logs: vec![root.join("b.jsonl")],
+                        session_directory: Some(root.join(".state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        visual.run_until_parked();
+        let view = log_view(&entity.unwrap(), visual);
+        view.read_with(visual, |view, _| {
+            assert_eq!(view.source_count(), 2);
+            assert_eq!(view.total(), 3);
+            assert!(view.merge.is_some());
         });
     }
 
