@@ -207,7 +207,8 @@ impl Reader {
     /// The heading under `position` in the Reader, by the list's real block
     /// bounds; `None` off a heading.
     pub(crate) fn heading_at(&self, position: Point<Pixels>, cx: &App) -> Option<String> {
-        if self.editing.is_some() || self.file_preview.is_some() {
+        // A right-click on a link belongs to the link's own menu (#943).
+        if self.editing.is_some() || self.file_preview.is_some() || self.pointer_on_link() {
             return None;
         }
         let list = self.content.read(cx).list_state();
@@ -362,6 +363,23 @@ mod tests {
                 v.heading_at(paragraph, cx),
                 None,
                 "positive control: a paragraph"
+            );
+        });
+        // #943: over a link inside the heading, only the link's menu opens.
+        reader.update_in(visual, |v, _, cx| {
+            v.pointer_link = Some((
+                "okilum://open/Other.md".into(),
+                v.navigation.preparation_generation,
+            ));
+            assert_eq!(
+                v.heading_at(heading, cx),
+                None,
+                "a link claims the right-click"
+            );
+            v.pointer_link = None;
+            assert!(
+                v.heading_at(heading, cx).is_some(),
+                "positive control: off the link"
             );
         });
         reader.update_in(visual, |v, window, cx| {
