@@ -323,3 +323,39 @@ class TransportRetryTests(unittest.TestCase):
         self.assertEqual(request.call_count, 3)
         self.assertEqual(delays, [5, 10])
         self.assertNotIn('secret', str(raised.exception))
+
+
+class PushRetryTests(unittest.TestCase):
+    """A transient GitHub rejection is retried; a lasting one names git's reason."""
+
+    def run_push(self, outcomes):
+        import subprocess as sp
+        calls = []
+
+        def fake_run(args, **kwargs):
+            calls.append(args)
+            result = outcomes[min(len(calls), len(outcomes)) - 1]
+            if result is not None:
+                raise sp.CalledProcessError(1, args, stderr=result)
+            return sp.CompletedProcess(args, 0)
+        sleeps = []
+        with patch.object(bridge.subprocess, 'check_output', return_value='a' * 40 + '\n'), \
+                patch.object(bridge.subprocess, 'run', side_effect=fake_run):
+            try:
+                bridge.push_head('forgejo-pr/x', 'a' * 40, 'token', sleep=sleeps.append)
+                return calls, sleeps, None
+            except bridge.Unavailable as error:
+                return calls, sleeps, str(error)
+
+    def test_transient_rejection_is_retried(self):
+        rejected = b'To https://github.com/BeFeast/okilum.git\n ! [remote rejected] x -> x (failed)\n'
+        calls, sleeps, error = self.run_push([rejected, None])
+        self.assertEqual((len(calls), error), (2, None))
+        self.assertEqual(sleeps, [bridge.PUSH_RETRY_SECONDS])
+
+    def test_lasting_failure_reports_git_reason_without_the_token(self):
+        rejected = b' ! [remote rejected] x -> x (failed)\nerror: failed to push some refs\n'
+        calls, sleeps, error = self.run_push([rejected])
+        self.assertEqual(len(calls), bridge.PUSH_ATTEMPTS)
+        self.assertIn('failed to push some refs', error)
+        self.assertNotIn('token', error)

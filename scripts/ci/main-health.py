@@ -67,7 +67,7 @@ class Api:
         return next((i for i in self.call('GET', f'/issues?{query}') if i['title'] == ISSUE_TITLE), None)
 
 
-INFRA_MARKERS = ('Cannot connect to the Docker daemon', 'Error response from daemon',
+INFRA_MARKERS = ('Hosted CI unavailable', 'Cannot connect to the Docker daemon', 'Error response from daemon',
                  'No space left on device', 'Could not resolve host', 'Connection reset by peer',
                  'context deadline exceeded', 'lost communication with the server',
                  'The runner has received a shutdown signal', 'failed to create container')
