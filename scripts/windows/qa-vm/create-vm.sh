@@ -3,7 +3,7 @@
 #   bash create-vm.sh MEDIA_DIR                 # VM 150 okilum-win-qa on mimir (defaults)
 #   QA_VM=gpu bash create-vm.sh MEDIA_DIR       # VM 151 okilum-win-gpu on sindri, no GPU yet
 # MEDIA_DIR holds okilum-win-qa-answer.iso and okilum-win-qa-provision.iso (build-media.sh;
-# for the GPU VM built with COMPUTER_NAME=OKILUM-WIN-GPU).
+# for the GPU VM built with COMPUTER_NAME=OKILUM-WIN-GPU SECURE_BOOT_BYPASS=1).
 # Installs Windows 11 Enterprise Evaluation unattended (about 30-50 minutes), removes the
 # install media, snapshots `clean` and starts the VM. The GPU VM installs on emulated VGA and
 # its snapshot is `base`; gpu-passthrough.sh attaches the Iris Xe, and `clean` follows the

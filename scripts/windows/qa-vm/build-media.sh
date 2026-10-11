@@ -2,6 +2,9 @@
 # Build the two install CDs for the Okilum Windows QA VM (#1113), outside the repo.
 #   [COMPUTER_NAME=OKILUM-WIN-GPU] build-media.sh OUT_DIR
 # COMPUTER_NAME is the Windows hostname: OKILUM-WIN-QA (VM 150, default) or OKILUM-WIN-GPU (VM 151, #1264).
+# SECURE_BOOT_BYPASS=1 only for VM 151: it boots with Secure Boot off (OVMF rejects the unsigned
+# Intel GOP ROM otherwise), so setup's Secure Boot check is skipped there. The key lives in the
+# setup environment's registry (windowsPE pass), not in the installed system.
 # OUT_DIR/okilum-win-qa-answer.iso     Autounattend.xml with qa's password (Infisical
 #                                      infrastructure/prod/okilum-win-qa/QA_USER_PASSWORD), mode 0600
 # OUT_DIR/okilum-win-qa-provision.iso  first-logon provisioning, no secrets
@@ -19,11 +22,18 @@ umask 077
 mkdir -p "$work/answer" "$work/provision"
 password="$(secret get infrastructure /okilum-win-qa QA_USER_PASSWORD)"
 [ -n "$password" ] || { echo "build-media.sh: no QA password in Infisical" >&2; exit 1; }
-PASSWORD="$password" COMPUTER_NAME="$computer_name" python3 - "$here/Autounattend.xml.in" "$work/answer/Autounattend.xml" <<'PY'
+PASSWORD="$password" COMPUTER_NAME="$computer_name" SECURE_BOOT_BYPASS="${SECURE_BOOT_BYPASS:-0}" python3 - "$here/Autounattend.xml.in" "$work/answer/Autounattend.xml" <<'PY'
 import os, sys
 from xml.sax.saxutils import escape
 text = open(sys.argv[1]).read().replace('@QA_PASSWORD@', escape(os.environ['PASSWORD']))
 text = text.replace('@COMPUTER_NAME@', os.environ['COMPUTER_NAME'])
+labconfig = '''<RunSynchronous>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>1</Order>
+          <Path>reg.exe add HKLM\\SYSTEM\\Setup\\LabConfig /v BypassSecureBootCheck /t REG_DWORD /d 1 /f</Path>
+        </RunSynchronousCommand>
+      </RunSynchronous>''' if os.environ['SECURE_BOOT_BYPASS'] == '1' else ''
+text = text.replace('<!--@LABCONFIG@-->', labconfig)
 open(sys.argv[2], 'w').write(text)
 PY
 cp "$here/OKILUM-QA.CMD" "$here/provision.ps1" "$here/run-gui.ps1" "$here/authorized_keys" "$work/provision/"
