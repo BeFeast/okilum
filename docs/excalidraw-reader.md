@@ -36,6 +36,14 @@ Markdown entry: the plugin's block refs are 8 characters, and it adopts such
 elements from the JSON on load. The explicit Open in Excalidraw action copies the scene
 JSON and opens the owner-approved https://draw.oklabs.uk editor; it is not part of normal rendering.
 
+Line endings are kept as opened, so a CRLF drawing is saved as CRLF. Obsidian
+reads such files correctly (#938): `vault.read` returns the CR bytes, but the
+text handed to the plugin's view arrives with LF endings, and the plugin's loader
+only ever parses LF. Checked with Obsidian 1.12.7 and 1.14.4 and plugin 2.28.1 on
+a CRLF writer fixture. The CRLF drawing loads with the same elements and text as
+its LF twin, and a corrupted control does not load. The CI plugin oracle
+normalises CRLF before `loadData` for the same reason.
+
 Decoded scenes use a 16-entry LRU. Raster variants share a 128 MiB / 64-entry
 LRU budget (excluding currently displayed images and in-flight renderer allocations).
 Vault watcher events invalidate decoded scenes, including external image dependencies.
