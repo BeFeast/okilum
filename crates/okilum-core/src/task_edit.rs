@@ -212,7 +212,6 @@ fn plain_metadata(source: &str, span: Range<usize>) -> bool {
     })
 }
 
-#[cfg(unix)]
 pub mod write;
 
 #[cfg(test)]

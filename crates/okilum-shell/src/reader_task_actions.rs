@@ -1,17 +1,14 @@
 //! UI workers retain displayed evidence and delegate every write to FileEditor.
 use super::*;
-#[cfg(unix)]
 use gpui_component::notification::Notification;
 use okilum_core::{
     task_edit::Change,
     tasks::{Index, Task},
 };
 
-#[cfg(unix)]
 use okilum_core::task_edit::{self, write::Receipt};
 
 impl Reader {
-    #[cfg(unix)]
     pub(super) fn apply_task_change(
         &mut self,
         index: Arc<Index>,
@@ -78,7 +75,6 @@ impl Reader {
         .detach();
     }
 
-    #[cfg(unix)]
     fn undo_task(
         &mut self,
         receipt: Receipt,
@@ -100,16 +96,5 @@ impl Reader {
             });
         })
         .detach();
-    }
-    #[cfg(not(unix))]
-    pub(super) fn apply_task_change(
-        &mut self,
-        _: Arc<Index>,
-        _: Task,
-        _: Change,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        reader_toast::transient("Task editing is unavailable on this platform.", window, cx);
     }
 }
