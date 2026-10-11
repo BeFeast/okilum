@@ -364,6 +364,16 @@ impl Resolution {
     }
 }
 
+/// What `Vault::discover` found at the top of a folder.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Discovery {
+    Found(String),
+    /// No Markdown anywhere and nothing skipped: a new vault.
+    Empty,
+    /// Markdown or folders that could not be read.
+    Unreadable,
+}
+
 #[derive(Clone)]
 pub struct Vault {
     /// Explicit quick-view scope: direct document links can be checked without a recursive inventory.
@@ -803,11 +813,24 @@ impl Vault {
         root: &Path,
         checkpoint: &mut impl FnMut() -> Result<()>,
     ) -> Result<Option<String>> {
+        Ok(match Self::discover(root, checkpoint)? {
+            Discovery::Found(rel) => Some(rel),
+            Discovery::Empty | Discovery::Unreadable => None,
+        })
+    }
+
+    /// The first readable note, or why there is none: a folder with no
+    /// Markdown at all and nothing skipped is a new, empty vault (#1123);
+    /// Markdown that cannot be read, or an entry that cannot be walked, is
+    /// a failure the user should see.
+    pub fn discover(root: &Path, checkpoint: &mut impl FnMut() -> Result<()>) -> Result<Discovery> {
+        let mut skipped = false;
         for entry in WalkDir::new(root).into_iter().filter_entry(|e| {
             e.depth() == 0 || !service_path(e.path().strip_prefix(root).unwrap_or(e.path()))
         }) {
             checkpoint()?;
             let Ok(entry) = entry else {
+                skipped = true;
                 continue;
             };
             if entry.file_type().is_file()
@@ -815,12 +838,20 @@ impl Vault {
                     .path()
                     .extension()
                     .is_some_and(|e| e.eq_ignore_ascii_case("md"))
-                && read_source(entry.path()).is_ok()
             {
-                return Ok(Some(note_path(entry.path().strip_prefix(root)?)));
+                if read_source(entry.path()).is_ok() {
+                    return Ok(Discovery::Found(note_path(
+                        entry.path().strip_prefix(root)?,
+                    )));
+                }
+                skipped = true;
             }
         }
-        Ok(None)
+        Ok(if skipped {
+            Discovery::Unreadable
+        } else {
+            Discovery::Empty
+        })
     }
 
     /// The first note in scan order, or `None` for an empty vault.
@@ -1563,6 +1594,47 @@ mod browser_inventory_tests {
         assert_eq!(vault.unreadable[0].path, missing);
         assert_eq!(vault.unreadable[0].operation, "enumerate entry");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn discovery_tells_an_empty_vault_from_an_unreadable_one() {
+        let fixture = tempfile::tempdir().unwrap();
+        let mut ok = || Ok(());
+        let empty = fixture.path().join("Fresh");
+        std::fs::create_dir_all(empty.join("Pictures")).unwrap();
+        std::fs::write(empty.join("Pictures/cat.png"), b"png").unwrap();
+        assert_eq!(Vault::discover(&empty, &mut ok).unwrap(), Discovery::Empty);
+        let notes = fixture.path().join("Notes");
+        std::fs::create_dir_all(&notes).unwrap();
+        std::fs::write(notes.join("Plan.md"), "# Plan").unwrap();
+        assert_eq!(
+            Vault::discover(&notes, &mut ok).unwrap(),
+            Discovery::Found("Plan.md".into())
+        );
+        // Root reads mode-000 files, which would make this control vacuous.
+        #[cfg(unix)]
+        if std::fs::read_to_string("/proc/self/status")
+            .map(|s| {
+                !s.lines()
+                    .any(|l| l.starts_with("Uid:") && l.split_whitespace().nth(1) == Some("0"))
+            })
+            .unwrap_or(true)
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let locked = fixture.path().join("Locked");
+            std::fs::create_dir_all(&locked).unwrap();
+            std::fs::write(locked.join("secret.md"), "# Secret").unwrap();
+            std::fs::set_permissions(
+                locked.join("secret.md"),
+                std::fs::Permissions::from_mode(0o000),
+            )
+            .unwrap();
+            assert_eq!(
+                Vault::discover(&locked, &mut ok).unwrap(),
+                Discovery::Unreadable,
+                "unreadable Markdown is never an empty vault"
+            );
+        }
     }
 
     #[test]

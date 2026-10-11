@@ -381,7 +381,13 @@ fn prepare_first_with_last_document(
             match hint {
                 Some(note) => Some(note),
                 None if explicitly_empty => Some(String::new()),
-                None => Vault::discover_document(&intent.root, &mut || cancel.check())?,
+                // A folder with no notes opens as an empty vault, inviting
+                // the first note; unreadable Markdown stays a failure (#1123).
+                None => match Vault::discover(&intent.root, &mut || cancel.check())? {
+                    okilum_core::vault::Discovery::Found(rel) => Some(rel),
+                    okilum_core::vault::Discovery::Empty => Some(String::new()),
+                    okilum_core::vault::Discovery::Unreadable => None,
+                },
             }
         }
     };
