@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+import unittest.mock
 
 import catalog
 import publish as p
@@ -190,6 +191,53 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(store.writes[-1], f'{catalog.PREFIX}/stable.json')
             self.assertEqual(store.data['okilum/macos/latest.zip'], b'Okilum-macos.zip')
             self.assertEqual(store.data['okilum/macos/stable/Okilum.dmg'], b'Okilum-0.1.700.dmg')
+
+    def test_resigned_windows_completes_the_current_stable_only(self):
+        # #1104: stable 700 went out with an unsigned Windows 701; the same bytes, signed,
+        # are Windows 705 of the same commit. Only Windows moves.
+        store = Store()
+        release = fixture(store)
+        store.data[f'{catalog.PREFIX}/stable.json'] = catalog.encode(release)
+        store.data[f'{catalog.PREFIX}/promoting.json'] = catalog.encode(release)
+        assets = [catalog.asset('archive/Setup.exe', 'Setup.exe', b'Setup.exe'),
+                  catalog.asset('archive/Okilum-windows-portable.zip', 'Okilum-windows-portable.zip',
+                                b'Okilum-windows-portable.zip')]
+        catalog.record(store, 'windows', 705, SOURCE, assets)
+        store.writes.clear()
+        github = unittest.mock.Mock()
+        github.call.return_value = {'id': 9, 'body': 'Published notes'}
+        with patch.object(p, 'preflight_windows') as preflight, \
+             patch.object(p.windows, 'promote') as windows, \
+             patch.object(p.arch, 'execute') as linux, \
+             patch.object(p, 'promote_macos') as macos, \
+             patch.object(p, 'mirror_tag') as mirror, \
+             patch.object(p, 'github_release') as publish:
+            p.complete_windows(store, github, 700)
+        self.assertEqual(preflight.call_args.args[1]['platforms']['windows']['build'], 705)
+        windows.assert_called_once_with(705, store)
+        linux.assert_not_called(); macos.assert_not_called(); mirror.assert_not_called()
+        self.assertEqual(publish.call_args.args[1], 'v0.1.700')
+        self.assertEqual(publish.call_args.args[4], 'Published notes')
+        record = json.loads(store.data[f'{catalog.PREFIX}/stable.json'])
+        self.assertEqual(record['platforms']['windows']['build'], 705)
+        self.assertEqual(record['platforms']['macos'], release['platforms']['macos'])
+
+    def test_windows_only_refuses_another_stable_or_changed_platforms(self):
+        store = Store()
+        release = fixture(store)
+        with self.assertRaisesRegex(ValueError, 'Stable is not build 700'):
+            p.complete_windows(store, None, 700)
+        store.data[f'{catalog.PREFIX}/stable.json'] = catalog.encode(
+            {**release, 'platforms': {**release['platforms'], 'linux': {'build': 1}}})
+        with self.assertRaisesRegex(ValueError, 'linux changed'):
+            p.complete_windows(store, None, 700)
+        store.data[f'{catalog.PREFIX}/stable.json'] = catalog.encode(release)
+        p.complete_windows(store, None, 700)  # nothing re-signed yet: no-op, no GitHub call
+        github = unittest.mock.Mock()
+        github.call.return_value = None
+        catalog.record(store, 'windows', 705, SOURCE, release['platforms']['windows']['assets'])
+        with patch.object(p, 'preflight_windows'), self.assertRaisesRegex(ValueError, 'missing'):
+            p.complete_windows(store, github, 700)
 
     def test_stable_without_dmg_keeps_the_previous_stable_dmg(self):
         store = Store()
