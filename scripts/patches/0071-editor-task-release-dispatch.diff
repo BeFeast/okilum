@@ -1,3 +1,47 @@
+diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
+index 6b55a2e4..1acc0a1a 100644
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -559,7 +559,7 @@ impl<M: InputModeKind> TextElement<M> {
+         self
+     }
+ 
+-    fn paint_mouse_listeners(&mut self, window: &mut Window, _: &mut App) {
++    fn paint_mouse_listeners(&mut self, bounds: Bounds<Pixels>, window: &mut Window, _: &mut App) {
+         window.on_mouse_event({
+             let state = self.state.clone();
+ 
+@@ -574,7 +574,7 @@ impl<M: InputModeKind> TextElement<M> {
+ 
+         window.on_mouse_event({
+             let state = self.state.clone();
+-            move |_: &MouseUpEvent, phase, _, cx| {
++            move |event: &MouseUpEvent, phase, _, cx| {
+                 if !phase.bubble() {
+                     return;
+                 }
+@@ -584,7 +584,11 @@ impl<M: InputModeKind> TextElement<M> {
+                     state.auto_scroll.stop();
+                     state.drag_anchors.clear();
+                     // Released outside the input: an armed task box cancels (#1051).
+-                    state.armed_task = None;
++                    // Inside, on_mouse_up decides: this window listener runs
++                    // before it, so clearing here dropped every click (#1277).
++                    if !bounds.contains(&event.position) {
++                        state.armed_task = None;
++                    }
+                     if state.selecting {
+                         // Released outside the input: end the gesture as
+                         // on_mouse_up does, or the lease would never expire.
+@@ -2950,7 +2954,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+             }
+         }
+ 
+-        self.paint_mouse_listeners(window, cx);
++        self.paint_mouse_listeners(input_bounds, window, cx);
+     }
+ }
+ 
 diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
 index abb60d96..b45f7eb7 100644
 --- a/crates/base/src/input/base/state.rs
