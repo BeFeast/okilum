@@ -110,8 +110,10 @@ mod windows {
             !parts.is_empty() && parts.iter().all(|p| matches!(p, Component::Normal(_))),
             "Choose an item inside the vault"
         );
+        // Windows names are case-insensitive: `.OBSIDIAN` is `.obsidian`.
+        let folded = PathBuf::from(relative.to_string_lossy().to_lowercase());
         ensure!(
-            !crate::vault::service_path(relative),
+            !crate::vault::service_path(&folded),
             "Service files cannot be moved to the Recycle Bin"
         );
         Ok(root.join(relative))
@@ -328,7 +330,12 @@ mod tests {
     #[test]
     fn windows_recycle_bin_refuses_service_files_and_outside_paths() {
         let temp = tempfile::tempdir().unwrap();
-        for relative in [".obsidian/app.json", "../escape.md", ""] {
+        for relative in [
+            ".obsidian/app.json",
+            ".OBSIDIAN/app.json",
+            "../escape.md",
+            "",
+        ] {
             assert!(
                 move_to_trash(temp.path(), Path::new(relative)).is_err(),
                 "{relative}"
