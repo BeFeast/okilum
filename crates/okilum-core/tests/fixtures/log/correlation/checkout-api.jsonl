@@ -1,0 +1,7 @@
+{"ts": "2026-10-10T06:02:00.120Z", "level": "info", "msg": "handling GET /cart", "x-request-id": "7b1c2f", "handler": "checkout"}
+{"ts": "2026-10-10T06:02:00.150Z", "level": "debug", "msg": "cache warm", "handler": "checkout"}
+{"ts": "2026-10-10T06:02:01.120Z", "level": "info", "msg": "handling POST /checkout", "x-request-id": "9e40aa", "handler": "checkout"}
+{"ts": "2026-10-10T06:02:01.180Z", "level": "error", "msg": "payment backend timeout", "x-request-id": "9e40aa", "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}
+{"ts": "2026-10-10T06:02:01.150Z", "level": "debug", "msg": "cache warm", "handler": "checkout"}
+{"ts": "2026-10-10T06:02:02.120Z", "level": "info", "msg": "handling GET /orders", "x-request-id": "c3d17e", "handler": "checkout"}
+{"ts": "2026-10-10T06:02:02.150Z", "level": "debug", "msg": "cache warm", "handler": "checkout"}

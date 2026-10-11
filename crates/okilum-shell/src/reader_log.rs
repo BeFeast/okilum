@@ -9,6 +9,7 @@
 //! be hidden without indexing anything again.
 use super::*;
 use gpui_component::scroll::ScrollableElement as _;
+use okilum_core::log::correlation;
 use okilum_core::log::merge::MergedLog;
 use okilum_core::log::query::{Expr, FieldRef, Literal, Test};
 use okilum_core::log::source_link::{self, Open, SourceLocation};
@@ -274,6 +275,8 @@ pub(crate) struct LogView {
     primary_enabled: bool,
     /// The time order of the shown sources, when there is more than one.
     merge: Option<Merge>,
+    /// Showing one request (#1166): the query text to go back to.
+    request_back: Option<String>,
     /// What the last source-link click asked for, instead of launching (#1165).
     #[cfg(test)]
     last_open: Option<Open>,
@@ -343,6 +346,7 @@ impl LogView {
             extra: Vec::new(),
             primary_enabled: true,
             merge: None,
+            request_back: None,
             #[cfg(test)]
             last_open: None,
             _text_input_events: events,
@@ -759,6 +763,21 @@ impl LogView {
             .into_any_element()
     }
 
+    /// Every record of the request `id`, across all files of the view
+    /// (#1166). The previous query comes back with `request_back`.
+    fn show_request(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.request_back.is_none() {
+            self.request_back = Some(self.query_text.clone());
+        }
+        self.replace_query(correlation::query(id).to_string(), window, cx);
+    }
+
+    fn request_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(previous) = self.request_back.take() {
+            self.replace_query(previous, window, cx);
+        }
+    }
+
     fn following(&self) -> bool {
         self.follow
             .as_ref()
@@ -903,6 +922,7 @@ impl LogView {
             .update(cx, |input, cx| input.set_value("", window, cx));
         self.query_text.clear();
         self.query_error = None;
+        self.request_back = None;
         self.update_filter(|filter| *filter = LogFilter::default(), cx);
     }
 
@@ -1681,6 +1701,23 @@ impl LogView {
                         }
                     )),
             )
+            .children(
+                file.record(index)
+                    .as_ref()
+                    .and_then(|record| correlation::ids(record).into_iter().next())
+                    .map(|id| {
+                        let value = id.value.clone();
+                        Button::new("log-show-request")
+                            .debug_selector(|| "log-show-request".into())
+                            .ghost()
+                            .small()
+                            .label("Show this request")
+                            .tooltip(format!("Every record with {} {}", id.key, id.value))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.show_request(&value, window, cx)
+                            }))
+                    }),
+            )
             .child(
                 reader_icon_button(
                     "log-copy-raw",
@@ -2005,6 +2042,14 @@ impl LogView {
             .child(level_button)
             .children(time_button)
             .child(query)
+            .children(self.request_back.as_ref().map(|_| {
+                bar_button("log-request-back", true)
+                    .label("Back")
+                    .icon(IconName::ArrowLeft)
+                    .tooltip("Back to the previous filter")
+                    .debug_selector(|| "log-request-back".into())
+                    .on_click(cx.listener(|this, _, window, cx| this.request_back(window, cx)))
+            }))
             .children(history)
             .child(self.files_button(cx))
             // A compressed log does not grow (#1164).
@@ -4174,6 +4219,84 @@ mod tests {
             saved["source_maps"][root.to_string_lossy().as_ref()][0]["from"],
             "/src/ordgw"
         );
+    }
+
+    /// #1166 acceptance: with ingress and app logs merged, choosing a
+    /// record's request id shows only that request's rows from both files,
+    /// and Back returns to the previous filter.
+    #[gpui::test]
+    fn show_this_request_filters_every_file_and_back_restores(cx: &mut TestAppContext) {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../okilum-core/tests/fixtures/log/correlation");
+        let ingress = std::fs::read_to_string(fixtures.join("ingress-nginx.jsonl")).unwrap();
+        let (directory, reader, visual) = open_log(&ingress, cx);
+        let root = directory.path().canonicalize().unwrap();
+        let app = root.join("checkout-api.jsonl");
+        std::fs::copy(fixtures.join("checkout-api.jsonl"), &app).unwrap();
+        let view = log_view(&reader, visual);
+        view.update(visual, |view, cx| view.add_files(vec![app.clone()], cx));
+        visual.run_until_parked();
+        let messages = |visual: &mut VisualTestContext| {
+            view.read_with(visual, |view, _| {
+                (0..view.visible_len())
+                    .map(|row| {
+                        let id = view.entry_at(row).unwrap();
+                        let raw = String::from_utf8_lossy(view.raw_at(id).unwrap()).into_owned();
+                        let msg = raw.split("\"msg\": \"").nth(1).unwrap();
+                        msg[..msg.find('"').unwrap()].to_owned()
+                    })
+                    .collect::<Vec<_>>()
+            })
+        };
+        assert_eq!(
+            messages(visual).len(),
+            3 + 7,
+            "positive control: both files"
+        );
+        // A query first, so Back has something to return to.
+        view.update(visual, |view, cx| view.set_query("level>=info".into(), cx));
+        visual.run_until_parked();
+        let before = messages(visual);
+        // Select the ingress record of the failed POST and show its request.
+        let id = view.read_with(visual, |view, _| {
+            (0..view.total())
+                .find(|&id| {
+                    String::from_utf8_lossy(view.raw_at(id).unwrap()).contains("POST /checkout 502")
+                })
+                .unwrap()
+        });
+        view.update_in(visual, |view, window, cx| view.select(id, true, window, cx));
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let button = visual
+            .debug_bounds("log-show-request")
+            .expect("the record offers its request");
+        visual.simulate_click(button.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(
+            messages(visual),
+            [
+                "POST /checkout 502",
+                "handling POST /checkout",
+                "payment backend timeout"
+            ],
+            "only that request, from both files, in time order"
+        );
+        view.read_with(visual, |view, _| {
+            assert_eq!(view.request_back.as_deref(), Some("level>=info"));
+        });
+        // Back returns to the previous filter.
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let back = visual
+            .debug_bounds("log-request-back")
+            .expect("Back is offered");
+        visual.simulate_click(back.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(messages(visual), before);
+        view.read_with(visual, |view, cx| {
+            assert!(view.request_back.is_none());
+            assert_eq!(view.query_input.read(cx).value().as_ref(), "level>=info");
+        });
     }
 
     #[gpui::test]
