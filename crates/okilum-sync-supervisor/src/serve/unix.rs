@@ -124,7 +124,11 @@ fn serve<C: PeerCheck>(
 mod tests {
     use super::*;
     use okilum_sync_controller::sidecar::supervisor::ipc::Scope;
-    use std::{io::Read, os::unix::{fs::PermissionsExt, net::UnixStream}, time::Duration};
+    use std::{
+        io::Read,
+        os::unix::{fs::PermissionsExt, net::UnixStream},
+        time::Duration,
+    };
 
     /// #1083: the controller holds the state lock and is connected to the generation that
     /// has just stopped. The supervisor must close its endpoint first, so that attempt ends
@@ -144,7 +148,9 @@ mod tests {
         };
         let endpoint = UnixEndpoint::create(&state, &scope).unwrap();
         let path = endpoint.path().to_owned();
-        let lock = store.begin(Instant::now() + Duration::from_secs(5)).unwrap();
+        let lock = store
+            .begin(Instant::now() + Duration::from_secs(5))
+            .unwrap();
         // Connected, never accepted: the state of a controller's `Status` exchange.
         let mut pending = UnixStream::connect(&path).unwrap();
         pending
