@@ -80,6 +80,8 @@ run_tests okilum-sync-controller --lib sidecar::
 # #1013: the supervisor's run loop against a real process tree and real sockets (the
 # shell does not depend on this crate, so nothing else would even build it here).
 run_tests okilum-sync-supervisor --tests ""
+# #1083: the exit path, deterministically (the integration tests above only race it).
+run_tests okilum-sync-supervisor --lib serve::unix::tests::a_connection_pending_under_the_state_lock_does_not_block_clearing_the_hint --exact
 # #1013: the supervisor's packaging steps, as the release runs them, on a real Mac.
 bash scripts/ci/check-supervisor-bundle.sh
 
