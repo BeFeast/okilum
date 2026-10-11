@@ -6,7 +6,7 @@ The note is the L1 long nested corpus (180 list-with-quote units, ~16 KB, like
 the QA fixture l1-long-180.md). Narrow (700 px), dark. One cycle, as in the QA
 step: type 20 characters, Enter x5, then Undo until the saved note is the
 original again. RSS is read after each cycle once the app has settled.
-Readout: the RSS slope over the cycles after warm-up (the first 5 dropped).
+Readout: the RSS slope over the restored cycles after warm-up (first 5 dropped).
 Pass: under 64 KiB per cycle, and the saved note is the original at the end.
 Positive control: the RSS reading is live (it rises when Live Preview first
 renders the long note).
@@ -65,7 +65,7 @@ try:
         xd(env, 'key', 'End')
         xd(env, 'type', '--delay', '15', 'abcdefghijklmnopqrst')
         xd(env, 'key', '--delay', '30', *(['Return'] * 5))
-        for _ in range(12):
+        for _ in range(60):
             xd(env, 'key', 'ctrl+s')
             time.sleep(.6)
             if note.read_text() == NOTE:
@@ -80,7 +80,9 @@ finally:
     proc.terminate()
     proc.wait(timeout=10)
 
-tail = readings[5:]
+# Growth is judged on restored cycles only: a cycle that left text behind
+# makes the note (and so the RSS) larger by design.
+tail = [r for r, ok in list(zip(readings, restored))[5:] if ok]
 n = len(tail)
 mean_x, mean_y = (n - 1) / 2, sum(tail) / n
 slope = sum((i - mean_x) * (y - mean_y) for i, y in enumerate(tail)) / sum((i - mean_x) ** 2 for i in range(n))
