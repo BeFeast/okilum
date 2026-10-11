@@ -1274,17 +1274,19 @@ impl Render for LinkVaultChoice {
             h_flex()
                 .gap_3()
                 .justify_between()
-                .child(v_flex().min_w_0().child(root.display().to_string()).when(
-                    opts.is_none(),
-                    |row| {
-                        row.child(
-                            div()
-                                .text_sm()
-                                .text_color(muted)
-                                .child("The note is not in this vault."),
-                        )
-                    },
-                ))
+                .child(
+                    v_flex()
+                        .min_w_0()
+                        .child(okilum_core::vault::display_path(&root))
+                        .when(opts.is_none(), |row| {
+                            row.child(
+                                div()
+                                    .text_sm()
+                                    .text_color(muted)
+                                    .child("The note is not in this vault."),
+                            )
+                        }),
+                )
                 .child(button)
         });
         v_flex()
@@ -1328,7 +1330,8 @@ impl Render for LinkConfirm {
                 div()
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
-                    .child(self.root.display().to_string()),
+                    // Without Windows' `\\?\` prefix (#1270).
+                    .child(okilum_core::vault::display_path(&self.root)),
             )
             .child("Links only open notes. Okilum asks once per vault.")
             .child(
