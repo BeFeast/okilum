@@ -253,6 +253,10 @@ impl Reader {
         let vault = self.vault.clone();
         let rel = rel.to_owned();
         let html = self.use_html;
+        let landing_line = match &landing {
+            Some(Landing::Line(line)) => Some(*line),
+            _ => None,
+        };
         let started = std::time::Instant::now();
         self.open_started = Some(started);
         cx.spawn_in(window, async move |this, cx| {
@@ -349,6 +353,9 @@ impl Reader {
                 let _phase = reader_diagnostics::phase(cx, "note_open_accept");
                 this.accept_prepared_document(request, document, window, cx);
                 this.navigation.flash_pending = flash_block;
+                if let Some(line) = landing_line {
+                    this.trace_link_landing(line, flash_block, window, cx);
+                }
                 if let Some(text) = task_landing {
                     this.land_task_text(text, cx);
                 }
@@ -363,6 +370,48 @@ impl Reader {
                     cx.notify();
                 }
             });
+        })
+        .detach();
+    }
+
+    /// #1269: where a link's line went. The block it resolved to, then the
+    /// Reader's top block once painted and again two seconds later, so a
+    /// later reset (window frame, restore) shows up in the diagnostic log.
+    fn trace_link_landing(
+        &mut self,
+        line: u32,
+        block: Option<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(trace) = reader_diagnostics::trace(cx) else {
+            return;
+        };
+        let top = |reader: &Self, cx: &App| {
+            reader
+                .content
+                .read(cx)
+                .list_state()
+                .logical_scroll_top()
+                .item_ix
+        };
+        trace.event(
+            "link_landing",
+            serde_json::json!({ "line": line, "block": block, "top": top(self, cx) }),
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            for (phase, delay) in [("link_landing_painted", 100), ("link_landing_later", 2000)] {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(delay))
+                    .await;
+                let Ok(top) = this.update(cx, |this, cx| top(this, cx)) else {
+                    return;
+                };
+                trace.event(
+                    phase,
+                    serde_json::json!({ "line": line, "block": block, "top": top }),
+                );
+            }
         })
         .detach();
     }

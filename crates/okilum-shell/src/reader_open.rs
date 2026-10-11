@@ -804,6 +804,19 @@ fn open_deep_link_among(link: &str, known: &[PathBuf], cx: &mut App) {
             rel,
             position,
         } => {
+            // #1269: the position as it arrived, before any window takes it.
+            if let Some(trace) = super::reader_diagnostics::trace(cx) {
+                trace.event(
+                    "link_open",
+                    serde_json::json!({
+                        "line": position.line,
+                        "column": position.column,
+                        "fragment": position.heading.is_some() || position.block.is_some(),
+                        "on_screen": reusable_roots(cx).contains(&root),
+                        "trusted": super::reader_ui_state::link_trusted(&root, cx),
+                    }),
+                );
+            }
             let opts = super::Opts {
                 vault: Some(root.clone()),
                 note: Some(rel),
