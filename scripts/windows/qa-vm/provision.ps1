@@ -2,6 +2,8 @@
 # provision CD, then powers the VM off so the owner's command can snapshot it as `clean`.
 param([Parameter(Mandatory)][string]$Media)
 $ErrorActionPreference = 'Stop'
+# Also accept a quoted trailing backslash mangled by cmd.exe (E:\" arrives as E:").
+$Media = $Media.Trim().TrimEnd('"')
 Start-Transcript -Path 'C:\okilum-qa-provision.transcript.txt' -Append | Out-Null
 function Step($text) { Write-Output "[$(Get-Date -Format s)] $text" }
 
@@ -13,7 +15,9 @@ function Find-Drive($relative) {
     throw "not found on any drive: $relative"
 }
 
-Step 'QEMU guest agent (reports the IP to Proxmox, clean shutdown)'
+Step 'VirtIO serial driver and QEMU guest agent (reports the IP to Proxmox, clean shutdown)'
+# The agent talks over virtio-serial, which Windows has no inbox driver for.
+pnputil.exe /add-driver (Find-Drive 'vioserial\w11\amd64\vioser.inf') /install | Out-Null
 $agent = Find-Drive 'guest-agent\qemu-ga-x86_64.msi'
 Start-Process msiexec.exe -Wait -ArgumentList '/i', "`"$agent`"", '/qn', '/norestart'
 Set-Service QEMU-GA -StartupType Automatic
