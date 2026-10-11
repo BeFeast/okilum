@@ -52,10 +52,6 @@ impl Split {
             .max(self.min_pane)
     }
 
-    pub(super) fn collapsed(&self) -> bool {
-        self.collapsed
-    }
-
     /// `requested` pane height inside a split `available` px tall.
     pub(super) fn drag_to(&mut self, requested: f32, available: f32) {
         let max = (available - HANDLE_HEIGHT - self.min_list).max(self.min_pane);
@@ -169,8 +165,8 @@ mod tests {
         assert_eq!(split.height, Some(36.));
         // Dragging restores a collapsed pane.
         split.toggle_collapsed();
-        assert!(split.collapsed());
+        assert!(split.collapsed);
         split.drag_to(300., 900.);
-        assert!(!split.collapsed());
+        assert!(!split.collapsed);
     }
 }
