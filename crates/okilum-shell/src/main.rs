@@ -8209,19 +8209,19 @@ mod document_link_landing_tests {
         });
         visual.run_until_parked();
         let before = visual
-            .debug_bounds(&format!("bl-card-{many}"))
+            .debug_bounds(name("bl-card", many))
             .expect("the card with five places is in view");
         let more = visual
-            .debug_bounds(&format!("bl-more-{many}"))
+            .debug_bounds(name("bl-more", many))
             .expect("it offers «Show 2 more»");
         visual.simulate_click(more.center(), Modifiers::default());
         visual.run_until_parked();
-        let after = visual.debug_bounds(&format!("bl-card-{many}")).unwrap();
+        let after = visual.debug_bounds(name("bl-card", many)).unwrap();
         assert!(
             after.size.height > before.size.height,
             "{before:?} -> {after:?}"
         );
-        assert!(visual.debug_bounds(&format!("bl-more-{many}")).is_none());
+        assert!(visual.debug_bounds(name("bl-more", many)).is_none());
         assert!(built(visual).len() <= 40);
     }
 
