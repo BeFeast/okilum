@@ -60,13 +60,14 @@ fn service_json_lines_keep_unparsed_rows_and_exact_text() {
     let file = fixture("service.jsonl");
     let index = file.index();
     assert_eq!(index.format(), Format::JsonLines);
+    // Line 4 is a Rust panic line: a block at level error (#1161).
     assert_eq!(
         levels(&file),
         [
             Level::Error,
             Level::Warn,
             Level::Info,
-            Level::Unparsed,
+            Level::Error,
             Level::Debug,
             Level::Trace,
             Level::Fatal,
@@ -120,12 +121,13 @@ fn service_json_lines_keep_unparsed_rows_and_exact_text() {
 fn logfmt_and_plain_text() {
     let file = fixture("service.logfmt");
     assert_eq!(file.index().format(), Format::Logfmt);
+    // Line 3 starts a goroutine dump: a block at level error (#1161).
     assert_eq!(
         levels(&file),
         [
             Level::Info,
             Level::Warn,
-            Level::Unparsed,
+            Level::Error,
             Level::Error,
             Level::Debug
         ]
@@ -172,12 +174,14 @@ fn throughput_100mb_with_known_counts() {
         seed
     };
     let mut data = Vec::with_capacity(TARGET + 1024);
-    let (mut written, mut errors, mut unparsed) = (0u64, 0u64, 0u64);
+    // Stack frames are indented continuation lines: each joins the record
+    // before it (#1161), so they are not entries of their own.
+    let (mut written, mut errors, mut frames) = (0u64, 0u64, 0u64);
     while data.len() < TARGET {
         let r = next();
         if r % 997 == 0 {
             data.extend_from_slice(b"    at okilum::reader::open (reader.rs:42)\n");
-            unparsed += 1;
+            frames += 1;
         } else {
             let level = match r % 20 {
                 0..=5 => 0,
@@ -209,7 +213,12 @@ fn throughput_100mb_with_known_counts() {
         independent_errors, errors,
         "generator and byte search agree"
     );
-    assert!(errors > 0 && unparsed > 0, "the controls are not vacuous");
+    assert!(errors > 0 && frames > 0, "the controls are not vacuous");
+    assert_eq!(
+        data.first(),
+        Some(&b'{'),
+        "every frame has a record before it"
+    );
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("app.jsonl");
@@ -222,10 +231,10 @@ fn throughput_100mb_with_known_counts() {
     assert!(file.is_mapped());
     let index = file.index();
     assert_eq!(index.format(), Format::JsonLines);
-    assert_eq!(index.len() as u64, written);
+    assert_eq!(index.len() as u64, written - frames);
     assert_eq!(index.stats().count(Level::Error), errors);
-    assert_eq!(index.stats().unparsed(), unparsed);
-    assert_eq!(index.stats().timestamped, written - unparsed);
+    assert_eq!(index.stats().unparsed(), 0);
+    assert_eq!(index.stats().timestamped, written - frames);
 
     let started = std::time::Instant::now();
     let single = LogIndex::build_with_threads(file.bytes(), 1);
@@ -234,10 +243,10 @@ fn throughput_100mb_with_known_counts() {
 
     let mb = index.bytes() as f64 / (1024.0 * 1024.0);
     println!(
-        "indexed {mb:.1} MiB, {} records ({} errors, {} unparsed): {:.3} s parallel ({:.0} MiB/s), {:.3} s one thread ({:.0} MiB/s), index {:.1} MiB",
+        "indexed {mb:.1} MiB, {} records ({} errors, {} frames joined): {:.3} s parallel ({:.0} MiB/s), {:.3} s one thread ({:.0} MiB/s), index {:.1} MiB",
         index.len(),
         errors,
-        unparsed,
+        frames,
         parallel.as_secs_f64(),
         mb / parallel.as_secs_f64(),
         one_thread.as_secs_f64(),

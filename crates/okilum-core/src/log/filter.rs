@@ -764,7 +764,8 @@ mod tests {
         let mut data = Vec::new();
         for i in 0..120_000u64 {
             if i % 11 == 0 {
-                data.extend_from_slice(b"  at frame\n");
+                // Not indented: a raw row of its own, not a continuation.
+                data.extend_from_slice(b"frame line\n");
                 continue;
             }
             data.extend_from_slice(

@@ -353,7 +353,8 @@ fn json_records_including_missing_fields() {
     // Line 4 is an unparsed panic line, line 6 is blank, line 9 says NOTICE.
     let cases: &[(&str, &[u64])] = &[
         ("", &[1, 2, 3, 4, 5, 7, 8, 9]),
-        ("level>=warn", &[1, 2, 8]),
+        // Line 4 is a Rust panic, a block at level error (#1161).
+        ("level>=warn", &[1, 2, 4, 8]),
         ("level=info", &[3, 9]),
         ("level in (debug, trace)", &[5, 7]),
         ("level?<info", &[4, 5, 7]),
