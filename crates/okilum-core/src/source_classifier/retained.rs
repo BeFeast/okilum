@@ -369,12 +369,19 @@ impl RetainedPresentation {
         }
         // The line above the run is outside the fragment. A paragraph there
         // can take a setext underline or block a list that cannot interrupt
-        // it; only a blank line or an ATX heading is a proven boundary.
+        // it; only a blank line or an ATX heading is a proven boundary. So is
+        // a run that opens a block quote: a quote interrupts any paragraph,
+        // nothing inside it can underline a line outside it, and an
+        // unindented `>` cannot continue a list item (indented first lines
+        // were refused above). A quote right under a list item was drawn raw
+        // until the full parse came back, and the note jumped (#1241).
         let above = new[..updated.start]
             .strip_suffix('\n')
             .map(|before| before.strip_suffix('\r').unwrap_or(before))
             .map(|before| &before[before.rfind('\n').map_or(0, |i| i + 1)..]);
-        if above.is_some_and(|line| !line.trim().is_empty() && !atx_heading(line)) {
+        if above.is_some_and(|line| !line.trim().is_empty() && !atx_heading(line))
+            && !fragment.starts_with('>')
+        {
             return None;
         }
         let local = Snapshot::new(current.document(), current.generation(), fragment);
@@ -1008,6 +1015,60 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_quote_right_under_a_list_or_paragraph_reparses_locally() {
+        // #1241: the L1 IME note; typing at the end of the quote line, whose
+        // paragraph continues lazily over the next two lines.
+        let note = "# IME\n\n- list item: type here →\n> quote: type here →\nParagraph with **bold** then type here →\n| heading | after |\n";
+        let quote_end = note.find("→\nParagraph").unwrap() + "→".len();
+        let mut typed = note.to_owned();
+        typed.insert(quote_end, 'x');
+        let cases = [
+            (note.to_owned(), typed),
+            ("para\n> q **b**".into(), "para\n> qx **b**".into()),
+            (
+                "- item\n> q\nlazy **b**".into(),
+                "- item\n> q\nlazyx **b**".into(),
+            ),
+            ("1. item\n> q *i*".into(), "1. item\n> q *i*\n> more".into()),
+        ];
+        for (from, to) in &cases {
+            for (from, to) in [(from, to), (to, from)] {
+                let old = snapshot(1, from);
+                let new = snapshot(2, to);
+                let remapped = RetainedPresentation::new(&classify(&old))
+                    .remap(&new)
+                    .unwrap_or_else(|| panic!("{from:?} -> {to:?} is local"));
+                let fresh = RetainedPresentation::new(&classify(&new))
+                    .project(&Active::default())
+                    .unwrap();
+                assert_eq!(
+                    remapped.project(&Active::default()).unwrap().display(),
+                    fresh.display(),
+                    "{from:?} -> {to:?}"
+                );
+            }
+        }
+        // Positive control: the same run under a paragraph line that the edit
+        // turns into a non-quote still has no proven boundary.
+        let old = snapshot(1, "para\n> q **b**");
+        let new = snapshot(2, "para\nq **b**");
+        let retained = RetainedPresentation::new(&classify(&old));
+        if let Some(remapped) = retained.remap(&new) {
+            let fresh = RetainedPresentation::new(&classify(&new))
+                .project(&Active::default())
+                .unwrap();
+            assert_eq!(
+                remapped.project(&Active::default()).unwrap().display(),
+                fresh.display()
+            );
+        }
+        assert!(
+            retained.reclassify_local_block(&new).is_none(),
+            "a lazy line joining the paragraph above is not proven locally"
+        );
     }
 
     #[test]
