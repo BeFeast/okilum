@@ -35,7 +35,10 @@ impl Fixture {
         let editor = self.editor.read(cx);
         println!(
             "{}",
-            serde_json::json!({"cursor": editor.cursor(), "selection": editor.selected_range(),
+            // `painted_cursor` is the offset the drawn caret belongs to; a record
+            // whose two offsets differ was taken between a move and its paint (#859).
+            serde_json::json!({"cursor": editor.cursor(), "painted_cursor": editor.painted_cursor(),
+            "selection": editor.selected_range(),
             "source": editor.value(), "live": self.live,
             "caret": editor.cursor_layout().map(|(b, h)| [f32::from(b.origin.x),
                 f32::from(b.origin.y), f32::from(h)]),
