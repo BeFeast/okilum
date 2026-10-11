@@ -437,7 +437,11 @@ fn task_marker<'a>(node: &'a AstNode<'a>, context: &Context<'_>, checked: bool) 
     {
         return None;
     }
-    let start = if ordered { scope.start + open } else { scope.start };
+    let start = if ordered {
+        scope.start + open
+    } else {
+        scope.start
+    };
     let range = start..scope.start + open + 3;
     Some(Marker {
         range: range.clone(),
