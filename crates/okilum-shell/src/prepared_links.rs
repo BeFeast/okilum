@@ -1001,20 +1001,23 @@ mod tests {
         visual.run_until_parked();
         let bounds = reader.read_with(visual, |v, cx| v.content.read(cx).bounds());
         let link = bounds.origin + point(px(25.), px(10.));
+        // A real double-click: the first press and release, then the second with click_count 2.
         let double_click = |visual: &mut VisualTestContext, at: Point<Pixels>| {
-            visual.simulate_event(MouseDownEvent {
-                position: at,
-                button: MouseButton::Left,
-                modifiers: Modifiers::default(),
-                click_count: 2,
-                first_mouse: false,
-            });
-            visual.simulate_event(MouseUpEvent {
-                position: at,
-                button: MouseButton::Left,
-                modifiers: Modifiers::default(),
-                click_count: 2,
-            });
+            for click_count in [1, 2] {
+                visual.simulate_event(MouseDownEvent {
+                    position: at,
+                    button: MouseButton::Left,
+                    modifiers: Modifiers::default(),
+                    click_count,
+                    first_mouse: false,
+                });
+                visual.simulate_event(MouseUpEvent {
+                    position: at,
+                    button: MouseButton::Left,
+                    modifiers: Modifiers::default(),
+                    click_count,
+                });
+            }
             visual.run_until_parked();
         };
         // The paragraph is the second block; its first row is a little below the link row.
