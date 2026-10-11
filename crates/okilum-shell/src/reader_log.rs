@@ -12,7 +12,11 @@ use std::ops::Range;
 
 const CONTEXT: &str = "ReaderLog";
 const ROW_HEIGHT: f32 = 24.;
+/// Detail pane height until the user drags it (#1156).
 const DETAIL_HEIGHT: f32 = 240.;
+/// The detail pane keeps its header; the rows keep five lines.
+const DETAIL_HEADER_HEIGHT: f32 = 36.;
+const MIN_LIST_ROWS: f32 = 5.;
 const KEY_WIDTH: f32 = 168.;
 /// Characters of a row shaped per frame; longer rows end in an ellipsis and
 /// stay complete in the detail pane and the raw copy.
@@ -80,6 +84,7 @@ pub(crate) struct LogView {
     /// A run for the latest filter is under way; the previous rows stay up.
     filtering: bool,
     text_input: Entity<InputState>,
+    detail_split: reader_split::Split,
     _text_input_events: Subscription,
     _filtering: Option<Task<()>>,
     _indexing: Option<Task<()>>,
@@ -110,6 +115,12 @@ impl LogView {
             rows: None,
             filtering: false,
             text_input,
+            detail_split: reader_split::Split::new(
+                "log-detail",
+                DETAIL_HEIGHT,
+                DETAIL_HEADER_HEIGHT,
+                ROW_HEIGHT * MIN_LIST_ROWS,
+            ),
             _text_input_events: events,
             _filtering: None,
             _indexing: None,
@@ -423,14 +434,9 @@ impl LogView {
     }
 
     fn render_detail(&self, cx: &mut Context<Self>) -> AnyElement {
-        let palette = brand::palette(cx);
         let muted = cx.theme().muted_foreground;
         let mono = cx.theme().mono_font_family.clone();
-        let pane = v_flex()
-            .flex_none()
-            .h(px(DETAIL_HEIGHT))
-            .border_t_1()
-            .border_color(palette.border_subtle);
+        let pane = v_flex().size_full().min_h_0();
         let (Some(file), Some(index)) = (self.file(), self.selected) else {
             return pane
                 .items_center()
@@ -451,7 +457,7 @@ impl LogView {
         };
         let header = h_flex()
             .flex_none()
-            .h(px(36.))
+            .h(px(DETAIL_HEADER_HEIGHT))
             .px_3()
             .gap_2()
             .child(
@@ -825,8 +831,13 @@ impl Render for LogView {
                 cx.listener(|this, _: &FocusLogFilter, window, cx| this.focus_filter(window, cx)),
             )
             .when(has_entries, |view| view.child(self.render_filter_bar(cx)))
-            .child(list)
-            .child(self.render_detail(cx))
+            .child(reader_split::vertical(
+                &self.detail_split,
+                |view: &mut Self| &mut view.detail_split,
+                list,
+                self.render_detail(cx),
+                cx,
+            ))
             .child(self.render_status(cx))
     }
 }
@@ -1220,6 +1231,168 @@ mod tests {
             reader.file_preview.as_ref().unwrap().log.clone().unwrap()
         })
     }
+
+    /// #1156: the detail pane is resized with the handle above it, keeps
+    /// the rows' and its header's minimums, collapses on a double-click and
+    /// keeps its height for the next log and the next launch.
+    #[gpui::test]
+    fn detail_pane_resizes_collapses_and_remembers_its_height(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let (root, state) = (
+            directory.path().join("vault"),
+            directory.path().join("state"),
+        );
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(root.join("start.md"), "# Start").unwrap();
+        let text =
+            "{\"level\":\"info\",\"msg\":\"first\"}\n{\"level\":\"warn\",\"msg\":\"second\"}\n";
+        std::fs::write(root.join("events.jsonl"), text).unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::bind_keys(cx);
+            reader_ui_state::install(&state, cx);
+        });
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("start.md".into()),
+                        index_dir: Some(directory.path().join("index")),
+                        session_directory: Some(state.clone()),
+                        panel_settings_override: Some(directory.path().join("panels.json")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        visual.simulate_resize(gpui::size(px(1440.), px(900.)));
+        visual.run_until_parked();
+        let open_log = |visual: &mut VisualTestContext| {
+            reader.update_in(visual, |reader, window, cx| {
+                let row = reader
+                    .tree
+                    .rows
+                    .iter()
+                    .find(|row| row.path == "events.jsonl")
+                    .unwrap()
+                    .clone();
+                reader.activate_tree_row(&row, window, cx);
+            });
+            visual.run_until_parked();
+            let view = log_view(&reader, visual);
+            view.update_in(visual, |view, window, cx| view.select(0, true, window, cx));
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+        };
+        let pane = |visual: &mut VisualTestContext| {
+            visual
+                .debug_bounds("log-detail-pane")
+                .expect("detail pane shown")
+        };
+        open_log(visual);
+        let before = pane(visual);
+        assert!(
+            (before.size.height - px(DETAIL_HEIGHT)).abs() < px(1.),
+            "positive control: the default height, {before:?}"
+        );
+        // Drag the handle up until the pane fills about 60% of the split.
+        let handle = visual.debug_bounds("log-detail-handle").unwrap();
+        let split_bottom = before.bottom();
+        let target = point(handle.center().x, split_bottom - px(540.));
+        visual.simulate_mouse_down(handle.center(), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            handle.center() - point(px(0.), px(20.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let dragged = pane(visual);
+        assert!(
+            (dragged.size.height - px(540.)).abs() < px(HANDLE_TOLERANCE),
+            "the pane follows the handle: {dragged:?}"
+        );
+        // Not past the rows' minimum.
+        let rows_minimum = px(ROW_HEIGHT * MIN_LIST_ROWS);
+        let view = log_view(&reader, visual);
+        view.update(visual, |view, cx| {
+            view.detail_split.drag_to(5_000., 600.);
+            cx.notify();
+        });
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let tallest = pane(visual);
+        assert!(
+            tallest.size.height <= px(600. - reader_split::HANDLE_HEIGHT) - rows_minimum + px(1.),
+            "the rows keep five lines: {tallest:?}"
+        );
+        view.update(visual, |view, cx| {
+            view.detail_split.drag_to(540., 900.);
+            cx.notify();
+        });
+        // A double-click collapses the pane to its header, another restores it.
+        let double_click = |visual: &mut VisualTestContext| {
+            let at = visual.debug_bounds("log-detail-handle").unwrap().center();
+            for click_count in [1, 2] {
+                visual.simulate_event(MouseDownEvent {
+                    position: at,
+                    button: MouseButton::Left,
+                    click_count,
+                    ..Default::default()
+                });
+                visual.simulate_event(MouseUpEvent {
+                    position: at,
+                    button: MouseButton::Left,
+                    click_count,
+                    ..Default::default()
+                });
+            }
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+        };
+        double_click(visual);
+        assert!(
+            (pane(visual).size.height - px(DETAIL_HEADER_HEIGHT)).abs() < px(1.),
+            "collapsed to the header"
+        );
+        double_click(visual);
+        assert!(
+            (pane(visual).size.height - px(540.)).abs() < px(HANDLE_TOLERANCE),
+            "restored"
+        );
+        // Remembered for the next log view and written for the next launch.
+        reader.update_in(visual, |reader, window, cx| {
+            reader.open_note("start.md", None, window, cx)
+        });
+        visual.run_until_parked();
+        open_log(visual);
+        assert!(
+            (pane(visual).size.height - px(540.)).abs() < px(HANDLE_TOLERANCE),
+            "the reopened log keeps the height"
+        );
+        visual.executor().advance_clock(Duration::from_secs(1));
+        visual.run_until_parked();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(state.join("reader-ui.json")).unwrap()).unwrap();
+        let saved = saved["split_sizes"]["log-detail"].as_f64().unwrap() as f32;
+        assert!(
+            (saved - 540.).abs() < HANDLE_TOLERANCE,
+            "saved for the next launch: {saved}"
+        );
+    }
+
+    /// The handle's hit area is a few pixels tall; the drop point lands
+    /// somewhere inside it.
+    const HANDLE_TOLERANCE: f32 = 8.;
 
     #[gpui::test]
     fn vault_tree_logs_publish_records_copy_and_return_to_notes(cx: &mut TestAppContext) {
