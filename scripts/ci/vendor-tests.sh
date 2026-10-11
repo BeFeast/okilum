@@ -14,10 +14,12 @@ mode="${OKILUM_VENDOR_TESTS:-auto}"
 
 changed() {
     # The change under test: a PR head against main, or a main commit against its parent.
-    git fetch --quiet --no-tags --depth=300 origin main 2>/dev/null || return 1
+    # Main into its own ref: a later fetch (the deepen below) overwrites FETCH_HEAD with
+    # HEAD, and a merge base equal to HEAD would compare only the last commit (#1238).
+    git fetch --quiet --no-tags --depth=300 origin +refs/heads/main:refs/okilum-ci/main 2>/dev/null || return 1
     git rev-parse --is-shallow-repository | grep -q true && git fetch --quiet --no-tags --deepen=300 2>/dev/null
     local base
-    base=$(git merge-base HEAD FETCH_HEAD 2>/dev/null) || return 1
+    base=$(git merge-base HEAD refs/okilum-ci/main 2>/dev/null) || return 1
     [ "$base" = "$(git rev-parse HEAD)" ] && base=$(git rev-parse HEAD^1 2>/dev/null || true)
     [ -n "$base" ] || return 1
     git diff --name-only "$base" HEAD
