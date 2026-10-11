@@ -2499,7 +2499,7 @@ mod tests {
     fn follow_mode_stays_exact_over_many_polls_and_a_rotation(cx: &mut TestAppContext) {
         use std::io::Write as _;
         let line = |n: usize| {
-            let level = if n % 10 == 0 { "warn" } else { "info" };
+            let level = if n.is_multiple_of(10) { "warn" } else { "info" };
             format!("{{\"level\":\"{level}\",\"msg\":\"tick {n}\"}}\n")
         };
         let (directory, reader, visual) = open_log(&line(1), cx);
@@ -2518,7 +2518,7 @@ mod tests {
                 since_rotation = 0;
             }
             // 2–3 records per 250 ms: 10 records a second.
-            let burst = if poll % 2 == 0 { 3 } else { 2 };
+            let burst = if poll.is_multiple_of(2) { 3 } else { 2 };
             let mut file = std::fs::OpenOptions::new()
                 .append(true)
                 .open(&path)
@@ -2535,7 +2535,7 @@ mod tests {
                 // The rows are the warn records of the current file, in order.
                 let first = written - since_rotation + 1;
                 let expected: Vec<usize> = (first..=written)
-                    .filter(|n| n % 10 == 0)
+                    .filter(|n| n.is_multiple_of(10))
                     .map(|n| n - first)
                     .collect();
                 assert_eq!(shown(&view, visual), expected, "poll {poll}");
