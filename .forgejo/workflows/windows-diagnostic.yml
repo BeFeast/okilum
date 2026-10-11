@@ -130,13 +130,21 @@ jobs:
 
       # Main builds are signed on the windows-signer runner once OKILUM_WINDOWS_SIGN_BACKEND
       # is set (#1104); pull requests and an unset variable keep the unsigned path below.
+      # The signer must also be known ready: maestro's heartbeat (main-red-poller's sibling,
+      # windows-signer-heartbeat) stamps OKILUM_WINDOWS_SIGNER_READY every 5 minutes while
+      # the runner is up and the SimplySign session presents the pinned certificate. A stale
+      # stamp keeps this build on the unsigned path at once instead of queueing for a signer.
       - name: Decide signing
         id: signing
         env:
           BACKEND: ${{ vars.OKILUM_WINDOWS_SIGN_BACKEND }}
+          READY: ${{ vars.OKILUM_WINDOWS_SIGNER_READY }}
         run: |
           on=false
-          if [ -n "$BACKEND" ] && [ "$GITHUB_REF" = refs/heads/main ] && [ "$GITHUB_EVENT_NAME" != pull_request ]; then on=true; fi
+          if [ -n "$BACKEND" ] && [ "$GITHUB_REF" = refs/heads/main ] && [ "$GITHUB_EVENT_NAME" != pull_request ]; then
+            age=$(( $(date +%s) - ${READY:-0} ))
+            if [ "${READY:-0}" -gt 0 ] && [ "$age" -lt 900 ]; then on=true; else echo "Signer not ready (heartbeat ${age}s old): unsigned"; fi
+          fi
           echo "on=$on" >> "$GITHUB_OUTPUT"
           echo "Windows signing on the signer runner: $on"
 
@@ -195,8 +203,9 @@ jobs:
     needs: [select, release]
     if: needs.release.outputs.signed == 'true'
     runs-on: windows-signer
-    # The signer runner has capacity 1, so signing jobs never overlap.
-    timeout-minutes: 30
+    # The signer runner has capacity 1, so signing jobs never overlap. Signing takes about a
+    # minute; the timeouts in sign.sh fall back to an unsigned beta well before this limit.
+    timeout-minutes: 20
     env:
       OKILUM_WINDOWS_SIGN_BACKEND: ${{ vars.OKILUM_WINDOWS_SIGN_BACKEND }}
       OKILUM_WINDOWS_SIGN_PKCS11_CFG: /etc/okilum-signer/simplysign-pkcs11.cfg
