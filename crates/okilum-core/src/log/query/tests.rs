@@ -385,7 +385,10 @@ fn json_records_including_missing_fields() {
         ("\"level\"=fatal", &[8]),
         ("Level=shadowed", &[8]),
         ("ts>=\"2025-10-01T00:00:00.262Z\"", &[5, 7, 8, 9]),
-        ("level>=error or (logger=reader and status=200)", &[1, 5, 8]),
+        (
+            "level>=error or (logger=reader and status=200)",
+            &[1, 4, 5, 8],
+        ),
         ("(level>=error or logger=reader) and status=200", &[5]),
     ];
     for (source, expected) in cases {
