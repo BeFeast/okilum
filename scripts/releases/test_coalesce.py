@@ -115,3 +115,23 @@ class ExplicitSource(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, message):
                 module.explicit_source(value, platform, ref, event)
 
+
+
+
+class ResignTests(unittest.TestCase):
+    """#1104: re-sign an existing Windows build of a commit without compiling."""
+
+    def test_only_the_published_build_of_that_commit_qualifies(self):
+        sha = 'a' * 40
+        published = {'source': sha, 'platform': 'windows', 'build': 11141}
+        with patch.object(module, 'descriptor', return_value=published):
+            module.check_resign('11141', sha, 'windows')
+            with self.assertRaisesRegex(ValueError, 'not the published'):
+                module.check_resign('11000', sha, 'windows')
+        with patch.object(module, 'descriptor', return_value=None):
+            with self.assertRaisesRegex(ValueError, 'not the published'):
+                module.check_resign('11141', sha, 'windows')
+        for resign, requested, platform in [('11141', None, 'windows'), ('x', sha, 'windows'),
+                                            ('11141', sha, 'linux')]:
+            with self.assertRaisesRegex(ValueError, 'explicit source'):
+                module.check_resign(resign, requested, platform)
