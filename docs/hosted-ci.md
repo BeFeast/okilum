@@ -56,9 +56,9 @@ API run id, so `GET /actions/runs/6123/jobs` reads another run or nothing.
 
 - **One run:** `python3 scripts/ci/ci-logs.py get <run URL or number> [job]`
   prints the failed jobs' logs (or the named job). It resolves the number first.
-- **Every failure, already saved (maestro):** `~/.cache/tessera-qa/ci-logs/`.
+- **Every failure, already saved (maestro):** `~/.cache/okilum-qa/ci-logs/`.
   A user timer (`okilum-ci-logs.timer`, every 5 minutes) runs
-  `ci-logs.py collect` into it from `~/.cache/tessera-qa/tools/ci-logs.py`:
+  `ci-logs.py collect` into it from `~/.cache/okilum-qa/tools/ci-logs.py`:
   - `<run>-<job>.log` is the Forgejo job log;
   - `<run>-<job>.github.log` holds the failed steps of a hosted lane's GitHub run
     (`gh run view --log-failed`);
