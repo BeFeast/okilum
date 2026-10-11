@@ -38,6 +38,9 @@ jobs:
     timeout-minutes: 3
     outputs:
       macos: ${{ steps.native-scope.outputs.macos }}
+      # Read once per run: OKILUM_MACOS_LANE flips at 03:05 and 09:00 Israel time, and
+      # two jobs reading it minutes apart could both skip (PR #1214).
+      macos_lane: ${{ steps.native-scope.outputs.macos_lane }}
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
@@ -47,8 +50,10 @@ jobs:
         if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          MACOS_LANE: ${{ vars.OKILUM_MACOS_LANE }}
         run: |
           set -euo pipefail
+          echo "macos_lane=$([ "$MACOS_LANE" = local ] && echo local || echo hosted)" >> "$GITHUB_OUTPUT"
           git fetch --no-tags --depth=1 origin "$BASE_SHA"
           needed=$(git diff --name-only -z "$BASE_SHA" HEAD | python3 scripts/ci/macos-scope.py)
           echo "macos=$needed" >> "$GITHUB_OUTPUT"
@@ -228,7 +233,7 @@ jobs:
   macos-github:
     needs: native-scope
     if: >-
-      vars.OKILUM_MACOS_LANE != 'local' &&
+      needs.native-scope.outputs.macos_lane == 'hosted' &&
       github.event_name == 'pull_request' &&
       needs.native-scope.outputs.macos == 'true' &&
       !github.event.pull_request.draft &&
@@ -259,7 +264,7 @@ jobs:
     # The host runner has a signing keychain. Fork code must first be reviewed
     # and moved to a trusted same-repository branch; the final gate fails closed.
     if: >-
-      vars.OKILUM_MACOS_LANE == 'local' &&
+      needs.native-scope.outputs.macos_lane == 'local' &&
       github.event_name == 'pull_request' &&
       needs.native-scope.outputs.macos == 'true' &&
       !github.event.pull_request.draft &&
