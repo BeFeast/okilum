@@ -255,7 +255,7 @@ fn first_with(file: &LogFile, level: Level) -> Record {
     file.record(at).unwrap()
 }
 
-fn role<'r>(record: &'r Record, role: Role) -> Option<&'r str> {
+fn role(record: &Record, role: Role) -> Option<&str> {
     record.role(role).map(|field| field.value.as_str())
 }
 
