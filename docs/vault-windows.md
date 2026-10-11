@@ -26,10 +26,14 @@ window during changes, and open a different vault. Repeat native handler/shortcu
 checks on macOS and Windows. Linux diagnostics:
 `~/.local/state/okilum/reader-diagnostic.log` (or absolute `$XDG_STATE_HOME`).
 
-For QA beside a user's running Reader, set an absolute `OKILUM_STATE_DIR` (and
-`--index-dir`): that instance then owns its own state, instance lock, drafts,
-diagnostics and presentation config (`<dir>/config`) instead of forwarding to the
-running Reader. This is the only per-user override on Windows.
+For QA beside a user's running Reader, set an absolute `OKILUM_STATE_DIR`: that
+instance then owns its own state, instance lock, drafts, diagnostics, presentation
+config (`<dir>/config`) and derived vault caches (`<dir>/cache`) instead of
+forwarding to the running Reader. This holds for every window and for the first-run
+folder picker, so a second vault opened there is cached under `<dir>/cache` and its
+retention (three vaults) only ever evicts caches of that instance (#1129). This is the
+only per-user override on Windows. `--index-dir` is separate: it is the index of the
+vault the instance is launched on and is not inherited by windows opened later.
 
 ## Window state integration (#592)
 
