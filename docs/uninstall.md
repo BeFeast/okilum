@@ -52,6 +52,7 @@ Velopack does not.
 | Search sessions | `%TEMP%\okilum-search-session-*` | hook; startup sweeps stale ones |
 | Crash dumps | `%LOCALAPPDATA%\CrashDumps\okilum.exe.*.dmp` | hook |
 | Velopack's per-app log | `%LOCALAPPDATA%\velopack\velopack_BeFeast.Okilum.log` (Velopack writes it after the hook); the `velopack` folder only if then empty | hook, by a detached cleanup that waits for `Update.exe` to exit |
+| What Windows records about the app | values for `%LOCALAPPDATA%\BeFeast.Okilum\…` in `HKCU\Software\Classes\Local Settings\…\Shell\MuiCache` and `HKCU\…\AppCompatFlags\Compatibility Assistant\Store`; `velopack.BeFeast.Okilum` / `com.befeast.okilum` in `HKCU\…\CurrentVersion\Search\JumplistData`, `…\Start\TileProperties\W~<id>` and `…\Explorer\UserAssist\{…}\Count` (names in ROT13); `okilum_okilum` and `BeFeast.Okilum.*` in `HKCU\…\CurrentVersion\ApplicationAssociationToasts` | the same detached cleanup, matched by exact name |
 
 There is no Run key, scheduled task, named pipe, service or
 Credential Manager entry. The sync sidecar's task and pipe exist in code but are
@@ -64,9 +65,14 @@ added entry and fails on anything named after Okilum outside the vault and
 the exported `Okilum unsaved drafts`. Names are checked only below the home
 recorded in the snapshot, so a QA home whose path says okilum is fine.
 
+Velopack's uninstaller ends with an "uninstall complete" dialog. It removes
+`Update.exe` and the install folder about 3 seconds after that dialog is
+closed, and the detached cleanup runs then too; until someone clicks OK, both
+are still there. Acceptance therefore closes the dialog like a person would.
+
 Known residue owned by Windows or Velopack, not by Okilum: Velopack's shared log
-`%LOCALAPPDATA%\velopack\velopack.log` (only written by `Setup.exe`), Explorer's `MuiCache` and `Recent`
-entries. The acceptance snapshot lists them separately.
+`%LOCALAPPDATA%\velopack\velopack.log` (only written by `Setup.exe`) and
+Explorer's `Recent` entries. The acceptance snapshot lists them separately.
 
 ## Linux (Arch package `okilum`)
 
