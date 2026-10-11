@@ -33,9 +33,9 @@ try:
     win = found[-1]
     subprocess.run(['xdotool', 'windowmove', win, '0', '0', 'windowsize', win, '1366', '768',
                     'windowfocus', win], env=env, check=True)
-    time.sleep(3)
+    time.sleep(8)  # loaded hosts: let the Reader settle before the shortcut
     subprocess.run(['xdotool', 'key', 'ctrl+shift+e'], env=env, check=True)
-    time.sleep(1.5)
+    time.sleep(4)
     subprocess.run(['xdotool', 'key', 'ctrl+Home'], env=env, check=True)
     time.sleep(1.5)
     out = work / f'{label}-block-refs.png'
