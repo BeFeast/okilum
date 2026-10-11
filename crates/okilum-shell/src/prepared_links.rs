@@ -1037,7 +1037,33 @@ mod tests {
         );
         visual.simulate_keystrokes("escape");
         visual.run_until_parked();
-        visual.simulate_click(link, Modifiers::default());
+        // A real click: the pointer arrives, then the press and the release in one go, with no
+        // frame drawn in between (xdotool, a quick tap, or a slow frame). The link handler of the
+        // frame that showed the selection must still be there for the release.
+        visual.update(|window, cx| {
+            for event in [
+                PlatformInput::MouseMove(MouseMoveEvent {
+                    position: link,
+                    pressed_button: None,
+                    modifiers: Modifiers::default(),
+                }),
+                PlatformInput::MouseDown(MouseDownEvent {
+                    position: link,
+                    button: MouseButton::Left,
+                    modifiers: Modifiers::default(),
+                    click_count: 1,
+                    first_mouse: false,
+                }),
+                PlatformInput::MouseUp(MouseUpEvent {
+                    position: link,
+                    button: MouseButton::Left,
+                    modifiers: Modifiers::default(),
+                    click_count: 1,
+                }),
+            ] {
+                window.dispatch_event(event, cx);
+            }
+        });
         visual.run_until_parked();
         reader.read_with(visual, |v, _| {
             assert_eq!(v.current_rel, "target.md", "the first click opens the link");
