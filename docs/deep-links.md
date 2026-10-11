@@ -94,7 +94,7 @@ rendered link is rewritten to the `v/` form.
   `HKCU\Software\Classes\okilum` (`URL Protocol`, command
   `"…\okilum.exe" "%1"`). The uninstaller removes it (#974).
 - Windows portable: no registration. Portable leaves no traces (#1037); its
-  About says links need the installed version.
+  About says «Okilum links open in the installed version.»
 - Every OS: a URL argument (`okilum okilum://…`) is accepted. A second process
   forwards it over the existing single-instance endpoint (`reader_instance`):
   the `Request` gains `link: Option<String>`. The running instance resolves

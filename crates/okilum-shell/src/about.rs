@@ -211,5 +211,11 @@ pub(crate) fn content(cx: &mut App) -> impl IntoElement {
                     .text_color(palette.text_muted)
                     .child("To update, download the latest Windows ZIP."),
             )
+            .child(
+                div()
+                    .text_size(px(12.))
+                    .text_color(palette.text_muted)
+                    .child("Okilum links open in the installed version."),
+            )
         })
 }

@@ -23,6 +23,7 @@ pub mod file_editor;
 pub mod goal_criteria;
 pub mod ir;
 pub mod link_candidates;
+pub mod link_registration;
 #[cfg(any(unix, windows))]
 pub mod link_rewrite;
 pub mod log;
