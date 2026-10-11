@@ -207,7 +207,7 @@ impl Reader {
                                 known.remove(path);
                             }
                             known.extend(titles);
-                            this.backlinks = this.vault.backlinks(&this.current_rel);
+                            this.set_backlinks(this.vault.backlinks(&this.current_rel));
                             if batch.topology_changed {
                                 this.sync_tree();
                             }
