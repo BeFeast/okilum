@@ -1638,6 +1638,8 @@ impl LogView {
                 this.rows = Some(Arc::new(rows));
                 this.filtering = false;
                 this.after_rows_changed();
+                // Following and pinned: the newest match, not the top (#1282).
+                this.keep_pinned();
                 cx.notify();
             });
         }));
@@ -5083,6 +5085,100 @@ mod tests {
         visual.run_until_parked();
         tick(visual);
         assert_eq!(len(visual), 71);
+    }
+
+    /// #1282: a merged view with a query stays on its newest match while
+    /// following, from an empty result through appends and a rotation.
+    #[gpui::test]
+    fn a_followed_merged_view_with_a_query_stays_at_the_newest_match(cx: &mut TestAppContext) {
+        use std::io::Write as _;
+        let line = |n: u32, level: &str, msg: &str| {
+            format!(
+                "{{\"ts\":\"2025-10-01T{:02}:{:02}:{:02}Z\",\"level\":\"{level}\",\"msg\":\"{msg}\"}}\n",
+                n / 3600,
+                n / 60 % 60,
+                n % 60
+            )
+        };
+        let lines = |from: u32, step: u32, count: u32, level: &str| -> String {
+            (0..count)
+                .map(|i| line(from + i * step, level, &format!("r{}", from + i * step)))
+                .collect()
+        };
+        // Nothing matches level>=warn at first.
+        let (directory, reader, visual) = open_log(&line(1, "info", "a1"), cx);
+        let root = directory.path().canonicalize().unwrap();
+        let a = root.join("app.jsonl");
+        let b = root.join("b.jsonl");
+        std::fs::write(&b, line(2, "info", "b2")).unwrap();
+        let append = |path: &Path, text: &str| {
+            let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+            file.write_all(text.as_bytes()).unwrap();
+        };
+        let tick = |visual: &mut VisualTestContext| {
+            visual.executor().advance_clock(Duration::from_millis(600));
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+        };
+        // Exactly one poll: the one that reads the new records. A writer that
+        // never stops leaves no quiet poll after it to pin the view again.
+        let poll = |visual: &mut VisualTestContext| {
+            visual
+                .executor()
+                .advance_clock(okilum_core::log::tail::LOCAL_POLL_INTERVAL);
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+        };
+        let view = log_view(&reader, visual);
+        // (the list overflows, it is scrolled to the end)
+        let place = |visual: &mut VisualTestContext| {
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            view.read_with(visual, |view, _| {
+                let handle = view.scroll.0.borrow();
+                let offset = handle.base_handle.offset();
+                let max = handle.base_handle.max_offset();
+                (max.y > px(0.), -offset.y >= max.y - px(2.))
+            })
+        };
+        view.update(visual, |view, cx| view.add_files(vec![b.clone()], cx));
+        visual.run_until_parked();
+        view.update(visual, |view, cx| view.set_query("level>=warn".into(), cx));
+        visual.run_until_parked();
+        assert_eq!(view.read_with(visual, |view, _| view.visible_len()), 0);
+        view.update(visual, |view, cx| view.toggle_follow(cx));
+        visual.run_until_parked();
+        tick(visual);
+
+        // Appends to both files, interleaved in time so the merge is rebuilt
+        // and refiltered: far more matches than fit.
+        append(&a, &lines(10, 2, 60, "warn"));
+        append(&b, &lines(11, 2, 60, "error"));
+        poll(visual);
+        assert_eq!(view.read_with(visual, |view, _| view.visible_len()), 120);
+        assert_eq!(
+            place(visual),
+            (true, true),
+            "newest match in view after appends"
+        );
+
+        // Rotation of the added file, then more records in both files.
+        std::fs::rename(&b, b.with_extension("jsonl.1")).unwrap();
+        std::fs::write(&b, lines(200, 2, 5, "warn")).unwrap();
+        tick(visual);
+        tick(visual);
+        append(&a, &lines(211, 2, 5, "warn"));
+        append(&b, &lines(210, 2, 5, "error"));
+        poll(visual);
+        assert_eq!(view.read_with(visual, |view, _| view.visible_len()), 135);
+        view.read_with(visual, |view, _| {
+            assert!(view.following() && view.follow.as_ref().unwrap().pinned)
+        });
+        assert_eq!(
+            place(visual),
+            (true, true),
+            "newest match in view after rotation"
+        );
     }
 
     /// #1160: follow covers every file of a merged view. A newer record
