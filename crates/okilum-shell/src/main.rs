@@ -1428,6 +1428,11 @@ struct Reader {
     link_original_source: Option<String>,
     link_identities: Vec<okilum_core::document_links::prepared::LinkIdentity>,
     backlinks: Vec<Backlink>,
+    /// `backlinks` is grouped by source note: one range per card of the «Linked from» list.
+    /// Kept with the list state below, which counts exactly these cards (#1135).
+    backlink_groups: Vec<std::ops::Range<usize>>,
+    /// The «Linked from» list renders only the cards in view: a hub note has thousands.
+    backlinks_list: ListState,
     use_html: bool,
     sel_format: SelectionFormat,
     /// Focus of the reader root: what receives the key bindings when no
@@ -1708,6 +1713,8 @@ impl Reader {
             link_original_source: None,
             link_identities: Vec::new(),
             backlinks: Vec::new(),
+            backlink_groups: Vec::new(),
+            backlinks_list: ListState::new(0, ListAlignment::Top, px(200.)),
             use_html,
             sel_format,
             focus_handle: cx.focus_handle(),
@@ -2136,7 +2143,7 @@ impl Reader {
         self.record_usable_document(cx);
         self.refresh_link_preparation(cx);
         self.current_title = self.note_label(rel);
-        self.backlinks = self.vault.backlinks(rel);
+        self.set_backlinks(self.vault.backlinks(rel), true);
         window.set_window_title(&format!("Okilum — {}", self.current_title));
         if request.history_index.is_none()
             && (heading.is_some()
@@ -2729,6 +2736,38 @@ impl Reader {
         .detach();
     }
 
+    /// Replace the notes that link here. The groups (one card each) and the list that shows
+    /// them are rebuilt together, so the list can never count cards that are not there (#1135).
+    ///
+    /// A background refresh that finds the same notes linking here (an unrelated file was edited,
+    /// the inventory was reconciled) keeps the scroll position and only measures the cards
+    /// again; opening another note (`new_note`) or a changed set starts from the top.
+    fn set_backlinks(&mut self, backlinks: Vec<Backlink>, new_note: bool) {
+        let mut groups: Vec<std::ops::Range<usize>> = Vec::new();
+        for (ix, b) in backlinks.iter().enumerate() {
+            match groups.last_mut() {
+                Some(group) if backlinks[group.start].path == b.path => group.end = ix + 1,
+                _ => groups.push(ix..ix + 1),
+            }
+        }
+        let same_cards = !new_note
+            && groups.len() == self.backlink_groups.len()
+            && groups.iter().zip(&self.backlink_groups).all(|(new, old)| {
+                new.len() == old.len()
+                    && backlinks[new.start].path == self.backlinks[old.start].path
+            });
+        self.backlinks = backlinks;
+        if same_cards {
+            self.backlinks_list.remeasure();
+        } else {
+            // About one source note with a place or two: a first estimate for the scroll extent;
+            // the real height replaces it once a card has been in view.
+            self.backlinks_list
+                .reset_with_uniform_height(groups.len(), px(58.));
+        }
+        self.backlink_groups = groups;
+    }
+
     /// #381: the display title of a linking note (first H1, then frontmatter
     /// title, then file name) and, as secondary text, its folder path. Index
     /// notes (`_index`, `index`, `README`) take their folder's name.
@@ -3019,6 +3058,8 @@ impl Reader {
             // Titles belong to this inventory and root.
             Arc::make_mut(&mut self.backlink_titles).clear();
             self.backlinks_expanded.clear();
+            // Collapsed cards are shorter: the list measures them again.
+            self.backlinks_list.remeasure();
         }
         let selected = self.selected_file().to_owned();
         #[cfg(any(unix, windows))]
@@ -5202,311 +5243,305 @@ impl Reader {
         )
     }
 
+    /// One card of the «Linked from» list: a source note and its places. Called only for the
+    /// cards in view (#1135): a hub note can have thousands of them.
+    fn render_backlink_group(&self, gx: usize, cx: &mut Context<Self>) -> AnyElement {
+        let Some(range) = self.backlink_groups.get(gx).cloned() else {
+            return div().into_any_element();
+        };
+        let muted = cx.theme().muted_foreground;
+        let current_bg = cx.theme().accent;
+        let hover_bg = brand::reader_palette(cx).hover;
+        let p = brand::palette(cx);
+        let faint = brand::reader_palette(cx).text_faint;
+        let mark = p.accent.opacity(0.18);
+        // One group per source note (#22): `Vault::backlinks` returns them grouped by path in
+        // source-line order, so a run of equal paths is a group.
+        let links: Vec<&Backlink> = self.backlinks[range].iter().collect();
+        let head = links[0];
+        let (title, location) = self.backlink_title(&head.path);
+        // Ambiguity is per link, but the flag is worth one word on the
+        // card when any link in the group carries it.
+        let any_ambiguous = links.iter().any(|b| b.ambiguous);
+        let is_current = head.path == self.current_rel;
+        let via: Vec<String> = links
+            .iter()
+            .filter_map(|b| b.property.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let occurrences: Vec<_> = links
+            .iter()
+            .map(|b| {
+                let (context, link, jump) = backlink_occurrence(b);
+                let external = if b.property.is_none() {
+                    prepared_links::snippet_links(&b.context, &context)
+                } else {
+                    Vec::new()
+                };
+                let (context, link, external) =
+                    prepared_links::decorate_snippet(context, link, external);
+                (context, link, jump, external)
+            })
+            .collect();
+        let count = occurrences.len();
+        let expanded = self.backlinks_expanded.contains(&head.path);
+        let shown = if expanded {
+            count
+        } else {
+            count.min(BACKLINK_PLACES_SHOWN)
+        };
+
+        let card_rel = head.path.clone();
+        let more_rel = head.path.clone();
+        let group = SharedString::from(format!("bl-card-{gx}"));
+        // #394 (variant A): the header is the source note — bold title
+        // with its folder right beside it, place count, ↗ on hover —
+        // and opens it. The rows below are places inside it: indented
+        // under a rule, muted, this note's name bold on a light mark,
+        // never link-blue. Each place opens the source there.
+        let hover_rel = head.path.clone();
+        let header = h_flex()
+            .id(SharedString::from(format!("bl-source-{gx}")))
+            .group(group.clone())
+            .gap_1p5()
+            .px_2()
+            .py_1p5()
+            .rounded(px(8.))
+            .cursor_pointer()
+            .when(is_current, |s| s.bg(current_bg))
+            .hover(move |s| s.bg(hover_bg))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.select_panel_note(reader_layout::Panel::Backlinks, &card_rel, None, window, cx)
+            }))
+            // Only the icon and title preview the note (#1101): the
+            // rest of the card and its places scroll and read freely.
+            .child(
+                h_flex()
+                    .id(SharedString::from(format!("bl-title-{gx}")))
+                    .debug_selector(move || format!("backlink-title-{gx}"))
+                    .flex_none()
+                    .max_w(relative(0.6))
+                    .min_w_0()
+                    .gap_1p5()
+                    .on_hover(cx.listener(move |this, active, window, cx| {
+                        let key = format!("backlink:{hover_rel}");
+                        if *active {
+                            let body = this.body_bounds;
+                            let widths = this
+                                .panels
+                                .widths(&this.panel_widths, f32::from(body.size.width));
+                            this.hover_note_beside(
+                                key,
+                                reader_hover::Target {
+                                    path: hover_rel.clone(),
+                                    heading: None,
+                                },
+                                window.mouse_position(),
+                                body.right() - px(widths.backlinks),
+                                window,
+                                cx,
+                            );
+                        } else {
+                            this.leave_hover(&key, cx);
+                        }
+                    }))
+                    .child(
+                        Icon::new(if any_ambiguous {
+                            IconName::TriangleAlert
+                        } else {
+                            IconName::FileText
+                        })
+                        .small()
+                        .text_color(if any_ambiguous {
+                            cx.theme().warning
+                        } else {
+                            p.text_muted
+                        }),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(p.text)
+                            .child(title),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .whitespace_nowrap()
+                    .text_xs()
+                    .text_color(faint)
+                    .children(location),
+            )
+            .children(via.into_iter().map(|key| {
+                div()
+                    .flex_none()
+                    .px_1()
+                    .rounded(px(4.))
+                    .border_1()
+                    .border_color(p.border_subtle)
+                    .text_size(px(10.5))
+                    .text_color(faint)
+                    .child(key)
+            }))
+            .when(any_ambiguous, |row| {
+                // Ambiguity is surfaced, never resolved silently.
+                row.child(
+                    div()
+                        .flex_none()
+                        .px_1p5()
+                        .rounded(px(4.))
+                        .text_size(px(10.5))
+                        .bg(cx.theme().warning.opacity(0.15))
+                        .text_color(cx.theme().warning)
+                        .child("ambiguous"),
+                )
+            })
+            .child(
+                div()
+                    .flex_none()
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(faint)
+                    .child(count.to_string()),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .opacity(0.)
+                    .group_hover(group.clone(), |s| s.opacity(1.))
+                    .child(
+                        Icon::default()
+                            .path(brand::READER_OPEN_ICON)
+                            .small()
+                            .text_color(p.text_muted),
+                    ),
+            );
+        let rows = occurrences
+            .into_iter()
+            .take(shown)
+            .enumerate()
+            .map(|(lx, (context, link, jump, external))| {
+                let rel = head.path.clone();
+                let highlight = link
+                    .and_then(|r| text_ranges::safe_highlight(&context, r))
+                    .map(|r| {
+                        (
+                            r,
+                            HighlightStyle {
+                                background_color: Some(mark),
+                                color: Some(p.text),
+                                font_weight: Some(FontWeight::SEMIBOLD),
+                                ..Default::default()
+                            },
+                        )
+                    });
+                let mut highlights: Vec<_> = highlight.into_iter().collect();
+                highlights.extend(external.iter().map(|(range, _)| {
+                    (
+                        range.clone(),
+                        HighlightStyle {
+                            color: Some(p.link),
+                            ..Default::default()
+                        },
+                    )
+                }));
+                highlights.sort_by_key(|(range, _)| range.start);
+                let ranges = external.iter().map(|(range, _)| range.clone()).collect();
+                let tooltip_links = external.clone();
+                let text = InteractiveText::new(
+                    ("bl-context", lx),
+                    StyledText::new(context).with_highlights(highlights),
+                )
+                .on_click(ranges, move |ix, _, cx| {
+                    cx.stop_propagation();
+                    cx.open_url(&external[ix].1);
+                })
+                .tooltip(move |ix, window, cx| {
+                    let (_, url) = tooltip_links.iter().find(|(r, _)| r.contains(&ix))?;
+                    Some(
+                        gpui_component::tooltip::Tooltip::new(prepared_links::external_tooltip(
+                            url,
+                        )?)
+                        .build(window, cx),
+                    )
+                });
+                div()
+                    .id(SharedString::from(format!("bl-{gx}-{lx}")))
+                    .debug_selector(move || format!("backlink-place-{gx}-{lx}"))
+                    .px_2()
+                    .py_1()
+                    .rounded(px(6.))
+                    .text_size(px(12.5))
+                    .line_height(px(18.))
+                    .text_color(muted)
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(hover_bg))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.select_panel_note(
+                            reader_layout::Panel::Backlinks,
+                            &rel,
+                            jump.as_deref(),
+                            window,
+                            cx,
+                        )
+                    }))
+                    .child(text)
+            })
+            .collect::<Vec<_>>();
+        let card = v_flex().child(header).child(
+            v_flex()
+                .ml(px(15.))
+                .pl_2()
+                .border_l_2()
+                .border_color(p.border_subtle)
+                .children(rows)
+                .when(shown < count, |places| {
+                    places.child(
+                        div()
+                            .id(SharedString::from(format!("bl-more-{gx}")))
+                            .debug_selector(move || format!("bl-more-{gx}"))
+                            .px_2()
+                            .py_0p5()
+                            .text_xs()
+                            .text_color(faint)
+                            .cursor_pointer()
+                            .hover(move |s| s.text_color(muted))
+                            .child(format!("Show {} more", count - shown))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.backlinks_expanded.insert(more_rel.clone());
+                                this.backlinks_list.remeasure_items(gx..gx + 1);
+                                cx.notify();
+                            })),
+                    )
+                }),
+        );
+        // A list measures the element, not its margins: the spacing is the item's padding.
+        div()
+            .debug_selector(move || format!("bl-card-{gx}"))
+            .px_1()
+            .pb_1p5()
+            .child(card)
+            .into_any_element()
+    }
+
+    /// «Linked from»: the cards in view only. The list state counts `backlink_groups`; see
+    /// `set_backlinks`, the one place that changes both.
     fn render_backlinks(&self, cx: &mut Context<Self>) -> AnyElement {
         let muted = cx.theme().muted_foreground;
         if self.file_preview.is_some() {
             return panel_empty_line(muted, "—");
         }
-        let current_bg = cx.theme().accent;
-        let hover_bg = brand::reader_palette(cx).hover;
-
-        // One group per source note (#22). `Vault::backlinks` returns them
-        // grouped by path in source-line order, so a run of equal paths is a
-        // group; no re-sorting here.
-        let mut groups: Vec<(&Backlink, Vec<&Backlink>)> = Vec::new();
-        for b in &self.backlinks {
-            match groups.last_mut() {
-                Some((head, links)) if head.path == b.path => links.push(b),
-                _ => groups.push((b, vec![b])),
-            }
-        }
-
-        let p = brand::palette(cx);
-        let faint = brand::reader_palette(cx).text_faint;
-        let mark = p.accent.opacity(0.18);
-        let items: Vec<AnyElement> = groups
-            .into_iter()
-            .enumerate()
-            .map(|(gx, (head, links))| {
-                let (title, location) = self.backlink_title(&head.path);
-                // Ambiguity is per link, but the flag is worth one word on the
-                // card when any link in the group carries it.
-                let any_ambiguous = links.iter().any(|b| b.ambiguous);
-                let is_current = head.path == self.current_rel;
-                let via: Vec<String> = links
-                    .iter()
-                    .filter_map(|b| b.property.clone())
-                    .collect::<std::collections::BTreeSet<_>>()
-                    .into_iter()
-                    .collect();
-                let occurrences: Vec<_> = links
-                    .iter()
-                    .map(|b| {
-                        let (context, link, jump) = backlink_occurrence(b);
-                        let external = if b.property.is_none() {
-                            prepared_links::snippet_links(&b.context, &context)
-                        } else {
-                            Vec::new()
-                        };
-                        let (context, link, external) =
-                            prepared_links::decorate_snippet(context, link, external);
-                        (context, link, jump, external)
-                    })
-                    .collect();
-                let count = occurrences.len();
-                let expanded = self.backlinks_expanded.contains(&head.path);
-                let shown = if expanded {
-                    count
-                } else {
-                    count.min(BACKLINK_PLACES_SHOWN)
-                };
-
-                let card_rel = head.path.clone();
-                let more_rel = head.path.clone();
-                let group = SharedString::from(format!("bl-card-{gx}"));
-                // #394 (variant A): the header is the source note — bold title
-                // with its folder right beside it, place count, ↗ on hover —
-                // and opens it. The rows below are places inside it: indented
-                // under a rule, muted, this note's name bold on a light mark,
-                // never link-blue. Each place opens the source there.
-                let hover_rel = head.path.clone();
-                let header = h_flex()
-                    .id(SharedString::from(format!("bl-source-{gx}")))
-                    .group(group.clone())
-                    .gap_1p5()
-                    .px_2()
-                    .py_1p5()
-                    .rounded(px(8.))
-                    .cursor_pointer()
-                    .when(is_current, |s| s.bg(current_bg))
-                    .hover(move |s| s.bg(hover_bg))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.select_panel_note(
-                            reader_layout::Panel::Backlinks,
-                            &card_rel,
-                            None,
-                            window,
-                            cx,
-                        )
-                    }))
-                    // Only the icon and title preview the note (#1101): the
-                    // rest of the card and its places scroll and read freely.
-                    .child(
-                        h_flex()
-                            .id(SharedString::from(format!("bl-title-{gx}")))
-                            .debug_selector(move || format!("backlink-title-{gx}"))
-                            .flex_none()
-                            .max_w(relative(0.6))
-                            .min_w_0()
-                            .gap_1p5()
-                            .on_hover(cx.listener(move |this, active, window, cx| {
-                                let key = format!("backlink:{hover_rel}");
-                                if *active {
-                                    let body = this.body_bounds;
-                                    let widths = this
-                                        .panels
-                                        .widths(&this.panel_widths, f32::from(body.size.width));
-                                    this.hover_note_beside(
-                                        key,
-                                        reader_hover::Target {
-                                            path: hover_rel.clone(),
-                                            heading: None,
-                                        },
-                                        window.mouse_position(),
-                                        body.right() - px(widths.backlinks),
-                                        window,
-                                        cx,
-                                    );
-                                } else {
-                                    this.leave_hover(&key, cx);
-                                }
-                            }))
-                            .child(
-                                Icon::new(if any_ambiguous {
-                                    IconName::TriangleAlert
-                                } else {
-                                    IconName::FileText
-                                })
-                                .small()
-                                .text_color(if any_ambiguous {
-                                    cx.theme().warning
-                                } else {
-                                    p.text_muted
-                                }),
-                            )
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .overflow_hidden()
-                                    .text_ellipsis()
-                                    .whitespace_nowrap()
-                                    .text_sm()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(p.text)
-                                    .child(title),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .whitespace_nowrap()
-                            .text_xs()
-                            .text_color(faint)
-                            .children(location),
-                    )
-                    .children(via.into_iter().map(|key| {
-                        div()
-                            .flex_none()
-                            .px_1()
-                            .rounded(px(4.))
-                            .border_1()
-                            .border_color(p.border_subtle)
-                            .text_size(px(10.5))
-                            .text_color(faint)
-                            .child(key)
-                    }))
-                    .when(any_ambiguous, |row| {
-                        // Ambiguity is surfaced, never resolved silently.
-                        row.child(
-                            div()
-                                .flex_none()
-                                .px_1p5()
-                                .rounded(px(4.))
-                                .text_size(px(10.5))
-                                .bg(cx.theme().warning.opacity(0.15))
-                                .text_color(cx.theme().warning)
-                                .child("ambiguous"),
-                        )
-                    })
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_xs()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(faint)
-                            .child(count.to_string()),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .opacity(0.)
-                            .group_hover(group.clone(), |s| s.opacity(1.))
-                            .child(
-                                Icon::default()
-                                    .path(brand::READER_OPEN_ICON)
-                                    .small()
-                                    .text_color(p.text_muted),
-                            ),
-                    );
-                let rows = occurrences
-                    .into_iter()
-                    .take(shown)
-                    .enumerate()
-                    .map(|(lx, (context, link, jump, external))| {
-                        let rel = head.path.clone();
-                        let highlight = link
-                            .and_then(|r| text_ranges::safe_highlight(&context, r))
-                            .map(|r| {
-                                (
-                                    r,
-                                    HighlightStyle {
-                                        background_color: Some(mark),
-                                        color: Some(p.text),
-                                        font_weight: Some(FontWeight::SEMIBOLD),
-                                        ..Default::default()
-                                    },
-                                )
-                            });
-                        let mut highlights: Vec<_> = highlight.into_iter().collect();
-                        highlights.extend(external.iter().map(|(range, _)| {
-                            (
-                                range.clone(),
-                                HighlightStyle {
-                                    color: Some(p.link),
-                                    ..Default::default()
-                                },
-                            )
-                        }));
-                        highlights.sort_by_key(|(range, _)| range.start);
-                        let ranges = external.iter().map(|(range, _)| range.clone()).collect();
-                        let tooltip_links = external.clone();
-                        let text = InteractiveText::new(
-                            ("bl-context", lx),
-                            StyledText::new(context).with_highlights(highlights),
-                        )
-                        .on_click(ranges, move |ix, _, cx| {
-                            cx.stop_propagation();
-                            cx.open_url(&external[ix].1);
-                        })
-                        .tooltip(move |ix, window, cx| {
-                            let (_, url) = tooltip_links.iter().find(|(r, _)| r.contains(&ix))?;
-                            Some(
-                                gpui_component::tooltip::Tooltip::new(
-                                    prepared_links::external_tooltip(url)?,
-                                )
-                                .build(window, cx),
-                            )
-                        });
-                        div()
-                            .id(SharedString::from(format!("bl-{gx}-{lx}")))
-                            .debug_selector(move || format!("backlink-place-{gx}-{lx}"))
-                            .px_2()
-                            .py_1()
-                            .rounded(px(6.))
-                            .text_size(px(12.5))
-                            .line_height(px(18.))
-                            .text_color(muted)
-                            .cursor_pointer()
-                            .hover(move |s| s.bg(hover_bg))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.select_panel_note(
-                                    reader_layout::Panel::Backlinks,
-                                    &rel,
-                                    jump.as_deref(),
-                                    window,
-                                    cx,
-                                )
-                            }))
-                            .child(text)
-                    })
-                    .collect::<Vec<_>>();
-                v_flex()
-                    .mx_1()
-                    .mb_1p5()
-                    .child(header)
-                    .child(
-                        v_flex()
-                            .ml(px(15.))
-                            .pl_2()
-                            .border_l_2()
-                            .border_color(p.border_subtle)
-                            .children(rows)
-                            .when(shown < count, |places| {
-                                places.child(
-                                    div()
-                                        .id(SharedString::from(format!("bl-more-{gx}")))
-                                        .px_2()
-                                        .py_0p5()
-                                        .text_xs()
-                                        .text_color(faint)
-                                        .cursor_pointer()
-                                        .hover(move |s| s.text_color(muted))
-                                        .child(format!("Show {} more", count - shown))
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.backlinks_expanded.insert(more_rel.clone());
-                                            cx.notify();
-                                        })),
-                                )
-                            }),
-                    )
-                    .into_any_element()
-            })
-            .collect();
-
-        let empty = (items.is_empty() || !self.vault.inventory_scanned).then(|| {
+        let empty = (self.backlink_groups.is_empty() || !self.vault.inventory_scanned).then(|| {
             reader_right_panel::linked_from_empty(
                 self.vault.inventory_scanned,
                 self.vault.inventory_complete,
@@ -5517,16 +5552,24 @@ impl Reader {
             .debug_selector(|| "backlinks-list".into())
             .flex_1()
             .min_h(px(96.))
-            .overflow_y_scroll()
-            // Scrolling wins over previews (#1101); the list still scrolls.
+            .overflow_hidden()
+            // Scrolling wins over previews (#1101); the list scrolls itself.
             .on_scroll_wheel(
                 cx.listener(|this, _: &ScrollWheelEvent, _, cx| this.panel_scrolled(cx)),
             )
             .py_1()
-            .when_some(empty, |list, line| {
-                list.child(panel_empty_line(muted, line))
+            .when_some(empty, |panel, line| {
+                panel.child(panel_empty_line(muted, line))
             })
-            .when(empty.is_none(), |list| list.px_1().children(items))
+            .when(empty.is_none(), |panel| {
+                panel.px_1().child(
+                    list(
+                        self.backlinks_list.clone(),
+                        cx.processor(|this, gx, _window, cx| this.render_backlink_group(gx, cx)),
+                    )
+                    .size_full(),
+                )
+            })
             .into_any_element()
     }
 
@@ -8123,6 +8166,152 @@ mod document_link_landing_tests {
         visual.update(|window, cx| reader_link_navigation::handle_link(&entity, &url, window, cx));
         visual.run_until_parked();
         view.read_with(visual, |v, _| assert_eq!(v.current_rel, "Other vault.md"));
+    }
+
+    #[gpui::test]
+    fn the_linked_from_list_builds_only_the_cards_in_view(cx: &mut gpui::TestAppContext) {
+        // #1135: a hub note with thousands of backlinks built every card on every frame, so
+        // typing anywhere in the Reader redrew all of them. Only the cards in view are built.
+        const NOTES: usize = 400;
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("Hub.md"), "# Hub\n\nWhere everything points.\n").unwrap();
+        for ix in 0..NOTES {
+            // One note links five times: its card shows three places and «Show 2 more».
+            let body = if ix == 7 {
+                "# Many\n\n[[Hub]] one\n\n[[Hub]] two\n\n[[Hub]] three\n\n[[Hub]] four\n\n[[Hub]] five\n"
+                    .to_owned()
+            } else {
+                format!("# Note {ix}\n\nsee [[Hub]] for the overview\n")
+            };
+            std::fs::write(root.join(format!("Note {ix:03}.md")), body).unwrap();
+        }
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("Hub.md".into()),
+                        index_dir: Some(fixture.path().join("index")),
+                        session_directory: Some(fixture.path().join("state")),
+                        ..Opts::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let view = reader.unwrap();
+        visual.run_until_parked();
+        visual.simulate_resize(size(px(1366.), px(768.)));
+        view.update_in(visual, |v, window, cx| {
+            v.panel_settings = None;
+            v.toggle_panel(reader_layout::Panel::Backlinks, window, cx);
+        });
+        visual.run_until_parked();
+        let (groups, many) = view.read_with(visual, |v, _| {
+            let many = v
+                .backlink_groups
+                .iter()
+                .position(|g| v.backlinks[g.start].path == "Note 007.md")
+                .expect("the note with five places is a group");
+            assert_eq!(v.backlinks_list.item_count(), v.backlink_groups.len());
+            (v.backlink_groups.len(), many)
+        });
+        assert_eq!(
+            groups, NOTES,
+            "one card per linking note, counted before drawing"
+        );
+        // `debug_bounds` takes a `&'static str`.
+        let name = |prefix: &str, ix: usize| -> &'static str {
+            Box::leak(format!("{prefix}-{ix}").into_boxed_str())
+        };
+        let built = |visual: &mut VisualTestContext| -> Vec<usize> {
+            (0..groups)
+                .filter(|ix| visual.debug_bounds(name("bl-card", *ix)).is_some())
+                .collect()
+        };
+        let first = built(visual);
+        assert!(
+            first.contains(&0),
+            "positive control: the first card is drawn"
+        );
+        assert!(
+            (3..=40).contains(&first.len()),
+            "{} of {groups} cards built for one screen",
+            first.len()
+        );
+        assert!(!first.contains(&(groups - 1)), "the last card is not built");
+
+        // Scrolling brings others into view and drops the first ones (the list really works).
+        // The list does not ask for a redraw itself when scrolled from outside.
+        view.update(visual, |v, cx| {
+            v.backlinks_list.scroll_by(px(3000.));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let scrolled = built(visual);
+        assert!(
+            !scrolled.is_empty() && !scrolled.contains(&0),
+            "{scrolled:?}"
+        );
+        assert!(scrolled.len() <= 40);
+
+        // A background refresh that finds the same notes keeps the position; another note starts
+        // from the top.
+        view.update(visual, |v, cx| {
+            let same = v.backlinks.clone();
+            v.set_backlinks(same, false);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let kept = built(visual);
+        assert!(
+            !kept.is_empty() && !kept.contains(&0),
+            "scroll lost by a refresh: {kept:?}"
+        );
+        view.update(visual, |v, cx| {
+            let same = v.backlinks.clone();
+            v.set_backlinks(same, true);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert!(built(visual).contains(&0), "a new note starts at the top");
+
+        // «Show 2 more» on a card makes that card taller without building the others.
+        // The card sits at the foot of the first screen: bring it to the top so its «Show 2 more»
+        // row is inside the window and can be clicked.
+        view.update(visual, |v, cx| {
+            v.backlinks_list.scroll_to(ListOffset {
+                item_ix: many,
+                offset_in_item: px(0.),
+            });
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let before = visual
+            .debug_bounds(name("bl-card", many))
+            .expect("the card with five places is in view");
+        let more = visual
+            .debug_bounds(name("bl-more", many))
+            .expect("it offers «Show 2 more»");
+        visual.simulate_click(more.center(), Modifiers::default());
+        visual.run_until_parked();
+        let after = visual.debug_bounds(name("bl-card", many)).unwrap();
+        assert!(
+            after.size.height > before.size.height,
+            "{before:?} -> {after:?}"
+        );
+        assert!(visual.debug_bounds(name("bl-more", many)).is_none());
+        assert!(built(visual).len() <= 40);
     }
 
     #[gpui::test]
