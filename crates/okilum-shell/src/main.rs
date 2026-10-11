@@ -2308,6 +2308,9 @@ impl Reader {
                         ReaderLanding::Ready => {
                             this.navigation.pending_landing = None;
                             this.content.update(cx, |s, cx| { s.list_state().scroll_to(position); cx.notify(); });
+                            if this.navigation.flash_pending.take() == Some(position.item_ix) {
+                                this.flash_block(position.item_ix, cx);
+                            }
                             true
                         }
                     }
@@ -5019,6 +5022,7 @@ impl Reader {
                             .context_menu(move |menu, _, cx| {
                                 reader_reminder::menu(menu, &menu_entity, cx)
                             })
+                            .children(self.render_landing_flash(cx))
                             .child(
                                 reader_plugins(
                                     self.vault_root.clone(),

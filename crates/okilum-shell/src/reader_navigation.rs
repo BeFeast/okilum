@@ -16,4 +16,8 @@ pub(super) struct State {
     pub history_positions: Vec<ListOffset>,
     pub history_ix: usize,
     pub history_nav: Option<usize>,
+    /// A link's line landing highlights its block once it is reached (#1049).
+    pub flash_pending: Option<usize>,
+    /// The highlighted block and its serial (each highlight fades once).
+    pub flash: Option<(usize, u64)>,
 }

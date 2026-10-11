@@ -315,9 +315,14 @@ impl Reader {
             let mut request = request;
             let mut task_text = None;
             let mut unplaced_line = None;
+            let mut flash_block = None;
             let document = document.map(|(document, target)| {
                 match target {
                     Some(Ok((block, text))) => {
+                        // A task carries its text; a link's line does not.
+                        if text.is_none() {
+                            flash_block = Some(block);
+                        }
                         task_text = text;
                         request.restore_position = Some(ListOffset {
                             item_ix: block,
@@ -343,6 +348,7 @@ impl Reader {
                 let unplaced_line = document.is_ok().then_some(unplaced_line).flatten();
                 let _phase = reader_diagnostics::phase(cx, "note_open_accept");
                 this.accept_prepared_document(request, document, window, cx);
+                this.navigation.flash_pending = flash_block;
                 if let Some(text) = task_landing {
                     this.land_task_text(text, cx);
                 }
