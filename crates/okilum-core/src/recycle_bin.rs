@@ -251,6 +251,7 @@ mod windows {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
     use std::path::{Path, PathBuf};
 
     fn utf16(text: &str) -> Vec<u8> {
