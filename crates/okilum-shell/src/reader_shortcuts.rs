@@ -69,6 +69,7 @@ fn catalog() -> Vec<Entry> {
         entry::<HistoryVersionPrevious>("Previous version in history", Navigation),
         entry::<NewNote>("New note", Notes),
         entry::<SaveSource>("Save", Notes),
+        entry::<ToggleTask>("Toggle task", Notes),
         entry::<CloseNote>("Close note", Notes),
         entry::<RenameTreeNote>("Rename selected item", Notes),
         entry::<RenameNote>("Rename note", Notes),

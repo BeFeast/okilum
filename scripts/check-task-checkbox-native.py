@@ -3,6 +3,8 @@
 edit and one undo step, and the click does not move the caret.
 Run on an exclusive X11 display (never maestro).
 Usage: DISPLAY=:1034 python3 scripts/check-task-checkbox-native.py OKILUM_BINARY WORK_DIR LABEL
+
+Also checks the keyboard «Toggle task» (Ctrl+L) on an ordered task (#1051).
 Steps: caret to the end of the note; click the first checkbox; type `Z`; double-click
 the second checkbox (two quick presses toggle twice, back to checked); click it once
 more; copy the whole source. Expected: first box checked, second box
@@ -137,6 +139,25 @@ try:
     expected = '- [x] first task\n- [ ] second task\n\nlast line\nZ'
     ok = toggled.rstrip('\n') in (expected, expected.replace('\nZ', 'Z'))
     ok &= undone.rstrip('\n') == NOTE.rstrip('\n')
+    # #1051: «Toggle task» from the keyboard, on an ordered task the editor
+    # just gained: caret on that line, Ctrl+L, then one undo.
+    xd(env, 'key', 'ctrl+End')
+    xd(env, 'type', '\n3. [ ] ordered task')
+    time.sleep(.5)
+    xd(env, 'key', 'ctrl+l')
+    time.sleep(1)
+    subprocess.run(['import', '-window', 'root', str(work / f'{label}-3-keyboard.png')], env=env,
+                   check=True)
+    keyboard = clipboard(env)
+    xd(env, 'key', 'ctrl+z')
+    time.sleep(.4)
+    keyboard_undone = clipboard(env)
+    print(label, {'keyboard': keyboard, 'keyboard_undone': keyboard_undone}, flush=True)
+    if keyboard == '<stale>':
+        print(label, 'INVALID run: nothing copied after the keyboard toggle', flush=True)
+        sys.exit(2)
+    ok &= keyboard.rstrip('\n').endswith('3. [x] ordered task')
+    ok &= keyboard_undone.rstrip('\n').endswith('3. [ ] ordered task')
     sys.exit(0 if ok else 1)
 finally:
     proc.terminate()

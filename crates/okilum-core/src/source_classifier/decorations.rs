@@ -405,20 +405,25 @@ fn whole_line_block<'a>(
     })
 }
 
-/// `- [ ]` of a bullet task item, exactly as written: bullet, whitespace,
-/// `[`, one of ` xX`, `]`, then whitespace or the end of the line.
+/// A task item's marker, exactly as written: a bullet or an ordered number
+/// (`1.`/`1)`), whitespace, `[`, one of ` xX`, `]`, then whitespace or the end
+/// of the line. A bullet task covers `- [ ]` (the box replaces the bullet);
+/// an ordered task covers only `[ ]`, so its number stays visible (#1051).
 fn task_marker<'a>(node: &'a AstNode<'a>, context: &Context<'_>, checked: bool) -> Option<Marker> {
     let scope = context.range(node)?;
     let raw = context.source.get(scope.clone())?;
     let bytes = raw.as_bytes();
-    if !matches!(bytes.first(), Some(b'-' | b'+' | b'*')) {
-        return None;
-    }
-    let gap = bytes[1..]
+    let digits = bytes.iter().take_while(|b| b.is_ascii_digit()).count();
+    let (lead, ordered) = match bytes.first() {
+        Some(b'-' | b'+' | b'*') => (1, false),
+        Some(b'0'..=b'9') if matches!(bytes.get(digits), Some(b'.' | b')')) => (digits + 1, true),
+        _ => return None,
+    };
+    let gap = bytes[lead..]
         .iter()
         .take_while(|b| matches!(b, b' ' | b'\t'))
         .count();
-    let open = 1 + gap;
+    let open = lead + gap;
     if gap == 0 || bytes.get(open) != Some(&b'[') || bytes.get(open + 2) != Some(&b']') {
         return None;
     }
@@ -432,7 +437,8 @@ fn task_marker<'a>(node: &'a AstNode<'a>, context: &Context<'_>, checked: bool) 
     {
         return None;
     }
-    let range = scope.start..scope.start + open + 3;
+    let start = if ordered { scope.start + open } else { scope.start };
+    let range = start..scope.start + open + 3;
     Some(Marker {
         range: range.clone(),
         scope: range,
@@ -493,7 +499,7 @@ mod tests {
 
     #[test]
     fn task_markers_cover_bullet_and_box_and_reveal_only_inside() {
-        let text = "- [ ] open\n* [x] done\n+\t[X] tab\n- [ ]\n1. [ ] ordered\n- [y] not a task\n";
+        let text = "- [ ] open\n* [x] done\n+\t[X] tab\n- [ ]\n1. [ ] ordered\n- [y] not a task\n\n10) [x] tenth\n";
         let source = snapshot(text, 1);
         let classified = classify(&source);
         let tasks: Vec<_> = classified
@@ -513,7 +519,10 @@ mod tests {
                 ("- [ ]", false, true),
                 ("* [x]", true, true),
                 ("+\t[X]", true, true),
-                ("- [ ]", false, true)
+                ("- [ ]", false, true),
+                // Ordered tasks paint only the box; the number stays (#1051).
+                ("[ ]", false, true),
+                ("[x]", true, true)
             ]
         );
     }
