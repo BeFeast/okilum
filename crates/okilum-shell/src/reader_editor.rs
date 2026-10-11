@@ -407,10 +407,9 @@ impl Reader {
             .flatten();
         let language = code.unwrap_or(if plain_file { "text" } else { "markdown" });
         let wrap = code.is_none() || reader_ui_state::code_soft_wrap(cx);
-        // The note's reference definitions, for rendered blocks (#1067).
-        let block_context: BlockContext = Rc::new(std::cell::RefCell::new(
-            okilum_core::render::reference_definitions(store.text()).into(),
-        ));
+        // The note's reference definitions and text, for rendered blocks (#1067).
+        let block_context: BlockContext =
+            Rc::new(std::cell::RefCell::new(BlockNote::new(store.text().into())));
         let blocks = (!plain_file).then(|| {
             (
                 self.vault_root.clone(),
@@ -490,11 +489,9 @@ impl Reader {
             input.update(cx, |state, _| {
                 let value = state.value();
                 state.set_direction_exempt_lines(direction_exempt_lines(&value));
-                // Rendered blocks resolve references against the whole note.
-                let definitions = okilum_core::render::reference_definitions(&value);
-                if block_context.borrow().as_ref() != definitions.as_str() {
-                    *block_context.borrow_mut() = definitions.into();
-                }
+                // Rendered blocks resolve references and number footnotes
+                // against the whole note.
+                *block_context.borrow_mut() = BlockNote::new(value);
             });
             let Some(editing) = &mut this.editing else {
                 return;
@@ -1113,17 +1110,30 @@ impl Reader {
     }
 }
 
+/// The note a rendered block belongs to, kept current as the note changes:
+/// its text, for footnote numbering, and its link reference definitions, so
+/// a block resolves references against the whole note (#1067).
+#[derive(Clone, Default)]
+struct BlockNote {
+    text: SharedString,
+    definitions: SharedString,
+}
+
+impl BlockNote {
+    fn new(text: SharedString) -> Self {
+        let definitions = okilum_core::render::reference_definitions(&text).into();
+        Self { text, definitions }
+    }
+}
+
+type BlockContext = Rc<std::cell::RefCell<BlockNote>>;
+
 /// Live Preview's rendered blocks (tables, images; S7, #936), drawn the way
 /// Reader draws them: the block's Markdown is prepared like a Reader document
 /// (embeds and relative images resolved against the vault), once per block
 /// content, and shown through the Reader's plugins. Display only: a click
 /// lands on the editor, which puts the caret in the block and reveals its
 /// source; links do not open from here.
-/// The note's link reference definitions, kept current as the note changes:
-/// a rendered block is prepared with them so its reference links resolve
-/// against the whole note (#1067).
-type BlockContext = Rc<std::cell::RefCell<SharedString>>;
-
 fn live_blocks(
     root: PathBuf,
     rel: String,
@@ -1131,8 +1141,9 @@ fn live_blocks(
     press: gpui_component::input::projection::BlockPressSlot,
     context: BlockContext,
 ) -> gpui_component::input::projection::BlockRenderer {
-    // Prepared Markdown per block content and note definitions, for the vault
-    // it was prepared against: a rescanned vault (a new image) prepares again.
+    // Prepared Markdown per block, keyed by the exact Markdown it was prepared
+    // from, for the vault it was prepared against: a rescanned vault (a new
+    // image) prepares again.
     let prepared = Rc::new(std::cell::RefCell::new((
         None::<Arc<okilum_core::vault::Vault>>,
         std::collections::HashMap::<u64, (SharedString, SharedString)>::new(),
@@ -1158,16 +1169,24 @@ fn live_blocks(
             {
                 *prepared = (Some(vault.clone()), Default::default());
             }
-            let definitions = context.borrow().clone();
+            let note = context.borrow().clone();
+            // Footnote references take the whole note's numbers; only a
+            // block with footnote syntax pays for the note-wide pass.
+            let block_source = okilum_core::obsidian::block_footnotes(
+                &note.text,
+                block.source.start.0..block.source.end.0,
+            )
+            .unwrap_or_else(|| source.to_owned());
+            let input: SharedString = if note.definitions.is_empty() {
+                block_source.into()
+            } else {
+                format!("{block_source}\n\n{}", note.definitions).into()
+            };
             let entry = prepared.1.entry(block.key).or_default();
-            if entry.1.is_empty() || entry.0 != definitions {
-                let source = if definitions.is_empty() {
-                    source.to_owned()
-                } else {
-                    format!("{source}\n\n{definitions}")
-                };
+            if entry.1.is_empty() || entry.0 != input {
+                let source = input.to_string();
                 *entry = (
-                    definitions,
+                    input,
                     okilum_core::render::reader_document_from_source(&vault, &rel, &source)
                         .rendered
                         .into(),
