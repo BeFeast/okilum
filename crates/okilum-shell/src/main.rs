@@ -8208,8 +8208,13 @@ mod document_link_landing_tests {
         assert!(scrolled.len() <= 40);
 
         // «Show 2 more» on a card makes that card taller without building the others.
+        // The card sits at the foot of the first screen: bring it to the top so its «Show 2 more»
+        // row is inside the window and can be clicked.
         view.update(visual, |v, cx| {
-            v.backlinks_list.scroll_to(ListOffset::default());
+            v.backlinks_list.scroll_to(ListOffset {
+                item_ix: many,
+                offset_in_item: px(0.),
+            });
             cx.notify();
         });
         visual.run_until_parked();
