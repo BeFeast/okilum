@@ -1933,7 +1933,23 @@ mod tests {
                 visual.debug_bounds("restore-unsaved-edits").is_none(),
                 "no «Restore unsaved edits» for an already restored draft"
             );
-            visual.executor().advance_clock(Duration::from_secs(5));
+            // #930: «Unsaved changes restored» stays readable for most of
+            // its 4 s lifetime; nothing pushes it away early.
+            visual.executor().advance_clock(Duration::from_secs(3));
+            visual.run_until_parked();
+            visual.update(|window, cx| {
+                assert_eq!(
+                    window.notifications(cx).len(),
+                    1,
+                    "the restored notice is still shown after 3 s"
+                );
+                window.draw(cx).clear(cx);
+            });
+            assert!(
+                visual.debug_bounds("restore-unsaved-edits").is_none(),
+                "and it is not the offer to restore"
+            );
+            visual.executor().advance_clock(Duration::from_secs(2));
             visual.run_until_parked();
             visual.update(|window, cx| {
                 assert!(
