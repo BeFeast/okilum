@@ -119,18 +119,26 @@ def run(mode):
         result = {'text_left': found_bands[0][2], 'latin_edge': latin_edge,
                   'hebrew': found_bands[-3], 'linked': found_bands[-2]}
         if mode == 'reader':
-            hebrew = found_bands[-3]
-            xd(env, 'mousemove', str((hebrew[2] + hebrew[3]) // 2),
-               str((hebrew[0] + hebrew[1]) // 2), 'click', '--repeat', '2', '--delay', '80', '1')
-            time.sleep(.8)
-            result['word'] = copy(env, False).strip()
-            xd(env, 'mousemove', '200', '700', 'click', '1')  # clear the selection
+            hebrew, latin = found_bands[-3], found_bands[0]
+
+            def double_click(x, y):
+                xd(env, 'mousemove', str(x), str(y), 'click', '--repeat', '2', '--delay', '80', '1')
+                time.sleep(.8)
+                word = copy(env, False).strip()
+                xd(env, 'key', 'Escape')
+                return word
+
+            # Positive control: a Latin word selects by double-click.
+            result['latin_word'] = double_click(latin[2] + 30, (latin[0] + latin[1]) // 2)
+            # The Hebrew row's middle word (the row is right-aligned).
+            result['word'] = double_click((hebrew[2] + hebrew[3]) // 2, (hebrew[0] + hebrew[1]) // 2)
+            # The link last: it navigates away.
             link = link_centre(shot, found_bands[-2])
             result['link_at'] = link
             if link:
                 xd(env, 'mousemove', str(link[0]), str(link[1]), 'click', '1')
                 time.sleep(3)
-                result['after_link'] = copy(env, True)
+                result['after_link'] = copy(env, True)[:60]
         return result
     finally:
         proc.terminate()
@@ -144,6 +152,9 @@ if not reader or not live or 'hebrew' not in reader or 'hebrew' not in live:
     sys.exit(2)
 if not reader.get('link_at'):
     print(label, 'INVALID run: no link pixels found', flush=True)
+    sys.exit(2)
+if reader.get('latin_word') not in LATIN.replace(',', ' ').replace('.', ' ').split():
+    print(label, 'INVALID run: double-click selects no Latin word either', flush=True)
     sys.exit(2)
 heb = reader['hebrew']
 right_aligned = (reader['latin_edge'] - 2 <= heb[3] <= reader['latin_edge'] + 80
