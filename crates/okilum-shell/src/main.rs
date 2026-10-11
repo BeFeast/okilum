@@ -7082,6 +7082,15 @@ OPTIONS:
 ";
 
 fn main() {
+    // #1256: glibc gives each allocating thread its own arena. Background
+    // classification and layout churn fragmented those arenas, and RSS rose by
+    // megabytes per edit cycle with a flat live heap. Two arenas keep it level.
+    // Must run before any thread exists.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: mallopt only adjusts allocator parameters; no other thread runs yet.
+    unsafe {
+        libc::mallopt(libc::M_ARENA_MAX, 2);
+    }
     #[cfg(windows)]
     velopack::VelopackApp::build()
         .on_after_install_fast_callback(|_| {

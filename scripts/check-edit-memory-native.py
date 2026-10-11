@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Native #1237: memory does not grow across repeated rapid edits in Live
-Preview. Run on an exclusive X11 display (never maestro).
+"""Native #1237/#1256: memory does not grow across repeated rapid edits in Live
+Preview. Run on an exclusive X11 display (never maestro); the hosted Arch
+package job runs it on the installed package.
 Usage: DISPLAY=:1034 python3 scripts/check-edit-memory-native.py OKILUM_BINARY WORK_DIR LABEL [CYCLES] [live|source]
 Run it in Source as well: the same cycles without Live Preview's projection
 separate growth that belongs to Live Preview from the editor's own.
@@ -8,13 +9,19 @@ The note is the L1 long nested corpus (180 list-with-quote units, ~16 KB, like
 the QA fixture l1-long-180.md). Narrow (700 px), dark. One cycle, as in the QA
 step: type 20 characters, Enter x5, then Undo until the saved note is the
 original again. RSS is read after each cycle once the app has settled.
-Readout: the RSS slope over the restored cycles after warm-up (first 5 dropped).
-Pass: under 64 KiB per cycle, and the saved note is the original at the end.
+Readout, over the restored cycles after warm-up (first 5 dropped):
+- level: median RSS minus RSS when the editor opened. Fragmented allocator
+  arenas (#1256) can level off early, 30-40 MB up (hosted runner), or keep
+  rising (CT141); with the fix both hosts sit ~10 MB above the opened editor.
+- slope: Theil-Sen (median of pairwise slopes), so one transient spike does
+  not fail a flat run.
+Pass: level under 20 MiB, slope under 64 KiB per cycle, and the saved note is
+the original at the end.
 Positive control: the RSS reading is live (it rises when Live Preview first
 renders the long note).
 Exit 0: all hold; 1: a check failed; 2: the run proves nothing.
 """
-import json, os, shutil, subprocess, sys, time
+import json, os, shutil, statistics, subprocess, sys, time
 from pathlib import Path
 
 binary, work, label = sys.argv[1], Path(sys.argv[2]), sys.argv[3]
@@ -86,15 +93,17 @@ finally:
 # Growth is judged on restored cycles only: a cycle that left text behind
 # makes the note (and so the RSS) larger by design.
 tail = [r for r, ok in list(zip(readings, restored))[5:] if ok]
-n = len(tail)
-mean_x, mean_y = (n - 1) / 2, sum(tail) / n
-slope = sum((i - mean_x) * (y - mean_y) for i, y in enumerate(tail)) / sum((i - mean_x) ** 2 for i in range(n))
+if len(tail) < 2:
+    print(label, 'INVALID: too few restored cycles after warm-up', flush=True)
+    sys.exit(2)
+level = statistics.median(tail) - open_rss
+slope = statistics.median((tail[j] - tail[i]) / (j - i) for i in range(len(tail)) for j in range(i + 1, len(tail)))
 result = {'empty_rss': empty_rss, 'open_rss': open_rss, 'first': readings[0], 'last': readings[-1],
-          'slope_kib_per_cycle': round(slope, 1), 'all_restored': all(restored)}
+          'level_kib': round(level), 'slope_kib_per_cycle': round(slope, 1), 'all_restored': all(restored)}
 print(label, result, flush=True)
 if open_rss <= empty_rss:
     print(label, 'INVALID: RSS did not rise when the editor opened', flush=True)
     sys.exit(2)
-checks = {'no_growth': slope < 64, 'note_restored_every_cycle': all(restored)}
+checks = {'level_under_20_mib': level < 20 * 1024, 'no_growth': slope < 64, 'note_restored_every_cycle': all(restored)}
 print(label, checks, flush=True)
 sys.exit(0 if all(checks.values()) else 1)
