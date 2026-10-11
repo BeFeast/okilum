@@ -23,6 +23,7 @@ mod logfmt;
 pub mod merge;
 pub mod query;
 mod record;
+pub mod source_link;
 pub mod tail;
 mod text;
 pub mod timestamp;
