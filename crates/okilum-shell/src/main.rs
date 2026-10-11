@@ -6061,9 +6061,9 @@ impl Reader {
             .id("reader-outline")
             .debug_selector(|| "reader-outline-list".into())
             .flex_none()
-            .h(px(rows_height + 8.))
+            .h(px(rows_height + 2. * OUTLINE_PADDING_Y))
             .max_h(relative(0.6))
-            .py_1()
+            .py(px(OUTLINE_PADDING_Y))
             .child(
                 list(
                     self.outline_list.clone(),
@@ -6139,6 +6139,8 @@ fn panel_empty_line(color: Hsla, text: &'static str) -> AnyElement {
 const READER_HEADER_HEIGHT: f32 = 46.;
 /// Height of one «On this page» row: the 13 px chrome text line plus 3 px above and below (#1004).
 const OUTLINE_ROW_HEIGHT: f32 = 27.;
+/// Vertical padding of the «On this page» list, above and below the rows (`py_1`).
+const OUTLINE_PADDING_Y: f32 = 4.;
 /// Places shown per linking note before «Show N more» (#394).
 const BACKLINK_PLACES_SHOWN: usize = 3;
 
