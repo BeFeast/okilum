@@ -8,6 +8,9 @@ and icon are included. The Markdown MIME association is available through
 
 ## Install
 
+This installs the stable channel, the releases offered on okilum.app. For a build
+of every merge to `main`, see [Beta channel](#beta-channel).
+
 Download the public signing key and verify its full fingerprint against the
 value below **before** trusting it:
 
