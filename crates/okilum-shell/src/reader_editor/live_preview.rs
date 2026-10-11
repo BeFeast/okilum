@@ -510,6 +510,51 @@ mod tests {
         (reader, visual, directory)
     }
 
+    /// #1192: in Live Preview a callout's chevron folds and unfolds the
+    /// rendered callout; the press does not reveal its source.
+    #[gpui::test]
+    fn live_preview_callout_chevron_toggles_fold_without_revealing(cx: &mut TestAppContext) {
+        let note = "# Callouts\n\n> [!note]- First callout\n> FIRST BODY\n\n\
+            > [!tip]- Second callout\n> SECOND BODY\n\nControl **bold**\n";
+        let (reader, visual, _directory) = fixture(cx, note);
+        reader.update_in(visual, |r, window, cx| {
+            if !r.editing.as_ref().unwrap().live_preview.enabled {
+                r.toggle_live_preview(window, cx);
+            }
+        });
+        visual.run_until_parked();
+        let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+        input.update(visual, |input, cx| {
+            input.set_selected_range(note.len()..note.len(), cx)
+        });
+        let draw = |visual: &mut VisualTestContext| {
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+        };
+        draw(visual);
+        // Positive control: both callouts are rendered and folded.
+        let chevron = visual
+            .debug_bounds("reader-callout-fold-0")
+            .expect("a rendered callout chevron");
+        assert!(visual.debug_bounds("reader-callout-body-0").is_none());
+        visual.simulate_click(chevron.center(), Modifiers::default());
+        draw(visual);
+        input.read_with(visual, |input, _| {
+            assert_eq!(
+                input.selected_range(),
+                note.len()..note.len(),
+                "caret stays"
+            );
+            assert_eq!(input.value().as_ref(), note);
+        });
+        assert!(
+            visual.debug_bounds("reader-callout-body-0").is_some(),
+            "the first callout unfolds, rendered"
+        );
+    }
+
     #[gpui::test]
     fn save_echo_batches_preserve_editor_projection_and_viewport(cx: &mut TestAppContext) {
         let original = format!(

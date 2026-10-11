@@ -1206,7 +1206,10 @@ fn markdown_plugins_at(
                                     .small()
                                     .text_color(accent),
                                 )
-                                .on_click(move |_, window, cx| {
+                                // Toggle on press and keep the press here: in Live
+                                // Preview a press that reaches the editor reveals
+                                // the callout's source instead (#1192).
+                                .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                                     cx.stop_propagation();
                                     reader_obsidian::toggle_callout(key, fold, window, cx);
                                 })
