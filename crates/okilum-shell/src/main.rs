@@ -8194,7 +8194,11 @@ mod document_link_landing_tests {
         assert!(!first.contains(&(groups - 1)), "the last card is not built");
 
         // Scrolling brings others into view and drops the first ones (the list really works).
-        view.update(visual, |v, _| v.backlinks_list.scroll_by(px(3000.)));
+        // The list does not ask for a redraw itself when scrolled from outside.
+        view.update(visual, |v, cx| {
+            v.backlinks_list.scroll_by(px(3000.));
+            cx.notify();
+        });
         visual.run_until_parked();
         let scrolled = built(visual);
         assert!(
@@ -8204,8 +8208,9 @@ mod document_link_landing_tests {
         assert!(scrolled.len() <= 40);
 
         // «Show 2 more» on a card makes that card taller without building the others.
-        view.update(visual, |v, _| {
-            v.backlinks_list.scroll_to(ListOffset::default())
+        view.update(visual, |v, cx| {
+            v.backlinks_list.scroll_to(ListOffset::default());
+            cx.notify();
         });
         visual.run_until_parked();
         let before = visual
