@@ -969,6 +969,206 @@ mod tests {
     }
 
     #[gpui::test]
+    fn the_first_click_on_a_link_opens_it_after_a_word_selection(cx: &mut TestAppContext) {
+        // #1234: double-click a word, Escape, double-click another word, Escape, then one click on
+        // a link: the note stayed and only a second click opened the target.
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let root = std::env::temp_dir().join(format!(
+            "okilum-link-after-selection-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = "[Target control](target.md)\n\nAlpha beta gamma delta epsilon.\n";
+        std::fs::write(root.join("start.md"), source).unwrap();
+        std::fs::write(root.join("target.md"), "# Target").unwrap();
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("start.md".into()),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        let bounds = reader.read_with(visual, |v, cx| v.content.read(cx).bounds());
+        let link = bounds.origin + point(px(25.), px(10.));
+        // A real double-click: the first press and release, then the second with click_count 2.
+        let double_click = |visual: &mut VisualTestContext, at: Point<Pixels>| {
+            for click_count in [1, 2] {
+                visual.simulate_event(MouseDownEvent {
+                    position: at,
+                    button: MouseButton::Left,
+                    modifiers: Modifiers::default(),
+                    click_count,
+                    first_mouse: false,
+                });
+                visual.simulate_event(MouseUpEvent {
+                    position: at,
+                    button: MouseButton::Left,
+                    modifiers: Modifiers::default(),
+                    click_count,
+                });
+            }
+            visual.run_until_parked();
+        };
+        // The paragraph is the second block; its first row is a little below the link row.
+        let word = |dx: f32| bounds.origin + point(px(dx), px(50.));
+        double_click(visual, word(10.));
+        let first = reader.read_with(visual, |v, cx| v.content.read(cx).selected_text());
+        assert!(
+            !first.trim().is_empty() && first.trim().len() < 12,
+            "positive control: a word is selected: {first:?}"
+        );
+        visual.simulate_keystrokes("escape");
+        double_click(visual, word(70.));
+        let second = reader.read_with(visual, |v, cx| v.content.read(cx).selected_text());
+        assert!(
+            !second.trim().is_empty() && second != first,
+            "positive control: another word is selected: {second:?}"
+        );
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        // A real click: the pointer arrives, then the press and the release in one go, with no
+        // frame drawn in between (xdotool, a quick tap, or a slow frame). The link handler of the
+        // frame that showed the selection must still be there for the release.
+        visual.update(|window, cx| {
+            for event in [
+                PlatformInput::MouseMove(MouseMoveEvent {
+                    position: link,
+                    pressed_button: None,
+                    modifiers: Modifiers::default(),
+                }),
+                PlatformInput::MouseDown(MouseDownEvent {
+                    position: link,
+                    button: MouseButton::Left,
+                    modifiers: Modifiers::default(),
+                    click_count: 1,
+                    first_mouse: false,
+                }),
+                PlatformInput::MouseUp(MouseUpEvent {
+                    position: link,
+                    button: MouseButton::Left,
+                    modifiers: Modifiers::default(),
+                    click_count: 1,
+                }),
+            ] {
+                window.dispatch_event(event, cx);
+            }
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |v, _| {
+            assert_eq!(v.current_rel, "target.md", "the first click opens the link");
+        });
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[gpui::test]
+    fn a_drag_selection_that_ends_over_a_link_does_not_open_it(cx: &mut TestAppContext) {
+        // #1234 review: the link handler is registered on every frame now, so the event-time
+        // selection check alone keeps a drag that ends on a link from navigating. Both with a
+        // frame between the events and without one.
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let root =
+            std::env::temp_dir().join(format!("okilum-drag-over-link-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = "[Target control](target.md)\n\nUnique selectable paragraph for the drag.\n";
+        std::fs::write(root.join("start.md"), source).unwrap();
+        std::fs::write(root.join("target.md"), "# Target").unwrap();
+        for frames_between in [true, false] {
+            let mut reader = None;
+            let (_, visual) = cx.add_window_view(|window, cx| {
+                let view = cx.new(|cx| {
+                    Reader::new(
+                        Opts {
+                            vault: Some(root.clone()),
+                            note: Some("start.md".into()),
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    )
+                });
+                reader = Some(view.clone());
+                Root::new(view, window, cx)
+            });
+            let reader = reader.unwrap();
+            visual.run_until_parked();
+            let bounds = reader.read_with(visual, |v, cx| v.content.read(cx).bounds());
+            let link = bounds.origin + point(px(25.), px(10.));
+            let start = bounds.origin + point(px(5.), px(50.));
+            let events = [
+                PlatformInput::MouseMove(MouseMoveEvent {
+                    position: start,
+                    pressed_button: None,
+                    modifiers: Modifiers::default(),
+                }),
+                PlatformInput::MouseDown(MouseDownEvent {
+                    position: start,
+                    button: MouseButton::Left,
+                    modifiers: Modifiers::default(),
+                    click_count: 1,
+                    first_mouse: false,
+                }),
+                PlatformInput::MouseMove(MouseMoveEvent {
+                    position: link,
+                    pressed_button: Some(MouseButton::Left),
+                    modifiers: Modifiers::default(),
+                }),
+                PlatformInput::MouseUp(MouseUpEvent {
+                    position: link,
+                    button: MouseButton::Left,
+                    modifiers: Modifiers::default(),
+                    click_count: 1,
+                }),
+            ];
+            if frames_between {
+                for event in events {
+                    visual.update(|window, cx| {
+                        window.dispatch_event(event, cx);
+                    });
+                    visual.run_until_parked();
+                }
+            } else {
+                visual.update(|window, cx| {
+                    for event in events {
+                        window.dispatch_event(event, cx);
+                    }
+                });
+                visual.run_until_parked();
+            }
+            reader.read_with(visual, |v, cx| {
+                let selected = v.content.read(cx).selected_text();
+                assert!(
+                    !selected.trim().is_empty(),
+                    "frames_between={frames_between}: positive control, the drag selected text"
+                );
+                assert_eq!(
+                    v.current_rel, "start.md",
+                    "frames_between={frames_between}: a drag ending on a link must not open it"
+                );
+            });
+            visual.update(|window, _| window.remove_window());
+            visual.run_until_parked();
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[gpui::test]
     fn reader_refresh_updates_status_without_replacing_document_or_history(
         cx: &mut TestAppContext,
     ) {
