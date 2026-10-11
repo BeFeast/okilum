@@ -59,6 +59,10 @@ run_tests okilum-shell --bins document_link_landing_tests::one_non_utf8_note_doe
 run_tests okilum-shell --bins document_link_landing_tests::hover_and_navigation_agree_in_a_vault_with_a_non_utf8_note_also_on_a_warm_start --exact
 # #1234: the first click on a link after a word selection (press and release in one frame).
 run_tests okilum-shell --bins prepared_links::tests::the_first_click_on_a_link_opens_it_after_a_word_selection --exact
+# #1248: the .stignore offer for a Syncthing vault (core detection and append, the offer, Settings).
+run_tests okilum-core --lib syncthing_ignore::
+run_tests okilum-shell --bins reader_stignore::
+run_tests okilum-shell --bins reader_settings::tests::settings_files_shows_the_syncthing_ignore_state_and_its_button --exact
 # The shell has a single binary target; avoid example/test harnesses with zero matches.
 run_tests okilum-shell --bins platform::exact_macos_clipboard::native_tests
 run_tests okilum-shell --bins reader_replay::
