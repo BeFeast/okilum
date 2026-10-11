@@ -10326,13 +10326,11 @@ fn reader_item_menu(
                     gpui_component::menu::PopupMenuItem::new(
                         crate::platform::labels::Os::CURRENT.move_to_trash(),
                     )
-                    .on_click(
-                        move |_, window, cx| {
-                            let _ = reader.update(cx, |this, cx| {
-                                this.delete_path(relative.clone(), window, cx)
-                            });
-                        },
-                    ),
+                    .on_click(move |_, window, cx| {
+                        let _ = reader.update(cx, |this, cx| {
+                            this.delete_path(relative.clone(), window, cx)
+                        });
+                    }),
                 )
             };
             menu
