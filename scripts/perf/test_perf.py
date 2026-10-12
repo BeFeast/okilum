@@ -120,6 +120,15 @@ class AnalyzerTests(unittest.TestCase):
         row = self.analyze.summarise(self.run_dir(lines))
         self.assertAlmostEqual(row["cost95"], 10.5)
 
+    def test_entry_frames_are_the_ones_where_the_shaper_ran(self):
+        base = 1_000_000_000
+        lines = []
+        for i in range(1, 41):
+            frame = self.frame(base + i * 130_000, i)
+            lines.append(frame if i % 4 == 0 else frame.replace("shapes=3", "shapes=0"))
+        row = self.analyze.summarise(self.run_dir(lines))
+        self.assertAlmostEqual(row["entry"], 25.0)
+
     def test_mac_lines_carry_the_drawable_wait(self):
         base = 1_000_000_000
         lines = []

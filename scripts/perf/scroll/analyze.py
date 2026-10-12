@@ -109,6 +109,8 @@ def summarise(run):
         **{key: statistics.median(f.get(key, 0) for f in frames) for key in MSG_COUNTS},
         "vs_max": statistics.median(f["vs_max"] for f in frames if "vs_max" in f) / 1000 if any("vs_max" in f for f in frames) else float("nan"),
         "vs_mean": statistics.median(f["vs_us"] / f["vs_n"] for f in frames if f.get("vs_n")) / 1000 if any(f.get("vs_n") for f in frames) else float("nan"),
+        # An entry frame is one in which the text shaper ran: new text came into view.
+        "entry": 100 * sum(f["shapes"] > 0 for f in frames) / len(frames),
         "cache_calls": statistics.median(f["cache_calls"] for f in frames),
         "shapes": statistics.median(f["shapes"] for f in frames),
         "quads": statistics.median(f["quads"] for f in frames),
@@ -122,6 +124,7 @@ COLUMNS = (
     ("capped", "host capped", "{}"), ("input_hz", "wheel Hz", "{:.1f}"), ("redraws", "redraws/rep", "{:.0f}"), ("fps", "fps", "{:.1f}"), ("ext_fps", "ext fps", "{:.1f}"),
     ("int50", "interval p50", "{:.1f}"), ("int95", "p95", "{:.1f}"),
     ("cost50", "frame cost p50", "{:.1f}"), ("cost95", "cost p95", "{:.1f}"), ("costmax", "max", "{:.1f}"),
+    ("entry", "entry frames %", "{:.0f}"),
     ("draw", "draw", "{:.1f}"), ("req", "req", "{:.1f}"), ("layout", "layout", "{:.1f}"),
     ("prepaint", "prepaint", "{:.1f}"), ("paint", "paint", "{:.1f}"), ("post", "post", "{:.1f}"),
     ("present", "present", "{:.1f}"), ("setup", "setup", "{:.1f}"), ("batches", "batches", "{:.1f}"),
