@@ -9,6 +9,8 @@ extern "C" {
     fn okilum_updater_install();
     fn okilum_updater_beta() -> bool;
     fn okilum_updater_set_beta(enabled: bool);
+    #[cfg(test)]
+    fn okilum_updater_forget_beta();
 }
 
 /// Sparkle calls this on the main thread with a probe's outcome.
@@ -52,4 +54,24 @@ pub(super) fn beta() -> bool {
 }
 pub(super) fn set_beta(enabled: bool) {
     unsafe { okilum_updater_set_beta(enabled) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #1307: an install that never chose a channel follows stable; an
+    /// explicit choice either way stays. Beta was the default, so a stable
+    /// install took the next every-merge beta.
+    #[test]
+    fn channel_defaults_to_stable_and_keeps_an_explicit_choice() {
+        unsafe { okilum_updater_forget_beta() };
+        assert!(!beta(), "a fresh install follows stable");
+        set_beta(true);
+        assert!(beta(), "an explicit Beta choice stays");
+        set_beta(false);
+        assert!(!beta(), "an explicit Stable choice stays");
+        unsafe { okilum_updater_forget_beta() };
+        assert!(!beta());
+    }
 }
