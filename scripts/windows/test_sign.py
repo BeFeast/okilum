@@ -143,5 +143,20 @@ class SsignTests(unittest.TestCase):
         self.assertIn('pins the certificate', result.stdout)
         self.assertEqual(self.calls(), 0)
 
+    def test_a_cached_session_signs_without_a_code(self):
+        # ssign needs --token even for a cached session: sign.sh hands it a placeholder.
+        self.stub('[ -n "$CERTUM_TOKEN" ] || exit 7\n')
+        (self.dir / 'run' / 'ssign').mkdir(parents=True)
+        (self.dir / 'run' / 'ssign' / 'session.json').write_text('{}')
+        result = self.run_sign(str(self.file), CERTUM_TOKEN='')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(Path(str(self.ssign) + '.args').read_text().startswith('000000 '))
+
+    def test_no_session_and_no_code_never_reaches_ssign(self):
+        self.stub('exit 0\n')
+        result = self.run_sign(str(self.file), CERTUM_TOKEN='')
+        self.assertIn('no Certum session', result.stderr)
+        self.assertEqual(self.calls(), 0)
+
 if __name__ == '__main__':
     unittest.main()
