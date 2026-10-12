@@ -24,12 +24,14 @@ trap 'rmdir "$lock"' EXIT
 if [ -t 0 ]; then read -rsp 'SimplySign code: ' code; echo; else read -r code; fi
 [[ "$code" =~ ^[0-9]{6}$ ]] || { echo "the code must be 6 digits" >&2; exit 2; }
 email=$(api "$A/actions/variables/OKILUM_CERTUM_EMAIL" | python3 -c 'import json,sys;print(json.load(sys.stdin)["data"])')
+[[ "$email" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$ ]] || { echo "OKILUM_CERTUM_EMAIL is not a plain e-mail address" >&2; exit 1; }
 
 say "logging in on the signer with the code (dry-sign of the test PE)"
-# The code travels on ssh's stdin into ssign's environment only.
-if ! printf '%s\n' "$code" | ssh -o BatchMode=yes -i "$HOME/.ssh/id_ed25519_maestro" "$SIGNER" \
-    "su okilum-signer -s /bin/bash -c 'set -e; read -r c; out=\$(mktemp -d); exec 9>/run/lock/okilum-ssign.lock; flock -w 60 9
-      CERTUM_EMAIL=$email CERTUM_TOKEN=\$c XDG_RUNTIME_DIR=/run/okilum-ssign timeout 120 /usr/local/bin/ssign -o \"\$out\" /usr/local/share/okilum-signer/test.exe >/dev/null
+# The code and the e-mail travel on ssh's stdin into ssign's environment only; the remote
+# command line is a fixed string with nothing interpolated into it.
+if ! printf '%s\n%s\n' "$code" "$email" | ssh -o BatchMode=yes -i "$HOME/.ssh/id_ed25519_maestro" "$SIGNER" \
+    "su okilum-signer -s /bin/bash -c 'set -e; read -r c; read -r e; out=\$(mktemp -d); exec 9>/run/lock/okilum-ssign.lock; flock -w 60 9
+      CERTUM_EMAIL=\$e CERTUM_TOKEN=\$c XDG_RUNTIME_DIR=/run/okilum-ssign timeout 120 /usr/local/bin/ssign -o \"\$out\" /usr/local/share/okilum-signer/test.exe >/dev/null
       test -f /run/okilum-ssign/ssign/session.json; rm -rf \"\$out\"'"; then
     unset code
     say "BLOCKER: login with the code failed (expired or mistyped?); nothing was dispatched"
