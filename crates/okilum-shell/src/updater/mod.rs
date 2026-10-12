@@ -47,6 +47,14 @@ fn macos_menu_items(quit: MenuItem) -> Vec<MenuItem> {
     items
 }
 
+/// The installed Windows package's version; elsewhere there is none (#1319).
+pub(crate) fn installed_package() -> Option<String> {
+    #[cfg(windows)]
+    return windows::package_version();
+    #[cfg(not(windows))]
+    None
+}
+
 /// Start Sparkle before the menus are built, so they reflect its availability.
 pub(crate) fn install(_cx: &mut App) {
     crate::reader_settings::install(_cx);
