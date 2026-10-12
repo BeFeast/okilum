@@ -59,9 +59,16 @@ def slice_trace(log, start_ms, end_ms):
 
 
 def window_hash(win, env):
-    """SHA-256 of the window's pixels (xwd), to tell a scroll from an idle window."""
-    shot = subprocess.run(["xwd", "-silent", "-id", win], env=env, capture_output=True, check=False).stdout
-    return hashlib.sha256(shot).hexdigest() if shot else ""
+    """SHA-256 of the window's pixels (xwd, else ImageMagick's import), to tell a scroll from an
+    idle window. An empty string when neither tool can capture: the rep then counts as invalid."""
+    for command in (["xwd", "-silent", "-id", win], ["import", "-window", win, "rgb:-"]):
+        try:
+            shot = subprocess.run(command, env=env, capture_output=True, check=False).stdout
+        except FileNotFoundError:
+            continue
+        if shot:
+            return hashlib.sha256(shot).hexdigest()
+    return ""
 
 
 summary = []
