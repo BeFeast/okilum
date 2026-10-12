@@ -22,5 +22,11 @@
     "headings": 1500,
     "lines": 24000,
     "sha256": "636585d9d9f79ae57db171aeebe14ad7a9c2ff8cf045f99f68a27b404b3c8d56"
+  },
+  "big-head-320.md": {
+    "bytes": 7359,
+    "headings": 20,
+    "lines": 320,
+    "sha256": "8ff46df58ed939b25ec57547e8a71c7b3edbd7747f25fc9a932bfa4ab5d4691f"
   }
 }
