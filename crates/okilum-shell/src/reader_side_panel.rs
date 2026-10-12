@@ -170,7 +170,8 @@ mod tests {
         // Inside the first section: the note moves, the panels are reused.
         let top = |visual: &mut VisualTestContext| {
             view.read_with(visual, |v, cx| {
-                v.content.read(cx).list_state().logical_scroll_top()
+                let top = v.content.read(cx).list_state().logical_scroll_top();
+                (top.item_ix, top.offset_in_item)
             })
         };
         let before = top(visual);
