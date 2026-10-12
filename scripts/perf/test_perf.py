@@ -176,18 +176,20 @@ class BudgetTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             # CT141, the 24k note: request_layout 3.9 ms before #1294 and 0.9 ms after; the
             # 320-line head of the same note costs what the fixed 24k note costs.
-            head = self.run_dir(root, "head", draw=4000, req=900)
-            problems, failed = self.check(head, self.run_dir(root, "before", draw=7100, req=3900))
+            # The CT141 calibration runs of the guard: main 7.55/1.41 ms (draw/req p50) on 24k
+            # lines against 6.61/1.34 on 320; #1294 reverted 8.80/4.39 against 6.65/1.42.
+            head = self.run_dir(root, "head", draw=6650, req=1420)
+            problems, failed = self.check(head, self.run_dir(root, "before", draw=8800, req=4390))
             self.assertEqual(problems, [])
-            self.assertEqual(len(failed), 2, failed)
+            self.assertEqual(len(failed), 1, failed)
             self.assertIn("request_layout grows with the note", failed[0])
-            problems, failed = self.check(head, self.run_dir(root, "after", draw=4300, req=1000))
+            problems, failed = self.check(head, self.run_dir(root, "after", draw=7550, req=1410))
             self.assertEqual((problems, failed), ([], []))
 
     def test_an_absolute_budget_catches_a_frame_that_is_slow_everywhere(self):
         with tempfile.TemporaryDirectory() as root:
-            head = self.run_dir(root, "head", draw=13000, req=900)
-            _, failed = self.check(head, self.run_dir(root, "big", draw=13000, req=900))
+            head = self.run_dir(root, "head", draw=31000, req=900)
+            _, failed = self.check(head, self.run_dir(root, "big", draw=31000, req=900))
             self.assertEqual(len(failed), 1)
             self.assertIn("draw p95", failed[0])
 

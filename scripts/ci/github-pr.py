@@ -18,6 +18,8 @@ LANES = {
     'native-core': ('native', 'Run native tests', 3600),
     'native-sync': ('native', 'Run native tests', 3600),
     'native-shell': ('native', 'Run native tests', 4500),
+    # #1290: the scroll frame cost must not grow with the note.
+    'perf-linux': ('perf-linux', 'Run the scroll frame-cost guard', 3600),
 }
 
 

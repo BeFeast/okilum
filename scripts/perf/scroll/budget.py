@@ -14,8 +14,13 @@ Under Xvfb, present is the software rasteriser and says nothing about a real dis
 
 Checks (milliseconds, medians and p95 over the redrawn frames of all reps):
   growth   req p50 (big) - req p50 (head)  <= REQ_GROWTH_MS   (default 1.0)
-           draw p50 (big) - draw p50 (head) <= DRAW_GROWTH_MS  (default 2.0)
-  budget   draw p95 (big)                   <= DRAW_P95_MS     (default 12.0)
+           draw p50 (big) - draw p50 (head) <= DRAW_GROWTH_MS  (default 3.0)
+  budget   draw p95 (big)                   <= DRAW_P95_MS     (default 30.0)
+The growth checks are the guard: they compare two notes in one run on one machine, so the
+runner's speed cancels out. Calibrated on CT141 (two runs each): main +0.07 / +0.13 ms req and
++0.94 / +0.79 ms draw; with #1294 reverted +4.13 / +2.97 ms req. The absolute budget only
+catches a frame that is slow on every note; p95 alone reached 21 ms on an unchanged build there,
+so it has wide headroom.
 Exit 0: all hold; 1: a check failed; 2: the run proves nothing (a rep did not scroll, or too
 few redrawn frames), which is a failure too.
 """
@@ -37,7 +42,7 @@ def load_analyze():
 
 def limits():
     return {key: float(os.environ.get(key, default)) for key, default in
-            (("REQ_GROWTH_MS", 1.0), ("DRAW_GROWTH_MS", 2.0), ("DRAW_P95_MS", 12.0))}
+            (("REQ_GROWTH_MS", 1.0), ("DRAW_GROWTH_MS", 3.0), ("DRAW_P95_MS", 30.0))}
 
 
 def measure(analyze, run):
