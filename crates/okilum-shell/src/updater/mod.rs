@@ -118,6 +118,13 @@ pub(crate) fn available() -> bool {
     false
 }
 
+/// Windows, before `VelopackApp::run`: whether a pending package may be applied
+/// at this start (#1318).
+#[cfg(windows)]
+pub(crate) fn apply_pending_at_start() -> bool {
+    windows::apply_pending_at_start()
+}
+
 pub(crate) fn check() {
     #[cfg(target_os = "macos")]
     macos::check();

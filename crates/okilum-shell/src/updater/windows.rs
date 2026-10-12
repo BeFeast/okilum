@@ -91,6 +91,74 @@ pub(super) fn restart(expected: Option<&str>, cx: &mut gpui::App) {
     }
 }
 
+const VERIFIED: &str = "windows-update-verified";
+
+fn verified_path() -> Option<std::path::PathBuf> {
+    crate::reader_history::state_directory()
+        .ok()
+        .map(|root| root.join(VERIFIED))
+}
+
+fn packages_dir() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    Some(exe.parent()?.parent()?.join("packages"))
+}
+
+/// SHA256 of the downloaded package file, upper-case hex like the feed's.
+/// Velopack's local pending asset leaves `SHA256` empty, so it is read here.
+fn package_sha256(asset: &velopack::VelopackAsset) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let mut file = std::fs::File::open(packages_dir()?.join(&asset.FileName)).ok()?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher).ok()?;
+    Some(
+        hasher
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02X}"))
+            .collect(),
+    )
+}
+
+/// Records that the pending package belongs to the current channel's feed.
+fn record_verified(sha256: &str) {
+    if let Some(path) = verified_path() {
+        let _ = path.parent().map(std::fs::create_dir_all);
+        let _ = std::fs::write(path, super::windows_feed::verified_record(beta(), sha256));
+    }
+}
+
+fn forget_verified() {
+    if let Some(path) = verified_path() {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// Deletes a downloaded package the current channel does not offer (#1318).
+fn discard(asset: &velopack::VelopackAsset) {
+    if let Some(packages) = packages_dir() {
+        let _ = std::fs::remove_file(packages.join(&asset.FileName));
+    }
+    forget_verified();
+}
+
+/// Before `VelopackApp::run`: whether it may apply a pending package now. Only
+/// a package checked against the channel the install follows today (#1318).
+pub(crate) fn apply_pending_at_start() -> bool {
+    let Ok(manager) = manager() else {
+        return true;
+    };
+    let Some(pending) = manager.get_update_pending_restart() else {
+        return true;
+    };
+    let record = verified_path().and_then(|path| std::fs::read_to_string(path).ok());
+    super::windows_feed::may_apply_at_start(
+        package_sha256(&pending).as_deref(),
+        record.as_deref(),
+        beta(),
+    )
+}
+
 /// The installed package's version from `current/sq.version` (#1319). Read
 /// once: an applied update starts a new process.
 pub(super) fn package_version() -> Option<String> {
@@ -158,6 +226,7 @@ pub(super) fn beta() -> bool {
 }
 
 pub(super) fn set_beta(value: bool) {
+    let previous = beta();
     let result = (|| -> anyhow::Result<()> {
         let root = crate::reader_history::state_directory()?;
         std::fs::create_dir_all(&root)?;
@@ -169,8 +238,13 @@ pub(super) fn set_beta(value: bool) {
     })();
     match result {
         Ok(()) => {
-            settings();
-            BETA.store(value, Ordering::Relaxed)
+            BETA.store(value, Ordering::Relaxed);
+            if previous != value {
+                // A package downloaded for the other channel is checked again
+                // before it can be applied (#1318).
+                forget_verified();
+                state().lock().unwrap().observe(None);
+            }
         }
         Err(error) => message(&format!("Could not save update channel: {error}")),
     }
@@ -216,18 +290,32 @@ const IN_PROGRESS: &str = "An update check or download is already in progress.";
 
 fn check_and_download() -> anyhow::Result<&'static str> {
     let manager = manager()?;
-    let pending = manager.get_update_pending_restart();
-    state()
-        .lock()
-        .unwrap()
-        .observe(pending.as_ref().map(identity));
-    if pending.is_some() {
-        return Ok("Update ready. Choose Restart to update.");
+    if let Some(asset) = manager.get_update_pending_restart() {
+        // Applied only if the current channel's feed lists it (#1318). A feed
+        // or a package file that cannot be read (a scan holding it, say) keeps
+        // the package, unverified, for the next check.
+        let feed = manager.get_release_feed()?;
+        let sha256 = package_sha256(&asset).ok_or_else(|| {
+            anyhow::anyhow!("The downloaded update could not be read. Okilum will try again later")
+        })?;
+        let listed = feed.Assets.iter().any(|offered| {
+            offered.Version == asset.Version && offered.SHA256.eq_ignore_ascii_case(&sha256)
+        });
+        if listed {
+            record_verified(&sha256);
+            state().lock().unwrap().observe(Some(identity(&asset)));
+            return Ok("Update ready. Choose Restart to update.");
+        }
+        discard(&asset);
+        state().lock().unwrap().observe(None);
     }
     match manager.check_for_updates()? {
         UpdateCheck::UpdateAvailable(update) => {
             manager.download_updates(&update, None)?;
             let pending = manager.get_update_pending_restart();
+            if let Some(sha256) = pending.as_ref().and_then(package_sha256) {
+                record_verified(&sha256);
+            }
             state()
                 .lock()
                 .unwrap()

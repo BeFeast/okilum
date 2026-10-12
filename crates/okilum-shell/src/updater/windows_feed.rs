@@ -31,9 +31,51 @@ pub(super) fn endpoint(beta: bool) -> (String, &'static str) {
     )
 }
 
+/// The record that a downloaded package was checked against a channel's feed:
+/// `<channel> <sha256>`. Written after a download from that channel, or after
+/// the feed was found to list the package; removed when the channel changes.
+pub(super) fn verified_record(beta: bool, sha256: &str) -> String {
+    format!("{} {sha256}", if beta { "beta" } else { "stable" })
+}
+
+/// Whether Velopack may apply the pending package when Okilum starts: only one
+/// recorded as checked against the channel the install follows now (#1318).
+/// Anything else waits for the next check, which keeps or discards it.
+pub(super) fn may_apply_at_start(
+    pending_sha256: Option<&str>,
+    record: Option<&str>,
+    beta: bool,
+) -> bool {
+    match (pending_sha256, record) {
+        (Some(sha), Some(record)) => record
+            .trim()
+            .eq_ignore_ascii_case(&verified_record(beta, sha)),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pending_package_applies_at_start_only_when_checked_for_the_current_channel() {
+        let beta_pkg = "aa11";
+        // #1318: a beta package downloaded before the user chose Stable.
+        let record = verified_record(true, beta_pkg);
+        assert!(!may_apply_at_start(Some(beta_pkg), Some(&record), false));
+        assert!(may_apply_at_start(Some(beta_pkg), Some(&record), true));
+        // Never checked (older builds, or the record was removed on a channel change).
+        assert!(!may_apply_at_start(Some(beta_pkg), None, true));
+        // The record names another package.
+        assert!(!may_apply_at_start(Some("bb22"), Some(&record), true));
+        assert!(!may_apply_at_start(None, Some(&record), true));
+        assert!(may_apply_at_start(
+            Some("cc33"),
+            Some(&format!("{}\r\n", verified_record(false, "cc33"))),
+            false
+        ));
+    }
 
     #[test]
     fn an_install_follows_stable_unless_beta_was_chosen() {
