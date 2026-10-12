@@ -146,8 +146,9 @@ pub(crate) fn content(cx: &mut App) -> impl IntoElement {
                         .text_sm()
                         .text_color(palette.text_muted)
                         .child(format!(
-                            "Version {} · Build {}{} · {}",
+                            "Version {}{} · Build {}{} · {}",
                             env!("OKILUM_RELEASE_VERSION"),
+                            crate::version_info::package_part(),
                             env!("OKILUM_BUILD_VERSION"),
                             if about_channel().is_empty() {
                                 String::new()

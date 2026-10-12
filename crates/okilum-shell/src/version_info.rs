@@ -31,6 +31,7 @@ pub(crate) fn report() -> String {
         env!("OKILUM_RELEASE_VERSION"),
         build_part(
             env!("OKILUM_BUILD_VERSION"),
+            package().as_deref(),
             &channel(crate::updater::channel()),
             &install
         ),
@@ -42,13 +43,39 @@ pub(crate) fn report() -> String {
 }
 
 /// `build N, beta channel`; a channel that only repeats the install kind
-/// (Windows "portable") is said once, in the install part.
-fn build_part(build: &str, channel: &str, install: &str) -> String {
+/// (Windows "portable") is said once, in the install part. A package version
+/// apart from the build follows it: `build N, package 0.1.M, …`.
+fn build_part(build: &str, package: Option<&str>, channel: &str, install: &str) -> String {
+    let build = match package {
+        Some(package) => format!("build {build}, package {package}"),
+        None => format!("build {build}"),
+    };
     if channel == install {
-        format!("build {build}")
+        build
     } else {
-        format!("build {build}, {channel}")
+        format!("{build}, {channel}")
     }
+}
+
+/// The installed package's version, only when it differs from the compiled
+/// one: a re-signed Windows build is packaged under a newer number than the
+/// binaries inside carry (#1319). Velopack updates by the package version.
+pub(crate) fn package() -> Option<String> {
+    differing_package(
+        env!("OKILUM_RELEASE_VERSION"),
+        crate::updater::installed_package(),
+    )
+}
+
+fn differing_package(compiled: &str, package: Option<String>) -> Option<String> {
+    package.filter(|package| !package.is_empty() && package != compiled)
+}
+
+/// ` · Package 0.1.M` after the version on the visible lines, else nothing.
+pub(crate) fn package_part() -> String {
+    package()
+        .map(|package| format!(" · Package {package}"))
+        .unwrap_or_default()
 }
 
 /// The compact form for the visible About line: `macOS arm64`.
@@ -254,12 +281,42 @@ mod tests {
             "beed5ef1"
         );
         assert_eq!(source("unknown (development)"), "unknown (development)");
-        assert_eq!(build_part("5068", "portable", "portable"), "build 5068");
+        assert_eq!(
+            build_part("5068", None, "portable", "portable"),
+            "build 5068"
+        );
         // Positive control: a real channel stays next to the build.
         assert_eq!(
-            build_part("5068", "beta channel", "installer"),
+            build_part("5068", None, "beta channel", "installer"),
             "build 5068, beta channel"
         );
+    }
+
+    /// A re-signed stable build: binaries 0.1.12166 inside package 0.1.12401
+    /// (#1319). Both numbers are named; equal ones are said once.
+    #[test]
+    fn a_package_apart_from_the_build_is_named() {
+        assert_eq!(
+            differing_package("0.1.12166", Some("0.1.12401".into())).as_deref(),
+            Some("0.1.12401")
+        );
+        assert_eq!(
+            build_part("12166", Some("0.1.12401"), "stable channel", "installer"),
+            "build 12166, package 0.1.12401, stable channel"
+        );
+        // Controls: the same version, an empty manifest and no install say nothing.
+        assert_eq!(
+            differing_package("0.1.12166", Some("0.1.12166".into())),
+            None
+        );
+        assert_eq!(differing_package("0.1.12166", Some(String::new())), None);
+        assert_eq!(differing_package("0.1.12166", None), None);
+        // Mac and Linux have no package version of their own.
+        if !cfg!(windows) {
+            assert_eq!(package(), None);
+            assert_eq!(package_part(), "");
+            assert!(!report().contains("package"), "{}", report());
+        }
     }
 
     #[test]

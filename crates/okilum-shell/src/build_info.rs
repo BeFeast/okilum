@@ -37,11 +37,15 @@ pub(crate) fn gpui_test_support() -> bool {
     present(HitboxId::placeholder())
 }
 
-/// One line per fact, `key: value`, for `okilum --build-info`.
+/// One line per fact, `key: value`, for `okilum --build-info`. `package:`
+/// appears only when the installed package differs from the build (#1319).
 pub(crate) fn report() -> String {
     format!(
-        "version: {}\nbuild: {}\ngpui-test-support: {}\n",
+        "version: {}\n{}build: {}\ngpui-test-support: {}\n",
         env!("OKILUM_RELEASE_VERSION"),
+        crate::version_info::package()
+            .map(|package| format!("package: {package}\n"))
+            .unwrap_or_default(),
         env!("OKILUM_BUILD_VERSION"),
         if gpui_test_support() { "yes" } else { "no" }
     )

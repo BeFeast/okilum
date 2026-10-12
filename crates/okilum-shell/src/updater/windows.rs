@@ -91,6 +91,20 @@ pub(super) fn restart(expected: Option<&str>, cx: &mut gpui::App) {
     }
 }
 
+/// The installed package's version from `current/sq.version` (#1319). Read
+/// once: an applied update starts a new process.
+pub(super) fn package_version() -> Option<String> {
+    static PACKAGE: OnceLock<Option<String>> = OnceLock::new();
+    PACKAGE
+        .get_or_init(|| {
+            settings()
+                .then(|| manager().ok())
+                .flatten()
+                .map(|manager| manager.get_current_version_as_string())
+        })
+        .clone()
+}
+
 fn manager() -> Result<UpdateManager, velopack::Error> {
     manager_for(beta())
 }
