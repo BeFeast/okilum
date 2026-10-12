@@ -147,6 +147,66 @@ class AnalyzerTests(unittest.TestCase):
         self.assertIsNone(self.analyze.summarise(self.run_dir([self.frame(5, 1)])))
 
 
+class BudgetTests(unittest.TestCase):
+    """The Linux CI guard (scroll/budget.py) fails on a #1294-style regression and passes a flat frame."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.budget = load(HERE / "scroll/budget.py", "budget")
+
+    def run_dir(self, root, name, draw, req, valid=True, frames=60):
+        base = 1_000_000_000
+        rep = Path(root) / name / "rep1"
+        rep.mkdir(parents=True)
+        lines = [f"[frame] t={base + i * 20_000} n={i} gap=20000 draws=1 draw={draw} req={req} layout=800 "
+                 f"prepaint=1300 paint=800 post=300 present=40000 cache=500 shape=0 cache_calls=300 "
+                 f"shapes=0 quads=118 glyphs=697 paths=0 underlines=0" for i in range(1, frames + 1)]
+        (rep / "trace.log").write_text("\n".join(lines) + "\n")
+        (rep / "wheel-start.txt").write_text("1000000\n")
+        (rep / "wheel-end.txt").write_text("1002000\n")
+        (rep / "summary.txt").write_text(f"rep=1 valid={valid} idle_frames_3s=0\n")
+        return str(Path(root) / name)
+
+    def check(self, head, big):
+        analyze = self.budget.load_analyze()
+        (h, hp), (b, bp) = self.budget.measure(analyze, head), self.budget.measure(analyze, big)
+        return hp + bp, self.budget.verdict(h, b, self.budget.limits()) if h and b else None
+
+    def test_the_1294_regression_fails_and_the_fix_passes(self):
+        with tempfile.TemporaryDirectory() as root:
+            # CT141, the 24k note: request_layout 3.9 ms before #1294 and 0.9 ms after; the
+            # 320-line head of the same note costs what the fixed 24k note costs.
+            head = self.run_dir(root, "head", draw=4000, req=900)
+            problems, failed = self.check(head, self.run_dir(root, "before", draw=7100, req=3900))
+            self.assertEqual(problems, [])
+            self.assertEqual(len(failed), 2, failed)
+            self.assertIn("request_layout grows with the note", failed[0])
+            problems, failed = self.check(head, self.run_dir(root, "after", draw=4300, req=1000))
+            self.assertEqual((problems, failed), ([], []))
+
+    def test_an_absolute_budget_catches_a_frame_that_is_slow_everywhere(self):
+        with tempfile.TemporaryDirectory() as root:
+            head = self.run_dir(root, "head", draw=13000, req=900)
+            _, failed = self.check(head, self.run_dir(root, "big", draw=13000, req=900))
+            self.assertEqual(len(failed), 1)
+            self.assertIn("draw p95", failed[0])
+
+    def test_a_run_that_did_not_scroll_proves_nothing(self):
+        with tempfile.TemporaryDirectory() as root:
+            head = self.run_dir(root, "head", draw=4000, req=900)
+            problems, _ = self.check(head, self.run_dir(root, "big", draw=4000, req=900, valid=False))
+            self.assertTrue(any("did not scroll" in p for p in problems), problems)
+            problems, _ = self.check(head, self.run_dir(root, "few", draw=4000, req=900, frames=5))
+            self.assertTrue(any("redrawn frames" in p for p in problems), problems)
+
+    def test_the_head_note_is_the_start_of_the_24k_note(self):
+        gen = load(HERE / "scroll/gen-notes.py", "gen_notes")
+        notes = gen.notes()
+        head = notes["big-head-320.md"]
+        self.assertTrue(notes["big-24k.md"].startswith(head))
+        self.assertEqual((head.count(b"\r\n"), gen.describe(head)["headings"]), (320, 20))
+
+
 class PatchScriptTests(unittest.TestCase):
     def test_patch_refuses_a_source_it_does_not_recognise(self):
         with tempfile.TemporaryDirectory() as root:
