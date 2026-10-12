@@ -332,6 +332,30 @@ jobs:
           CI_LANE: native-shell
         run: python3 scripts/ci/github-pr.py
 
+  # #1290: a frame of the scroll must not grow with the note (scripts/perf/scroll/budget.py).
+  perf-linux:
+    needs: native-scope
+    if: >-
+      github.event_name == 'pull_request' &&
+      needs.native-scope.outputs.macos == 'true' &&
+      !github.event.pull_request.draft &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: bridge
+    timeout-minutes: 100
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - name: Run the exact PR head's scroll frame-cost guard on GitHub Linux
+        env:
+          MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_LANE: perf-linux
+        run: python3 scripts/ci/github-pr.py
+
   macos:
     needs: [linux, native-scope, macos-github, macos-local]
     if: always() && github.event_name == 'pull_request'
@@ -380,7 +404,7 @@ jobs:
   # Keep the existing protected-branch context. Skipped/cancelled/failed native
   # jobs never pass a code PR; docs-only PRs and main retain Linux-only CI here.
   check:
-    needs: [linux, native-scope, macos, windows-github]
+    needs: [linux, native-scope, macos, windows-github, perf-linux]
     if: always()
     runs-on: bridge
     timeout-minutes: 2
@@ -392,6 +416,7 @@ jobs:
           MACOS_REQUIRED: ${{ needs.native-scope.outputs.macos }}
           MACOS_RESULT: ${{ needs.macos.result }}
           WINDOWS_RESULT: ${{ needs.windows-github.result }}
+          PERF_RESULT: ${{ needs.perf-linux.result }}
         run: |
           set -euo pipefail
           test "$LINUX_RESULT" = success
@@ -399,7 +424,8 @@ jobs:
             case "$MACOS_REQUIRED" in
               true)
                 test "$MACOS_RESULT" = success
-                test "$WINDOWS_RESULT" = success ;;
+                test "$WINDOWS_RESULT" = success
+                test "$PERF_RESULT" = success ;;
               false) echo "Documentation-only PR: native runner not needed" ;;
               *) echo "Missing native scope result" >&2; exit 1 ;;
             esac

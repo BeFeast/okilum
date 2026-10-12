@@ -41,6 +41,9 @@ touched, and the gpui sources stay unpatched (see AGENTS.md).
 |---|---|
 | `frame-trace/patch.py` | patches throwaway copies of `gpui-pre` (and `gpui-pre-windows`, `gpui-pre-apple`) so each presented frame writes one line: gap, draw, request_layout, compute_layout, prepaint, paint, present, time in the line-layout cache, time and count of text shaping, scene sizes; Windows adds the Present split, macOS the `next_drawable` / encode / commit split. Field list in its docstring. |
 | `build-windows-trace.sh` | cross-builds a Windows `okilum.exe` with that trace (same profile as shipped; `--no-debug-assertions` for the comparison) |
+| `build-linux-trace.sh` | builds a Linux release `okilum` with that trace (CI guard, Linux runs) |
+| `scroll/linux/scroll-trace.py` | the Linux probe under X11 (Xvfb): 120 wheel notches every 16 ms, a window-pixel check that the note scrolled |
+| `scroll/budget.py` | the CI guard: the frame must not grow with the note (see below) |
 | `scroll/windows/scroll-trace.ps1` | the Windows probe: wheel every 16 ms for 10 s, DXGI `Present_Start` intervals from ETW as ground truth, the trace as the breakdown |
 | `scroll/mac/scroll-trace.py`, `wheel.swift` | the Mac probe (Hedva): 120 pixel wheel events of 40 px every 16 ms, no screen capture while measuring |
 | `scroll/analyze.py` | one table row per run: fps, interval p50/p95, medians of every phase |
@@ -83,6 +86,23 @@ Take `/tmp/okilum-hedva-qa.lock` first (shlock), then `scripts/perf/build-mac-tr
 `python3 scroll-trace.py BINARY OUT VAULT reader:Long-10k.md …` and `analyze.py OUT/<scenario>`.
 The headless Mac has a virtual display at 30 Hz: the `drawable` column shows whether
 `next_drawable` is what waits, which is the question to repeat on a Mac with a real display.
+
+## Linux and the CI guard
+
+`perf-linux` (hosted, on every PR that touches app code, required by `ci / check`) builds the
+trace binary, scrolls `big-head-320.md` and `big-24k.md` (the first 320 lines of the 24k note:
+the same blocks on screen, only the length differs) under Xvfb and runs `scroll/budget.py`. It
+fails when `request_layout` p50 grows by more than 1 ms with the length, `draw` p50 by more than
+3 ms, or `draw` p95 on the 24k note exceeds 30 ms; a rep that did not scroll fails as
+"no evidence". The growth checks compare two notes in one run on one machine, so the runner's
+speed cancels out; `present` is left out because under Xvfb it is the software rasteriser.
+A #1294-style regression (work per frame over all of a note's links) fails it: on CT141
+`request_layout` grew +3.0 to +4.1 ms with #1294 reverted, +0.1 ms on main.
+
+By hand on CT141 (through `~/bin/tessera-build`):
+`scripts/perf/build-linux-trace.sh OUT`, `scroll/gen-notes.py NOTES --check`, then
+`DISPLAY=:N python3 scroll/linux/scroll-trace.py OUT/okilum RUN NOTES reader:big-head-320.md reader:big-24k.md`
+and `scroll/budget.py RUN/reader-big-head-320 RUN/reader-big-24k`.
 
 ## Reading a row
 
