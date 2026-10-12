@@ -13,16 +13,18 @@ SRC=${1:?source commit} BUILD=${2:?build to re-sign}
 [[ "$SRC" =~ ^[0-9a-f]{40}$ && "$BUILD" =~ ^[0-9]+$ ]] || { echo "usage: okilum-sign-code SOURCE_SHA BUILD" >&2; exit 2; }
 SIGNER=root@10.10.0.237
 A=https://git.oklabs.uk/api/v1/repos/BeFeast/okilum CDN=https://updates.befeast.com/okilum
-say() { echo "[$(TZ=Asia/Jerusalem date +%H:%M:%S)] $*"; }
+# Status lines (never the code) also go to a log, so whoever follows the run sees the outcome.
+LOG="$HOME/.cache/okilum-sign-code.log"
+say() { echo "[$(TZ=Asia/Jerusalem date '+%F %H:%M:%S')] $*" | tee -a "$LOG"; }
 set -a; . "$HOME/.config/forgejo/token.env"; set +a
 api() { curl -fsS -H "Authorization: token $FORGEJO_TOKEN" -H 'Content-Type: application/json' "$@"; }
 
 lock="${XDG_RUNTIME_DIR:-/tmp}/okilum-sign-code.lock.d"
-mkdir "$lock" 2>/dev/null || { echo "another okilum-sign-code run holds $lock" >&2; exit 1; }
+mkdir "$lock" 2>/dev/null || { say "another okilum-sign-code run holds $lock"; exit 1; }
 trap 'rmdir "$lock"' EXIT
 
 if [ -t 0 ]; then read -rsp 'SimplySign code: ' code; echo; else read -r code; fi
-[[ "$code" =~ ^[0-9]{6}$ ]] || { echo "the code must be 6 digits" >&2; exit 2; }
+[[ "$code" =~ ^[0-9]{6}$ ]] || { say "the code must be 6 digits; nothing was sent"; exit 2; }
 email=$(api "$A/actions/variables/OKILUM_CERTUM_EMAIL" | python3 -c 'import json,sys;print(json.load(sys.stdin)["data"])')
 [[ "$email" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$ ]] || { echo "OKILUM_CERTUM_EMAIL is not a plain e-mail address" >&2; exit 1; }
 
