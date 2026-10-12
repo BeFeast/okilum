@@ -6,7 +6,7 @@
 BINARY is a frame-trace build (scripts/perf/frame-trace/patch.py); VAULT holds the notes of
 gen-notes.py; mode is reader, live or source. Per scenario Okilum starts once with
 OKILUM_FRAME_TRACE=<file>, and REPS (3) wheel streams of 120 pixel events of 40 px, one every
-16 ms (the stream of the #1004 measurements), are posted by `wheel` (wheel.swift; it does not
+16 ms (the stream of the #1004 measurements; WHEEL_EVENTS / WHEEL_INTERVAL_MS change it), are posted by `wheel` (wheel.swift; it does not
 capture the screen, a capture loads WindowServer and perturbs the timing). OUTDIR/<scenario>/
 rep<N>/ gets the slice of the trace of that stream, wheel-start.txt / wheel-end.txt (Unix ms)
 for scripts/perf/scroll/analyze.py, and before/after screenshots next to the scenario's idle
@@ -26,6 +26,11 @@ from pathlib import Path
 binary, out, vault = sys.argv[1], Path(sys.argv[2]), sys.argv[3]
 scenarios = sys.argv[4:] or ["reader:Long-LP-700.md", "reader:Long-10k.md", "source:Long-10k.md"]
 REPS = int(os.environ.get("REPS", "3"))
+# The measured stream: WHEEL_EVENTS notches of 40 px, one every WHEEL_INTERVAL_MS. The default is the
+# 60 Hz stream of #1004; 130 ms is one notch per frame on Hedva's 7.5 fps virtual display, i.e. the
+# same distance per frame as the default has on a 60 Hz display.
+EVENTS = int(os.environ.get("WHEEL_EVENTS", "120"))
+INTERVAL_MS = os.environ.get("WHEEL_INTERVAL_MS", "16")
 HOME = Path.home()
 OKQA = os.environ.get("OKQA", str(HOME / "qa/okilum/tools/okqa"))
 # build-mac-trace.sh puts the compiled injector next to the binary
@@ -88,10 +93,10 @@ for scenario in scenarios:
         time.sleep(3)
         idle = frames(log) - a
         for rep in range(1, REPS + 1):
-            run(WHEEL, str(proc.pid), "120", "-40", "16", check=False)  # back to the top (not measured)
+            run(WHEEL, str(proc.pid), str(EVENTS), "-40", "16", check=False)  # back to the top (not measured)
             time.sleep(2.5)
             start = now_ms()
-            res = run(WHEEL, str(proc.pid), "120", "40", "16", check=False).stdout.strip()
+            res = run(WHEEL, str(proc.pid), str(EVENTS), "40", INTERVAL_MS, check=False).stdout.strip()
             end = now_ms()
             time.sleep(1.5)
             rep_dir = base / f"rep{rep}"
@@ -101,7 +106,7 @@ for scenario in scenarios:
             (rep_dir / "trace.log").write_text(slice_trace(log, start, end))
             sent = re.search(r"sent=(\d+)", res)
             (rep_dir / "summary.txt").write_text(
-                f"rep={rep} valid={bool(sent and int(sent.group(1)) == 120)} idle_frames_3s={idle} probe={res.replace(' ', '_')}\n")
+                f"rep={rep} valid={bool(sent and int(sent.group(1)) == EVENTS)} idle_frames_3s={idle} stream={EVENTS}x40px/{INTERVAL_MS}ms probe={res.replace(' ', '_')}\n")
             summary.append({"label": label, "rep": rep, "idle_frames_3s": idle, "probe": res})
             print(f"{label} rep{rep}: probe {res}, idle {idle}", flush=True)
         run(OKQA, "shot", str(proc.pid), str(base / "after.png"), check=False)

@@ -87,6 +87,12 @@ Take `/tmp/okilum-hedva-qa.lock` first (shlock), then `scripts/perf/build-mac-tr
 The headless Mac has a virtual display at 30 Hz: the `drawable` column shows whether
 `next_drawable` is what waits, which is the question to repeat on a Mac with a real display.
 
+The default stream is 60 notches a second, which a 7.5 fps display turns into ~8 notches (~320 px)
+per frame. `WHEEL_EVENTS=120 WHEEL_INTERVAL_MS=130` sends one notch per frame instead, the distance
+per frame of the default stream on a 60 Hz display; run both on the same build, interleaved. The
+`entry frames %` column is the share of redrawn frames in which the text shaper ran (new text came
+into view).
+
 ## Linux and the CI guard
 
 `perf-linux` (hosted, on every PR that touches app code, required by `ci / check`) builds the
