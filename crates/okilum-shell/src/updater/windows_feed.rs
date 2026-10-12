@@ -1,6 +1,9 @@
 //! Shared client/publisher contract for Windows release channels.
 #[derive(serde::Deserialize)]
 struct Contract {
+    /// The channel CI packs and publishes main builds into. Not the client's
+    /// default: an install follows stable unless the user chose beta (#1307).
+    #[cfg_attr(not(test), allow(dead_code))]
     default_channel: String,
     public_root: String,
     prefix: String,
@@ -11,8 +14,12 @@ fn contract() -> Contract {
         .expect("Windows channel contract must be valid")
 }
 
-pub(super) fn default_beta() -> bool {
-    contract().default_channel == "beta"
+/// The channel an install follows, from the choice saved by Settings →
+/// Updates (`windows-update-channel`). Only an explicit «beta» follows beta;
+/// no file, or anything else, is stable (#1307). A promoted stable build is
+/// the beta build re-signed, so the default cannot come from the binary.
+pub(super) fn follows_beta(saved: Option<&str>) -> bool {
+    saved.is_some_and(|value| value.trim() == "beta")
 }
 
 pub(super) fn endpoint(beta: bool) -> (String, &'static str) {
@@ -27,6 +34,19 @@ pub(super) fn endpoint(beta: bool) -> (String, &'static str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_install_follows_stable_unless_beta_was_chosen() {
+        assert!(!follows_beta(None), "no saved choice: stable (#1307)");
+        assert!(follows_beta(Some("beta")));
+        assert!(follows_beta(Some("beta\r\n")));
+        assert!(!follows_beta(Some("stable")));
+        assert!(
+            !follows_beta(Some("")),
+            "an empty or unknown value is not a choice of beta"
+        );
+        assert!(!follows_beta(Some("Beta channel")));
+    }
     use std::io::{Read, Write};
     use velopack::{
         bundle::Manifest,
@@ -37,9 +57,9 @@ mod tests {
     #[test]
     fn sdk_requests_the_feed_path_published_by_ci() {
         let config = contract();
-        assert!(
-            default_beta(),
-            "First publication and default client must both be beta"
+        assert_eq!(
+            config.default_channel, "beta",
+            "main builds publish to beta"
         );
         for beta in [true, false] {
             let (base, channel) = endpoint(beta);
