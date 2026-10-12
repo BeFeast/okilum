@@ -1797,6 +1797,7 @@ impl Reader {
             _subs: vec![find_sub],
             _content_sub: content_sub,
         };
+        this.side_panels = reader_side_panel::SidePanel::pair(cx);
         // Nothing has focus on a fresh window, and gpui then dispatches keys
         // to the root node only, where the reader's context is not on the
         // stack. Take focus so the bindings are live from the first keystroke.
@@ -6542,7 +6543,7 @@ impl Render for Reader {
             [reader_layout::Panel::Notes, reader_layout::Panel::Backlinks].map(|panel| {
                 self.panels
                     .visible(panel, available)
-                    .then(|| self.side_panel(panel == reader_layout::Panel::Notes, cx))
+                    .then(|| self.side_panel(panel == reader_layout::Panel::Notes))
             });
         let panels: Vec<_> = [reader_layout::Panel::Notes, reader_layout::Panel::Backlinks]
             .into_iter()

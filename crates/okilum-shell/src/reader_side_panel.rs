@@ -17,7 +17,16 @@ pub(crate) struct SidePanel {
 }
 
 impl SidePanel {
-    pub(crate) fn new(reader: &Entity<Reader>, left: bool, cx: &mut Context<Self>) -> Self {
+    /// Both panels, made with the Reader and outside any draw: a view first
+    /// created during a draw is not tracked by the window from the next frame
+    /// on (it was already "accessed" before its first render), so a notify
+    /// could never redraw it and the panel would stay frozen.
+    pub(crate) fn pair(cx: &mut Context<Reader>) -> [Option<Entity<Self>>; 2] {
+        let reader = cx.entity();
+        [true, false].map(|left| Some(cx.new(|cx| Self::new(&reader, left, cx))))
+    }
+
+    fn new(reader: &Entity<Reader>, left: bool, cx: &mut Context<Self>) -> Self {
         Self {
             reader: reader.downgrade(),
             left,
@@ -56,15 +65,14 @@ impl Render for SidePanel {
 }
 
 impl Reader {
-    /// The panel's cached view, made on first use.
-    pub(super) fn side_panel(&mut self, left: bool, cx: &mut Context<Self>) -> AnyElement {
-        let reader = cx.entity();
-        let panel = self.side_panels[usize::from(!left)]
-            .get_or_insert_with(|| cx.new(|cx| SidePanel::new(&reader, left, cx)))
-            .clone();
-        AnyView::from(panel)
-            .cached(StyleRefinement::default().size_full())
-            .into_any_element()
+    /// The panel's cached view (made with the Reader, see [`SidePanel::pair`]).
+    pub(super) fn side_panel(&self, left: bool) -> AnyElement {
+        match &self.side_panels[usize::from(!left)] {
+            Some(panel) => AnyView::from(panel.clone())
+                .cached(StyleRefinement::default().size_full())
+                .into_any_element(),
+            None => div().into_any_element(),
+        }
     }
 
     /// Called on every Reader render: the outline marks the section at the
