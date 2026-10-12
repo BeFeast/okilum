@@ -203,6 +203,8 @@ mod tests {
             }
             wheel(visual, 200.);
         }
+        // The frame that met the new section asked for the next one.
+        frame(visual);
         let (current, drawn) = section(visual);
         assert!(
             current.is_some_and(|s| s > 0),
