@@ -99,6 +99,7 @@ def summarise(run):
         "valid": "/".join(str(e.get("valid", "?"))[0] for e in ext),
         "quiet": "/".join(str(e.get("quiet", "?"))[0] for e in ext),
         "capped": "/".join(str(e.get("host_capped", "?"))[0] for e in ext),
+        "input_hz": statistics.mean(float(e["wheel_hz"]) for e in ext if "wheel_hz" in e) if any("wheel_hz" in e for e in ext) else float("nan"),
         "redraws": len(frames) / len(reps),
         "fps": statistics.mean(fps) if fps else float("nan"),
         "int50": pct(intervals, 50), "int95": pct(intervals, 95),
@@ -118,7 +119,7 @@ def summarise(run):
 
 COLUMNS = (
     ("run", "run", "{}"), ("reps", "reps", "{}"), ("valid", "valid", "{}"), ("quiet", "quiet", "{}"),
-    ("capped", "host capped", "{}"), ("redraws", "redraws/rep", "{:.0f}"), ("fps", "fps", "{:.1f}"), ("ext_fps", "ext fps", "{:.1f}"),
+    ("capped", "host capped", "{}"), ("input_hz", "wheel Hz", "{:.1f}"), ("redraws", "redraws/rep", "{:.0f}"), ("fps", "fps", "{:.1f}"), ("ext_fps", "ext fps", "{:.1f}"),
     ("int50", "interval p50", "{:.1f}"), ("int95", "p95", "{:.1f}"),
     ("cost50", "frame cost p50", "{:.1f}"), ("cost95", "cost p95", "{:.1f}"), ("costmax", "max", "{:.1f}"),
     ("draw", "draw", "{:.1f}"), ("req", "req", "{:.1f}"), ("layout", "layout", "{:.1f}"),
