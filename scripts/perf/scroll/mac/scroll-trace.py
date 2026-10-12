@@ -28,7 +28,8 @@ scenarios = sys.argv[4:] or ["reader:Long-LP-700.md", "reader:Long-10k.md", "sou
 REPS = int(os.environ.get("REPS", "3"))
 HOME = Path.home()
 OKQA = os.environ.get("OKQA", str(HOME / "qa/okilum/tools/okqa"))
-WHEEL = os.environ.get("WHEEL", str(HOME / "qa1290/wheel"))
+# build-mac-trace.sh puts the compiled injector next to the binary
+WHEEL = os.environ.get("WHEEL", str(Path(binary).with_name("wheel")))
 SPARKLE = os.environ.get("SPARKLE_DIR", str(HOME / "qa/okilum/src/vendor/sparkle"))
 if not os.path.exists("/tmp/okilum-hedva-qa.lock"):
     sys.exit("QA lock is not held")
