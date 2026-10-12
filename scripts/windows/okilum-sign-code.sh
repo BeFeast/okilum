@@ -28,6 +28,18 @@ if [ -t 0 ]; then read -rsp 'SimplySign code: ' code; echo; else read -r code; f
 email=$(api "$A/actions/variables/OKILUM_CERTUM_EMAIL" | python3 -c 'import json,sys;print(json.load(sys.stdin)["data"])')
 [[ "$email" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$ ]] || { echo "OKILUM_CERTUM_EMAIL is not a plain e-mail address" >&2; exit 1; }
 
+# The re-sign shares the windows-build concurrency group with the scheduled beta build, and a
+# running beta build would hold it past the 20-minute session (2026-10-12, run 7396). The beta
+# is rebuilt every hour, so cancelling it costs nothing: clear the group before the code is spent.
+api "$A/actions/runs?limit=30" | python3 -c '
+import json, sys
+for r in json.load(sys.stdin)["workflow_runs"]:
+    if (r["workflow_id"] == "windows-diagnostic.yml" and r["trigger_event"] == "schedule"
+            and r["status"] in ("running", "waiting", "blocked", "queued")):
+        print(r["id"], r["index_in_repo"])' | while read -r id index; do
+    api -o /dev/null -X POST "$A/actions/runs/$id/cancel" && say "cancelled scheduled beta run $index (it would hold the re-sign)"
+done
+
 say "logging in on the signer with the code (dry-sign of the test PE)"
 # The code and the e-mail travel on ssh's stdin into ssign's environment only; the remote
 # command line is a fixed string with nothing interpolated into it.
