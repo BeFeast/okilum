@@ -7,6 +7,14 @@
 
 static NSString *const TSBetaKey = @"OkilumReceiveBetaBuilds";
 
+// Every build follows stable unless the user chose Beta (#1307). Promotion
+// re-signs a beta build without rebuilding it, so a beta default here moved
+// every stable install to every-merge beta. A choice is the value the
+// Settings toggle (or `defaults write`) stored; nothing else ever writes it.
+static void TSRegisterChannelDefault(void) {
+    [NSUserDefaults.standardUserDefaults registerDefaults:@{TSBetaKey : @NO}];
+}
+
 // kind: 0 up to date, 1 update available (text = version), 2 error (text = reason).
 typedef void (*TSReport)(int kind, const char *text);
 static TSReport TSReporter;
@@ -44,7 +52,7 @@ static SPUStandardUpdaterController *TSController;
 static TSUpdaterDelegate *TSDelegate;
 
 void okilum_updater_start(void) {
-    [NSUserDefaults.standardUserDefaults registerDefaults:@{TSBetaKey : @YES}];
+    TSRegisterChannelDefault();
     // A bare `cargo run` binary has no bundle feed; Sparkle would only report errors.
     if (TSController || ![NSBundle.mainBundle objectForInfoDictionaryKey:@"SUFeedURL"]) return;
     TSDelegate = [TSUpdaterDelegate new];
@@ -69,7 +77,7 @@ bool okilum_updater_check(void) {
 void okilum_updater_install(void) { [TSController checkForUpdates:nil]; }
 
 bool okilum_updater_beta(void) {
-    [NSUserDefaults.standardUserDefaults registerDefaults:@{TSBetaKey : @YES}];
+    TSRegisterChannelDefault();
     return [NSUserDefaults.standardUserDefaults boolForKey:TSBetaKey];
 }
 
