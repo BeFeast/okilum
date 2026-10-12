@@ -1,0 +1,217 @@
+--- a/crates/base/src/text/node.rs
++++ b/crates/base/src/text/node.rs
+@@ -9,7 +9,8 @@
+     Image, ImageFormat, InteractiveElement as _, IntoElement, Length, MouseButton, ObjectFit,
+     Overflow,
+     ParentElement, Pixels, Refineable as _, ScrollHandle, SharedString, SharedUri,
+-    StatefulInteractiveElement, StyleRefinement, Styled, StyledImage as _, WhiteSpace, Window,
++    StatefulInteractiveElement, StyleRefinement, Styled, StyledImage as _, TextStyle, WhiteSpace,
++    Window,
+     canvas, div, img, prelude::FluentBuilder as _, px, relative, rems,
+ };
+ use markdown::mdast;
+@@ -976,6 +977,41 @@
+     pub(crate) children: Vec<TableRow>,
+     pub(crate) column_aligns: Vec<ColumnumnAlign>,
+     pub(crate) span: Option<Span>,
++    /// What a table renders the same on every frame (shared across clones,
++    /// like a code block's highlights): its measured column widths and its
++    /// `table_actions` snapshot. Not part of the table's identity.
++    pub(crate) frame_cache: TableFrameCache,
++}
++
++#[derive(Clone, Default)]
++pub(crate) struct TableFrameCache(Arc<Mutex<TableFrameCached>>);
++
++#[derive(Default)]
++struct TableFrameCached {
++    /// Max-content and minimum column widths, for the styles they were measured with.
++    widths: Option<(TableWidthsKey, Vec<f32>, Vec<f32>)>,
++    /// `table_data()` without and with `overflows` set.
++    data: [Option<Arc<TableData>>; 2],
++}
++
++#[derive(PartialEq)]
++struct TableWidthsKey {
++    text_style: TextStyle,
++    rem_size: Pixels,
++    style: TextViewStyle,
++    col_count: usize,
++}
++
++impl PartialEq for TableFrameCache {
++    fn eq(&self, _: &Self) -> bool {
++        true
++    }
++}
++
++impl std::fmt::Debug for TableFrameCache {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.write_str("TableFrameCache")
++    }
+ }
+ 
+ /// Plain snapshot of a rendered Markdown table, passed to the
+@@ -1049,6 +1085,49 @@
+         lines.join("\n")
+     }
+ 
++    /// [`Self::table_data`] with `overflows` set, made once per table.
++    fn frame_data(&self, overflows: bool) -> Arc<TableData> {
++        let mut cache = self.frame_cache.0.lock().unwrap_or_else(|e| e.into_inner());
++        cache.data[usize::from(overflows)]
++            .get_or_insert_with(|| {
++                let mut data = self.table_data();
++                data.overflows = overflows;
++                Arc::new(data)
++            })
++            .clone()
++    }
++
++    /// The max-content and minimum column widths (see [`measure_table_widths`]),
++    /// measured once per table and text style instead of on every frame.
++    fn frame_widths(
++        &self,
++        col_count: usize,
++        node_cx: &NodeContext,
++        window: &mut Window,
++    ) -> (Vec<f32>, Vec<f32>) {
++        let key = TableWidthsKey {
++            text_style: window.text_style(),
++            rem_size: window.rem_size(),
++            style: node_cx.style.clone(),
++            col_count,
++        };
++        let mut cache = self.frame_cache.0.lock().unwrap_or_else(|e| e.into_inner());
++        if let Some((cached, full, min)) = &cache.widths
++            && *cached == key
++        {
++            return (full.clone(), min.clone());
++        }
++        let full = measure_table_widths(self, col_count, node_cx, window, false);
++        let nowrap = node_cx.style.table_cell().text.white_space == Some(WhiteSpace::Nowrap);
++        let min = if nowrap {
++            full.clone()
++        } else {
++            measure_table_widths(self, col_count, node_cx, window, true)
++        };
++        cache.widths = Some((key, full.clone(), min.clone()));
++        (full, min)
++    }
++
+     /// Snapshot of this table for the [`crate::text::TextView::table_actions`]
+     /// hook.
+     pub(crate) fn table_data(&self) -> TableData {
+@@ -2460,14 +2539,8 @@
+         cx: &mut App,
+     ) -> AnyElement {
+         const TABLE_BORDER_PX: f32 = 2.0;
+-        let col_w = measure_table_columns(table, col_count, node_cx, window);
++        let (col_w, col_min_w) = table.frame_widths(col_count, node_cx, window);
+         let style = &node_cx.style;
+-        let nowrap = style.table_cell().text.white_space == Some(WhiteSpace::Nowrap);
+-        let col_min_w = if nowrap {
+-            col_w.clone()
+-        } else {
+-            measure_table_widths(table, col_count, node_cx, window, true)
+-        };
+         let min_total_w: f32 = col_min_w.iter().sum::<f32>() + TABLE_BORDER_PX;
+ 
+         let table_scroll_key = if let Some(span) = table.span {
+@@ -2610,8 +2683,7 @@
+                             }))
+                     };
+ 
+-                    let mut data = table.table_data();
+-                    data.overflows = overflows;
++                    let data = table.frame_data(overflows);
+                     let mut frame_style = StyleRefinement::default()
+                         .bg(cx.theme().tokens.colors.surface)
+                         .border_1()
+@@ -2984,6 +3056,7 @@
+             }],
+             column_aligns: vec![],
+             span: None,
++            frame_cache: Default::default(),
+         };
+         let node_cx = NodeContext {
+             style: TextViewStyle::default().with_inline_code_font_family(Some(MONO.into())),
+@@ -3348,6 +3421,7 @@
+             ],
+             column_aligns: vec![ColumnumnAlign::Left, ColumnumnAlign::Right],
+             span: None,
++            frame_cache: Default::default(),
+         };
+         let block = BlockNode::Table(table);
+         assert_eq!(
+@@ -3373,6 +3447,7 @@
+                 .collect(),
+             column_aligns,
+             span: None,
++            frame_cache: Default::default(),
+         }
+     }
+ 
+@@ -3451,6 +3526,62 @@
+         assert_eq!(data.span, Some(4..42));
+     }
+ 
++    /// A table's column widths and its `table_actions` snapshot are made once,
++    /// not on every frame (#1290 in Okilum: every scroll frame measured each
++    /// visible table twice and serialized it to Markdown).
++    #[test]
++    fn table_frame_cache_keeps_widths_and_data_until_the_style_changes() {
++        use crate::text::inline::test_fonts::{MONO, WideMonoTextSystem};
++        use gpui::{Empty, TestApp};
++
++        let table = table_of(
++            vec![
++                vec![plain_cell("Name"), plain_cell("A longer cell")],
++                vec![plain_cell("x"), plain_cell("y")],
++            ],
++            vec![ColumnumnAlign::Left, ColumnumnAlign::Left],
++        );
++        let node_cx = NodeContext::default();
++        let mut app = TestApp::with_text_system(Arc::new(WideMonoTextSystem));
++        let mut window = app.open_window(|_, _| Empty);
++        window.update(|_, window, _| {
++            let measured = (
++                measure_table_widths(&table, 2, &node_cx, window, false),
++                measure_table_widths(&table, 2, &node_cx, window, true),
++            );
++            assert!(
++                measured.0[1] > measured.0[0],
++                "positive control: real widths"
++            );
++            assert_eq!(table.frame_widths(2, &node_cx, window), measured);
++            // The next frame reads the cache: a value planted there comes back.
++            table
++                .frame_cache
++                .0
++                .lock()
++                .unwrap()
++                .widths
++                .as_mut()
++                .unwrap()
++                .1 = vec![1., 2.];
++            assert_eq!(table.frame_widths(2, &node_cx, window).0, vec![1., 2.]);
++            // Another style measures again.
++            let other = NodeContext {
++                style: TextViewStyle::default().with_inline_code_font_family(Some(MONO.into())),
++                ..Default::default()
++            };
++            assert_eq!(table.frame_widths(2, &other, window).0, measured.0);
++        });
++
++        // The snapshot is made once and shared by clones of the parsed table.
++        let data = table.frame_data(false);
++        assert!(Arc::ptr_eq(&data, &table.clone().frame_data(false)));
++        assert_eq!(*data, table.table_data());
++        let overflowing = table.frame_data(true);
++        assert!(overflowing.overflows && !data.overflows);
++        assert_eq!(overflowing.markdown, data.markdown);
++    }
++
+     #[test]
+     fn table_data_handles_tables_without_rows() {
+         // Header only: still a valid table, with no data rows.
