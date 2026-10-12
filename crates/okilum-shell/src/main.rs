@@ -8502,7 +8502,7 @@ mod document_link_landing_tests {
 
         // Even a pair out of step draws no card instead of crashing.
         view.update(visual, |v, cx| {
-            v.backlink_groups = vec![0..1];
+            v.backlink_groups = std::iter::once(0..1).collect();
             v.backlinks_list.reset_with_uniform_height(1, px(58.));
             cx.notify();
         });
