@@ -99,7 +99,7 @@ speed cancels out; `present` is left out because under Xvfb it is the software r
 A #1294-style regression (work per frame over all of a note's links) fails it: on CT141
 `request_layout` grew +3.0 to +4.1 ms with #1294 reverted, +0.1 ms on main.
 
-By hand on CT141 (through `~/bin/tessera-build`):
+By hand on CT141 (through its build wrapper in `~/bin`, which holds the one-cargo lock):
 `scripts/perf/build-linux-trace.sh OUT`, `scroll/gen-notes.py NOTES --check`, then
 `DISPLAY=:N python3 scroll/linux/scroll-trace.py OUT/okilum RUN NOTES reader:big-head-320.md reader:big-24k.md`
 and `scroll/budget.py RUN/reader-big-head-320 RUN/reader-big-24k`.

@@ -6,7 +6,7 @@
 #
 # Release build against a throwaway copy of gpui-pre that scripts/perf/frame-trace/patch.py
 # instruments. OUTDIR gets okilum and BUILD.txt. Nothing is published; the checkout's sources and
-# Cargo.lock are left as they were. On CT141 run it through ~/bin/tessera-build (one cargo at a
+# Cargo.lock are left as they were. On CT141 run it through the build wrapper in ~/bin (one cargo at a
 # time; the VM 151 measurement windows hold that lock).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
