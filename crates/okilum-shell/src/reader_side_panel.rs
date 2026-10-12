@@ -6,7 +6,8 @@
 //! panel observes the Reader: every Reader `cx.notify()` redraws it, as every
 //! frame did before. Scrolling the note does not notify the Reader; what the
 //! panels show of the scroll position, the current section in the outline, is
-//! checked on each Reader render and notifies the right panel when it changes.
+//! checked on each Reader render and redraws the right panel, in the frame
+//! after, when it changes.
 use super::*;
 
 pub(crate) struct SidePanel {
@@ -74,8 +75,10 @@ impl Reader {
             return;
         }
         self.outline_section = section;
-        if let Some(panel) = &self.side_panels[1] {
-            panel.update(cx, |_, cx| cx.notify());
+        // A notify inside a draw only takes effect at the next draw, and none
+        // would be scheduled: after this one, it asks for its own frame.
+        if let Some(panel) = self.side_panels[1].clone() {
+            cx.defer(move |_, cx| panel.update(cx, |_, cx| cx.notify()));
         }
     }
 
