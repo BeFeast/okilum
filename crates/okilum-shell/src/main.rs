@@ -997,19 +997,12 @@ fn reader_plugins_at(
     states: prepared_links::States,
     identities: &[okilum_core::document_links::prepared::LinkIdentity],
 ) -> TextView {
-    // Use exactly the same eligibility as the Create note hover action.
     #[cfg(any(unix, windows))]
-    let missing_cards = identities
-        .iter()
-        .filter_map(|identity| {
-            reader_hover::missing_note_target(&identity.url, &states, identities)
-                .map(|_| identity.url.clone())
-        })
-        .collect();
+    let missing_cards = reader_hover::missing_cards(&states, identities);
     #[cfg(not(any(unix, windows)))]
     let missing_cards = {
         let _ = identities;
-        std::collections::BTreeSet::new()
+        Arc::new(std::collections::BTreeSet::new())
     };
     let hover_entity = entity.clone();
     let tasks_entity = entity.clone();

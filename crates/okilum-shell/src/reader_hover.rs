@@ -89,6 +89,70 @@ pub(super) fn missing_note_target(
     missing_path(&identity.from, &identity.target)
 }
 
+/// Links that get the Create note card, with exactly the eligibility of the
+/// Create note hover action. Every frame renders the document, so the set is
+/// computed once per link preparation (#1290: rebuilding it per frame cost
+/// O(links²), 3 ms a frame at 1,500 missing links).
+///
+/// A preparation's `states` belong to one identities snapshot: replacing the
+/// identities first invalidates the states (`accept_prepared_document`), so a
+/// `states` Arc is the key. The entry keeps its Arc alive, so its address
+/// cannot be reused by a later preparation; the identities' address and length
+/// are checked as well.
+#[cfg(any(unix, windows))]
+pub(super) fn missing_cards(
+    states: &prepared_links::States,
+    identities: &[document_links::prepared::LinkIdentity],
+) -> Arc<std::collections::BTreeSet<String>> {
+    type Entry = (
+        prepared_links::States,
+        (usize, usize),
+        Arc<std::collections::BTreeSet<String>>,
+    );
+    // A few entries: several Reader windows render in turn.
+    const KEPT: usize = 8;
+    thread_local! {
+        static CACHE: std::cell::RefCell<Vec<Entry>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    let shape = (identities.as_ptr() as usize, identities.len());
+    let hit = CACHE.with(|cache| {
+        cache
+            .borrow()
+            .iter()
+            .find(|(cached, cached_shape, _)| Arc::ptr_eq(cached, states) && *cached_shape == shape)
+            .map(|(_, _, cards)| cards.clone())
+    });
+    if let Some(cards) = hit {
+        return cards;
+    }
+    let mut first_wiki = std::collections::HashMap::new();
+    for identity in identities.iter().filter(|identity| identity.wiki) {
+        first_wiki.entry(identity.url.as_str()).or_insert(identity);
+    }
+    let cards: Arc<std::collections::BTreeSet<String>> = Arc::new(
+        identities
+            .iter()
+            .filter(|identity| {
+                states
+                    .get(&identity.url)
+                    .is_some_and(|state| state.status == LinkStatus::MissingDocument)
+                    && first_wiki
+                        .get(identity.url.as_str())
+                        .is_some_and(|wiki| missing_path(&wiki.from, &wiki.target).is_some())
+            })
+            .map(|identity| identity.url.clone())
+            .collect(),
+    );
+    CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.len() == KEPT {
+            cache.remove(0);
+        }
+        cache.push((states.clone(), shape, cards.clone()));
+    });
+    cards
+}
+
 pub(super) fn link_presentation(
     url: &str,
     states: &prepared_links::States,
@@ -677,6 +741,71 @@ fn preview_plugins(
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    /// #1290: the Create note cards are the links `missing_note_target`
+    /// accepts, computed once per preparation instead of once per frame.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn missing_cards_match_the_hover_action_and_are_kept_per_preparation() {
+        use document_links::prepared::{LinkIdentity, LinkState};
+        let identity = |url: &str, target: &str, wiki: bool| LinkIdentity {
+            from: "Work/Start.md".into(),
+            target: target.into(),
+            wiki,
+            url: url.into(),
+        };
+        let identities = vec![
+            identity("wiki:Gone", "Gone", true),
+            identity("wiki:Gone", "Gone", true),
+            identity("wiki:Gone#Intro", "Gone#Intro", true),
+            // Markdown links never offer to create a note.
+            identity("md:Absent.md", "Absent.md", false),
+            identity("wiki:Here", "Here", true),
+            // Not a note path: no card.
+            identity("wiki:pic", "pic.png", true),
+            identity("wiki:Other/New", "Other/New", true),
+        ];
+        let state = |status| LinkState {
+            status,
+            reason: String::new(),
+            action_url: None,
+            target_revision: None,
+        };
+        let states: prepared_links::States = Arc::new(
+            [
+                ("wiki:Gone", LinkStatus::MissingDocument),
+                ("wiki:Gone#Intro", LinkStatus::MissingDocument),
+                ("md:Absent.md", LinkStatus::MissingDocument),
+                ("wiki:Here", LinkStatus::Resolved),
+                ("wiki:pic", LinkStatus::MissingDocument),
+                ("wiki:Other/New", LinkStatus::MissingDocument),
+            ]
+            .into_iter()
+            .map(|(url, status)| (url.to_owned(), state(status)))
+            .collect(),
+        );
+        let expected: std::collections::BTreeSet<String> = identities
+            .iter()
+            .filter(|i| missing_note_target(&i.url, &states, &identities).is_some())
+            .map(|i| i.url.clone())
+            .collect();
+        let cards = missing_cards(&states, &identities);
+        assert_eq!(*cards, expected);
+        assert_eq!(
+            cards.iter().map(String::as_str).collect::<Vec<_>>(),
+            ["wiki:Gone", "wiki:Gone#Intro", "wiki:Other/New"],
+            "positive control: the set is not empty"
+        );
+        // The next frame of the same preparation reuses the set.
+        assert!(Arc::ptr_eq(&cards, &missing_cards(&states, &identities)));
+        // A new preparation (a new Arc, even with equal content) recomputes.
+        let renewed: prepared_links::States = Arc::new((*states).clone());
+        let again = missing_cards(&renewed, &identities);
+        assert!(!Arc::ptr_eq(&cards, &again));
+        assert_eq!(*again, expected);
+        // An empty preparation (invalidated links) has no cards.
+        assert!(missing_cards(&Arc::default(), &identities).is_empty());
+    }
 
     #[test]
     fn only_resolved_internal_notes_preview() {
