@@ -5332,7 +5332,12 @@ impl Reader {
         let mark = p.accent.opacity(0.18);
         // One group per source note (#22): `Vault::backlinks` returns them grouped by path in
         // source-line order, so a run of equal paths is a group.
-        let links: Vec<&Backlink> = self.backlinks[range].iter().collect();
+        // A range that no longer fits (the list one frame behind its groups) draws nothing
+        // rather than taking the window down (#1313).
+        let Some(links) = self.backlinks.get(range).filter(|links| !links.is_empty()) else {
+            return div().into_any_element();
+        };
+        let links: Vec<&Backlink> = links.iter().collect();
         let head = links[0];
         let (title, location) = self.backlink_title(&head.path);
         // Ambiguity is per link, but the flag is worth one word on the
@@ -8430,6 +8435,80 @@ mod document_link_landing_tests {
         visual.update(|window, cx| reader_link_navigation::handle_link(&entity, &url, window, cx));
         visual.run_until_parked();
         view.read_with(visual, |v, _| assert_eq!(v.current_rel, "Other vault.md"));
+    }
+
+    /// #1313: leaving a note for the vault home emptied the backlinks but not the cards'
+    /// ranges, and the next frame of «Linked from» indexed an empty list (a crash).
+    #[gpui::test]
+    fn the_vault_home_empties_linked_from_and_a_stale_card_draws_nothing(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("Target.md"), "# Target\n\nLinked to.\n").unwrap();
+        std::fs::write(root.join("Source.md"), "# Source\n\nsee [[Target]]\n").unwrap();
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("Target.md".into()),
+                        index_dir: Some(fixture.path().join("index")),
+                        session_directory: Some(fixture.path().join("state")),
+                        ..Opts::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let view = reader.unwrap();
+        visual.run_until_parked();
+        visual.simulate_resize(size(px(1366.), px(768.)));
+        view.update_in(visual, |v, window, cx| {
+            v.panel_settings = None;
+            v.toggle_panel(reader_layout::Panel::Backlinks, window, cx);
+        });
+        visual.run_until_parked();
+        view.read_with(visual, |v, _| assert_eq!(v.backlink_groups.len(), 1));
+        assert!(
+            visual.debug_bounds("bl-card-0").is_some(),
+            "positive control: the card is drawn"
+        );
+
+        // To the vault home, then a width change redraws the panel (the night QA steps).
+        view.update_in(visual, |v, window, cx| v.show_empty_vault(window, cx));
+        visual.run_until_parked();
+        visual.simulate_resize(size(px(683.), px(768.)));
+        visual.run_until_parked();
+        visual.simulate_resize(size(px(1366.), px(768.)));
+        visual.run_until_parked();
+        view.read_with(visual, |v, _| {
+            assert!(v.backlinks.is_empty());
+            assert!(
+                v.backlink_groups.is_empty(),
+                "the cards went with the backlinks"
+            );
+            assert_eq!(v.backlinks_list.item_count(), 0);
+        });
+
+        // Even a pair out of step draws no card instead of crashing.
+        view.update(visual, |v, cx| {
+            v.backlink_groups = std::iter::once(0..1).collect();
+            v.backlinks_list.reset_with_uniform_height(1, px(58.));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(visual.debug_bounds("bl-card-0").is_none());
     }
 
     #[gpui::test]

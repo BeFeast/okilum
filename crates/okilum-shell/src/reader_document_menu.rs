@@ -472,7 +472,8 @@ impl Reader {
         self.usable_document = false;
         self.outline.clear();
         self.outline_list.reset(0);
-        self.backlinks.clear();
+        // Through set_backlinks: the cards' ranges and the list must change with it (#1313).
+        self.set_backlinks(Vec::new(), true);
         self.properties = Ok(Vec::new());
         self.link_notice = None;
         self.link_choices.clear();
