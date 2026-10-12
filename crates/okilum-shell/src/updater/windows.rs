@@ -91,6 +91,58 @@ pub(super) fn restart(expected: Option<&str>, cx: &mut gpui::App) {
     }
 }
 
+const VERIFIED: &str = "windows-update-verified";
+
+fn verified_path() -> Option<std::path::PathBuf> {
+    crate::reader_history::state_directory()
+        .ok()
+        .map(|root| root.join(VERIFIED))
+}
+
+/// Records that the pending package belongs to the current channel's feed.
+fn record_verified(asset: &velopack::VelopackAsset) {
+    if let Some(path) = verified_path() {
+        let _ = path.parent().map(std::fs::create_dir_all);
+        let _ = std::fs::write(
+            path,
+            super::windows_feed::verified_record(beta(), &asset.SHA256),
+        );
+    }
+}
+
+fn forget_verified() {
+    if let Some(path) = verified_path() {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// Deletes a downloaded package the current channel does not offer (#1318).
+fn discard(asset: &velopack::VelopackAsset) {
+    let packages = std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.parent()?.join("packages")));
+    if let Some(packages) = packages {
+        let _ = std::fs::remove_file(packages.join(&asset.FileName));
+    }
+    forget_verified();
+}
+
+/// Before `VelopackApp::run`: whether it may apply a pending package now. Only
+/// a package checked against the channel the install follows today (#1318).
+pub(crate) fn apply_pending_at_start() -> bool {
+    let Ok(manager) = manager() else {
+        return true;
+    };
+    let pending = manager.get_update_pending_restart();
+    let record = verified_path().and_then(|path| std::fs::read_to_string(path).ok());
+    pending.is_none()
+        || super::windows_feed::may_apply_at_start(
+            pending.as_ref().map(|asset| asset.SHA256.as_str()),
+            record.as_deref(),
+            beta(),
+        )
+}
+
 fn manager() -> Result<UpdateManager, velopack::Error> {
     manager_for(beta())
 }
@@ -144,6 +196,7 @@ pub(super) fn beta() -> bool {
 }
 
 pub(super) fn set_beta(value: bool) {
+    let previous = beta();
     let result = (|| -> anyhow::Result<()> {
         let root = crate::reader_history::state_directory()?;
         std::fs::create_dir_all(&root)?;
@@ -155,8 +208,13 @@ pub(super) fn set_beta(value: bool) {
     })();
     match result {
         Ok(()) => {
-            settings();
-            BETA.store(value, Ordering::Relaxed)
+            BETA.store(value, Ordering::Relaxed);
+            if previous != value {
+                // A package downloaded for the other channel is checked again
+                // before it can be applied (#1318).
+                forget_verified();
+                state().lock().unwrap().observe(None);
+            }
         }
         Err(error) => message(&format!("Could not save update channel: {error}")),
     }
@@ -202,18 +260,28 @@ const IN_PROGRESS: &str = "An update check or download is already in progress.";
 
 fn check_and_download() -> anyhow::Result<&'static str> {
     let manager = manager()?;
-    let pending = manager.get_update_pending_restart();
-    state()
-        .lock()
-        .unwrap()
-        .observe(pending.as_ref().map(identity));
-    if pending.is_some() {
-        return Ok("Update ready. Choose Restart to update.");
+    if let Some(asset) = manager.get_update_pending_restart() {
+        // Applied only if the current channel's feed lists it (#1318).
+        let listed = manager
+            .get_release_feed()?
+            .Assets
+            .iter()
+            .any(|offered| offered.SHA256 == asset.SHA256 && offered.Version == asset.Version);
+        if listed {
+            record_verified(&asset);
+            state().lock().unwrap().observe(Some(identity(&asset)));
+            return Ok("Update ready. Choose Restart to update.");
+        }
+        discard(&asset);
+        state().lock().unwrap().observe(None);
     }
     match manager.check_for_updates()? {
         UpdateCheck::UpdateAvailable(update) => {
             manager.download_updates(&update, None)?;
             let pending = manager.get_update_pending_restart();
+            if let Some(asset) = &pending {
+                record_verified(asset);
+            }
             state()
                 .lock()
                 .unwrap()

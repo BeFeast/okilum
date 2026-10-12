@@ -7118,6 +7118,7 @@ fn main() {
     }
     #[cfg(windows)]
     velopack::VelopackApp::build()
+        .set_auto_apply_on_startup(updater::apply_pending_at_start())
         .on_after_install_fast_callback(|_| {
             markdown_handler::install();
             url_protocol::install();

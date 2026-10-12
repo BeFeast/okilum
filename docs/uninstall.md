@@ -47,7 +47,7 @@ Velopack does not.
 | Markdown Open With | `HKCU\Software\Classes\BeFeast.Okilum.Markdown`, value `BeFeast.Okilum.Markdown` in `HKCU\Software\Classes\.md\OpenWithProgids` | hook (`markdown_handler::uninstall`) |
 | `okilum:` links | `HKCU\Software\Classes\okilum` (installed build only; the portable ZIP registers nothing) | hook (`url_protocol::uninstall`) |
 | Notification identity | `HKCU\Software\Classes\AppUserModelId\com.befeast.okilum` | hook |
-| State and search index | `%LOCALAPPDATA%\okilum\` (state files, `editor-drafts\`, `link-moves\`, `sidebar\`, `reminders\`, `reader\<sha>\` index, `reader-diagnostic.log`, `windows-update-channel`) | hook |
+| State and search index | `%LOCALAPPDATA%\okilum\` (state files, `editor-drafts\`, `link-moves\`, `sidebar\`, `reminders\`, `reader\<sha>\` index, `reader-diagnostic.log`, `windows-update-channel`, `windows-update-verified`) | hook |
 | Config | `%APPDATA%\okilum\` (`reader-layout.json`, `appearance.json`, `reader-runs\`) | hook |
 | Search sessions | `%TEMP%\okilum-search-session-*` | hook; startup sweeps stale ones |
 | Crash dumps | `%LOCALAPPDATA%\CrashDumps\okilum.exe.*.dmp` | hook |
