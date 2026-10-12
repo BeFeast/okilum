@@ -149,10 +149,18 @@ mod tests {
             cx.notify();
         });
         visual.run_until_parked();
+        // The test platform does not draw a dirty window by itself; the app
+        // gets the next frame from the display. Draw it, so a deferred redraw
+        // shows up (and a missing one would be caught).
+        let frame = |visual: &mut VisualTestContext| {
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            visual.run_until_parked();
+        };
         let section = |visual: &mut VisualTestContext| {
             view.read_with(visual, |v, cx| (v.current_section(cx), v.outline_section))
         };
         assert_eq!(section(visual), (Some(0), Some(0)));
+        frame(visual);
         let opened = renders();
         assert!(
             opened[0] > 0 && opened[1] > 0,
@@ -168,6 +176,7 @@ mod tests {
                 ..Default::default()
             });
             visual.run_until_parked();
+            frame(visual);
         };
 
         // Inside the first section: the note moves, the panels are reused.
@@ -212,6 +221,7 @@ mod tests {
             v.open_note("other.md", None, window, cx)
         });
         visual.run_until_parked();
+        frame(visual);
         view.read_with(visual, |v, _| assert_eq!(v.current_rel, "other.md"));
         let switched = renders();
         assert!(
