@@ -684,6 +684,74 @@ mod tests {
         }
     }
 
+    /// #1266: Enter at the end of a list's last item fell back to a full
+    /// reclassification and drew the whole note raw for a frame: under a
+    /// nested item (the new line keeps its indent) and on a task list right
+    /// under an ordered one. Each frame before adoption must project, with
+    /// the markers of a fresh parse of that revision and its text on every
+    /// line but the one being typed (its own syntax waits for the parse).
+    #[test]
+    fn enter_at_the_end_of_a_list_projects_every_frame_before_adoption() {
+        let base = include_str!("../examples/decoration784/fixture.md");
+        for (item, indent) in [
+            ("    - Third level", "    "),
+            ("- [ ] Task stays unchanged", ""),
+        ] {
+            let at = base.find(item).unwrap() + item.len();
+            let mut texts = vec![base.to_string()];
+            let mut text = base.to_string();
+            text.insert_str(at, &format!("\n{indent}"));
+            texts.push(text.clone());
+            let mut caret = at + 1 + indent.len();
+            for c in ["*", "*", "x", "*", "*"] {
+                text.insert_str(caret, c);
+                caret += 1;
+                texts.push(text.clone());
+            }
+            for _ in 0..2 {
+                caret -= 1;
+                text.remove(caret);
+                texts.push(text.clone());
+            }
+            let undo: Vec<_> = texts.iter().rev().skip(1).cloned().collect();
+            let frames: Vec<_> = texts.iter().cloned().chain(undo).collect();
+            let original = source(&frames[0]);
+            let provider = CachedProvider::classify(original.clone());
+            // Projection keeps every source line, so line numbers match.
+            let edited = base[..at].matches('\n').count() + 1;
+            let shown = |p: &Arc<dyn SourceProjection>| {
+                let markers: Vec<_> = p
+                    .markers()
+                    .iter()
+                    .map(|m| (m.range.clone(), m.kind.clone()))
+                    .collect();
+                let lines: Vec<_> = p
+                    .text()
+                    .split('\n')
+                    .enumerate()
+                    .filter(|(line, _)| *line != edited)
+                    .map(|(_, text)| text)
+                    .collect();
+                format!("{lines:?}\n{markers:?}")
+            };
+            for (step, text) in frames.iter().enumerate().skip(1) {
+                let current = SourceSnapshot {
+                    stamp: SourceStamp {
+                        generation: original.stamp.generation + step as u64,
+                        ..original.stamp
+                    },
+                    text: Arc::from(text.as_str()),
+                };
+                let frame = provider
+                    .compose(&current, &inactive(&current))
+                    .unwrap_or_else(|| panic!("{item:?} frame {step} drew raw: {text:?}"));
+                let fresh = CachedProvider::classify(current.clone());
+                let expected = fresh.compose(&current, &inactive(&current)).unwrap();
+                assert_eq!(shown(&frame), shown(&expected), "{item:?} frame {step}");
+            }
+        }
+    }
+
     #[test]
     fn quote_markers_reveal_as_their_own_element_not_the_whole_quote() {
         use gpui_component::input::projection::{LayoutStamp, MarkerKind, PinnedProjection};

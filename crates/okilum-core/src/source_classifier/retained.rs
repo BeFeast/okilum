@@ -388,8 +388,20 @@ impl RetainedPresentation {
             .strip_suffix('\n')
             .map(|before| before.strip_suffix('\r').unwrap_or(before))
             .map(|before| &before[before.rfind('\n').map_or(0, |i| i + 1)..]);
+        // A list item of another type cannot continue the list item above it:
+        // it starts a new list and interrupts its paragraph. Enter at the end
+        // of a task list right under an ordered one drew the note raw (#1266).
+        let first_line = fragment.lines().next().unwrap_or("");
+        let new_list_under_item = above.is_some_and(|line| {
+            opens_list_item(line)
+                && opens_list_item(first_line)
+                && !bare_list_marker(first_line.trim())
+                && starts_new_list(first_line)
+                && list_marker_kind(line) != list_marker_kind(first_line)
+        });
         if above.is_some_and(|line| !line.trim().is_empty() && !atx_heading(line))
             && !fragment.starts_with('>')
+            && !new_list_under_item
         {
             return None;
         }
@@ -409,8 +421,13 @@ impl RetainedPresentation {
                 .as_ref()
                 .is_some_and(|c| c.contexts.iter().any(|ctx| ctx.start <= at && at < ctx.end))
         };
+        // A whitespace-only line attaches to nothing: Enter at the end of a
+        // nested last item keeps its indent and drew the note raw (#1266).
         let attaching = lines.iter().any(|&(at, line)| {
             let plain = line.trim_start();
+            if plain.is_empty() {
+                return false;
+            }
             (line.len() - plain.len() >= 4
                 || line.starts_with('\t')
                 || plain.starts_with(['>', '`', '~', '<']))
@@ -1045,6 +1062,28 @@ mod tests {
             ("plain\n\n  **AFTER**", "1. plain\n\n  **AFTER**"),
             ("plain\n\n   **AFTER**", "10) plain\n\n   **AFTER**"),
             ("- item\n\nplain *x*", "- item\n\n  plain *x*"),
+            // #1266: Enter at the end of a list's last item, and typing there.
+            ("1. one\n- [ ] task\n\nnext", "1. one\n- [ ] task\n\n\nnext"),
+            (
+                "1. one\n- [ ] task\n\nnext",
+                "1. one\n- [ ] task\n*\n\nnext",
+            ),
+            (
+                "1. one\n- [ ] task\n\nnext",
+                "1. one\n- [ ] task\n**x**\n\nnext",
+            ),
+            ("- a\n  - b\n\n> q", "- a\n  - b\n  \n\n> q"),
+            ("- a\n  - b\n\n> q", "- a\n  - b\n  **x**\n\n> q"),
+            // The same marker continues the list above; text there is lazy.
+            ("- one\n- two\n\nnext", "- one\n- two\n- three\n\nnext"),
+            (
+                "- one\nlazy\n- two\n\nnext",
+                "- one\nlazy\n- two\nx\n\nnext",
+            ),
+            (
+                "1. one\n- [ ] task\n\nnext",
+                "1. one\n2. two\n- [ ] task\n\nnext",
+            ),
         ] {
             for (from, to) in [(before, after), (after, before)] {
                 let old = snapshot(1, from);
