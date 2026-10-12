@@ -69,11 +69,10 @@ Velopack's uninstaller ends with an "uninstall complete" dialog. It removes
 `Update.exe` and the install folder about 3 seconds after that dialog is
 closed, and the detached cleanup runs then too; until someone clicks OK, both
 are still there. Acceptance therefore closes the dialog like a person would.
-A build installed from a branch's `Setup.exe` updates itself to the newest beta
-within a minute, so the uninstall hook that runs is then main's. To test a
-branch, write `stable` to `%LOCALAPPDATA%\okilum\windows-update-channel`
-before running `Setup.exe` and check `current\okilum.exe`'s version before
-uninstalling.
+A build installed from a branch's `Setup.exe` updates itself within a minute
+when its channel (stable unless `windows-update-channel` says `beta`) has a
+newer version, so the uninstall hook that runs is then that build's. Check
+`current\okilum.exe`'s version before uninstalling.
 
 Known residue owned by Windows or Velopack, not by Okilum: Velopack's shared log
 `%LOCALAPPDATA%\velopack\velopack.log` (only written by `Setup.exe`) and

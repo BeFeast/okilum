@@ -11,9 +11,12 @@ Public installer URLs:
 - https://updates.befeast.com/okilum/windows/beta/Setup.exe
 - https://updates.befeast.com/okilum/windows/stable/Setup.exe
 
-Beta is the default update preference, matching the packaged beta channel and
-the first published feed. To receive only promoted releases, select
-**Settings → Updates → Stable** after a stable release is available.
+Every install follows **stable** unless beta was chosen explicitly (#1307), on
+both installers: a promoted stable package is the beta build re-signed, so the
+default cannot come from the binary. Beta is an opt-in: **Settings → Updates →
+Beta**, which writes `beta` to `%LOCALAPPDATA%\okilum\windows-update-channel`.
+No file, or any other value, means stable. QA machines that must follow every
+merge write that file before installing.
 This explicit preference is retained outside the installation. Promotion uses
 identical installer/package bytes and serves `releases.stable.json`; the SDK's
 explicit channel setting selects the matching feed. Switching back to stable

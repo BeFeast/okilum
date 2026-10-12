@@ -7,7 +7,7 @@ use std::sync::{
 use velopack::{sources::HttpSource, HttpOptions, UpdateCheck, UpdateManager, UpdateOptions};
 
 static AVAILABLE: OnceLock<bool> = OnceLock::new();
-static BETA: AtomicBool = AtomicBool::new(true);
+static BETA: AtomicBool = AtomicBool::new(false);
 static BUSY: AtomicBool = AtomicBool::new(false);
 static READY: OnceLock<Mutex<super::ready::Ready>> = OnceLock::new();
 fn state() -> &'static Mutex<super::ready::Ready> {
@@ -119,12 +119,10 @@ fn manager_for(beta: bool) -> Result<UpdateManager, velopack::Error> {
 /// was installed (#1273).
 fn settings() -> bool {
     *AVAILABLE.get_or_init(|| {
-        let mut beta = super::windows_feed::default_beta();
-        if let Ok(root) = crate::reader_history::state_directory() {
-            if let Ok(value) = std::fs::read_to_string(root.join("windows-update-channel")) {
-                beta = value.trim() != "stable";
-            }
-        }
+        let saved = crate::reader_history::state_directory()
+            .ok()
+            .and_then(|root| std::fs::read_to_string(root.join("windows-update-channel")).ok());
+        let beta = super::windows_feed::follows_beta(saved.as_deref());
         BETA.store(beta, Ordering::Relaxed);
         manager_for(beta).is_ok_and(|m| !m.get_is_portable())
     })
