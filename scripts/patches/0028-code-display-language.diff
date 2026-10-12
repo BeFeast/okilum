@@ -272,12 +272,14 @@
      pub(crate) code_block_actions: Option<Arc<CodeBlockActionsFn>>,
      pub(crate) code_block_highlighter: Option<Arc<CodeBlockHighlighterFn>>,
      pub(crate) table_actions: Option<Arc<TableActionsFn>>,
-@@ -2550,7 +2619,7 @@
+@@ -2550,7 +2619,8 @@
                                      if now != measured {
-                                         window.on_next_frame(move |window, cx| {
+-                                        window.on_next_frame(move |window, cx| {
++                                        // The owning view renders the table again; a full
++                                        // refresh would also redraw every cached view (#1290).
++                                        window.on_next_frame(move |_, cx| {
                                              cx.notify(owner);
 -                                            window.refresh();
-+                                            window.defer(cx, |window, _| window.refresh());
                                          });
                                      }
                                  },

@@ -76,6 +76,7 @@ mod reader_settings;
 #[cfg(target_os = "linux")]
 mod reader_settings_sync;
 mod reader_shortcuts;
+mod reader_side_panel;
 mod reader_sidebar;
 mod reader_split;
 mod reader_stignore;
@@ -1367,6 +1368,12 @@ struct Reader {
     /// An external link opened while editing: once its note is accepted, the
     /// editor returns there with the caret on the link's line (#1049).
     pending_link_edit: Option<reader_deep_link::EditLanding>,
+    /// The Notes and «On this page» panels as cached views (#1290).
+    side_panels: [Option<Entity<reader_side_panel::SidePanel>>; 2],
+    /// The outline's current section as last drawn (#1290).
+    outline_section: Option<usize>,
+    /// The document's parse state as last seen; see `content_changed`.
+    content_status: Option<bool>,
     shared_session: Option<reader_session::Shared>,
     shared_version: u64,
     usable_document: bool,
@@ -1623,7 +1630,7 @@ impl Reader {
             },
         );
 
-        let content_sub = cx.observe(&content, |_, _, cx| cx.notify());
+        let content_sub = cx.observe(&content, |this, _, cx| this.content_changed(cx));
 
         let mut this = Self {
             navigation: Default::default(),
@@ -1633,6 +1640,9 @@ impl Reader {
             queued_open_note: None,
             queued_landing: None,
             pending_link_edit: None,
+            side_panels: [None, None],
+            outline_section: None,
+            content_status: None,
             shared_session: None,
             shared_version: 0,
             usable_document: false,
@@ -1787,6 +1797,7 @@ impl Reader {
             _subs: vec![find_sub],
             _content_sub: content_sub,
         };
+        this.side_panels = reader_side_panel::SidePanel::pair(cx);
         // Nothing has focus on a fresh window, and gpui then dispatches keys
         // to the root node only, where the reader's context is not on the
         // stack. Take focus so the bindings are live from the first keystroke.
@@ -2088,7 +2099,7 @@ impl Reader {
         });
         self._content_sub = cx.observe(&self.content, |this, _, cx| {
             this.record_usable_document(cx);
-            cx.notify();
+            this.content_changed(cx);
         });
         // Transfer focus only at replacement; asynchronous landing never steals it.
         if content_had_focus {
@@ -6482,6 +6493,7 @@ impl Render for Reader {
         self.restore_ui_source(window, cx);
         self.record_ui_state(window.is_window_active(), cx);
         self.sync_backlink_titles();
+        self.sync_outline_section(cx);
         let diagnostics = self
             .loading
             .as_ref()
@@ -6527,6 +6539,12 @@ impl Render for Reader {
                     .child(self.render_document_surface(window, cx)),
             )
             .when(self.find_open, |s| s.child(self.render_find_bar(cx)));
+        let mut panel_bodies =
+            [reader_layout::Panel::Notes, reader_layout::Panel::Backlinks].map(|panel| {
+                self.panels
+                    .visible(panel, available)
+                    .then(|| self.side_panel(panel == reader_layout::Panel::Notes))
+            });
         let panels: Vec<_> = [reader_layout::Panel::Notes, reader_layout::Panel::Backlinks]
             .into_iter()
             .filter(|panel| self.panels.visible(*panel, available))
@@ -6562,11 +6580,12 @@ impl Render for Reader {
                     .border_color(brand::palette(cx).border_subtle)
                     .when(overlay, |p| p.shadow_lg())
                     .child(self.render_panel_header(panel, panel_widths.get(panel), window, cx))
-                    .child(div().flex_1().min_h_0().child(if left {
-                        self.render_sidebar(window, cx)
-                    } else {
-                        self.render_right_panel(cx)
-                    }))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .children(panel_bodies[usize::from(!left)].take()),
+                    )
                     .child(
                         div()
                             .absolute()
