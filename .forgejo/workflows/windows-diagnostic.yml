@@ -219,6 +219,8 @@ jobs:
           ref: ${{ needs.select.outputs.source }}
           persist-credentials: false
       - name: Require an open signing session
+        # certum-ssign: okilum-sign-code opened the session; sign.sh --probe checks it is fresh.
+        if: vars.OKILUM_WINDOWS_SIGN_BACKEND != 'certum-ssign'
         env:
           READY: ${{ vars.OKILUM_WINDOWS_SIGNER_READY }}
         run: |
@@ -254,13 +256,17 @@ jobs:
       OKILUM_WINDOWS_SIGN_ALIAS: ${{ vars.OKILUM_WINDOWS_SIGN_ALIAS }}
       OKILUM_WINDOWS_SIGN_CERT_SHA256: ${{ vars.OKILUM_WINDOWS_SIGN_CERT_SHA256 }}
       OKILUM_WINDOWS_SIGN_SUBJECT: ${{ vars.OKILUM_WINDOWS_SIGN_SUBJECT }}
+      # certum-ssign: the account e-mail; the session comes from okilum-sign-code (Oleg's code).
+      CERTUM_EMAIL: ${{ vars.OKILUM_CERTUM_EMAIL }}
       # A re-sign exists only to sign: without a key it fails instead of republishing unsigned.
       OKILUM_WINDOWS_UNSIGNED_POLICY: ${{ needs.select.outputs.resign != '' && 'fail' || vars.OKILUM_WINDOWS_UNSIGNED_POLICY }}
       DOTNET_SYSTEM_GLOBALIZATION_INVARIANT: "1"
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
-          ref: ${{ inputs.source != '' && needs.select.outputs.source || '' }}
+          # A re-sign packages with this workflow's scripts (the signer backends evolve); its
+          # payload and recorded source are those of the build being re-signed.
+          ref: ${{ inputs.source != '' && needs.select.outputs.resign == '' && needs.select.outputs.source || '' }}
           persist-credentials: false
       - name: Receive the unsigned payload
         uses: https://code.forgejo.org/actions/download-artifact@v3
@@ -275,13 +281,21 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: python3 scripts/windows/publish.py prepare --directory target/windows-release
       - name: Sign, package and verify
+        env:
+          RESIGN_SOURCE: ${{ needs.select.outputs.resign != '' && needs.select.outputs.source || '' }}
         run: |
           export OKILUM_RELEASE_VERSION="0.1.$((5000 + GITHUB_RUN_NUMBER))"
           cat /etc/ssl/certs/ca-certificates.crt scripts/windows/certs/certum-code-signing-2021-ca.pem > "$RUNNER_TEMP/ca.pem"
           export OKILUM_WINDOWS_SIGN_CA_FILE="$RUNNER_TEMP/ca.pem"
+          # certum-ssign: the session okilum-sign-code opened on this signer (tmpfs, owner-only).
+          export XDG_RUNTIME_DIR=/run/okilum-ssign
           bash scripts/windows/install-vpk.sh "$RUNNER_TEMP/velopack" >/dev/null
           bash scripts/windows/package-release.sh "$RUNNER_TEMP/velopack" target/windows-dist target/windows-release
-          git rev-parse HEAD > target/windows-release/release-source.txt
+          if [ -n "${RESIGN_SOURCE}" ]; then
+            echo "$RESIGN_SOURCE" > target/windows-release/release-source.txt
+          else
+            git rev-parse HEAD > target/windows-release/release-source.txt
+          fi
           python3 -m unittest discover -s scripts/windows -p 'test_*.py'
       - name: Upload installer for Windows QA
         uses: https://code.forgejo.org/actions/upload-artifact@v3
