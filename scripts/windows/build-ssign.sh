@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build the pinned ssign for the Windows signer (#1104) and install it on CT 142.
-# Run on CT 141 (tessera-dev), where builds belong:  bash build-ssign.sh
+# Run on CT 141, the build container (builds do not run on maestro):  bash build-ssign.sh
 # ssign (github.com/Le-Syl21/ssign, MIT) signs PE files over Certum's SimplySign HTTPS API
 # with the same OAuth login as SimplySign Desktop; reviewed at this commit (v0.1.7, see #1104).
 # The installed binary must match ssign.sha256, which sign.sh checks before every use.

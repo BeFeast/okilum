@@ -17,7 +17,7 @@ say() { echo "[$(TZ=Asia/Jerusalem date +%H:%M:%S)] $*"; }
 set -a; . "$HOME/.config/forgejo/token.env"; set +a
 api() { curl -fsS -H "Authorization: token $FORGEJO_TOKEN" -H 'Content-Type: application/json' "$@"; }
 
-lock="$HOME/.cache/tessera-qa/okilum-sign-code.lock.d"
+lock="${XDG_RUNTIME_DIR:-/tmp}/okilum-sign-code.lock.d"
 mkdir "$lock" 2>/dev/null || { echo "another okilum-sign-code run holds $lock" >&2; exit 1; }
 trap 'rmdir "$lock"' EXIT
 
