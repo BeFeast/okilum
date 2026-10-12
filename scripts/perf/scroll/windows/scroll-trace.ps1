@@ -21,7 +21,11 @@ param(
     [int]$Reps = 3,
     [string]$Label = 'run',
     [string]$Out = 'C:\qa\bench\scroll',
-    [int]$QuietBusyPercent = 12
+    [int]$QuietBusyPercent = 12,
+    # Wheel notches per second. 60 = one per display refresh, sent against absolute deadlines. With the old
+    # loop (-WheelHz 0: Start-Sleep 16 ms per notch) the guest sends only 35-40 a second, which caps the
+    # frame rate at that figure once the host can pace 60 Hz (seen on VM 151 with a virtual display).
+    [int]$WheelHz = 60
 )
 $ErrorActionPreference = 'Stop'
 $root = Join-Path $Out $Label
@@ -156,8 +160,16 @@ if (`$h -eq 0) { 'no window' | Set-Content $dir\wheel-error.txt; exit 1 }
 [W]::SetCursorPos([int]((`$r.L + `$r.R) / 2), [int]((`$r.T + `$r.B) / 2)) | Out-Null
 Start-Sleep -Milliseconds 300; Shot $dir\before.png
 [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Set-Content $dir\wheel-start.txt
-`$end = (Get-Date).AddSeconds($Seconds)
-while ((Get-Date) -lt `$end) { [W]::mouse_event(0x0800, 0, 0, -120, [UIntPtr]::Zero); Start-Sleep -Milliseconds 16 }
+`$sw = [Diagnostics.Stopwatch]::StartNew(); `$n = 0
+if ($WheelHz -gt 0) {
+  `$step = 1000.0 / $WheelHz
+  while (`$sw.Elapsed.TotalSeconds -lt $Seconds) {
+    if (`$sw.Elapsed.TotalMilliseconds -ge `$n * `$step) { [W]::mouse_event(0x0800, 0, 0, -120, [UIntPtr]::Zero); `$n++ } else { Start-Sleep -Milliseconds 1 }
+  }
+} else {
+  while (`$sw.Elapsed.TotalSeconds -lt $Seconds) { [W]::mouse_event(0x0800, 0, 0, -120, [UIntPtr]::Zero); `$n++; Start-Sleep -Milliseconds 16 }
+}
+"`$n" | Set-Content $dir\wheel-events.txt
 [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Set-Content $dir\wheel-end.txt
 Start-Sleep -Milliseconds 400; Shot $dir\after.png
 'done' | Set-Content $dir\wheel-done.txt
@@ -195,7 +207,10 @@ Start-Sleep -Milliseconds 400; Shot $dir\after.png
     $starts = @(Get-WinEvent -Path $etl -Oldest | Where-Object { $_.Id -eq 42 -and $_.ProcessId -eq $p.Id } |
         ForEach-Object { $_.TimeCreated } | Where-Object { $_ -ge $from -and $_ -le $to })
     $valid = (-not $same) -and ($starts.Count -ge 10)
-    $line = "rep=$rep valid=$valid scrolled=$(-not $same) quiet=$($gate.quiet) busy=$($gate.busy) host_capped=$hostCapped dwm_p50=$dwmP50 presents=$($starts.Count)"
+    $eventsFile = Join-Path $dir 'wheel-events.txt'
+    $events = if (Test-Path $eventsFile) { [int](Get-Content $eventsFile) } else { -1 }
+    $wheelRate = if ($events -gt 0) { [math]::Round($events / $Seconds, 1) } else { -1 }
+    $line = "rep=$rep valid=$valid scrolled=$(-not $same) quiet=$($gate.quiet) busy=$($gate.busy) host_capped=$hostCapped dwm_p50=$dwmP50 wheel_hz=$wheelRate presents=$($starts.Count)"
     if ($starts.Count -ge 2) {
         $ms = @(for ($i = 1; $i -lt $starts.Count; $i++) { ($starts[$i] - $starts[$i - 1]).TotalMilliseconds }) | Sort-Object
         $pct = { param($q) $ms[[Math]::Min($ms.Count - 1, [int][Math]::Floor($q * $ms.Count))] }

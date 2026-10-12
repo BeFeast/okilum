@@ -25,6 +25,10 @@ touched, and the gpui sources stay unpatched (see AGENTS.md).
   (#1290). `scroll/windows/dwm-flush.ps1` times it; `scroll-trace.ps1` runs it first and every
   rep says `host_capped=True` when the median is above 20 ms. Read frame *cost* (draw, present)
   from the trace on such a host, never the frame rate.
+- **Input must not be the limit.** The wheel helper sends `-WheelHz` notches a second (default 60,
+  against absolute deadlines) and records what it really sent as `wheel_hz`; a frame rate at or near
+  the input rate says nothing about the app. (The first probe's `Start-Sleep 16` loop sent 35-40 a
+  second: harmless while the host paced at 12.5 fps, a cap of 38 fps once it paced at 60 Hz.)
 - **Positive controls in every rep.** The before and after screenshots must differ (the note
   really scrolled, otherwise `valid=False`); the trace must hold redrawn frames inside the
   wheel burst (the analyzer says so when it does not); an idle window shows no redraws.
@@ -51,6 +55,26 @@ touched, and the gpui sources stay unpatched (see AGENTS.md).
 3. `powershell -File C:\qa\scroll-trace.ps1 -Note C:\qa\notes\big-24k.md -Label shipped -Exe C:\qa\trace\okilum.exe -Trace`
    (`-Label control` without `-Trace` for the tracing-off check; no `-Exe` runs the installed build).
 4. Copy `C:\qa\bench\scroll\<label>` back and run `scroll/analyze.py <label>`.
+
+### A Windows VM with a GPU and no monitor: give it a virtual one first
+
+VM 151 (`okilum-win-gpu`, Iris Xe passed through, nothing plugged into it) has no monitor with an
+EDID for Windows, DWM's timing query fails, and `DwmFlush()` returns every 79 ms: every gpui app
+runs at 12.5 fps, whatever it draws (#1290). `scroll/windows/idd-install.ps1` adds an Indirect
+Display (IddCx) monitor, 1920x1080 at 60 Hz, rendered on the Iris Xe, and `DwmFlush` goes to 16.6 ms.
+
+- Driver: VirtualDrivers/Virtual-Display-Driver release 25.5.2, asset `Signed-Driver-v24.12.24-x64.zip`
+  (SHA-256 `f93e7ce3d640c83c419b1b72d2c83b2d8e34d83e8b7ba11f3328a40d2da82fa4`; files `MttVDD.dll`,
+  `MttVDD.inf`, `mttvdd.cat`, `vdd_settings.xml`; signed by SignPath Foundation via GlobalSign).
+  Copy them to `C:\qa\idd\`, then `powershell -ExecutionPolicy Bypass -File C:\qa\idd-install.ps1`
+  (`-CheckOnly` first: it only verifies the signatures).
+- The script adds the SignPath signer certificate to the guest's `TrustedPublisher` store (without it
+  Windows refuses the package with 0xE0000242), writes `C:\VirtualDisplayDriver\vdd_settings.xml`,
+  and creates the root device the way `devcon install` does. It changes the guest's trust store:
+  take a snapshot first. Run the script once; a second run adds a second monitor.
+- Check with `dwm-flush.ps1`: p50 should be about 16.7 ms (and `host_capped=False` in the probe).
+- VM 151 snapshots: `clean` (no display, `DwmFlush` 79 ms: do not use for speed), `pre-idd`,
+  and **`idd`** (clean + this display): start speed checks from `idd`.
 
 ## Mac (Hedva)
 
