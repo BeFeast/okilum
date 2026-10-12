@@ -1,0 +1,26 @@
+{
+  "Long-10k.md": {
+    "bytes": 871885,
+    "headings": 436,
+    "lines": 10000,
+    "sha256": "3919b0cb978a84cb677122ed38b209c99146fc9b155823ebcf76428d1555b1f9"
+  },
+  "Long-LP-700.md": {
+    "bytes": 62927,
+    "headings": 32,
+    "lines": 700,
+    "sha256": "c2c85c56f2ea07b7772794dc3d63de733a0044e0dcad7c5520a74444dfc24686"
+  },
+  "Tiny-20.md": {
+    "bytes": 1734,
+    "headings": 2,
+    "lines": 20,
+    "sha256": "347180b5b092387225a6a4943894f041a7c2dc652a55d25c90126d05fba6418a"
+  },
+  "big-24k.md": {
+    "bytes": 588057,
+    "headings": 1500,
+    "lines": 24000,
+    "sha256": "636585d9d9f79ae57db171aeebe14ad7a9c2ff8cf045f99f68a27b404b3c8d56"
+  }
+}
