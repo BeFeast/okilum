@@ -278,16 +278,17 @@ fn check_and_download() -> anyhow::Result<&'static str> {
     let manager = manager()?;
     if let Some(asset) = manager.get_update_pending_restart() {
         // Applied only if the current channel's feed lists it (#1318). A feed
-        // that cannot be read keeps the package, unverified, for the next check.
+        // or a package file that cannot be read (a scan holding it, say) keeps
+        // the package, unverified, for the next check.
         let feed = manager.get_release_feed()?;
-        let sha256 = package_sha256(&asset);
-        let listed = sha256.as_deref().is_some_and(|sha256| {
-            feed.Assets.iter().any(|offered| {
-                offered.Version == asset.Version && offered.SHA256.eq_ignore_ascii_case(sha256)
-            })
+        let sha256 = package_sha256(&asset).ok_or_else(|| {
+            anyhow::anyhow!("The downloaded update could not be read. Okilum will try again later")
+        })?;
+        let listed = feed.Assets.iter().any(|offered| {
+            offered.Version == asset.Version && offered.SHA256.eq_ignore_ascii_case(&sha256)
         });
-        if let (true, Some(sha256)) = (listed, sha256.as_deref()) {
-            record_verified(sha256);
+        if listed {
+            record_verified(&sha256);
             state().lock().unwrap().observe(Some(identity(&asset)));
             return Ok("Update ready. Choose Restart to update.");
         }
