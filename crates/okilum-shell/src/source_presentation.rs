@@ -198,10 +198,10 @@ impl CachedProvider {
         );
         Some(Arc::new(MappedProjection {
             source: source.clone(),
-            markers: self
-                .classified
-                .decorations_for(&current)
-                .unwrap_or_default()
+            // Retained with the styles, so a revision not yet classified keeps
+            // its quote bars, bullets and task boxes (#1295).
+            markers: retained
+                .decorations()
                 .iter()
                 .filter(|m| !is_block(&m.kind))
                 .map(|m| ProjectionMarker {
@@ -564,7 +564,7 @@ mod tests {
         }
     }
     #[test]
-    fn decoration_inventory_is_exact_revision_only_and_pinned() {
+    fn decoration_inventory_follows_edits_and_stays_pinned() {
         let source = source("- list\n\n> quote\n\n***\n\nend");
         let provider = CachedProvider::classify(source.clone());
         let idle = inactive(&source);
@@ -576,18 +576,30 @@ mod tests {
             .iter()
             .map(|m| m.range.clone())
             .collect();
-        for change_bytes in [false, true] {
+        for (step, text) in [
+            "- list\n\n> quote\n\n***\n\nend",
+            "- list\n\n> quote\n\n***\n\nended",
+            "- listing\n\n> quote\n\n***\n\nended",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            // Each step is one edit on top of the previous revision.
             let mut current = source.clone();
-            current.stamp.generation += 1;
-            if change_bytes {
-                current.text = Arc::from("- list\n\n> quote\n\n***\n\nended");
-            }
-            if let Some(updated) = provider.compose(&current, &inactive(&current)) {
-                assert!(
-                    updated.markers().is_empty(),
-                    "retained projection must not remap decoration metadata"
-                );
-            }
+            current.stamp.generation += 1 + step as u64;
+            current.text = Arc::from(text);
+            // An unclassified revision draws the markers a fresh parse would.
+            let updated = provider.compose(&current, &inactive(&current)).unwrap();
+            let fresh = CachedProvider::classify(current.clone());
+            let expected = fresh.compose(&current, &inactive(&current)).unwrap();
+            let ranges = |p: &Arc<dyn SourceProjection>| {
+                p.markers()
+                    .iter()
+                    .map(|m| (m.range.clone(), m.scope.clone(), format!("{:?}", m.kind)))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(ranges(&updated), ranges(&expected), "{text:?}");
+            // The pinned earlier projection never changes.
             assert_eq!(
                 projection
                     .markers()
@@ -595,6 +607,79 @@ mod tests {
                     .map(|m| m.range.clone())
                     .collect::<Vec<_>>(),
                 old_ranges
+            );
+        }
+    }
+
+    /// #1295: every keystroke in a list drew one frame with the quote above it
+    /// and the list as raw Markdown, until the background parse came back.
+    /// Replay the Hedva sequence frame by frame without adoption: each frame
+    /// keeps the markers a fresh parse of that revision would draw.
+    #[test]
+    fn list_edits_keep_neighbouring_markers_on_every_frame_before_adoption() {
+        let quote: String = (0..5)
+            .map(|i| format!("> Quote line {i} with some words.\n"))
+            .collect();
+        let base = format!(
+            "# Title\n\nParagraph before.\n\n{quote}\n- List item one at depth one\n  - Nested item at depth two\n    - Deep item at depth three\n    - [ ] A task at depth three\n  - Back at depth two\n- Last item at depth one\n\nClosing line.\n"
+        );
+        let anchor = "  - Nested item at depth two";
+        let at = base.find(anchor).unwrap() + anchor.len();
+        // Enter keeps the line's indent, then `**x**`, Backspace twice.
+        let mut texts = vec![base.clone()];
+        let mut text = base.clone();
+        text.insert_str(at, "\n  ");
+        texts.push(text.clone());
+        let mut caret = at + 3;
+        for c in ["*", "*", "x", "*", "*"] {
+            text.insert_str(caret, c);
+            caret += 1;
+            texts.push(text.clone());
+        }
+        for _ in 0..2 {
+            caret -= 1;
+            text.remove(caret);
+            texts.push(text.clone());
+        }
+        // Undo back to the original, then Redo forward again.
+        let undo: Vec<_> = texts.iter().rev().skip(1).cloned().collect();
+        let redo: Vec<_> = texts.iter().skip(1).cloned().collect();
+        let frames: Vec<_> = texts.iter().cloned().chain(undo).chain(redo).collect();
+        let original = source(&frames[0]);
+        let provider = CachedProvider::classify(original.clone());
+        let markers = |p: &Arc<dyn SourceProjection>| {
+            p.markers()
+                .iter()
+                .map(|m| (m.range.clone(), m.kind.clone()))
+                .collect::<Vec<_>>()
+        };
+        // Positive control: the classified revision draws quote and list markers.
+        let first = markers(&provider.compose(&original, &inactive(&original)).unwrap());
+        assert!(first
+            .iter()
+            .any(|(_, k)| matches!(k, MarkerKind::Quote { .. })));
+        assert!(first
+            .iter()
+            .any(|(_, k)| matches!(k, MarkerKind::Bullet { .. })));
+        assert!(first
+            .iter()
+            .any(|(_, k)| matches!(k, MarkerKind::Task { .. })));
+        for (step, text) in frames.iter().enumerate().skip(1) {
+            let current = SourceSnapshot {
+                stamp: SourceStamp {
+                    generation: original.stamp.generation + step as u64,
+                    ..original.stamp
+                },
+                text: Arc::from(text.as_str()),
+            };
+            let frame = provider.compose(&current, &inactive(&current)).unwrap();
+            let fresh = CachedProvider::classify(current.clone());
+            let expected = fresh.compose(&current, &inactive(&current)).unwrap();
+            let debug = |m: Vec<(Range<SourceByte>, MarkerKind)>| format!("{m:?}");
+            assert_eq!(
+                debug(markers(&frame)),
+                debug(markers(&expected)),
+                "frame {step}: {text:?}"
             );
         }
     }
