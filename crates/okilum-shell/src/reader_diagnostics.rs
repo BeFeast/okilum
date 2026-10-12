@@ -62,7 +62,7 @@ impl Trace {
         };
         trace.event(
             "process_start",
-            serde_json::json!({ "version": env!("OKILUM_RELEASE_VERSION"), "build": env!("OKILUM_BUILD_VERSION"), "os": std::env::consts::OS, "version_info": crate::version_info::report() }),
+            serde_json::json!({ "version": env!("OKILUM_RELEASE_VERSION"), "package": crate::version_info::package(), "build": env!("OKILUM_BUILD_VERSION"), "os": std::env::consts::OS, "version_info": crate::version_info::report() }),
         );
         trace
     }

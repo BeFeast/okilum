@@ -102,7 +102,17 @@
      /// Snapshot of this table for the [`crate::text::TextView::table_actions`]
      /// hook.
      pub(crate) fn table_data(&self) -> TableData {
-@@ -2460,14 +2539,8 @@
+@@ -1966,6 +2045,9 @@
+ /// shaped with the runs the cell renders with, plus the cell's padding and
+ /// border. Never capped: a cap would clip overflowing text *and* leave it
+ /// outside the scrollable width, making it unreachable.
++// Only the tests measure the max-content widths alone; rendering goes through
++// `Table::frame_widths`, which measures both once.
++#[cfg(test)]
+ fn measure_table_columns(
+     table: &Table,
+     col_count: usize,
+@@ -2460,14 +2542,8 @@
          cx: &mut App,
      ) -> AnyElement {
          const TABLE_BORDER_PX: f32 = 2.0;
@@ -118,7 +128,7 @@
          let min_total_w: f32 = col_min_w.iter().sum::<f32>() + TABLE_BORDER_PX;
  
          let table_scroll_key = if let Some(span) = table.span {
-@@ -2610,8 +2683,7 @@
+@@ -2610,8 +2686,7 @@
                              }))
                      };
  
@@ -128,7 +138,7 @@
                      let mut frame_style = StyleRefinement::default()
                          .bg(cx.theme().tokens.colors.surface)
                          .border_1()
-@@ -2984,6 +3056,7 @@
+@@ -2984,6 +3059,7 @@
              }],
              column_aligns: vec![],
              span: None,
@@ -136,7 +146,7 @@
          };
          let node_cx = NodeContext {
              style: TextViewStyle::default().with_inline_code_font_family(Some(MONO.into())),
-@@ -3348,6 +3421,7 @@
+@@ -3348,6 +3424,7 @@
              ],
              column_aligns: vec![ColumnumnAlign::Left, ColumnumnAlign::Right],
              span: None,
@@ -144,7 +154,7 @@
          };
          let block = BlockNode::Table(table);
          assert_eq!(
-@@ -3373,6 +3447,7 @@
+@@ -3373,6 +3450,7 @@
                  .collect(),
              column_aligns,
              span: None,
@@ -152,7 +162,7 @@
          }
      }
  
-@@ -3451,6 +3526,62 @@
+@@ -3451,6 +3529,62 @@
          assert_eq!(data.span, Some(4..42));
      }
  

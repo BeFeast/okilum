@@ -879,8 +879,9 @@ impl Settings {
             Section::Updates => {
                 let content =
                     content.child(div().text_sm().text_color(p.text_muted).child(format!(
-                        "Version {} · Build {} · Channel: {}",
+                        "Version {}{} · Build {} · Channel: {}",
                         env!("OKILUM_RELEASE_VERSION"),
+                        crate::version_info::package_part(),
                         env!("OKILUM_BUILD_VERSION"),
                         match self.preview_channel() {
                             Some(true) => "Beta",
