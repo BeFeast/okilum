@@ -99,14 +99,32 @@ fn verified_path() -> Option<std::path::PathBuf> {
         .map(|root| root.join(VERIFIED))
 }
 
+fn packages_dir() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    Some(exe.parent()?.parent()?.join("packages"))
+}
+
+/// SHA256 of the downloaded package file, upper-case hex like the feed's.
+/// Velopack's local pending asset leaves `SHA256` empty, so it is read here.
+fn package_sha256(asset: &velopack::VelopackAsset) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let mut file = std::fs::File::open(packages_dir()?.join(&asset.FileName)).ok()?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher).ok()?;
+    Some(
+        hasher
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02X}"))
+            .collect(),
+    )
+}
+
 /// Records that the pending package belongs to the current channel's feed.
-fn record_verified(asset: &velopack::VelopackAsset) {
+fn record_verified(sha256: &str) {
     if let Some(path) = verified_path() {
         let _ = path.parent().map(std::fs::create_dir_all);
-        let _ = std::fs::write(
-            path,
-            super::windows_feed::verified_record(beta(), &asset.SHA256),
-        );
+        let _ = std::fs::write(path, super::windows_feed::verified_record(beta(), sha256));
     }
 }
 
@@ -118,10 +136,7 @@ fn forget_verified() {
 
 /// Deletes a downloaded package the current channel does not offer (#1318).
 fn discard(asset: &velopack::VelopackAsset) {
-    let packages = std::env::current_exe()
-        .ok()
-        .and_then(|exe| Some(exe.parent()?.parent()?.join("packages")));
-    if let Some(packages) = packages {
+    if let Some(packages) = packages_dir() {
         let _ = std::fs::remove_file(packages.join(&asset.FileName));
     }
     forget_verified();
@@ -133,14 +148,15 @@ pub(crate) fn apply_pending_at_start() -> bool {
     let Ok(manager) = manager() else {
         return true;
     };
-    let pending = manager.get_update_pending_restart();
+    let Some(pending) = manager.get_update_pending_restart() else {
+        return true;
+    };
     let record = verified_path().and_then(|path| std::fs::read_to_string(path).ok());
-    pending.is_none()
-        || super::windows_feed::may_apply_at_start(
-            pending.as_ref().map(|asset| asset.SHA256.as_str()),
-            record.as_deref(),
-            beta(),
-        )
+    super::windows_feed::may_apply_at_start(
+        package_sha256(&pending).as_deref(),
+        record.as_deref(),
+        beta(),
+    )
 }
 
 fn manager() -> Result<UpdateManager, velopack::Error> {
@@ -261,14 +277,17 @@ const IN_PROGRESS: &str = "An update check or download is already in progress.";
 fn check_and_download() -> anyhow::Result<&'static str> {
     let manager = manager()?;
     if let Some(asset) = manager.get_update_pending_restart() {
-        // Applied only if the current channel's feed lists it (#1318).
-        let listed = manager
-            .get_release_feed()?
-            .Assets
-            .iter()
-            .any(|offered| offered.SHA256 == asset.SHA256 && offered.Version == asset.Version);
-        if listed {
-            record_verified(&asset);
+        // Applied only if the current channel's feed lists it (#1318). A feed
+        // that cannot be read keeps the package, unverified, for the next check.
+        let feed = manager.get_release_feed()?;
+        let sha256 = package_sha256(&asset);
+        let listed = sha256.as_deref().is_some_and(|sha256| {
+            feed.Assets.iter().any(|offered| {
+                offered.Version == asset.Version && offered.SHA256.eq_ignore_ascii_case(sha256)
+            })
+        });
+        if let (true, Some(sha256)) = (listed, sha256.as_deref()) {
+            record_verified(sha256);
             state().lock().unwrap().observe(Some(identity(&asset)));
             return Ok("Update ready. Choose Restart to update.");
         }
@@ -279,8 +298,8 @@ fn check_and_download() -> anyhow::Result<&'static str> {
         UpdateCheck::UpdateAvailable(update) => {
             manager.download_updates(&update, None)?;
             let pending = manager.get_update_pending_restart();
-            if let Some(asset) = &pending {
-                record_verified(asset);
+            if let Some(sha256) = pending.as_ref().and_then(package_sha256) {
+                record_verified(&sha256);
             }
             state()
                 .lock()

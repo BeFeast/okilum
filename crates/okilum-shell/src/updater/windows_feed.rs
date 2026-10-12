@@ -47,7 +47,9 @@ pub(super) fn may_apply_at_start(
     beta: bool,
 ) -> bool {
     match (pending_sha256, record) {
-        (Some(sha), Some(record)) => record.trim() == verified_record(beta, sha),
+        (Some(sha), Some(record)) => record
+            .trim()
+            .eq_ignore_ascii_case(&verified_record(beta, sha)),
         _ => false,
     }
 }
