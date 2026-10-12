@@ -94,5 +94,7 @@ bash scripts/ci/check-supervisor-bundle.sh
 # #477: real Quick Look providers, bounded Retina output and cancellation.
 export OKILUM_THUMBNAIL_EVIDENCE_DIR="${RUNNER_TEMP}/thumbnail-evidence"
 run_tests okilum-shell --bins reader_thumbnail::native_tests
+# #1307: a build that never chose a channel follows stable; a Beta choice stays.
+run_tests okilum-shell --bins updater::macos::tests::channel_defaults_to_stable_and_keeps_an_explicit_choice --exact
 
 release_cache_stats

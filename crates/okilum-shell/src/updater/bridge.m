@@ -76,3 +76,8 @@ bool okilum_updater_beta(void) {
 void okilum_updater_set_beta(bool enabled) {
     [NSUserDefaults.standardUserDefaults setBool:enabled forKey:TSBetaKey];
 }
+
+// Tests only: an install that never chose a channel.
+void okilum_updater_forget_beta(void) {
+    [NSUserDefaults.standardUserDefaults removeObjectForKey:TSBetaKey];
+}
