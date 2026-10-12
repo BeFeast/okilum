@@ -64,14 +64,38 @@ impl Render for SidePanel {
     }
 }
 
+// Tests draw the panels uncached unless they ask for the cache
+// (`tests::CachedPanels`): gpui records `debug_selector` bounds only for
+// subtrees it draws, not for a cached one it reuses, so a test looking up a
+// panel row after a reused frame would find nothing, and an `is_none()`
+// check would pass for the wrong reason.
+#[cfg(test)]
+thread_local! {
+    static CACHE_IN_TESTS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn cache_panels() -> bool {
+    CACHE_IN_TESTS.with(std::cell::Cell::get)
+}
+
+#[cfg(not(test))]
+fn cache_panels() -> bool {
+    true
+}
+
 impl Reader {
     /// The panel's cached view (made with the Reader, see [`SidePanel::pair`]).
     pub(super) fn side_panel(&self, left: bool) -> AnyElement {
-        match &self.side_panels[usize::from(!left)] {
-            Some(panel) => AnyView::from(panel.clone())
-                .cached(StyleRefinement::default().size_full())
-                .into_any_element(),
-            None => div().into_any_element(),
+        let Some(panel) = &self.side_panels[usize::from(!left)] else {
+            return div().into_any_element();
+        };
+        let view = AnyView::from(panel.clone());
+        if cache_panels() {
+            view.cached(StyleRefinement::default().size_full())
+                .into_any_element()
+        } else {
+            view.into_any_element()
         }
     }
 
@@ -115,11 +139,26 @@ mod tests {
         RENDERS.with(|renders| renders.get())
     }
 
+    /// Panels drawn through the cache, as in the app, for one test.
+    pub(super) struct CachedPanels;
+    impl CachedPanels {
+        pub(super) fn on() -> Self {
+            CACHE_IN_TESTS.with(|cache| cache.set(true));
+            Self
+        }
+    }
+    impl Drop for CachedPanels {
+        fn drop(&mut self) {
+            CACHE_IN_TESTS.with(|cache| cache.set(false));
+        }
+    }
+
     /// #1290: scrolling inside a section redraws neither panel; reaching the
     /// next section redraws «On this page» (its current row moves); a Reader
     /// change (another note) redraws both.
     #[gpui::test]
     fn scrolling_reuses_the_side_panels_until_what_they_show_changes(cx: &mut TestAppContext) {
+        let _cache = CachedPanels::on();
         cx.update(|cx| {
             gpui_component::init(cx);
             bind_keys(cx);
