@@ -7,15 +7,20 @@
 # Velopack calls this through `--signTemplate "<path>/sign.sh {{file...}}"`. On Linux it
 # escapes `$`, quotes and backticks in the template, so all configuration comes from the
 # environment it inherits:
-#   OKILUM_WINDOWS_SIGN_BACKEND      certum-pkcs11 | esigner | pkcs12-test
+#   OKILUM_WINDOWS_SIGN_BACKEND      certum-ssign | certum-pkcs11 | esigner | pkcs12-test
 #   OKILUM_WINDOWS_SIGN_CERT_SHA256  pinned signer certificate (hex, any case, colons allowed)
+#   certum-ssign:  CERTUM_EMAIL; a session ssign cached under XDG_RUNTIME_DIR (okilum-sign-code
+#                  opens it on the signer from Oleg's 6-digit code) or CERTUM_TOKEN (a current
+#                  code, single use); OKILUM_SSIGN (binary, default /usr/local/bin/ssign) is
+#                  checked against ssign.sha256
 #   certum-pkcs11: OKILUM_WINDOWS_SIGN_PKCS11_CFG (jsign/SunPKCS11 config with library=),
 #                  OKILUM_WINDOWS_SIGN_ALIAS, optional OKILUM_WINDOWS_SIGN_PIN_FILE (0600)
 #   esigner:       OKILUM_WINDOWS_SIGN_ALIAS (credential id), ESIGNER_STOREPASS
 #                  ("<username>|<password>"), ESIGNER_TOTP_SECRET (base64)
 #   pkcs12-test:   OKILUM_WINDOWS_SIGN_TEST_P12, OKILUM_WINDOWS_SIGN_TEST_PASSWORD_FILE,
 #                  OKILUM_WINDOWS_SIGN_ALIAS
-# Secrets are passed to jsign as env:/file: references, never on its command line.
+# Secrets are passed to jsign as env:/file: references, never on its command line; ssign reads
+# CERTUM_TOKEN from its environment.
 set -Eeuo pipefail
 
 die() { echo "sign.sh: $*" >&2; exit 1; }
@@ -31,6 +36,15 @@ normalize() { tr -d ': \r\n' | tr '[:upper:]' '[:lower:]'; }
 
 store=()
 case "$backend" in
+    certum-ssign)
+        # ssign (github.com/Le-Syl21/ssign, pinned build) signs over Certum's HTTPS API with
+        # the same OAuth login as SimplySign Desktop: no Desktop, no PKCS#11, no TOTP seed.
+        ssign="${OKILUM_SSIGN:-/usr/local/bin/ssign}"
+        [ -x "$ssign" ] || die "ssign not installed at $ssign"
+        want="${OKILUM_SSIGN_SHA256:-$(cut -d' ' -f1 "$(dirname "$0")/ssign.sha256")}"  # override: tests only
+        [ "$(sha256sum "$ssign" | cut -d' ' -f1)" = "$want" ] || die "$ssign is not the pinned ssign build"
+        : "${CERTUM_EMAIL:?CERTUM_EMAIL required}"
+        ;;
     certum-pkcs11)
         cfg="${OKILUM_WINDOWS_SIGN_PKCS11_CFG:?PKCS#11 config required}"
         store=(--storetype PKCS11 --keystore "$cfg" --alias "${OKILUM_WINDOWS_SIGN_ALIAS:?alias required}")
@@ -71,7 +85,7 @@ certificate_sha256() {
                 -passin "file:$OKILUM_WINDOWS_SIGN_TEST_PASSWORD_FILE" 2>/dev/null \
                 | openssl x509 -outform DER -out "$der" 2>/dev/null || return 1
             ;;
-        *) return 2 ;;  # eSigner has no local token to read
+        *) return 2 ;;  # eSigner and ssign have no local token to read
     esac
     [ -s "$der" ] || return 1
     sha256sum "$der" | cut -d' ' -f1
@@ -81,6 +95,16 @@ if [ "${1:-}" = --probe ]; then
     expected=$(printf '%s' "${OKILUM_WINDOWS_SIGN_CERT_SHA256:?pinned certificate SHA-256 required}" | normalize)
     status=0
     actual=$(certificate_sha256) || status=$?
+    if [ "$status" = 2 ] && [ "$backend" = certum-ssign ]; then
+        # A Certum code works once and for about 30 s; ssign caches the session it opens for
+        # 20 min. The probe never logs in: it needs a fresh cached session or a code.
+        session="${XDG_RUNTIME_DIR:-${HOME:?}/.cache}/ssign/session.json"
+        if [ -z "${CERTUM_TOKEN:-}" ] && ! [ -n "$(find "$session" -mmin -19 2>/dev/null)" ]; then
+            die "probe: no Certum session (run okilum-sign-code with a current SimplySign code)"
+        fi
+        echo "sign.sh: certum-ssign logs in when it signs; the signature check after signing pins the certificate"
+        exit 0
+    fi
     if [ "$status" = 2 ]; then
         echo "sign.sh: $backend has no local token; the signature check after signing pins the certificate"
         exit 0
@@ -93,6 +117,24 @@ fi
 
 [ "$#" -gt 0 ] || die "no files to sign"
 for file in "$@"; do [ -f "$file" ] || die "not a file: $file"; done
+
+if [ "$backend" = certum-ssign ]; then
+    # One login per job: the first call spends the code, Velopack's later calls reuse the
+    # session ssign caches under XDG_RUNTIME_DIR. The lock keeps two logins from ever
+    # overlapping (Certum locks the account after repeated bad codes).
+    exec 9>"${OKILUM_SSIGN_LOCK:-/run/lock/okilum-ssign.lock}"
+    flock -w 600 9 || die "another signing run holds the ssign lock"
+    session="${XDG_RUNTIME_DIR:-${HOME:?}/.cache}/ssign/session.json"
+    failures=0
+    while ! timeout 600 "$ssign" --timestamp-url "$tsa" --name Okilum --url https://okilum.app "$@"; do
+        failures=$((failures + 1))
+        # Retry only once a session exists (login worked; e.g. the timestamp server failed):
+        # replaying a rejected code counts towards Certum's account lock.
+        [ -f "$session" ] && [ "$failures" -lt 3 ] || die "ssign failed for: $*"
+        sleep "${OKILUM_WINDOWS_SIGN_RETRY:-10}"
+    done
+    exit 0
+fi
 
 # SimplySign enumerates the token before its certificate is populated, so right after a
 # login jsign reports "No certificate found" for a while: retry that every 4 s for ~60 s.
