@@ -22,7 +22,7 @@ identical installer/package bytes and serves `releases.stable.json`; the SDK's
 explicit channel setting selects the matching feed. Switching back to stable
 never downgrades the current version. A downloaded update is applied only if the
 channel the install follows now offers it (#1318): the package is checked against
-that channel's feed and recorded in `windows-update-verified` (by version); changing the
+that channel's feed and recorded in `windows-update-verified`; changing the
 channel removes the record, and the next check keeps the package or deletes it.
 
 The SDK handles installer lifecycle arguments before Reader argument parsing.
