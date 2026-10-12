@@ -6,6 +6,11 @@
                                 wheel-end.txt (Unix ms) from the host's probe.
     analyze.py --md RUNDIR...   markdown instead of the aligned text table
 
+"cost" is what the app itself spends on a frame, the figure the stage-2 criterion is about
+(#1290/#1004): draw + present - the wait for a free drawable (macOS `next_drawable`, which is the
+display's, not ours). Windows' Present(0) does not block, so there present counts whole. The
+criterion is cost p95 <= 8 ms on the 24k-line note on VM 151 and Linux, <= 16.7 ms on Hedva.
+
 Only frames that redrew (draws >= 1) inside the wheel burst, plus 0.3 s after it, count: gpui
 keeps presenting an unchanged scene for about a second afterwards (draws = 0), and a blinking
 caret redraws every 500 ms; neither is scroll cost. Times are milliseconds, medians of those
@@ -82,6 +87,7 @@ def summarise(run):
         ext.append(external(rep))
     if not frames:
         return None
+    costs = [(f["draw"] + f["present"] - f.get("drawable", 0)) / 1000 for f in frames]
 
     def med(key):
         values = [f[key] / 1000 for f in frames if key in f]
@@ -96,6 +102,7 @@ def summarise(run):
         "redraws": len(frames) / len(reps),
         "fps": statistics.mean(fps) if fps else float("nan"),
         "int50": pct(intervals, 50), "int95": pct(intervals, 95),
+        "cost50": pct(costs, 50), "cost95": pct(costs, 95), "costmax": max(costs),
         **{key: med(key) for key in PHASES + ("setup", "batches", "swap", "drawable", "encode", "commit", "cache", "shape")},
         **{key: med(key) for key in MSG_KEYS},
         **{key: statistics.median(f.get(key, 0) for f in frames) for key in MSG_COUNTS},
@@ -113,6 +120,7 @@ COLUMNS = (
     ("run", "run", "{}"), ("reps", "reps", "{}"), ("valid", "valid", "{}"), ("quiet", "quiet", "{}"),
     ("capped", "host capped", "{}"), ("redraws", "redraws/rep", "{:.0f}"), ("fps", "fps", "{:.1f}"), ("ext_fps", "ext fps", "{:.1f}"),
     ("int50", "interval p50", "{:.1f}"), ("int95", "p95", "{:.1f}"),
+    ("cost50", "frame cost p50", "{:.1f}"), ("cost95", "cost p95", "{:.1f}"), ("costmax", "max", "{:.1f}"),
     ("draw", "draw", "{:.1f}"), ("req", "req", "{:.1f}"), ("layout", "layout", "{:.1f}"),
     ("prepaint", "prepaint", "{:.1f}"), ("paint", "paint", "{:.1f}"), ("post", "post", "{:.1f}"),
     ("present", "present", "{:.1f}"), ("setup", "setup", "{:.1f}"), ("batches", "batches", "{:.1f}"),

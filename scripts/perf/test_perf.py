@@ -104,6 +104,22 @@ class AnalyzerTests(unittest.TestCase):
         rows = [self.frame(base + i * 80_000, i) for i in range(1, 11)]
         self.assertIsNone(self.analyze.accounting(self.analyze.summarise(self.run_dir(rows))))
 
+    def test_frame_cost_leaves_out_the_drawable_wait(self):
+        # draw 14 ms + present 107 ms of which 104 ms is the wait for a drawable: our cost is 17 ms.
+        base = 1_000_000_000
+        lines = []
+        for i in range(1, 51):
+            t = base + i * 130_000
+            lines += [f"[mac] t={t - 10} drawable=104000 encode=2500 commit=300",
+                      self.frame(t, i, draw=14000, present=107000)]
+        row = self.analyze.summarise(self.run_dir(lines))
+        self.assertAlmostEqual(row["cost50"], 17.0)
+        self.assertAlmostEqual(row["cost95"], 17.0)
+        # On Windows (no drawable) present counts whole: 10 ms draw + 0.5 ms present.
+        lines = [self.frame(base + i * 80_000, i, draw=10000, present=500) for i in range(1, 51)]
+        row = self.analyze.summarise(self.run_dir(lines))
+        self.assertAlmostEqual(row["cost95"], 10.5)
+
     def test_mac_lines_carry_the_drawable_wait(self):
         base = 1_000_000_000
         lines = []
