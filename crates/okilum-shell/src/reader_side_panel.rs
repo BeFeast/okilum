@@ -78,7 +78,7 @@ impl Reader {
         // A notify inside a draw only takes effect at the next draw, and none
         // would be scheduled: after this one, it asks for its own frame.
         if let Some(panel) = self.side_panels[1].clone() {
-            cx.defer(move |_, cx| panel.update(cx, |_, cx| cx.notify()));
+            cx.defer(move |cx| panel.update(cx, |_, cx| cx.notify()));
         }
     }
 
