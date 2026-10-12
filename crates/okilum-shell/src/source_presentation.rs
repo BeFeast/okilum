@@ -198,10 +198,10 @@ impl CachedProvider {
         );
         Some(Arc::new(MappedProjection {
             source: source.clone(),
-            markers: self
-                .classified
-                .decorations_for(&current)
-                .unwrap_or_default()
+            // Retained with the styles, so a revision not yet classified keeps
+            // its quote bars, bullets and task boxes (#1295).
+            markers: retained
+                .decorations()
                 .iter()
                 .filter(|m| !is_block(&m.kind))
                 .map(|m| ProjectionMarker {

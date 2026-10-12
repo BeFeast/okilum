@@ -1,5 +1,5 @@
 //! Presentation-only edit mapping. Never reuse stale navigation or parser metadata.
-use super::{Classification, Reference, Style, StyleSpan, MAX_BYTES};
+use super::{decorations::Marker, Classification, Reference, Style, StyleSpan, MAX_BYTES};
 use crate::source_projection::{Active, Plan, Region, Snapshot};
 use std::{ops::Range, sync::Arc};
 
@@ -55,6 +55,10 @@ pub struct RetainedPresentation {
     plan: Plan,
     styles: Vec<StyleSpan>,
     marker_scopes: Vec<(Range<usize>, Range<usize>)>,
+    /// Painted list, quote, task, rule and code markers, carried with the
+    /// styles: without them every edit drew one raw frame of every container
+    /// until the async classification came back (#1295).
+    decorations: Vec<Marker>,
     contexts: Vec<Range<usize>>,
     /// Definitions change only through a full parse; local reparses reuse these.
     references: Arc<[Reference]>,
@@ -73,6 +77,7 @@ impl RetainedPresentation {
             plan: classified.plan.clone(),
             styles: classified.styles.clone(),
             marker_scopes: classified.marker_scopes.clone(),
+            decorations: classified.decorations.clone(),
             contexts: classified.contexts.clone(),
             references: classified.references.clone().into(),
         }
@@ -86,6 +91,10 @@ impl RetainedPresentation {
     }
     pub fn styles(&self) -> &[StyleSpan] {
         &self.styles
+    }
+    /// Paint markers of this exact retained revision.
+    pub fn decorations(&self) -> &[Marker] {
+        &self.decorations
     }
 
     /// Range validation must not construct another whole-document projection.
@@ -511,6 +520,29 @@ impl RetainedPresentation {
                 .map(|(m, s)| (offset(m), offset(s))),
         );
         marker_scopes.sort_by_key(|(m, _)| m.start);
+        // Markers of the reparsed run come from its parse; the rest only move.
+        let mut decorations: Vec<_> = self
+            .decorations
+            .iter()
+            .filter_map(|m| {
+                Some(Marker {
+                    range: map(&m.range)?,
+                    scope: map(&m.scope)?,
+                    kind: m.kind.clone(),
+                })
+            })
+            .collect();
+        decorations.extend(
+            classified
+                .iter()
+                .flat_map(|c| &c.decorations)
+                .map(|m| Marker {
+                    range: offset(&m.range),
+                    scope: offset(&m.scope),
+                    kind: m.kind.clone(),
+                }),
+        );
+        decorations.sort_by_key(|m| m.range.start);
         // An unclassified raw run has no proven containers: later edits in it
         // keep the strict outside-container line rules until adoption.
         let mut contexts: Vec<_> = self.contexts.iter().filter_map(map).collect();
@@ -524,6 +556,7 @@ impl RetainedPresentation {
             plan,
             styles,
             marker_scopes,
+            decorations,
             contexts,
             references: self.references.clone(),
         })
@@ -550,6 +583,7 @@ impl RetainedPresentation {
                 plan: Plan::new(current, self.plan.regions().to_vec()),
                 styles: self.styles.clone(),
                 marker_scopes: self.marker_scopes.clone(),
+                decorations: self.decorations.clone(),
                 contexts: self.contexts.clone(),
                 references: self.references.clone(),
             });
@@ -682,6 +716,35 @@ impl RetainedPresentation {
                 }
             })
             .collect::<Option<Vec<_>>>()?;
+        // A marker moves with the text; its container stretches over an edit
+        // inside it. A marker the edit touches is dropped until adoption.
+        let decorations = self
+            .decorations
+            .iter()
+            .filter_map(|m| {
+                let range = if m.range.end <= start {
+                    m.range.clone()
+                } else if m.range.start >= end {
+                    shift(m.range.start)?..shift(m.range.end)?
+                } else {
+                    return None;
+                };
+                let scope = if m.scope.start <= start && end <= m.scope.end {
+                    m.scope.start..shift(m.scope.end)?
+                } else if m.scope.end <= start {
+                    m.scope.clone()
+                } else if m.scope.start >= end {
+                    shift(m.scope.start)?..shift(m.scope.end)?
+                } else {
+                    return None;
+                };
+                Some(Marker {
+                    range,
+                    scope,
+                    kind: m.kind.clone(),
+                })
+            })
+            .collect();
         let plan = Plan::new(current, regions);
         // Build and validate once per revision, then reuse during reveal/IME.
         let base = crate::source_projection::project(current, &plan, &Active::default()).ok()?;
@@ -696,6 +759,7 @@ impl RetainedPresentation {
                 .iter()
                 .filter_map(|(marker, scope)| Some((map(marker)?, map(scope)?)))
                 .collect(),
+            decorations,
             styles: self
                 .styles
                 .iter()
