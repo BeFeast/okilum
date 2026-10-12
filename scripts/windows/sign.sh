@@ -125,6 +125,14 @@ if [ "$backend" = certum-ssign ]; then
     exec 9>"${OKILUM_SSIGN_LOCK:-/run/lock/okilum-ssign.lock}"
     flock -w 600 9 || die "another signing run holds the ssign lock"
     session="${XDG_RUNTIME_DIR:-${HOME:?}/.cache}/ssign/session.json"
+    # ssign insists on --token/--otp even when it will reuse a cached session (2026-10-12,
+    # run 7400). With a fresh session and no code, give it a placeholder it never sends;
+    # without either, stop here rather than let ssign try a login with a bad code.
+    if [ -z "${CERTUM_TOKEN:-}" ]; then
+        [ -n "$(find "$session" -mmin -19 2>/dev/null)" ] \
+            || die "no Certum session (run okilum-sign-code with a current SimplySign code)"
+        export CERTUM_TOKEN=000000
+    fi
     failures=0
     while ! timeout 600 "$ssign" --timestamp-url "$tsa" --name Okilum --url https://okilum.app "$@"; do
         failures=$((failures + 1))
