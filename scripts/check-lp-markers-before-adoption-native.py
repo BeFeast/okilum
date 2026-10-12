@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""Native #1295: list and quote markers stay drawn between a keystroke and the
-background parse. Run on an exclusive X11 display (never maestro).
-Usage: DISPLAY=:1037 python3 scripts/check-lp-markers-before-adoption-native.py NATIVE_MARKER784 OUT LABEL
+"""Native #1295/#1266: Live Preview draws the same frame before and after the
+background parse of a keystroke. Run on an exclusive X11 display (never maestro).
+Usage: DISPLAY=:1037 python3 scripts/check-lp-markers-before-adoption-native.py NATIVE_MARKER784 OUT LABEL [CASE]
+CASE (default mid-list):
+- mid-list (#1295): the end of the wrapped second-level item, a deeper item below;
+- last-nested (#1266): the end of the last, nested item, a blank line and a quote below;
+- task (#1266): the end of a task list right under an ordered one.
 The isolated #216 fixture with its 500 ms parse delay holds the unadopted
 revision on screen long enough to capture it even on Xvfb, where the real
-one-frame gap is never painted. As on Hedva, the caret is at the end of the
-second-level list item, which has a deeper item below it: Enter (it keeps the
-deeper indent), `**x**`, Backspace twice. Before adoption each frame must
-look exactly like the adopted one: the list rows above the edit, and the
-deeper item and the quote below it.
+one-frame gap is never painted. With the caret at the case's place: Enter
+(it keeps the line's or the deeper next line's indent), `**x**`, Backspace
+twice. Before adoption each frame must look exactly like the adopted one
+above and below the edited line (the edited line's own syntax waits for
+the parse).
 Positive control: the capture inside the window is taken while the status
 line still says the source is being classified (the edit is unadopted), and
 the typed text is on screen.
@@ -18,10 +22,17 @@ import os, subprocess, sys, time
 from pathlib import Path
 
 binary, out, label = sys.argv[1], Path(sys.argv[2]), sys.argv[3]
+case = sys.argv[4] if len(sys.argv) > 4 else 'mid-list'
 out.mkdir(parents=True, exist_ok=True)
 env = dict(os.environ, WAYLAND_DISPLAY='')
-ABOVE = '840x122+20+275'     # title, first level and the wrapped second level
-BELOW = '840x130+20+422'     # third level, the quote and the rule, below the edited line
+# 900x900 window; text rows are 24 px. Per case: caret click, the rows above
+# the edit, and the rows below the new edited line.
+CASES = {
+    'mid-list': ((400, 386), '840x122+20+275', '840x130+20+422'),
+    'last-nested': ((400, 410), '840x146+20+275', '840x130+20+446'),
+    'task': ((420, 626), '840x362+20+275', '840x120+20+662'),
+}
+CARET, ABOVE, BELOW = CASES[case]
 STATUS = '880x24+10+176'     # "Classifying in background" vs "Current classification"
 
 
@@ -57,7 +68,7 @@ try:
     time.sleep(4)
     xd('mousemove', 729, 73, 'click', 1)          # Parse delay: 500 ms
     time.sleep(1)
-    xd('mousemove', 400, 386, 'click', 1)         # end of the wrapped second level
+    xd('mousemove', *CARET, 'click', 1)
     time.sleep(2)
     steps = [('key', 'Return')] + [('type', c) for c in '**x**'] + [('key', 'BackSpace')] * 2
     for i, (kind, arg) in enumerate(steps):
@@ -80,5 +91,5 @@ finally:
 if not all(r['unadopted_capture'] for r in results.values()):
     print(label, 'INVALID: a capture was not taken before adoption'); sys.exit(2)
 ok = all(r['no_flash'] for r in results.values())
-print(label, {'markers_kept_before_adoption': ok}, flush=True)
+print(label, case, {'same_frame_before_adoption': ok}, flush=True)
 sys.exit(0 if ok else 1)
