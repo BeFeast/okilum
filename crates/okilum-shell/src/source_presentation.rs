@@ -802,6 +802,62 @@ mod tests {
         }
     }
 
+    /// #1332 (night QA, muninn): a heading, a paragraph, a quote, a list and
+    /// another block after the list. Typing after the last item, Enter and
+    /// Undo drew the whole note raw for a frame. Undo replays the coalesced
+    /// groups (the Enter, then the typed run) as well as single steps.
+    #[test]
+    fn enter_and_undo_after_a_list_followed_by_a_block_project_every_frame() {
+        for after in ["\n\n[[linked]]\n", "\n\nplain after\n"] {
+            let base = format!("# Heading\n\npara\n\n> quote\n\n- one\n- two{after}");
+            let at = base.find("- two").unwrap() + "- two".len();
+            let mut text = base.clone();
+            let mut typed = vec![text.clone()];
+            for (i, c) in " EDIT\n".chars().enumerate() {
+                text.insert(at + i, c);
+                typed.push(text.clone());
+            }
+            let single: Vec<_> = typed.iter().rev().skip(1).cloned().collect();
+            let grouped = vec![typed[typed.len() - 2].clone(), base.clone()];
+            for undo in [single, grouped] {
+                let frames: Vec<_> = typed.iter().cloned().chain(undo).collect();
+                let original = source(&frames[0]);
+                let provider = CachedProvider::classify(original.clone());
+                for (step, text) in frames.iter().enumerate().skip(1) {
+                    let current = SourceSnapshot {
+                        stamp: SourceStamp {
+                            generation: original.stamp.generation + step as u64,
+                            ..original.stamp
+                        },
+                        text: Arc::from(text.as_str()),
+                    };
+                    let frame = provider
+                        .compose(&current, &inactive(&current))
+                        .unwrap_or_else(|| panic!("{after:?} frame {step} drew raw: {text:?}"));
+                    // Everything above the list item keeps its presentation.
+                    let fresh = CachedProvider::classify(current.clone());
+                    let expected = fresh.compose(&current, &inactive(&current)).unwrap();
+                    let head = |p: &Arc<dyn SourceProjection>| {
+                        let lines: Vec<_> =
+                            p.text().split('\n').take(7).map(str::to_owned).collect();
+                        let markers: Vec<_> = p
+                            .markers()
+                            .iter()
+                            .filter(|m| m.range.start.0 < at - "- two".len())
+                            .map(|m| (m.range.clone(), m.kind.clone()))
+                            .collect();
+                        format!("{lines:?}\n{markers:?}")
+                    };
+                    assert_eq!(
+                        head(&frame),
+                        head(&expected),
+                        "{after:?} frame {step}: {text:?}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn quote_markers_reveal_as_their_own_element_not_the_whole_quote() {
         use gpui_component::input::projection::{LayoutStamp, MarkerKind, PinnedProjection};

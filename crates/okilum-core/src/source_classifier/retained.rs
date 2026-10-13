@@ -231,8 +231,26 @@ impl RetainedPresentation {
         while !old.is_char_boundary(old.len() - tail) || !new.is_char_boundary(new.len() - tail) {
             tail -= 1;
         }
-        let end = old.len() - tail;
-        let new_end = new.len() - tail;
+        let mut end = old.len() - tail;
+        let mut new_end = new.len() - tail;
+        // A newline or space inserted into (or removed from) a run of the same
+        // byte matches anywhere in that run; the longest prefix puts it at the
+        // run's end, inside the next block. Enter after a list item followed
+        // by `[[link]]` then reparsed that block and refused it (#1332).
+        // Take the leftmost place: the end of the block where it was typed.
+        while start > 0 && (start == end) != (start == new_end) {
+            let changed = if start == end {
+                new.as_bytes()[new_end - 1]
+            } else {
+                old.as_bytes()[end - 1]
+            };
+            if !matches!(changed, b'\n' | b' ') || old.as_bytes()[start - 1] != changed {
+                break;
+            }
+            start -= 1;
+            end -= 1;
+            new_end -= 1;
+        }
         // Include both neighbors when an edit joins/splits their whitespace gap.
         // Never bridge unsupported containers hidden between accepted regions.
         let source_regions = self.plan.regions();
@@ -260,6 +278,39 @@ impl RetainedPresentation {
                 }
                 (source_regions.len() - 1, true)
             }
+        };
+        // Blank lines added to or removed from the gap after a block, which
+        // stays a blank-line gap before and after, join and split nothing:
+        // the edit belongs to the block above, not to the block below. Undo
+        // of Enter after a list item reparsed a following `[[link]]` and
+        // refused it (#1332).
+        let (last, document_end) = match last.checked_sub(1) {
+            Some(above)
+                if first <= above && {
+                    let (gap_start, below) = (
+                        source_regions[above].block().end,
+                        source_regions[last].block().start,
+                    );
+                    let blank = |gap: Option<&str>| {
+                        gap.is_some_and(|gap| {
+                            gap.trim().is_empty() && gap.matches('\n').count() >= 2
+                        })
+                    };
+                    // Only an edit wholly inside the gap; the next block moves
+                    // by the edit's length.
+                    gap_start <= start
+                        && end <= below
+                        && blank(old.get(gap_start..below))
+                        && blank(
+                            (below + new_end)
+                                .checked_sub(end)
+                                .and_then(|moved| new.get(gap_start..moved)),
+                        )
+                } =>
+            {
+                (above, true)
+            }
+            _ => (last, document_end),
         };
         if last < first {
             return None;
@@ -323,7 +374,8 @@ impl RetainedPresentation {
             .iter()
             .any(|r| !matches!(r, Region::Conceal { .. }) && !in_container(r.block()))
             || !container_gap(old.get(dirty.start..affected[0].block().start))
-            // The document-end tail was checked above: the last block's lines.
+            // The tail was checked above: the last block's own lines at the
+            // document end, or a blank-line gap edit.
             || !(document_end
                 || container_gap(old.get(affected[affected.len() - 1].block().end..dirty.end)))
             || affected
@@ -733,10 +785,22 @@ impl RetainedPresentation {
                 regions.push(Region::Source(dirty.start..shift(dirty.end)?));
                 continue;
             }
+            // Text typed right after a block's last character is on its line,
+            // so it is that block's text: extend the block. Left where it was,
+            // a later Enter found the typed text outside every block and fell
+            // back to a full parse (#1323, #1332). Inline styles keep their
+            // ends: typing after `**bold**` does not extend the bold.
+            let block = |b: &Range<usize>| {
+                if start == end && b.end == start && b.start < start {
+                    Some(b.start..shift(b.end)?)
+                } else {
+                    map(b)
+                }
+            };
             regions.push(match region {
-                Region::Source(r) => Region::Source(map(r)?),
-                Region::Conceal { block, markers } => Region::Conceal {
-                    block: map(block)?,
+                Region::Source(r) => Region::Source(block(r)?),
+                Region::Conceal { block: b, markers } => Region::Conceal {
+                    block: block(b)?,
                     markers: markers.iter().map(map).collect::<Option<Vec<_>>>()?,
                 },
             });
@@ -1135,6 +1199,19 @@ mod tests {
                 "1. one\n- [ ] task\n\nnext",
                 "1. one\n2. two\n- [ ] task\n\nnext",
             ),
+            // #1332: Enter after the last item with another block after the list.
+            ("- a\n- b\n\n[[l]]\n", "- a\n- b\n\n\n[[l]]\n"),
+            ("- a\n- b\n\n[[l]]\n", "- a\n- b\n\n\n\n[[l]]\n"),
+            ("- a\n- b x\n\n[[l]]", "- a\n- b x\n\n\n[[l]]"),
+            ("- a\n- b\n\nplain", "- a\n- b\n\n\nplain"),
+            ("- a\n- b\n\n\n[[l]]\n", "- a\n- b\n\n[[l]]\n"),
+            ("- a\n- b\n\nplain", "- a\n- b\nplain"),
+            ("- a\n- b\n\n\nplain", "- a\n- b\n\nplain"),
+            // Deleting across a block into the gap must not underflow.
+            ("a\n\nb\n\nc", "a\n\nc"),
+            ("- a\n\n[[l]]\n\nc", "- a\n\nc"),
+            ("- a\n\nb\n\n\nc", "- a\n\n\nc"),
+            ("- a\n- b\n\n[x]: /u\n", "- a\n- b\n\n\n[x]: /u\n"),
             // #1323: Enter and text after the last item at the document end.
             ("> q\n\n- a\n- b", "> q\n\n- a\n- b\n"),
             ("> q\n\n- a\n- b\n", "> q\n\n- a\n- b\n\n"),
