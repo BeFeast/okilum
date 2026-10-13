@@ -68,36 +68,24 @@ pub(crate) fn launch(mut opts: Opts, cx: &mut App) {
     let directory = opts.session_directory.clone();
     let diagnostics = opts.diagnostics.clone();
     cx.spawn(async move |cx| {
-        let mut restorable = Vec::new();
-        let history =
-            cx.background_executor()
-                .spawn(async move {
-                    let _phase = diagnostics
-                        .as_ref()
-                        .map(|trace| trace.phase("startup_history_and_root_validation"));
-                    let directory = directory
-                        .map(Ok)
-                        .unwrap_or_else(reader_history::state_directory)?;
-                    let windows = super::reader_open_windows::load(&directory);
-                    let (last, roots) = reader_history::ReadingHistory::startup_roots(&directory)?;
-                    let restore = last.map(|root| {
-                        match reader_history::ReadingHistory::quick_document(&directory, &root)? {
-                            Some(note) if note.is_empty() => Err(anyhow::anyhow!(
-                                "The last quick viewer has no selected document"
-                            )),
-                            Some(note) => {
-                                reader_open::OpenIntent::validate(&root.join(note), None, None)
-                            }
-                            None => reader_open::OpenIntent::validate(&root, Some(&root), None),
-                        }
-                    });
-                    Ok::<_, anyhow::Error>((directory, roots, restore, windows))
-                })
-                .await;
-        let history = history.map(|(directory, roots, restore, windows)| {
-            restorable = windows;
-            (directory, roots, restore)
-        });
+        let (restorable, history) = cx
+            .background_executor()
+            .spawn(async move {
+                let _phase = diagnostics
+                    .as_ref()
+                    .map(|trace| trace.phase("startup_history_and_root_validation"));
+                let directory = directory
+                    .map(Ok)
+                    .unwrap_or_else(reader_history::state_directory);
+                // The window set does not depend on the reading history: a
+                // damaged history still reopens every recorded window.
+                let windows = directory
+                    .as_deref()
+                    .map(super::reader_open_windows::load)
+                    .unwrap_or_default();
+                (windows, history(directory))
+            })
+            .await;
         if !restorable.is_empty() {
             let restored = cx.update(|cx| {
                 if cx.global::<Startup>().superseded {
@@ -163,6 +151,29 @@ pub(crate) fn launch(mut opts: Opts, cx: &mut App) {
         });
     })
     .detach();
+}
+
+/// The last vault or quick viewer to reopen, and the vaults the start screen lists.
+fn history(
+    directory: anyhow::Result<PathBuf>,
+) -> anyhow::Result<(
+    PathBuf,
+    Vec<PathBuf>,
+    Option<anyhow::Result<reader_open::OpenIntent>>,
+)> {
+    let directory = directory?;
+    let (last, roots) = reader_history::ReadingHistory::startup_roots(&directory)?;
+    let restore =
+        last.map(
+            |root| match reader_history::ReadingHistory::quick_document(&directory, &root)? {
+                Some(note) if note.is_empty() => Err(anyhow::anyhow!(
+                    "The last quick viewer has no selected document"
+                )),
+                Some(note) => reader_open::OpenIntent::validate(&root.join(note), None, None),
+                None => reader_open::OpenIntent::validate(&root, Some(&root), None),
+            },
+        );
+    Ok((directory, roots, restore))
 }
 
 /// Reopen every recorded vault window, one after another so the window that

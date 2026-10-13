@@ -2045,6 +2045,30 @@ mod entry_tests {
         expected.retain(|(root, _)| root != &roots[1]);
         assert_eq!(open_roots(cx), expected, "the missing vault is skipped");
         assert_eq!(cx.windows().len(), 2);
+
+        // A damaged reading history does not cost the recorded windows.
+        cx.update(reader_open_windows::quit);
+        cx.update(|cx| {
+            for window in cx.windows() {
+                let _ = window.update(cx, |_, window, _| window.remove_window());
+            }
+        });
+        cx.run_until_parked();
+        std::fs::write(state.join("update-session.json"), b"{ damaged").unwrap();
+        cx.update(|cx| {
+            cx.set_global(reader_startup::Startup::default());
+            reader_startup::launch(base.clone(), cx);
+        });
+        cx.run_until_parked();
+        let reopened: Vec<PathBuf> = open_roots(cx).into_iter().map(|(root, _)| root).collect();
+        assert_eq!(
+            reopened,
+            expected
+                .iter()
+                .map(|(root, _)| root.clone())
+                .collect::<Vec<_>>(),
+            "the window set survives a damaged history"
+        );
     }
 
     /// #1049: a link to a vault name that two known vaults share opens a
