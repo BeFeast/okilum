@@ -68,6 +68,7 @@ pub(crate) fn launch(mut opts: Opts, cx: &mut App) {
     let directory = opts.session_directory.clone();
     let diagnostics = opts.diagnostics.clone();
     cx.spawn(async move |cx| {
+        let mut restorable = Vec::new();
         let history =
             cx.background_executor()
                 .spawn(async move {
@@ -77,6 +78,7 @@ pub(crate) fn launch(mut opts: Opts, cx: &mut App) {
                     let directory = directory
                         .map(Ok)
                         .unwrap_or_else(reader_history::state_directory)?;
+                    let windows = super::reader_open_windows::load(&directory);
                     let (last, roots) = reader_history::ReadingHistory::startup_roots(&directory)?;
                     let restore = last.map(|root| {
                         match reader_history::ReadingHistory::quick_document(&directory, &root)? {
@@ -89,9 +91,30 @@ pub(crate) fn launch(mut opts: Opts, cx: &mut App) {
                             None => reader_open::OpenIntent::validate(&root, Some(&root), None),
                         }
                     });
-                    Ok::<_, anyhow::Error>((directory, roots, restore))
+                    Ok::<_, anyhow::Error>((directory, roots, restore, windows))
                 })
                 .await;
+        let history = history.map(|(directory, roots, restore, windows)| {
+            restorable = windows;
+            (directory, roots, restore)
+        });
+        if !restorable.is_empty() {
+            let restored = cx.update(|cx| {
+                if cx.global::<Startup>().superseded {
+                    return None;
+                }
+                if let Ok((directory, ..)) = &history {
+                    opts.session_directory = Some(directory.clone());
+                }
+                Some(restore_windows(restorable, opts.clone(), cx))
+            });
+            match restored {
+                None => return,
+                Some(restoring) if restoring.await => return,
+                // Not one recorded vault could be opened: the last vault, as before.
+                Some(_) => {}
+            }
+        }
         cx.update(|cx| {
             if cx.global::<Startup>().superseded {
                 return;
@@ -139,6 +162,58 @@ pub(crate) fn launch(mut opts: Opts, cx: &mut App) {
         });
     })
     .detach();
+}
+
+/// Reopen every recorded vault window, one after another so the window that
+/// was in front (recorded last) is in front again (#1325). A vault that is
+/// gone or unreadable is skipped and named in a notice; the others open.
+/// Resolves to whether any window opened.
+fn restore_windows(roots: Vec<PathBuf>, base: Opts, cx: &mut App) -> Task<bool> {
+    cx.spawn(async move |cx| {
+        let mut opened = 0;
+        let mut skipped = Vec::new();
+        for root in roots {
+            let opts = Opts {
+                vault: Some(root.clone()),
+                ..base.clone()
+            };
+            let resolving = cx.update(|cx| reader_open::resolve(opts, cx));
+            match resolving.await {
+                Ok(opts) => {
+                    cx.update(|cx| reader_open::finish_open(Ok(opts), cx));
+                    opened += 1;
+                }
+                Err(error) => {
+                    eprintln!("Cannot reopen {}: {error:#}", root.display());
+                    skipped.push(root);
+                }
+            }
+        }
+        if opened > 0 && !skipped.is_empty() {
+            cx.update(|cx| skipped_notice(&skipped, cx));
+        }
+        opened > 0
+    })
+}
+
+/// A quiet notice in the front window naming the vaults that did not reopen.
+fn skipped_notice(skipped: &[PathBuf], cx: &mut App) {
+    let names = skipped
+        .iter()
+        .map(|root| {
+            root.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| root.display().to_string())
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let message = format!("Couldn’t reopen {names}: the folder is missing or can’t be read.");
+    let Some(window) = cx.active_window().or_else(|| cx.windows().last().copied()) else {
+        return;
+    };
+    let _ = window.update(cx, |_, window, cx| {
+        super::reader_toast::transient(message, window, cx)
+    });
 }
 
 fn show_entry(roots: Vec<PathBuf>, error: Option<String>, cx: &mut App) {

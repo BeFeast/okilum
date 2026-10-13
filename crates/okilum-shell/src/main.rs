@@ -63,6 +63,7 @@ mod reader_move;
 mod reader_move_picker;
 mod reader_obsidian;
 mod reader_open;
+mod reader_open_windows;
 mod reader_pdf;
 mod reader_plain_text;
 mod reader_properties;
@@ -7250,6 +7251,7 @@ fn main() {
             let config_directory = reader_layout::config_base().map(|base| base.join("okilum"));
             reader_recovery::install(&directory, config_directory.as_deref(), cx);
             reader_ui_state::install(&directory, cx);
+            reader_open_windows::install(directory.clone(), cx);
             window_state::install(directory, cx);
         }
         drop(recovery_phase);
