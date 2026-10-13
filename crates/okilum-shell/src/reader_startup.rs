@@ -194,6 +194,16 @@ fn restore_windows(roots: Vec<PathBuf>, base: Opts, cx: &mut App) -> Task<bool> 
                 Ok(opts) => {
                     cx.update(|cx| reader_open::finish_open(Ok(opts), cx));
                     opened += 1;
+                    // One window at a time: the next opens once this one has
+                    // its note, so restored windows never prepare at once.
+                    for _ in 0..RESTORE_PATIENCE.as_millis() / 50 {
+                        if cx.update(|cx| settled(&root, cx)) {
+                            break;
+                        }
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_millis(50))
+                            .await;
+                    }
                 }
                 Err(error) => {
                     eprintln!("Cannot reopen {}: {error:#}", root.display());
@@ -205,6 +215,18 @@ fn restore_windows(roots: Vec<PathBuf>, base: Opts, cx: &mut App) -> Task<bool> 
             cx.update(|cx| skipped_notice(&skipped, cx));
         }
         opened > 0
+    })
+}
+
+/// How long a restored window may take to show its note before the next opens.
+const RESTORE_PATIENCE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The window of this vault shows its note, or its preparation has ended.
+fn settled(root: &std::path::Path, cx: &App) -> bool {
+    reader_open::readers(cx).iter().any(|reader| {
+        let reader = reader.read(cx);
+        reader.vault_root == root
+            && (reader.document_ready() || reader.loading.as_ref().is_some_and(|l| !l.active))
     })
 }
 

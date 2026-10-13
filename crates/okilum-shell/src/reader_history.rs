@@ -58,6 +58,17 @@ const FILE: &str = "update-session.json";
 
 #[derive(Debug)]
 struct InvalidHistory;
+
+/// Another writer of this process holds the history lock for a moment;
+/// the caller retries rather than reporting it (#1325).
+#[derive(Debug)]
+pub(crate) struct Busy;
+impl std::fmt::Display for Busy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Reader state is busy; retry without losing the existing history")
+    }
+}
+impl std::error::Error for Busy {}
 impl std::fmt::Display for InvalidHistory {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Reading history is corrupt or unsupported")
@@ -114,8 +125,7 @@ impl ReadingHistory {
             options.mode(0o600);
         }
         let lock = options.open(path)?;
-        lock.try_lock()
-            .context("Reader state is busy; retry without losing the existing history")?;
+        lock.try_lock().map_err(|_| Busy)?;
         Ok(lock)
     }
     fn outside_notes<'a>(directory: &Path, roots: impl Iterator<Item = &'a Path>) -> Result<()> {
