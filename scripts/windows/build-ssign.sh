@@ -11,7 +11,7 @@
 #   systemd-tmpfiles --create /etc/tmpfiles.d/okilum-ssign.conf
 #   install -m 644 hello.exe /usr/local/share/okilum-signer/test.exe   # ssign's own test PE
 set -Eeuo pipefail
-COMMIT=64d98498db64aa08ac258db32fa753646b4ba7e8   # BeFeast/ssign main
+COMMIT=4317d69485f9b80fba881bfb5bf8c810c27e5cc1   # BeFeast/ssign main
 dir="${1:-$HOME/work/ssign}"
 [ -d "$dir/.git" ] || git clone -q https://git.oklabs.uk/BeFeast/ssign "$dir"
 cd "$dir"
