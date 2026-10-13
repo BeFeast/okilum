@@ -5,6 +5,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 const MAX_MEMORY_SEARCH_BYTES: usize = 128 * 1024 * 1024;
 
+/// How long a history write waits out another window's write before the
+/// failure is shown (#1325); writes take milliseconds.
+const HISTORY_LOCK_PATIENCE: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub(super) struct SessionRecord {
     pub(super) root: PathBuf,
     pub(super) document: String,
@@ -1864,16 +1868,37 @@ impl Reader {
                 diagnostics,
             }) = receive.recv().await
             {
-                let directory = directory.clone();
                 let requested_root = root.clone();
                 let requested_document = document.clone();
-                let result = cx
-                    .background_executor()
+                // Restored windows record their notes at the same moment
+                // (#1325): a busy lock is waited out, not reported.
+                let mut result;
+                let mut delay = std::time::Duration::from_millis(20);
+                let mut waited = std::time::Duration::ZERO;
+                loop {
+                    let (directory, root, document) =
+                        (directory.clone(), root.clone(), document.clone());
+                    result = cx
+                        .background_executor()
+                        .spawn(async move {
+                            crate::reader_history::ReadingHistory::record_document_mode(
+                                &directory, &root, &document, single_file,
+                            )
+                        })
+                        .await;
+                    let busy = result
+                        .as_ref()
+                        .is_err_and(|e| e.is::<crate::reader_history::Busy>());
+                    if !busy || waited >= HISTORY_LOCK_PATIENCE {
+                        break;
+                    }
+                    cx.background_executor().timer(delay).await;
+                    waited += delay;
+                    delay = (delay * 2).min(std::time::Duration::from_millis(500));
+                }
+                cx.background_executor()
                     .spawn(async move {
                         let _cache_lease = cache_lease;
-                        let result = crate::reader_history::ReadingHistory::record_document_mode(
-                            &directory, &root, &document, single_file,
-                        );
                         if !document.is_empty() {
                             if let Some(base) = cache {
                                 let started = std::time::Instant::now();
@@ -1893,7 +1918,6 @@ impl Reader {
                                 }
                             }
                         }
-                        result
                     })
                     .await;
                 if let Err(error) = result {

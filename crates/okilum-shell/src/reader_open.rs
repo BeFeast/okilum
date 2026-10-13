@@ -1927,7 +1927,8 @@ mod entry_tests {
     #[gpui::test]
     fn launch_reopens_every_vault_window_and_skips_a_missing_one(cx: &mut TestAppContext) {
         use super::super::{
-            reader_history::TestSessionDirectory, reader_open_windows, reader_startup, Opts,
+            reader_history::{ReadingHistory, TestSessionDirectory},
+            reader_open_windows, reader_startup, Opts,
         };
         let fixture = tempfile::tempdir().unwrap();
         let state = fixture.path().join("state");
@@ -1985,6 +1986,32 @@ mod entry_tests {
                 open
             })
         };
+        // A restore opens one window after another, waiting on timers.
+        let settle = |cx: &mut TestAppContext| {
+            for _ in 0..60 {
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_millis(100));
+                cx.run_until_parked();
+            }
+        };
+        // Every window shows its note and no notice.
+        let all_shown = |cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                for reader in readers(cx) {
+                    let reader = reader.read(cx);
+                    if !cx.windows().contains(&reader.reader_window) {
+                        continue;
+                    }
+                    let name = reader.vault_root.file_name().unwrap().to_string_lossy();
+                    assert!(reader.document_ready(), "{name} shows its note");
+                    assert!(
+                        matches!(reader.content.read(cx).preparation_status(), Some(Ok(()))),
+                        "{name} prepared its note"
+                    );
+                    assert!(reader.link_notice.is_none(), "{name} shows no notice");
+                }
+            })
+        };
         let mut expected: Vec<(PathBuf, String)> = roots
             .iter()
             .map(|root| {
@@ -2019,14 +2046,35 @@ mod entry_tests {
             "closing after quit keeps the set"
         );
 
-        // Launch: all three come back, each on its own last note.
+        // Launch: all three come back, each on its own last note. The windows
+        // record their notes as they come up; here another write holds the
+        // history lock meanwhile (#1325, muninn gate): the writes wait for it
+        // and no window reports it.
+        let busy = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(state.join("reader-session.lock"))
+            .unwrap();
+        busy.try_lock().unwrap();
         cx.update(|cx| {
             cx.set_global(reader_startup::Startup::default());
             reader_startup::launch(base.clone(), cx);
         });
-        cx.run_until_parked();
+        settle(cx);
+        drop(busy);
+        settle(cx);
         assert_eq!(open_roots(cx), expected, "every vault window reopens");
         assert_eq!(cx.windows().len(), 3, "no start screen next to them");
+        all_shown(cx);
+        for root in &roots {
+            assert!(
+                ReadingHistory::last_document(&state, root)
+                    .unwrap()
+                    .is_some(),
+                "{} recorded its note once the lock was free",
+                root.display()
+            );
+        }
 
         // A vault folder that is gone is skipped; the other two still open.
         cx.update(reader_open_windows::quit);
@@ -2041,10 +2089,11 @@ mod entry_tests {
             cx.set_global(reader_startup::Startup::default());
             reader_startup::launch(base.clone(), cx);
         });
-        cx.run_until_parked();
+        settle(cx);
         expected.retain(|(root, _)| root != &roots[1]);
         assert_eq!(open_roots(cx), expected, "the missing vault is skipped");
         assert_eq!(cx.windows().len(), 2);
+        all_shown(cx);
 
         // A damaged reading history does not cost the recorded windows.
         cx.update(reader_open_windows::quit);
@@ -2059,7 +2108,7 @@ mod entry_tests {
             cx.set_global(reader_startup::Startup::default());
             reader_startup::launch(base.clone(), cx);
         });
-        cx.run_until_parked();
+        settle(cx);
         let reopened: Vec<PathBuf> = open_roots(cx).into_iter().map(|(root, _)| root).collect();
         assert_eq!(
             reopened,
