@@ -239,14 +239,36 @@ impl RetainedPresentation {
         let first = source_regions
             .iter()
             .rposition(|r| r.block().start <= start)?;
-        let last = source_regions.iter().position(|r| r.block().end >= end)?;
+        let (last, document_end) = match source_regions.iter().position(|r| r.block().end >= end) {
+            Some(last) => (last, false),
+            // An edit at the end of the document (only whitespace after it)
+            // belongs to the last block when only that block's own lines lie
+            // between them: text typed after its last line (the inline path
+            // does not move the block's end), lazy lines, trailing newlines.
+            // Enter after the last list item, and its Undo, drew the whole
+            // note raw (#1323). A blank line followed by text may start
+            // another block: refuse.
+            None => {
+                let gap = old.get(source_regions.last()?.block().end..start)?;
+                let new_block = gap
+                    .trim_end()
+                    .split('\n')
+                    .skip(1)
+                    .any(|line| line.trim().is_empty());
+                if !old[end..].trim().is_empty() || new_block {
+                    return None;
+                }
+                (source_regions.len() - 1, true)
+            }
+        };
         if last < first {
             return None;
         }
         // A top-level list/quote is the parse context of every line in it, and
         // can absorb an indented or lazy line across whitespace. Reparse whole
         // containers that the dirty run touches or borders (#868).
-        let mut dirty = source_regions[first].block().start..source_regions[last].block().end;
+        let mut dirty =
+            source_regions[first].block().start..source_regions[last].block().end.max(end);
         let mut included = vec![false; self.contexts.len()];
         while let Some(index) = self.contexts.iter().enumerate().position(|(i, c)| {
             !included[i]
@@ -301,7 +323,9 @@ impl RetainedPresentation {
             .iter()
             .any(|r| !matches!(r, Region::Conceal { .. }) && !in_container(r.block()))
             || !container_gap(old.get(dirty.start..affected[0].block().start))
-            || !container_gap(old.get(affected[affected.len() - 1].block().end..dirty.end))
+            // The document-end tail was checked above: the last block's lines.
+            || !(document_end
+                || container_gap(old.get(affected[affected.len() - 1].block().end..dirty.end)))
             || affected
                 .windows(2)
                 .any(|pair| !container_gap(old.get(pair[0].block().end..pair[1].block().start)))
@@ -943,6 +967,33 @@ mod tests {
     fn snapshot(generation: u64, text: &str) -> Snapshot {
         Snapshot::new("note", generation, text)
     }
+    /// #1323: typing after the last item first takes the inline path, which
+    /// keeps the block's end; Enter at the document end must still reparse
+    /// locally, and match a fresh parse.
+    #[test]
+    fn enter_after_typing_at_the_document_end_reparses_locally() {
+        let base = "# h\n\n> q\n\n- a\n- b";
+        for trailing in ["", "\n"] {
+            let mut text = format!("{base}{trailing}");
+            let mut retained = RetainedPresentation::new(&classify(&snapshot(1, &text)));
+            for (step, c) in " typed\nnew\nnext".chars().enumerate() {
+                text.insert(base.len() + step, c);
+                let current = snapshot(step as u64 + 2, &text);
+                retained = retained
+                    .remap(&current)
+                    .unwrap_or_else(|| panic!("{text:?} fell back"));
+                let fresh = RetainedPresentation::new(&classify(&current))
+                    .project(&Active::default())
+                    .unwrap();
+                assert_eq!(
+                    retained.project(&Active::default()).unwrap().display(),
+                    fresh.display(),
+                    "{text:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn structural_edit_in_one_block_matches_fresh_classification() {
         for (before, after) in [
@@ -1084,6 +1135,17 @@ mod tests {
                 "1. one\n- [ ] task\n\nnext",
                 "1. one\n2. two\n- [ ] task\n\nnext",
             ),
+            // #1323: Enter and text after the last item at the document end.
+            ("> q\n\n- a\n- b", "> q\n\n- a\n- b\n"),
+            ("> q\n\n- a\n- b\n", "> q\n\n- a\n- b\n\n"),
+            ("> q\n\n- a\n- b\n", "> q\n\n- a\n- b\nlazy"),
+            ("> q\n\n- a\n- b\nlazy", "> q\n\n- a\n- b\nlazy\n"),
+            ("# h\n\n- a\n- b", "# h\n\n- a\n- b\n- c"),
+            ("# h\n\n- a\n- b", "# h\n\n- a\n- b\n\n---"),
+            ("# h\n\n- a\n- b", "# h\n\n- a\n- b\n\n```"),
+            ("# h\n\n- a\n- b", "# h\n\n- a\n- b\n\nplain"),
+            ("# h\n\n- a\n- b", "# h\n\n- a\n- b\n```"),
+            ("# h\n\n- a\n- b", "# h\n\n- a\n- b\n---"),
         ] {
             for (from, to) in [(before, after), (after, before)] {
                 let old = snapshot(1, from);

@@ -752,6 +752,56 @@ mod tests {
         }
     }
 
+    /// #1323 (stable gate, muninn): a heading, a quote and a list ending the
+    /// note. Typing after the last item, Enter, more text and Undo drew the
+    /// whole note raw for a frame: the edit lay past the last block's end.
+    #[test]
+    fn typing_after_the_last_item_at_the_note_end_projects_every_frame() {
+        let base = "# Quote and list\n\n> A quote before the list.\n\n- first item\n- last item";
+        for trailing in ["", "\n"] {
+            let mut text = format!("{base}{trailing}");
+            let mut caret = base.len();
+            let mut texts = vec![text.clone()];
+            for typed in [" typed", "\n", "new", "\n", "next"] {
+                for c in typed.chars() {
+                    text.insert(caret, c);
+                    caret += c.len_utf8();
+                    texts.push(text.clone());
+                }
+            }
+            let undo: Vec<_> = texts.iter().rev().skip(1).cloned().collect();
+            let frames: Vec<_> = texts.iter().cloned().chain(undo).collect();
+            let original = source(&frames[0]);
+            let provider = CachedProvider::classify(original.clone());
+            for (step, text) in frames.iter().enumerate().skip(1) {
+                let current = SourceSnapshot {
+                    stamp: SourceStamp {
+                        generation: original.stamp.generation + step as u64,
+                        ..original.stamp
+                    },
+                    text: Arc::from(text.as_str()),
+                };
+                let frame = provider
+                    .compose(&current, &inactive(&current))
+                    .unwrap_or_else(|| panic!("frame {step} drew raw: {text:?}"));
+                // Heading, quote and first item keep their presentation.
+                let fresh = CachedProvider::classify(current.clone());
+                let expected = fresh.compose(&current, &inactive(&current)).unwrap();
+                let head = |p: &Arc<dyn SourceProjection>| {
+                    let lines: Vec<_> = p.text().split('\n').take(5).map(str::to_owned).collect();
+                    let markers: Vec<_> = p
+                        .markers()
+                        .iter()
+                        .filter(|m| m.range.start.0 < base.find("- last").unwrap())
+                        .map(|m| (m.range.clone(), m.kind.clone()))
+                        .collect();
+                    format!("{lines:?}\n{markers:?}")
+                };
+                assert_eq!(head(&frame), head(&expected), "frame {step}: {text:?}");
+            }
+        }
+    }
+
     #[test]
     fn quote_markers_reveal_as_their_own_element_not_the_whole_quote() {
         use gpui_component::input::projection::{LayoutStamp, MarkerKind, PinnedProjection};
