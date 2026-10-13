@@ -2081,6 +2081,30 @@ mod entry_tests {
             );
         }
 
+        // Switching between windows re-records each one's note (the VM 150
+        // gate saw the notice there too): with the lock held meanwhile, the
+        // writes wait and no window reports it.
+        let busy = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(state.join("reader-session.lock"))
+            .unwrap();
+        busy.try_lock().unwrap();
+        for reader in cx.update(|cx| readers(cx)) {
+            reader.update(cx, |reader, cx| {
+                reader.last_recorded_document = None;
+                reader.record_usable_document(cx);
+            });
+        }
+        for _ in 0..15 {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(100));
+            cx.run_until_parked();
+        }
+        drop(busy);
+        settle(cx);
+        all_shown(cx);
+
         // A vault folder that is gone is skipped; the other two still open.
         cx.update(reader_open_windows::quit);
         cx.update(|cx| {
