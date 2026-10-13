@@ -600,6 +600,7 @@ pub(crate) fn register(reader: WeakEntity<super::Reader>, root: PathBuf, cx: &mu
         let readers = &mut cx.global_mut::<Readers>().0;
         readers.retain(|(old, _)| old.entity_id() != reader.entity_id() && old.upgrade().is_some());
         readers.push((reader, root));
+        super::reader_open_windows::record_soon(cx);
     }
 }
 
@@ -861,57 +862,64 @@ fn dispatch_path(path: &Path, cx: &mut App) {
 /// Resolve aliases away from the UI thread, then choose or reserve the window
 /// in one UI transaction. A window is registered before preparation starts so
 /// simultaneous OS deliveries cannot create duplicate vault readers.
-pub(crate) fn open_window(mut opts: super::Opts, cx: &mut App) -> Result<()> {
-    if opts.reusable_roots.is_empty() {
-        opts.reusable_roots = reusable_roots(cx);
-    }
+pub(crate) fn open_window(opts: super::Opts, cx: &mut App) -> Result<()> {
+    let resolving = resolve(opts, cx);
     cx.spawn(async move |cx| {
-        let resolved = cx
-            .background_executor()
-            .spawn(async move {
-                let path = opts
-                    .open_path
-                    .clone()
-                    .or_else(|| {
-                        opts.vault.as_ref().map(|root| {
-                            opts.note
-                                .as_ref()
-                                .map_or_else(|| root.clone(), |note| root.join(note))
-                        })
-                    })
-                    .context("No file or vault was requested")?;
-                let path = okilum_core::vault::canonical_root(&path)
-                    .context("This file or folder couldn’t be opened.")?;
-                let intent = OpenIntent::validate_cached(
-                    &path,
-                    opts.vault.as_deref(),
-                    opts.reusable_roots
-                        .iter()
-                        .find(|root| path.starts_with(root))
-                        .map(PathBuf::as_path),
-                )?;
-                opts.vault = Some(intent.root.clone());
-                opts.single_file |= intent.single_file;
-                if intent.note.is_some() {
-                    opts.note = intent.note;
-                }
-                opts.open_path = None;
-                Ok::<_, anyhow::Error>(opts)
-            })
-            .await;
-        cx.update(|cx| match resolved {
-            Ok(opts) => {
-                if !focus_existing(&opts, cx) {
-                    if let Err(error) = create_window(opts, None, None, cx) {
-                        show_error(error, cx);
-                    }
-                }
-            }
-            Err(error) => show_error(error, cx),
-        });
+        let resolved = resolving.await;
+        cx.update(|cx| finish_open(resolved, cx));
     })
     .detach();
     Ok(())
+}
+
+/// Validate a request off the UI thread; `finish_open` then shows it.
+pub(crate) fn resolve(mut opts: super::Opts, cx: &mut App) -> gpui::Task<Result<super::Opts>> {
+    if opts.reusable_roots.is_empty() {
+        opts.reusable_roots = reusable_roots(cx);
+    }
+    cx.background_executor().spawn(async move {
+        let path = opts
+            .open_path
+            .clone()
+            .or_else(|| {
+                opts.vault.as_ref().map(|root| {
+                    opts.note
+                        .as_ref()
+                        .map_or_else(|| root.clone(), |note| root.join(note))
+                })
+            })
+            .context("No file or vault was requested")?;
+        let path = okilum_core::vault::canonical_root(&path)
+            .context("This file or folder couldn’t be opened.")?;
+        let intent = OpenIntent::validate_cached(
+            &path,
+            opts.vault.as_deref(),
+            opts.reusable_roots
+                .iter()
+                .find(|root| path.starts_with(root))
+                .map(PathBuf::as_path),
+        )?;
+        opts.vault = Some(intent.root.clone());
+        opts.single_file |= intent.single_file;
+        if intent.note.is_some() {
+            opts.note = intent.note;
+        }
+        opts.open_path = None;
+        Ok::<_, anyhow::Error>(opts)
+    })
+}
+
+pub(crate) fn finish_open(resolved: Result<super::Opts>, cx: &mut App) {
+    match resolved {
+        Ok(opts) => {
+            if !focus_existing(&opts, cx) {
+                if let Err(error) = create_window(opts, None, None, cx) {
+                    show_error(error, cx);
+                }
+            }
+        }
+        Err(error) => show_error(error, cx),
+    }
 }
 
 fn focus_existing(opts: &super::Opts, cx: &mut App) -> bool {
@@ -1912,6 +1920,157 @@ mod entry_tests {
         assert_eq!(cx.windows().len(), 1);
     }
 
+    /// #1325: every open vault window comes back after a quit and a launch,
+    /// each on its own last note; a vault that is gone is skipped and the
+    /// others still open. The set is on disk before the quit (a crash keeps
+    /// it), and windows closing as the app ends do not change it.
+    #[gpui::test]
+    fn launch_reopens_every_vault_window_and_skips_a_missing_one(cx: &mut TestAppContext) {
+        use super::super::{
+            reader_history::TestSessionDirectory, reader_open_windows, reader_startup, Opts,
+        };
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let roots: Vec<PathBuf> = ["Home", "Work", "Archive"]
+            .iter()
+            .map(|name| {
+                let root = fixture.path().join(name);
+                std::fs::create_dir_all(&root).unwrap();
+                std::fs::write(root.join("Start.md"), "# Start").unwrap();
+                std::fs::write(root.join(format!("{name}.md")), "# Note").unwrap();
+                root.canonicalize().unwrap()
+            })
+            .collect();
+        let base = Opts {
+            session_directory: Some(state.clone()),
+            index_dir: Some(fixture.path().join("index")),
+            ..Default::default()
+        };
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            install(cx);
+            cx.set_global(TestSessionDirectory(state.clone()));
+            reader_open_windows::install(state.clone(), cx);
+            cx.set_global(reader_startup::ReopenBase(base.clone()));
+            cx.set_quit_mode(gpui::QuitMode::Explicit);
+        });
+        for root in &roots {
+            let name = root.file_name().unwrap().to_string_lossy().into_owned();
+            cx.update(|cx| {
+                open_window(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some(format!("{name}.md")),
+                        ..base.clone()
+                    },
+                    cx,
+                )
+                .unwrap()
+            });
+            cx.run_until_parked();
+        }
+        let open_roots = |cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                let mut open: Vec<(PathBuf, String)> = readers(cx)
+                    .iter()
+                    .filter(|r| cx.windows().contains(&r.read(cx).reader_window))
+                    .map(|r| {
+                        (
+                            r.read(cx).vault_root.clone(),
+                            r.read(cx).current_rel.clone(),
+                        )
+                    })
+                    .collect();
+                open.sort();
+                open
+            })
+        };
+        let mut expected: Vec<(PathBuf, String)> = roots
+            .iter()
+            .map(|root| {
+                let name = root.file_name().unwrap().to_string_lossy();
+                (root.clone(), format!("{name}.md"))
+            })
+            .collect();
+        expected.sort();
+        assert_eq!(
+            open_roots(cx),
+            expected,
+            "three vault windows before the quit"
+        );
+        // Recorded as they opened, before any quit: a crash keeps this.
+        let mut recorded = reader_open_windows::load(&state);
+        recorded.sort();
+        let mut sorted_roots = roots.clone();
+        sorted_roots.sort();
+        assert_eq!(recorded, sorted_roots);
+
+        // Quit, then the windows go away as the app ends.
+        cx.update(reader_open_windows::quit);
+        cx.update(|cx| {
+            for window in cx.windows() {
+                let _ = window.update(cx, |_, window, _| window.remove_window());
+            }
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            reader_open_windows::load(&state).len(),
+            3,
+            "closing after quit keeps the set"
+        );
+
+        // Launch: all three come back, each on its own last note.
+        cx.update(|cx| {
+            cx.set_global(reader_startup::Startup::default());
+            reader_startup::launch(base.clone(), cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(open_roots(cx), expected, "every vault window reopens");
+        assert_eq!(cx.windows().len(), 3, "no start screen next to them");
+
+        // A vault folder that is gone is skipped; the other two still open.
+        cx.update(reader_open_windows::quit);
+        cx.update(|cx| {
+            for window in cx.windows() {
+                let _ = window.update(cx, |_, window, _| window.remove_window());
+            }
+        });
+        cx.run_until_parked();
+        std::fs::remove_dir_all(&roots[1]).unwrap();
+        cx.update(|cx| {
+            cx.set_global(reader_startup::Startup::default());
+            reader_startup::launch(base.clone(), cx);
+        });
+        cx.run_until_parked();
+        expected.retain(|(root, _)| root != &roots[1]);
+        assert_eq!(open_roots(cx), expected, "the missing vault is skipped");
+        assert_eq!(cx.windows().len(), 2);
+
+        // A damaged reading history does not cost the recorded windows.
+        cx.update(reader_open_windows::quit);
+        cx.update(|cx| {
+            for window in cx.windows() {
+                let _ = window.update(cx, |_, window, _| window.remove_window());
+            }
+        });
+        cx.run_until_parked();
+        std::fs::write(state.join("update-session.json"), b"{ damaged").unwrap();
+        cx.update(|cx| {
+            cx.set_global(reader_startup::Startup::default());
+            reader_startup::launch(base.clone(), cx);
+        });
+        cx.run_until_parked();
+        let reopened: Vec<PathBuf> = open_roots(cx).into_iter().map(|(root, _)| root).collect();
+        assert_eq!(
+            reopened,
+            expected
+                .iter()
+                .map(|(root, _)| root.clone())
+                .collect::<Vec<_>>(),
+            "the window set survives a damaged history"
+        );
+    }
+
     /// #1049: a link to a vault name that two known vaults share opens a
     /// chooser listing both (the one without the note cannot be chosen); a
     /// newer link replaces it; choosing opens that vault on the note.
@@ -2672,10 +2831,15 @@ pub(crate) fn update_restart_args(cx: &App) -> anyhow::Result<Vec<std::ffi::OsSt
         .flat_map(|readers| readers.0.iter())
         .filter_map(|(reader, _)| reader.upgrade())
         .collect();
-    anyhow::ensure!(
-        readers.len() <= 1,
-        "Close other Okilum document windows before restarting to update."
-    );
+    if readers.len() > 1 {
+        // Several vault windows reopen from the recorded set (#1325); a quick
+        // viewer of one file is not part of it.
+        anyhow::ensure!(
+            readers.iter().all(|reader| !reader.read(cx).single_file),
+            "Close other Okilum document windows before restarting to update."
+        );
+        return Ok(vec![]);
+    }
     let Some(reader) = readers.first() else {
         return Ok(vec![]);
     };
@@ -2710,7 +2874,7 @@ mod update_restart_tests {
 
     #[cfg(test)]
     #[gpui::test]
-    fn update_restart_tracks_current_note_and_refuses_multiple_windows(
+    fn update_restart_tracks_current_note_and_leaves_several_vaults_to_the_recorded_set(
         cx: &mut gpui::TestAppContext,
     ) {
         let temp = tempfile::tempdir().unwrap();
@@ -2759,8 +2923,12 @@ mod update_restart_tests {
             .unwrap();
         });
         cx.run_until_parked();
+        // Two vault windows: no arguments, so startup reopens both (#1325).
         cx.update(|cx| {
-            assert!(update_restart_args(cx).is_err());
+            assert_eq!(
+                update_restart_args(cx).unwrap(),
+                Vec::<std::ffi::OsString>::new()
+            );
         });
     }
 }
