@@ -108,12 +108,13 @@ pub(crate) fn launch(mut opts: Opts, cx: &mut App) {
                 }
                 Some(restore_windows(restorable, opts.clone(), cx))
             });
-            match restored {
-                None => return,
-                Some(restoring) if restoring.await => return,
-                // Not one recorded vault could be opened: the last vault, as before.
-                Some(_) => {}
+            let Some(restoring) = restored else {
+                return;
+            };
+            if restoring.await {
+                return;
             }
+            // Not one recorded vault could be opened: the last vault, as before.
         }
         cx.update(|cx| {
             if cx.global::<Startup>().superseded {
