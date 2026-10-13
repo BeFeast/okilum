@@ -1135,6 +1135,15 @@ mod tests {
                 "1. one\n- [ ] task\n\nnext",
                 "1. one\n2. two\n- [ ] task\n\nnext",
             ),
+            // #1332: Enter after the last item with another block after the list.
+            ("- a\n- b\n\n[[l]]\n", "- a\n- b\n\n\n[[l]]\n"),
+            ("- a\n- b\n\n[[l]]\n", "- a\n- b\n\n\n\n[[l]]\n"),
+            ("- a\n- b x\n\n[[l]]", "- a\n- b x\n\n\n[[l]]"),
+            ("- a\n- b\n\nplain", "- a\n- b\n\n\nplain"),
+            ("- a\n- b\n\n\n[[l]]\n", "- a\n- b\n\n[[l]]\n"),
+            ("- a\n- b\n\nplain", "- a\n- b\nplain"),
+            ("- a\n- b\n\n\nplain", "- a\n- b\n\nplain"),
+            ("- a\n- b\n\n[x]: /u\n", "- a\n- b\n\n\n[x]: /u\n"),
             // #1323: Enter and text after the last item at the document end.
             ("> q\n\n- a\n- b", "> q\n\n- a\n- b\n"),
             ("> q\n\n- a\n- b\n", "> q\n\n- a\n- b\n\n"),

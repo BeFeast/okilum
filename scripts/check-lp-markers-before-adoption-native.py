@@ -9,7 +9,10 @@ CASE (default mid-list):
 - note-end (#1323): the stable gate's note, a heading, a quote and a list
   ending the note without a final newline; at the end of the last item type,
   and 0.2 s later (drawn, not yet parsed) press Enter, type again, then Undo
-  twice. The fixture loads the note from OKILUM_NATIVE216_SOURCE.
+  twice. The fixture loads the note from OKILUM_NATIVE216_SOURCE;
+- list-then-block (#1332): night QA's note, a heading, a paragraph, a quote,
+  a list and `[[linked]]` after it; the same type, Enter, Undo twice at the
+  end of the last item.
 The isolated #216 fixture with its 500 ms parse delay holds the unadopted
 revision on screen long enough to capture it even on Xvfb, where the real
 one-frame gap is never painted. With the caret at the case's place: Enter
@@ -37,8 +40,12 @@ CASES = {
     'task': ((420, 626), '840x362+20+275', '840x120+20+662'),
 }
 CASES['note-end'] = ((400, 433), '840x150+20+280', '840x60+20+500')
+CASES['list-then-block'] = ((300, 481), '840x190+20+280', '840x110+20+495')
 NOTE_END = '# Quote and list\n\n> A quote before the list.\n\n- first item\n- last item'
-STEPS = {'note-end': [('type-enter', 'ab'), ('type', 'n'), ('key', 'ctrl+z'), ('key', 'ctrl+z')]}
+NOTES = {'note-end': NOTE_END,
+         'list-then-block': '# Heading\n\npara\n\n> quote\n\n- one\n- two\n\n[[linked]]\n'}
+STEPS = {'note-end': [('type-enter', 'ab'), ('type', 'n'), ('key', 'ctrl+z'), ('key', 'ctrl+z')],
+         'list-then-block': [('type-enter', ' EDIT'), ('key', 'ctrl+z'), ('key', 'ctrl+z')]}
 CARET, ABOVE, BELOW = CASES[case]
 STATUS = '880x24+10+176'     # "Classifying in background" vs "Current classification"
 
@@ -59,9 +66,9 @@ def same(a, b):
     return int(float(r.stderr.split()[0] or 1)) == 0
 
 
-if case == 'note-end':
-    (out / 'note-end.md').write_text(NOTE_END)
-    env['OKILUM_NATIVE216_SOURCE'] = str(out / 'note-end.md')
+if case in NOTES:
+    (out / f'{case}.md').write_text(NOTES[case])
+    env['OKILUM_NATIVE216_SOURCE'] = str(out / f'{case}.md')
 proc = subprocess.Popen([binary], env=env, stdout=open(out / f'{label}.log', 'w'), stderr=subprocess.STDOUT)
 results = {}
 try:
