@@ -3,7 +3,8 @@
 # Run on CT 141, the build container (builds do not run on maestro):  bash build-ssign.sh
 # ssign (github.com/Le-Syl21/ssign, MIT) signs PE files over Certum's SimplySign HTTPS API
 # with the same OAuth login as SimplySign Desktop. We build our fork BeFeast/ssign: upstream
-# v0.1.7 (5fd4daf2, reviewed in #1104) plus keeping the refresh token (`ssign --refresh`).
+# v0.1.7 (5fd4daf2, reviewed in #1104) plus keeping the refresh token (`ssign --refresh`,
+# BeFeast/ssign#1) and token-free error messages (BeFeast/ssign#2).
 # The installed binary must match ssign.sha256, which sign.sh checks before every use.
 # Signer setup once (root on CT 142):
 #   install -m 755 ssign /usr/local/bin/ssign
