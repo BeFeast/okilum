@@ -24,6 +24,10 @@ struct State {
     directory: PathBuf,
     written: Option<Vec<PathBuf>>,
     quitting: bool,
+    /// The vault window focused last; it stays the front one while another
+    /// application has the focus (#1329).
+    front: Option<gpui::AnyWindowHandle>,
+    pending: Option<gpui::Task<()>>,
 }
 impl Global for State {}
 
@@ -32,6 +36,8 @@ pub(crate) fn install(directory: PathBuf, cx: &mut App) {
         directory,
         written: None,
         quitting: false,
+        front: None,
+        pending: None,
     });
     cx.on_window_closed(|cx, _| record(cx)).detach();
     cx.on_app_quit(|cx| {
@@ -47,6 +53,24 @@ pub(crate) fn quit(cx: &mut App) {
     if cx.has_global::<State>() {
         cx.global_mut::<State>().quitting = true;
     }
+}
+
+/// A vault window got the focus: it is the front one. Written after the
+/// switching settles, so a run of quick switches is one write (#1329).
+pub(crate) fn focused(window: gpui::AnyWindowHandle, cx: &mut App) {
+    if !cx.has_global::<State>() {
+        return;
+    }
+    let task = cx.spawn(async move |cx| {
+        cx.background_executor()
+            .timer(std::time::Duration::from_millis(300))
+            .await;
+        cx.update(record);
+    });
+    let state = cx.global_mut::<State>();
+    state.front = Some(window);
+    // Dropping the previous task cancels its write.
+    state.pending = Some(task);
 }
 
 /// Rewrite the set after this effect cycle, once a new window is in the
@@ -73,10 +97,13 @@ fn record(cx: &mut App) {
     }
 }
 
-/// Vault windows that are open now, the active one last.
+/// Vault windows that are open now, the one focused last at the end.
 fn open_roots(cx: &App) -> Vec<PathBuf> {
     let windows = cx.windows();
-    let active = cx.active_window();
+    let active = cx
+        .try_global::<State>()
+        .and_then(|state| state.front)
+        .or_else(|| cx.active_window());
     let mut roots: Vec<(bool, PathBuf)> = Vec::new();
     for reader in super::reader_open::readers(cx) {
         let reader = reader.read(cx);

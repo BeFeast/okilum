@@ -2032,6 +2032,33 @@ mod entry_tests {
         sorted_roots.sort();
         assert_eq!(recorded, sorted_roots);
 
+        // Focus decides the front window, not the opening order (#1329):
+        // Archive opened last, then the focus goes to Work and on to Home.
+        // A crash right after keeps Home in front.
+        let window_of = |cx: &mut TestAppContext, root: &PathBuf| {
+            cx.update(|cx| {
+                readers(cx)
+                    .into_iter()
+                    .map(|r| r.read(cx))
+                    .find(|r| r.vault_root == *root)
+                    .map(|r| r.reader_window)
+                    .unwrap()
+            })
+        };
+        for root in [&roots[1], &roots[0]] {
+            let window = window_of(cx, root);
+            cx.update(|cx| {
+                let _ = window.update(cx, |_, window, _| window.activate_window());
+            });
+            cx.run_until_parked();
+        }
+        settle(cx);
+        assert_eq!(
+            reader_open_windows::load(&state).last(),
+            Some(&roots[0]),
+            "the window focused last is the front one on disk"
+        );
+
         // Quit, then the windows go away as the app ends.
         cx.update(reader_open_windows::quit);
         cx.update(|cx| {
@@ -2071,6 +2098,11 @@ mod entry_tests {
         assert_eq!(open_roots(cx), expected, "every vault window reopens");
         assert_eq!(cx.windows().len(), 3, "no start screen next to them");
         all_shown(cx);
+        assert_eq!(
+            reader_open_windows::load(&state).last(),
+            Some(&roots[0]),
+            "the restored front window stays the front one"
+        );
         for root in &roots {
             assert!(
                 ReadingHistory::last_document(&state, root)

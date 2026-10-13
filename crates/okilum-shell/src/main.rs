@@ -1835,6 +1835,9 @@ impl Reader {
             this.recent_switcher.cancel();
             cx.notify();
             this.record_ui_state(window.is_window_active(), cx);
+            if window.is_window_active() {
+                reader_open_windows::focused(window.window_handle(), cx);
+            }
         })
         .detach();
         this.install_source_lifecycle(window, cx);
