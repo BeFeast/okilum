@@ -28,6 +28,14 @@ use sha2::{Digest, Sha256};
 const FIXTURE: &str = include_str!("decoration784/fixture.md");
 const FIXTURE_HASH: &str = include_str!("decoration784/fixture.sha256");
 
+/// The synthetic fixture, or a note from OKILUM_NATIVE216_SOURCE for a native
+/// check that needs another layout (#1323: a list ending the note).
+fn fixture_text() -> String {
+    std::env::var_os("OKILUM_NATIVE216_SOURCE")
+        .map(|path| std::fs::read_to_string(path).expect("OKILUM_NATIVE216_SOURCE is readable"))
+        .unwrap_or_else(|| FIXTURE.to_owned())
+}
+
 actions!(
     projection_fixture,
     [SnapshotEvidence, ToggleMode, DumpAttribution, ResetFixture]
@@ -127,7 +135,7 @@ impl Fixture {
                 .replaceable(false)
                 .soft_wrap(true)
                 .wrapping_indent(WrappingIndent::None);
-            editor.set_value(FIXTURE, window, cx);
+            editor.set_value(fixture_text(), window, cx);
             editor.set_exact_clipboard_provider(Some(clipboard), cx);
             editor
         });
@@ -309,7 +317,7 @@ impl Fixture {
         let text = if large {
             "x".repeat(okilum_core::source_classifier::MAX_BYTES + 1)
         } else {
-            FIXTURE.to_owned()
+            fixture_text()
         };
         self.editor
             .update(cx, |editor, cx| editor.set_value(text, window, cx));

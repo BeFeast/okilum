@@ -943,6 +943,33 @@ mod tests {
     fn snapshot(generation: u64, text: &str) -> Snapshot {
         Snapshot::new("note", generation, text)
     }
+    /// #1323: typing after the last item first takes the inline path, which
+    /// keeps the block's end; Enter at the document end must still reparse
+    /// locally, and match a fresh parse.
+    #[test]
+    fn enter_after_typing_at_the_document_end_reparses_locally() {
+        let base = "# h\n\n> q\n\n- a\n- b";
+        for trailing in ["", "\n"] {
+            let mut text = format!("{base}{trailing}");
+            let mut retained = RetainedPresentation::new(&classify(&snapshot(1, &text)));
+            for (step, c) in " typed\nnew\nnext".chars().enumerate() {
+                text.insert(base.len() + step, c);
+                let current = snapshot(step as u64 + 2, &text);
+                retained = retained
+                    .remap(&current)
+                    .unwrap_or_else(|| panic!("{text:?} fell back"));
+                let fresh = RetainedPresentation::new(&classify(&current))
+                    .project(&Active::default())
+                    .unwrap();
+                assert_eq!(
+                    retained.project(&Active::default()).unwrap().display(),
+                    fresh.display(),
+                    "{text:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn structural_edit_in_one_block_matches_fresh_classification() {
         for (before, after) in [
@@ -1084,6 +1111,17 @@ mod tests {
                 "1. one\n- [ ] task\n\nnext",
                 "1. one\n2. two\n- [ ] task\n\nnext",
             ),
+            // #1323: Enter and text after the last item at the document end.
+            ("> q\n\n- a\n- b", "> q\n\n- a\n- b\n"),
+            ("> q\n\n- a\n- b\n", "> q\n\n- a\n- b\n\n"),
+            ("> q\n\n- a\n- b\n", "> q\n\n- a\n- b\nlazy"),
+            ("> q\n\n- a\n- b\nlazy", "> q\n\n- a\n- b\nlazy\n"),
+            ("# h\n\n- a\n- b", "# h\n\n- a\n- b\n- c"),
+            ("# h\n\n- a\n- b", "# h\n\n- a\n- b\n\n---"),
+            ("# h\n\n- a\n- b", "# h\n\n- a\n- b\n\n```"),
+            ("# h\n\n- a\n- b", "# h\n\n- a\n- b\n\nplain"),
+            ("# h\n\n- a\n- b", "# h\n\n- a\n- b\n```"),
+            ("# h\n\n- a\n- b", "# h\n\n- a\n- b\n---"),
         ] {
             for (from, to) in [(before, after), (after, before)] {
                 let old = snapshot(1, from);
