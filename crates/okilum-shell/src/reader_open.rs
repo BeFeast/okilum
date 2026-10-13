@@ -2060,7 +2060,12 @@ mod entry_tests {
             cx.set_global(reader_startup::Startup::default());
             reader_startup::launch(base.clone(), cx);
         });
-        settle(cx);
+        // Held for 1.5 s, well inside the recorder's patience.
+        for _ in 0..15 {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(100));
+            cx.run_until_parked();
+        }
         drop(busy);
         settle(cx);
         assert_eq!(open_roots(cx), expected, "every vault window reopens");
