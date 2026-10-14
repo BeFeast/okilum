@@ -2181,6 +2181,130 @@ mod entry_tests {
         );
     }
 
+    /// #1335: duplicate windows of a vault (New Window) and closing either the
+    /// duplicate or the original keep that vault in the recorded set, and a
+    /// launch brings back one window per vault.
+    #[gpui::test]
+    fn closing_a_duplicate_or_its_original_keeps_the_vault(cx: &mut TestAppContext) {
+        use super::super::{
+            reader_history::TestSessionDirectory, reader_open_windows, reader_startup, Opts,
+        };
+        for close_originals in [false, true] {
+            let fixture = tempfile::tempdir().unwrap();
+            let state = fixture.path().join("state");
+            let roots: Vec<PathBuf> = ["Gate1", "Gate2", "Gate3"]
+                .iter()
+                .map(|name| {
+                    let root = fixture.path().join(name);
+                    std::fs::create_dir_all(&root).unwrap();
+                    std::fs::write(root.join(format!("{name}.md")), "# Note").unwrap();
+                    root.canonicalize().unwrap()
+                })
+                .collect();
+            let base = Opts {
+                session_directory: Some(state.clone()),
+                index_dir: Some(fixture.path().join("index")),
+                ..Default::default()
+            };
+            cx.update(|cx| {
+                gpui_component::init(cx);
+                install(cx);
+                cx.set_global(TestSessionDirectory(state.clone()));
+                reader_open_windows::install(state.clone(), cx);
+                cx.set_global(reader_startup::ReopenBase(base.clone()));
+                cx.set_quit_mode(gpui::QuitMode::Explicit);
+            });
+            let window_of = |cx: &mut TestAppContext, root: &PathBuf| {
+                cx.update(|cx| {
+                    readers(cx)
+                        .into_iter()
+                        .filter(|r| cx.windows().contains(&r.read(cx).reader_window))
+                        .find(|r| r.read(cx).vault_root == *root)
+                        .map(|r| r.read(cx).reader_window)
+                        .unwrap()
+                })
+            };
+            // As the gate did: each vault from the picker, and New Window on
+            // the first two before the next vault opens.
+            for (i, root) in roots.iter().enumerate() {
+                if i > 0 {
+                    let previous = window_of(cx, &roots[i - 1]);
+                    cx.update(|cx| {
+                        let _ = previous.update(cx, |_, window, _| window.activate_window());
+                        new_window(cx);
+                    });
+                    cx.run_until_parked();
+                }
+                cx.update(|cx| dispatch_path(root, cx));
+                cx.run_until_parked();
+            }
+            assert_eq!(cx.windows().len(), 5, "three vaults and two duplicates");
+            // Close one window of each duplicated vault.
+            let doomed: Vec<gpui::AnyWindowHandle> = cx.update(|cx| {
+                let open: Vec<_> = readers(cx)
+                    .into_iter()
+                    .filter(|r| cx.windows().contains(&r.read(cx).reader_window))
+                    .map(|r| (r.read(cx).vault_root.clone(), r.read(cx).reader_window))
+                    .collect();
+                roots[..2]
+                    .iter()
+                    .filter_map(|root| {
+                        let mine: Vec<_> = open.iter().filter(|(r, _)| r == root).collect();
+                        assert_eq!(mine.len(), 2, "{} has a duplicate", root.display());
+                        Some(mine[if close_originals { 0 } else { 1 }].1)
+                    })
+                    .collect()
+            });
+            for window in doomed {
+                cx.update(|cx| {
+                    let _ = window.update(cx, |_, window, _| window.remove_window());
+                });
+                cx.run_until_parked();
+            }
+            assert_eq!(cx.windows().len(), 3);
+            let mut recorded = reader_open_windows::load(&state);
+            recorded.sort();
+            assert_eq!(
+                recorded, roots,
+                "close_originals={close_originals}: recorded set"
+            );
+            cx.update(reader_open_windows::quit);
+            cx.update(|cx| {
+                for window in cx.windows() {
+                    let _ = window.update(cx, |_, window, _| window.remove_window());
+                }
+            });
+            cx.run_until_parked();
+            cx.update(|cx| {
+                cx.set_global(reader_startup::Startup::default());
+                reader_startup::launch(base.clone(), cx);
+            });
+            for _ in 0..60 {
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_millis(100));
+                cx.run_until_parked();
+            }
+            let mut reopened: Vec<PathBuf> = cx.update(|cx| {
+                readers(cx)
+                    .into_iter()
+                    .filter(|r| cx.windows().contains(&r.read(cx).reader_window))
+                    .map(|r| r.read(cx).vault_root.clone())
+                    .collect()
+            });
+            reopened.sort();
+            assert_eq!(
+                reopened, roots,
+                "close_originals={close_originals}: restored"
+            );
+            cx.update(|cx| {
+                for window in cx.windows() {
+                    let _ = window.update(cx, |_, window, _| window.remove_window());
+                }
+            });
+            cx.run_until_parked();
+        }
+    }
+
     /// #1049: a link to a vault name that two known vaults share opens a
     /// chooser listing both (the one without the note cannot be chosen); a
     /// newer link replaces it; choosing opens that vault on the note.
