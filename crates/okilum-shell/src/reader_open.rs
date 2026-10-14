@@ -2248,10 +2248,10 @@ mod entry_tests {
                     .collect();
                 roots[..2]
                     .iter()
-                    .filter_map(|root| {
+                    .map(|root| {
                         let mine: Vec<_> = open.iter().filter(|(r, _)| r == root).collect();
                         assert_eq!(mine.len(), 2, "{} has a duplicate", root.display());
-                        Some(mine[if close_originals { 0 } else { 1 }].1)
+                        mine[if close_originals { 0 } else { 1 }].1
                     })
                     .collect()
             });
