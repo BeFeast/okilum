@@ -1229,6 +1229,12 @@ mod tests {
             ("> q\n\n[[l]] t", "> q\n\n[[l]] tx"),
             ("plain\n\nx", "plain\n\n[x]: /u"),
             ("plain\n\n[x]", "plain\n\n[x]: /u"),
+            // Edge cases from review: a `[[` line comrak must not take as a
+            // definition, and an escaped bracket that still refuses.
+            ("plain\n\nx", "plain\n\n[[a]: /u"),
+            ("plain\n\n[[a]", "plain\n\n[[a]: /u"),
+            ("plain\n\n[[a]]", "plain\n\n[[a]]: /u"),
+            ("plain\n\nx", "plain\n\n[\\[x]: /u"),
             ("- a\n  [[l]]", "- a\n  [[l]] x"),
             // #1323: Enter and text after the last item at the document end.
             ("> q\n\n- a\n- b", "> q\n\n- a\n- b\n"),
