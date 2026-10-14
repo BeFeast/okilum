@@ -421,9 +421,10 @@ impl RetainedPresentation {
         if fragment.contains('\0')
             || lines.iter().any(|&(at, line)| {
                 if in_spans(at) {
-                    container_content(line).starts_with('[')
+                    opens_definition(container_content(line))
                 } else {
-                    line.trim_start().starts_with(['`', '~', '<', '['])
+                    let line = line.trim_start();
+                    line.starts_with(['`', '~', '<']) || opens_definition(line)
                 }
             })
         {
@@ -912,6 +913,14 @@ fn atx_heading(line: &str) -> bool {
 
 /// Line content after container prefixes: indentation, quote markers and
 /// list/task markers.
+/// Whether a line may open a link reference definition (`[label]: url`).
+/// A label cannot contain an unescaped `[`, so a wiki link line (`[[note]]
+/// tail`) never does. Typing in one fell back to a full parse on every key,
+/// drawing the whole note raw while it ran (#1334).
+fn opens_definition(line: &str) -> bool {
+    line.starts_with('[') && !line.starts_with("[[")
+}
+
 fn container_content(line: &str) -> &str {
     let mut rest = line;
     loop {
