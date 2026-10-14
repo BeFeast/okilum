@@ -2305,6 +2305,93 @@ mod entry_tests {
         }
     }
 
+    /// #1338: each Reader stays bound to its own window. GPUI binds an entity
+    /// to the window whose draw last read it, and runs its window callbacks
+    /// (the quick-open Enter among them) there; a Reader read while another
+    /// window draws took that window's title.
+    #[gpui::test]
+    fn every_reader_stays_bound_to_its_own_window(cx: &mut TestAppContext) {
+        use super::super::{reader_history::TestSessionDirectory, Opts};
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let roots: Vec<PathBuf> = ["Amber", "Bravo", "Charlie"]
+            .iter()
+            .map(|name| {
+                let root = fixture.path().join(name);
+                std::fs::create_dir_all(&root).unwrap();
+                std::fs::write(root.join(format!("{name}.md")), "# Note").unwrap();
+                std::fs::write(root.join("Other.md"), "# Other").unwrap();
+                root.canonicalize().unwrap()
+            })
+            .collect();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            install(cx);
+            cx.set_global(TestSessionDirectory(state.clone()));
+            super::super::reader_ui_state::install(&state, cx);
+        });
+        for root in &roots {
+            cx.update(|cx| {
+                open_window(
+                    Opts {
+                        vault: Some(root.clone()),
+                        session_directory: Some(state.clone()),
+                        index_dir: Some(fixture.path().join("index")),
+                        ..Default::default()
+                    },
+                    cx,
+                )
+                .unwrap()
+            });
+            cx.run_until_parked();
+        }
+        let readers_now = |cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                readers(cx)
+                    .into_iter()
+                    .filter(|r| cx.windows().contains(&r.read(cx).reader_window))
+                    .collect::<Vec<_>>()
+            })
+        };
+        let all = readers_now(cx);
+        assert_eq!(all.len(), 3);
+        // Work in each window as a person does: focus it, open another note,
+        // let every window draw.
+        for reader in &all {
+            let handle = cx.update(|cx| reader.read(cx).reader_window);
+            cx.update(|cx| {
+                handle
+                    .update(cx, |_, window, cx| {
+                        window.activate_window();
+                        reader.update(cx, |r, cx| r.open_note("Other.md", None, window, cx));
+                    })
+                    .unwrap();
+                for window in cx.windows() {
+                    let _ = window.update(cx, |_, window, _| window.refresh());
+                }
+            });
+            cx.run_until_parked();
+        }
+        cx.update(|cx| {
+            for reader in &all {
+                let own = reader.read(cx).reader_window;
+                let name = reader
+                    .read(cx)
+                    .vault_root
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned();
+                let bound = cx.with_window(reader.entity_id(), |window, _| window.window_handle());
+                assert_eq!(
+                    bound,
+                    Some(own),
+                    "{name}'s Reader runs its window callbacks in its own window"
+                );
+            }
+        });
+    }
+
     /// #1049: a link to a vault name that two known vaults share opens a
     /// chooser listing both (the one without the note cannot be chosen); a
     /// newer link replaces it; choosing opens that vault on the note.

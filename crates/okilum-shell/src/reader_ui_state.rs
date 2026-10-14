@@ -216,6 +216,11 @@ struct Store {
     last_changed: bool,
     last_frame_changed: bool,
     readers: Vec<WeakEntity<Reader>>,
+    /// The vault each Reader's window shows while that window is the active
+    /// one. The sibling check reads this, not the other Readers: reading an
+    /// entity while another window draws binds it to that window in GPUI,
+    /// and its window callbacks then run there (#1338).
+    active_roots: std::collections::HashMap<gpui::EntityId, PathBuf>,
     blocked: bool,
     serial: Arc<AtomicU64>,
     pending: Option<Task<()>>,
@@ -296,6 +301,7 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         last_changed: false,
         last_frame_changed: false,
         readers: vec![],
+        active_roots: Default::default(),
         blocked: false,
         serial: Arc::default(),
         pending: None,
@@ -986,16 +992,15 @@ impl Reader {
         }
         // A background sibling must not replace the active window's viewport
         // when both show the same vault (including during quit).
-        if !active
-            && cx.global::<Store>().readers.iter().any(|other| {
+        if !active && {
+            let store = cx.global::<Store>();
+            store.readers.iter().any(|other| {
                 other.entity_id() != cx.entity_id()
-                    && other.upgrade().is_some_and(|other| {
-                        let other = other.read(cx);
-                        other.ui_state.active && other.vault_root == self.vault_root
-                    })
+                    && other.upgrade().is_some()
+                    && store.active_roots.get(&other.entity_id()) == Some(&self.vault_root)
             })
-        {
-            self.ui_state.active = false;
+        } {
+            self.set_ui_active(false, cx);
             return;
         }
         if self.editing.is_none() && self.ui_state.source.is_none() {
@@ -1072,7 +1077,19 @@ impl Reader {
             self.ui_state.last = Some(saved.clone());
             record(&self.vault_root, saved, active, cx);
         }
+        self.set_ui_active(active, cx);
+    }
+
+    fn set_ui_active(&mut self, active: bool, cx: &mut Context<Self>) {
         self.ui_state.active = active;
+        let id = cx.entity_id();
+        let root = self.vault_root.clone();
+        let roots = &mut cx.global_mut::<Store>().active_roots;
+        if active {
+            roots.insert(id, root);
+        } else {
+            roots.remove(&id);
+        }
     }
 }
 fn valid_note(note: &str) -> bool {
