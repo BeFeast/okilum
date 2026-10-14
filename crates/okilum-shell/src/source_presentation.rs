@@ -858,6 +858,56 @@ mod tests {
         }
     }
 
+    /// #1334 (Windows gate, VM 150): the full parse after a fallback ran for
+    /// several frames on a slow host, so every fallback showed. Composing
+    /// without ever adopting a parse stands in for an arbitrarily slow one.
+    /// The gate's recipe in a note ending with a wiki link paragraph: type
+    /// at the end, Enter, Undo, Redo, then Enter before the link.
+    #[test]
+    fn wiki_link_paragraph_edits_project_every_frame_however_slow_the_parse() {
+        let base = "# Heading preview\n\n> Quote neighbour stays rendered.\n\n- First item\n- Last item\n\n[[Linked1]] tail";
+        let mut text = base.to_string();
+        let mut frames = vec![text.clone()];
+        for c in " typed12815".chars() {
+            text.push(c);
+            frames.push(text.clone());
+        }
+        let typed = text.clone();
+        text.push('\n');
+        frames.extend([text.clone(), typed, text.clone()]);
+        text.insert(text.find("[[Linked1]]").unwrap(), '\n');
+        frames.push(text);
+        let original = source(&frames[0]);
+        let provider = CachedProvider::classify(original.clone());
+        let list = base.find("- Last item").unwrap();
+        for (step, text) in frames.iter().enumerate().skip(1) {
+            let current = SourceSnapshot {
+                stamp: SourceStamp {
+                    generation: original.stamp.generation + step as u64,
+                    ..original.stamp
+                },
+                text: Arc::from(text.as_str()),
+            };
+            let frame = provider
+                .compose(&current, &inactive(&current))
+                .unwrap_or_else(|| panic!("frame {step} drew raw: {text:?}"));
+            // Heading, quote and list keep their presentation.
+            let fresh = CachedProvider::classify(current.clone());
+            let expected = fresh.compose(&current, &inactive(&current)).unwrap();
+            let head = |p: &Arc<dyn SourceProjection>| {
+                let lines: Vec<_> = p.text().split('\n').take(6).map(str::to_owned).collect();
+                let markers: Vec<_> = p
+                    .markers()
+                    .iter()
+                    .filter(|m| m.range.start.0 <= list)
+                    .map(|m| (m.range.clone(), m.kind.clone()))
+                    .collect();
+                format!("{lines:?}\n{markers:?}")
+            };
+            assert_eq!(head(&frame), head(&expected), "frame {step}: {text:?}");
+        }
+    }
+
     #[test]
     fn quote_markers_reveal_as_their_own_element_not_the_whole_quote() {
         use gpui_component::input::projection::{LayoutStamp, MarkerKind, PinnedProjection};
