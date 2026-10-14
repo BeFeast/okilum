@@ -12,7 +12,9 @@ CASE (default mid-list):
   twice. The fixture loads the note from OKILUM_NATIVE216_SOURCE;
 - list-then-block (#1332): night QA's note, a heading, a paragraph, a quote,
   a list and `[[linked]]` after it; the same type, Enter, Undo twice at the
-  end of the last item.
+  end of the last item;
+- wiki-tail (#1334): the Windows gate's note, ending with a `[[Linked1]] tail`
+  paragraph; at its end type, Enter, Undo, Redo, then Up, Home, Enter.
 The isolated #216 fixture with its 500 ms parse delay holds the unadopted
 revision on screen long enough to capture it even on Xvfb, where the real
 one-frame gap is never painted. With the caret at the case's place: Enter
@@ -41,11 +43,16 @@ CASES = {
 }
 CASES['note-end'] = ((400, 433), '840x150+20+280', '840x60+20+500')
 CASES['list-then-block'] = ((300, 481), '840x190+20+280', '840x110+20+495')
+CASES['wiki-tail'] = ((400, 481), '840x165+20+280', '840x40+20+560')
 NOTE_END = '# Quote and list\n\n> A quote before the list.\n\n- first item\n- last item'
 NOTES = {'note-end': NOTE_END,
-         'list-then-block': '# Heading\n\npara\n\n> quote\n\n- one\n- two\n\n[[linked]]\n'}
+         'list-then-block': '# Heading\n\npara\n\n> quote\n\n- one\n- two\n\n[[linked]]\n',
+         'wiki-tail': '# Heading preview\n\n> Quote neighbour stays rendered.\n\n- First item\n'
+                      '- Last item\n\n[[Linked1]] tail'}
 STEPS = {'note-end': [('type-enter', 'ab'), ('type', 'n'), ('key', 'ctrl+z'), ('key', 'ctrl+z')],
-         'list-then-block': [('type-enter', ' EDIT'), ('key', 'ctrl+z'), ('key', 'ctrl+z')]}
+         'list-then-block': [('type-enter', ' EDIT'), ('key', 'ctrl+z'), ('key', 'ctrl+z')],
+         'wiki-tail': [('type', ' typed'), ('key', 'Return'), ('key', 'ctrl+z'), ('key', 'ctrl+y'),
+                       ('keys', 'Up Home Return')]}
 CARET, ABOVE, BELOW = CASES[case]
 STATUS = '880x24+10+176'     # "Classifying in background" vs "Current classification"
 
@@ -89,7 +96,9 @@ try:
     time.sleep(2)
     steps = STEPS.get(case) or [('key', 'Return')] + [('type', c) for c in '**x**'] + [('key', 'BackSpace')] * 2
     for i, (kind, arg) in enumerate(steps):
-        if kind == 'type-enter':
+        if kind == 'keys':
+            xd('key', '--delay', '60', *arg.split())
+        elif kind == 'type-enter':
             xd('type', arg)
             time.sleep(.2)
             xd('key', 'Return')
