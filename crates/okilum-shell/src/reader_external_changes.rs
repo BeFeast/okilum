@@ -34,11 +34,7 @@ mod tests {
     }
 
     fn in_tree(reader: &Reader, path: &str) -> bool {
-        reader
-            .vault
-            .entries
-            .iter()
-            .any(|entry| entry.path == path)
+        reader.vault.entries.iter().any(|entry| entry.path == path)
     }
 
     fn hits(reader: &Reader, word: &str) -> usize {
@@ -121,7 +117,11 @@ mod tests {
             "# Missing Target\n\ntargetword\n",
         )
         .unwrap();
-        std::fs::write(root.join("External Control.md"), "# External\n\ncontrolword\n").unwrap();
+        std::fs::write(
+            root.join("External Control.md"),
+            "# External\n\ncontrolword\n",
+        )
+        .unwrap();
         settle(visual, &reader, "created notes", |r| {
             resolved(&r.vault, "Missing Target")
                 && has_note(r, "External Control.md")
@@ -197,7 +197,11 @@ mod tests {
         for index in 0..60 {
             let dir = root.join(format!("Pull/{}", index % 6));
             std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(dir.join(format!("Note {index}.md")), "# Pulled\n\nburstword\n").unwrap();
+            std::fs::write(
+                dir.join(format!("Note {index}.md")),
+                "# Pulled\n\nburstword\n",
+            )
+            .unwrap();
         }
         settle(visual, &reader, "60 pulled notes", |r| {
             (0..60).all(|index| has_note(r, &format!("Pull/{}/Note {index}.md", index % 6)))
@@ -234,15 +238,18 @@ mod tests {
         visual.update(|_, cx| reader_settings::show(Some(reader.downgrade()), cx));
         visual.run_until_parked();
         let settings = visual
-            .update(|_, cx| cx.windows().into_iter().find(|window| *window != reader_window))
+            .update(|_, cx| {
+                cx.windows()
+                    .into_iter()
+                    .find(|window| *window != reader_window)
+            })
             .expect("positive control: the Settings window opened");
         settings
             .update(visual, |_, window, _| window.remove_window())
             .unwrap();
         // No draw of the Reader's window in between: the gap the timer can hit.
-        let current = visual.update(|_, cx| {
-            cx.with_window(reader.entity_id(), |window, _| window.window_handle())
-        });
+        let current = visual
+            .update(|_, cx| cx.with_window(reader.entity_id(), |window, _| window.window_handle()));
         assert!(
             current.is_none(),
             "positive control: the Reader has no current window, as in the failing session"
@@ -251,9 +258,16 @@ mod tests {
             visual.executor().advance_clock(Duration::from_millis(300));
             visual.run_until_parked();
         }
-        std::fs::write(root.join("External Control.md"), "# External\n\ncontrolword\n").unwrap();
-        settle(visual, &reader, "a note created after Settings was closed", |r| {
-            has_note(r, "External Control.md") && hits(r, "controlword") == 1
-        });
+        std::fs::write(
+            root.join("External Control.md"),
+            "# External\n\ncontrolword\n",
+        )
+        .unwrap();
+        settle(
+            visual,
+            &reader,
+            "a note created after Settings was closed",
+            |r| has_note(r, "External Control.md") && hits(r, "controlword") == 1,
+        );
     }
 }
