@@ -133,7 +133,7 @@ impl CodePreview {
         // Each selection owns its own entity; a late read cannot reach a newer one.
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
-            let _ = this.update_in_own_window(cx, |this, window, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 this.state = match result {
                     Ok(Loaded::Text(text, pretty)) => {
                         let shown = if json {
@@ -189,7 +189,7 @@ impl CodePreview {
                 .spawn(async move { okilum_core::json_view::pretty(&raw) });
             cx.spawn_in(window, async move |this, cx| {
                 let pretty = task.await;
-                let _ = this.update_in_own_window(cx, |this, window, cx| {
+                let _ = this.update_in(cx, |this, window, cx| {
                     if let Some(json) = &mut this.json {
                         json.formatting = false;
                         json.pretty = Some(pretty);
