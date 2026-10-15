@@ -3016,7 +3016,12 @@ impl Reader {
                     label: quick_open::folder_note_title(folder, &item.path)
                         .unwrap_or_else(|| self.note_label(&item.path)),
                     meta: Some(reader_sidebar::age_label(item.created, now)),
-                    location: Some(quick_open::result_location(vault, &item.path)),
+                    // A note at the vault's top level says why it is here (#1354).
+                    location: Some(if item.path.contains('/') {
+                        quick_open::result_location(vault, &item.path)
+                    } else {
+                        "Not in a folder yet".into()
+                    }),
                     folder: false,
                 });
             }
