@@ -402,8 +402,12 @@ impl FileEditor {
     }
     /// A copy saved `text`: that is the file now, so it becomes the base.
     pub fn saved_as(&mut self, text: String) -> Result<()> {
+        self.saved_as_queued(text).persist()
+    }
+    /// `saved_as` with the recovery copy written by the caller, off the UI thread.
+    pub fn saved_as_queued(&mut self, text: String) -> DraftWrite {
         self.draft.base = text;
-        self.persist()
+        self.pending_write()
     }
     #[cfg(unix)]
     fn save_before_exchange(&mut self, before_exchange: impl FnOnce()) -> Result<Save> {

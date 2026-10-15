@@ -997,9 +997,15 @@ impl Reader {
         }
         match result {
             Ok(Save::Saved) => {
-                if let Err(error) = editing.store.saved_as(text) {
-                    eprintln!("Autosaved, but the recovery copy lags: {error:#}");
-                }
+                // The recovery copy of a large note is written off the UI thread too.
+                let write = editing.store.saved_as_queued(text);
+                cx.background_executor()
+                    .spawn(async move {
+                        if let Err(error) = write.persist() {
+                            eprintln!("Autosaved, but the recovery copy lags: {error:#}");
+                        }
+                    })
+                    .detach();
                 editing.saved_at = Some(
                     time::OffsetDateTime::now_local()
                         .unwrap_or_else(|_| time::OffsetDateTime::now_utc()),
