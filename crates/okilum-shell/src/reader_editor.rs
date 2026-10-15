@@ -1011,10 +1011,18 @@ impl Reader {
                         .unwrap_or_else(|_| time::OffsetDateTime::now_utc()),
                 );
                 editing.save_failed = false;
+                // Typing during the save: its timer found this save running
+                // and skipped, so the rest is saved after its own pause.
+                let editing = self.editing.as_mut().unwrap();
+                if editing.input.read(cx).value().as_ref() != editing.store.text()
+                    || editing.store.dirty()
+                {
+                    let epoch = editing.recovery_epoch;
+                    self.schedule_autosave(input_id, epoch, cx);
+                }
                 if self.file_preview.is_none() {
                     self.queue_saved_source(cx);
                 }
-                // Typing during the save: its own timer saves the rest.
             }
             Ok(Save::Conflict) => {
                 editing.conflict_detected = true;
@@ -4320,6 +4328,37 @@ mod autosave_tests {
         visual.run_until_parked();
         wait(visual, 1200);
         assert_eq!(on_disk(&f), "漢original", "the committed text is saved");
+    }
+
+    /// Typing while an autosave is still writing: that edit's timer finds the
+    /// save running and skips; when the save completes it schedules another,
+    /// so the last edit is saved without a further keystroke (review of #1362).
+    #[gpui::test]
+    fn typing_during_an_autosave_is_saved_after_it(cx: &mut TestAppContext) {
+        let (f, visual) = open(cx, "original");
+        type_at_start(&f, visual, "a");
+        // A save of «aoriginal» is still in flight.
+        let input_id = input(&f, visual).entity_id();
+        let saves = f.reader.update(visual, |r, _| {
+            let editing = r.editing.as_mut().unwrap();
+            editing.autosaving = Some("aoriginal".into());
+            editing.saves
+        });
+        type_at_start(&f, visual, "b");
+        wait(visual, 1200);
+        assert_eq!(on_disk(&f), "original", "the timer found the save running");
+        // That save completes (it wrote «aoriginal»).
+        std::fs::write(&f.file, "aoriginal").unwrap();
+        f.reader.update(visual, |r, cx| {
+            r.autosaved(input_id, saves, "aoriginal".into(), Ok(Save::Saved), cx)
+        });
+        visual.run_until_parked();
+        wait(visual, 1200);
+        assert_eq!(
+            on_disk(&f),
+            "baoriginal",
+            "the edit made during the save is saved"
+        );
     }
 
     /// A save that fails keeps the text, says so, and is not retried in a loop.
