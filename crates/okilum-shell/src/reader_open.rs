@@ -599,8 +599,9 @@ pub(crate) fn register(reader: WeakEntity<super::Reader>, root: PathBuf, cx: &mu
     if cx.try_global::<Readers>().is_some() {
         let readers = &mut cx.global_mut::<Readers>().0;
         readers.retain(|(old, _)| old.entity_id() != reader.entity_id() && old.upgrade().is_some());
-        readers.push((reader, root));
+        readers.push((reader, root.clone()));
         super::reader_open_windows::record_soon(cx);
+        super::vault_name::watch(root, cx);
     }
 }
 

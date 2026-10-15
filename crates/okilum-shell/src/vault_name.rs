@@ -14,27 +14,119 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Where display names are kept. Whether a name travels with the vault or
-/// stays on this machine is still open; either keeps this shape: names by
-/// canonical vault root, the existing vault identity.
-pub(crate) trait Storage {
-    fn save(&self, names: &BTreeMap<PathBuf, String>) -> anyhow::Result<()>;
-}
+/// The name lives in the vault, so it travels with it (Syncthing): one small
+/// file in a service folder that every inventory skips, so it never shows in
+/// the tree, search or quick open. Syncthing conflict copies sit next to it
+/// and are never read; the last write wins.
+pub(crate) const DIRECTORY: &str = ".okilum";
+const FILE: &str = "vault.json";
+/// How often an open vault's name file is looked at for a change made on
+/// another machine.
+const POLL: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// Display names by canonical vault root.
+/// Display names by canonical vault root, as last read from each vault.
 #[derive(Default)]
 pub(crate) struct Names {
     names: BTreeMap<PathBuf, String>,
-    storage: Option<Box<dyn Storage>>,
+    watched: std::collections::BTreeSet<PathBuf>,
 }
 impl Global for Names {}
 
-/// Start with the names a storage holds; later changes are saved to it.
-pub(crate) fn install(names: BTreeMap<PathBuf, String>, storage: Box<dyn Storage>, cx: &mut App) {
-    cx.set_global(Names {
-        names,
-        storage: Some(storage),
-    });
+fn file(root: &Path) -> PathBuf {
+    root.join(DIRECTORY).join(FILE)
+}
+
+/// The name in the vault's file; `None` when it is missing, empty, blank or
+/// not readable as JSON. Reading never writes.
+pub(crate) fn read(root: &Path) -> Option<String> {
+    let bytes = std::fs::read(file(root)).ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    clean(value.get("name")?.as_str()?)
+}
+
+/// Write the name into the vault's file, keeping anything else in it; `None`
+/// removes the name. Written to a temporary file in the same folder and
+/// renamed, so another machine never syncs half a file.
+fn write(root: &Path, name: Option<&str>) -> anyhow::Result<()> {
+    let directory = root.join(DIRECTORY);
+    std::fs::create_dir_all(&directory)?;
+    let mut value = std::fs::read(file(root))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .filter(serde_json::Value::is_object)
+        .unwrap_or_else(|| serde_json::json!({}));
+    let object = value.as_object_mut().expect("an object");
+    object.insert("version".into(), 1.into());
+    match name {
+        Some(name) => object.insert("name".into(), name.into()),
+        None => object.remove("name"),
+    };
+    let temporary = directory.join(format!(".{FILE}.{}.tmp", uuid::Uuid::new_v4()));
+    std::fs::write(&temporary, serde_json::to_vec_pretty(&value)?)?;
+    std::fs::rename(&temporary, file(root)).inspect_err(|_| {
+        let _ = std::fs::remove_file(&temporary);
+    })?;
+    Ok(())
+}
+
+fn stamp(root: &Path) -> Option<(std::time::SystemTime, u64)> {
+    let metadata = std::fs::metadata(file(root)).ok()?;
+    Some((metadata.modified().ok()?, metadata.len()))
+}
+
+/// Keep this vault's name current while a window shows it: read it now and
+/// again whenever the file changes, e.g. after Syncthing brings a rename
+/// from another machine. Off the UI thread; stops when no window shows it.
+pub(crate) fn watch(root: PathBuf, cx: &mut App) {
+    if !cx.default_global::<Names>().watched.insert(root.clone()) {
+        return;
+    }
+    cx.spawn(async move |cx| {
+        let mut seen = None;
+        let mut first = true;
+        loop {
+            let probe = root.clone();
+            let last = seen;
+            let changed = cx
+                .background_executor()
+                .spawn(async move {
+                    let now = stamp(&probe);
+                    (first || now != last).then(|| (now, read(&probe)))
+                })
+                .await;
+            first = false;
+            if let Some((now, name)) = changed {
+                seen = now;
+                let root = root.clone();
+                cx.update(|cx| adopt(&root, name, cx));
+            }
+            let open = cx.update(|cx| {
+                crate::reader_open::readers(cx)
+                    .iter()
+                    .any(|reader| reader.read(cx).vault_root == root)
+            });
+            if !open {
+                cx.update(|cx| cx.default_global::<Names>().watched.remove(&root));
+                return;
+            }
+            cx.background_executor().timer(POLL).await;
+        }
+    })
+    .detach();
+}
+
+/// Take a name read from the vault: shown at once in every window of it.
+fn adopt(root: &Path, name: Option<String>, cx: &mut App) {
+    let names = &mut cx.default_global::<Names>().names;
+    if names.get(root) == name.as_ref() {
+        return;
+    }
+    match name {
+        Some(name) => names.insert(root.to_owned(), name),
+        None => names.remove(root),
+    };
+    retitle(root, cx);
+    cx.refresh_windows();
 }
 
 /// The folder's own name, which links and lookups use.
@@ -62,24 +154,23 @@ pub(crate) fn stored(root: &Path, cx: &App) -> Option<String> {
 }
 
 /// Set or clear the display name. A blank name, or the folder name itself,
-/// clears it. Every window repaints with the new name.
+/// clears it. It is written into the vault, and every window repaints.
 pub(crate) fn set(root: &Path, name: &str, cx: &mut App) {
     let name = clean(name).filter(|name| *name != folder_name(root));
-    let state = cx.default_global::<Names>();
-    if state.names.get(root) == name.as_ref() {
+    if stored(root, cx) == name {
         return;
     }
-    match name {
-        Some(name) => state.names.insert(root.to_owned(), name),
-        None => state.names.remove(root),
-    };
-    if let Some(storage) = &state.storage {
-        if let Err(error) = storage.save(&state.names) {
-            eprintln!("Cannot save the vault name: {error:#}");
+    if let Err(error) = write(root, name.as_deref()) {
+        let message = format!("Cannot save the vault name: {error:#}");
+        eprintln!("{message}");
+        if let Some(window) = cx.active_window() {
+            let _ = window.update(cx, |_, window, cx| {
+                crate::reader_toast::error(message, window, cx)
+            });
         }
+        return;
     }
-    retitle(root, cx);
-    cx.refresh_windows();
+    adopt(root, name, cx);
 }
 
 /// The native window title: `Okilum — Note — Vault`, `Okilum — Vault`
@@ -231,21 +322,63 @@ mod tests {
     }
 
     #[gpui::test]
-    fn the_shown_name_falls_back_to_the_folder(cx: &mut TestAppContext) {
-        let root = PathBuf::from("/vaults/Gate1");
+    fn the_name_lives_in_the_vault_and_falls_back_to_the_folder(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("Gate1");
+        std::fs::create_dir_all(&root).unwrap();
         cx.update(|cx| {
             assert_eq!(shown(&root, cx), "Gate1", "no name yet: the folder");
             set(&root, "  Work  ", cx);
             assert_eq!(shown(&root, cx), "Work", "trimmed");
-            assert_eq!(stored(&root, cx).as_deref(), Some("Work"));
-            set(&root, "   ", cx);
-            assert_eq!(shown(&root, cx), "Gate1", "blank goes back to the folder");
-            assert_eq!(stored(&root, cx), None);
-            set(&root, "Gate1", cx);
-            assert_eq!(stored(&root, cx), None, "the folder name stores nothing");
-            // Another vault is not affected.
-            set(&root, "Work", cx);
-            assert_eq!(shown(Path::new("/vaults/Gate2"), cx), "Gate2");
         });
+        assert_eq!(
+            read(&root).as_deref(),
+            Some("Work"),
+            "written into the vault"
+        );
+        cx.update(|cx| set(&root, "   ", cx));
+        assert_eq!(read(&root), None, "blank removes the name");
+        cx.update(|cx| assert_eq!(shown(&root, cx), "Gate1"));
+    }
+
+    #[test]
+    fn a_missing_empty_or_broken_file_is_no_name_and_is_left_alone() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        assert_eq!(read(root), None, "missing");
+        std::fs::create_dir_all(root.join(DIRECTORY)).unwrap();
+        for broken in [
+            &b""[..],
+            b"{ not json",
+            b"[1,2]",
+            b"{\"name\": 7}",
+            b"{\"name\": \"  \"}",
+        ] {
+            std::fs::write(file(root), broken).unwrap();
+            assert_eq!(read(root), None, "{:?}", String::from_utf8_lossy(broken));
+            assert_eq!(
+                std::fs::read(file(root)).unwrap(),
+                broken,
+                "reading never rewrites"
+            );
+        }
+        // Positive control: a good file reads.
+        std::fs::write(file(root), br#"{"version":1,"name":"Work"}"#).unwrap();
+        assert_eq!(read(root).as_deref(), Some("Work"));
+    }
+
+    #[test]
+    fn writing_keeps_other_fields() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        std::fs::create_dir_all(root.join(DIRECTORY)).unwrap();
+        std::fs::write(file(root), br#"{"version":1,"color":"teal"}"#).unwrap();
+        write(root, Some("Work")).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(file(root)).unwrap()).unwrap();
+        assert_eq!(value["name"], "Work");
+        assert_eq!(value["color"], "teal");
+        write(root, None).unwrap();
+        assert_eq!(read(root), None);
     }
 }
