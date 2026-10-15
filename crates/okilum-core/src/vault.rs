@@ -1822,7 +1822,10 @@ mod preimage_visibility_tests {
         let vault = Vault::scan(root).unwrap();
         assert!(vault.notes.iter().any(|n| n.path == "nested/Visible.md"));
         assert!(
-            vault.entries.iter().all(|e| !e.path.starts_with(".okilum/"))
+            vault
+                .entries
+                .iter()
+                .all(|e| !e.path.starts_with(".okilum/"))
                 && vault.notes.iter().all(|n| !n.path.starts_with(".okilum/")),
             "Okilum's vault settings stay out of the inventory"
         );
