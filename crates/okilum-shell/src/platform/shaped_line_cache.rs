@@ -102,7 +102,7 @@ impl ShapedLineCache {
     /// Empty the application's cache when this window's scale factor is not
     /// the one it last drew at. Per window, so two windows on displays with
     /// different scales do not empty it on every frame.
-    pub(crate) fn note_scale_factor(window: &gpui::Window) {
+    pub(crate) fn note_scale_factor(window: &gpui::Window, cx: &gpui::App) {
         static SCALES: Mutex<Vec<(gpui::AnyWindowHandle, f32)>> = Mutex::new(Vec::new());
         let handle = window.window_handle();
         let scale = window.scale_factor();
@@ -114,7 +114,13 @@ impl ShapedLineCache {
                 drop(scales);
                 Self::clear_installed();
             }
-            None => scales.push((handle, scale)),
+            None => {
+                // A new window: forget the ones that closed, so the list is
+                // as long as the open windows.
+                let open = cx.windows();
+                scales.retain(|(seen, _)| open.contains(seen));
+                scales.push((handle, scale));
+            }
         }
     }
 

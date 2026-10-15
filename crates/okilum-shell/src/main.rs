@@ -6550,7 +6550,7 @@ impl Render for ReaderPanelDrag {
 
 impl Render for Reader {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        platform::shaped_line_cache::ShapedLineCache::note_scale_factor(window);
+        platform::shaped_line_cache::ShapedLineCache::note_scale_factor(window, cx);
         if self.toast_subscription.is_none() {
             let notifications = Root::read(window, cx).notification.clone();
             self.toast_subscription = Some(cx.observe(&notifications, |_, _, cx| cx.notify()));
