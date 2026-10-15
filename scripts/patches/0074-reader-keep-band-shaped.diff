@@ -1,0 +1,366 @@
+diff --git a/crates/base/src/text/document.rs b/crates/base/src/text/document.rs
+--- a/crates/base/src/text/document.rs
++++ b/crates/base/src/text/document.rs
+@@ -1,9 +1,10 @@
+ use gpui::{
+-    App, InteractiveElement as _, IntoElement, ListState, ParentElement as _, SharedString,
+-    Styled as _, Window, div,
++    AnyElement, App, AvailableSpace, Bounds, Element, ElementId, GlobalElementId,
++    InspectorElementId, InteractiveElement as _, IntoElement, LayoutId, ListState,
++    ParentElement as _, Pixels, SharedString, Style, Styled as _, Window, div, px, size,
+ };
+ 
+-use std::{ops::RangeInclusive, sync::Arc};
++use std::{ops::RangeInclusive, rc::Rc, sync::Arc};
+ 
+ use crate::text::{
+     SelectionFormat,
+@@ -211,28 +212,148 @@
+             list_state.reset(blocks.len());
+         }
+ 
+-        div().id("document").size_full().child(
+-            gpui::list(list_state, {
+-                let node_cx = node_cx.clone();
+-                let blocks = blocks.clone();
+-                move |ix, window, cx| {
+-                    let is_last = ix + 1 == blocks.len();
+-                    blocks[ix]
+-                        .render_block(
+-                            NodeRenderOptions {
+-                                ix,
+-                                is_last,
+-                                ..options
+-                            },
+-                            &node_cx,
+-                            window,
+-                            cx,
+-                        )
+-                        .into_any_element()
+-                }
+-            })
++        let render_item: Rc<RenderBlockFn> = Rc::new({
++            let node_cx = node_cx.clone();
++            let blocks = blocks.clone();
++            move |ix, window, cx| {
++                let is_last = ix + 1 == blocks.len();
++                blocks[ix]
++                    .render_block(
++                        NodeRenderOptions {
++                            ix,
++                            is_last,
++                            ..options
++                        },
++                        &node_cx,
++                        window,
++                        cx,
++                    )
++                    .into_any_element()
++            }
++        });
++
++        div()
++            .id("document")
+             .size_full()
+-            .pb(node_cx.style.bottom_padding()),
+-        )
++            .child(
++                gpui::list(list_state.clone(), {
++                    let render_item = render_item.clone();
++                    move |ix, window, cx| render_item(ix, window, cx)
++                })
++                .size_full()
++                .pb(node_cx.style.bottom_padding()),
++            )
++            .child(KeepBandShaped {
++                list_state,
++                render_item,
++            })
++    }
++}
++
++type RenderBlockFn = dyn Fn(usize, &mut Window, &mut App) -> AnyElement;
++
++/// How far below the viewport blocks are kept shaped. Matches the overdraw of
++/// the virtualized list (`TextViewState::prepare_list_for_document`).
++const KEEP_SHAPED_BELOW: Pixels = px(1000.);
++
++/// Keeps the text of the blocks the list measured below the viewport shaped
++/// until they scroll into view (#1312).
++///
++/// The list lays out a block once when it enters its overdraw band, to learn
++/// its height, and then does not render it again until it becomes visible.
++/// GPUI keeps a shaped line only for the frame after the one that used it, so
++/// by the time the block scrolls in its text is shaped a second time, in the
++/// frame that shows it. Laying the band out again in every frame keeps those
++/// lines in the cache: the frame that shows a block finds them shaped.
++///
++/// The work happens only in frames GPUI draws anyway; a view with nothing to
++/// redraw does no work here. Blocks above the scroll top are not kept: the
++/// list exposes no positions for them.
++struct KeepBandShaped {
++    list_state: ListState,
++    render_item: Rc<RenderBlockFn>,
++}
++
++impl IntoElement for KeepBandShaped {
++    type Element = Self;
++
++    fn into_element(self) -> Self::Element {
++        self
++    }
++}
++
++impl Element for KeepBandShaped {
++    type RequestLayoutState = ();
++    type PrepaintState = ();
++
++    fn id(&self) -> Option<ElementId> {
++        Some("keep-band-shaped".into())
++    }
++
++    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
++        None
++    }
++
++    fn request_layout(
++        &mut self,
++        _: Option<&GlobalElementId>,
++        _: Option<&InspectorElementId>,
++        window: &mut Window,
++        cx: &mut App,
++    ) -> (LayoutId, Self::RequestLayoutState) {
++        let mut style = Style::default();
++        style.position = gpui::Position::Absolute;
++        (window.request_layout(style, [], cx), ())
++    }
++
++    fn prepaint(
++        &mut self,
++        _: Option<&GlobalElementId>,
++        _: Option<&InspectorElementId>,
++        _: Bounds<Pixels>,
++        _: &mut Self::RequestLayoutState,
++        window: &mut Window,
++        cx: &mut App,
++    ) -> Self::PrepaintState {
++        // Runs after the list's prepaint (it is the list's next sibling), so the
++        // list has measured this frame's band already.
++        let viewport = self.list_state.viewport_bounds();
++        if viewport.size.width <= px(0.) {
++            return;
++        }
++        let band_end = viewport.bottom() + KEEP_SHAPED_BELOW;
++        let space = size(
++            AvailableSpace::Definite(viewport.size.width),
++            AvailableSpace::MinContent,
++        );
++        let count = self.list_state.item_count();
++        let mut ix = self.list_state.logical_scroll_top().item_ix;
++        while ix < count {
++            let Some(bounds) = self.list_state.bounds_for_item(ix) else {
++                break;
++            };
++            if bounds.top() >= band_end {
++                break;
++            }
++            if bounds.top() >= viewport.bottom() {
++                // Not painted this frame: lay it out at the list's width so the
++                // same lines are requested from the cache.
++                let mut element = (self.render_item)(ix, window, cx);
++                element.layout_as_root(space, window, cx);
++            }
++            ix += 1;
++        }
++    }
++
++    fn paint(
++        &mut self,
++        _: Option<&GlobalElementId>,
++        _: Option<&InspectorElementId>,
++        _: Bounds<Pixels>,
++        _: &mut Self::RequestLayoutState,
++        _: &mut Self::PrepaintState,
++        _: &mut Window,
++        _: &mut App,
++    ) {
+     }
+ }
+diff --git a/crates/base/src/text/text_view.rs b/crates/base/src/text/text_view.rs
+--- a/crates/base/src/text/text_view.rs
++++ b/crates/base/src/text/text_view.rs
+@@ -408,7 +408,9 @@
+     pub fn on_link_hover<F>(mut self, handler: F) -> Self
+     where
+         F: Fn(&SharedString, bool, gpui::Point<Pixels>, &mut Window, &mut App)
+-            + Send + Sync + 'static,
++            + Send
++            + Sync
++            + 'static,
+     {
+         self.link_hover_handler = Some(Arc::new(handler));
+         self
+@@ -651,7 +653,12 @@
+             state.max_lines = max_lines;
+             // End-space changes move no glyphs within their blocks and must
+             // not invalidate an existing selection during window resizing.
+-            if state.text_view_style.clone().with_bottom_padding(text_view_style.bottom_padding()) != text_view_style {
++            if state
++                .text_view_style
++                .clone()
++                .with_bottom_padding(text_view_style.bottom_padding())
++                != text_view_style
++            {
+                 state.selection_revision = state.selection_revision.wrapping_add(1);
+             }
+             state.text_view_style = text_view_style.clone();
+@@ -1036,11 +1043,147 @@
+         // about one viewport.
+         let floor = BLOCKS as f32 * 36. * 0.8;
+         let opened = extent(cx);
+-        assert!(opened > floor, "extent after first layout: {opened} <= {floor}");
++        assert!(
++            opened > floor,
++            "extent after first layout: {opened} <= {floor}"
++        );
+         cx.simulate_resize(gpui::size(px(640.), px(480.)));
+         settle(cx);
+         let resized = extent(cx);
+-        assert!(resized > floor, "extent after a width change: {resized} <= {floor}");
++        assert!(
++            resized > floor,
++            "extent after a width change: {resized} <= {floor}"
++        );
++    }
++
++    /// #1312: a block the list measured below the viewport is not shaped a
++    /// second time when it scrolls in. GPUI keeps a shaped line only for the
++    /// next frame, so without the band being kept shaped every block of a
++    /// large note was shaped twice on a downward scroll: once when the list
++    /// measured it in its overdraw, and again in the frame that showed it.
++    #[test]
++    fn scrolling_down_a_large_document_shapes_each_block_once() {
++        use super::super::inline::test_fonts::WideMonoTextSystem;
++        use gpui::{
++            Bounds, DevicePixels, Font, FontId, FontMetrics, FontRun, GlyphId, LineLayout,
++            PlatformTextSystem, RenderGlyphParams, Size, TestApp, TextRenderingMode,
++        };
++        use std::{borrow::Cow, collections::HashMap, sync::Mutex};
++
++        /// Records the text of every line the platform is asked to shape.
++        #[derive(Default)]
++        struct CountingTextSystem {
++            shaped: Mutex<Vec<String>>,
++        }
++
++        impl PlatformTextSystem for CountingTextSystem {
++            fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> anyhow::Result<()> {
++                WideMonoTextSystem.add_fonts(fonts)
++            }
++            fn all_font_names(&self) -> Vec<String> {
++                WideMonoTextSystem.all_font_names()
++            }
++            fn font_id(&self, descriptor: &Font) -> anyhow::Result<FontId> {
++                WideMonoTextSystem.font_id(descriptor)
++            }
++            fn font_metrics(&self, font_id: FontId) -> FontMetrics {
++                WideMonoTextSystem.font_metrics(font_id)
++            }
++            fn typographic_bounds(
++                &self,
++                font_id: FontId,
++                glyph_id: GlyphId,
++            ) -> anyhow::Result<Bounds<f32>> {
++                WideMonoTextSystem.typographic_bounds(font_id, glyph_id)
++            }
++            fn advance(&self, font_id: FontId, glyph_id: GlyphId) -> anyhow::Result<Size<f32>> {
++                WideMonoTextSystem.advance(font_id, glyph_id)
++            }
++            fn glyph_for_char(&self, font_id: FontId, ch: char) -> Option<GlyphId> {
++                WideMonoTextSystem.glyph_for_char(font_id, ch)
++            }
++            fn glyph_raster_bounds(
++                &self,
++                params: &RenderGlyphParams,
++            ) -> anyhow::Result<Bounds<DevicePixels>> {
++                WideMonoTextSystem.glyph_raster_bounds(params)
++            }
++            fn rasterize_glyph(
++                &self,
++                params: &RenderGlyphParams,
++                raster_bounds: Bounds<DevicePixels>,
++            ) -> anyhow::Result<(Size<DevicePixels>, Vec<u8>)> {
++                WideMonoTextSystem.rasterize_glyph(params, raster_bounds)
++            }
++            fn layout_line(&self, text: &str, font_size: Pixels, runs: &[FontRun]) -> LineLayout {
++                self.shaped.lock().unwrap().push(text.to_string());
++                WideMonoTextSystem.layout_line(text, font_size, runs)
++            }
++            fn recommended_rendering_mode(
++                &self,
++                font_id: FontId,
++                font_size: Pixels,
++            ) -> TextRenderingMode {
++                WideMonoTextSystem.recommended_rendering_mode(font_id, font_size)
++            }
++        }
++
++        let text_system = Arc::new(CountingTextSystem::default());
++        let mut app = TestApp::with_text_system(text_system.clone());
++        app.update(crate::init);
++        let mut window = app.open_window(|_, cx| FullWidthTestRoot {
++            text_view: cx.new(|cx| TextViewState::markdown(&document_of(600, 1), cx)),
++        });
++        for _ in 0..3 {
++            app.run_until_parked();
++            window.draw();
++        }
++        window.read(|root, cx| assert!(root.text_view.read(cx).list_visible_only));
++
++        let block = |line: &str| {
++            line.strip_prefix("Block ")
++                .and_then(|rest| rest.split(':').next())
++                .and_then(|n| n.parse::<usize>().ok())
++        };
++        let shown = |window: &mut gpui::TestAppWindow<FullWidthTestRoot>| {
++            window.read(|root, cx| {
++                let list = root.text_view.read(cx).list_state().clone();
++                (0..list.item_count())
++                    .filter(|&ix| list.item_is_below_viewport(ix) == Some(false))
++                    .filter(|&ix| list.item_is_above_viewport(ix) == Some(false))
++                    .count()
++            })
++        };
++        assert!(
++            shown(&mut window) > 0,
++            "positive control: blocks are on screen"
++        );
++        text_system.shaped.lock().unwrap().clear();
++
++        // 40 px a frame, the flick of the Hedva probe (#1312): a block enters
++        // the 1000 px band about 25 frames before it scrolls in.
++        for _ in 0..150 {
++            window.update(|root, _, cx| {
++                root.text_view.read(cx).list_state().scroll_by(px(40.));
++                cx.notify();
++            });
++            window.draw();
++        }
++
++        let mut counts = HashMap::<usize, usize>::new();
++        for line in text_system.shaped.lock().unwrap().iter() {
++            if let Some(n) = block(line) {
++                *counts.entry(n).or_default() += 1;
++            }
++        }
++        assert!(
++            counts.len() >= 30,
++            "positive control: the scroll brings new blocks in, shaped {}",
++            counts.len()
++        );
++        let mut twice: Vec<_> = counts.into_iter().filter(|&(_, c)| c > 1).collect();
++        twice.sort();
++        assert!(twice.is_empty(), "blocks shaped more than once: {twice:?}");
+     }
+ 
+     struct StatelessMarkdownRoot {
