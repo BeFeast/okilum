@@ -395,6 +395,33 @@ pub fn reader_block(source: &str, rendered: &str, line: u32) -> Option<usize> {
     )
 }
 
+/// The file line (1-based, frontmatter counted) where Reader block `block`
+/// starts: the inverse of [`reader_block`], with the same rule that both
+/// parses must have the same top-level blocks. Entering the editor opens it
+/// at the Reader's place (#1296).
+pub fn block_line(source: &str, rendered: &str, block: usize) -> Option<u32> {
+    use comrak::{parse_document, Arena};
+    let body = crate::render::without_frontmatter(source);
+    let prefix_lines = source[..source.len() - body.len()]
+        .bytes()
+        .filter(|b| *b == b'\n')
+        .count();
+    let options = crate::render::comrak_options();
+    let block_starts = |text: &str| {
+        let arena = Arena::new();
+        let root = parse_document(&arena, text, &options);
+        root.children()
+            .map(|top| top.data.borrow().sourcepos.start.line)
+            .collect::<Vec<_>>()
+    };
+    let original = block_starts(body);
+    if original.len() != block_starts(rendered).len() {
+        return None;
+    }
+    let line = *original.get(block)? + prefix_lines;
+    u32::try_from(line).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -407,6 +434,19 @@ mod tests {
             } => (vault, path, position),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn block_line_is_the_inverse_of_reader_block() {
+        let source =
+            "---\ntitle: Plan\n---\n# Plan\n\nFirst paragraph\nstill first.\n\n- one\n- two\n";
+        let body = crate::render::without_frontmatter(source);
+        for (block, line) in [(0, 4), (1, 6), (2, 9)] {
+            assert_eq!(block_line(source, body, block), Some(line), "block {block}");
+            assert_eq!(reader_block(source, body, line), Some(block));
+        }
+        assert_eq!(block_line(source, body, 3), None);
+        assert_eq!(block_line(source, "# only one block", 1), None);
     }
 
     #[test]

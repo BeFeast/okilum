@@ -348,6 +348,11 @@ impl Reader {
         if self.editing.is_some() {
             let file = self.selected_file().to_owned();
             let input = self.editing.as_ref().map(|editing| editing.input.clone());
+            // The Reader opens where the editor was, not at the top (#1296).
+            let place = input
+                .as_ref()
+                .and_then(|input| input.read(cx).top_visible_line())
+                .and_then(|line| u32::try_from(line + 1).ok());
             if !self.leave_source(cx) {
                 return;
             }
@@ -359,7 +364,7 @@ impl Reader {
                 self.preview_file(&rel, window, cx);
             } else {
                 let rel = self.current_rel.clone();
-                self.prepare_document(&rel, None, None, window, cx);
+                self.prepare_document_at_place(&rel, place, window, cx);
             }
             self.focus_handle.focus(window, cx);
             return;
@@ -394,6 +399,25 @@ impl Reader {
                 return;
             }
         };
+        // The editor opens at the Reader's place, not at the top (#1296). The
+        // mapping parses the note (tens of ms for a long one), so it runs off
+        // the UI thread; see place_editor_at_reader.
+        let reader_place = (!plain_file)
+            .then(|| {
+                let top = self
+                    .content
+                    .read(cx)
+                    .list_state()
+                    .logical_scroll_top()
+                    .item_ix;
+                Some((
+                    top,
+                    self.note_canonical_source.clone()?,
+                    self.note_source.clone(),
+                ))
+            })
+            .flatten()
+            .filter(|(top, _, _)| *top > 0);
         self.close_find(window, cx);
         // Cancel a pending navigation before exposing an editable snapshot.
         self.navigation.preparation_generation =
@@ -651,6 +675,9 @@ impl Reader {
             if file == self.selected_file() {
                 input.update(cx, |input, cx| input.restore_edit_history(history, cx));
             }
+        }
+        if let Some(place) = reader_place {
+            self.place_editor_at_reader(input.clone(), place, window, cx);
         }
         self.set_live_preview(self.ui_state.live_preview, window, cx);
         self.start_editor_layout_diagnostics(input.clone(), cx);
@@ -934,6 +961,59 @@ impl Reader {
         }
         cx.notify();
     }
+    /// #1296: scroll the new editor to the Reader's top block and start the
+    /// caret there, so typing stays in view; a restored selection (#1095)
+    /// elsewhere would be off screen. Undo still scrolls to its own edit
+    /// (#945). Skipped when the user typed or moved the caret meanwhile.
+    fn place_editor_at_reader(
+        &mut self,
+        input: Entity<EditorState>,
+        (top, canonical, rendered): (usize, Arc<str>, String),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let untouched = {
+            let input = input.read(cx);
+            (input.source_stamp(), input.selected_range())
+        };
+        cx.spawn_in(window, async move |this, cx| {
+            let line = cx
+                .background_executor()
+                .spawn(
+                    async move { okilum_core::deep_link::block_line(&canonical, &rendered, top) },
+                )
+                .await
+                .filter(|line| *line > 1);
+            let Some(line) = line else {
+                return;
+            };
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this
+                    .editing
+                    .as_ref()
+                    .is_none_or(|editing| editing.input != input)
+                {
+                    return;
+                }
+                input.update(cx, |input, cx| {
+                    if (input.source_stamp(), input.selected_range()) != untouched {
+                        return;
+                    }
+                    input.set_cursor_position(
+                        gpui_component::input::Position {
+                            line: line - 1,
+                            character: 0,
+                        },
+                        window,
+                        cx,
+                    );
+                    input.scroll_line_to_top(line as usize - 1, cx);
+                });
+            });
+        })
+        .detach();
+    }
+
     pub(super) fn restore_source_position(
         &self,
         offset: [f32; 2],
@@ -2677,6 +2757,123 @@ mod tests {
             source
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// #1296: Esc from the editor kept the note but opened the Reader at the
+    /// top, and entering the editor did the same. Both keep the place now, in
+    /// Source and Live Preview, for a short note and a 24k-line one.
+    #[gpui::test]
+    fn leaving_and_entering_the_editor_keep_the_place(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let root = std::env::temp_dir().join(format!("okilum-place1296-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let short: String = (0..40).map(|i| format!("Paragraph {i}\n\n")).collect();
+        let long: String = (0..12_000).map(|i| format!("Line {i}\n\n")).collect();
+        std::fs::write(root.join("short.md"), &short).unwrap();
+        std::fs::write(root.join("long.md"), &long).unwrap();
+        for (note, block) in [("short.md", 20), ("long.md", 6_000)] {
+            for live_preview in [false, true] {
+                let mut reader = None;
+                let (_, visual) = cx.add_window_view(|window, cx| {
+                    let view = cx.new(|cx| {
+                        Reader::new(
+                            Opts {
+                                vault: Some(root.clone()),
+                                note: Some(note.into()),
+                                session_directory: Some(root.join("state")),
+                                ..Opts::default()
+                            },
+                            window,
+                            cx,
+                        )
+                    });
+                    reader = Some(view.clone());
+                    Root::new(view, window, cx)
+                });
+                let reader = reader.unwrap();
+                visual.simulate_resize(size(px(1200.), px(700.)));
+                visual.run_until_parked();
+                let top = |visual: &mut VisualTestContext| {
+                    reader.read_with(visual, |v, cx| {
+                        v.content.read(cx).list_state().logical_scroll_top().item_ix
+                    })
+                };
+                // Reader at block `block`: its paragraph starts at file line 2*block+1.
+                reader.update_in(visual, |v, _, cx| {
+                    v.content.read(cx).list_state().scroll_to(gpui::ListOffset {
+                        item_ix: block,
+                        offset_in_item: px(0.),
+                    });
+                });
+                visual.run_until_parked();
+                visual.update(|w, cx| w.draw(cx).clear(cx));
+                assert_eq!(top(visual), block, "positive control: the Reader scrolled");
+                reader.update_in(visual, |v, window, cx| {
+                    v.toggle_source(window, cx);
+                    v.set_live_preview(live_preview, window, cx);
+                });
+                visual.run_until_parked();
+                visual.update(|w, cx| w.draw(cx).clear(cx));
+                let input =
+                    reader.read_with(visual, |v, _| v.editing.as_ref().unwrap().input.clone());
+                let line = input
+                    .read_with(visual, |v, _| v.top_visible_line())
+                    .unwrap();
+                assert_eq!(
+                    line,
+                    2 * block,
+                    "{note} live={live_preview}: editor opens at the place"
+                );
+                // Move the editor further down, then leave it with Esc.
+                input.update(visual, |v, cx| v.scroll_line_to_top(2 * (block + 5), cx));
+                visual.run_until_parked();
+                visual.update(|w, cx| w.draw(cx).clear(cx));
+                // Esc ends in Dismiss → toggle_source once nothing else is
+                // open; a toast in the test window would take the key, so
+                // leave the way Esc does. The native check sends the key.
+                reader.update_in(visual, |v, window, cx| v.toggle_source(window, cx));
+                // The landing polls on timers until the list has laid out.
+                for _ in 0..20 {
+                    visual
+                        .executor()
+                        .advance_clock(std::time::Duration::from_millis(60));
+                    visual.run_until_parked();
+                    visual.update(|w, cx| w.draw(cx).clear(cx));
+                }
+                assert!(
+                    reader.read_with(visual, |v, _| v.editing.is_none()),
+                    "the editor was left"
+                );
+                assert_eq!(
+                    top(visual),
+                    block + 5,
+                    "{note} live={live_preview}: Reader opens at the place"
+                );
+                // Entering again (Undo history retained, #1095): the caret is at
+                // the place too, not at the last session's selection.
+                reader.update_in(visual, |v, window, cx| {
+                    v.toggle_source(window, cx);
+                    v.set_live_preview(live_preview, window, cx);
+                });
+                visual.run_until_parked();
+                visual.update(|w, cx| w.draw(cx).clear(cx));
+                let input =
+                    reader.read_with(visual, |v, _| v.editing.as_ref().unwrap().input.clone());
+                let caret_line =
+                    input.read_with(visual, |v, _| v.value()[..v.cursor()].matches('\n').count());
+                assert_eq!(
+                    caret_line,
+                    2 * (block + 5),
+                    "{note} live={live_preview}: the caret starts at the place"
+                );
+                // Leave, so the next window can edit the same note.
+                reader.update_in(visual, |v, window, cx| v.toggle_source(window, cx));
+                visual.run_until_parked();
+            }
+        }
     }
 
     /// #945: Undo and Redo of an edit that is out of view scroll the editor
