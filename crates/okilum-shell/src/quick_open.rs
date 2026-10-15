@@ -691,11 +691,7 @@ impl Reader {
         let generation = self.quick_open.generation;
         let root = self.vault_root.clone();
         let inventory = self.watcher_generation;
-        let vault_name = self
-            .vault_root
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default();
+        let vault_name = super::vault_name::shown(&self.vault_root, cx);
         // Results are capped at 100. Content-sized rows avoid reserving blank
         // snippet/reason lines, and keep the keyboard scroll target exact.
         let query = self.quick_open.input.read(cx).value().to_string();

@@ -1155,10 +1155,7 @@ fn confirm_link_vault(root: PathBuf, opts: super::Opts, cx: &mut App) {
     }
     // A prompt closed with its window button left a stale entry.
     cx.global_mut::<LinkPrompts>().0.remove(&root);
-    let name = root
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| root.display().to_string());
+    let name = super::vault_name::shown(&root, cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(super::window_state::default_bounds(
             size(px(560.), px(240.)),
@@ -1301,6 +1298,9 @@ impl Render for LinkVaultChoice {
                 .child(
                     v_flex()
                         .min_w_0()
+                        .when_some(super::vault_name::stored(root, cx), |row, name| {
+                            row.child(div().font_weight(FontWeight::MEDIUM).child(name))
+                        })
                         .child(okilum_core::vault::display_path(root))
                         .when(opts.is_none(), |row| {
                             row.child(

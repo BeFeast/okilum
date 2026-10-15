@@ -498,12 +498,7 @@ impl Reader {
     }
 
     pub(super) fn render_empty_vault(&self, cx: &mut Context<Self>) -> AnyElement {
-        let name = self
-            .vault_root
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned();
+        let name = super::vault_name::shown(&self.vault_root, cx);
         let mut recent = v_flex().gap_1();
         let mut recent_notes = self
             .sidebar

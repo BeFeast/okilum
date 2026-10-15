@@ -83,6 +83,7 @@ mod reader_split;
 mod reader_stignore;
 #[cfg(windows)]
 mod url_protocol;
+mod vault_name;
 mod version_info;
 use reader_sidebar::SectionAction;
 mod reader_link_navigation;
@@ -2967,7 +2968,7 @@ impl Reader {
                 items.push(SideItem::Empty("No new unfiled notes."));
             }
             for item in inbox {
-                let vault_name = self
+                let folder = self
                     .vault_root
                     .file_name()
                     .and_then(|name| name.to_str())
@@ -2975,10 +2976,13 @@ impl Reader {
                 items.push(SideItem::Entry {
                     section: Section::Inbox,
                     path: item.path.clone(),
-                    label: quick_open::folder_note_title(vault_name, &item.path)
+                    label: quick_open::folder_note_title(folder, &item.path)
                         .unwrap_or_else(|| self.note_label(&item.path)),
                     meta: Some(reader_sidebar::age_label(item.created, now)),
-                    location: Some(quick_open::result_location(vault_name, &item.path)),
+                    location: Some(quick_open::result_location(
+                        &vault_name::shown(&self.vault_root, cx),
+                        &item.path,
+                    )),
                     folder: false,
                 });
             }
@@ -3703,11 +3707,7 @@ impl Reader {
         use gpui_component::menu::DropdownMenu as _;
         let left = panel == reader_layout::Panel::Notes;
         let title = if left {
-            self.vault_root
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned()
+            vault_name::shown(&self.vault_root, cx)
         } else if self.active_timeline().is_some() {
             "Note history".into()
         } else {
@@ -3799,6 +3799,14 @@ impl Reader {
                         .submenu("Vault colour", window, cx, move |menu, _, cx| {
                             vault_color_menu(menu, &root, cx)
                         })
+                        .item(
+                            gpui_component::menu::PopupMenuItem::new("Rename vault…").on_click({
+                                let root = vault_root.clone();
+                                move |_, window, cx| {
+                                    vault_name::open_rename(root.clone(), window, cx)
+                                }
+                            }),
+                        )
                         .separator()
                         .menu("Open folder…", Box::new(reader_open::OpenFolder))
                         .menu("Open file…", Box::new(reader_open::OpenFile))
