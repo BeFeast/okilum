@@ -251,6 +251,7 @@ fn open_rename_input(root: PathBuf, window: &mut Window, cx: &mut App) -> Entity
         })
         .detach();
     let opened = input.clone();
+    let field = input.clone();
     window.open_dialog(cx, move |dialog, _, cx| {
         let save = save.clone();
         let reset_input = input.clone();
@@ -303,7 +304,7 @@ fn open_rename_input(root: PathBuf, window: &mut Window, cx: &mut App) -> Entity
             input.select_all(window, cx);
         });
     });
-    input
+    field
 }
 
 #[cfg(test)]
