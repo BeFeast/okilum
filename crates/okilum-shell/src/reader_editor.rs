@@ -348,6 +348,11 @@ impl Reader {
         if self.editing.is_some() {
             let file = self.selected_file().to_owned();
             let input = self.editing.as_ref().map(|editing| editing.input.clone());
+            // The Reader opens where the editor was, not at the top (#1296).
+            let place = input
+                .as_ref()
+                .and_then(|input| input.read(cx).top_visible_line())
+                .and_then(|line| u32::try_from(line + 1).ok());
             if !self.leave_source(cx) {
                 return;
             }
@@ -359,7 +364,7 @@ impl Reader {
                 self.preview_file(&rel, window, cx);
             } else {
                 let rel = self.current_rel.clone();
-                self.prepare_document(&rel, None, None, window, cx);
+                self.prepare_document_at_place(&rel, place, window, cx);
             }
             self.focus_handle.focus(window, cx);
             return;
@@ -394,6 +399,25 @@ impl Reader {
                 return;
             }
         };
+        // The editor opens at the Reader's place, not at the top (#1296). The
+        // mapping parses the note (tens of ms for a long one), so it runs off
+        // the UI thread; see place_editor_at_reader.
+        let reader_place = (!plain_file)
+            .then(|| {
+                let top = self
+                    .content
+                    .read(cx)
+                    .list_state()
+                    .logical_scroll_top()
+                    .item_ix;
+                Some((
+                    top,
+                    self.note_canonical_source.clone()?,
+                    self.note_source.clone(),
+                ))
+            })
+            .flatten()
+            .filter(|(top, _, _)| *top > 0);
         self.close_find(window, cx);
         // Cancel a pending navigation before exposing an editable snapshot.
         self.navigation.preparation_generation =
@@ -651,6 +675,9 @@ impl Reader {
             if file == self.selected_file() {
                 input.update(cx, |input, cx| input.restore_edit_history(history, cx));
             }
+        }
+        if let Some(place) = reader_place {
+            self.place_editor_at_reader(input.clone(), place, window, cx);
         }
         self.set_live_preview(self.ui_state.live_preview, window, cx);
         self.start_editor_layout_diagnostics(input.clone(), cx);
@@ -934,6 +961,59 @@ impl Reader {
         }
         cx.notify();
     }
+    /// #1296: scroll the new editor to the Reader's top block and start the
+    /// caret there, so typing stays in view; a restored selection (#1095)
+    /// elsewhere would be off screen. Undo still scrolls to its own edit
+    /// (#945). Skipped when the user typed or moved the caret meanwhile.
+    fn place_editor_at_reader(
+        &mut self,
+        input: Entity<EditorState>,
+        (top, canonical, rendered): (usize, Arc<str>, String),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let untouched = {
+            let input = input.read(cx);
+            (input.source_stamp(), input.selected_range())
+        };
+        cx.spawn_in(window, async move |this, cx| {
+            let line = cx
+                .background_executor()
+                .spawn(
+                    async move { okilum_core::deep_link::block_line(&canonical, &rendered, top) },
+                )
+                .await
+                .filter(|line| *line > 1);
+            let Some(line) = line else {
+                return;
+            };
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this
+                    .editing
+                    .as_ref()
+                    .is_none_or(|editing| editing.input != input)
+                {
+                    return;
+                }
+                input.update(cx, |input, cx| {
+                    if (input.source_stamp(), input.selected_range()) != untouched {
+                        return;
+                    }
+                    input.set_cursor_position(
+                        gpui_component::input::Position {
+                            line: line - 1,
+                            character: 0,
+                        },
+                        window,
+                        cx,
+                    );
+                    input.scroll_line_to_top(line as usize - 1, cx);
+                });
+            });
+        })
+        .detach();
+    }
+
     pub(super) fn restore_source_position(
         &self,
         offset: [f32; 2],

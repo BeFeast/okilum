@@ -176,6 +176,9 @@ pub(crate) enum Landing {
     Task(okilum_core::tasks::Task),
     /// A file line from an external link (#1049), 1-based.
     Line(u32),
+    /// The file line the editor showed at its top when it was left (#1296),
+    /// 1-based: the Reader opens there quietly, without a flash or notice.
+    Place(u32),
 }
 
 pub(crate) struct DocumentRequest {
@@ -225,6 +228,17 @@ impl Reader {
         self.prepare_document_target(rel, (None, heading), line.map(Landing::Line), window, cx);
     }
 
+    /// The note back in the Reader at the editor's place (#1296).
+    pub(crate) fn prepare_document_at_place(
+        &mut self,
+        rel: &str,
+        line: Option<u32>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.prepare_document_target(rel, (None, None), line.map(Landing::Place), window, cx);
+    }
+
     fn prepare_document_target(
         &mut self,
         rel: &str,
@@ -257,6 +271,7 @@ impl Reader {
             Some(Landing::Line(line)) => Some(*line),
             _ => None,
         };
+        let quiet = matches!(landing, Some(Landing::Place(_)));
         let started = std::time::Instant::now();
         self.open_started = Some(started);
         cx.spawn_in(window, async move |this, cx| {
@@ -296,7 +311,7 @@ impl Reader {
                             }
                             // A line that cannot be placed opens the note at the
                             // top and says so; it never lands on a guess.
-                            Some(Landing::Line(line)) => Some(
+                            Some(Landing::Line(line) | Landing::Place(line)) => Some(
                                 document
                                     .canonical_source
                                     .as_deref()
@@ -318,13 +333,14 @@ impl Reader {
                 .await;
             let mut request = request;
             let mut task_text = None;
+            // A place the Reader cannot show opens at the top, as before.
             let mut unplaced_line = None;
             let mut flash_block = None;
             let document = document.map(|(document, target)| {
                 match target {
                     Some(Ok((block, text))) => {
                         // A task carries its text; a link's line does not.
-                        if text.is_none() {
+                        if text.is_none() && !quiet {
                             flash_block = Some(block);
                         }
                         task_text = text;
@@ -333,7 +349,7 @@ impl Reader {
                             offset_in_item: px(0.),
                         });
                     }
-                    Some(Err(line)) => unplaced_line = Some(line),
+                    Some(Err(line)) => unplaced_line = (!quiet).then_some(line),
                     None => {}
                 }
                 document

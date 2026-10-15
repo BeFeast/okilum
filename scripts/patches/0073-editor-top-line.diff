@@ -2,14 +2,15 @@ diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/
 index 1acc0a1a..bc43477b 100644
 --- a/crates/base/src/input/base/element.rs
 +++ b/crates/base/src/input/base/element.rs
-@@ -2158,6 +2158,16 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -2158,6 +2158,17 @@ impl<M: InputModeKind> Element for TextElement<M> {
                      bounds.size.height, window.line_height())).max(bounds.size.height);
              let needed = (bounds.size.height - state.scroll_handle.offset().y - natural).max(px(0.));
              state.projection_anchor_tail = state.projection_anchor_tail.min(needed);
-+            // A requested top line wins over the current offset (#1296).
-+            if let Some(line) = state.pending_top_line.take() {
-+                let count = state.display_map.buffer_line_count();
-+                if count > 0 {
++            // A requested top line wins over the current offset (#1296). It
++            // waits for a layout that has lines; an empty one does not drop it.
++            let count = state.display_map.buffer_line_count();
++            if count > 0 {
++                if let Some(line) = state.pending_top_line.take() {
 +                    let row = state.display_map.buffer_line_to_display_row(line.min(count - 1));
 +                    let scroll = point(state.scroll_handle.offset().x, -rows.row_top(row));
 +                    state.scroll_handle.set_offset(scroll);
