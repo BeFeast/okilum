@@ -2665,6 +2665,113 @@ mod entry_tests {
         );
     }
 
+    /// #1364: a rename made in a vault window (its sidebar menu or its
+    /// dialog runs inside that window's update) retitles that window and
+    /// every other window of the vault.
+    #[gpui::test]
+    fn a_rename_from_inside_a_window_retitles_it_and_its_siblings(cx: &mut TestAppContext) {
+        use super::super::{reader_history::TestSessionDirectory, vault_name, Opts};
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let root = fixture.path().join("Gate1");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("Plan.md"), "# Plan").unwrap();
+        let root = root.canonicalize().unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            install(cx);
+            cx.set_global(TestSessionDirectory(state.clone()));
+            open_window(
+                Opts {
+                    vault: Some(root.clone()),
+                    note: Some("Plan.md".into()),
+                    session_directory: Some(state.clone()),
+                    index_dir: Some(fixture.path().join("index")),
+                    ..Default::default()
+                },
+                cx,
+            )
+            .unwrap();
+        });
+        cx.run_until_parked();
+        // A second window of the same vault.
+        let first = cx.update(|cx| cx.windows()[0]);
+        cx.update(|cx| {
+            let _ = first.update(cx, |_, window, _| window.activate_window());
+            new_window(cx);
+        });
+        cx.run_until_parked();
+        let windows = cx.update(|cx| cx.windows());
+        assert_eq!(windows.len(), 2);
+        // Renamed from inside the first window, as its menu and dialog do.
+        cx.update(|cx| {
+            first
+                .update(cx, |_, _, cx| vault_name::set(&root, "Work", cx))
+                .unwrap()
+        });
+        cx.run_until_parked();
+        for window in windows {
+            assert_eq!(
+                gpui::VisualTestContext::from_window(window, cx)
+                    .window_title()
+                    .as_deref(),
+                Some("Okilum — Plan — Work"),
+                "every window of the vault has the new name"
+            );
+        }
+    }
+
+    /// #1364: the start screen names a renamed vault (read from the vault at
+    /// launch), and a vault without a name by its folder.
+    #[gpui::test]
+    fn the_start_screen_names_vaults_like_everywhere_else(cx: &mut TestAppContext) {
+        use super::super::{
+            reader_history::{ReadingHistory, TestSessionDirectory},
+            reader_startup, vault_name, Opts,
+        };
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let roots: Vec<PathBuf> = ["Gate1", "Gate2", "Gone"]
+            .iter()
+            .map(|name| {
+                let root = fixture.path().join(name);
+                std::fs::create_dir_all(&root).unwrap();
+                std::fs::write(root.join("Plan.md"), "# Plan").unwrap();
+                root.canonicalize().unwrap()
+            })
+            .collect();
+        std::fs::create_dir_all(roots[1].join(vault_name::DIRECTORY)).unwrap();
+        std::fs::write(
+            roots[1].join(vault_name::DIRECTORY).join("vault.json"),
+            r#"{"version":1,"name":"Work"}"#,
+        )
+        .unwrap();
+        for root in &roots {
+            ReadingHistory::record_usable_document(&state, root, "Plan.md").unwrap();
+        }
+        // The last vault is gone, so the start screen lists the others.
+        std::fs::remove_dir_all(&roots[2]).unwrap();
+        let base = Opts {
+            session_directory: Some(state.clone()),
+            index_dir: Some(fixture.path().join("index")),
+            ..Default::default()
+        };
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            install(cx);
+            cx.set_global(TestSessionDirectory(state.clone()));
+            cx.set_quit_mode(gpui::QuitMode::Explicit);
+            reader_startup::launch(base.clone(), cx);
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let named = reader_startup::recent_label(&roots[1], cx);
+            assert!(named.starts_with("Work — "), "{named}");
+            let plain = reader_startup::recent_label(&roots[0], cx);
+            assert!(plain.starts_with("Gate1 — "), "{plain}");
+        });
+    }
+
     /// #1049: a link to a vault name that two known vaults share opens a
     /// chooser listing both (the one without the note cannot be chosen); a
     /// newer link replaces it; choosing opens that vault on the note.

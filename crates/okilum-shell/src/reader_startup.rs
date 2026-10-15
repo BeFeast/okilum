@@ -83,9 +83,24 @@ pub(crate) fn launch(mut opts: Opts, cx: &mut App) {
                     .as_deref()
                     .map(super::reader_open_windows::load)
                     .unwrap_or_default();
-                (windows, history(directory))
+                let history = history(directory);
+                // The start screen lists vaults by their names too (#1364).
+                let names: Vec<(PathBuf, String)> = history
+                    .as_ref()
+                    .map(|(_, roots, _)| {
+                        roots
+                            .iter()
+                            .filter_map(|root| {
+                                super::vault_name::read(root).map(|name| (root.clone(), name))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                (windows, (history, names))
             })
             .await;
+        let (history, names) = history;
+        cx.update(|cx| super::vault_name::remember(names, cx));
         if !restorable.is_empty() {
             let restored = cx.update(|cx| {
                 if cx.global::<Startup>().superseded {
@@ -246,6 +261,16 @@ fn skipped_notice(skipped: &[PathBuf], cx: &mut App) {
     });
 }
 
+/// A vault on the start screen: its name (display name, else folder) and
+/// where it is, as every other place names a vault (#1364).
+pub(crate) fn recent_label(root: &std::path::Path, cx: &App) -> String {
+    format!(
+        "{} — {}",
+        super::vault_name::shown(root, cx),
+        okilum_core::vault::display_path(root)
+    )
+}
+
 fn show_entry(roots: Vec<PathBuf>, error: Option<String>, cx: &mut App) {
     let (options, frame_key) =
         super::window_state::prepare(reader_open::window_options(cx), "entry", cx);
@@ -314,13 +339,7 @@ impl Render for Entry {
                 .gap_2();
             for (index, root) in self.roots.iter().enumerate() {
                 let root = root.clone();
-                // A renamed vault is listed by its name, with its folder.
-                let label = match super::vault_name::stored(&root, cx) {
-                    Some(name) => {
-                        format!("{name} — {}", okilum_core::vault::display_path(&root))
-                    }
-                    None => root.display().to_string(),
-                };
+                let label = recent_label(&root, cx);
                 recent = recent.child(
                     Button::new(("recent-folder", index))
                         .ghost()
