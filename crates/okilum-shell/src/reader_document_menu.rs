@@ -538,25 +538,30 @@ impl Reader {
                     )
                 },
             )
+            // Real buttons, each also naming its shortcut (#1348). With no
+            // notes yet, creating one comes first and searching is not offered.
             .child(
-                div()
-                    .text_color(brand::palette(cx).text_muted)
-                    .child(reader_shortcuts::hint("Search notes", &QuickOpen, cx)),
-            )
-            .when(cfg!(any(unix, windows)), |view| {
-                view.child(
-                    div()
-                        .text_color(brand::palette(cx).text_muted)
-                        .child(reader_shortcuts::hint("New note", &NewNote, cx)),
-                )
-            })
-            .child(
-                div()
-                    .text_color(brand::palette(cx).text_muted)
-                    .child(reader_shortcuts::hint(
-                        "Keyboard shortcuts",
-                        &ToggleShortcutSheet,
-                        cx,
+                v_flex()
+                    .items_start()
+                    .gap_1()
+                    .when(cfg!(any(unix, windows)), |actions| {
+                        actions.child(empty_action(
+                            "empty-new-note",
+                            reader_shortcuts::hint("New note", &NewNote, cx),
+                            Box::new(NewNote),
+                        ))
+                    })
+                    .when(!self.vault.notes.is_empty(), |actions| {
+                        actions.child(empty_action(
+                            "empty-search-notes",
+                            reader_shortcuts::hint("Search notes", &QuickOpen, cx),
+                            Box::new(QuickOpen),
+                        ))
+                    })
+                    .child(empty_action(
+                        "empty-shortcuts",
+                        reader_shortcuts::hint("Keyboard shortcuts", &ToggleShortcutSheet, cx),
+                        Box::new(ToggleShortcutSheet),
                     )),
             )
             .when(has_recent, |view| {
@@ -564,6 +569,15 @@ impl Reader {
             })
             .into_any_element()
     }
+}
+
+/// One action on the empty-vault page: a quiet button that dispatches it.
+fn empty_action(id: &'static str, label: SharedString, action: Box<dyn Action>) -> Button {
+    Button::new(id)
+        .ghost()
+        .label(label)
+        .debug_selector(move || id.into())
+        .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
 }
 
 #[cfg(test)]
@@ -704,6 +718,31 @@ mod tests {
         });
         assert!(visual.debug_bounds("reader-empty-vault").is_some());
         assert!(visual.debug_bounds("reader-empty-vault-new").is_some());
+        // #1348: the actions are buttons; with no notes, «New note» is
+        // offered and «Search notes» is not. #1349: the side panel says what
+        // it is for instead of showing dashes.
+        assert!(visual.debug_bounds("empty-search-notes").is_none());
+        assert!(visual.debug_bounds("empty-shortcuts").is_some());
+        if cfg!(any(unix, windows)) {
+            let new_note = visual
+                .debug_bounds("empty-new-note")
+                .expect("a New note button");
+            visual.simulate_click(new_note.center(), gpui::Modifiers::default());
+            visual.run_until_parked();
+            reader.read_with(visual, |v, _| {
+                assert!(v.creation.is_some(), "clicking New note starts a new note")
+            });
+            reader.update_in(visual, |v, window, cx| v.cancel_creation(window, cx));
+            visual.run_until_parked();
+        }
+        if reader.read_with(visual, |v, _| {
+            v.panels.visible(
+                reader_layout::Panel::Backlinks,
+                f32::from(v.body_bounds.size.width),
+            )
+        }) {
+            assert!(visual.debug_bounds("right-panel-no-note").is_some());
+        }
         // Positive control: a vault with a note does not say it has none.
         std::fs::write(root.join("First.md"), "# First").unwrap();
         reader.update_in(visual, |v, window, cx| {
@@ -712,6 +751,8 @@ mod tests {
         visual.run_until_parked();
         reader.read_with(visual, |v, _| assert!(!v.vault.notes.is_empty()));
         assert!(visual.debug_bounds("reader-empty-vault-new").is_none());
+        // Positive control: with notes, searching is offered again.
+        assert!(visual.debug_bounds("empty-search-notes").is_some());
     }
 
     #[gpui::test]

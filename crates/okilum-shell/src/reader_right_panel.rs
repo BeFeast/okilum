@@ -43,6 +43,9 @@ pub(super) fn linked_from_title(
     }
 }
 
+/// The panel with no note open.
+pub(super) const NO_NOTE: &str = "Open a note to see its headings and the notes that link to it.";
+
 /// Empty sections remain quiet, including while inventory is pending.
 pub(super) fn linked_from_empty(_scanned: bool, _complete: bool) -> &'static str {
     "—"
