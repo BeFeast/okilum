@@ -26,12 +26,14 @@ that channel's feed and recorded in `windows-update-verified`; changing the
 channel removes the record, and the next check keeps the package or deletes it.
 
 The SDK handles installer lifecycle arguments before Reader argument parsing.
-Checks/downloads run on a background thread. Once a package is downloaded, a
-quiet **Update ready → Restart** notification appears once; dismissing it leaves
-**Restart to update** available in ⋯, About and Settings. Restart protects edits
-and saves Reader state before asking Velopack to apply after normal shutdown.
-It reopens the current vault/note or standalone file. With several document
-windows open, close the others first; the app refuses to silently lose windows.
+Checks/downloads run on a background thread, at startup and every 6 hours while
+Okilum stays open (#683). Once a package is downloaded, a quiet **Update ready →
+Restart** notification appears and stays until it is closed or Restart is chosen;
+closed, it does not return for the same package until the next launch.
+**Restart to update** stays available in ⋯, About and Settings, where the status
+line reads «Update downloaded · restart to install». Restart protects edits and
+saves Reader state before asking Velopack to apply after normal shutdown, then
+reopens the same vault windows (#1325) or the standalone file.
 Download alone never terminates an active Reader. Normal quit and reopen still
 applies a pending update.
 An offline check leaves the current version intact. Portable diagnostic builds
