@@ -93,6 +93,10 @@ per frame of the default stream on a 60 Hz display; run both on the same build, 
 `entry frames %` column is the share of redrawn frames in which the text shaper ran (new text came
 into view).
 
+`SHOTS=1` replaces the measured reps by one stream per scenario with a window shot in the middle of it
+(`mid-stream.png`), 300 ms after its end and 2 s after it, to look for blank or half-drawn text; run it apart from
+the timed runs, on each build being compared.
+
 ## Linux and the CI guard
 
 `perf-linux` (hosted, on every PR that touches app code, required by `ci / check`) builds the

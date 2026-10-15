@@ -6,7 +6,7 @@
 BINARY is a frame-trace build (scripts/perf/frame-trace/patch.py); VAULT holds the notes of
 gen-notes.py; mode is reader, live or source. Per scenario Okilum starts once with
 OKILUM_FRAME_TRACE=<file>, and REPS (3) wheel streams of 120 pixel events of 40 px, one every
-16 ms (the stream of the #1004 measurements; WHEEL_EVENTS / WHEEL_INTERVAL_MS change it), are posted by `wheel` (wheel.swift; it does not
+16 ms (the stream of the #1004 measurements; WHEEL_EVENTS / WHEEL_INTERVAL_MS change it; SHOTS=1 takes frame shots instead), are posted by `wheel` (wheel.swift; it does not
 capture the screen, a capture loads WindowServer and perturbs the timing). OUTDIR/<scenario>/
 rep<N>/ gets the slice of the trace of that stream, wheel-start.txt / wheel-end.txt (Unix ms)
 for scripts/perf/scroll/analyze.py, and before/after screenshots next to the scenario's idle
@@ -31,6 +31,9 @@ REPS = int(os.environ.get("REPS", "3"))
 # same distance per frame as the default has on a 60 Hz display.
 EVENTS = int(os.environ.get("WHEEL_EVENTS", "120"))
 INTERVAL_MS = os.environ.get("WHEEL_INTERVAL_MS", "16")
+# SHOTS=1: instead of measured reps, one stream per scenario with a window shot in the middle of it and
+# one 300 ms after its end, for looking at the frames (a shot loads WindowServer, so these runs are never timed).
+SHOTS = os.environ.get("SHOTS") == "1"
 HOME = Path.home()
 OKQA = os.environ.get("OKQA", str(HOME / "qa/okilum/tools/okqa"))
 # build-mac-trace.sh puts the compiled injector next to the binary
@@ -92,6 +95,21 @@ for scenario in scenarios:
         a = frames(log)
         time.sleep(3)
         idle = frames(log) - a
+        if SHOTS:
+            run(WHEEL, str(proc.pid), str(EVENTS), "-40", "16", check=False)  # back to the top
+            time.sleep(2.5)
+            stream = subprocess.Popen([WHEEL, str(proc.pid), str(EVENTS), "40", INTERVAL_MS],
+                                      stdout=subprocess.PIPE, text=True)
+            time.sleep(EVENTS * float(INTERVAL_MS) / 1000 / 2)
+            run(OKQA, "shot", str(proc.pid), str(base / "mid-stream.png"), check=False)
+            res = stream.communicate()[0].strip()
+            time.sleep(0.3)
+            run(OKQA, "shot", str(proc.pid), str(base / "end-plus-300ms.png"), check=False)
+            time.sleep(1.5)
+            run(OKQA, "shot", str(proc.pid), str(base / "end-plus-2s.png"), check=False)
+            summary.append({"label": label, "shots": True, "probe": res})
+            print(f"{label} shots: probe {res}", flush=True)
+            continue
         for rep in range(1, REPS + 1):
             run(WHEEL, str(proc.pid), str(EVENTS), "-40", "16", check=False)  # back to the top (not measured)
             time.sleep(2.5)
