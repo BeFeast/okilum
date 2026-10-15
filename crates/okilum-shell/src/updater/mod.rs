@@ -55,12 +55,22 @@ pub(crate) fn installed_package() -> Option<String> {
     None
 }
 
+/// How often a running Windows install checks its channel again.
+#[cfg(windows)]
+const RECHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
+
 /// Start Sparkle before the menus are built, so they reflect its availability.
 pub(crate) fn install(_cx: &mut App) {
     crate::reader_settings::install(_cx);
     #[cfg(windows)]
     {
         windows::start();
+        // An Okilum left open for days still learns of a new release (#683).
+        _cx.spawn(async move |cx| loop {
+            cx.background_executor().timer(RECHECK_EVERY).await;
+            windows::check(false);
+        })
+        .detach();
         _cx.spawn(async move |cx| {
             let mut previous = None;
             let mut checked = status::generation();
@@ -239,13 +249,20 @@ pub(crate) fn ready_notice(window: &mut gpui::Window, cx: &mut App) {
     let _ = (window, cx);
 }
 
-#[cfg(any(windows, all(target_os = "linux", feature = "updater-ui-harness")))]
+/// «Update ready» with Restart (#683). It stays until the user closes it or
+/// restarts: a downloaded update must not pass unnoticed. Closed, it does not
+/// return for the same package until the next launch.
+#[cfg(any(
+    windows,
+    test,
+    all(target_os = "linux", feature = "updater-ui-harness")
+))]
 fn show_ready_notice(
     window: &mut gpui::Window,
     cx: &mut App,
     restart: impl Fn(&mut App) + 'static,
 ) {
-    use gpui::AppContext;
+    use gpui::{AppContext, InteractiveElement as _};
     use gpui_component::button::Button;
     use gpui_component::{notification::Notification, Sizable, WindowExt};
     use std::rc::Rc;
@@ -261,21 +278,73 @@ fn show_ready_notice(
                 .action(move |_, _, _| {
                     let restart = restart.clone();
                     Button::new("restart-update")
+                        .debug_selector(|| "restart-update".into())
                         .small()
                         .label("Restart")
                         .on_click(move |_, _, cx| restart(cx))
                 }),
             cx,
         );
-        let handle = window.window_handle();
-        cx.spawn(async move |cx| {
-            cx.background_executor()
-                .timer(std::time::Duration::from_secs(4))
-                .await;
-            let _ = cx.update_window(handle, |_, window, cx| {
-                window.remove_notification::<UpdateNotice>(cx);
-            });
-        })
-        .detach();
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+    use gpui::{AppContext, TestAppContext};
+    use gpui_component::{Root, WindowExt as _};
+
+    /// A window whose content draws the notification layer, as Reader does.
+    struct Empty;
+    impl gpui::Render for Empty {
+        fn render(
+            &mut self,
+            window: &mut gpui::Window,
+            cx: &mut gpui::Context<Self>,
+        ) -> impl gpui::IntoElement {
+            use gpui::{ParentElement, Styled};
+            gpui::div()
+                .size_full()
+                .children(Root::render_notification_layer(window, cx))
+        }
+    }
+
+    /// #683: the notice used to vanish after 4 s, so an update downloaded while
+    /// the user looked elsewhere passed unnoticed. It now stays until closed.
+    #[gpui::test]
+    fn update_ready_notice_stays_until_the_user_closes_it(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_reduce_motion(true);
+            gpui_component::init(cx);
+        });
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|_| Empty);
+            Root::new(view, window, cx)
+        });
+        let restarted = std::rc::Rc::new(std::cell::Cell::new(false));
+        let flag = restarted.clone();
+        visual.update(|window, cx| show_ready_notice(window, cx, move |_| flag.set(true)));
+        visual.run_until_parked();
+        visual.update(|window, cx| assert_eq!(window.notifications(cx).len(), 1));
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_secs(60));
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            assert_eq!(
+                window.notifications(cx).len(),
+                1,
+                "still there after a minute"
+            )
+        });
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let restart = visual
+            .debug_bounds("restart-update")
+            .expect("the Restart action is drawn")
+            .center();
+        visual.simulate_click(restart, gpui::Modifiers::default());
+        visual.run_until_parked();
+        assert!(restarted.get(), "Restart runs the restart");
+    }
 }

@@ -271,6 +271,10 @@ pub(super) fn check(manual: bool) {
         BUSY.store(false, Ordering::Release);
         // A manual click during a background check is answered by its result.
         let waiting = matches!(status::get(), CheckStatus::Note(ref note) if note == IN_PROGRESS);
+        // A background download also shows in About and Settings (#683).
+        if !manual && !waiting && result.is_ok() && ready() {
+            status::set(CheckStatus::Ready);
+        }
         if manual || waiting {
             status::set(match result {
                 Ok(_) if ready() => CheckStatus::Ready,
