@@ -262,7 +262,7 @@ fn show_ready_notice(
     cx: &mut App,
     restart: impl Fn(&mut App) + 'static,
 ) {
-    use gpui::{AppContext, InteractiveElement as _};
+    use gpui::InteractiveElement as _;
     use gpui_component::button::Button;
     use gpui_component::{notification::Notification, Sizable, WindowExt};
     use std::rc::Rc;
