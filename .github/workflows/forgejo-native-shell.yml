@@ -62,3 +62,18 @@ jobs:
         if (-not ($list | Select-String ': test$')) { Write-Error "No test matches $env:FILTER"; exit 1 }
         & cargo @a -- --nocapture --test-threads=1; exit $LASTEXITCODE
       name: Run native tests
+    - shell: pwsh
+      env:
+        FILTER: shaped_line_cache
+      run: |
+        $env:OKILUM_WINDOWS_ICON = Join-Path $env:GITHUB_WORKSPACE 'target/windows-dist/okilum.ico'
+        rustup show active-toolchain; if ($LASTEXITCODE) { exit $LASTEXITCODE }
+        $a = @('test', '--locked', '-p', 'okilum-shell', '--bins', $env:FILTER)
+        # Positive control: a renamed test must not leave this lane running nothing.
+        $list = & cargo @a -- --list; if ($LASTEXITCODE) { exit $LASTEXITCODE }
+        $list
+        if (-not ($list | Select-String ': test$')) { Write-Error "No test matches $env:FILTER"; exit 1 }
+        & cargo @a -- --nocapture --test-threads=1; exit $LASTEXITCODE
+      # #1312: the shaped-line cache over the right-to-left repair equals the
+      # shaper on Windows (the order text_platform.rs installs).
+      name: Run native text tests
