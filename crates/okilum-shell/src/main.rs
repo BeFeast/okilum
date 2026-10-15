@@ -40,6 +40,8 @@ mod reader_create;
 #[cfg(windows)]
 mod reader_creation_undo_windows;
 mod reader_deep_link;
+#[cfg(any(unix, windows))]
+mod reader_external_changes;
 mod reader_delimited;
 mod reader_diagnostics;
 mod reader_document_menu;
