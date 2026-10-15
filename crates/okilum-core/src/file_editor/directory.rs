@@ -35,6 +35,12 @@ impl Directory {
         }
         Ok(Self { file, ancestors })
     }
+    pub fn try_clone(&self) -> Result<Self> {
+        Ok(Self {
+            file: self.file.try_clone()?,
+            ancestors: self.ancestors.clone(),
+        })
+    }
     pub fn validate(&self, path: &Path) -> Result<()> {
         let current = Self::open(path).context(
             "The note's folder changed. Your draft is preserved; restore the folder or copy your edits before reopening",

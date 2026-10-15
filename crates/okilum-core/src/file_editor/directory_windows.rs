@@ -4,11 +4,15 @@ use std::{
     ffi::OsStr,
     path::{Path, PathBuf},
 };
+#[derive(Clone)]
 pub(super) struct Directory {
     path: PathBuf,
     identities: Vec<(u32, u32, u32)>,
 }
 impl Directory {
+    pub fn try_clone(&self) -> Result<Self> {
+        Ok(self.clone())
+    }
     pub fn open(path: &Path) -> Result<Self> {
         let native = crate::windows_files::Directory::open(path)?;
         Ok(Self {

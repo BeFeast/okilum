@@ -388,6 +388,23 @@ impl FileEditor {
     pub fn save(&mut self) -> Result<Save> {
         self.save_before_exchange(|| {})
     }
+    /// An editor for the same file and draft that can save on a worker while
+    /// this one keeps taking edits (autosave, #1353). It shares the lock and
+    /// the journal order; `save` still refuses to replace a changed file.
+    pub fn save_copy(&self) -> Result<Self> {
+        Ok(Self {
+            directory: self.directory.try_clone()?,
+            draft: self.draft.clone(),
+            journal: self.journal.clone(),
+            lock: self.lock.clone(),
+            writes: self.writes.clone(),
+        })
+    }
+    /// A copy saved `text`: that is the file now, so it becomes the base.
+    pub fn saved_as(&mut self, text: String) -> Result<()> {
+        self.draft.base = text;
+        self.persist()
+    }
     #[cfg(unix)]
     fn save_before_exchange(&mut self, before_exchange: impl FnOnce()) -> Result<Save> {
         if !self.dirty() {

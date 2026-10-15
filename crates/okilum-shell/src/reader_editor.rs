@@ -27,6 +27,9 @@ impl ProjectionProvider for ExactSource {
 
 use okilum_core::file_editor::{FileEditor, Save};
 
+/// The pause in typing after which an edit is saved (#1353).
+const AUTOSAVE_PAUSE: std::time::Duration = std::time::Duration::from_secs(1);
+
 pub(super) struct Editing {
     store: FileEditor,
     live_preview: live_preview::LivePreview,
@@ -38,6 +41,10 @@ pub(super) struct Editing {
     protecting: bool,
     recovery_epoch: u64,
     save_pending: bool,
+    /// The text an autosave is writing on a worker (#1353).
+    autosaving: Option<String>,
+    /// Saves made on the UI thread; an autosave result older than one is dropped.
+    saves: u64,
     saved_at: Option<time::OffsetDateTime>,
     current_input: Entity<EditorState>,
     /// Snapshot for the editor's context menu, which cannot read the editor.
@@ -176,6 +183,8 @@ impl Editing {
             protecting,
             recovery_epoch,
             save_pending,
+            autosaving,
+            saves,
             saved_at,
             current_input,
             menu_facts,
@@ -192,6 +201,8 @@ impl Editing {
             protecting,
             recovery_epoch,
             save_pending,
+            autosaving,
+            saves,
             saved_at,
             current_input,
             menu_facts,
@@ -202,7 +213,7 @@ impl Editing {
     fn status(&self) -> &'static str {
         if self.conflict_detected {
             "Conflict"
-        } else if self.save_pending {
+        } else if self.save_pending || self.autosaving.is_some() {
             "Saving…"
         } else if self.save_failed {
             "Save failed"
@@ -551,6 +562,7 @@ impl Reader {
                 });
             })
             .detach();
+            this.schedule_autosave(input_id, epoch, cx);
             this.schedule_live_preview(cx);
             cx.notify();
         });
@@ -665,6 +677,8 @@ impl Reader {
             protecting: false,
             recovery_epoch: 0,
             save_pending: false,
+            autosaving: None,
+            saves: 0,
             saved_at: None,
             current_input,
             menu_facts,
@@ -720,13 +734,13 @@ impl Reader {
         };
         let tooltip = match editing.saved_at {
             Some(at) => format!(
-                "Last saved at {:02}:{:02}:{:02}. Changes also save when you leave the editor or switch apps.",
+                "Last saved at {:02}:{:02}:{:02}. Changes save on their own a second after you stop typing.",
                 at.hour(),
                 at.minute(),
                 at.second()
             ),
             None => format!(
-                "Changes save with {}, when you leave the editor, or when you switch apps.",
+                "Changes save on their own a second after you stop typing, or now with {}.",
                 Os::CURRENT.shortcut("secondary-s")
             ),
         };
@@ -825,6 +839,18 @@ impl Reader {
         editing.save_pending = false;
         editing.recovery_epoch = editing.recovery_epoch.wrapping_add(1);
         editing.protecting = false;
+        editing.saves = editing.saves.wrapping_add(1);
+        // An autosave may already have written its text: that is the base now,
+        // not an outside change (#1353).
+        if let Some(written) = editing.autosaving.take() {
+            if editing
+                .store
+                .current()
+                .is_ok_and(|current| current == written)
+            {
+                let _ = editing.store.saved_as(written);
+            }
+        }
         let text = editing.input.read(cx).value().to_string();
         let source_changed = editing.store.dirty() || editing.store.text() != text;
         let draft = editing.store.set_text(text);
@@ -873,6 +899,133 @@ impl Reader {
         };
         (saved, protected)
     }
+    /// Autosave (#1353): one second after the last edit, save on a worker so
+    /// typing never waits. Each edit schedules one try, so a failed save is
+    /// tried again only after the next edit. Not during IME composition, not
+    /// while a conflict is shown (it needs a choice), and never over
+    /// a change made outside Okilum: the store refuses that and the conflict
+    /// view opens.
+    fn schedule_autosave(&mut self, input_id: EntityId, epoch: u64, cx: &mut Context<Self>) {
+        let handle = self.reader_window;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(AUTOSAVE_PAUSE).await;
+            let _ = handle.update(cx, |_, window, cx| {
+                let _ = this.update(cx, |this, cx| this.autosave(input_id, epoch, window, cx));
+            });
+        })
+        .detach();
+    }
+
+    fn autosave(
+        &mut self,
+        input_id: EntityId,
+        epoch: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.move_applying || self.active_timeline().is_some_and(|t| t.selected.is_some()) {
+            return;
+        }
+        let Some(editing) = &mut self.editing else {
+            return;
+        };
+        if editing.input.entity_id() != input_id
+            || editing.recovery_epoch != epoch
+            || editing.conflict_detected
+            || editing.autosaving.is_some()
+        {
+            return;
+        }
+        // Mid-composition text is not what the person typed yet; the commit
+        // is an edit of its own and schedules the next autosave.
+        if editing
+            .input
+            .update(cx, |input, cx| input.marked_text_range(window, cx))
+            .is_some()
+        {
+            return;
+        }
+        let text = editing.input.read(cx).value().to_string();
+        if editing.store.text() != text {
+            let _ = editing.store.queue_text(text.clone());
+        }
+        if !editing.store.dirty() {
+            return;
+        }
+        let copy = match editing.store.save_copy() {
+            Ok(copy) => copy,
+            Err(error) => {
+                eprintln!("Autosave could not start: {error:#}");
+                return;
+            }
+        };
+        editing.autosaving = Some(text.clone());
+        let saves = editing.saves;
+        cx.notify();
+        let worker = cx.background_executor().spawn(async move {
+            let mut copy = copy;
+            copy.save()
+        });
+        cx.spawn(async move |this, cx| {
+            let result = worker.await;
+            let _ = this.update(cx, |this, cx| {
+                this.autosaved(input_id, saves, text, result, cx)
+            });
+        })
+        .detach();
+    }
+
+    fn autosaved(
+        &mut self,
+        input_id: EntityId,
+        saves: u64,
+        text: String,
+        result: anyhow::Result<Save>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(editing) = &mut self.editing else {
+            return;
+        };
+        if editing.input.entity_id() != input_id || editing.autosaving.as_ref() != Some(&text) {
+            return;
+        }
+        editing.autosaving = None;
+        // A save on the UI thread came after this one started; it decided.
+        if editing.saves != saves {
+            cx.notify();
+            return;
+        }
+        match result {
+            Ok(Save::Saved) => {
+                if let Err(error) = editing.store.saved_as(text) {
+                    eprintln!("Autosaved, but the recovery copy lags: {error:#}");
+                }
+                editing.saved_at = Some(
+                    time::OffsetDateTime::now_local()
+                        .unwrap_or_else(|_| time::OffsetDateTime::now_utc()),
+                );
+                editing.save_failed = false;
+                if self.file_preview.is_none() {
+                    self.queue_saved_source(cx);
+                }
+                // Typing during the save: its own timer saves the rest.
+            }
+            Ok(Save::Conflict) => {
+                editing.conflict_detected = true;
+                if editing.conflict.is_none() {
+                    editing.conflict = editing.store.current().ok();
+                }
+                self.link_notice = Some("This file changed outside Okilum. Your edits are still here. Reload, keep your version, or compare before saving.".into());
+            }
+            Err(error) => {
+                editing.save_failed = true;
+                eprintln!("Autosave failed: {error:#}");
+                self.link_notice = Some(file_access_notice(&error).into());
+            }
+        }
+        cx.notify();
+    }
+
     pub(super) fn leave_source(&mut self, cx: &mut Context<Self>) -> bool {
         if !self.save_source(cx) {
             return false;
@@ -3968,5 +4121,223 @@ mod edit_error_tests {
             // Positive control: stderr keeps the OS detail.
             assert!(format!("{raw:#}").contains("os error 5"));
         }
+    }
+}
+
+/// #1353: autosave a second after typing stops, off the UI thread.
+#[cfg(test)]
+mod autosave_tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+    use std::time::Duration;
+
+    struct Fixture {
+        _temp: tempfile::TempDir,
+        file: PathBuf,
+        reader: Entity<Reader>,
+    }
+
+    fn open(cx: &mut TestAppContext, text: &str) -> (Fixture, &mut VisualTestContext) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("note.md"), text).unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("note.md".into()),
+                        index_dir: Some(temp.path().join("index")),
+                        session_directory: Some(temp.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
+        visual.run_until_parked();
+        (
+            Fixture {
+                file: root.join("note.md"),
+                reader,
+                _temp: temp,
+            },
+            visual,
+        )
+    }
+
+    fn input(f: &Fixture, visual: &mut VisualTestContext) -> Entity<EditorState> {
+        f.reader
+            .read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone())
+    }
+
+    fn type_at_start(f: &Fixture, visual: &mut VisualTestContext, text: &str) {
+        let input = input(f, visual);
+        visual.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.replace_text_in_range(Some(0..0), text, window, cx)
+            })
+        });
+        visual.run_until_parked();
+    }
+
+    fn wait(visual: &mut VisualTestContext, millis: u64) {
+        visual
+            .executor()
+            .advance_clock(Duration::from_millis(millis));
+        visual.run_until_parked();
+    }
+
+    fn on_disk(f: &Fixture) -> String {
+        std::fs::read_to_string(&f.file).unwrap()
+    }
+
+    #[gpui::test]
+    fn a_pause_saves_typing_continues_and_undo_reaches_past_the_save(cx: &mut TestAppContext) {
+        let (f, visual) = open(cx, "original");
+        type_at_start(&f, visual, "edit ");
+        wait(visual, 500);
+        assert_eq!(on_disk(&f), "original", "nothing is saved mid-pause");
+        wait(visual, 700);
+        assert_eq!(
+            on_disk(&f),
+            "edit original",
+            "saved a second after typing stopped"
+        );
+        f.reader.read_with(visual, |r, cx| {
+            assert!(!r.source_is_dirty(cx), "no dot once saved");
+            assert!(r.link_notice.is_none());
+        });
+        // A burst of typing is saved once it pauses, not in the middle.
+        type_at_start(&f, visual, "a");
+        wait(visual, 600);
+        type_at_start(&f, visual, "b");
+        wait(visual, 600);
+        assert_eq!(on_disk(&f), "edit original", "still typing: not saved yet");
+        wait(visual, 500);
+        assert_eq!(on_disk(&f), "baedit original");
+        // Undo goes back past the autosave, and that is saved too.
+        #[cfg(target_os = "macos")]
+        visual.simulate_keystrokes("cmd-z");
+        #[cfg(not(target_os = "macos"))]
+        visual.simulate_keystrokes("ctrl-z");
+        visual.run_until_parked();
+        let undone = input(&f, visual).read_with(visual, |v, _| v.value().to_string());
+        assert_ne!(undone, "baedit original", "undo works after an autosave");
+        wait(visual, 1200);
+        assert_eq!(on_disk(&f), undone);
+    }
+
+    /// A change made outside Okilum before the autosave is never overwritten:
+    /// the conflict view opens, the typing stays, and no save is retried.
+    #[gpui::test]
+    fn an_outside_change_is_never_overwritten(cx: &mut TestAppContext) {
+        let (f, visual) = open(cx, "original");
+        type_at_start(&f, visual, "mine ");
+        std::fs::write(&f.file, "theirs").unwrap();
+        wait(visual, 1200);
+        assert_eq!(on_disk(&f), "theirs", "the outside version stays");
+        f.reader.read_with(visual, |r, cx| {
+            let editing = r.editing.as_ref().unwrap();
+            assert!(editing.conflict_detected);
+            assert_eq!(editing.input.read(cx).value().as_ref(), "mine original");
+        });
+        type_at_start(&f, visual, "more ");
+        wait(visual, 3000);
+        assert_eq!(
+            on_disk(&f),
+            "theirs",
+            "no autosave while the conflict is open"
+        );
+    }
+
+    /// Our own autosave is not an outside change: the next watcher poll
+    /// replaces nothing, opens no conflict and shows no notice.
+    #[gpui::test]
+    fn the_watcher_does_not_echo_an_autosave(cx: &mut TestAppContext) {
+        let (f, visual) = open(cx, "original");
+        type_at_start(&f, visual, "edit ");
+        wait(visual, 1200);
+        assert_eq!(on_disk(&f), "edit original");
+        let before = input(&f, visual).read_with(visual, |v, _| v.scroll_offset());
+        // Several real watcher and poll intervals.
+        for _ in 0..30 {
+            std::thread::sleep(Duration::from_millis(100));
+            wait(visual, 300);
+        }
+        f.reader.update_in(visual, |r, window, cx| {
+            r.refresh_source_from_disk(window, cx)
+        });
+        visual.run_until_parked();
+        f.reader.read_with(visual, |r, cx| {
+            let editing = r.editing.as_ref().unwrap();
+            assert!(!editing.conflict_detected, "no conflict from our own save");
+            assert!(r.link_notice.is_none(), "{:?}", r.link_notice);
+            assert_eq!(editing.input.read(cx).value().as_ref(), "edit original");
+            assert!(!r.source_is_dirty(cx));
+        });
+        let after = input(&f, visual).read_with(visual, |v, _| v.scroll_offset());
+        assert_eq!(before, after, "no reload, no scroll jump");
+    }
+
+    /// IME composition is not saved half-way; the commit is.
+    #[gpui::test]
+    fn composition_is_saved_only_after_the_commit(cx: &mut TestAppContext) {
+        let (f, visual) = open(cx, "original");
+        let input = input(&f, visual);
+        visual.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(Some(0..0), "か", None, window, cx)
+            })
+        });
+        visual.run_until_parked();
+        wait(visual, 1500);
+        assert_eq!(on_disk(&f), "original", "not during composition");
+        visual.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                let marked = input.marked_text_range(window, cx);
+                input.replace_text_in_range(marked, "漢", window, cx)
+            })
+        });
+        visual.run_until_parked();
+        wait(visual, 1200);
+        assert_eq!(on_disk(&f), "漢original", "the committed text is saved");
+    }
+
+    /// A save that fails keeps the text, says so, and is not retried in a loop.
+    #[cfg(unix)]
+    #[gpui::test]
+    fn a_failed_autosave_keeps_the_text_and_says_so(cx: &mut TestAppContext) {
+        use std::os::unix::fs::PermissionsExt;
+        let (f, visual) = open(cx, "original");
+        let folder = f.file.parent().unwrap().to_owned();
+        type_at_start(&f, visual, "mine ");
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o555)).unwrap();
+        wait(visual, 1200);
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if on_disk(&f) == "mine original" {
+            // Running as a user that ignores directory permissions.
+            return;
+        }
+        f.reader.read_with(visual, |r, cx| {
+            let editing = r.editing.as_ref().unwrap();
+            assert!(editing.save_failed, "the failure is shown");
+            assert!(r.link_notice.is_some());
+            assert_eq!(editing.input.read(cx).value().as_ref(), "mine original");
+        });
+        wait(visual, 3000);
+        assert_eq!(on_disk(&f), "original", "no retry loop until the next edit");
     }
 }
