@@ -4137,7 +4137,7 @@ mod autosave_tests {
         reader: Entity<Reader>,
     }
 
-    fn open(cx: &mut TestAppContext, text: &str) -> (Fixture, &mut VisualTestContext) {
+    fn open<'a>(cx: &'a mut TestAppContext, text: &str) -> (Fixture, &'a mut VisualTestContext) {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("vault");
         std::fs::create_dir_all(&root).unwrap();
