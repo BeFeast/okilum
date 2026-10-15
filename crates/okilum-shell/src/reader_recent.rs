@@ -91,7 +91,7 @@ impl Reader {
             cx.background_executor()
                 .timer(Duration::from_millis(100))
                 .await;
-            let _ = reader.update_in(cx, |reader, window, cx| {
+            let _ = reader.update_in_own_window(cx, |reader, window, cx| {
                 if reader.recent_switcher.release_generation != generation {
                     return;
                 }

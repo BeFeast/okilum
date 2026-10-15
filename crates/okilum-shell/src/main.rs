@@ -198,6 +198,31 @@ fn note_gutter(window: &Window) -> Pixels {
     px((24. + (width - 600.) * 24. / 400.).clamp(24., 48.))
 }
 
+/// `WeakEntity::update_in` for a task spawned with `cx.spawn_in(window, ..)`, in
+/// that window (#1314). gpui's own `update_in` resolves the window from the
+/// entity's "current window": the last window whose draw read the entity, and
+/// none once that window is closed. Settings and About read the Reader while
+/// they draw, so closing one left the Reader without a window, and the next
+/// `update_in` of every task of the Reader failed: the watcher timer ended for
+/// the rest of the session, and no change made outside the app was seen again.
+trait UpdateInOwnWindow {
+    fn update_in_own_window<R>(
+        &self,
+        cx: &mut AsyncWindowContext,
+        update: impl FnOnce(&mut Reader, &mut Window, &mut Context<Reader>) -> R,
+    ) -> anyhow::Result<R>;
+}
+
+impl UpdateInOwnWindow for WeakEntity<Reader> {
+    fn update_in_own_window<R>(
+        &self,
+        cx: &mut AsyncWindowContext,
+        update: impl FnOnce(&mut Reader, &mut Window, &mut Context<Reader>) -> R,
+    ) -> anyhow::Result<R> {
+        cx.update(|window, app| self.update(app, |reader, cx| update(reader, window, cx)))?
+    }
+}
+
 impl Reader {
     /// Left and right margins of the note text across the whole document
     /// pane: Reader's centred column (reading width) with its gutter and right
@@ -1814,7 +1839,7 @@ impl Reader {
                 .timer(Duration::from_millis(250))
                 .await;
             let alive = this
-                .update_in(cx, |this, window, cx| this.poll_vault(window, cx))
+                .update_in_own_window(cx, |this, window, cx| this.poll_vault(window, cx))
                 .is_ok();
             if !alive {
                 break;
@@ -1894,7 +1919,7 @@ impl Reader {
                     (watcher, changes)
                 })
                 .await;
-            let _ = this.update_in(cx, |this, window, cx| {
+            let _ = this.update_in_own_window(cx, |this, window, cx| {
                 if this.vault_root != root
                     || this.watcher_generation != generation
                     || this.watcher.is_some()

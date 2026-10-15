@@ -169,7 +169,7 @@ impl Reader {
             if path.extension().is_none() {
                 path.set_extension("md");
             }
-            let _ = this.update_in(cx, |r, window, cx| {
+            let _ = this.update_in_own_window(cx, |r, window, cx| {
                 let result = (|| -> anyhow::Result<_> {
                     anyhow::ensure!(
                         r.vault_root == root,

@@ -210,7 +210,7 @@ impl ArchivePreview {
         });
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
-            let _ = this.update_in(cx, |this, window, cx| {
+            let _ = this.update_in_own_window(cx, |this, window, cx| {
                 if this.generation != generation {
                     return;
                 }
@@ -263,7 +263,7 @@ impl ArchivePreview {
                     async move { archive::extract(&source, &indices, &folder, Limits::default()) },
                 )
                 .await;
-            let _ = this.update_in(cx, |this, window, cx| {
+            let _ = this.update_in_own_window(cx, |this, window, cx| {
                 this.extracting = false;
                 match result {
                     Ok(done) => {

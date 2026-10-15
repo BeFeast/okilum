@@ -34,7 +34,7 @@ impl Reader {
                         }
                     })
                     .await;
-            let _ = reader.update_in(cx, |_, window, cx| match result {
+            let _ = reader.update_in_own_window(cx, |_, window, cx| match result {
                 Ok(Some(receipt)) => {
                     let weak = cx.weak_entity();
                     reader_toast::push(
@@ -88,7 +88,7 @@ impl Reader {
                 .background_executor()
                 .spawn(async move { receipt.undo(&root, &drafts) })
                 .await;
-            let _ = reader.update_in(cx, |_, window, cx| match result {
+            let _ = reader.update_in_own_window(cx, |_, window, cx| match result {
                 Ok(()) => reader_toast::transient("Task change undone", window, cx),
                 Err(error) => {
                     reader_toast::error(format!("Cannot undo task change: {error}"), window, cx)

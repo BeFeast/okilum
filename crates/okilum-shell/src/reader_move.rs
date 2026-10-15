@@ -209,7 +209,7 @@ impl Reader {
         );
         cx.spawn_in(window, async move |this, cx| {
             cx.background_executor().timer(Duration::from_secs(8)).await;
-            let _ = this.update_in(cx, |r, window, cx| {
+            let _ = this.update_in_own_window(cx, |r, window, cx| {
                 if r.move_notice_generation == generation {
                     window.remove_notification::<MoveProgress>(cx);
                 }
@@ -517,7 +517,7 @@ impl Reader {
             });
             let result = worker.await;
             let answer = this
-                .update_in(cx, |this, window, cx| {
+                .update_in_own_window(cx, |this, window, cx| {
                     window.remove_notification::<MoveProgress>(cx);
                     if cancel.check().is_err() {
                         this.note_move_pending = false;
@@ -565,7 +565,7 @@ impl Reader {
                 .flatten();
             if let Some((pending, answer)) = answer {
                 let confirmed = answer.recv().await.unwrap_or(None);
-                let _ = this.update_in(cx, |this, window, cx| {
+                let _ = this.update_in_own_window(cx, |this, window, cx| {
                     this.note_move_pending = false;
                     if let Some(update) = confirmed {
                         this.finish_move(pending, update, window, cx);
@@ -770,7 +770,7 @@ impl Reader {
                 );
                 Ok(applied)
             });
-            let _ = this.update_in(cx, |this, window, cx| {
+            let _ = this.update_in_own_window(cx, |this, window, cx| {
                 this.note_move_pending = false;
                 window.remove_notification::<MoveProgress>(cx);
                 this.complete_move(pending, update, result, window, cx);
@@ -1010,10 +1010,10 @@ impl Reader {
         cx.spawn_in(window, async move |this, cx| {
             if answer.recv().await != Ok(true) {
                 // Back to the list the review came from; it only reads.
-                let _ = this.update_in(cx, |this, window, cx| this.recover_link_moves(window, cx));
+                let _ = this.update_in_own_window(cx, |this, window, cx| this.recover_link_moves(window, cx));
                 return;
             }
-            let _ = this.update_in(cx, |this, window, cx| {
+            let _ = this.update_in_own_window(cx, |this, window, cx| {
                 match this.revert_link_move(&path, &state, window, cx) {
                     Ok(()) => reader_toast::transient("Link move reverted.", window, cx),
                     Err(error) => this.link_notice = Some(format!(

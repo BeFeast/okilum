@@ -224,7 +224,7 @@ impl Reader {
             let (count, _locks, before) = match prepared {
                 Ok(value) => value,
                 Err(error) => {
-                    let _ = this.update_in(cx, |this, window, cx| {
+                    let _ = this.update_in_own_window(cx, |this, window, cx| {
                         this.trash_pending = false;
                         window.push_notification(
                             Notification::new()
@@ -246,7 +246,7 @@ impl Reader {
             if incoming > 0 && creation.is_none() {
                 let (send, receive) = async_channel::bounded(1);
                 let shown = this
-                    .update_in(cx, |this, window, cx| {
+                    .update_in_own_window(cx, |this, window, cx| {
                         window.remove_notification::<TrashToast>(cx);
                         if this.vault_root != root {
                             this.trash_pending = false;
@@ -355,7 +355,7 @@ impl Reader {
                     return;
                 }
             }
-            let held_editor = match this.update_in(cx, |this, window, cx| {
+            let held_editor = match this.update_in_own_window(cx, |this, window, cx| {
                 let dirty_creation = creation.is_some() && this.source_is_dirty(cx);
                 if this.vault_root != root || dirty_creation || !this.save_source(cx) {
                     window.remove_notification::<TrashToast>(cx);
@@ -417,7 +417,7 @@ impl Reader {
                     reader_trash_fs::move_to_trash(&move_root, Path::new(&move_relative))
                 })
                 .await;
-            let _ = this.update_in(cx, |this, window, cx| {
+            let _ = this.update_in_own_window(cx, |this, window, cx| {
                 this.trash_pending = false;
                 match result {
                     Ok(trashed) => {
@@ -517,7 +517,7 @@ impl Reader {
         );
         cx.spawn_in(window, async move |this, cx| {
             cx.background_executor().timer(TRASH_TOAST_LIFETIME).await;
-            let _ = this.update_in(cx, |this, window, cx| {
+            let _ = this.update_in_own_window(cx, |this, window, cx| {
                 if this.trash_undo.generation == generation {
                     this.dismiss_trash_toast(window, cx);
                 }
@@ -582,7 +582,7 @@ impl Reader {
                         .map(|()| trashed.root.join(&trashed.relative).is_dir())
                 })
                 .await;
-            let _ = this.update_in(cx, |this, window, cx| {
+            let _ = this.update_in_own_window(cx, |this, window, cx| {
                 this.trash_pending = false;
                 if let Ok(directory) = &result {
                     if this.vault_root == restored_root {

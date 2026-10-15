@@ -1486,7 +1486,7 @@ impl Reader {
                         .prepare_code_languages(reader_code_language::resolver(), cx);
                     pending.language_task = Some(cx.spawn_in(window, async move |this, cx| {
                         work.await;
-                        let _ = this.update_in(cx, |this, window, cx| {
+                        let _ = this.update_in_own_window(cx, |this, window, cx| {
                             let Some(pending) = this.pending_open_document.as_mut() else {
                                 return;
                             };
@@ -1753,7 +1753,7 @@ impl Reader {
                     }
                 })
                 .await;
-            let _ = this.update_in(cx, |this, window, cx| {
+            let _ = this.update_in_own_window(cx, |this, window, cx| {
                 if this.vault_root != root
                     || this.current_rel != rel
                     || this.navigation.generation != navigation
@@ -2379,7 +2379,7 @@ impl Reader {
         cx.spawn_in(window, async move |this, cx| {
             while let Ok(event) = receive.recv().await {
                 if this
-                    .update_in(cx, |this, window, cx| {
+                    .update_in_own_window(cx, |this, window, cx| {
                         if !this
                             .loading
                             .as_ref()
@@ -6923,7 +6923,7 @@ impl Reader {
                 .background_executor()
                 .spawn(async move { std::fs::read_to_string(path) })
                 .await;
-            let _ = this.update_in(cx, |this, window, cx| {
+            let _ = this.update_in_own_window(cx, |this, window, cx| {
                 if !this.single_file
                     || this.vault_root != root
                     || this.navigation.generation != navigation

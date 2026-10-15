@@ -352,7 +352,7 @@ impl Reader {
         });
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
-            let _ = this.update_in(cx, |this, window, cx| match result {
+            let _ = this.update_in_own_window(cx, |this, window, cx| match result {
                 Ok(receipt) => this.announce_reminder(receipt, root, drafts, date, window, cx),
                 Err(error) => {
                     reader_toast::transient(format!("Reminder not added: {error:#}"), window, cx)
@@ -397,7 +397,7 @@ impl Reader {
         );
         cx.spawn_in(window, async move |this, cx| {
             cx.background_executor().timer(Duration::from_secs(8)).await;
-            let _ = this.update_in(cx, |this, window, cx| {
+            let _ = this.update_in_own_window(cx, |this, window, cx| {
                 if this
                     .reminder_undo
                     .as_ref()

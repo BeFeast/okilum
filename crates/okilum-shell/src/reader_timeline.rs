@@ -150,7 +150,7 @@ impl Reader {
                     Ok::<_, anyhow::Error>((listing, current))
                 })
                 .await;
-            let _ = this.update_in(cx, |r, _, cx| {
+            let _ = this.update_in_own_window(cx, |r, _, cx| {
                 if r.active_timeline().is_none_or(|t| t.id != id) {
                     return;
                 }
@@ -245,7 +245,7 @@ impl Reader {
                     Ok::<_, anyhow::Error>((version, current, document, states))
                 })
                 .await;
-            let _ = this.update_in(cx, |r, window, cx| {
+            let _ = this.update_in_own_window(cx, |r, window, cx| {
                 if r.active_timeline()
                     .is_none_or(|t| t.id != id || t.selection != selection)
                 {
