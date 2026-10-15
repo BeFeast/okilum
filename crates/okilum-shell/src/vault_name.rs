@@ -222,6 +222,10 @@ fn retitle(root: &Path, cx: &mut App) {
 /// «Rename vault…»: a dialog with the current name; Enter or Rename saves,
 /// an empty field goes back to the folder name.
 pub(crate) fn open_rename(root: PathBuf, window: &mut Window, cx: &mut App) {
+    open_rename_input(root, window, cx);
+}
+
+fn open_rename_input(root: PathBuf, window: &mut Window, cx: &mut App) -> Entity<InputState> {
     let current = shown(&root, cx);
     let folder = folder_name(&root);
     let input = cx.new(|cx| {
@@ -246,10 +250,7 @@ pub(crate) fn open_rename(root: PathBuf, window: &mut Window, cx: &mut App) {
             }
         })
         .detach();
-    input.update(cx, |input, cx| {
-        input.focus(window, cx);
-        input.select_all(window, cx);
-    });
+    let opened = input.clone();
     window.open_dialog(cx, move |dialog, _, cx| {
         let save = save.clone();
         let reset_input = input.clone();
@@ -294,6 +295,15 @@ pub(crate) fn open_rename(root: PathBuf, window: &mut Window, cx: &mut App) {
                     ),
             )
     });
+    // The dialog takes the focus as it opens; the field gets it afterwards,
+    // so typing replaces the shown name at once (muninn check, #1327).
+    window.defer(cx, move |window, cx| {
+        opened.update(cx, |input, cx| {
+            input.focus(window, cx);
+            input.select_all(window, cx);
+        });
+    });
+    input
 }
 
 #[cfg(test)]
@@ -365,6 +375,40 @@ mod tests {
         // Positive control: a good file reads.
         std::fs::write(file(root), br#"{"version":1,"name":"Work"}"#).unwrap();
         assert_eq!(read(root).as_deref(), Some("Work"));
+    }
+
+    /// Typing goes straight into the field: the dialog must not keep the
+    /// focus (found on muninn, where typing went nowhere).
+    #[gpui::test]
+    fn the_rename_field_has_the_focus_and_typing_replaces_the_name(cx: &mut TestAppContext) {
+        struct Blank;
+        impl Render for Blank {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+            }
+        }
+        cx.update(gpui_component::init);
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("Gate2");
+        std::fs::create_dir_all(&root).unwrap();
+        let (_, visual) = cx
+            .add_window_view(|window, cx| gpui_component::Root::new(cx.new(|_| Blank), window, cx));
+        let input = visual.update(|window, cx| open_rename_input(root.clone(), window, cx));
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            assert!(
+                input.read(cx).focus_handle(cx).is_focused(window),
+                "the name field has the focus"
+            )
+        });
+        visual.simulate_input("Work");
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        assert_eq!(
+            read(&root).as_deref(),
+            Some("Work"),
+            "typed over the name and saved"
+        );
     }
 
     #[test]
