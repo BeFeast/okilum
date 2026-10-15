@@ -384,8 +384,12 @@ mod tests {
     fn the_rename_field_has_the_focus_and_typing_replaces_the_name(cx: &mut TestAppContext) {
         struct Blank;
         impl Render for Blank {
-            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            // Like the Reader and Settings: the dialog layer is drawn, so the
+            // field gets its input handler.
+            fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
                 div()
+                    .size_full()
+                    .children(gpui_component::Root::render_dialog_layer(window, cx))
             }
         }
         cx.update(gpui_component::init);
