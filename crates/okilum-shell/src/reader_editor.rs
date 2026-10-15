@@ -2679,6 +2679,123 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// #1296: Esc from the editor kept the note but opened the Reader at the
+    /// top, and entering the editor did the same. Both keep the place now, in
+    /// Source and Live Preview, for a short note and a 24k-line one.
+    #[gpui::test]
+    fn leaving_and_entering_the_editor_keep_the_place(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let root = std::env::temp_dir().join(format!("okilum-place1296-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let short: String = (0..40).map(|i| format!("Paragraph {i}\n\n")).collect();
+        let long: String = (0..12_000).map(|i| format!("Line {i}\n\n")).collect();
+        std::fs::write(root.join("short.md"), &short).unwrap();
+        std::fs::write(root.join("long.md"), &long).unwrap();
+        for (note, block) in [("short.md", 20), ("long.md", 6_000)] {
+            for live_preview in [false, true] {
+                let mut reader = None;
+                let (_, visual) = cx.add_window_view(|window, cx| {
+                    let view = cx.new(|cx| {
+                        Reader::new(
+                            Opts {
+                                vault: Some(root.clone()),
+                                note: Some(note.into()),
+                                session_directory: Some(root.join("state")),
+                                ..Opts::default()
+                            },
+                            window,
+                            cx,
+                        )
+                    });
+                    reader = Some(view.clone());
+                    Root::new(view, window, cx)
+                });
+                let reader = reader.unwrap();
+                visual.simulate_resize(size(px(1200.), px(700.)));
+                visual.run_until_parked();
+                let top = |visual: &mut VisualTestContext| {
+                    reader.read_with(visual, |v, cx| {
+                        v.content.read(cx).list_state().logical_scroll_top().item_ix
+                    })
+                };
+                // Reader at block `block`: its paragraph starts at file line 2*block+1.
+                reader.update_in(visual, |v, _, cx| {
+                    v.content.read(cx).list_state().scroll_to(gpui::ListOffset {
+                        item_ix: block,
+                        offset_in_item: px(0.),
+                    });
+                });
+                visual.run_until_parked();
+                visual.update(|w, cx| w.draw(cx).clear(cx));
+                assert_eq!(top(visual), block, "positive control: the Reader scrolled");
+                reader.update_in(visual, |v, window, cx| {
+                    v.toggle_source(window, cx);
+                    v.set_live_preview(live_preview, window, cx);
+                });
+                visual.run_until_parked();
+                visual.update(|w, cx| w.draw(cx).clear(cx));
+                let input =
+                    reader.read_with(visual, |v, _| v.editing.as_ref().unwrap().input.clone());
+                let line = input
+                    .read_with(visual, |v, _| v.top_visible_line())
+                    .unwrap();
+                assert_eq!(
+                    line,
+                    2 * block,
+                    "{note} live={live_preview}: editor opens at the place"
+                );
+                // Move the editor further down, then leave it with Esc.
+                input.update(visual, |v, cx| v.scroll_line_to_top(2 * (block + 5), cx));
+                visual.run_until_parked();
+                visual.update(|w, cx| w.draw(cx).clear(cx));
+                // Esc ends in Dismiss → toggle_source once nothing else is
+                // open; a toast in the test window would take the key, so
+                // leave the way Esc does. The native check sends the key.
+                reader.update_in(visual, |v, window, cx| v.toggle_source(window, cx));
+                // The landing polls on timers until the list has laid out.
+                for _ in 0..20 {
+                    visual
+                        .executor()
+                        .advance_clock(std::time::Duration::from_millis(60));
+                    visual.run_until_parked();
+                    visual.update(|w, cx| w.draw(cx).clear(cx));
+                }
+                assert!(
+                    reader.read_with(visual, |v, _| v.editing.is_none()),
+                    "the editor was left"
+                );
+                assert_eq!(
+                    top(visual),
+                    block + 5,
+                    "{note} live={live_preview}: Reader opens at the place"
+                );
+                // Entering again (Undo history retained, #1095): the caret is at
+                // the place too, not at the last session's selection.
+                reader.update_in(visual, |v, window, cx| {
+                    v.toggle_source(window, cx);
+                    v.set_live_preview(live_preview, window, cx);
+                });
+                visual.run_until_parked();
+                visual.update(|w, cx| w.draw(cx).clear(cx));
+                let input =
+                    reader.read_with(visual, |v, _| v.editing.as_ref().unwrap().input.clone());
+                let caret_line =
+                    input.read_with(visual, |v, _| v.value()[..v.cursor()].matches('\n').count());
+                assert_eq!(
+                    caret_line,
+                    2 * (block + 5),
+                    "{note} live={live_preview}: the caret starts at the place"
+                );
+                // Leave, so the next window can edit the same note.
+                reader.update_in(visual, |v, window, cx| v.toggle_source(window, cx));
+                visual.run_until_parked();
+            }
+        }
+    }
+
     /// #945: Undo and Redo of an edit that is out of view scroll the editor
     /// back to the restored caret, in Source and in Live Preview.
     #[gpui::test]

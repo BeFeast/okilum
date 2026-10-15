@@ -1,0 +1,62 @@
+diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
+index 1acc0a1a..bc43477b 100644
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -2158,6 +2158,16 @@ impl<M: InputModeKind> Element for TextElement<M> {
+                     bounds.size.height, window.line_height())).max(bounds.size.height);
+             let needed = (bounds.size.height - state.scroll_handle.offset().y - natural).max(px(0.));
+             state.projection_anchor_tail = state.projection_anchor_tail.min(needed);
++            // A requested top line wins over the current offset (#1296).
++            if let Some(line) = state.pending_top_line.take() {
++                let count = state.display_map.buffer_line_count();
++                if count > 0 {
++                    let row = state.display_map.buffer_line_to_display_row(line.min(count - 1));
++                    let scroll = point(state.scroll_handle.offset().x, -rows.row_top(row));
++                    state.scroll_handle.set_offset(scroll);
++                    state.deferred_scroll_offset = Some(scroll);
++                }
++            }
+             frame_rows = Some(rows);
+         });
+         let state = self.state.read(cx);
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+index b45f7eb7..5fd65b5b 100644
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -430,6 +430,8 @@ pub struct InputBaseState<M: InputModeKind> {
+     pub(crate) scroll_handle: ScrollHandle,
+     /// The deferred scroll offset to apply on next layout.
+     pub(crate) deferred_scroll_offset: Option<Point<Pixels>>,
++    /// A buffer line to scroll to the top of the viewport at the next layout.
++    pub(super) pending_top_line: Option<usize>,
+     /// The size of the scrollable content.
+     pub(crate) scroll_size: gpui::Size<Pixels>,
+     pub(super) editor_scrollbar_snapshot: Cell<Option<EditorScrollbarSnapshot>>,
+@@ -797,6 +799,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+             editor_paddings: Edges::default(),
+             text_gutter: px(0.),
+             deferred_scroll_offset: None,
++            pending_top_line: None,
+             preferred_column: None,
+             placeholder: SharedString::default(),
+             mask_pattern: MaskPattern::default(),
+@@ -2927,6 +2930,19 @@ impl<M: InputModeKind> InputBaseState<M> {
+         cx.notify();
+     }
+ 
++    /// The buffer line at the top of the viewport in the last layout, `None`
++    /// before the first layout (#1296: leaving the editor keeps the place).
++    pub fn top_visible_line(&self) -> Option<usize> {
++        self.last_layout.as_ref().and_then(|l| l.visible_buffer_lines.first().copied())
++    }
++
++    /// Scroll so that buffer line `line` is at the top of the viewport, at the
++    /// next layout (#1296: entering the editor keeps the Reader's place).
++    pub fn scroll_line_to_top(&mut self, line: usize, cx: &mut Context<Self>) {
++        self.pending_top_line = Some(line);
++        cx.notify();
++    }
++
+     /// Laid-out line height; `None` before first layout.
+     pub fn line_height(&self) -> Option<gpui::Pixels> {
+         self.last_layout.as_ref().map(|l| l.line_height)
