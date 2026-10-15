@@ -31,8 +31,9 @@ REPS = int(os.environ.get("REPS", "3"))
 # same distance per frame as the default has on a 60 Hz display.
 EVENTS = int(os.environ.get("WHEEL_EVENTS", "120"))
 INTERVAL_MS = os.environ.get("WHEEL_INTERVAL_MS", "16")
-# SHOTS=1: instead of measured reps, one stream per scenario with a window shot in the middle of it and
-# two inside it (at 60 % and 85 % of it) and one 300 ms after its end, for looking at the frames (a shot loads WindowServer, so these runs are never timed).
+# SHOTS=1: instead of measured reps, one stream per scenario with window shots inside it (at 60 % and 85 %
+# of it), 300 ms after its end and 2 s after it, for looking at the frames (a shot loads WindowServer, so
+# these runs are never timed).
 SHOTS = os.environ.get("SHOTS") == "1"
 HOME = Path.home()
 OKQA = os.environ.get("OKQA", str(HOME / "qa/okilum/tools/okqa"))
