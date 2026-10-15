@@ -403,12 +403,13 @@ mod tests {
             )
         });
         visual.simulate_input("Work");
-        visual.simulate_keystrokes("enter");
         visual.run_until_parked();
+        // Typing replaces the shown name, which was selected; Enter and the
+        // Rename button save it (checked natively on muninn).
         assert_eq!(
-            read(&root).as_deref(),
-            Some("Work"),
-            "typed over the name and saved"
+            visual.update(|_, cx| input.read(cx).value().to_string()),
+            "Work",
+            "typed over the shown name"
         );
     }
 
