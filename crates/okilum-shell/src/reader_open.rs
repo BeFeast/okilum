@@ -2482,9 +2482,8 @@ mod entry_tests {
         });
         // The link opens the renamed vault: its window comes forward, no
         // new window and no error.
-        let link = cx.update(|cx| {
-            super::super::reader_files::okilum_link(&roots[1], "Plan.md", &Default::default())
-        });
+        let link =
+            super::super::reader_files::okilum_link(&roots[1], "Plan.md", &Default::default());
         cx.update(|cx| open_deep_link_among(&link, &roots, cx));
         cx.run_until_parked();
         assert_eq!(
