@@ -1386,6 +1386,9 @@ struct Reader {
     session_directory: Option<PathBuf>,
     session_records: Option<async_channel::Sender<reader_loading::SessionRecord>>,
     last_recorded_document: Option<(PathBuf, String, u64)>,
+    /// The note part of the native window title; the vault part is added
+    /// from its display name, so a rename can retitle the window (#1327).
+    title_note: Option<String>,
     index_dir: Option<PathBuf>,
     cache_lease: Option<Arc<reader_cache::Lease>>,
     vault: Arc<Vault>,
@@ -1653,6 +1656,7 @@ impl Reader {
             session_directory: opts.session_directory.clone(),
             session_records: None,
             last_recorded_document: None,
+            title_note: None,
             index_dir,
             cache_lease: None,
             vault,
@@ -2179,7 +2183,7 @@ impl Reader {
         self.refresh_link_preparation(cx);
         self.current_title = self.note_label(rel);
         self.set_backlinks(self.vault.backlinks(rel), true);
-        window.set_window_title(&format!("Okilum — {}", self.current_title));
+        self.show_window_title(Some(self.current_title.clone()), window, cx);
         if request.history_index.is_none()
             && (heading.is_some()
                 || self
@@ -2878,7 +2882,13 @@ impl Reader {
     }
 
     /// Section rows; headers are mounted outside their content viewports (#434).
+    #[cfg(test)]
     fn sidebar_items(&self) -> Vec<SideItem> {
+        self.sidebar_items_named(&vault_name::folder_name(&self.vault_root))
+    }
+
+    /// `vault` is what the vault is called in Inbox locations (#1327).
+    fn sidebar_items_named(&self, vault: &str) -> Vec<SideItem> {
         use reader_sidebar::Section;
         if self.single_file {
             let mut items = vec![SideItem::Header(
@@ -2979,10 +2989,7 @@ impl Reader {
                     label: quick_open::folder_note_title(folder, &item.path)
                         .unwrap_or_else(|| self.note_label(&item.path)),
                     meta: Some(reader_sidebar::age_label(item.created, now)),
-                    location: Some(quick_open::result_location(
-                        &vault_name::shown(&self.vault_root, cx),
-                        &item.path,
-                    )),
+                    location: Some(quick_open::result_location(vault, &item.path)),
                     folder: false,
                 });
             }
@@ -4018,7 +4025,7 @@ impl Reader {
         let tokens = brand::reader_palette(cx);
         let entity = cx.entity().downgrade();
         let tree = &self.tree;
-        let items = self.sidebar_items();
+        let items = self.sidebar_items_named(&vault_name::shown(&self.vault_root, cx));
         let pinned: Rc<std::collections::BTreeSet<String>> =
             Rc::new(self.sidebar.pinned.iter().cloned().collect());
         let collapsed: std::collections::BTreeSet<_> = [

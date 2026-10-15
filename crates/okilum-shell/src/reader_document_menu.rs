@@ -492,7 +492,7 @@ impl Reader {
                 diagnostics: None,
             });
         }
-        window.set_window_title("Okilum");
+        self.show_window_title(None, window, cx);
         self.focus_handle.focus(window, cx);
         cx.notify();
     }

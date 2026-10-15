@@ -14,10 +14,28 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// Where display names are kept. Whether a name travels with the vault or
+/// stays on this machine is still open; either keeps this shape: names by
+/// canonical vault root, the existing vault identity.
+pub(crate) trait Storage {
+    fn save(&self, names: &BTreeMap<PathBuf, String>) -> anyhow::Result<()>;
+}
+
 /// Display names by canonical vault root.
 #[derive(Default)]
-pub(crate) struct Names(BTreeMap<PathBuf, String>);
+pub(crate) struct Names {
+    names: BTreeMap<PathBuf, String>,
+    storage: Option<Box<dyn Storage>>,
+}
 impl Global for Names {}
+
+/// Start with the names a storage holds; later changes are saved to it.
+pub(crate) fn install(names: BTreeMap<PathBuf, String>, storage: Box<dyn Storage>, cx: &mut App) {
+    cx.set_global(Names {
+        names,
+        storage: Some(storage),
+    });
+}
 
 /// The folder's own name, which links and lookups use.
 pub(crate) fn folder_name(root: &Path) -> String {
@@ -34,30 +52,80 @@ pub(crate) fn clean(name: &str) -> Option<String> {
 
 /// What Okilum calls this vault: its display name, else its folder name.
 pub(crate) fn shown(root: &Path, cx: &App) -> String {
-    cx.try_global::<Names>()
-        .and_then(|names| names.0.get(root).cloned())
-        .unwrap_or_else(|| folder_name(root))
+    stored(root, cx).unwrap_or_else(|| folder_name(root))
 }
 
 /// The display name stored for this vault, if any.
 pub(crate) fn stored(root: &Path, cx: &App) -> Option<String> {
     cx.try_global::<Names>()
-        .and_then(|names| names.0.get(root).cloned())
+        .and_then(|names| names.names.get(root).cloned())
 }
 
 /// Set or clear the display name. A blank name, or the folder name itself,
 /// clears it. Every window repaints with the new name.
 pub(crate) fn set(root: &Path, name: &str, cx: &mut App) {
     let name = clean(name).filter(|name| *name != folder_name(root));
-    let names = &mut cx.default_global::<Names>().0;
-    if names.get(root) == name.as_ref() {
+    let state = cx.default_global::<Names>();
+    if state.names.get(root) == name.as_ref() {
         return;
     }
     match name {
-        Some(name) => names.insert(root.to_owned(), name),
-        None => names.remove(root),
+        Some(name) => state.names.insert(root.to_owned(), name),
+        None => state.names.remove(root),
     };
+    if let Some(storage) = &state.storage {
+        if let Err(error) = storage.save(&state.names) {
+            eprintln!("Cannot save the vault name: {error:#}");
+        }
+    }
+    retitle(root, cx);
     cx.refresh_windows();
+}
+
+/// The native window title: `Okilum — Note — Vault`, `Okilum — Vault`
+/// before a note opens, and no vault part for a quick viewer of one file.
+/// With several vault windows the title is what tells them apart in the
+/// Window menu, the taskbar and the window switcher.
+pub(crate) fn window_title(note: Option<&str>, vault: Option<&str>) -> String {
+    match (note.filter(|note| !note.is_empty()), vault) {
+        (Some(note), Some(vault)) => format!("Okilum — {note} — {vault}"),
+        (Some(note), None) => format!("Okilum — {note}"),
+        (None, Some(vault)) => format!("Okilum — {vault}"),
+        (None, None) => "Okilum".into(),
+    }
+}
+
+impl crate::Reader {
+    /// Title this window for `note`, with its vault's current name.
+    pub(crate) fn show_window_title(
+        &mut self,
+        note: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.title_note = note;
+        let vault = (!self.single_file).then(|| shown(&self.vault_root, cx));
+        window.set_window_title(&window_title(self.title_note.as_deref(), vault.as_deref()));
+    }
+}
+
+/// Retitle every window of this vault, each through its own window handle.
+fn retitle(root: &Path, cx: &mut App) {
+    for reader in crate::reader_open::readers(cx) {
+        let (handle, mine) = {
+            let r = reader.read(cx);
+            (r.reader_window, r.vault_root == root && !r.single_file)
+        };
+        if !mine {
+            continue;
+        }
+        let _ = handle.update(cx, |_, window, cx| {
+            reader.update(cx, |r, cx| {
+                let note = r.title_note.clone();
+                r.show_window_title(note, window, cx);
+            })
+        });
+    }
 }
 
 /// «Rename vault…»: a dialog with the current name; Enter or Rename saves,
@@ -102,7 +170,7 @@ pub(crate) fn open_rename(root: PathBuf, window: &mut Window, cx: &mut App) {
                 v_flex()
                     .gap_2()
                     .child(
-                        Input::new(&input).debug_selector(|| "vault-rename-input".into()),
+                        Input::new(&input),
                     )
                     .child(
                         div()
@@ -141,6 +209,18 @@ pub(crate) fn open_rename(root: PathBuf, window: &mut Window, cx: &mut App) {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    #[test]
+    fn the_window_title_names_note_and_vault() {
+        assert_eq!(
+            window_title(Some("Plan"), Some("Work")),
+            "Okilum — Plan — Work"
+        );
+        assert_eq!(window_title(None, Some("Work")), "Okilum — Work");
+        assert_eq!(window_title(Some(""), Some("Work")), "Okilum — Work");
+        assert_eq!(window_title(Some("log.txt"), None), "Okilum — log.txt");
+        assert_eq!(window_title(None, None), "Okilum");
+    }
 
     #[test]
     fn a_blank_name_is_no_name() {

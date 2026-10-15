@@ -4007,7 +4007,7 @@ impl Reader {
         self.navigation.history_ix = 0;
         self.find_open = false;
         self.link_notice = None;
-        window.set_window_title(&format!("Okilum — {rel}"));
+        self.show_window_title(Some(rel.to_string()), window, cx);
         self.record_usable_document(cx);
         cx.notify();
     }

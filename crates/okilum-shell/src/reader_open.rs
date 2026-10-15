@@ -1005,7 +1005,14 @@ fn create_window(
                 window.refresh();
             })
             .detach();
-        window.set_window_title("Okilum — Opening document");
+        // A vault window is named by its vault before the first note opens.
+        match opts.vault.as_deref().filter(|_| !opts.single_file) {
+            Some(root) => window.set_window_title(&super::vault_name::window_title(
+                None,
+                Some(&super::vault_name::shown(root, cx)),
+            )),
+            None => window.set_window_title("Okilum — Opening document"),
+        }
         let selected = opts.note.clone().unwrap_or_default();
         let root_path = opts.vault.clone();
         let full_vault = !opts.single_file;
@@ -2390,6 +2397,109 @@ mod entry_tests {
                 );
             }
         });
+    }
+
+    /// #1327: a renamed vault is named by its display name in its window
+    /// titles only; another vault's window keeps its own. Links still name
+    /// the folder and open the renamed vault; a blank name is the folder.
+    #[gpui::test]
+    fn a_renamed_vault_titles_its_windows_and_links_still_open(cx: &mut TestAppContext) {
+        use super::super::{reader_history::TestSessionDirectory, vault_name, Opts};
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let roots: Vec<PathBuf> = ["Gate1", "Gate2"]
+            .iter()
+            .map(|name| {
+                let root = fixture.path().join(name);
+                std::fs::create_dir_all(&root).unwrap();
+                std::fs::write(root.join("Plan.md"), "# Plan").unwrap();
+                root.canonicalize().unwrap()
+            })
+            .collect();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            install(cx);
+            cx.set_global(TestSessionDirectory(state.clone()));
+            super::super::reader_ui_state::install(&state, cx);
+            super::super::reader_ui_state::trust_for_links(&roots[1], cx);
+        });
+        for root in &roots {
+            cx.update(|cx| {
+                open_window(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("Plan.md".into()),
+                        session_directory: Some(state.clone()),
+                        index_dir: Some(fixture.path().join("index")),
+                        ..Default::default()
+                    },
+                    cx,
+                )
+                .unwrap()
+            });
+            cx.run_until_parked();
+        }
+        let window_of = |cx: &mut TestAppContext, root: &PathBuf| {
+            cx.update(|cx| {
+                readers(cx)
+                    .into_iter()
+                    .find(|r| r.read(cx).vault_root == *root)
+                    .map(|r| r.read(cx).reader_window)
+                    .unwrap()
+            })
+        };
+        let title = |cx: &mut TestAppContext, root: &PathBuf| {
+            let window = window_of(cx, root);
+            gpui::VisualTestContext::from_window(window, cx).window_title()
+        };
+        assert_eq!(
+            title(cx, &roots[0]).as_deref(),
+            Some("Okilum — Plan — Gate1")
+        );
+        assert_eq!(
+            title(cx, &roots[1]).as_deref(),
+            Some("Okilum — Plan — Gate2")
+        );
+
+        cx.update(|cx| vault_name::set(&roots[1], "  Work  ", cx));
+        cx.run_until_parked();
+        assert_eq!(
+            title(cx, &roots[1]).as_deref(),
+            Some("Okilum — Plan — Work"),
+            "the renamed vault's window"
+        );
+        assert_eq!(
+            title(cx, &roots[0]).as_deref(),
+            Some("Okilum — Plan — Gate1"),
+            "the other vault's window keeps its name"
+        );
+        cx.update(|cx| {
+            assert_eq!(vault_name::shown(&roots[1], cx), "Work");
+            // The link still names the folder, never the display name.
+            let link =
+                super::super::reader_files::okilum_link(&roots[1], "Plan.md", &Default::default());
+            assert!(link.contains("Gate2") && !link.contains("Work"), "{link}");
+        });
+        // The link opens the renamed vault: its window comes forward, no
+        // new window and no error.
+        let link = cx.update(|cx| {
+            super::super::reader_files::okilum_link(&roots[1], "Plan.md", &Default::default())
+        });
+        cx.update(|cx| open_deep_link_among(&link, &roots, cx));
+        cx.run_until_parked();
+        assert_eq!(
+            cx.windows().len(),
+            2,
+            "the link reuses the renamed vault's window"
+        );
+
+        // A blank name goes back to the folder name.
+        cx.update(|cx| vault_name::set(&roots[1], "   ", cx));
+        cx.run_until_parked();
+        assert_eq!(
+            title(cx, &roots[1]).as_deref(),
+            Some("Okilum — Plan — Gate2")
+        );
     }
 
     /// #1049: a link to a vault name that two known vaults share opens a
