@@ -213,4 +213,44 @@ mod tests {
                 && hits(r, "burstword") == 0
         });
     }
+
+    /// #1314: the poll timer ran against the Reader's "current window", which
+    /// is whichever window drew it last. Settings/About draw the Reader, and
+    /// closing that window leaves the Reader with no current window until its
+    /// own window draws again; one tick in that gap ended the timer for the
+    /// session, so nothing outside was ever seen again.
+    #[gpui::test]
+    fn closing_settings_does_not_end_the_watcher_poll(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("Start.md"), START).unwrap();
+        let (reader, visual) = open_first_session(cx, &root, &temp.path().join("cache"));
+        let reader_window = reader.read_with(visual, |reader, _| reader.reader_window);
+        visual.update(|_, cx| reader_settings::show(Some(reader.downgrade()), cx));
+        visual.run_until_parked();
+        let settings = visual
+            .update(|_, cx| cx.windows().into_iter().find(|window| *window != reader_window))
+            .expect("positive control: the Settings window opened");
+        settings
+            .update(visual, |_, window, _| window.remove_window())
+            .unwrap();
+        // No draw of the Reader's window in between: the gap the timer can hit.
+        let current = visual.update(|_, cx| {
+            cx.with_window(reader.entity_id(), |window, _| window.window_handle())
+        });
+        eprintln!("current window of the Reader after closing Settings: {current:?}");
+        for _ in 0..4 {
+            visual.executor().advance_clock(Duration::from_millis(300));
+            visual.run_until_parked();
+        }
+        std::fs::write(root.join("External Control.md"), "# External\n\ncontrolword\n").unwrap();
+        settle(visual, &reader, "a note created after Settings was closed", |r| {
+            has_note(r, "External Control.md") && hits(r, "controlword") == 1
+        });
+    }
 }
