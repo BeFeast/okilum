@@ -243,7 +243,10 @@ mod tests {
         let current = visual.update(|_, cx| {
             cx.with_window(reader.entity_id(), |window, _| window.window_handle())
         });
-        eprintln!("current window of the Reader after closing Settings: {current:?}");
+        assert!(
+            current.is_none(),
+            "positive control: the Reader has no current window, as in the failing session"
+        );
         for _ in 0..4 {
             visual.executor().advance_clock(Duration::from_millis(300));
             visual.run_until_parked();
