@@ -347,7 +347,7 @@ impl Reader {
         cx.spawn_in(window, async move |this, cx| {
             cx.background_executor().timer(delay).await;
             let proceed = this
-                .update_in(cx, |this, _, cx| {
+                .update_in_own_window(cx, |this, _, cx| {
                     if this.hover_preview.generation != generation
                         || !this.hover_preview.over_source
                     {
@@ -398,7 +398,7 @@ impl Reader {
                     Ok::<_, anyhow::Error>((document, states, heading))
                 })
                 .await;
-            let _ = this.update_in(cx, |this, _, cx| {
+            let _ = this.update_in_own_window(cx, |this, _, cx| {
                 if this.hover_preview.generation != generation
                     || this.navigation.generation != navigation
                     || this.vault_root != root

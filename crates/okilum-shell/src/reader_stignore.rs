@@ -28,7 +28,7 @@ impl Reader {
                 .background_executor()
                 .spawn(async move { syncthing_ignore::status(&checked) })
                 .await;
-            let _ = this.update_in(cx, |this, window, cx| {
+            let _ = this.update_in_own_window(cx, |this, window, cx| {
                 if this.vault_root != root {
                     return;
                 }
@@ -120,7 +120,7 @@ impl Reader {
                 .background_executor()
                 .spawn(async move { syncthing_ignore::add_block(&target) })
                 .await;
-            let _ = this.update_in(cx, |this, window, cx| {
+            let _ = this.update_in_own_window(cx, |this, window, cx| {
                 this.stignore_busy = false;
                 match added {
                     Ok(Added::Appended(_)) => {

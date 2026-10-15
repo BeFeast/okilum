@@ -49,7 +49,7 @@ impl Reader {
                     )
                 })
                 .await;
-            let _ = this.update_in(cx, |this, window, cx| {
+            let _ = this.update_in_own_window(cx, |this, window, cx| {
                 this.trash_pending = false;
                 match result {
                     Ok(()) => {

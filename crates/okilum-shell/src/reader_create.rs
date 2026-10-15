@@ -137,7 +137,7 @@ impl Reader {
         );
         cx.spawn_in(window, async move |this, cx| {
             cx.background_executor().timer(Duration::from_secs(8)).await;
-            let _ = this.update_in(cx, |this, window, cx| {
+            let _ = this.update_in_own_window(cx, |this, window, cx| {
                 if this
                     .creation_undo
                     .as_ref()

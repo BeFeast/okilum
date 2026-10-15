@@ -147,7 +147,7 @@ impl Reader {
                     Ok::<_, anyhow::Error>((folder, templates))
                 })
                 .await;
-            let _ = this.update_in(cx, |this, window, cx| {
+            let _ = this.update_in_own_window(cx, |this, window, cx| {
                 if this.vault_root != root {
                     return;
                 }

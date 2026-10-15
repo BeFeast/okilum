@@ -173,7 +173,7 @@ impl Reader {
             let _cache_lease = cache_lease;
             let result = task.await;
             let ready = this
-                .update_in(cx, |this, window, cx| {
+                .update_in_own_window(cx, |this, window, cx| {
                     if this.vault_root != root || this.incremental_epoch != epoch {
                         return None;
                     }
@@ -325,7 +325,7 @@ impl Reader {
                 Ok::<_, anyhow::Error>(state)
             });
             let persisted = persist_task.await;
-            let _ = this.update_in(cx, |this, window, cx| {
+            let _ = this.update_in_own_window(cx, |this, window, cx| {
                 if this.vault_root != root || this.incremental_epoch != epoch {
                     return;
                 }

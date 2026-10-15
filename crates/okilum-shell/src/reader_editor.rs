@@ -1664,7 +1664,7 @@ impl Reader {
                 .zip(stores.next().and_then(|(_, s)| s))
                 .map(|(ui, store)| ui(store));
             let moved = result.as_ref().is_ok_and(|a| a.moved);
-            let _ = this.update_in(cx, |this, _, cx| {
+            let _ = this.update_in_own_window(cx, |this, _, cx| {
                 // Keep the initiating window frozen until complete_move has
                 // replaced the old source path and synchronized its input.
                 if park_own {
