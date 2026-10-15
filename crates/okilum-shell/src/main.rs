@@ -4185,10 +4185,12 @@ impl Reader {
                                 Button::new("create-template-picker")
                                     .ghost()
                                     .small()
+                                    // Says what it is: «Template» until one is
+                                    // chosen, then its name (#1351).
                                     .label(
                                         selected
                                             .as_deref()
-                                            .unwrap_or("Built-in")
+                                            .unwrap_or("Template")
                                             .trim_end_matches(".md")
                                             .chars()
                                             .take(10)
@@ -4199,7 +4201,7 @@ impl Reader {
                                         "Template: {}",
                                         selected
                                             .as_deref()
-                                            .unwrap_or("Built-in")
+                                            .unwrap_or("standard note")
                                             .trim_end_matches(".md")
                                     ))
                                     .dropdown_menu_with_anchor(
@@ -4226,7 +4228,7 @@ impl Reader {
                                                     })
                                             };
                                             let mut menu =
-                                                menu.item(option("Built-in note".into(), None));
+                                                menu.item(option("Standard note".into(), None));
                                             for name in &templates {
                                                 menu = menu.item(option(
                                                     name.trim_end_matches(".md").to_owned(),
@@ -5706,6 +5708,20 @@ impl Reader {
             return self.render_timeline(cx);
         }
         let p = brand::palette(cx);
+        // No note is open (a new or empty vault): one line about what the
+        // panel shows, not two sections of dashes (#1349).
+        if self.selected_file().is_empty() && self.active_timeline().is_none() {
+            return div()
+                .w_full()
+                .h_full()
+                .px_4()
+                .pt_3()
+                .text_size(px(brand::READER_CHROME_FONT_SIZE))
+                .text_color(p.text_muted)
+                .debug_selector(|| "right-panel-no-note".into())
+                .child(reader_right_panel::NO_NOTE)
+                .into_any_element();
+        }
         let faint = brand::reader_palette(cx).text_faint;
         let section = |icon: &'static str, label: String| {
             h_flex()

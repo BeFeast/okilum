@@ -62,6 +62,9 @@ impl CreatedUndo {
         Ok(())
     }
 }
+/// How long the «Created …» toast stays; its Undo keeps it from hiding.
+const CREATION_TOAST_LIFETIME: std::time::Duration = std::time::Duration::from_secs(6);
+
 struct CreationToast;
 
 pub(super) struct Creation {
@@ -106,6 +109,25 @@ impl Reader {
         self.creation_undo = Some(item.clone());
         let reader = cx.weak_entity();
         let announced = item.clone();
+        // The Undo button keeps the toast from hiding on its own; it goes
+        // after a while, and Ctrl+Z still undoes (#1354).
+        let expiring = Arc::downgrade(&item);
+        let handle = window.window_handle();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(CREATION_TOAST_LIFETIME)
+                .await;
+            let _ = handle.update(cx, |_, window, cx| {
+                let current = this
+                    .upgrade()
+                    .and_then(|this| this.read(cx).creation_undo.clone());
+                if current.is_some_and(|c| expiring.upgrade().is_some_and(|e| Arc::ptr_eq(&c, &e)))
+                {
+                    window.remove_notification::<CreationToast>(cx);
+                }
+            });
+        })
+        .detach();
         window.push_notification(
             Notification::new()
                 .id::<CreationToast>()
