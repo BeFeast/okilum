@@ -35,6 +35,11 @@ INTERVAL_MS = os.environ.get("WHEEL_INTERVAL_MS", "16")
 # of it), 300 ms after its end and 2 s after it, for looking at the frames (a shot loads WindowServer, so
 # these runs are never timed).
 SHOTS = os.environ.get("SHOTS") == "1"
+# IDLE=1: instead of measured reps, one stream per scenario and then IDLE_SECONDS (30) without input, with the
+# process's CPU time and resident size read before the stream and at both ends of the idle period, and the frames
+# the trace shows during it (idle.json). The cost of an app that is only open.
+IDLE = os.environ.get("IDLE") == "1"
+IDLE_SECONDS = float(os.environ.get("IDLE_SECONDS", "30"))
 HOME = Path.home()
 OKQA = os.environ.get("OKQA", str(HOME / "qa/okilum/tools/okqa"))
 # build-mac-trace.sh puts the compiled injector next to the binary
@@ -55,6 +60,14 @@ def frames(log):
         return sum(1 for line in open(log, errors="replace") if line.startswith("[frame]"))
     except FileNotFoundError:
         return 0
+
+
+def process_stats(pid):
+    """CPU seconds (user + system, 10 ms resolution) and resident kB of a process, from ps."""
+    out = subprocess.run(["ps", "-o", "cputime=,rss=", "-p", str(pid)], capture_output=True, text=True).stdout.split()
+    parts = out[0].split(":")
+    cpu = sum(float(part) * 60 ** index for index, part in enumerate(reversed(parts)))
+    return cpu, int(out[1])
 
 
 def now_ms():
@@ -96,6 +109,27 @@ for scenario in scenarios:
         a = frames(log)
         time.sleep(3)
         idle = frames(log) - a
+        if IDLE:
+            before_cpu, before_rss = process_stats(proc.pid)
+            run(WHEEL, str(proc.pid), str(EVENTS), "-40", "16", check=False)  # back to the top
+            time.sleep(2.5)
+            res = run(WHEEL, str(proc.pid), str(EVENTS), "40", INTERVAL_MS, check=False).stdout.strip()
+            time.sleep(1.5)
+            cpu0, rss0 = process_stats(proc.pid)
+            frames0 = frames(log)
+            time.sleep(IDLE_SECONDS)
+            cpu1, rss1 = process_stats(proc.pid)
+            record = {
+                "label": label, "probe": res, "idle_seconds": IDLE_SECONDS,
+                "cpu_percent": round(100 * (cpu1 - cpu0) / IDLE_SECONDS, 3), "cpu_seconds": round(cpu1 - cpu0, 2),
+                "frames_in_idle": frames(log) - frames0,
+                "rss_mb_before_flick": round(before_rss / 1024, 1), "rss_mb_after_flick": round(rss0 / 1024, 1),
+                "rss_mb_after_idle": round(rss1 / 1024, 1),
+            }
+            (base / "idle.json").write_text(json.dumps(record, indent=1) + "\n")
+            summary.append(record)
+            print(f"{label} idle: {record}", flush=True)
+            continue
         if SHOTS:
             run(WHEEL, str(proc.pid), str(EVENTS), "-40", "16", check=False)  # back to the top
             time.sleep(2.5)

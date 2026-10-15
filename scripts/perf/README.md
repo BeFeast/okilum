@@ -97,6 +97,10 @@ into view).
 (`in-stream-60.png`, `in-stream-85.png`), 300 ms after its end and 2 s after it, to look for blank or half-drawn text; run it apart from
 the timed runs, on each build being compared.
 
+`IDLE=1` (with `IDLE_SECONDS`, default 30) replaces the measured reps by one stream per scenario followed by that long
+without input: CPU % of the process over the idle time (delta of its cputime, not `ps %cpu`), frames in the trace
+during it (expected 0) and resident size before the stream, after it and after the idle time, in `idle.json`.
+
 ## Linux and the CI guard
 
 `perf-linux` (hosted, on every PR that touches app code, required by `ci / check`) builds the
