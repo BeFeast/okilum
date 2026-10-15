@@ -62,10 +62,13 @@ fn write(root: &Path, name: Option<&str>) -> anyhow::Result<()> {
         None => object.remove("name"),
     };
     let temporary = directory.join(format!(".{FILE}.{}.tmp", uuid::Uuid::new_v4()));
-    std::fs::write(&temporary, serde_json::to_vec_pretty(&value)?)?;
-    std::fs::rename(&temporary, file(root)).inspect_err(|_| {
-        let _ = std::fs::remove_file(&temporary);
-    })?;
+    let bytes = serde_json::to_vec_pretty(&value)?;
+    // A failed write or rename leaves no temporary file to sync.
+    std::fs::write(&temporary, bytes)
+        .and_then(|()| std::fs::rename(&temporary, file(root)))
+        .inspect_err(|_| {
+            let _ = std::fs::remove_file(&temporary);
+        })?;
     Ok(())
 }
 
@@ -414,6 +417,26 @@ mod tests {
             visual.update(|_, cx| input.read(cx).value().to_string()),
             "Work",
             "typed over the shown name"
+        );
+    }
+
+    #[test]
+    fn a_failed_write_leaves_no_temporary_file() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        std::fs::create_dir_all(root.join(DIRECTORY)).unwrap();
+        // The name file is a folder, so the rename fails.
+        std::fs::create_dir_all(file(root)).unwrap();
+        std::fs::write(file(root).join("keep"), b"").unwrap();
+        assert!(write(root, Some("Work")).is_err());
+        let left: Vec<_> = std::fs::read_dir(root.join(DIRECTORY))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            left,
+            [std::ffi::OsString::from(FILE)],
+            "only the original entry"
         );
     }
 
