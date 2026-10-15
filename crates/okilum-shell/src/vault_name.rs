@@ -128,8 +128,19 @@ fn adopt(root: &Path, name: Option<String>, cx: &mut App) {
         Some(name) => names.insert(root.to_owned(), name),
         None => names.remove(root),
     };
-    retitle(root, cx);
+    // After the current update: a rename made in a vault window runs inside
+    // that window's update, where the window cannot be updated again (#1364).
+    let root = root.to_owned();
+    cx.defer(move |cx| retitle(&root, cx));
     cx.refresh_windows();
+}
+
+/// Names read for vaults no window shows yet (the start screen's list).
+pub(crate) fn remember(known: Vec<(PathBuf, String)>, cx: &mut App) {
+    let names = &mut cx.default_global::<Names>().names;
+    for (root, name) in known {
+        names.entry(root).or_insert(name);
+    }
 }
 
 /// The folder's own name, which links and lookups use.
