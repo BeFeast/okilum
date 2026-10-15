@@ -746,11 +746,8 @@ impl Settings {
                     let hidden = state.sidebar.show_hidden;
                     let root = state.vault_root.clone();
                     let map_root = root.clone();
-                    let name = root
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .into_owned();
+                    let name = crate::vault_name::shown(&root, cx);
+                    let rename_root = root.clone();
                     let full_path = root.to_string_lossy().into_owned();
                     let short_path = compact_vault_path(&root);
                     let color_root = root.clone();
@@ -792,6 +789,18 @@ impl Settings {
                                                     .build(window, cx)
                                                 }),
                                         ),
+                                )
+                                .child(
+                                    Button::new("settings-rename-vault")
+                                        .ghost()
+                                        .label("Rename…")
+                                        .on_click(move |_, window, cx| {
+                                            crate::vault_name::open_rename(
+                                                rename_root.clone(),
+                                                window,
+                                                cx,
+                                            )
+                                        }),
                                 )
                                 .child(
                                     Button::new("settings-reveal-vault")

@@ -174,6 +174,9 @@ const SKIP_DIRS: &[&str] = &[
     ".stfolder",
     ".stversions",
     ".okilum-index",
+    // Okilum's per-vault settings (the display name, #1327); synced with the
+    // vault, never a note.
+    ".okilum",
     "node_modules",
 ];
 /// Exact Windows preimage spelling reserved for native safe-save recovery.
@@ -1805,8 +1808,27 @@ mod preimage_visibility_tests {
         assert!(!windows_preimage_name(std::ffi::OsStr::new(
             &filename.replace('-', "")
         )));
+        // Okilum's per-vault settings and their Syncthing conflict copies
+        // (#1327) are never notes, files in the tree or search results.
+        fs::create_dir_all(root.join(".okilum")).unwrap();
+        fs::write(root.join(".okilum/vault.json"), r#"{"name":"Work"}"#).unwrap();
+        fs::write(
+            root.join(".okilum/vault.sync-conflict-20261015-120000-ABCDEFG.json"),
+            r#"{"name":"Home"}"#,
+        )
+        .unwrap();
+        fs::write(root.join(".okilum/Looks like a note.md"), "# not a note").unwrap();
+        assert!(service_path(Path::new(".okilum/vault.json")));
         let vault = Vault::scan(root).unwrap();
         assert!(vault.notes.iter().any(|n| n.path == "nested/Visible.md"));
+        assert!(
+            vault
+                .entries
+                .iter()
+                .all(|e| !e.path.starts_with(".okilum/"))
+                && vault.notes.iter().all(|n| !n.path.starts_with(".okilum/")),
+            "Okilum's vault settings stay out of the inventory"
+        );
         assert!(vault
             .entries
             .iter()

@@ -599,8 +599,9 @@ pub(crate) fn register(reader: WeakEntity<super::Reader>, root: PathBuf, cx: &mu
     if cx.try_global::<Readers>().is_some() {
         let readers = &mut cx.global_mut::<Readers>().0;
         readers.retain(|(old, _)| old.entity_id() != reader.entity_id() && old.upgrade().is_some());
-        readers.push((reader, root));
+        readers.push((reader, root.clone()));
         super::reader_open_windows::record_soon(cx);
+        super::vault_name::watch(root, cx);
     }
 }
 
@@ -1005,7 +1006,14 @@ fn create_window(
                 window.refresh();
             })
             .detach();
-        window.set_window_title("Okilum — Opening document");
+        // A vault window is named by its vault before the first note opens.
+        match opts.vault.as_deref().filter(|_| !opts.single_file) {
+            Some(root) => window.set_window_title(&super::vault_name::window_title(
+                None,
+                Some(&super::vault_name::shown(root, cx)),
+            )),
+            None => window.set_window_title("Okilum — Opening document"),
+        }
         let selected = opts.note.clone().unwrap_or_default();
         let root_path = opts.vault.clone();
         let full_vault = !opts.single_file;
@@ -1155,10 +1163,7 @@ fn confirm_link_vault(root: PathBuf, opts: super::Opts, cx: &mut App) {
     }
     // A prompt closed with its window button left a stale entry.
     cx.global_mut::<LinkPrompts>().0.remove(&root);
-    let name = root
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| root.display().to_string());
+    let name = super::vault_name::shown(&root, cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(super::window_state::default_bounds(
             size(px(560.), px(240.)),
@@ -1301,6 +1306,9 @@ impl Render for LinkVaultChoice {
                 .child(
                     v_flex()
                         .min_w_0()
+                        .when_some(super::vault_name::stored(root, cx), |row, name| {
+                            row.child(div().font_weight(FontWeight::MEDIUM).child(name))
+                        })
                         .child(okilum_core::vault::display_path(root))
                         .when(opts.is_none(), |row| {
                             row.child(
@@ -2390,6 +2398,271 @@ mod entry_tests {
                 );
             }
         });
+    }
+
+    /// #1327: a renamed vault is named by its display name in its window
+    /// titles only; another vault's window keeps its own. Links still name
+    /// the folder and open the renamed vault; a blank name is the folder.
+    #[gpui::test]
+    fn a_renamed_vault_titles_its_windows_and_links_still_open(cx: &mut TestAppContext) {
+        use super::super::{reader_history::TestSessionDirectory, vault_name, Opts};
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let roots: Vec<PathBuf> = ["Gate1", "Gate2"]
+            .iter()
+            .map(|name| {
+                let root = fixture.path().join(name);
+                std::fs::create_dir_all(&root).unwrap();
+                std::fs::write(root.join("Plan.md"), "# Plan").unwrap();
+                root.canonicalize().unwrap()
+            })
+            .collect();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            install(cx);
+            cx.set_global(TestSessionDirectory(state.clone()));
+            super::super::reader_ui_state::install(&state, cx);
+            super::super::reader_ui_state::trust_for_links(&roots[1], cx);
+        });
+        for root in &roots {
+            cx.update(|cx| {
+                open_window(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("Plan.md".into()),
+                        session_directory: Some(state.clone()),
+                        index_dir: Some(fixture.path().join("index")),
+                        ..Default::default()
+                    },
+                    cx,
+                )
+                .unwrap()
+            });
+            cx.run_until_parked();
+        }
+        let window_of = |cx: &mut TestAppContext, root: &PathBuf| {
+            cx.update(|cx| {
+                readers(cx)
+                    .into_iter()
+                    .find(|r| r.read(cx).vault_root == *root)
+                    .map(|r| r.read(cx).reader_window)
+                    .unwrap()
+            })
+        };
+        let title = |cx: &mut TestAppContext, root: &PathBuf| {
+            let window = window_of(cx, root);
+            gpui::VisualTestContext::from_window(window, cx).window_title()
+        };
+        assert_eq!(
+            title(cx, &roots[0]).as_deref(),
+            Some("Okilum — Plan — Gate1")
+        );
+        assert_eq!(
+            title(cx, &roots[1]).as_deref(),
+            Some("Okilum — Plan — Gate2")
+        );
+
+        cx.update(|cx| vault_name::set(&roots[1], "  Work  ", cx));
+        cx.run_until_parked();
+        assert_eq!(
+            title(cx, &roots[1]).as_deref(),
+            Some("Okilum — Plan — Work"),
+            "the renamed vault's window"
+        );
+        assert_eq!(
+            title(cx, &roots[0]).as_deref(),
+            Some("Okilum — Plan — Gate1"),
+            "the other vault's window keeps its name"
+        );
+        cx.update(|cx| {
+            assert_eq!(vault_name::shown(&roots[1], cx), "Work");
+            // The link still names the folder, never the display name.
+            let link =
+                super::super::reader_files::okilum_link(&roots[1], "Plan.md", &Default::default());
+            assert!(link.contains("Gate2") && !link.contains("Work"), "{link}");
+        });
+        // The link opens the renamed vault: its window comes forward, no
+        // new window and no error.
+        let link =
+            super::super::reader_files::okilum_link(&roots[1], "Plan.md", &Default::default());
+        cx.update(|cx| open_deep_link_among(&link, &roots, cx));
+        cx.run_until_parked();
+        assert_eq!(
+            cx.windows().len(),
+            2,
+            "the link reuses the renamed vault's window"
+        );
+
+        // A blank name goes back to the folder name.
+        cx.update(|cx| vault_name::set(&roots[1], "   ", cx));
+        cx.run_until_parked();
+        assert_eq!(
+            title(cx, &roots[1]).as_deref(),
+            Some("Okilum — Plan — Gate2")
+        );
+    }
+
+    /// #1327: a rename made on another machine arrives as a changed
+    /// `.okilum/vault.json` (Syncthing); the open window takes the new name
+    /// without a restart. A broken file afterwards means the folder name.
+    #[gpui::test]
+    fn a_name_synced_from_another_machine_shows_without_restart(cx: &mut TestAppContext) {
+        use super::super::{reader_history::TestSessionDirectory, vault_name, Opts};
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let root = fixture.path().join("Gate1");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("Plan.md"), "# Plan").unwrap();
+        let root = root.canonicalize().unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            install(cx);
+            cx.set_global(TestSessionDirectory(state.clone()));
+            open_window(
+                Opts {
+                    vault: Some(root.clone()),
+                    note: Some("Plan.md".into()),
+                    session_directory: Some(state.clone()),
+                    index_dir: Some(fixture.path().join("index")),
+                    ..Default::default()
+                },
+                cx,
+            )
+            .unwrap();
+        });
+        cx.run_until_parked();
+        let window = cx.update(|cx| cx.windows()[0]);
+        let title = |cx: &mut TestAppContext| {
+            gpui::VisualTestContext::from_window(window, cx).window_title()
+        };
+        let wait = |cx: &mut TestAppContext| {
+            for _ in 0..30 {
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_millis(100));
+                cx.run_until_parked();
+            }
+        };
+        assert_eq!(title(cx).as_deref(), Some("Okilum — Plan — Gate1"));
+        // Machine A renamed the vault; Syncthing replaces the file here.
+        let file = root.join(vault_name::DIRECTORY).join("vault.json");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, r#"{"version":1,"name":"Work"}"#).unwrap();
+        wait(cx);
+        assert_eq!(
+            title(cx).as_deref(),
+            Some("Okilum — Plan — Work"),
+            "picked up"
+        );
+        cx.update(|cx| assert_eq!(vault_name::shown(&root, cx), "Work"));
+        // A conflict copy next to it is never read.
+        std::fs::write(
+            file.with_file_name("vault.sync-conflict-20261015-120000-ABCDEFG.json"),
+            r#"{"version":1,"name":"Home"}"#,
+        )
+        .unwrap();
+        wait(cx);
+        assert_eq!(title(cx).as_deref(), Some("Okilum — Plan — Work"));
+        // A broken file means the folder name, and is left as it is.
+        std::fs::write(&file, b"{ broken").unwrap();
+        wait(cx);
+        assert_eq!(
+            title(cx).as_deref(),
+            Some("Okilum — Plan — Gate1"),
+            "fallback"
+        );
+        assert_eq!(
+            std::fs::read(&file).unwrap(),
+            b"{ broken",
+            "never rewritten"
+        );
+    }
+
+    /// #1327: the name is read back from the vault after a restart, and the
+    /// restored windows carry it.
+    #[gpui::test]
+    fn a_vault_name_survives_restart_and_restore(cx: &mut TestAppContext) {
+        use super::super::{
+            reader_history::TestSessionDirectory, reader_open_windows, reader_startup, vault_name,
+            Opts,
+        };
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let roots: Vec<PathBuf> = ["Gate1", "Gate2", "Gate3"]
+            .iter()
+            .map(|name| {
+                let root = fixture.path().join(name);
+                std::fs::create_dir_all(&root).unwrap();
+                std::fs::write(root.join("Plan.md"), "# Plan").unwrap();
+                root.canonicalize().unwrap()
+            })
+            .collect();
+        let base = Opts {
+            session_directory: Some(state.clone()),
+            index_dir: Some(fixture.path().join("index")),
+            ..Default::default()
+        };
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            install(cx);
+            cx.set_global(TestSessionDirectory(state.clone()));
+            reader_open_windows::install(state.clone(), cx);
+            cx.set_global(reader_startup::ReopenBase(base.clone()));
+            cx.set_quit_mode(gpui::QuitMode::Explicit);
+        });
+        for root in &roots {
+            cx.update(|cx| {
+                open_window(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("Plan.md".into()),
+                        ..base.clone()
+                    },
+                    cx,
+                )
+                .unwrap()
+            });
+            cx.run_until_parked();
+        }
+        cx.update(|cx| vault_name::set(&roots[1], "Work", cx));
+        cx.update(reader_open_windows::quit);
+        cx.update(|cx| {
+            for window in cx.windows() {
+                let _ = window.update(cx, |_, window, _| window.remove_window());
+            }
+            // The next process starts with nothing in memory.
+            cx.set_global(vault_name::Names::default());
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            cx.set_global(reader_startup::Startup::default());
+            reader_startup::launch(base.clone(), cx);
+        });
+        for _ in 0..60 {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(100));
+            cx.run_until_parked();
+        }
+        let windows: Vec<gpui::AnyWindowHandle> = cx.update(|cx| {
+            readers(cx)
+                .into_iter()
+                .filter(|r| cx.windows().contains(&r.read(cx).reader_window))
+                .map(|r| r.read(cx).reader_window)
+                .collect()
+        });
+        let mut titles: Vec<String> = windows
+            .into_iter()
+            .filter_map(|window| gpui::VisualTestContext::from_window(window, cx).window_title())
+            .collect();
+        titles.sort();
+        assert_eq!(
+            titles,
+            [
+                "Okilum — Plan — Gate1",
+                "Okilum — Plan — Gate3",
+                "Okilum — Plan — Work",
+            ],
+            "all three restored, the renamed one by its name"
+        );
     }
 
     /// #1049: a link to a vault name that two known vaults share opens a

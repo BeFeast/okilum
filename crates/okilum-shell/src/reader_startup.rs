@@ -234,11 +234,7 @@ fn settled(root: &std::path::Path, cx: &App) -> bool {
 fn skipped_notice(skipped: &[PathBuf], cx: &mut App) {
     let names = skipped
         .iter()
-        .map(|root| {
-            root.file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_else(|| root.display().to_string())
-        })
+        .map(|root| super::vault_name::shown(root, cx))
         .collect::<Vec<_>>()
         .join(", ");
     let message = format!("Couldn’t reopen {names}: the folder is missing or can’t be read.");
@@ -318,10 +314,17 @@ impl Render for Entry {
                 .gap_2();
             for (index, root) in self.roots.iter().enumerate() {
                 let root = root.clone();
+                // A renamed vault is listed by its name, with its folder.
+                let label = match super::vault_name::stored(&root, cx) {
+                    Some(name) => {
+                        format!("{name} — {}", okilum_core::vault::display_path(&root))
+                    }
+                    None => root.display().to_string(),
+                };
                 recent = recent.child(
                     Button::new(("recent-folder", index))
                         .ghost()
-                        .label(root.display().to_string())
+                        .label(label)
                         .on_click(move |_, _, cx| {
                             if let Err(error) = reader_open::open_window(
                                 Opts {
