@@ -571,6 +571,15 @@ impl Reader {
     }
 }
 
+/// One action on the empty-vault page: a quiet button that dispatches it.
+fn empty_action(id: &'static str, label: SharedString, action: Box<dyn Action>) -> Button {
+    Button::new(id)
+        .ghost()
+        .label(label)
+        .debug_selector(move || id.into())
+        .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -976,13 +985,4 @@ mod tests {
         );
         std::fs::remove_dir_all(fixture).unwrap();
     }
-}
-
-/// One action on the empty-vault page: a quiet button that dispatches it.
-fn empty_action(id: &'static str, label: SharedString, action: Box<dyn Action>) -> Button {
-    Button::new(id)
-        .ghost()
-        .label(label)
-        .debug_selector(move || id.into())
-        .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
 }
