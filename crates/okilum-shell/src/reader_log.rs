@@ -3432,6 +3432,12 @@ impl LogView {
 impl Render for LogView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.update_pin();
+        // A request to scroll to the newest row is placed with the row height
+        // the list knew at that moment, which is not yet measured when the
+        // first rows appear, and the view stayed a few rows short of the end
+        // until the next poll (#1342). Asking again while pinned lets the next
+        // layout, which has measured the rows, place it.
+        self.keep_pinned();
         let count = self.visible_len();
         // Any file with records keeps the bar, even with every file hidden.
         let has_entries = (0..self.source_count()).any(|source| {
