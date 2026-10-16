@@ -1,0 +1,506 @@
+diff --git a/crates/base/src/text/document.rs b/crates/base/src/text/document.rs
+--- a/crates/base/src/text/document.rs
++++ b/crates/base/src/text/document.rs
+@@ -1,13 +1,23 @@
+ use gpui::{
+-    App, InteractiveElement as _, IntoElement, ListState, ParentElement as _, SharedString,
+-    Styled as _, Window, div,
++    AnyElement, App, AvailableSpace, Bounds, Element, ElementId, GlobalElementId,
++    InspectorElementId, InteractiveElement as _, IntoElement, LayoutId, ListState,
++    ParentElement as _, Pixels, SharedString, Style, Styled as _, Window, div, px, size,
+ };
+ 
+-use std::{ops::RangeInclusive, sync::Arc};
++use std::{
++    collections::HashMap,
++    ops::RangeInclusive,
++    rc::Rc,
++    sync::{
++        Arc, Weak,
++        atomic::{AtomicBool, Ordering},
++    },
++    time::{Duration, Instant},
++};
+ 
+ use crate::text::{
+     SelectionFormat,
+-    node::{BlockNode, NodeContext},
++    node::{BlockNode, NodeContext, Paragraph},
+ };
+ 
+ /// The parsed document AST.
+@@ -211,28 +221,287 @@
+             list_state.reset(blocks.len());
+         }
+ 
+-        div().id("document").size_full().child(
+-            gpui::list(list_state, {
+-                let node_cx = node_cx.clone();
+-                let blocks = blocks.clone();
+-                move |ix, window, cx| {
+-                    let is_last = ix + 1 == blocks.len();
+-                    blocks[ix]
+-                        .render_block(
+-                            NodeRenderOptions {
+-                                ix,
+-                                is_last,
+-                                ..options
+-                            },
+-                            &node_cx,
+-                            window,
+-                            cx,
+-                        )
+-                        .into_any_element()
++        let render_item: Rc<RenderBlockFn> = Rc::new({
++            let node_cx = node_cx.clone();
++            let blocks = blocks.clone();
++            move |ix, window, cx| {
++                let is_last = ix + 1 == blocks.len();
++                blocks[ix]
++                    .render_block(
++                        NodeRenderOptions {
++                            ix,
++                            is_last,
++                            ..options
++                        },
++                        &node_cx,
++                        window,
++                        cx,
++                    )
++                    .into_any_element()
++            }
++        });
++
++        div()
++            .id("document")
++            .size_full()
++            .child(
++                gpui::list(list_state.clone(), {
++                    let render_item = render_item.clone();
++                    move |ix, window, cx| render_item(ix, window, cx)
++                })
++                .size_full()
++                .pb(node_cx.style.bottom_padding()),
++            )
++            .child(ShapeAhead {
++                list_state,
++                render_item,
++                blocks: blocks.clone(),
++            })
++    }
++}
++
++type RenderBlockFn = dyn Fn(usize, &mut Window, &mut App) -> AnyElement;
++
++/// How long the view must stay where it is before the blocks ahead are shaped.
++const SHAPE_AHEAD_SETTLE: Duration = Duration::from_millis(200);
++/// How far below the scroll position, in pixels of laid-out blocks, to shape.
++/// A fast flick of 120 wheel notches covers 4800 px with 40 px notches (Mac probe)
++/// and about 7000 px with the notches X11 sends (Linux probe).
++const SHAPE_AHEAD_PIXELS: Pixels = px(10000.);
++/// What a block that is not laid out ahead counts for towards the distance.
++const SHAPE_AHEAD_SKIPPED_HEIGHT: Pixels = px(80.);
++/// Real time one frame spends on this, so the frame is not held up.
++const SHAPE_AHEAD_BUDGET: Duration = Duration::from_millis(4);
++
++/// Shapes the text of the blocks below the viewport while the view is idle, so
++/// the first fast scroll after opening a note finds it already shaped (#1312).
++///
++/// A large note is virtualized: the list lays out a block only when it enters
++/// its overdraw band, and the first lines of every block go through the
++/// platform text shaper then. A fast flick brings a new section into the band
++/// every frame, and that shaping is most of what is left of its cost once lines
++/// are kept in the shaped-line cache. Here the blocks beyond the band are laid
++/// out (layout only: no hitboxes, nothing painted) in a few frames after the
++/// scroll position has stopped moving, so the cache holds their lines before
++/// the user scrolls.
++///
++/// The work is finite. It runs only in frames of a view that stays still, in
++/// small steps, asks for a next frame only while blocks are left, and then
++/// stops: a view that is not being used does no work here. Scrolling again
++/// restarts it from the new position and skips what is already done. It does
++/// nothing for a note whose blocks the list measures all at once.
++struct ShapeAhead {
++    list_state: ListState,
++    render_item: Rc<RenderBlockFn>,
++    /// The parsed blocks. A new parse starts the warm-up over.
++    blocks: Arc<Vec<BlockNode>>,
++}
++
++/// Whether `blocks` is the parse `seen` was taken from. A `Weak` keeps its
++/// allocation reserved, so a later parse cannot be handed the same address the
++/// way it could be after comparing raw pointers of a dropped `Arc`.
++#[cfg(test)]
++pub(super) fn same_parse_for_test(seen: &Weak<Vec<BlockNode>>, blocks: &Arc<Vec<BlockNode>>) -> bool {
++    same_parse(seen, blocks)
++}
++
++fn same_parse(seen: &Weak<Vec<BlockNode>>, blocks: &Arc<Vec<BlockNode>>) -> bool {
++    seen.ptr_eq(&Arc::downgrade(blocks))
++}
++
++/// Whether laying a block out ahead of time could start work beyond shaping:
++/// loading an image, or whatever a Markdown extension renders.
++fn may_start_loading(block: &BlockNode) -> bool {
++    let has_image = |paragraph: &Paragraph| paragraph.children.iter().any(|node| node.image.is_some());
++    match block {
++        BlockNode::Paragraph(paragraph) => has_image(paragraph),
++        BlockNode::Heading { children, .. } => has_image(children),
++        BlockNode::Root { children, .. }
++        | BlockNode::Blockquote { children, .. }
++        | BlockNode::List { children, .. }
++        | BlockNode::ListItem { children, .. } => children.iter().any(may_start_loading),
++        BlockNode::Table(table) => table
++            .children
++            .iter()
++            .any(|row| row.children.iter().any(|cell| has_image(&cell.children))),
++        BlockNode::Custom(_) => true,
++        BlockNode::CodeBlock(_)
++        | BlockNode::Break { .. }
++        | BlockNode::HorizontalRule { .. }
++        | BlockNode::Definition { .. }
++        | BlockNode::Unknown => false,
++    }
++}
++
++#[derive(Default)]
++struct ShapeAheadProgress {
++    document: Weak<Vec<BlockNode>>,
++    width: Pixels,
++    /// Blocks already laid out here, and their heights.
++    laid_out: HashMap<usize, Pixels>,
++    last_top: Option<(usize, Pixels)>,
++    last_change: Option<Instant>,
++    /// A wake-up timer is waiting to redraw the view once it has settled.
++    wake_pending: Arc<AtomicBool>,
++    finished_at: Option<(usize, Pixels)>,
++}
++
++impl IntoElement for ShapeAhead {
++    type Element = Self;
++
++    fn into_element(self) -> Self::Element {
++        self
++    }
++}
++
++impl Element for ShapeAhead {
++    type RequestLayoutState = ();
++    type PrepaintState = ();
++
++    fn id(&self) -> Option<ElementId> {
++        Some("shape-ahead".into())
++    }
++
++    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
++        None
++    }
++
++    fn request_layout(
++        &mut self,
++        _: Option<&GlobalElementId>,
++        _: Option<&InspectorElementId>,
++        window: &mut Window,
++        cx: &mut App,
++    ) -> (LayoutId, Self::RequestLayoutState) {
++        let mut style = Style::default();
++        style.position = gpui::Position::Absolute;
++        (window.request_layout(style, [], cx), ())
++    }
++
++    fn prepaint(
++        &mut self,
++        id: Option<&GlobalElementId>,
++        _: Option<&InspectorElementId>,
++        _: Bounds<Pixels>,
++        _: &mut Self::RequestLayoutState,
++        window: &mut Window,
++        cx: &mut App,
++    ) -> Self::PrepaintState {
++        let Some(id) = id else {
++            return;
++        };
++        let viewport = self.list_state.viewport_bounds();
++        let count = self.list_state.item_count();
++        if viewport.size.width <= px(0.) || count == 0 {
++            return;
++        }
++        let list_state = self.list_state.clone();
++        let render_item = self.render_item.clone();
++        let blocks = self.blocks.clone();
++        let now = cx.background_executor().now();
++        window.with_element_state::<ShapeAheadProgress, _>(id, |progress, window| {
++            let mut progress = progress.unwrap_or_default();
++            if !same_parse(&progress.document, &blocks) || progress.width != viewport.size.width {
++                progress = ShapeAheadProgress {
++                    document: Arc::downgrade(&blocks),
++                    width: viewport.size.width,
++                    wake_pending: progress.wake_pending,
++                    ..Default::default()
++                };
++            }
++            let offset = list_state.logical_scroll_top();
++            let top = (offset.item_ix, offset.offset_in_item);
++            if progress.last_top != Some(top) {
++                // Moving: nothing to do now, and look again once it stops.
++                progress.last_top = Some(top);
++                progress.last_change = Some(now);
++                progress.finished_at = None;
++                Self::wake_after(SHAPE_AHEAD_SETTLE, &progress.wake_pending, window, cx);
++                return ((), progress);
++            }
++            if progress.finished_at == Some(top) {
++                return ((), progress);
++            }
++            let still_for = progress
++                .last_change
++                .map_or(Duration::ZERO, |at| now.saturating_duration_since(at));
++            if still_for < SHAPE_AHEAD_SETTLE {
++                Self::wake_after(
++                    SHAPE_AHEAD_SETTLE - still_for,
++                    &progress.wake_pending,
++                    window,
++                    cx,
++                );
++                return ((), progress);
++            }
++            let space = size(
++                AvailableSpace::Definite(viewport.size.width),
++                AvailableSpace::MinContent,
++            );
++            let began = Instant::now();
++            let mut extent = px(0.);
++            let mut ix = offset.item_ix;
++            let mut finished = true;
++            while ix < count && extent < SHAPE_AHEAD_PIXELS {
++                if let Some(bounds) = list_state.bounds_for_item(ix) {
++                    // The list measured it: its lines were shaped then.
++                    extent += bounds.size.height;
++                } else if let Some(height) = progress.laid_out.get(&ix) {
++                    extent += *height;
++                } else {
++                    if began.elapsed() >= SHAPE_AHEAD_BUDGET {
++                        finished = false;
++                        break;
++                    }
++                    let height = if may_start_loading(&blocks[ix]) {
++                        // Left for the list: nothing here may start loading.
++                        SHAPE_AHEAD_SKIPPED_HEIGHT
++                    } else {
++                        render_item(ix, window, cx)
++                            .layout_as_root(space, window, cx)
++                            .height
++                    };
++                    progress.laid_out.insert(ix, height);
++                    extent += height;
+                 }
++                ix += 1;
++            }
++            if finished {
++                progress.finished_at = Some(top);
++            } else {
++                window.request_animation_frame();
++            }
++            ((), progress)
++        });
++    }
++
++    fn paint(
++        &mut self,
++        _: Option<&GlobalElementId>,
++        _: Option<&InspectorElementId>,
++        _: Bounds<Pixels>,
++        _: &mut Self::RequestLayoutState,
++        _: &mut Self::PrepaintState,
++        _: &mut Window,
++        _: &mut App,
++    ) {
++    }
++}
++
++impl ShapeAhead {
++    /// Redraws the view after `delay`, once, unless a redraw is already waiting.
++    fn wake_after(delay: Duration, pending: &Arc<AtomicBool>, window: &mut Window, cx: &mut App) {
++        if pending.swap(true, Ordering::AcqRel) {
++            return;
++        }
++        let view = window.current_view();
++        let pending = pending.clone();
++        window
++            .spawn(cx, async move |cx| {
++                cx.background_executor().timer(delay).await;
++                pending.store(false, Ordering::Release);
++                let _ = cx.update(|_, cx| cx.notify(view));
+             })
+-            .size_full()
+-            .pb(node_cx.style.bottom_padding()),
+-        )
++            .detach();
+     }
+ }
+diff --git a/crates/base/src/text/text_view.rs b/crates/base/src/text/text_view.rs
+--- a/crates/base/src/text/text_view.rs
++++ b/crates/base/src/text/text_view.rs
+@@ -1043,6 +1043,162 @@
+         assert!(resized > floor, "extent after a width change: {resized} <= {floor}");
+     }
+ 
++    /// #1312: a new parse is never taken for the old one, whatever address it gets.
++    #[test]
++    fn a_new_parse_is_not_the_one_the_warm_up_started_on() {
++        use super::super::document::same_parse_for_test as same_parse;
++        let first = Arc::new(Vec::new());
++        let seen = Arc::downgrade(&first);
++        assert!(same_parse(&seen, &first), "positive control: the same parse");
++        drop(first);
++        // Allocations while the Weak is alive: none may share the first one's address.
++        for _ in 0..1000 {
++            let next = Arc::new(Vec::new());
++            assert!(!same_parse(&seen, &next));
++        }
++    }
++
++    /// #1312: the blocks of a large document beyond the list's band are shaped
++    /// while the view is idle, in a few frames, and then the work stops.
++    #[test]
++    fn an_idle_large_document_is_shaped_ahead_and_then_does_nothing() {
++        use super::super::inline::test_fonts::WideMonoTextSystem;
++        use gpui::{
++            Bounds, DevicePixels, Font, FontId, FontMetrics, FontRun, GlyphId, LineLayout,
++            PlatformTextSystem, RenderGlyphParams, Size, TestApp, TextRenderingMode,
++        };
++        use std::{borrow::Cow, sync::Mutex, time::Duration};
++
++        /// Records the text of every line the platform is asked to shape.
++        #[derive(Default)]
++        struct CountingTextSystem {
++            shaped: Mutex<Vec<String>>,
++        }
++
++        impl PlatformTextSystem for CountingTextSystem {
++            fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> anyhow::Result<()> {
++                WideMonoTextSystem.add_fonts(fonts)
++            }
++            fn all_font_names(&self) -> Vec<String> {
++                WideMonoTextSystem.all_font_names()
++            }
++            fn font_id(&self, descriptor: &Font) -> anyhow::Result<FontId> {
++                WideMonoTextSystem.font_id(descriptor)
++            }
++            fn font_metrics(&self, font_id: FontId) -> FontMetrics {
++                WideMonoTextSystem.font_metrics(font_id)
++            }
++            fn typographic_bounds(
++                &self,
++                font_id: FontId,
++                glyph_id: GlyphId,
++            ) -> anyhow::Result<Bounds<f32>> {
++                WideMonoTextSystem.typographic_bounds(font_id, glyph_id)
++            }
++            fn advance(&self, font_id: FontId, glyph_id: GlyphId) -> anyhow::Result<Size<f32>> {
++                WideMonoTextSystem.advance(font_id, glyph_id)
++            }
++            fn glyph_for_char(&self, font_id: FontId, ch: char) -> Option<GlyphId> {
++                WideMonoTextSystem.glyph_for_char(font_id, ch)
++            }
++            fn glyph_raster_bounds(
++                &self,
++                params: &RenderGlyphParams,
++            ) -> anyhow::Result<Bounds<DevicePixels>> {
++                WideMonoTextSystem.glyph_raster_bounds(params)
++            }
++            fn rasterize_glyph(
++                &self,
++                params: &RenderGlyphParams,
++                raster_bounds: Bounds<DevicePixels>,
++            ) -> anyhow::Result<(Size<DevicePixels>, Vec<u8>)> {
++                WideMonoTextSystem.rasterize_glyph(params, raster_bounds)
++            }
++            fn layout_line(&self, text: &str, font_size: Pixels, runs: &[FontRun]) -> LineLayout {
++                self.shaped.lock().unwrap().push(text.to_string());
++                WideMonoTextSystem.layout_line(text, font_size, runs)
++            }
++            fn recommended_rendering_mode(
++                &self,
++                font_id: FontId,
++                font_size: Pixels,
++            ) -> TextRenderingMode {
++                WideMonoTextSystem.recommended_rendering_mode(font_id, font_size)
++            }
++        }
++
++        let text_system = Arc::new(CountingTextSystem::default());
++        let mut app = TestApp::with_text_system(text_system.clone());
++        app.update(crate::init);
++        let mut window = app.open_window(|_, cx| FullWidthTestRoot {
++            text_view: cx.new(|cx| TextViewState::markdown(&document_of(600, 1), cx)),
++        });
++        let frame = |app: &mut TestApp, window: &mut gpui::TestAppWindow<FullWidthTestRoot>| {
++            app.run_until_parked();
++            window.draw();
++        };
++        for _ in 0..3 {
++            frame(&mut app, &mut window);
++        }
++        window.read(|root, cx| assert!(root.text_view.read(cx).list_visible_only));
++
++        let furthest = |text_system: &CountingTextSystem| {
++            text_system
++                .shaped
++                .lock()
++                .unwrap()
++                .iter()
++                .filter_map(|line| {
++                    line.strip_prefix("Block ")
++                        .and_then(|rest| rest.split(':').next())
++                        .and_then(|n| n.parse::<usize>().ok())
++                })
++                .max()
++                .unwrap_or(0)
++        };
++        let opened = furthest(&text_system);
++        assert!(opened > 0, "positive control: the band is shaped on open");
++
++        // Nothing moves for a while: the blocks ahead are shaped in some frames.
++        for _ in 0..80 {
++            app.advance_clock(Duration::from_millis(250));
++            frame(&mut app, &mut window);
++        }
++        let ahead = furthest(&text_system);
++        assert!(
++            ahead > opened + 100,
++            "blocks beyond the band are shaped while idle: first {opened}, then {ahead}"
++        );
++
++        // And then it stops: no line is shaped in frames that follow.
++        let lines = text_system.shaped.lock().unwrap().len();
++        for _ in 0..20 {
++            app.advance_clock(Duration::from_secs(1));
++            frame(&mut app, &mut window);
++        }
++        assert_eq!(
++            text_system.shaped.lock().unwrap().len(),
++            lines,
++            "an idle view does no shaping once the blocks ahead are done"
++        );
++
++        // Scrolling brings only blocks that were shaped ahead (lines are shaped
++        // again by this test platform, which has no cache, but no block new).
++        let seen = ahead;
++        for _ in 0..60 {
++            window.update(|root, _, cx| {
++                root.text_view.read(cx).list_state().scroll_by(px(40.));
++                cx.notify();
++            });
++            frame(&mut app, &mut window);
++        }
++        assert!(
++            furthest(&text_system) <= seen + 30,
++            "a flick inside the shaped range brings few new blocks: {} after {seen}",
++            furthest(&text_system)
++        );
++    }
++
+     struct StatelessMarkdownRoot {
+         renders: Arc<AtomicUsize>,
+     }
