@@ -7,6 +7,10 @@ pub mod labels;
 #[cfg(any(windows, test))]
 pub(crate) mod bidi_layout;
 pub mod reveal;
+/// The shaped-line cache in front of the platform shaper (#1312).
+pub(crate) mod shaped_line_cache;
+/// GPUI's platform with Okilum's text system (#1121, #1312).
+pub(crate) mod text_platform;
 #[cfg(windows)]
 pub(crate) mod windows_bidi;
 

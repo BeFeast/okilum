@@ -6550,6 +6550,7 @@ impl Render for ReaderPanelDrag {
 
 impl Render for Reader {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        platform::shaped_line_cache::ShapedLineCache::note_scale_factor(window, cx);
         if self.toast_subscription.is_none() {
             let notifications = Root::read(window, cx).notification.clone();
             self.toast_subscription = Some(cx.observe(&notifications, |_, _, cx| cx.notify()));
@@ -7289,12 +7290,9 @@ fn main() {
 
     let platform_phase = diagnostics.phase("platform_application");
     let clipboard = platform::managed_clipboard();
-    // Windows lays right-to-left glyphs out in logical order; the wrapper
-    // repairs their positions (#1121). Other platforms already shape bidi.
-    #[cfg(windows)]
-    let app = platform::windows_bidi::application().with_assets(Assets);
-    #[cfg(not(windows))]
-    let app = gpui_platform::application().with_assets(Assets);
+    // Shaped lines outlive GPUI's one-frame cache (#1312); on Windows the
+    // right-to-left glyph positions are repaired under that cache (#1121).
+    let app = platform::text_platform::application().with_assets(Assets);
     drop(platform_phase);
     // Register before launch: macOS can deliver files before the launch callback.
     let (open_tx, open_rx) = async_channel::unbounded();
@@ -7362,6 +7360,11 @@ fn main() {
         }
 
         brand::apply_theme(cx);
+        // A theme can swap the fonts behind a run; shaped lines start over.
+        cx.observe_global::<Theme>(|_| {
+            platform::shaped_line_cache::ShapedLineCache::clear_installed()
+        })
+        .detach();
         cx.activate(true);
         drop(appearance_phase);
 
