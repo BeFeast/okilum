@@ -29,7 +29,7 @@ diff --git a/crates/base/src/text/document.rs b/crates/base/src/text/document.rs
  };
  
  /// The parsed document AST.
-@@ -211,28 +221,277 @@
+@@ -211,28 +221,278 @@
              list_state.reset(blocks.len());
          }
  
@@ -96,8 +96,9 @@ diff --git a/crates/base/src/text/document.rs b/crates/base/src/text/document.rs
 +/// How long the view must stay where it is before the blocks ahead are shaped.
 +const SHAPE_AHEAD_SETTLE: Duration = Duration::from_millis(200);
 +/// How far below the scroll position, in pixels of laid-out blocks, to shape.
-+/// A fast flick on a wheel covers about five viewports.
-+const SHAPE_AHEAD_PIXELS: Pixels = px(7000.);
++/// A fast flick of 120 wheel notches covers 4800 px with 40 px notches (Mac probe)
++/// and about 7000 px with the notches X11 sends (Linux probe).
++const SHAPE_AHEAD_PIXELS: Pixels = px(10000.);
 +/// What a block that is not laid out ahead counts for towards the distance.
 +const SHAPE_AHEAD_SKIPPED_HEIGHT: Pixels = px(80.);
 +/// Real time one frame spends on this, so the frame is not held up.
