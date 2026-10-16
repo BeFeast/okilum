@@ -195,7 +195,7 @@ fn history(
 /// was in front (recorded last) is in front again (#1325). A vault that is
 /// gone or unreadable is skipped and named in a notice; the others open.
 /// Resolves to whether any window opened.
-fn restore_windows(roots: Vec<PathBuf>, base: Opts, cx: &mut App) -> Task<bool> {
+pub(crate) fn restore_windows(roots: Vec<PathBuf>, base: Opts, cx: &mut App) -> Task<bool> {
     cx.spawn(async move |cx| {
         let mut opened = 0;
         let mut skipped = Vec::new();
@@ -204,8 +204,13 @@ fn restore_windows(roots: Vec<PathBuf>, base: Opts, cx: &mut App) -> Task<bool> 
             // sharing that window's session, not a second open (#1335).
             if let Some(source) = cx.update(|cx| reader_open::reader_of(&root, cx)) {
                 let duplicating = cx.update(|cx| reader_open::duplicate_window(source, cx));
-                if duplicating.await {
-                    opened += 1;
+                // It waits for the vault to load; one that is still loading
+                // does not hold back the vaults after it.
+                let patience = cx.background_executor().timer(RESTORE_PATIENCE);
+                match futures::future::select(duplicating, patience).await {
+                    futures::future::Either::Left((true, _)) => opened += 1,
+                    futures::future::Either::Left((false, _)) => {}
+                    futures::future::Either::Right((_, duplicating)) => duplicating.detach(),
                 }
                 continue;
             }

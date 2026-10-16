@@ -2883,6 +2883,77 @@ mod entry_tests {
         assert_eq!(cx.windows().len(), 3, "no start screen next to them");
     }
 
+    /// #1335: a second window of a vault that is still loading does not hold
+    /// back the vaults after it; it opens once the vault is ready.
+    #[gpui::test]
+    fn a_loading_vault_does_not_hold_back_the_restore(cx: &mut TestAppContext) {
+        use super::super::{reader_history::TestSessionDirectory, reader_startup, Opts};
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let roots: Vec<PathBuf> = ["Amber", "Bravo"]
+            .iter()
+            .map(|name| {
+                let root = fixture.path().join(name);
+                std::fs::create_dir_all(&root).unwrap();
+                std::fs::write(root.join(format!("{name}.md")), "# Note").unwrap();
+                root.canonicalize().unwrap()
+            })
+            .collect();
+        let base = Opts {
+            session_directory: Some(state.clone()),
+            index_dir: Some(fixture.path().join("index")),
+            ..Default::default()
+        };
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            install(cx);
+            cx.set_global(TestSessionDirectory(state.clone()));
+            cx.set_quit_mode(gpui::QuitMode::Explicit);
+        });
+        let settle = |cx: &mut TestAppContext| {
+            for _ in 0..60 {
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_millis(100));
+                cx.run_until_parked();
+            }
+        };
+        let per_vault = |cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                let mut roots: Vec<PathBuf> = readers(cx)
+                    .into_iter()
+                    .filter(|r| cx.windows().contains(&r.read(cx).reader_window))
+                    .map(|r| r.read(cx).vault_root.clone())
+                    .collect();
+                roots.sort();
+                roots
+            })
+        };
+        cx.update(|cx| dispatch_path(&roots[0], cx));
+        settle(cx);
+        let amber = cx.update(|cx| reader_of(&roots[0], cx)).unwrap();
+        // Amber cannot share its session yet.
+        cx.update(|cx| amber.update(cx, |reader, _| reader.incremental_initializing = true))
+            .unwrap();
+        let restoring =
+            cx.update(|cx| reader_startup::restore_windows(roots.clone(), base.clone(), cx));
+        settle(cx);
+        settle(cx);
+        assert_eq!(
+            per_vault(cx),
+            vec![roots[0].clone(), roots[1].clone()],
+            "Bravo opens while Amber's second window waits"
+        );
+        cx.update(|cx| amber.update(cx, |reader, _| reader.incremental_initializing = false))
+            .unwrap();
+        settle(cx);
+        assert_eq!(
+            per_vault(cx),
+            vec![roots[0].clone(), roots[0].clone(), roots[1].clone()],
+            "Amber's second window opens once Amber is ready"
+        );
+        drop(restoring);
+    }
+
     /// #1049: a link to a vault name that two known vaults share opens a
     /// chooser listing both (the one without the note cannot be chosen); a
     /// newer link replaces it; choosing opens that vault on the note.
