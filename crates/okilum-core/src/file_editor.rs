@@ -109,9 +109,43 @@ struct Draft {
     text: String,
 }
 
+/// What a `stat` of the note says about it: which file it is, its size, and
+/// when its content or metadata last changed. A write in place changes the
+/// size, the mtime or at least the ctime, which no program can set back; a
+/// replacement (a save, Syncthing) is another inode. The note is read again
+/// whenever any of them differ.
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DiskStamp {
+    dev: u64,
+    ino: u64,
+    size: u64,
+    mtime: (i64, i64),
+    ctime: (i64, i64),
+}
+#[cfg(unix)]
+impl DiskStamp {
+    fn of(metadata: &fs::Metadata) -> Self {
+        Self {
+            dev: metadata.dev(),
+            ino: metadata.ino(),
+            size: metadata.size(),
+            mtime: (metadata.mtime(), metadata.mtime_nsec()),
+            ctime: (metadata.ctime(), metadata.ctime_nsec()),
+        }
+    }
+}
+/// Windows reads the note on every refresh, as before.
+#[cfg(windows)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DiskStamp(());
+
 pub struct FileEditor {
     directory: Directory,
     draft: Draft,
+    /// The file as this editor last read or wrote it while it held
+    /// `draft.base` (#1363). `None` when that is not known.
+    on_disk: Option<DiskStamp>,
     journal: PathBuf,
     lock: Arc<EditorLock>,
     writes: Arc<JournalWrites>,
@@ -272,6 +306,10 @@ impl FileEditor {
         let journal = state.join(format!("{key}.json"));
         let (base, opened) = directory.read(path.file_name().unwrap())?;
         #[cfg(unix)]
+        let opened_stamp = Some(DiskStamp::of(&opened));
+        #[cfg(windows)]
+        let opened_stamp: Option<DiskStamp> = None;
+        #[cfg(unix)]
         anyhow::ensure!(
             (meta.dev(), meta.ino()) == (opened.dev(), opened.ino()),
             "The source file changed while opening; reopen it"
@@ -282,30 +320,37 @@ impl FileEditor {
             "The source file changed while opening; reopen it"
         );
         directory.validate(path.parent().unwrap())?;
-        let draft = if journal.exists() {
+        // A recovered draft may carry another base than the file holds; then
+        // its stamp says nothing about the base.
+        let (draft, holds_base) = if journal.exists() {
             let draft: Draft = serde_json::from_slice(&fs::read(&journal)?)?;
             if draft.path != path {
                 bail!("Recovery draft belongs to another file");
             }
             if draft.text == draft.base {
-                Draft {
+                let draft = Draft {
                     path,
                     text: base.clone(),
                     base,
-                }
+                };
+                (draft, true)
             } else {
-                draft
+                let holds_base = draft.base == base;
+                (draft, holds_base)
             }
         } else {
-            Draft {
+            let draft = Draft {
                 path,
                 text: base.clone(),
                 base,
-            }
+            };
+            (draft, true)
         };
+        let on_disk = opened_stamp.filter(|_| holds_base);
         Ok(Self {
             directory,
             draft,
+            on_disk,
             journal,
             lock: Arc::new(lock),
             writes: Arc::default(),
@@ -322,8 +367,32 @@ impl FileEditor {
         self.draft.text != self.draft.base
     }
     pub fn current(&self) -> Result<String> {
+        Ok(self.read_current()?.0)
+    }
+    /// The note's text with its stamp. The stamp is taken before the read, so
+    /// a write during the read leaves it older than the text, never newer.
+    fn read_current(&self) -> Result<(String, Option<DiskStamp>)> {
         self.directory.validate(self.draft.path.parent().unwrap())?;
-        Ok(self.directory.read(self.draft.path.file_name().unwrap())?.0)
+        let (text, _metadata) = self.directory.read(self.draft.path.file_name().unwrap())?;
+        #[cfg(unix)]
+        return Ok((text, Some(DiskStamp::of(&_metadata))));
+        #[cfg(windows)]
+        Ok((text, None))
+    }
+    /// The note's stamp now, without reading it.
+    #[cfg(unix)]
+    fn stamp_now(&self) -> Result<Option<DiskStamp>> {
+        let file = open_regular_at(&self.directory.file, self.draft.path.file_name().unwrap())?;
+        Ok(Some(DiskStamp::of(&file.metadata()?)))
+    }
+    #[cfg(windows)]
+    fn stamp_now(&self) -> Result<Option<DiskStamp>> {
+        Ok(None)
+    }
+    /// The stamp of the file this editor last saw holding its base, for
+    /// handing a worker's save back to the UI editor (`saved_as_queued_at`).
+    pub fn disk_stamp(&self) -> Option<DiskStamp> {
+        self.on_disk
     }
     /// Update the UI-owned snapshot without performing filesystem I/O.
     pub fn queue_text(&mut self, text: String) -> DraftWrite {
@@ -346,9 +415,20 @@ impl FileEditor {
         self.pending_write().persist()
     }
     /// Refresh only a clean buffer. Dirty source is never replaced by a watcher.
+    ///
+    /// The folder is checked every time; the note itself is read only when its
+    /// stamp differs from the one this editor last saw holding its base
+    /// (#1363), so a refresh after the editor's own save does no read.
     pub fn refresh_from_disk(&mut self) -> Result<Save> {
-        let current = self.current()?;
+        self.directory.validate(self.draft.path.parent().unwrap())?;
+        if self.on_disk.is_some() && self.stamp_now()? == self.on_disk {
+            return Ok(Save::Saved);
+        }
+        let (current, stamp) = self.read_current()?;
         if self.dirty() {
+            if current == self.draft.base {
+                self.on_disk = stamp;
+            }
             return Ok(
                 if current == self.draft.base || current == self.draft.text {
                     Save::Saved
@@ -368,13 +448,15 @@ impl FileEditor {
             self.draft.base = current.clone();
             self.draft.text = current;
         }
+        self.on_disk = stamp;
         Ok(Save::Saved)
     }
 
     pub fn reload(&mut self) -> Result<()> {
-        let current = self.current()?;
+        let (current, stamp) = self.read_current()?;
         self.draft.base = current.clone();
         self.draft.text = current;
+        self.on_disk = stamp;
         self.persist()
     }
     /// Explicit Keep mine uses the exact version displayed in the conflict UI.
@@ -383,6 +465,7 @@ impl FileEditor {
             return Ok(Save::Conflict);
         }
         self.draft.base = reviewed.to_owned();
+        self.on_disk = None;
         self.save()
     }
     pub fn save(&mut self) -> Result<Save> {
@@ -395,6 +478,7 @@ impl FileEditor {
         Ok(Self {
             directory: self.directory.try_clone()?,
             draft: self.draft.clone(),
+            on_disk: self.on_disk,
             journal: self.journal.clone(),
             lock: self.lock.clone(),
             writes: self.writes.clone(),
@@ -406,7 +490,13 @@ impl FileEditor {
     }
     /// `saved_as` with the recovery copy written by the caller, off the UI thread.
     pub fn saved_as_queued(&mut self, text: String) -> DraftWrite {
+        self.saved_as_queued_at(text, None)
+    }
+    /// `saved_as_queued` with the stamp the saving copy left (`disk_stamp`),
+    /// so the next refresh does not read back the text just written.
+    pub fn saved_as_queued_at(&mut self, text: String, stamp: Option<DiskStamp>) -> DraftWrite {
         self.draft.base = text;
+        self.on_disk = stamp;
         self.pending_write()
     }
     #[cfg(unix)]
@@ -421,6 +511,7 @@ impl FileEditor {
         if current == self.draft.text {
             self.directory.validate(self.draft.path.parent().unwrap())?;
             self.draft.base = current;
+            self.on_disk = Some(DiskStamp::of(&metadata));
             self.persist()?;
             return Ok(Save::Saved);
         }
@@ -476,6 +567,9 @@ impl FileEditor {
         crate::source_history::Preimage::finish_bound(&history, directory)?;
         self.directory.validate(parent)?;
         self.draft.base = self.draft.text.clone();
+        // The note is now the inode written above; its stamp after the
+        // exchange is what a later refresh will find unless someone writes.
+        self.on_disk = Some(DiskStamp::of(&temp.metadata()?));
         self.persist()?;
         // Cleanup is best effort; a retention error never reverses a saved note.
         let _ = crate::source_history::prune(self.journal.parent().unwrap());
@@ -530,6 +624,7 @@ impl FileEditor {
         }
         crate::source_history::Preimage::finish_windows(&history, &directory, preimage_identity)?;
         self.draft.base = self.draft.text.clone();
+        self.on_disk = None;
         self.persist()?;
         let _ = crate::source_history::prune(self.journal.parent().unwrap());
         Ok(Save::Saved)
@@ -560,6 +655,97 @@ mod lock_tests {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    fn reads() -> usize {
+        directory::READS.with(|reads| reads.get())
+    }
+
+    /// #1363: a refresh does not read the note back after this editor's own
+    /// save, its autosave copy's save, or another refresh; any outside write
+    /// is still seen, even one that keeps the size and sets the mtime back.
+    #[test]
+    fn refresh_reads_the_note_only_when_it_changed_on_disk() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("note.md");
+        fs::write(&path, "base").unwrap();
+        let state = root.path().join("state");
+        let mut editor = FileEditor::open(&path, &state).unwrap();
+        let refresh_reads = |editor: &mut FileEditor| {
+            let before = reads();
+            let outcome = editor.refresh_from_disk().unwrap();
+            (outcome, reads() - before)
+        };
+        assert_eq!(refresh_reads(&mut editor), (Save::Saved, 0), "after open");
+
+        editor.set_text("saved edit".into()).unwrap();
+        assert_eq!(editor.save().unwrap(), Save::Saved);
+        assert_eq!(
+            refresh_reads(&mut editor),
+            (Save::Saved, 0),
+            "after its own save"
+        );
+
+        // Autosave: a copy saves on a worker and hands its stamp back.
+        editor.queue_text("autosaved edit".into());
+        let mut copy = editor.save_copy().unwrap();
+        assert_eq!(copy.save().unwrap(), Save::Saved);
+        editor
+            .saved_as_queued_at("autosaved edit".into(), copy.disk_stamp())
+            .persist()
+            .unwrap();
+        assert_eq!(
+            refresh_reads(&mut editor),
+            (Save::Saved, 0),
+            "after an autosave"
+        );
+
+        // Positive controls: an outside replacement is read and adopted.
+        fs::write(root.path().join("other"), "outside").unwrap();
+        fs::rename(root.path().join("other"), &path).unwrap();
+        assert_eq!(
+            refresh_reads(&mut editor),
+            (Save::Saved, 1),
+            "outside replacement"
+        );
+        assert_eq!(editor.text(), "outside");
+        assert_eq!(
+            refresh_reads(&mut editor),
+            (Save::Saved, 0),
+            "the adopted text"
+        );
+
+        // A write in place with the same size and the old mtime: only the
+        // ctime tells, and it must be enough.
+        let mtime = fs::metadata(&path).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(&path, "OUTSIDE").unwrap();
+        File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        assert_eq!(
+            refresh_reads(&mut editor),
+            (Save::Saved, 1),
+            "same size, mtime set back"
+        );
+        assert_eq!(editor.text(), "OUTSIDE");
+
+        // A dirty buffer still sees an outside change as a conflict.
+        editor.set_text("typing".into()).unwrap();
+        assert_eq!(
+            refresh_reads(&mut editor),
+            (Save::Saved, 0),
+            "dirty, file unchanged"
+        );
+        fs::write(&path, "elsewhere").unwrap();
+        assert_eq!(
+            refresh_reads(&mut editor),
+            (Save::Conflict, 1),
+            "dirty, file changed"
+        );
+    }
     #[test]
     fn replaced_parent_or_ancestor_refuses_save_reload_and_undo_without_losing_drafts() {
         use std::os::unix::fs::symlink;
