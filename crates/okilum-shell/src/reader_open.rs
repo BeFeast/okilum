@@ -1065,6 +1065,25 @@ fn new_window(cx: &mut App) {
     let Some(source) = source else {
         return;
     };
+    duplicate_window(source, cx).detach();
+}
+
+/// An open, full-vault Reader of this vault, if a window shows one.
+pub(crate) fn reader_of(root: &Path, cx: &App) -> Option<WeakEntity<super::Reader>> {
+    cx.try_global::<Readers>()?.0.iter().find_map(|(weak, _)| {
+        let reader = weak.upgrade()?;
+        let state = reader.read(cx);
+        (state.vault_root == root
+            && !state.single_file
+            && cx.windows().contains(&state.reader_window))
+        .then(|| weak.clone())
+    })
+}
+
+/// Another window of the vault `source` shows, sharing its session: New
+/// Window, and a second window of one vault at restore (#1335). Waits for the
+/// source to finish loading; resolves to whether the window opened.
+pub(crate) fn duplicate_window(source: WeakEntity<super::Reader>, cx: &mut App) -> Task<bool> {
     cx.spawn(async move |cx| loop {
         let outcome = source.update(cx, |reader, cx| {
             reader.record_ui_state(true, cx);
@@ -1089,18 +1108,21 @@ fn new_window(cx: &mut App) {
         });
         match outcome {
             Ok((Some((opts, session, source_window)), _)) => {
-                cx.update(|cx| {
+                break cx.update(|cx| {
                     let options = source_window.update(cx, |_, window, cx| {
                         super::window_state::duplicate_options(window_options(cx), window, cx)
                     });
-                    let Ok(options) = options else { return };
-                    if let Err(error) = create_window(opts, Some(session), Some(options), cx) {
-                        show_error(error, cx);
+                    let Ok(options) = options else { return false };
+                    match create_window(opts, Some(session), Some(options), cx) {
+                        Ok(()) => true,
+                        Err(error) => {
+                            show_error(error, cx);
+                            false
+                        }
                     }
                 });
-                break;
             }
-            Err(_) => break,
+            Err(_) => break false,
             Ok((None, true)) => {
                 cx.update(|cx| {
                     show_error(
@@ -1110,7 +1132,7 @@ fn new_window(cx: &mut App) {
                         cx,
                     )
                 });
-                break;
+                break false;
             }
             Ok((None, false)) => {
                 cx.background_executor()
@@ -1119,7 +1141,6 @@ fn new_window(cx: &mut App) {
             }
         }
     })
-    .detach();
 }
 
 pub(crate) fn window_options(cx: &App) -> WindowOptions {
@@ -2770,6 +2791,167 @@ mod entry_tests {
             let plain = reader_startup::recent_label(&roots[0], cx);
             assert!(plain.starts_with("Gate1 — "), "{plain}");
         });
+    }
+
+    /// #1335: two windows of one vault come back as two after a restart, a
+    /// third vault as one; the recorded set lists the vault twice. Night QA
+    /// saw A+A → A on Linux and Windows.
+    #[gpui::test]
+    fn two_windows_of_one_vault_come_back_as_two(cx: &mut TestAppContext) {
+        use super::super::{
+            reader_history::TestSessionDirectory, reader_open_windows, reader_startup, Opts,
+        };
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let roots: Vec<PathBuf> = ["Amber", "Bravo"]
+            .iter()
+            .map(|name| {
+                let root = fixture.path().join(name);
+                std::fs::create_dir_all(&root).unwrap();
+                std::fs::write(root.join(format!("{name}.md")), "# Note").unwrap();
+                root.canonicalize().unwrap()
+            })
+            .collect();
+        let base = Opts {
+            session_directory: Some(state.clone()),
+            index_dir: Some(fixture.path().join("index")),
+            ..Default::default()
+        };
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            install(cx);
+            cx.set_global(TestSessionDirectory(state.clone()));
+            reader_open_windows::install(state.clone(), cx);
+            cx.set_global(reader_startup::ReopenBase(base.clone()));
+            cx.set_quit_mode(gpui::QuitMode::Explicit);
+        });
+        let settle = |cx: &mut TestAppContext| {
+            for _ in 0..60 {
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_millis(100));
+                cx.run_until_parked();
+            }
+        };
+        // Amber, a second Amber window (New Window), then Bravo.
+        cx.update(|cx| dispatch_path(&roots[0], cx));
+        settle(cx);
+        let amber = cx.update(|cx| cx.windows()[0]);
+        cx.update(|cx| {
+            let _ = amber.update(cx, |_, window, _| window.activate_window());
+            new_window(cx);
+        });
+        settle(cx);
+        cx.update(|cx| dispatch_path(&roots[1], cx));
+        settle(cx);
+        let count = |cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                let mut per_vault: Vec<PathBuf> = readers(cx)
+                    .into_iter()
+                    .filter(|r| cx.windows().contains(&r.read(cx).reader_window))
+                    .map(|r| r.read(cx).vault_root.clone())
+                    .collect();
+                per_vault.sort();
+                per_vault
+            })
+        };
+        let expected = vec![roots[0].clone(), roots[0].clone(), roots[1].clone()];
+        assert_eq!(
+            count(cx),
+            expected,
+            "two Amber windows and one Bravo before quit"
+        );
+        let mut recorded = reader_open_windows::load(&state);
+        recorded.sort();
+        assert_eq!(recorded, expected, "the recorded set lists Amber twice");
+        cx.update(reader_open_windows::quit);
+        cx.update(|cx| {
+            for window in cx.windows() {
+                let _ = window.update(cx, |_, window, _| window.remove_window());
+            }
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            cx.set_global(reader_startup::Startup::default());
+            reader_startup::launch(base.clone(), cx);
+        });
+        settle(cx);
+        assert_eq!(
+            count(cx),
+            expected,
+            "both Amber windows and Bravo come back"
+        );
+        assert_eq!(cx.windows().len(), 3, "no start screen next to them");
+    }
+
+    /// #1335: a second window of a vault that is still loading does not hold
+    /// back the vaults after it; it opens once the vault is ready.
+    #[gpui::test]
+    fn a_loading_vault_does_not_hold_back_the_restore(cx: &mut TestAppContext) {
+        use super::super::{reader_history::TestSessionDirectory, reader_startup, Opts};
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let roots: Vec<PathBuf> = ["Amber", "Bravo"]
+            .iter()
+            .map(|name| {
+                let root = fixture.path().join(name);
+                std::fs::create_dir_all(&root).unwrap();
+                std::fs::write(root.join(format!("{name}.md")), "# Note").unwrap();
+                root.canonicalize().unwrap()
+            })
+            .collect();
+        let base = Opts {
+            session_directory: Some(state.clone()),
+            index_dir: Some(fixture.path().join("index")),
+            ..Default::default()
+        };
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            install(cx);
+            cx.set_global(TestSessionDirectory(state.clone()));
+            cx.set_quit_mode(gpui::QuitMode::Explicit);
+        });
+        let settle = |cx: &mut TestAppContext| {
+            for _ in 0..60 {
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_millis(100));
+                cx.run_until_parked();
+            }
+        };
+        let per_vault = |cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                let mut roots: Vec<PathBuf> = readers(cx)
+                    .into_iter()
+                    .filter(|r| cx.windows().contains(&r.read(cx).reader_window))
+                    .map(|r| r.read(cx).vault_root.clone())
+                    .collect();
+                roots.sort();
+                roots
+            })
+        };
+        cx.update(|cx| dispatch_path(&roots[0], cx));
+        settle(cx);
+        let amber = cx.update(|cx| reader_of(&roots[0], cx)).unwrap();
+        // Amber cannot share its session yet.
+        cx.update(|cx| amber.update(cx, |reader, _| reader.incremental_initializing = true))
+            .unwrap();
+        let restoring =
+            cx.update(|cx| reader_startup::restore_windows(roots.clone(), base.clone(), cx));
+        settle(cx);
+        settle(cx);
+        assert_eq!(
+            per_vault(cx),
+            vec![roots[0].clone(), roots[1].clone()],
+            "Bravo opens while Amber's second window waits"
+        );
+        cx.update(|cx| amber.update(cx, |reader, _| reader.incremental_initializing = false))
+            .unwrap();
+        settle(cx);
+        assert_eq!(
+            per_vault(cx),
+            vec![roots[0].clone(), roots[0].clone(), roots[1].clone()],
+            "Amber's second window opens once Amber is ready"
+        );
+        drop(restoring);
     }
 
     /// #1049: a link to a vault name that two known vaults share opens a
