@@ -3,6 +3,12 @@ use super::*;
 use rustix::fs::{openat, Mode, OFlags, CWD};
 use std::{ffi::OsStr, io::Read, path::Component};
 
+#[cfg(test)]
+thread_local! {
+    /// Whole-note reads on this thread, for tests that a refresh skips them.
+    pub(super) static READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub(super) struct Directory {
     pub file: File,
     ancestors: Vec<(u64, u64)>,
@@ -52,6 +58,8 @@ impl Directory {
         Ok(())
     }
     pub fn read(&self, name: &OsStr) -> Result<(String, fs::Metadata)> {
+        #[cfg(test)]
+        READS.with(|reads| reads.set(reads.get() + 1));
         let mut file = open_regular_at(&self.file, name)?;
         let metadata = file.metadata()?;
         let mut text = String::new();

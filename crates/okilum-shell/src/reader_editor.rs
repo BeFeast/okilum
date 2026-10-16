@@ -25,7 +25,7 @@ impl ProjectionProvider for ExactSource {
     }
 }
 
-use okilum_core::file_editor::{FileEditor, Save};
+use okilum_core::file_editor::{DiskStamp, FileEditor, Save};
 
 /// The pause in typing after which an edit is saved (#1353).
 const AUTOSAVE_PAUSE: std::time::Duration = std::time::Duration::from_secs(1);
@@ -784,7 +784,11 @@ impl Reader {
             }
         }
         let mut outcome = "unchanged";
-        match editing.store.refresh_from_disk() {
+        // Time on the UI thread, for the keystroke stalls of #1363.
+        let started = std::time::Instant::now();
+        let refreshed = editing.store.refresh_from_disk();
+        let refresh_ms = started.elapsed().as_secs_f64() * 1000.;
+        match refreshed {
             Ok(Save::Conflict) => {
                 outcome = "conflict";
                 editing.conflict_detected = true;
@@ -818,6 +822,7 @@ impl Reader {
             trace.event(
                 "editor_disk_refresh",
                 serde_json::json!({"outcome": outcome,
+                "refresh_ms": refresh_ms,
                 "generation": editing.input.read(cx).source_stamp().generation,
                 "presentation_epoch": editing.input.read(cx).presentation_epoch()}),
             );
@@ -964,12 +969,14 @@ impl Reader {
         cx.notify();
         let worker = cx.background_executor().spawn(async move {
             let mut copy = copy;
-            copy.save()
+            let result = copy.save();
+            // The UI editor takes the stamp, so its next refresh skips the read (#1363).
+            (result, copy.disk_stamp())
         });
         cx.spawn(async move |this, cx| {
-            let result = worker.await;
+            let (result, stamp) = worker.await;
             let _ = this.update(cx, |this, cx| {
-                this.autosaved(input_id, saves, text, result, cx)
+                this.autosaved(input_id, saves, text, result, stamp, cx)
             });
         })
         .detach();
@@ -981,6 +988,7 @@ impl Reader {
         saves: u64,
         text: String,
         result: anyhow::Result<Save>,
+        stamp: Option<DiskStamp>,
         cx: &mut Context<Self>,
     ) {
         let Some(editing) = &mut self.editing else {
@@ -998,7 +1006,7 @@ impl Reader {
         match result {
             Ok(Save::Saved) => {
                 // The recovery copy of a large note is written off the UI thread too.
-                let write = editing.store.saved_as_queued(text);
+                let write = editing.store.saved_as_queued_at(text, stamp);
                 cx.background_executor()
                     .spawn(async move {
                         if let Err(error) = write.persist() {
@@ -4350,7 +4358,14 @@ mod autosave_tests {
         // That save completes (it wrote «aoriginal»).
         std::fs::write(&f.file, "aoriginal").unwrap();
         f.reader.update(visual, |r, cx| {
-            r.autosaved(input_id, saves, "aoriginal".into(), Ok(Save::Saved), cx)
+            r.autosaved(
+                input_id,
+                saves,
+                "aoriginal".into(),
+                Ok(Save::Saved),
+                None,
+                cx,
+            )
         });
         visual.run_until_parked();
         wait(visual, 1200);
