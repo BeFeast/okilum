@@ -200,6 +200,15 @@ fn restore_windows(roots: Vec<PathBuf>, base: Opts, cx: &mut App) -> Task<bool> 
         let mut opened = 0;
         let mut skipped = Vec::new();
         for root in roots {
+            // A second window of a vault already back: New Window's path,
+            // sharing that window's session, not a second open (#1335).
+            if let Some(source) = cx.update(|cx| reader_open::reader_of(&root, cx)) {
+                let duplicating = cx.update(|cx| reader_open::duplicate_window(source, cx));
+                if duplicating.await {
+                    opened += 1;
+                }
+                continue;
+            }
             let opts = Opts {
                 vault: Some(root.clone()),
                 ..base.clone()

@@ -15,8 +15,10 @@ const SCHEMA: u32 = 1;
 #[serde(default)]
 struct Saved {
     version: u32,
-    /// Vault roots in window order; the window that was in front comes last,
-    /// so reopening them in this order leaves it in front again.
+    /// One vault root per window, in window order; a vault open in two
+    /// windows is listed twice. The window that was in front comes last, so
+    /// reopening them in this order leaves it in front again. Builds before
+    /// #1335 wrote one entry per vault, which still reads as one window each.
     roots: Vec<PathBuf>,
 }
 
@@ -107,10 +109,9 @@ fn open_roots(cx: &App) -> Vec<PathBuf> {
     let mut roots: Vec<(bool, PathBuf)> = Vec::new();
     for reader in super::reader_open::readers(cx) {
         let reader = reader.read(cx);
-        if reader.single_file
-            || !windows.contains(&reader.reader_window)
-            || roots.iter().any(|(_, root)| *root == reader.vault_root)
-        {
+        // One entry per window: two windows of a vault are listed twice and
+        // both come back (#1335).
+        if reader.single_file || !windows.contains(&reader.reader_window) {
             continue;
         }
         roots.push((
