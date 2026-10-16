@@ -16,7 +16,7 @@ diff --git a/crates/base/src/text/document.rs b/crates/base/src/text/document.rs
 +    ops::RangeInclusive,
 +    rc::Rc,
 +    sync::{
-+        Arc,
++        Arc, Weak,
 +        atomic::{AtomicBool, Ordering},
 +    },
 +    time::{Duration, Instant},
@@ -29,7 +29,7 @@ diff --git a/crates/base/src/text/document.rs b/crates/base/src/text/document.rs
  };
  
  /// The parsed document AST.
-@@ -211,28 +221,278 @@
+@@ -211,28 +221,287 @@
              list_state.reset(blocks.len());
          }
  
@@ -85,7 +85,6 @@ diff --git a/crates/base/src/text/document.rs b/crates/base/src/text/document.rs
 +            .child(ShapeAhead {
 +                list_state,
 +                render_item,
-+                document: Arc::as_ptr(blocks) as usize,
 +                blocks: blocks.clone(),
 +            })
 +    }
@@ -124,9 +123,20 @@ diff --git a/crates/base/src/text/document.rs b/crates/base/src/text/document.rs
 +struct ShapeAhead {
 +    list_state: ListState,
 +    render_item: Rc<RenderBlockFn>,
-+    /// Identity of the parsed blocks: a new parse starts over.
-+    document: usize,
++    /// The parsed blocks. A new parse starts the warm-up over.
 +    blocks: Arc<Vec<BlockNode>>,
++}
++
++/// Whether `blocks` is the parse `seen` was taken from. A `Weak` keeps its
++/// allocation reserved, so a later parse cannot be handed the same address the
++/// way it could be after comparing raw pointers of a dropped `Arc`.
++#[cfg(test)]
++pub(super) fn same_parse_for_test(seen: &Weak<Vec<BlockNode>>, blocks: &Arc<Vec<BlockNode>>) -> bool {
++    same_parse(seen, blocks)
++}
++
++fn same_parse(seen: &Weak<Vec<BlockNode>>, blocks: &Arc<Vec<BlockNode>>) -> bool {
++    seen.ptr_eq(&Arc::downgrade(blocks))
 +}
 +
 +/// Whether laying a block out ahead of time could start work beyond shaping:
@@ -155,7 +165,7 @@ diff --git a/crates/base/src/text/document.rs b/crates/base/src/text/document.rs
 +
 +#[derive(Default)]
 +struct ShapeAheadProgress {
-+    document: usize,
++    document: Weak<Vec<BlockNode>>,
 +    width: Pixels,
 +    /// Blocks already laid out here, and their heights.
 +    laid_out: HashMap<usize, Pixels>,
@@ -218,13 +228,12 @@ diff --git a/crates/base/src/text/document.rs b/crates/base/src/text/document.rs
 +        let list_state = self.list_state.clone();
 +        let render_item = self.render_item.clone();
 +        let blocks = self.blocks.clone();
-+        let document = self.document;
 +        let now = cx.background_executor().now();
 +        window.with_element_state::<ShapeAheadProgress, _>(id, |progress, window| {
 +            let mut progress = progress.unwrap_or_default();
-+            if progress.document != document || progress.width != viewport.size.width {
++            if !same_parse(&progress.document, &blocks) || progress.width != viewport.size.width {
 +                progress = ShapeAheadProgress {
-+                    document,
++                    document: Arc::downgrade(&blocks),
 +                    width: viewport.size.width,
 +                    wake_pending: progress.wake_pending,
 +                    ..Default::default()
@@ -332,10 +341,25 @@ diff --git a/crates/base/src/text/document.rs b/crates/base/src/text/document.rs
 diff --git a/crates/base/src/text/text_view.rs b/crates/base/src/text/text_view.rs
 --- a/crates/base/src/text/text_view.rs
 +++ b/crates/base/src/text/text_view.rs
-@@ -1043,6 +1043,147 @@
+@@ -1043,6 +1043,162 @@
          assert!(resized > floor, "extent after a width change: {resized} <= {floor}");
      }
  
++    /// #1312: a new parse is never taken for the old one, whatever address it gets.
++    #[test]
++    fn a_new_parse_is_not_the_one_the_warm_up_started_on() {
++        use super::super::document::same_parse_for_test as same_parse;
++        let first = Arc::new(Vec::new());
++        let seen = Arc::downgrade(&first);
++        assert!(same_parse(&seen, &first), "positive control: the same parse");
++        drop(first);
++        // Allocations while the Weak is alive: none may share the first one's address.
++        for _ in 0..1000 {
++            let next = Arc::new(Vec::new());
++            assert!(!same_parse(&seen, &next));
++        }
++    }
++
 +    /// #1312: the blocks of a large document beyond the list's band are shaped
 +    /// while the view is idle, in a few frames, and then the work stops.
 +    #[test]
