@@ -1478,7 +1478,7 @@ struct Reader {
     backlink_groups: Vec<std::ops::Range<usize>>,
     /// The «Linked from» list renders only the cards in view: a hub note has thousands.
     backlinks_list: ListState,
-    /// The Syncthing `.stignore` state of the open vault root (#1248), for Settings → Files.
+    /// The Syncthing `.stignore` state of the open vault root (#1248), for Settings → Vault.
     stignore: Option<(PathBuf, okilum_core::syncthing_ignore::Status)>,
     /// Roots the offer was shown for in this launch: once per vault.
     stignore_offered: std::collections::HashSet<PathBuf>,

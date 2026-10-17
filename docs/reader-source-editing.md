@@ -304,7 +304,7 @@ are rejected. Templates and settings must be regular UTF-8 files, at most 1 MiB;
 symlinks, invalid settings and unreadable selected templates abort with an error.
 Windows stays read-only. Orphan drafts and active writers block note creation.
 
-Inline creation uses an explicit Settings → Files template-folder preference when
+Inline creation uses an explicit Settings → Vault template-folder preference when
 present, ahead of the Obsidian folder setting. Unrelated hidden `_Assets` branches
 stay hidden when no template collection exists.
 

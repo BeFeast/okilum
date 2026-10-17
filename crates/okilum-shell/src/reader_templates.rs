@@ -78,7 +78,7 @@ fn list(root: &Path, folder: &str) -> Result<Vec<PathBuf>> {
     let folder = root
         .join(folder)
         .canonicalize()
-        .context("Templates folder is missing. Choose it in Settings → Files")?;
+        .context("Templates folder is missing. Choose it in Settings → Vault")?;
     anyhow::ensure!(
         folder.starts_with(&root),
         "Templates folder is outside the vault"
@@ -96,7 +96,7 @@ fn list(root: &Path, folder: &str) -> Result<Vec<PathBuf>> {
         }
     }
     templates.sort();
-    anyhow::ensure!(!templates.is_empty(), "No Markdown templates in this folder. Add a .md template or choose another folder in Settings → Files");
+    anyhow::ensure!(!templates.is_empty(), "No Markdown templates in this folder. Add a .md template or choose another folder in Settings → Vault");
     Ok(templates)
 }
 #[cfg(all(test, unix))]

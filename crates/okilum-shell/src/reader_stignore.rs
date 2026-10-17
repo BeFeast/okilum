@@ -151,7 +151,7 @@ impl Reader {
         cx.notify();
     }
 
-    /// Ask again at the next launch (Settings → Files).
+    /// Ask again at the next launch (Settings → Vault).
     fn undo_decline_stignore(&mut self, cx: &mut Context<Self>) {
         self.load_sidebar_state();
         self.sidebar.stignore_declined = false;
@@ -160,7 +160,7 @@ impl Reader {
     }
 }
 
-/// The «Syncthing» row of Settings → Files: nothing for a vault that is not a Syncthing folder.
+/// The «Syncthing» row of Settings → Vault: nothing for a vault that is not a Syncthing folder.
 pub(super) fn settings_row(reader: &Entity<Reader>, cx: &App) -> Option<AnyElement> {
     let this = reader.read(cx);
     let (root, status) = this.stignore.as_ref()?;

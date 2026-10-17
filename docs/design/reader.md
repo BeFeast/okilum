@@ -260,7 +260,7 @@ a single-vault user sees no change. The colour shows only as an 8 px dot before
 the vault name in the sidebar header and a 2 px line along the window's top
 edge, drawn over the title bar so nothing moves. Each preset has a light and a
 dark value, tested at 3:1 against `canvas`, `surface` and `sidebar` of every
-theme. Set from the vault name menu (Vault colour) or Settings → Files; stored
+theme. Set from the vault name menu (Vault colour) or Settings → Vault; stored
 in `reader-ui.json` (`vault_colors`) by canonical vault root, never in the
 vault. Every window of the vault repaints at once. No per-vault theme and no
 tinted rows.
