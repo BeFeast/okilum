@@ -71,6 +71,10 @@ jobs:
             exec python scripts/releases/prepare.py request "$PROMOTE_SOURCE"
           fi
           args=()
+          if [ "$SKIP_WINDOWS" = true ] && [ "$WINDOWS_ONLY" = true ]; then
+            echo 'skip_windows and windows_only exclude each other' >&2
+            exit 1
+          fi
           if [ "$WINDOWS_ONLY" = true ]; then
             test -n "$PROMOTE_BUILD"
             exec python scripts/releases/publish.py --build "$PROMOTE_BUILD" --windows-only
