@@ -186,14 +186,13 @@ pub(crate) fn launch(mut opts: Opts, cx: &mut App) {
     .detach();
 }
 
+/// The last vault, and whether it can be reopened.
+type Restore = (PathBuf, anyhow::Result<reader_open::OpenIntent>);
+
 /// The last vault or quick viewer to reopen, and the vaults the start screen lists.
 fn history(
     directory: anyhow::Result<PathBuf>,
-) -> anyhow::Result<(
-    PathBuf,
-    Vec<PathBuf>,
-    Option<(PathBuf, anyhow::Result<reader_open::OpenIntent>)>,
-)> {
+) -> anyhow::Result<(PathBuf, Vec<PathBuf>, Option<Restore>)> {
     let directory = directory?;
     let (last, roots) = reader_history::ReadingHistory::startup_roots(&directory)?;
     let restore = last.map(|root| {
