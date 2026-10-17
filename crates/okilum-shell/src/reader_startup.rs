@@ -369,24 +369,35 @@ struct Entry {
 }
 impl Entry {
     fn open(&mut self, root: PathBuf, cx: &mut Context<Self>) {
-        // The folder may have gone while the start screen was up.
-        if gone(&root) {
-            self.state.missing.insert(root.clone());
-            self.state.notice = Some(Notice::unopened(&root, true, cx));
-            cx.notify();
-            return;
-        }
-        if let Err(error) = reader_open::open_window(
-            Opts {
-                vault: Some(root.clone()),
-                ..Default::default()
-            },
-            cx,
-        ) {
-            eprintln!("Cannot open recent folder: {error:#}");
-            self.state.notice = Some(Notice::unopened(&root, false, cx));
-            cx.notify();
-        }
+        // The folder may have gone while the start screen was up. Checked off
+        // the UI thread: a dead network share must not stall the window.
+        let checking = cx.background_executor().spawn({
+            let root = root.clone();
+            async move { gone(&root) }
+        });
+        cx.spawn(async move |entry, cx| {
+            let missing = checking.await;
+            let _ = entry.update(cx, |entry, cx| {
+                if missing {
+                    entry.state.missing.insert(root.clone());
+                    entry.state.notice = Some(Notice::unopened(&root, true, cx));
+                    cx.notify();
+                    return;
+                }
+                if let Err(error) = reader_open::open_window(
+                    Opts {
+                        vault: Some(root.clone()),
+                        ..Default::default()
+                    },
+                    cx,
+                ) {
+                    eprintln!("Cannot open recent folder: {error:#}");
+                    entry.state.notice = Some(Notice::unopened(&root, false, cx));
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     /// Take a vault off the list; its folder is left alone.
