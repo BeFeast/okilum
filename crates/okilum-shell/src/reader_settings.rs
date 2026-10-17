@@ -1626,9 +1626,10 @@ mod tests {
         let shown = |visual: &mut gpui::VisualTestContext, label: &str| {
             visual.run_until_parked();
             visual.update(|window, cx| window.draw(cx).clear(cx));
-            visual
-                .debug_bounds(&format!("setting-help-{label}"))
-                .is_some()
+            // `debug_bounds` takes a static selector; leaking a few is fine here.
+            let selector: &'static str =
+                Box::leak(format!("setting-help-{label}").into_boxed_str());
+            visual.debug_bounds(selector).is_some()
         };
         assert!(shown(visual, "Vault colour"), "positive control");
         assert!(shown(visual, "Templates folder"));
