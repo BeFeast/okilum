@@ -82,10 +82,7 @@ pub(crate) fn launch(mut opts: Opts, cx: &mut App) {
                 let windows = directory
                     .as_deref()
                     .map(|directory| {
-                        restorable_windows(
-                            directory,
-                            super::reader_open_windows::load_windows(directory),
-                        )
+                        restorable_windows(super::reader_open_windows::load_windows(directory))
                     })
                     .unwrap_or_default();
                 let history = history(directory);
@@ -215,29 +212,17 @@ fn history(
 }
 
 /// Each window's note as it can be reopened (#1375): kept only while the
-/// note is still there. The first window of a vault opens like the vault
-/// does, so on the vault's last note it is left out and that window comes
-/// back as before, at its last position too. A later window copies the first
-/// one's note when it has none, so it always keeps its own.
+/// note is still there. Every window gets its note explicitly: a vault opened
+/// without one takes the note its UI state names, which is one window's note
+/// for all of them. The reading position comes back either way, since it is
+/// kept with that note.
 fn restorable_windows(
-    directory: &std::path::Path,
     windows: Vec<super::reader_open_windows::Window>,
 ) -> Vec<super::reader_open_windows::Window> {
-    let mut seen = std::collections::HashSet::new();
     windows
         .into_iter()
         .map(|(root, note)| {
-            let first = seen.insert(root.clone());
-            let note = note
-                .filter(|note| root.join(note).is_file())
-                .filter(|note| {
-                    !first
-                        || reader_history::ReadingHistory::last_document(directory, &root)
-                            .ok()
-                            .flatten()
-                            .as_ref()
-                            != Some(note)
-                });
+            let note = note.filter(|note| root.join(note).is_file());
             (root, note)
         })
         .collect()
