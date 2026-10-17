@@ -455,7 +455,7 @@ impl Reader {
                     window,
                     cx,
                 );
-                self.toggle_source(window, cx);
+                self.edit_created_note(window, cx);
                 // Typing starts in the body after the heading, never before
                 // the frontmatter (#1117).
                 let body = okilum_core::note_files::body_start(&source);
@@ -948,10 +948,11 @@ mod tests {
                 && entry.kind == okilum_core::vault::EntryKind::Directory));
     }
 
-    /// #1117: typing right after creating a note writes into its body; the
-    /// file still starts with its frontmatter.
+    /// #1117: typing right after creating a note writes into its body, after
+    /// the heading. #1352: the new note has no front matter nobody wrote, opens
+    /// in Live Preview, and leaving it keeps the Source choice made before.
     #[gpui::test]
-    fn typing_right_after_create_keeps_the_frontmatter_first(cx: &mut TestAppContext) {
+    fn typing_right_after_create_lands_in_the_body(cx: &mut TestAppContext) {
         cx.update(|cx| {
             cx.set_reduce_motion(true);
             gpui_component::init(cx);
@@ -994,6 +995,13 @@ mod tests {
         visual.run_until_parked();
         visual.simulate_keystrokes("enter");
         visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert!(!r.ui_state.live_preview, "the existing note was in Source");
+            assert!(
+                r.source_live_preview(),
+                "the new note opens in Live Preview"
+            );
+        });
         // Type at once, without clicking into the editor.
         visual.simulate_input("Body");
         visual.run_until_parked();
@@ -1001,14 +1009,15 @@ mod tests {
             assert_eq!(r.current_rel, "Friend new note.md");
             let value = r.editing.as_ref().unwrap().test_input().read(cx).value();
             // Positive control: the keystrokes reached the new note's editor.
-            assert!(value.contains("Body"), "{value:?}");
-            assert!(value.starts_with("---\n"), "{value:?}");
-            assert!(value.ends_with("# Friend new note\nBody"), "{value:?}");
-            assert!(r.save_source(cx));
+            assert_eq!(value.as_ref(), "# Friend new note\nBody");
+            assert!(r.leave_source(cx));
+            assert!(
+                !r.ui_state.live_preview,
+                "Source stays the choice for other notes"
+            );
         });
         let saved = std::fs::read_to_string(root.join("Friend new note.md")).unwrap();
-        assert!(saved.starts_with("---\n"), "{saved:?}");
-        assert!(saved.ends_with("# Friend new note\nBody"), "{saved:?}");
+        assert_eq!(saved, "# Friend new note\nBody");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1105,8 +1114,10 @@ mod tests {
                 .any(|path| path == "start.md"));
         });
         let created = std::fs::read_to_string(root.join("Selected/Target/a/Новая 🧠.md")).unwrap();
-        assert!(created.starts_with("---\ntype: Note\ncreated: "));
-        assert!(created.ends_with("# Новая 🧠\n"));
+        assert_eq!(
+            created, "# Новая 🧠\n",
+            "no front matter by default (#1352)"
+        );
         reader.update_in(visual, |reader, window, cx| {
             reader.new_note(None, window, cx);
             assert_eq!(

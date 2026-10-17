@@ -282,7 +282,7 @@ mod tests {
         fn at(source: &str) -> &str {
             &source[..body_start(source)]
         }
-        // The default note: the caret is on the line after the H1.
+        // A front matter template: the caret is on the line after the H1.
         let note = "---\ntype: Note\ncreated: 2026-10-05\n---\n\n# Привет 🧠\n";
         assert_eq!(body_start(note), note.len());
         // A template body starts after the heading and its blank line.
@@ -304,10 +304,8 @@ mod tests {
         let root = dir.path();
         let rel = typed_path(Path::new(""), "A/B/Привет 🧠", false).unwrap();
         let source = create_note(root, &rel, state.path()).unwrap();
-        assert_eq!(
-            source,
-            "---\ntype: Note\ncreated: 2026-10-05\n---\n\n# Привет 🧠\n"
-        );
+        // No front matter nobody wrote (#1352); a Note.md template still applies.
+        assert_eq!(source, "# Привет 🧠\n");
         std::fs::create_dir_all(root.join("_Assets/Templates")).unwrap();
         std::fs::write(
             root.join("_Assets/Templates/Note.md"),

@@ -49,6 +49,9 @@ pub(super) struct Editing {
     /// A disk refresh came while that autosave was writing; it runs once the
     /// save is back (#1376).
     refresh_deferred: bool,
+    /// Opened on a new note in Live Preview: the Source/Live Preview choice to
+    /// keep when it is left still in Live Preview (#1352).
+    kept_preference: Option<bool>,
     /// Saves made on the UI thread; an autosave result older than one is dropped.
     saves: u64,
     saved_at: Option<time::OffsetDateTime>,
@@ -191,6 +194,7 @@ impl Editing {
             save_pending,
             autosaving,
             refresh_deferred,
+            kept_preference,
             saves,
             saved_at,
             current_input,
@@ -210,6 +214,7 @@ impl Editing {
             save_pending,
             autosaving,
             refresh_deferred,
+            kept_preference,
             saves,
             saved_at,
             current_input,
@@ -687,6 +692,7 @@ impl Reader {
             save_pending: false,
             autosaving: None,
             refresh_deferred: false,
+            kept_preference: None,
             saves: 0,
             saved_at: None,
             current_input,
@@ -1116,11 +1122,28 @@ impl Reader {
         }
         // Document preparation can call leave_source again after the editor
         // has already closed. That no-op must retain the last presentation.
-        if self.editing.is_some() {
-            self.ui_state.live_preview = self.source_live_preview();
+        if let Some(editing) = &self.editing {
+            let live = self.source_live_preview();
+            self.ui_state.live_preview = match editing.kept_preference {
+                Some(preferred) if live => preferred,
+                _ => live,
+            };
         }
         self.editing = None;
         true
+    }
+
+    /// Open a note just created: in Live Preview, so a first note reads as a
+    /// note and not as raw Markdown, without changing the Source/Live Preview
+    /// choice the person made for other notes (#1352). Switching to Source
+    /// here is a choice of its own and is kept.
+    pub(super) fn edit_created_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let preferred = self.ui_state.live_preview;
+        self.toggle_source(window, cx);
+        self.set_live_preview(true, window, cx);
+        if let Some(editing) = &mut self.editing {
+            editing.kept_preference = Some(preferred);
+        }
     }
     fn resolve_source(&mut self, reload: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(mut editing) = self.editing.take() else {
