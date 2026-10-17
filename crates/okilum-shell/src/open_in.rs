@@ -21,6 +21,8 @@ struct Known {
     id: &'static str,
     label: &'static str,
     line: LineArg,
+    /// Arguments the launcher needs before the file.
+    flags: &'static [&'static str],
     /// macOS bundle name and its command-line launcher inside the bundle.
     mac: &'static [(&'static str, &'static str)],
     /// Executable names on `PATH`, `/snap/bin` and Flatpak exports.
@@ -34,6 +36,7 @@ const KNOWN: &[Known] = &[
         id: "zed",
         label: "Zed",
         line: LineArg::Suffix,
+        flags: &[],
         mac: &[("Zed.app", "Contents/MacOS/cli")],
         unix: &["zed", "zeditor", "dev.zed.Zed"],
         windows: &["Programs\\Zed\\zed.exe"],
@@ -42,6 +45,9 @@ const KNOWN: &[Known] = &[
         id: "cursor",
         label: "Cursor",
         line: LineArg::Goto,
+        // Cursor 3 sends a launch to its Agents window when that was the last
+        // one used; `--reuse-window` opens the file in an editor window (#1398).
+        flags: &["--reuse-window"],
         mac: &[("Cursor.app", "Contents/Resources/app/bin/cursor")],
         unix: &["cursor"],
         windows: &["Programs\\cursor\\Cursor.exe"],
@@ -50,6 +56,7 @@ const KNOWN: &[Known] = &[
         id: "vscode",
         label: "VS Code",
         line: LineArg::Goto,
+        flags: &[],
         mac: &[("Visual Studio Code.app", "Contents/Resources/app/bin/code")],
         unix: &["code", "com.visualstudio.code"],
         windows: &[
@@ -61,6 +68,7 @@ const KNOWN: &[Known] = &[
         id: "vscode-insiders",
         label: "VS Code Insiders",
         line: LineArg::Goto,
+        flags: &[],
         mac: &[(
             "Visual Studio Code - Insiders.app",
             "Contents/Resources/app/bin/code-insiders",
@@ -72,6 +80,7 @@ const KNOWN: &[Known] = &[
         id: "windsurf",
         label: "Windsurf",
         line: LineArg::Goto,
+        flags: &[],
         mac: &[("Windsurf.app", "Contents/Resources/app/bin/windsurf")],
         unix: &["windsurf"],
         windows: &["Programs\\Windsurf\\Windsurf.exe"],
@@ -80,6 +89,7 @@ const KNOWN: &[Known] = &[
         id: "sublime",
         label: "Sublime Text",
         line: LineArg::Suffix,
+        flags: &[],
         mac: &[("Sublime Text.app", "Contents/SharedSupport/bin/subl")],
         unix: &["subl", "com.sublimetext.three"],
         windows: &["Sublime Text\\subl.exe", "Sublime Text\\sublime_text.exe"],
@@ -91,7 +101,7 @@ pub(crate) struct Editor {
     pub id: &'static str,
     pub label: &'static str,
     program: PathBuf,
-    /// Arguments before the file (`-a App` for `open`).
+    /// Arguments before the file (`-a App` for `open`, launcher flags).
     prefix: Vec<OsString>,
     line: LineArg,
 }
@@ -185,6 +195,7 @@ fn detect_with(probe: &Probe) -> Vec<Editor> {
     KNOWN
         .iter()
         .filter_map(|known| {
+            let flags = || known.flags.iter().map(OsString::from).collect::<Vec<_>>();
             let editor = |program: PathBuf, prefix: Vec<OsString>, line| Editor {
                 id: known.id,
                 label: known.label,
@@ -200,7 +211,7 @@ fn detect_with(probe: &Probe) -> Vec<Editor> {
                     }
                     let cli = app.join(cli);
                     return Some(if executable(&cli) {
-                        editor(cli, vec![], known.line)
+                        editor(cli, flags(), known.line)
                     } else {
                         // The bundle without its launcher: Finder's `open`.
                         editor(
@@ -215,7 +226,7 @@ fn detect_with(probe: &Probe) -> Vec<Editor> {
                 for rel in known.windows {
                     let exe = rel.split('\\').fold(root.clone(), |p, part| p.join(part));
                     if exe.is_file() {
-                        return Some(editor(exe, vec![], known.line));
+                        return Some(editor(exe, flags(), known.line));
                     }
                 }
             }
@@ -228,7 +239,7 @@ fn detect_with(probe: &Probe) -> Vec<Editor> {
                     };
                     let bin = dir.join(name);
                     if executable(&bin) {
-                        return Some(editor(bin, vec![], known.line));
+                        return Some(editor(bin, flags(), known.line));
                     }
                 }
             }
@@ -435,6 +446,65 @@ mod tests {
         };
         let editors = detect_with(&probe);
         assert_eq!(ids(&editors), ["cursor"]);
+    }
+
+    /// #1398: Cursor gets `--reuse-window` before `--goto`, so the note opens
+    /// in an editor window, not in Cursor's Agents window; the others are
+    /// launched exactly as before.
+    #[test]
+    fn cursor_opens_the_note_in_an_editor_window() {
+        let temp = tempfile::tempdir().unwrap();
+        let apps = temp.path().join("Applications");
+        for cli in [
+            "Cursor.app/Contents/Resources/app/bin/cursor",
+            "Visual Studio Code.app/Contents/Resources/app/bin/code",
+            "Zed.app/Contents/MacOS/cli",
+        ] {
+            touch(&apps.join(cli), true);
+        }
+        let local = temp.path().join("Local");
+        touch(
+            &local.join("Programs").join("cursor").join("Cursor.exe"),
+            true,
+        );
+        let file = Path::new("/v/A note.md");
+        let args = |editor: &Editor| {
+            editor
+                .args(file, Some(7))
+                .into_iter()
+                .map(|a| a.into_string().unwrap())
+                .collect::<Vec<_>>()
+        };
+        let mac = detect_with(&Probe {
+            mac_apps: vec![apps.clone()],
+            ..Default::default()
+        });
+        assert_eq!(ids(&mac), ["zed", "cursor", "vscode"]);
+        assert_eq!(
+            args(&mac[1]),
+            ["--reuse-window", "--goto", "/v/A note.md:7"],
+            "macOS bundled CLI"
+        );
+        assert_eq!(
+            args(&mac[2]),
+            ["--goto", "/v/A note.md:7"],
+            "VS Code unchanged"
+        );
+        assert_eq!(args(&mac[0]), ["/v/A note.md:7"], "Zed unchanged");
+        let windows = detect_with(&Probe {
+            windows_roots: vec![local],
+            ..Default::default()
+        });
+        assert_eq!(
+            args(&windows[0]),
+            ["--reuse-window", "--goto", "/v/A note.md:7"],
+            "Windows Cursor.exe"
+        );
+        assert_eq!(
+            windows[0].args(file, None),
+            ["--reuse-window", "/v/A note.md"].map(std::ffi::OsString::from),
+            "no line: still an editor window"
+        );
     }
 
     #[test]
