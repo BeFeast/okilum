@@ -153,6 +153,7 @@ fn write(directory: &Path, windows: &[Window]) -> anyhow::Result<()> {
 
 /// The vault roots to reopen, in order; empty when none were recorded or the
 /// file cannot be read, so startup falls back to the last vault.
+#[cfg(test)]
 pub(crate) fn load(directory: &Path) -> Vec<PathBuf> {
     load_windows(directory)
         .into_iter()
