@@ -159,13 +159,13 @@ pub(crate) fn launch(mut opts: Opts, cx: &mut App) {
                 notice,
             };
             if let Some(intent) = restore {
+                let last = intent.root.clone();
                 // Folder intent revalidates the last document and falls back if it disappeared.
                 if intent.single_file {
                     opts.open_path = intent.note.map(|note| intent.root.join(note));
                 } else {
                     opts.vault = Some(intent.root);
                 }
-                let last = intent.root.clone();
                 if let Err(error) = reader_open::open_window(opts, cx) {
                     eprintln!("Cannot open {}: {error:#}", last.display());
                     let notice = Notice::unopened(&last, false, cx);
@@ -569,6 +569,8 @@ impl Render for Entry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // `gpui::*` brings its own `test`, which `#[gpui::test]` expands into.
+    use ::core::prelude::v1::test;
 
     /// The start screen's state, read through its window.
     fn entry(cx: &mut TestAppContext) -> Entity<Entry> {
