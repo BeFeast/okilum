@@ -374,7 +374,11 @@ impl Settings {
                         this.template_missing = missing;
                         this.template_folder = folder;
                     }
-                    Err(error) => this.template_error = Some(format!("{error:#}")),
+                    Err(error) => {
+                        // The error says what is wrong; no second message.
+                        this.template_missing = false;
+                        this.template_error = Some(format!("{error:#}"));
+                    }
                 }
                 cx.notify();
             });
