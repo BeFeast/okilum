@@ -2949,6 +2949,10 @@ impl Reader {
             .collect();
         let pinned: Vec<_> = self.sidebar.pinned.iter().filter(|p| shown(p)).collect();
         let inbox: Vec<_> = self.inbox.iter().filter(|i| shown(&i.path)).collect();
+        // One short line per empty section, all in the same words (#1350). A
+        // vault without notes shows none: the page says how to start, and
+        // there is nothing to open, pin or file yet.
+        let hints = !self.vault.notes.is_empty();
         let mut items = Vec::new();
         items.push(SideItem::Header(
             Section::Recent,
@@ -2960,7 +2964,7 @@ impl Reader {
             } else {
                 recent.len().min(reader_sidebar::RECENT_SHOWN)
             };
-            if recent.is_empty() {
+            if hints && recent.is_empty() {
                 items.push(SideItem::Empty("Notes you open appear here."));
             }
             for (path, at) in &recent[..visible] {
@@ -2982,8 +2986,8 @@ impl Reader {
             reader_sidebar::section_count(pinned.len()),
         ));
         if open(Section::Pinned) {
-            if pinned.is_empty() {
-                items.push(SideItem::Empty("Hover a note or folder to pin it."));
+            if hints && pinned.is_empty() {
+                items.push(SideItem::Empty("Notes you pin appear here."));
             }
             for path in pinned {
                 items.push(SideItem::Entry {
@@ -3001,8 +3005,8 @@ impl Reader {
             reader_sidebar::section_count(inbox.len()),
         ));
         if open(Section::Inbox) {
-            if inbox.is_empty() {
-                items.push(SideItem::Empty("No new unfiled notes."));
+            if hints && inbox.is_empty() {
+                items.push(SideItem::Empty("New unfiled notes appear here."));
             }
             for item in inbox {
                 let folder = self
@@ -3030,6 +3034,9 @@ impl Reader {
         if open(Section::Projects) {
             use okilum_core::projects::Status;
             let rows = self.projects.rows();
+            if hints && rows.is_empty() {
+                items.push(SideItem::Empty("Notes with type: project appear here."));
+            }
             items.extend(
                 rows.iter()
                     .filter(|p| p.status != Status::Done)
@@ -3056,6 +3063,9 @@ impl Reader {
             #[cfg(any(unix, windows))]
             if let Some(create) = creation.filter(|c| c.folder.is_empty()) {
                 append_creation_rows(&mut items, create, 0);
+            }
+            if hints && self.tree.rows.is_empty() {
+                items.push(SideItem::Empty("Notes and folders appear here."));
             }
             for row in self.tree.rows.iter() {
                 #[cfg(any(unix, windows))]
@@ -8930,6 +8940,59 @@ mod document_link_landing_tests {
                     (Section::Folders, None),
                 ]
             );
+        });
+    }
+
+    /// #1350: the empty sections speak alike, and an empty vault shows no
+    /// hints at all.
+    #[gpui::test]
+    fn empty_sidebar_sections_read_as_one_set(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| Reader::new(Opts::default(), window, cx));
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let view = reader.unwrap();
+        visual.run_until_parked();
+        let hints = |v: &Reader| -> Vec<&'static str> {
+            v.sidebar_items()
+                .into_iter()
+                .filter_map(|item| match item {
+                    SideItem::Empty(text) => Some(text),
+                    _ => None,
+                })
+                .collect()
+        };
+        view.update(visual, |v, _| {
+            v.loading = None;
+            v.sidebar.recent.clear();
+            v.sidebar.pinned.clear();
+            v.inbox.clear();
+            v.vault = Arc::new(Vault::from_note_paths(Vec::<String>::new()));
+            assert!(hints(v).is_empty(), "an empty vault shows no hints");
+            v.vault = Arc::new(Vault::from_note_paths(["Work/Plan.md".to_string()]));
+            let shown = hints(v);
+            assert_eq!(
+                &shown[..4],
+                [
+                    "Notes you open appear here.",
+                    "Notes you pin appear here.",
+                    "New unfiled notes appear here.",
+                    "Notes with type: project appear here.",
+                ]
+            );
+            assert!(
+                shown.iter().all(|hint| hint.ends_with("appear here.")),
+                "{shown:?}"
+            );
+            // Positive control: a filled section drops its hint.
+            v.sidebar.pinned.push("Work/Plan.md".into());
+            assert!(!hints(v).contains(&"Notes you pin appear here."));
         });
     }
 
