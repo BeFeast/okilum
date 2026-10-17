@@ -952,7 +952,9 @@ mod tests {
         ("crates/okilum-shell/src/open_in.rs", 1),
         ("crates/okilum-shell/src/reader_history.rs", 4),
         ("crates/okilum-shell/src/reader_layout.rs", 3),
-        ("crates/okilum-shell/src/reader_open.rs", 4),
+        // Two more: Create a new vault suggests ~/Documents in the save
+        // dialog (#1357); the user picks the folder, it is theirs.
+        ("crates/okilum-shell/src/reader_open.rs", 6),
         // Sync lives under the state root; its systemd unit is removed by
         // the sync controller (Linux part of #974).
         ("crates/okilum-shell/src/reader_settings_sync.rs", 3),

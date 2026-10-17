@@ -624,7 +624,7 @@ fn reusable_roots(cx: &App) -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
-actions!(reader_open, [OpenFile, OpenFolder, NewWindow]);
+actions!(reader_open, [OpenFile, OpenFolder, NewVault, NewWindow]);
 
 pub(crate) fn install(cx: &mut App) {
     cx.set_global(Readers::default());
@@ -644,6 +644,7 @@ pub(crate) fn install(cx: &mut App) {
     cx.on_action(|_: &NewWindow, cx| new_window(cx));
     cx.on_action(|_: &OpenFile, cx| pick(false, cx));
     cx.on_action(|_: &OpenFolder, cx| pick(true, cx));
+    cx.on_action(|_: &NewVault, cx| new_vault(cx));
 }
 
 pub(crate) fn file_menu() -> Menu {
@@ -653,6 +654,7 @@ pub(crate) fn file_menu() -> Menu {
         items: vec![
             MenuItem::action("Open File…", OpenFile),
             MenuItem::action("Open Folder…", OpenFolder),
+            MenuItem::action("New Vault…", NewVault),
             MenuItem::action("New Window", NewWindow),
         ],
     }
@@ -726,6 +728,75 @@ fn pick(folder: bool, cx: &mut App) {
         });
     })
     .detach();
+}
+
+/// Name a new folder in the system save dialog, create it and open it as a
+/// vault (#1357): someone without notes can start without making a folder in
+/// a file dialog first.
+fn new_vault(cx: &mut App) {
+    #[cfg(windows)]
+    let home = dirs::home_dir();
+    #[cfg(not(windows))]
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    // Documents when there is one, as Obsidian and most editors suggest.
+    let start = home
+        .map(|home| {
+            let documents = home.join("Documents");
+            if documents.is_dir() {
+                documents
+            } else {
+                home
+            }
+        })
+        .unwrap_or_else(std::env::temp_dir);
+    let result = cx.prompt_for_new_path(&start, Some("Notes"));
+    cx.spawn(async move |cx| {
+        let chosen = match result.await {
+            Ok(Ok(chosen)) => chosen,
+            Ok(Err(error)) => {
+                cx.update(|cx| show_error(anyhow::anyhow!("Folder dialog failed: {error}"), cx));
+                return;
+            }
+            Err(_) => None,
+        };
+        let Some(path) = chosen else {
+            return;
+        };
+        let created = cx
+            .background_executor()
+            .spawn(async move { create_vault_folder(&path).map(|()| path) })
+            .await;
+        cx.update(|cx| match created {
+            Ok(path) => dispatch_path(&path, cx),
+            Err(error) => show_error(error, cx),
+        });
+    })
+    .detach();
+}
+
+/// The folder for a new vault: created, or an empty folder that is already
+/// there (the save dialog lets you pick one). Anything else is refused rather
+/// than opened, so «New Vault» never turns out to be an existing vault.
+pub(crate) fn create_vault_folder(path: &Path) -> Result<()> {
+    match std::fs::create_dir(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let empty = std::fs::read_dir(path)
+                .ok()
+                .is_some_and(|mut entries| entries.next().is_none());
+            if empty {
+                Ok(())
+            } else {
+                bail!(
+                    "“{}” already exists. Choose another name, or use Open folder… for an existing vault.",
+                    path.file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| path.display().to_string())
+                )
+            }
+        }
+        Err(error) => Err(error).context("The new vault folder couldn’t be created"),
+    }
 }
 
 pub(crate) fn picker_path(
@@ -2887,6 +2958,50 @@ mod entry_tests {
             "both Amber windows and Bravo come back"
         );
         assert_eq!(cx.windows().len(), 3, "no start screen next to them");
+    }
+
+    /// #1357: «Create a new vault…» names a folder in the save dialog,
+    /// creates it and opens it as a vault.
+    #[gpui::test]
+    fn a_new_vault_is_created_and_opened(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().join("My Notes");
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            install(cx);
+            cx.dispatch_action(&NewVault);
+        });
+        cx.run_until_parked();
+        assert!(cx.did_prompt_for_new_path(), "the save dialog is shown");
+        cx.simulate_new_path_selection(|_| Some(path.clone()));
+        cx.run_until_parked();
+        assert!(path.is_dir(), "the folder is created");
+        cx.update(|cx| {
+            let readers = readers(cx);
+            assert_eq!(readers.len(), 1, "and opened as a vault");
+            let reader = readers[0].read(cx);
+            assert_eq!(reader.vault_root, path.canonicalize().unwrap());
+            assert!(!reader.single_file);
+        });
+    }
+
+    #[test]
+    fn a_new_vault_folder_is_new_or_empty() {
+        let fixture = tempfile::tempdir().unwrap();
+        let fresh = fixture.path().join("Fresh");
+        create_vault_folder(&fresh).unwrap();
+        assert!(fresh.is_dir());
+        // An empty folder that is already there is fine.
+        create_vault_folder(&fresh).unwrap();
+        // A folder with files in it is an existing vault: refused.
+        std::fs::write(fresh.join("Note.md"), "# Note").unwrap();
+        let error = create_vault_folder(&fresh).unwrap_err().to_string();
+        assert!(error.contains("“Fresh” already exists"), "{error}");
+        // A file, or a place that cannot be created, is refused too.
+        let file = fixture.path().join("file.md");
+        std::fs::write(&file, "x").unwrap();
+        assert!(create_vault_folder(&file).is_err());
+        assert!(create_vault_folder(&fixture.path().join("missing/Child")).is_err());
     }
 
     /// #1375: two windows of one vault on different notes come back each on

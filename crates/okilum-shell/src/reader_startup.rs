@@ -491,12 +491,27 @@ impl Render for Entry {
                             }),
                     )
                     .child(
+                        Button::new("startup-new-vault")
+                            .label("Create a new vault…")
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(Box::new(reader_open::NewVault), cx)
+                            }),
+                    )
+                    .child(
                         Button::new("startup-open-file")
                             .label("Open file…")
                             .on_click(|_, window, cx| {
                                 window.dispatch_action(Box::new(reader_open::OpenFile), cx)
                             }),
                     ),
+            )
+            // Someone without notes yet: any folder works (#1357).
+            .child(
+                div()
+                    .text_sm()
+                    .text_center()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("A vault is a folder of Markdown files. An empty folder is fine to start with."),
             );
         if let Some(notice) = self.state.notice.clone() {
             let mut actions = h_flex().gap_2().child(
