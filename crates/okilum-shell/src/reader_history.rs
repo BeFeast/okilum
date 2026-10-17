@@ -267,6 +267,19 @@ impl ReadingHistory {
         Ok((last, roots))
     }
 
+    /// Remove a vault from the start screen's list and from restore (#1368).
+    /// Its folder is not touched; opening it again adds it back.
+    pub fn forget_root(directory: &Path, root: &Path) -> Result<()> {
+        let _lock = Self::lock(directory, std::iter::empty())?;
+        let Some(mut state) = Self::load(directory)? else {
+            return Ok(());
+        };
+        state.last_documents.remove(root);
+        state.quick_roots.remove(root);
+        state.recent_roots.retain(|old| old != root);
+        state.persist(directory)
+    }
+
     /// Recover only invalid content, never permission/I/O errors or symlinks.
     /// The same lock as writers prevents archiving a concurrently repaired file.
     pub fn last_document_or_recover(
@@ -328,6 +341,32 @@ mod tests {
         assert_eq!(isolated_from(Some("relative/state".into())), None);
         assert_eq!(isolated_from(Some("".into())), None);
         assert_eq!(isolated_from(None), None);
+    }
+
+    #[test]
+    fn forgetting_a_vault_keeps_the_others_and_its_folder() {
+        // #1368: the start screen removes a vault from the list.
+        let f =
+            Fixture(std::env::temp_dir().join(format!("okilum-forget-{}", uuid::Uuid::new_v4())));
+        let state = f.0.join("state");
+        let one = f.0.join("one");
+        let two = f.0.join("two");
+        for root in [&one, &two] {
+            fs::create_dir_all(root).unwrap();
+        }
+        ReadingHistory::record_usable_document(&state, &one, "a.md").unwrap();
+        ReadingHistory::record_document_mode(&state, &two, "b.md", true).unwrap();
+        ReadingHistory::forget_root(&state, &two).unwrap();
+        assert_eq!(
+            ReadingHistory::startup_roots(&state).unwrap(),
+            (Some(one.clone()), vec![one.clone()])
+        );
+        assert_eq!(ReadingHistory::last_document(&state, &two).unwrap(), None);
+        assert_eq!(ReadingHistory::quick_document(&state, &two).unwrap(), None);
+        assert!(two.is_dir(), "the folder itself is left alone");
+        // A vault that is not listed, or no history at all, is not an error.
+        ReadingHistory::forget_root(&state, &two).unwrap();
+        ReadingHistory::forget_root(&f.0.join("empty-state"), &one).unwrap();
     }
 
     #[test]
