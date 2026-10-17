@@ -16,7 +16,10 @@ type OwnedFd = crate::windows_files::Directory;
 use time::OffsetDateTime;
 
 pub const DEFAULT_FOLDER: &str = "_Assets/Templates";
-const DEFAULT_SOURCE: &str = "---\ntype: Note\ncreated: {{date:YYYY-MM-DD}}\n---\n\n# {{title}}\n";
+/// A new note without a chosen template is just its title: front matter the
+/// person did not write makes a first note look like a config file (#1352).
+/// A `Note.md` in the templates folder still applies by default.
+const DEFAULT_SOURCE: &str = "# {{title}}\n";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Catalog {
