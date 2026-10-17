@@ -286,7 +286,7 @@ fn open(editor: &'static Editor, root: &Path, rel: &str, window: &mut Window, cx
             Err(error) => anyhow::bail!("{error}"),
         };
         let mut child = std::process::Command::new(&editor.program)
-            .args(editor.args(&path, line))
+            .args(editor.args(&okilum_core::vault::plain_path(&path), line))
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())

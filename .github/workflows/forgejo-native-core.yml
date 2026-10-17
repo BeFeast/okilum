@@ -61,7 +61,9 @@ jobs:
           # #1269: an okilum: link's line lands, cold and in a running window (verbatim roots).
           'reader_open::entry_tests::line_links_land_on_the_line_cold_and_in_a_running_window',
           # #1271: Enter opens and Esc cancels the link confirmation.
-          'reader_open::entry_tests::link_confirmation_answers_enter_and_escape'
+          'reader_open::entry_tests::link_confirmation_answers_enter_and_escape',
+          # #1391: «Copy absolute path» copies C:\..., not the verbatim \\?\C:\... form.
+          'reader_files::tests::copy_absolute_path_is_the_plain_path_of_the_file'
         )) {
           $found = & cargo test --locked -p okilum-shell --bins $shell -- --list --exact 2>$null
           if ($LASTEXITCODE) { exit $LASTEXITCODE }

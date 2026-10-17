@@ -41,7 +41,33 @@ pub fn with_root_directory(path: PathBuf) -> PathBuf {
 
 /// Human-readable paths and error chains; keep verbatim prefixes for filesystem I/O.
 pub fn display_path(path: &Path) -> String {
-    display_error(&path.to_string_lossy())
+    plain_path(path).to_string_lossy().into_owned()
+}
+
+/// The path as the user knows it, for what is shown, copied or handed to another
+/// program (#1391). On Windows `canonicalize` returns the verbatim form; this drops
+/// its prefix: `\\?\C:\…` → `C:\…`, `\\?\UNC\server\share\…` → `\\server\share\…`.
+/// Other verbatim forms (`\\?\Volume{…}`) have no plain spelling and stay. Okilum's
+/// own filesystem I/O keeps the verbatim path. Other platforms: unchanged.
+pub fn plain_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    if let Some(text) = path.to_str() {
+        return PathBuf::from(strip_verbatim(text));
+    }
+    path.to_owned()
+}
+
+#[cfg(any(windows, test))]
+fn strip_verbatim(path: &str) -> String {
+    if let Some(share) = path.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{share}");
+    }
+    match path.strip_prefix(r"\\?\") {
+        Some(rest) if matches!(rest.as_bytes(), [letter, b':', ..] if letter.is_ascii_alphabetic()) => {
+            rest.to_owned()
+        }
+        _ => path.to_owned(),
+    }
 }
 
 pub fn display_error(message: &str) -> String {
@@ -138,6 +164,49 @@ mod root_tests {
 
 #[cfg(test)]
 mod display_tests {
+    /// #1391: «Copy absolute path» copied `\\?\C:\…`. The four prefix cases, plus a
+    /// verbatim form that has no plain spelling.
+    #[test]
+    fn windows_verbatim_prefixes_become_plain_paths() {
+        for (verbatim, plain) in [
+            (r"\\?\C:\Users\qa\Notes\a.md", r"C:\Users\qa\Notes\a.md"),
+            (
+                r"\\?\UNC\server\share\Notes\a.md",
+                r"\\server\share\Notes\a.md",
+            ),
+            (r"C:\Users\qa\Notes\a.md", r"C:\Users\qa\Notes\a.md"),
+            (r"\\server\share\Notes\a.md", r"\\server\share\Notes\a.md"),
+            (
+                r"\\?\Volume{0b3c}\Notes\a.md",
+                r"\\?\Volume{0b3c}\Notes\a.md",
+            ),
+        ] {
+            assert_eq!(super::strip_verbatim(verbatim), plain);
+        }
+        #[cfg(windows)]
+        {
+            // A real canonicalized path: positive control that it is verbatim at all.
+            let dir = std::env::temp_dir().canonicalize().unwrap();
+            assert!(
+                dir.to_str().unwrap().starts_with(r"\\?\"),
+                "{}",
+                dir.display()
+            );
+            let plain = super::plain_path(&dir);
+            assert!(
+                !plain.to_str().unwrap().starts_with(r"\\?\"),
+                "{}",
+                plain.display()
+            );
+            assert!(plain.is_dir() && plain.canonicalize().unwrap() == dir);
+        }
+        #[cfg(not(windows))]
+        {
+            let literal = std::path::Path::new(r"\\?\C:\weird name");
+            assert_eq!(super::plain_path(literal), literal);
+        }
+    }
+
     #[test]
     fn windows_invalid_name_explains_alias_and_only_reports_supplied_original() {
         let cause = "The filename syntax is incorrect. (os error 123)";
