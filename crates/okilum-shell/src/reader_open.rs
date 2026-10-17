@@ -1065,7 +1065,7 @@ fn new_window(cx: &mut App) {
     let Some(source) = source else {
         return;
     };
-    duplicate_window(source, cx).detach();
+    duplicate_window(source, None, cx).detach();
 }
 
 /// An open, full-vault Reader of this vault, if a window shows one.
@@ -1082,14 +1082,20 @@ pub(crate) fn reader_of(root: &Path, cx: &App) -> Option<WeakEntity<super::Reade
 
 /// Another window of the vault `source` shows, sharing its session: New
 /// Window, and a second window of one vault at restore (#1335). Waits for the
-/// source to finish loading; resolves to whether the window opened.
-pub(crate) fn duplicate_window(source: WeakEntity<super::Reader>, cx: &mut App) -> Task<bool> {
+/// source to finish loading; resolves to whether the window opened. It shows
+/// `note` when given (the note that window had before a restart, #1375),
+/// otherwise the source's note.
+pub(crate) fn duplicate_window(
+    source: WeakEntity<super::Reader>,
+    note: Option<String>,
+    cx: &mut App,
+) -> Task<bool> {
     cx.spawn(async move |cx| loop {
         let outcome = source.update(cx, |reader, cx| {
             reader.record_ui_state(true, cx);
             let opts = super::Opts {
                 vault: Some(reader.vault_root.clone()),
-                note: Some(reader.current_rel.clone()),
+                note: Some(note.clone().unwrap_or_else(|| reader.current_rel.clone())),
                 session_directory: reader.session_directory.clone(),
                 use_html: reader.use_html,
                 defer_loading: true,
@@ -2883,6 +2889,160 @@ mod entry_tests {
         assert_eq!(cx.windows().len(), 3, "no start screen next to them");
     }
 
+    /// #1375: two windows of one vault on different notes come back each on
+    /// its own note, not both on the note used last.
+    #[gpui::test]
+    fn two_windows_of_one_vault_come_back_on_their_own_notes(cx: &mut TestAppContext) {
+        use super::super::{
+            reader_history::TestSessionDirectory, reader_open_windows, reader_startup, Opts,
+        };
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let amber = fixture.path().join("Amber");
+        let bravo = fixture.path().join("Bravo");
+        std::fs::create_dir_all(amber.join("Folder")).unwrap();
+        std::fs::create_dir_all(&bravo).unwrap();
+        std::fs::write(amber.join("Alpha.md"), "# Alpha").unwrap();
+        std::fs::write(amber.join("Folder/Beta.md"), "# Beta").unwrap();
+        std::fs::write(bravo.join("Bravo.md"), "# Bravo").unwrap();
+        let amber = amber.canonicalize().unwrap();
+        let bravo = bravo.canonicalize().unwrap();
+        let base = Opts {
+            session_directory: Some(state.clone()),
+            index_dir: Some(fixture.path().join("index")),
+            ..Default::default()
+        };
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            install(cx);
+            cx.set_global(TestSessionDirectory(state.clone()));
+            reader_open_windows::install(state.clone(), cx);
+            cx.set_global(reader_startup::ReopenBase(base.clone()));
+            cx.set_quit_mode(gpui::QuitMode::Explicit);
+        });
+        let settle = |cx: &mut TestAppContext| {
+            for _ in 0..60 {
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_millis(100));
+                cx.run_until_parked();
+            }
+        };
+        let shown = |cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                let mut shown: Vec<(PathBuf, String)> = readers(cx)
+                    .into_iter()
+                    .filter(|r| cx.windows().contains(&r.read(cx).reader_window))
+                    .map(|r| {
+                        (
+                            r.read(cx).vault_root.clone(),
+                            r.read(cx).current_rel.clone(),
+                        )
+                    })
+                    .collect();
+                shown.sort();
+                shown
+            })
+        };
+        // Amber on Alpha; New Window, which then goes to Beta; then Bravo.
+        cx.update(|cx| {
+            open_window(
+                Opts {
+                    vault: Some(amber.clone()),
+                    note: Some("Alpha.md".into()),
+                    ..base.clone()
+                },
+                cx,
+            )
+            .unwrap()
+        });
+        settle(cx);
+        let first = cx.update(|cx| cx.windows()[0]);
+        cx.update(|cx| {
+            let _ = first.update(cx, |_, window, _| window.activate_window());
+            new_window(cx);
+        });
+        settle(cx);
+        let second = cx.update(|cx| {
+            readers(cx)
+                .into_iter()
+                .find(|r| r.read(cx).reader_window != first)
+                .unwrap()
+        });
+        let second_window = cx.update(|cx| second.read(cx).reader_window);
+        cx.update(|cx| {
+            let _ = second_window.update(cx, |_, window, cx| {
+                second.update(cx, |reader, cx| {
+                    reader.open_note("Folder/Beta.md", None, window, cx)
+                })
+            });
+        });
+        settle(cx);
+        cx.update(|cx| {
+            open_window(
+                Opts {
+                    vault: Some(bravo.clone()),
+                    ..base.clone()
+                },
+                cx,
+            )
+            .unwrap()
+        });
+        settle(cx);
+        let expected = vec![
+            (amber.clone(), "Alpha.md".to_string()),
+            (amber.clone(), "Folder/Beta.md".to_string()),
+            (bravo.clone(), "Bravo.md".to_string()),
+        ];
+        assert_eq!(shown(cx), expected, "Alpha and Beta in Amber, and Bravo");
+
+        cx.update(reader_open_windows::quit);
+        let mut recorded = reader_open_windows::load_windows(&state);
+        recorded.sort();
+        assert_eq!(
+            recorded,
+            expected
+                .iter()
+                .map(|(root, note)| (root.clone(), Some(note.clone())))
+                .collect::<Vec<_>>(),
+            "each window is recorded with its note"
+        );
+        cx.update(|cx| {
+            for window in cx.windows() {
+                let _ = window.update(cx, |_, window, _| window.remove_window());
+            }
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            cx.set_global(reader_startup::Startup::default());
+            reader_startup::launch(base.clone(), cx);
+        });
+        settle(cx);
+        assert_eq!(shown(cx), expected, "each window is back on its own note");
+        assert_eq!(cx.windows().len(), 3, "no start screen next to them");
+
+        // A recorded note that is gone: that window opens like its vault.
+        cx.update(reader_open_windows::quit);
+        cx.update(|cx| {
+            for window in cx.windows() {
+                let _ = window.update(cx, |_, window, _| window.remove_window());
+            }
+        });
+        cx.run_until_parked();
+        std::fs::remove_file(amber.join("Alpha.md")).unwrap();
+        cx.update(|cx| {
+            cx.set_global(reader_startup::Startup::default());
+            reader_startup::launch(base.clone(), cx);
+        });
+        settle(cx);
+        let back = shown(cx);
+        assert_eq!(back.len(), 3, "all three windows come back");
+        assert!(
+            back.iter().all(|(_, note)| note != "Alpha.md"),
+            "the deleted note is not shown: {back:?}"
+        );
+        assert!(back.contains(&(amber.clone(), "Folder/Beta.md".to_string())));
+    }
+
     /// #1335: a second window of a vault that is still loading does not hold
     /// back the vaults after it; it opens once the vault is ready.
     #[gpui::test]
@@ -2934,8 +3094,8 @@ mod entry_tests {
         // Amber cannot share its session yet.
         cx.update(|cx| amber.update(cx, |reader, _| reader.incremental_initializing = true))
             .unwrap();
-        let restoring =
-            cx.update(|cx| reader_startup::restore_windows(roots.clone(), base.clone(), cx));
+        let windows = roots.iter().map(|root| (root.clone(), None)).collect();
+        let restoring = cx.update(|cx| reader_startup::restore_windows(windows, base.clone(), cx));
         settle(cx);
         settle(cx);
         assert_eq!(

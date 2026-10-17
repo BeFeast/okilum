@@ -81,7 +81,12 @@ pub(crate) fn launch(mut opts: Opts, cx: &mut App) {
                 // damaged history still reopens every recorded window.
                 let windows = directory
                     .as_deref()
-                    .map(super::reader_open_windows::load)
+                    .map(|directory| {
+                        restorable_windows(
+                            directory,
+                            super::reader_open_windows::load_windows(directory),
+                        )
+                    })
                     .unwrap_or_default();
                 let history = history(directory);
                 // The start screen lists vaults by their names too (#1364).
@@ -209,19 +214,53 @@ fn history(
     Ok((directory, roots, restore))
 }
 
+/// Each window's note as it can be reopened (#1375): kept only while the
+/// note is still there. The first window of a vault opens like the vault
+/// does, so on the vault's last note it is left out and that window comes
+/// back as before, at its last position too. A later window copies the first
+/// one's note when it has none, so it always keeps its own.
+fn restorable_windows(
+    directory: &std::path::Path,
+    windows: Vec<super::reader_open_windows::Window>,
+) -> Vec<super::reader_open_windows::Window> {
+    let mut seen = std::collections::HashSet::new();
+    windows
+        .into_iter()
+        .map(|(root, note)| {
+            let first = seen.insert(root.clone());
+            let note = note
+                .filter(|note| root.join(note).is_file())
+                .filter(|note| {
+                    !first
+                        || reader_history::ReadingHistory::last_document(directory, &root)
+                            .ok()
+                            .flatten()
+                            .as_ref()
+                            != Some(note)
+                });
+            (root, note)
+        })
+        .collect()
+}
+
 /// Reopen every recorded vault window, one after another so the window that
-/// was in front (recorded last) is in front again (#1325). A vault that is
-/// gone or unreadable is skipped and named in a notice; the others open.
-/// Resolves to whether any window opened.
-pub(crate) fn restore_windows(roots: Vec<PathBuf>, base: Opts, cx: &mut App) -> Task<bool> {
+/// was in front (recorded last) is in front again (#1325), each on the note
+/// it showed (#1375). A vault that is gone or unreadable is skipped and named
+/// in a notice; the others open. Resolves to whether any window opened.
+pub(crate) fn restore_windows(
+    windows: Vec<super::reader_open_windows::Window>,
+    base: Opts,
+    cx: &mut App,
+) -> Task<bool> {
     cx.spawn(async move |cx| {
         let mut opened = 0;
         let mut skipped = Vec::new();
-        for root in roots {
+        for (root, note) in windows {
             // A second window of a vault already back: New Window's path,
             // sharing that window's session, not a second open (#1335).
             if let Some(source) = cx.update(|cx| reader_open::reader_of(&root, cx)) {
-                let duplicating = cx.update(|cx| reader_open::duplicate_window(source, cx));
+                let duplicating =
+                    cx.update(|cx| reader_open::duplicate_window(source, note.clone(), cx));
                 // It waits for the vault to load; one that is still loading
                 // does not hold back the vaults after it.
                 let patience = cx.background_executor().timer(RESTORE_PATIENCE);
@@ -234,6 +273,7 @@ pub(crate) fn restore_windows(roots: Vec<PathBuf>, base: Opts, cx: &mut App) -> 
             }
             let opts = Opts {
                 vault: Some(root.clone()),
+                note,
                 ..base.clone()
             };
             let resolving = cx.update(|cx| reader_open::resolve(opts, cx));
