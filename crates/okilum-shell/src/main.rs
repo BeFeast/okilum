@@ -4964,14 +4964,24 @@ impl Reader {
                 rows.push(item);
             }
         }
+        // A section showing only its empty hint takes that one row, not a
+        // share of the space (#1350).
+        let hint_only = |rows: &Vec<SideItem>| {
+            rows.len() == 1 && matches!(rows.first(), Some(SideItem::Empty(_)))
+        };
+        let hinted = sections
+            .iter()
+            .filter(|(s, _, rows)| *s != Section::Folders && hint_only(rows))
+            .count();
         let expanded = sections
             .iter()
-            .filter(|(s, _, rows)| *s != Section::Folders && !rows.is_empty())
+            .filter(|(s, _, rows)| *s != Section::Folders && !rows.is_empty() && !hint_only(rows))
             .count()
             .max(1);
         let upper_budget = (f32::from(self.body_bounds.size.height)
             - READER_HEADER_HEIGHT
             - sections.len() as f32 * 28.
+            - hinted as f32 * 28.
             - 8.
             - 140.)
             .max(0.);
@@ -4997,6 +5007,7 @@ impl Reader {
             } else {
                 28.
             };
+            let hint = hint_only(&rows);
             let render = render_row.clone();
             let list = uniform_list(
                 SharedString::from(format!("sidebar-body-{}", section.label())),
@@ -5066,7 +5077,11 @@ impl Reader {
             } else {
                 section_views.push(
                     div()
-                        .h(px((count as f32 * row_height).min(per_section)))
+                        .h(px(if hint {
+                            row_height
+                        } else {
+                            (count as f32 * row_height).min(per_section)
+                        }))
                         .flex_none()
                         .overflow_hidden()
                         .debug_selector(move || format!("sidebar-body-{}", section.label()))
