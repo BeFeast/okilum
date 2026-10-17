@@ -2969,7 +2969,7 @@ mod entry_tests {
         cx.update(|cx| {
             gpui_component::init(cx);
             install(cx);
-            cx.dispatch_action(NewVault);
+            cx.dispatch_action(&NewVault);
         });
         cx.run_until_parked();
         assert!(cx.did_prompt_for_new_path(), "the save dialog is shown");
