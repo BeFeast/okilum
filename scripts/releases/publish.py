@@ -290,8 +290,10 @@ def complete_windows(store, github, build):
     print(f"Stable Windows is now {release['platforms']['windows']['build']} for {build}")
 
 
-def execute(store, github, forgejo, build=None, supersede_pending=False):
+def execute(store, github, forgejo, build=None, supersede_pending=False, skip_windows=False):
     stable = build is not None
+    if skip_windows and not stable:
+        raise ValueError('skip_windows needs an explicit stable build')
     channel = 'stable' if stable else 'beta'
     key = f'{catalog.PREFIX}/{channel}.json'
     old = store.call('GET', key)
@@ -313,6 +315,13 @@ def execute(store, github, forgejo, build=None, supersede_pending=False):
             raise ValueError('Unknown selected build')
         print('No complete catalogs for current platform beta heads yet')
         return
+    if skip_windows:
+        # #1378: Mac and Linux go first; Windows keeps the signed build of the previous
+        # stable, with its own source, until --windows-only after the re-sign.
+        if previous is None:
+            raise ValueError('skip_windows needs a previous stable Windows build to keep')
+        release = {**release, 'platforms': {**release['platforms'],
+                                            'windows': previous['platforms']['windows']}}
     if previous and previous['build'] > release['build']:
         raise ValueError('Refusing release rollback')
     if previous and not stable:
@@ -327,7 +336,10 @@ def execute(store, github, forgejo, build=None, supersede_pending=False):
     body = (notes(forgejo, release, json.loads(prior_stable) if prior_stable else None)
             if stable else beta_notes(release))
     if stable:
-        preflight_stable(store, release)
+        if skip_windows:
+            preflight_linux_macos(store, release)
+        else:
+            preflight_stable(store, release)
         # Validate Arch signature and metadata before touching Windows/macOS.
         with arch.SigningKey() as signing, tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
@@ -342,7 +354,8 @@ def execute(store, github, forgejo, build=None, supersede_pending=False):
             tag = mirror_tag(release, True)
             arch.execute(SimpleNamespace(command='promote', build=release['platforms']['linux']['build']),
                          store, signing, directory)
-            windows.promote(release['platforms']['windows']['build'], store)
+            if not skip_windows:
+                windows.promote(release['platforms']['windows']['build'], store)
             promote_macos(SimpleNamespace(app='okilum', build=release['build']))
         store.put('okilum/macos/latest.zip', files['Okilum-macos.zip'], 'application/zip', 'no-cache')
         # Builds before #993 have no DMG; the stable DMG then keeps its previous build.
@@ -364,7 +377,11 @@ if __name__ == '__main__':
                         help='Owner-approved recovery: replace an interrupted promotion with a newer build')
     parser.add_argument('--windows-only', action='store_true',
                         help='Stable only: put the re-signed Windows build of this stable build on stable (#1104)')
+    parser.add_argument('--skip-windows', action='store_true',
+                        help='With --build: promote Mac and Linux; stable keeps its signed Windows build (#1378)')
     args = parser.parse_args()
+    if args.skip_windows and (args.build is None or args.windows_only):
+        parser.error('--skip-windows requires --build and excludes --windows-only')
     if args.windows_only:
         if args.build is None:
             parser.error('--windows-only requires --build')
@@ -374,4 +391,4 @@ if __name__ == '__main__':
         parser.error('--supersede-pending requires --build')
     if args.build is not None and args.build < 1:
         parser.error('Build must be positive')
-    execute(R2(), GitHub(), Forgejo(), args.build, args.supersede_pending)
+    execute(R2(), GitHub(), Forgejo(), args.build, args.supersede_pending, args.skip_windows)
