@@ -45,9 +45,11 @@ const KNOWN: &[Known] = &[
         id: "cursor",
         label: "Cursor",
         line: LineArg::Goto,
-        // Cursor 3 sends a launch to its Agents window when that was the last
-        // one used; `--reuse-window` opens the file in an editor window (#1398).
-        flags: &["--reuse-window"],
+        // Cursor 3 opens a file in the last active window, and when that is
+        // its Agents window the note lands in a side panel. A new window is a
+        // classic editor window; `--reuse-window` would pick the Agents one
+        // (#1398).
+        flags: &["--new-window"],
         mac: &[("Cursor.app", "Contents/Resources/app/bin/cursor")],
         unix: &["cursor"],
         windows: &["Programs\\cursor\\Cursor.exe"],
@@ -448,7 +450,7 @@ mod tests {
         assert_eq!(ids(&editors), ["cursor"]);
     }
 
-    /// #1398: Cursor gets `--reuse-window` before `--goto`, so the note opens
+    /// #1398: Cursor gets `--new-window` before `--goto`, so the note opens
     /// in an editor window, not in Cursor's Agents window; the others are
     /// launched exactly as before.
     #[test]
@@ -482,7 +484,7 @@ mod tests {
         assert_eq!(ids(&mac), ["zed", "cursor", "vscode"]);
         assert_eq!(
             args(&mac[1]),
-            ["--reuse-window", "--goto", "/v/A note.md:7"],
+            ["--new-window", "--goto", "/v/A note.md:7"],
             "macOS bundled CLI"
         );
         assert_eq!(
@@ -497,12 +499,12 @@ mod tests {
         });
         assert_eq!(
             args(&windows[0]),
-            ["--reuse-window", "--goto", "/v/A note.md:7"],
+            ["--new-window", "--goto", "/v/A note.md:7"],
             "Windows Cursor.exe"
         );
         assert_eq!(
             windows[0].args(file, None),
-            ["--reuse-window", "/v/A note.md"].map(std::ffi::OsString::from),
+            ["--new-window", "/v/A note.md"].map(std::ffi::OsString::from),
             "no line: still an editor window"
         );
     }
