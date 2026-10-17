@@ -159,6 +159,8 @@ fn vault_color_swatches(root: &Path, cx: &App) -> impl IntoElement {
 }
 
 fn compact_vault_path(root: &Path) -> String {
+    // The plain form, so a verbatim `\\?\C:\…` root still sits under the home folder (#1391).
+    let root = &okilum_core::vault::plain_path(root);
     let home =
         std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from);
     let display = home
@@ -748,7 +750,7 @@ impl Settings {
                     let map_root = root.clone();
                     let name = crate::vault_name::shown(&root, cx);
                     let rename_root = root.clone();
-                    let full_path = root.to_string_lossy().into_owned();
+                    let full_path = okilum_core::vault::display_path(&root);
                     let short_path = compact_vault_path(&root);
                     let color_root = root.clone();
                     let weak = reader.downgrade();

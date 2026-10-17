@@ -63,10 +63,10 @@ pub(crate) fn run(action: FileAction, root: &Path, rel: &str, window: &mut Windo
                     None
                 }
             }
-            FileAction::Absolute => Some(path.to_string_lossy().into_owned()),
-            FileAction::Relative => Some(rel.to_owned()),
-            FileAction::Wiki => Some(format!("[[{rel}|{}]]", Vault::title_of(rel))),
-            FileAction::OkilumLink => Some(okilum_link(root, rel, &Default::default())),
+            FileAction::Absolute
+            | FileAction::Relative
+            | FileAction::Wiki
+            | FileAction::OkilumLink => copied_text(action, root, rel, &path),
         };
         if let Some(text) = copied {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
@@ -81,6 +81,18 @@ pub(crate) fn run(action: FileAction, root: &Path, rel: &str, window: &mut Windo
     })();
     if let Err(error) = result {
         reader_toast::error(format!("File action failed: {error}"), window, cx);
+    }
+}
+
+/// What a «Copy …» action puts on the clipboard; `path` is the checked, canonical
+/// file. The absolute path is the plain one the user knows, not `\\?\C:\…` (#1391).
+fn copied_text(action: FileAction, root: &Path, rel: &str, path: &Path) -> Option<String> {
+    match action {
+        FileAction::Absolute => Some(okilum_core::vault::display_path(path)),
+        FileAction::Relative => Some(rel.to_owned()),
+        FileAction::Wiki => Some(format!("[[{rel}|{}]]", Vault::title_of(rel))),
+        FileAction::OkilumLink => Some(okilum_link(root, rel, &Default::default())),
+        FileAction::Reveal | FileAction::Open | FileAction::QuickLook => None,
     }
 }
 
@@ -101,7 +113,8 @@ pub(crate) fn okilum_link(
 /// Shows the item in the platform file manager; a failure of every route is
 /// reported rather than left as a silent no-op.
 pub(crate) fn reveal(path: &Path, window: &mut Window, cx: &mut App) {
-    let task = crate::platform::reveal::reveal_path(path, cx);
+    // Explorer is handed the plain form, not `\\?\C:\…` (#1391).
+    let task = crate::platform::reveal::reveal_path(&okilum_core::vault::plain_path(path), cx);
     window
         .spawn(cx, async move |cx| {
             if let Err(error) = task.await {
@@ -228,7 +241,7 @@ impl Reader {
             "Reveal {}",
             path.file_name().unwrap_or_default().to_string_lossy()
         );
-        let copy = path.to_string_lossy().into_owned();
+        let copy = okilum_core::vault::display_path(&path);
         let popup = PopupMenu::build(window, cx, move |menu, _, _| {
             let path = path.clone();
             let copy = copy.clone();
@@ -732,6 +745,34 @@ mod preview_error_tests {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    /// #1391: on Windows the checked path is verbatim (`\\?\C:\…`); «Copy absolute
+    /// path» must copy the plain form, which still names the same file.
+    #[test]
+    fn copy_absolute_path_is_the_plain_path_of_the_file() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("Notes");
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("sub").join("a.md"), "# A\n").unwrap();
+        let path = checked_path(&root, "sub/a.md").unwrap();
+        let copied = copied_text(FileAction::Absolute, &root, "sub/a.md", &path).unwrap();
+        assert!(!copied.starts_with(r"\\?\"), "{copied}");
+        let pasted = Path::new(&copied);
+        assert!(pasted.is_absolute() && pasted.is_file(), "{copied}");
+        assert_eq!(pasted.canonicalize().unwrap(), path);
+        #[cfg(windows)]
+        {
+            // Positive control: the canonical path this used to copy is verbatim.
+            assert!(
+                path.to_str().unwrap().starts_with(r"\\?\"),
+                "{}",
+                path.display()
+            );
+            assert!(copied.as_bytes()[1] == b':', "{copied}");
+        }
+        #[cfg(not(windows))]
+        assert_eq!(copied, path.to_string_lossy());
+    }
 
     #[gpui::test]
     fn json_files_show_pretty_or_raw_without_touching_the_file(cx: &mut TestAppContext) {
