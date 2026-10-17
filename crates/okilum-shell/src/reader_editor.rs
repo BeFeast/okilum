@@ -29,6 +29,9 @@ use okilum_core::file_editor::{DiskStamp, FileEditor, Save};
 
 /// The pause in typing after which an edit is saved (#1353).
 const AUTOSAVE_PAUSE: std::time::Duration = std::time::Duration::from_secs(1);
+/// How every conflict notice starts, so a conflict that went away takes its
+/// notice with it and leaves any other notice alone (#1376).
+const CONFLICT_NOTICE: &str = "This file changed outside Okilum.";
 
 pub(super) struct Editing {
     store: FileEditor,
@@ -43,6 +46,9 @@ pub(super) struct Editing {
     save_pending: bool,
     /// The text an autosave is writing on a worker (#1353).
     autosaving: Option<String>,
+    /// A disk refresh came while that autosave was writing; it runs once the
+    /// save is back (#1376).
+    refresh_deferred: bool,
     /// Saves made on the UI thread; an autosave result older than one is dropped.
     saves: u64,
     saved_at: Option<time::OffsetDateTime>,
@@ -184,6 +190,7 @@ impl Editing {
             recovery_epoch,
             save_pending,
             autosaving,
+            refresh_deferred,
             saves,
             saved_at,
             current_input,
@@ -202,6 +209,7 @@ impl Editing {
             recovery_epoch,
             save_pending,
             autosaving,
+            refresh_deferred,
             saves,
             saved_at,
             current_input,
@@ -678,6 +686,7 @@ impl Reader {
             recovery_epoch: 0,
             save_pending: false,
             autosaving: None,
+            refresh_deferred: false,
             saves: 0,
             saved_at: None,
             current_input,
@@ -769,6 +778,15 @@ impl Reader {
         let Some(editing) = &mut self.editing else {
             return;
         };
+        // The file may already hold the text an autosave is writing while the
+        // store's base is still the old one: read now, our own save looks like
+        // an outside change and the conflict stops autosave (#1376). Look
+        // again once the save is back; an outside change made meanwhile is
+        // seen by the save itself or by that refresh.
+        if editing.autosaving.is_some() {
+            editing.refresh_deferred = true;
+            return;
+        }
         // Sample native state before looking at disk: a queued mutation event
         // cannot make an actually dirty buffer look clean.
         let text = editing.input.read(cx).value().to_string();
@@ -784,6 +802,7 @@ impl Reader {
             }
         }
         let mut outcome = "unchanged";
+        let mut resume_autosave = None;
         // Time on the UI thread, for the keystroke stalls of #1363.
         let started = std::time::Instant::now();
         let refreshed = editing.store.refresh_from_disk();
@@ -795,10 +814,27 @@ impl Reader {
                 if editing.conflict.is_none() {
                     editing.conflict = editing.store.current().ok();
                 }
-                self.link_notice = Some("This file changed outside Okilum. Your edits are still here. Reload, keep your version, or compare before saving.".into());
+                self.link_notice = Some(format!("{CONFLICT_NOTICE} Your edits are still here. Reload, keep your version, or compare before saving.").into());
             }
             Ok(Save::Saved) => {
-                if editing.store.text() != text {
+                if editing.conflict_detected && editing.store.text() == text {
+                    // The disk holds the base or this text again: no conflict
+                    // is left to resolve, so autosave may go on (#1376).
+                    outcome = "conflict_cleared";
+                    editing.conflict = None;
+                    editing.conflict_detected = false;
+                    editing.compare = false;
+                    if self
+                        .link_notice
+                        .as_deref()
+                        .is_some_and(|notice| notice.starts_with(CONFLICT_NOTICE))
+                    {
+                        self.link_notice = None;
+                    }
+                    if editing.store.dirty() {
+                        resume_autosave = Some((editing.input.entity_id(), editing.recovery_epoch));
+                    }
+                } else if editing.store.text() != text {
                     outcome = "replaced";
                     let updated = editing.store.text().to_owned();
                     editing
@@ -827,6 +863,9 @@ impl Reader {
                 "presentation_epoch": editing.input.read(cx).presentation_epoch()}),
             );
         }
+        if let Some((input_id, epoch)) = resume_autosave {
+            self.schedule_autosave(input_id, epoch, cx);
+        }
         cx.notify();
     }
 
@@ -847,6 +886,8 @@ impl Reader {
         editing.saves = editing.saves.wrapping_add(1);
         // An autosave may already have written its text: that is the base now,
         // not an outside change (#1353).
+        // This save checks the disk itself, so a deferred refresh is moot.
+        editing.refresh_deferred = false;
         if let Some(written) = editing.autosaving.take() {
             if editing
                 .store
@@ -883,7 +924,12 @@ impl Reader {
                 if editing.conflict.is_none() {
                     editing.conflict = editing.store.current().ok();
                 }
-                self.link_notice = Some("This file changed outside Okilum. Reload, keep your version, or compare before saving.".into());
+                self.link_notice = Some(
+                    format!(
+                        "{CONFLICT_NOTICE} Reload, keep your version, or compare before saving."
+                    )
+                    .into(),
+                );
                 cx.notify();
                 false
             }
@@ -998,6 +1044,10 @@ impl Reader {
             return;
         }
         editing.autosaving = None;
+        if std::mem::take(&mut editing.refresh_deferred) {
+            self.refresh_after_autosave(cx);
+        }
+        let editing = self.editing.as_mut().unwrap();
         // A save on the UI thread came after this one started; it decided.
         if editing.saves != saves {
             cx.notify();
@@ -1037,7 +1087,7 @@ impl Reader {
                 if editing.conflict.is_none() {
                     editing.conflict = editing.store.current().ok();
                 }
-                self.link_notice = Some("This file changed outside Okilum. Your edits are still here. Reload, keep your version, or compare before saving.".into());
+                self.link_notice = Some(format!("{CONFLICT_NOTICE} Your edits are still here. Reload, keep your version, or compare before saving.").into());
             }
             Err(error) => {
                 editing.save_failed = true;
@@ -1046,6 +1096,18 @@ impl Reader {
             }
         }
         cx.notify();
+    }
+
+    /// Run the refresh that came while an autosave was writing, after the
+    /// result has updated the store (#1376).
+    fn refresh_after_autosave(&mut self, cx: &mut Context<Self>) {
+        let handle = self.reader_window;
+        cx.spawn(async move |this, cx| {
+            let _ = handle.update(cx, |_, window, cx| {
+                let _ = this.update(cx, |this, cx| this.refresh_source_from_disk(window, cx));
+            });
+        })
+        .detach();
     }
 
     pub(super) fn leave_source(&mut self, cx: &mut Context<Self>) -> bool {
@@ -4374,6 +4436,114 @@ mod autosave_tests {
             "baoriginal",
             "the edit made during the save is saved"
         );
+    }
+
+    /// Start an autosave of `text` by hand and let its worker "write" it, the
+    /// way a watcher can see the file before the save is back (#1376).
+    fn autosave_in_flight(f: &Fixture, visual: &mut VisualTestContext, text: &str) -> u64 {
+        let saves = f.reader.update(visual, |r, _| {
+            let editing = r.editing.as_mut().unwrap();
+            editing.autosaving = Some(text.into());
+            editing.saves
+        });
+        std::fs::write(&f.file, text).unwrap();
+        saves
+    }
+
+    fn autosave_back(f: &Fixture, visual: &mut VisualTestContext, saves: u64, text: &str) {
+        let input_id = input(f, visual).entity_id();
+        f.reader.update(visual, |r, cx| {
+            r.autosaved(input_id, saves, text.into(), Ok(Save::Saved), None, cx)
+        });
+        visual.run_until_parked();
+    }
+
+    fn refresh(f: &Fixture, visual: &mut VisualTestContext) {
+        f.reader.update_in(visual, |r, window, cx| {
+            r.refresh_source_from_disk(window, cx)
+        });
+        visual.run_until_parked();
+    }
+
+    /// #1376: a refresh that lands while an autosave is writing finds that
+    /// save's text on disk and newer typing in the buffer. It is our own
+    /// write, not a conflict: no banner, and every later edit is saved.
+    #[gpui::test]
+    fn a_refresh_during_an_autosave_is_not_a_conflict(cx: &mut TestAppContext) {
+        let (f, visual) = open(cx, "original");
+        type_at_start(&f, visual, "a");
+        let saves = autosave_in_flight(&f, visual, "aoriginal");
+        type_at_start(&f, visual, "b");
+        refresh(&f, visual);
+        f.reader.read_with(visual, |r, _| {
+            let editing = r.editing.as_ref().unwrap();
+            assert!(!editing.conflict_detected, "our own save is not a conflict");
+            assert!(r.link_notice.is_none(), "{:?}", r.link_notice);
+        });
+        autosave_back(&f, visual, saves, "aoriginal");
+        wait(visual, 1200);
+        assert_eq!(on_disk(&f), "baoriginal", "the edit after it is saved too");
+        // Twenty keys, each a pause apart, with a refresh racing every save.
+        for _ in 0..20 {
+            type_at_start(&f, visual, "x");
+            let text = input(&f, visual).read_with(visual, |v, _| v.value().to_string());
+            let saves = autosave_in_flight(&f, visual, &text);
+            refresh(&f, visual);
+            autosave_back(&f, visual, saves, &text);
+        }
+        // And the real autosave still runs after all of them.
+        type_at_start(&f, visual, "end ");
+        wait(visual, 1200);
+        assert_eq!(on_disk(&f), format!("end {}baoriginal", "x".repeat(20)));
+        f.reader.read_with(visual, |r, cx| {
+            let editing = r.editing.as_ref().unwrap();
+            assert!(!editing.conflict_detected);
+            assert!(r.link_notice.is_none(), "{:?}", r.link_notice);
+            assert!(!r.source_is_dirty(cx));
+        });
+    }
+
+    /// A real outside change made while an autosave is writing is still a
+    /// conflict once the save is back, and both versions are kept.
+    #[gpui::test]
+    fn an_outside_change_during_an_autosave_is_still_a_conflict(cx: &mut TestAppContext) {
+        let (f, visual) = open(cx, "original");
+        type_at_start(&f, visual, "a");
+        let saves = autosave_in_flight(&f, visual, "aoriginal");
+        type_at_start(&f, visual, "b");
+        std::fs::write(&f.file, "theirs").unwrap();
+        refresh(&f, visual);
+        autosave_back(&f, visual, saves, "aoriginal");
+        wait(visual, 1200);
+        assert_eq!(on_disk(&f), "theirs", "the outside version stays");
+        f.reader.read_with(visual, |r, cx| {
+            let editing = r.editing.as_ref().unwrap();
+            assert!(editing.conflict_detected, "the deferred refresh saw it");
+            assert_eq!(editing.conflict.as_deref(), Some("theirs"));
+            assert_eq!(editing.input.read(cx).value().as_ref(), "baoriginal");
+            assert!(r.link_notice.is_some());
+        });
+    }
+
+    /// A conflict whose outside change is gone again (the file holds the base
+    /// once more) no longer blocks autosave, and its banner goes (#1376).
+    #[gpui::test]
+    fn a_conflict_that_went_away_lets_autosave_go_on(cx: &mut TestAppContext) {
+        let (f, visual) = open(cx, "original");
+        type_at_start(&f, visual, "mine ");
+        std::fs::write(&f.file, "theirs").unwrap();
+        wait(visual, 1200);
+        f.reader.read_with(visual, |r, _| {
+            assert!(r.editing.as_ref().unwrap().conflict_detected)
+        });
+        std::fs::write(&f.file, "original").unwrap();
+        refresh(&f, visual);
+        f.reader.read_with(visual, |r, _| {
+            assert!(!r.editing.as_ref().unwrap().conflict_detected);
+            assert!(r.link_notice.is_none(), "{:?}", r.link_notice);
+        });
+        wait(visual, 1200);
+        assert_eq!(on_disk(&f), "mine original", "the waiting edit is saved");
     }
 
     /// A save that fails keeps the text, says so, and is not retried in a loop.
