@@ -17,6 +17,10 @@ on:
         description: 'With build: put the re-signed Windows build of that stable build on stable; Mac, Linux, tag and notes unchanged (#1104)'
         type: boolean
         default: false
+      skip_windows:
+        description: 'With build: promote Mac and Linux only; stable keeps its signed Windows build until windows_only (#1378)'
+        type: boolean
+        default: false
       supersede_pending:
         description: 'Owner-approved recovery only: supersede interrupted promotion with a NEWER build'
         required: false
@@ -60,12 +64,17 @@ jobs:
           PROMOTE_SOURCE: ${{ inputs.source }}
           SUPERSEDE_PENDING: ${{ inputs.supersede_pending }}
           WINDOWS_ONLY: ${{ inputs.windows_only }}
+          SKIP_WINDOWS: ${{ inputs.skip_windows }}
         run: |
           if [ -n "$PROMOTE_SOURCE" ] && [ -z "$PROMOTE_BUILD" ]; then
             # Builds what is missing for that commit; the last publication starts the promotion.
             exec python scripts/releases/prepare.py request "$PROMOTE_SOURCE"
           fi
           args=()
+          if [ "$SKIP_WINDOWS" = true ] && [ "$WINDOWS_ONLY" = true ]; then
+            echo 'skip_windows and windows_only exclude each other' >&2
+            exit 1
+          fi
           if [ "$WINDOWS_ONLY" = true ]; then
             test -n "$PROMOTE_BUILD"
             exec python scripts/releases/publish.py --build "$PROMOTE_BUILD" --windows-only
@@ -73,6 +82,10 @@ jobs:
           if [ "$SUPERSEDE_PENDING" = true ]; then
             test -n "$PROMOTE_BUILD"
             args+=(--supersede-pending)
+          fi
+          if [ "$SKIP_WINDOWS" = true ]; then
+            test -n "$PROMOTE_BUILD"
+            args+=(--skip-windows)
           fi
           if [ -n "$PROMOTE_BUILD" ]; then
             python scripts/releases/publish.py --build "$PROMOTE_BUILD" "${args[@]}"

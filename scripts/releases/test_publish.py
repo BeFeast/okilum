@@ -285,6 +285,109 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual([a['name'] for a in entry['assets']], ['Setup.exe', 'Okilum-windows-portable.zip'])
 
 
+def stable_patches():
+    """Mock the steps outside the store that a stable promotion takes."""
+    return [patch.object(p, 'notes', return_value='Notes'),
+            patch.object(p, 'mirror_tag', return_value='v0.1.700'),
+            patch.object(p.arch, 'SigningKey'),
+            patch.object(p.arch, 'validate_package'),
+            patch.object(p.arch, 'execute'),
+            patch.object(p, 'promote_macos')]
+
+
+class SplitPromotionTests(unittest.TestCase):
+    """#1378: Mac and Linux first, the signed Windows build later; the full call is unchanged."""
+
+    def previous_stable(self, store):
+        # Stable 600 of another commit, with a signed Windows 650.
+        data = b'signed-setup'
+        store.data['old/Setup.exe'] = data
+        old = {'platform': 'windows', 'build': 650, 'source': 'b' * 40,
+               'assets': [catalog.asset('old/Setup.exe', 'Setup.exe', data)]}
+        store.data[f'{catalog.PREFIX}/stable.json'] = catalog.encode(
+            {'build': 600, 'source': 'b' * 40,
+             'platforms': {'macos': {'build': 600}, 'linux': {'build': 600}, 'windows': old}})
+        return old
+
+    def run_execute(self, store, **kwargs):
+        with patch.object(p, 'preflight_linux_macos') as early, \
+             patch.object(p, 'preflight_windows') as preflight, \
+             patch.object(p.windows, 'promote') as windows, \
+             patch.object(p, 'github_release') as github:
+            for item in stable_patches():
+                item.start()
+            try:
+                p.execute(store, None, None, 700, **kwargs)
+            finally:
+                patch.stopall()
+        return early, preflight, windows, github
+
+    def test_full_promotion_still_moves_windows(self):
+        store = Store()
+        fixture(store)
+        self.previous_stable(store)
+        early, preflight, windows, github = self.run_execute(store)
+        early.assert_called_once()
+        preflight.assert_called_once()
+        windows.assert_called_once_with(701, store)
+        record = json.loads(store.data[f'{catalog.PREFIX}/stable.json'])
+        self.assertEqual(record['platforms']['windows']['build'], 701)
+        self.assertEqual(github.call_args.args[3]['Setup.exe'], b'Setup.exe')
+
+    def test_skip_windows_keeps_the_signed_stable_windows(self):
+        store = Store()
+        fixture(store)
+        old = self.previous_stable(store)
+        early, preflight, windows, github = self.run_execute(store, skip_windows=True)
+        early.assert_called_once()
+        preflight.assert_not_called()
+        windows.assert_not_called()
+        record = json.loads(store.data[f'{catalog.PREFIX}/stable.json'])
+        self.assertEqual((record['build'], record['source']), (700, SOURCE))
+        self.assertEqual(record['platforms']['linux']['build'], 702)
+        self.assertEqual(record['platforms']['windows'], old)
+        # The GitHub release carries the signed Windows installer, not the candidate's.
+        self.assertEqual(github.call_args.args[3]['Setup.exe'], b'signed-setup')
+        self.assertNotIn('Okilum-windows-portable.zip', github.call_args.args[3])
+        self.assertFalse(any(key.startswith('okilum/windows/') for key in store.writes))
+        store.writes.clear()
+        self.run_execute(store, skip_windows=True)  # retry is a no-op
+        self.assertEqual(store.writes, [])
+
+    def test_skip_windows_needs_a_previous_stable(self):
+        store = Store()
+        fixture(store)
+        with self.assertRaisesRegex(ValueError, 'previous stable Windows'):
+            self.run_execute(store, skip_windows=True)
+        self.assertEqual(store.writes, [])
+
+    def test_windows_only_after_skip_puts_the_resigned_build_on_stable(self):
+        store = Store()
+        release = fixture(store)
+        self.previous_stable(store)
+        self.run_execute(store, skip_windows=True)
+        # Before the re-sign the candidate's Windows is unsigned: the guard refuses, nothing moves.
+        before = dict(store.data)
+        store.writes.clear()
+        with patch.object(p, 'preflight_windows', side_effect=ValueError('not signed')), \
+             self.assertRaisesRegex(ValueError, 'not signed'):
+            p.complete_windows(store, None, 700)
+        self.assertEqual((store.writes, store.data), ([], before))
+        catalog.record(store, 'windows', 705, SOURCE, release['platforms']['windows']['assets'])
+        github = unittest.mock.Mock()
+        github.call.return_value = {'id': 9, 'body': 'Published notes'}
+        with patch.object(p, 'preflight_windows'), \
+             patch.object(p.windows, 'promote') as windows, \
+             patch.object(p, 'github_release') as publish:
+            p.complete_windows(store, github, 700)
+        windows.assert_called_once_with(705, store)
+        self.assertEqual(publish.call_args.args[1], 'v0.1.700')
+        record = json.loads(store.data[f'{catalog.PREFIX}/stable.json'])
+        self.assertEqual((record['platforms']['windows']['build'], record['platforms']['windows']['source']),
+                         (705, SOURCE))
+        self.assertEqual(record['platforms']['macos']['build'], 700)
+
+
 class GitHubTests(unittest.TestCase):
     def test_delete_asset_uses_github_documented_endpoint(self):
         from unittest.mock import Mock
