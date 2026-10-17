@@ -1,0 +1,90 @@
+name: Bug report
+description: Something in Okilum does not work as it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Where the logs are and what helps most: [CONTRIBUTING.md](https://github.com/BeFeast/okilum/blob/main/CONTRIBUTING.md#reporting-a-bug).
+        Please check the [open issues](https://github.com/BeFeast/okilum/issues) first.
+  - type: input
+    id: version
+    attributes:
+      label: Version info
+      description: >-
+        In Okilum open Settings → About and click **Copy** next to the version line
+        (or ⋯ → Copy version info; on macOS Help → Copy Version Info), then paste it here.
+        It names the version, build, update channel, OS and architecture.
+      placeholder: "Okilum 0.1.10467 (build 10467, beta channel) — macOS 15.6 arm64 — app in /Applications — source beed5ef1"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Windows
+        - Linux
+    validations:
+      required: true
+  - type: input
+    id: os-version
+    attributes:
+      label: OS version
+      description: For example macOS 15.6, Windows 11 24H2, Arch Linux with KDE Plasma 6 on Wayland.
+    validations:
+      required: true
+  - type: dropdown
+    id: channel
+    attributes:
+      label: Update channel
+      description: Settings → About shows it after the version (for example «Stable channel»).
+      options:
+        - Stable
+        - Beta
+        - Built from source
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: What you did, step by step, starting from opening Okilum. Say if the vault is large or synced (Syncthing, iCloud, a network share).
+      placeholder: |
+        1. Open the vault …
+        2. Open the note …
+        3. …
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected
+      description: What you expected to happen.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual
+      description: What happened instead, including any message Okilum showed.
+    validations:
+      required: true
+  - type: textarea
+    id: media
+    attributes:
+      label: Screenshot or video
+      description: >-
+        Drag a screenshot of the Okilum window here. For anything about timing (slowness,
+        flicker, a click that does nothing) a 10–20 second video helps most.
+  - type: textarea
+    id: log
+    attributes:
+      label: Log excerpt
+      description: >-
+        The last lines of `reader-diagnostic.log` from around the time it happened.
+        Where it is on each OS: [CONTRIBUTING.md](https://github.com/BeFeast/okilum/blob/main/CONTRIBUTING.md#logs).
+        It holds no note content, but it does name your vault folder and file names; remove anything you do not want to share.
+      render: text

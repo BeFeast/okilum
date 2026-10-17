@@ -96,7 +96,9 @@ needs the pinned Sparkle framework — follow the platform guide.
 
 ## Contributing
 
-Bug reports and ideas are welcome in [GitHub issues](https://github.com/BeFeast/okilum/issues).
+Found a bug? Open a [bug report](https://github.com/BeFeast/okilum/issues/new?template=bug_report.yml);
+[CONTRIBUTING.md](CONTRIBUTING.md) says what to include and where Okilum keeps its
+logs on each OS. Ideas are welcome in [GitHub issues](https://github.com/BeFeast/okilum/issues).
 Pull requests are welcome too: development happens on a private Forgejo
 instance and this repository mirrors `main` and releases, so accepted changes
 are landed there and appear here with your authorship preserved.
