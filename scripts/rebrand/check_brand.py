@@ -52,7 +52,8 @@ NAME_ALLOWED = ("vendor/",)
 # Bytes that cannot change without a secret: the Arch signing key's user id names
 # the old brand inside its armored base64, and rewriting it needs the private key.
 ENCODED_ALLOWED = ("scripts/arch/okilum-signing-key.asc",)
-BASE64_RUN = re.compile(rb"[A-Za-z0-9+/]{16,}={0,2}")
+# A base64 run, joined across line wraps (armored keys, MIME) before decoding.
+BASE64_RUN = re.compile(rb"[A-Za-z0-9+/]{16,}={0,2}(?:\r?\n[A-Za-z0-9+/]{4,}={0,2})*")
 
 
 def encoded_name(data):
@@ -66,7 +67,7 @@ def encoded_name(data):
         except (zipfile.BadZipFile, NotImplementedError):
             pass
     for run in BASE64_RUN.finditer(data):
-        token = run.group(0)
+        token = run.group(0).replace(b"\r", b"").replace(b"\n", b"")
         try:
             decoded = base64.b64decode(token + b"=" * (-len(token) % 4))
         except (binascii.Error, ValueError):
