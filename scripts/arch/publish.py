@@ -119,11 +119,16 @@ def execute(args, r2, key, tmp):
         path = tmp / name
         path.write_bytes(package)
         validate_package(path, args.build)
-        key.sign(path)
-        signature = Path(str(path) + '.sig').read_bytes()
         if existing is not None:
+            original = r2.call('GET', f'{archive}/{name}')
             signature = r2.call('GET', f'{archive}/{name}.sig')
+            if original != package or signature is None:
+                raise ValueError('Archived package/signature missing or changed')
+            Path(str(path) + '.sig').write_bytes(signature)
+            key.verify(path)
         else:
+            key.sign(path)
+            signature = Path(str(path) + '.sig').read_bytes()
             r2.put(f'{archive}/{name}', package, 'application/octet-stream')
             r2.put(f'{archive}/{name}.sig', signature, 'application/octet-stream')
             r2.put(f'{archive}/manifest.json', encode(manifest), 'application/json')

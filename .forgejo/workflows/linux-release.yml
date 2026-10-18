@@ -57,6 +57,14 @@ jobs:
             vulkan-icd-loader librsvg desktop-file-utils xorg-server-xvfb xorg-xauth xdotool vulkan-swrast dbus
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Reject unsupported selected consumer tooling before checkout
+        env:
+          OKILUM_SELECTED_SOURCE: ${{ needs.select.outputs.source }}
+        run: python3 scripts/arch/select-source.py "$OKILUM_SELECTED_SOURCE"
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
           # An explicit older main commit (#1040) or a scheduled tick (main tip, chosen by
           # select) sets the checkout; manual and pull-request runs keep the default ref.
           ref: ${{ (inputs.source != '' || github.event_name == 'schedule') && needs.select.outputs.source || '' }}
@@ -65,9 +73,11 @@ jobs:
         run: useradd -m builder
       - name: Resolve exact required-CI production bytes
         env:
+          OKILUM_SELECTED_SOURCE: ${{ needs.select.outputs.source }}
           MIRROR_TOKEN: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && secrets.OKILUM_GITHUB_MIRROR || '' }}
         run: |
           export PR_HEAD_SHA="$(git rev-parse HEAD)"
+          test "$PR_HEAD_SHA" = "$OKILUM_SELECTED_SOURCE"
           python3 scripts/ci/github-linux.py resolve
       - name: Build package as an unprivileged user
         run: |
@@ -89,6 +99,7 @@ jobs:
           name: arch-publication
           path: |
             dist/arch/*.pkg.tar.zst
+            dist/arch/*.pkg.tar.zst.sig
             dist/arch/release-source.txt
             dist/arch/production-receipt.json
           retention-days: 7

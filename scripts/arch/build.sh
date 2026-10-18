@@ -27,6 +27,13 @@ PY
 )
 export OKILUM_RELEASE_VERSION="0.1.$OKILUM_BUILD_VERSION"
 mkdir -p dist/arch
+# Repackaging the same executable can change makepkg timestamps. An existing
+# archive owns these package bytes, even if feed/catalog publication was interrupted.
+archive_status=$(python3 scripts/arch/reuse-package.py --source "$OKILUM_SOURCE_COMMIT" \
+  --prebuilt "$OKILUM_PREBUILT_DIR" --output dist/arch)
+if [[ $archive_status == reused ]]; then
+  exit 0
+fi
 cp scripts/arch/PKGBUILD dist/arch/PKGBUILD
 cp scripts/arch/okilum.install dist/arch/okilum.install
 cp "$OKILUM_PREBUILT_DIR/receipt.json" dist/arch/production-receipt.json
