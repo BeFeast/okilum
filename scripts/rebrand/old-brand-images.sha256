@@ -1,4 +1,4 @@
-# sha256 of image assets that showed the Tessera name or mark (#980).
+# sha256 of image assets that showed the old product name or mark (#980).
 # scripts/rebrand/check_brand.py fails if any tracked image matches one of them.
 ceead7f4c7b1944b9bcf269a063779aa2662babf695b831492bb06c7fa3ab61d  docs/images/readme/hero-light@2x.png
 07d0b944de70e7bbdc6f0c766b3083468286cf1bc674118cf671e20a298b54c2  docs/images/readme/hero-dark@2x.png
