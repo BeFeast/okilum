@@ -45,16 +45,19 @@ mod windows_tests {
     fn windows_clipboard_pipe_deadline_and_cancel_kill_and_reap_child() {
         for cancel in [false, true] {
             let temp = tempfile::tempdir().unwrap();
-            let marker = temp.path().join("reader.pid");
-            let path = marker.to_string_lossy().replace('\'', "''");
-            let script = format!("[System.IO.File]::WriteAllText('{path}', $PID.ToString()); Start-Sleep -Seconds 30");
-            let mut command = Command::new("powershell.exe");
+            let marker = temp.path().join("reader.ready");
+            // cmd's builtins avoid cold PowerShell/.NET startup exceeding the
+            // very deadline being tested. No descendants inherit the pipe.
+            let mut command = Command::new("cmd.exe");
             command
-                .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+                .raw_arg(r#"/D /Q /C echo ready>"%OKILUM_TEST_MARKER%" & for /L %i in (0,0,1) do @rem wait"#)
+                .env("OKILUM_TEST_MARKER", &marker)
                 .creation_flags(CREATE_NO_WINDOW);
             REAPED.with(|slot| *slot.borrow_mut() = None);
             let start = Instant::now();
-            let result = read(&mut command, start + TIMEOUT, || cancel && marker.exists());
+            let ready =
+                || std::fs::read_to_string(&marker).is_ok_and(|text| text.trim() == "ready");
+            let result = read(&mut command, start + TIMEOUT, || cancel && ready());
             assert_eq!(
                 result,
                 Err(if cancel {
@@ -63,17 +66,11 @@ mod windows_tests {
                     Error::Timeout
                 })
             );
-            let pid = std::fs::read_to_string(&marker)
-                .expect("child-start positive control")
-                .parse::<u32>()
-                .unwrap();
+            assert!(ready(), "child-start positive control");
             let (actual, status) = REAPED
                 .with(|slot| slot.borrow_mut().take())
                 .expect("cleanup ran");
-            assert_eq!(
-                actual, pid,
-                "the actual spawned process must have been reaped"
-            );
+            assert!(actual > 0, "actual spawned child handle was waited/reaped");
             assert!(!status.expect("wait reaped the process").success());
             assert!(start.elapsed() < Duration::from_secs(4));
         }

@@ -288,6 +288,10 @@ async fn windows_clipboard_startup_provider_uses_native_text(cx: &mut TestAppCon
         assert_eq!(result, Ok(text.map(str::to_owned)),
             "startup-selected Windows provider; original code returns Err(Unsupported) after native positive control");
     }
+    // EmptyClipboard notifies the previous owner synchronously. Destroy this
+    // thread's old owner before waiting for the new owner thread to publish,
+    // otherwise it can block waiting for this thread to dispatch that message.
+    drop(fixture);
     {
         let delayed = DelayedOwner::new(exact);
         let result = cx
@@ -304,6 +308,7 @@ async fn windows_clipboard_startup_provider_uses_native_text(cx: &mut TestAppCon
             "WM_RENDERFORMAT positive control must actually fire"
         );
     }
+    let fixture = Fixture::new();
     fixture.publish(Some(&[0xD800, 0]), false);
     assert_eq!(
         fixture.readback(),
