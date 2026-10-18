@@ -50,7 +50,8 @@ bytes, index and window origin through `Arc`; changing a retained generation
 requires a new reservation before copying. The process-wide pool is 320 MiB,
 charged for raw capacity, four index-sized working sets and 8 MiB parser/IO
 scratch per snapshot. IO chunks reserve from the same pool before allocation.
-Pool exhaustion defers Follow without advancing its cursor. Old background
+Raw Vec growth also reserves the old-plus-new allocation overlap until the
+old buffer is released. Pool exhaustion defers Follow without advancing its cursor. Old background
 readers retain their reservation until they finish; UI queues coalesce rather
 than retaining an unbounded sequence of generations.
 
@@ -80,8 +81,7 @@ their identities. Never label a window-relative line as a known whole-file line.
 
 ## Native evidence
 
-Native acceptance for the integrated implementation is still pending. Unit
-and integration results do not establish the native memory or paint gates.
+Unit and integration results do not establish the native memory or paint gates.
 
 Record build source, fixture hashes, empty-copy baseline, peak memory, first
 painted-row timing and the ten-minute follow trace in the PR and issue. Keep the
