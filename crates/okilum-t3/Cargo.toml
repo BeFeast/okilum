@@ -11,6 +11,7 @@ description = "Okilum's remote control for an area manager in T3 Code: ManagerGa
 anyhow = "1"
 serde.workspace = true
 serde_json.workspace = true
+serde_yaml = "0.9"
 reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "rustls-tls"] }
 url = "2"
 sha2 = "0.10"

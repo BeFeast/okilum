@@ -1,0 +1,14 @@
+# Isolated test data. These identifiers are not registered T3 resources.
+display_name: Okilum T3 POC fixture
+repo: {full_name: example/poc}
+t3:
+  schema_version: 1
+  environment: maestro
+  manager:
+    project_id: poc-managers
+    thread_id: 'mcp:poc-manager'
+    workspace_mode: local
+  executor: {project_id: poc-executors}
+  default_models:
+    manager: {instanceId: codex, model: gpt-6.1-sol}
+    executor: {instanceId: codex, model: gpt-6.1-sol}
