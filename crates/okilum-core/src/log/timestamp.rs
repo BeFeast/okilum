@@ -311,18 +311,27 @@ pub fn clock_utc(nanos: i64) -> String {
     )
 }
 
-/// `YYYY-MM-DD HH:MM:SS.mmm UTC`, for the detail pane.
-pub fn datetime_utc(nanos: i64) -> String {
+/// `YYYY-MM-DD HH:MM:SS.mmm` in UTC, the date a spreadsheet reads as a date
+/// (the zone is the caller's to name); empty for a time outside the calendar.
+pub fn sortable_utc(nanos: i64) -> String {
     let Ok(at) = ::time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(nanos)) else {
         return String::new();
     };
     format!(
-        "{:04}-{:02}-{:02} {} UTC",
+        "{:04}-{:02}-{:02} {}",
         at.year(),
         u8::from(at.month()),
         at.day(),
         clock_utc(nanos)
     )
+}
+
+/// `YYYY-MM-DD HH:MM:SS.mmm UTC`, for the detail pane.
+pub fn datetime_utc(nanos: i64) -> String {
+    match sortable_utc(nanos) {
+        date if date.is_empty() => date,
+        date => format!("{date} UTC"),
+    }
 }
 
 #[cfg(test)]
@@ -445,5 +454,8 @@ mod tests {
     fn display_is_utc() {
         assert_eq!(clock_utc(BASE + 240_000_000), "00:00:00.240");
         assert_eq!(datetime_utc(BASE), "2025-10-01 00:00:00.000 UTC");
+        assert_eq!(sortable_utc(BASE + 240_000_000), "2025-10-01 00:00:00.240");
+        assert_eq!(sortable_utc(i64::MAX), "2262-04-11 23:47:16.854");
+        assert_eq!(datetime_utc(i64::MAX), "2262-04-11 23:47:16.854 UTC");
     }
 }

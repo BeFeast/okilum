@@ -12,7 +12,7 @@ use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::scroll::ScrollableElement as _;
 use okilum_core::log::correlation;
 use okilum_core::log::elapsed::{self, Stamp};
-use okilum_core::log::export::{self, ExportFormat};
+use okilum_core::log::export::{self, CsvColumns, ExportFormat};
 use okilum_core::log::histogram::Histogram;
 use okilum_core::log::merge::MergedLog;
 use okilum_core::log::query::{Expr, FieldRef, Literal, Test};
@@ -236,8 +236,9 @@ impl ExportJob {
     }
 
     /// Writes every row in order; returns how many.
-    fn write(&self, out: &mut dyn std::io::Write, format: ExportFormat) -> std::io::Result<usize> {
+    fn write(&self, out: &mut dyn std::io::Write, format: &ExportFormat) -> std::io::Result<usize> {
         let several = self.merged.is_some();
+        export::write_header(out, format)?;
         let mut written = 0;
         let mut one = |id: usize| -> std::io::Result<()> {
             let Some((file, entry)) = self.locate(id) else {
@@ -964,6 +965,12 @@ impl LogView {
         self.history_key()
             .map(|key| reader_ui_state::log_columns(&key, cx))
             .unwrap_or_default()
+    }
+
+    /// What a CSV export writes as columns (#1387): the field columns shown
+    /// now, in their order, and the file's name when several files are merged.
+    fn csv_columns(&self, cx: &App) -> CsvColumns {
+        CsvColumns::new(self.columns(cx), self.merge.is_some())
     }
 
     /// Column `key`'s width: the dragged one, or the default for its key.
@@ -3379,26 +3386,20 @@ impl LogView {
             .file_stem()
             .map(|stem| stem.to_string_lossy().into_owned())
             .unwrap_or_else(|| "log".into());
-        let suggested = match format {
+        let what = match scope {
+            ExportScope::Shown => "filtered",
+            ExportScope::Selected => "selected",
+            ExportScope::Marked => "marked",
+        };
+        let suggested = match &format {
             ExportFormat::Raw => format!(
-                "{stem}-{}.{}",
-                match scope {
-                    ExportScope::Shown => "filtered",
-                    ExportScope::Selected => "selected",
-                    ExportScope::Marked => "marked",
-                },
+                "{stem}-{what}.{}",
                 first
                     .extension()
                     .map_or("log".into(), |ext| ext.to_string_lossy())
             ),
-            ExportFormat::JsonLines => format!(
-                "{stem}-{}.jsonl",
-                match scope {
-                    ExportScope::Shown => "filtered",
-                    ExportScope::Selected => "selected",
-                    ExportScope::Marked => "marked",
-                }
-            ),
+            ExportFormat::JsonLines => format!("{stem}-{what}.jsonl"),
+            ExportFormat::Csv(_) => format!("{stem}-{what}.csv"),
         };
         let picker = cx.prompt_for_new_path(&directory, Some(&suggested));
         self.exporting = true;
@@ -3410,7 +3411,7 @@ impl LogView {
                     let result = cx
                         .background_executor()
                         .spawn(async move {
-                            write_export(&job, &logs, &path, format).map(|n| (n, path))
+                            write_export(&job, &logs, &path, &format).map(|n| (n, path))
                         })
                         .await;
                     Some((counted, result))
@@ -3448,6 +3449,7 @@ impl LogView {
         let shown = self.visible_len();
         let selected = self.selection().map_or(0, |rows| rows.len());
         let marked = self.marked_rows().len();
+        let csv = ExportFormat::Csv(self.csv_columns(cx));
         bar_button("log-export", false)
             .icon(IconName::ArrowDown)
             .tooltip("Export rows")
@@ -3468,6 +3470,7 @@ impl LogView {
                     for (format, how) in [
                         (ExportFormat::Raw, "raw lines"),
                         (ExportFormat::JsonLines, "JSON lines"),
+                        (csv.clone(), "CSV"),
                     ] {
                         let view = view.clone();
                         menu = menu.item(
@@ -3477,6 +3480,7 @@ impl LogView {
                             ))
                             .disabled(count == 0)
                             .on_click(move |_, window, cx| {
+                                let format = format.clone();
                                 let _ = view.update(cx, |this, cx| {
                                     this.export_rows(scope, format, window, cx)
                                 });
@@ -3956,7 +3960,7 @@ fn write_export(
     job: &ExportJob,
     logs: &[PathBuf],
     path: &Path,
-    format: ExportFormat,
+    format: &ExportFormat,
 ) -> anyhow::Result<usize> {
     use anyhow::Context as _;
     use std::io::Write as _;
@@ -7032,6 +7036,85 @@ mod tests {
         view.update(visual, |view, cx| view.set_source_enabled(1, true, cx));
         visual.run_until_parked();
         assert_eq!(marked(visual), wanted, "the same two records");
+    }
+
+    /// #1387 acceptance: a filtered view with a multi-line stack trace exports
+    /// as CSV with the columns column mode shows, in their order, one row per
+    /// record; a CSV parser gets the values back.
+    #[gpui::test]
+    fn csv_export_writes_the_columns_of_column_mode_one_row_per_record(cx: &mut TestAppContext) {
+        let text = "\
+{\"ts\":\"2025-10-01T00:00:05Z\",\"level\":\"error\",\"msg\":\"cache miss, \\\"cold\\\"\",\"status\":500,\"path\":\"/v1/notes\"}
+  at frame one
+  at frame two
+{\"ts\":\"2025-10-01T00:00:06Z\",\"level\":\"info\",\"msg\":\"ok\",\"status\":200,\"path\":\"/health\"}
+{\"ts\":\"2025-10-01T00:00:07Z\",\"level\":\"error\",\"msg\":\"boom\",\"status\":503,\"path\":\"/v1/search\"}
+";
+        // Column mode keeps its columns in the UI state.
+        let state = tempfile::tempdir().unwrap();
+        cx.update(|cx| reader_ui_state::install(state.path(), cx));
+        let (directory, reader, visual) = open_named("api.jsonl", text.as_bytes(), cx);
+        let root = directory.path().canonicalize().unwrap();
+        let view = log_view(&reader, visual);
+        visual.run_until_parked();
+        view.update(visual, |view, cx| {
+            // Column mode: path first, then status.
+            view.toggle_column("path", cx);
+            view.toggle_column("status", cx);
+            view.set_query("status>=500".into(), cx);
+        });
+        visual.run_until_parked();
+        assert_eq!(
+            view.read_with(visual, |view, cx| view.columns(cx)),
+            ["path", "status"],
+            "positive control: column mode holds the two columns"
+        );
+        assert_eq!(view.read_with(visual, |view, _| view.visible_len()), 2);
+        let format = view.read_with(visual, |view, cx| ExportFormat::Csv(view.csv_columns(cx)));
+        view.update_in(visual, |view, window, cx| {
+            view.export_rows(ExportScope::Shown, format, window, cx)
+        });
+        assert!(visual.did_prompt_for_new_path(), "asks where to save");
+        let out = root.join("api-filtered.csv");
+        let target = out.clone();
+        visual.simulate_new_path_selection(move |_| Some(target));
+        visual.run_until_parked();
+
+        let mut reader = csv::ReaderBuilder::new()
+            .flexible(false)
+            .from_path(&out)
+            .expect("the file exists and starts with a header");
+        let header: Vec<String> = reader
+            .headers()
+            .unwrap()
+            .iter()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(header, ["time_utc", "level", "path", "status", "message"]);
+        let rows: Vec<Vec<String>> = reader
+            .records()
+            .map(|row| row.unwrap().iter().map(str::to_owned).collect())
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                vec![
+                    "2025-10-01 00:00:05.000",
+                    "error",
+                    "/v1/notes",
+                    "500",
+                    "cache miss, \"cold\"\n  at frame one\n  at frame two"
+                ],
+                vec![
+                    "2025-10-01 00:00:07.000",
+                    "error",
+                    "/v1/search",
+                    "503",
+                    "boom"
+                ],
+            ],
+            "the shown rows only, the stack trace in its record's row"
+        );
     }
 
     /// #1169: shift-click and shift-arrows select a run of records, which
