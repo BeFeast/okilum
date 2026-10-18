@@ -25,6 +25,9 @@ const DEFAULT_SOURCE: &str = "# {{title}}\n";
 pub struct Catalog {
     pub folder: PathBuf,
     pub files: Vec<String>,
+    /// Chosen in Settings or `.obsidian/templates.json`, not the default.
+    chosen: bool,
+    exists: bool,
     date_format: String,
     time_format: String,
 }
@@ -158,15 +161,17 @@ impl Catalog {
             date_format: default_date(),
             time_format: default_time(),
         });
-        let folder = if let Some(folder) = override_folder {
-            PathBuf::from(folder)
+        let (folder, chosen) = if let Some(folder) = override_folder {
+            (PathBuf::from(folder), true)
         } else if settings.folder.is_empty() {
-            PathBuf::from(DEFAULT_FOLDER)
+            (PathBuf::from(DEFAULT_FOLDER), false)
         } else {
-            PathBuf::from(&settings.folder)
+            (PathBuf::from(&settings.folder), true)
         };
         let mut files = Vec::new();
-        if let Some(fd) = open_folder(root, &folder)? {
+        let opened = open_folder(root, &folder)?;
+        let exists = opened.is_some();
+        if let Some(fd) = opened {
             #[cfg(windows)]
             for item in std::fs::read_dir(fd.path())? {
                 let item = item?;
@@ -218,9 +223,32 @@ impl Catalog {
         Ok(Self {
             folder,
             files,
+            chosen,
+            exists,
             date_format: settings.date_format,
             time_format: settings.time_format,
         })
+    }
+
+    /// The same catalog read again: the same folder, wherever it was chosen.
+    /// Reloading from `.obsidian/templates.json` alone lost a folder chosen
+    /// in Settings, so every New note failed as «Templates changed» (#1394).
+    pub fn reload(&self, root: &Path) -> Result<Self> {
+        let folder = self
+            .folder
+            .to_str()
+            .context("Templates folder must be a UTF-8 path")?;
+        Self::load_with_folder(root, Some(folder)).map(|current| Self {
+            chosen: self.chosen,
+            ..current
+        })
+    }
+
+    /// A templates folder was chosen but is not in the vault: new notes are
+    /// created without a template, and the person is told why (#1394). The
+    /// default folder missing is the normal case and says nothing.
+    pub fn missing(&self) -> bool {
+        self.chosen && !self.exists
     }
 
     pub fn default_file(&self) -> Option<String> {
