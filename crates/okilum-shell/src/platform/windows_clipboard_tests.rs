@@ -330,3 +330,30 @@ async fn windows_clipboard_startup_provider_uses_native_text(cx: &mut TestAppCon
         "locked clipboard is a refusal, not empty text"
     );
 }
+
+#[gpui::test]
+async fn windows_clipboard_native_payload_limit(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    // Real child pipe, production deadline, exact supported limit and overflow.
+    for size in [8 * 1024 * 1024, 8 * 1024 * 1024 + 1] {
+        let text = "x".repeat(size);
+        let words = text.encode_utf16().chain([0]).collect::<Vec<_>>();
+        fixture.publish(Some(&words), false);
+        assert!(
+            fixture.readback() == Some(words[..size].to_vec()),
+            "native readback positive control"
+        );
+        let result = cx
+            .update(|cx| managed_clipboard().read_text(ClipboardReadRequest::default(), cx))
+            .await;
+        if size == 8 * 1024 * 1024 {
+            let actual = result
+                .expect("supported payload within production deadline")
+                .expect("native Unicode format is present");
+            assert_eq!(actual.len(), size);
+            assert!(actual == text, "supported payload must remain exact");
+        } else {
+            assert_eq!(result, Err(Error::TooLarge));
+        }
+    }
+}

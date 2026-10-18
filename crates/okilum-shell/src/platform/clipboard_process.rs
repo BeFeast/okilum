@@ -2,8 +2,10 @@
 use gpui_component::input::clipboard::ClipboardReadError as Error;
 #[cfg(unix)]
 use rustix::fs::{fcntl_getfl, fcntl_setfl, OFlags};
+#[cfg(unix)]
+use std::io::ErrorKind;
 use std::{
-    io::{ErrorKind, Read},
+    io::Read,
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
 };
@@ -96,8 +98,22 @@ pub(super) fn read(
         .spawn()
         .map_err(|_| Error::Io)?;
     let mut child = Reap(child);
-    let mut stdout = child.0.stdout.take().ok_or(Error::Io)?;
+    let stdout = child.0.stdout.take().ok_or(Error::Io)?;
+    #[cfg(windows)]
+    return read_windows(child, stdout, deadline, cancelled);
     #[cfg(unix)]
+    {
+        read_unix(&mut child, stdout, deadline, cancelled)
+    }
+}
+
+#[cfg(unix)]
+fn read_unix(
+    child: &mut Reap,
+    mut stdout: std::process::ChildStdout,
+    deadline: Instant,
+    cancelled: impl Fn() -> bool,
+) -> Result<Option<String>, Error> {
     {
         let flags = fcntl_getfl(&stdout).map_err(|_| Error::Io)?;
         fcntl_setfl(&stdout, flags | OFlags::NONBLOCK).map_err(|_| Error::Io)?;
@@ -113,7 +129,7 @@ pub(super) fn read(
             return Err(Error::Timeout);
         }
         if !eof {
-            match read_available(&mut stdout, &mut buffer) {
+            match stdout.read(&mut buffer) {
                 Ok(0) => eof = true,
                 Ok(n) => {
                     // One status byte precedes an optional exact UTF-8 payload.
@@ -143,48 +159,69 @@ pub(super) fn read(
     }
 }
 
-/// Windows anonymous pipes are synchronous. Peek before reading, with this
-/// process as the only reader, so a delayed owner cannot block the deadline.
+/// Drain synchronous Windows pipes continuously, including near-limit offers.
+/// Only this reader thread blocks; the parent retains deadline/cancel control.
 #[cfg(windows)]
-fn read_available(
-    input: &mut std::process::ChildStdout,
-    buffer: &mut [u8],
-) -> std::io::Result<usize> {
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::{Foundation::ERROR_BROKEN_PIPE, System::Pipes::PeekNamedPipe};
-    let mut available = 0;
-    // SAFETY: the child stdout owns this live pipe handle; output is a valid u32.
-    let result = unsafe {
-        PeekNamedPipe(
-            input.as_raw_handle(),
-            std::ptr::null_mut(),
-            0,
-            std::ptr::null_mut(),
-            &mut available,
-            std::ptr::null_mut(),
-        )
-    };
-    if result == 0 {
-        let error = std::io::Error::last_os_error();
-        return if error.raw_os_error() == Some(ERROR_BROKEN_PIPE as i32) {
-            Ok(0)
-        } else {
-            Err(error)
-        };
-    }
-    if available == 0 {
-        return Err(ErrorKind::WouldBlock.into());
-    }
-    let count = buffer.len().min(available as usize);
-    input.read(&mut buffer[..count])
-}
-
-#[cfg(unix)]
-fn read_available(
-    input: &mut std::process::ChildStdout,
-    buffer: &mut [u8],
-) -> std::io::Result<usize> {
-    input.read(buffer)
+fn read_windows(
+    mut child: Reap,
+    stdout: std::process::ChildStdout,
+    deadline: Instant,
+    cancelled: impl Fn() -> bool,
+) -> Result<Option<String>, Error> {
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let reader = std::thread::Builder::new()
+        .name("clipboard-pipe".into())
+        .spawn(move || {
+            let mut bytes = Vec::new();
+            // One status byte, at most MAX_BYTES payload, and one overflow
+            // byte. A faulty helper cannot allocate an unbounded parent buffer.
+            let result = stdout
+                .take((MAX_BYTES + 2) as u64)
+                .read_to_end(&mut bytes)
+                .map_err(|_| Error::Io)
+                .and_then(|_| {
+                    if bytes.len() > MAX_BYTES + 1 {
+                        Err(Error::TooLarge)
+                    } else {
+                        Ok(bytes)
+                    }
+                });
+            let _ = tx.send(result);
+        })
+        .map_err(|_| Error::Io)?;
+    let result = (|| {
+        let mut bytes = None;
+        loop {
+            if cancelled() {
+                return Err(Error::Cancelled);
+            }
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .ok_or(Error::Timeout)?;
+            if bytes.is_none() {
+                match rx.recv_timeout(remaining.min(Duration::from_millis(5))) {
+                    Ok(result) => bytes = Some(result?),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(_) => return Err(Error::Io),
+                }
+            }
+            if let Some(status) = child.0.try_wait().map_err(|_| Error::Io)? {
+                if !status.success() {
+                    return Err(Error::Io);
+                }
+                if cancelled() {
+                    return Err(Error::Cancelled);
+                }
+                return decode(bytes.as_deref().ok_or(Error::Io)?);
+            }
+            std::thread::sleep(remaining.min(Duration::from_millis(5)));
+        }
+    })();
+    // This same-executable helper creates no descendants. Killing/reaping it
+    // closes the sole writer and unblocks Read before joining on every result.
+    drop(child);
+    let _ = reader.join();
+    result
 }
 
 fn decode(bytes: &[u8]) -> Result<Option<String>, Error> {
