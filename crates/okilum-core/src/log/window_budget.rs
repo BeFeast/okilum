@@ -7,6 +7,17 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+/// A reservation failed without advancing the reader; retry after releasing caches.
+#[derive(Debug)]
+pub struct BudgetBusy;
+
+impl std::fmt::Display for BudgetBusy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Log memory budget is busy; waiting for earlier filters or exports to finish")
+    }
+}
+impl std::error::Error for BudgetBusy {}
+
 #[derive(Clone, Debug)]
 pub struct MemoryBudget(Arc<Pool>);
 

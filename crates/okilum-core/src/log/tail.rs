@@ -66,7 +66,7 @@ pub enum TailEvent {
     Unchanged,
     Stale,
     /// No state was advanced: retry after background snapshots release memory.
-    Deferred(String),
+    Deferred(anyhow::Error),
     /// The loaded prefix was evicted. All window-relative entry IDs changed.
     WindowChanged,
     Appended {
@@ -249,12 +249,12 @@ impl LogTail {
                 let before = self.index().len();
                 let snapshot = match LogSnapshot::mutable(&mut self.snapshot) {
                     Ok(snapshot) => snapshot,
-                    Err(e) => return TailEvent::Deferred(format!("{e:#}")),
+                    Err(e) => return TailEvent::Deferred(e),
                 };
                 let mut incoming = bytes.as_slice();
                 if self.skip_partial {
                     if let Err(error) = snapshot.prepare_skip_append(incoming.len()) {
-                        return TailEvent::Deferred(format!("{error:#}"));
+                        return TailEvent::Deferred(error);
                     }
                     let skip = memchr::memchr(b'\n', incoming).map_or(incoming.len(), |at| at + 1);
                     snapshot.skip_to(end - incoming.len() as u64 + skip as u64, file_len);
@@ -263,7 +263,7 @@ impl LogTail {
                 }
                 let (slid, grown, reindexed) = match snapshot.append(incoming, end, file_len) {
                     Ok(result) => result,
-                    Err(e) => return TailEvent::Deferred(format!("{e:#}")),
+                    Err(e) => return TailEvent::Deferred(e),
                 };
                 self.skip_partial = snapshot.bytes().is_empty()
                     && snapshot.window().offset > 0
@@ -308,13 +308,13 @@ impl LogTail {
                 } else {
                     let old = match LogSnapshot::mutable(&mut self.snapshot) {
                         Ok(old) => old,
-                        Err(e) => return TailEvent::Deferred(format!("{e:#}")),
+                        Err(e) => return TailEvent::Deferred(e),
                     };
                     if !old_tail.is_empty() {
                         let mut incoming = old_tail.as_slice();
                         if self.skip_partial {
                             if let Err(error) = old.prepare_skip_append(incoming.len()) {
-                                return TailEvent::Deferred(format!("{error:#}"));
+                                return TailEvent::Deferred(error);
                             }
                             let skip =
                                 memchr::memchr(b'\n', incoming).map_or(incoming.len(), |at| at + 1);
@@ -322,7 +322,7 @@ impl LogTail {
                             incoming = &incoming[skip..];
                         }
                         if let Err(error) = old.append(incoming, old_end, old_len) {
-                            return TailEvent::Deferred(format!("{error:#}"));
+                            return TailEvent::Deferred(error);
                         }
                     }
                     old.finish();
