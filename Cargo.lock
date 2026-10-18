@@ -8030,6 +8030,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "okilum-core",
  "okilum-sync-controller",
+ "okilum-t3",
  "regex",
  "resvg 0.45.1",
  "rust-embed",

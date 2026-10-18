@@ -26,6 +26,11 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if self.project_open {
+            if let Some(project) = &self.project {
+                return div().size_full().child(project.clone()).into_any_element();
+            }
+        }
         if self.active_timeline().is_some_and(|t| t.selected.is_some())
             || self.file_preview.is_some()
         {
