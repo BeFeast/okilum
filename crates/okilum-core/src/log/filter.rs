@@ -256,7 +256,9 @@ pub(crate) fn evaluate_with(
 ) -> Option<Vec<u32>> {
     let plan = Plan::new(filter, index);
     let entries = index.len();
-    let threads = threads.clamp(1, (entries / MIN_ENTRIES_PER_THREAD).max(1));
+    // Decoding is bounded per record; also bound simultaneous decoders so a
+    // many-core host cannot multiply parser scratch past a snapshot's lease.
+    let threads = threads.clamp(1, 4.min((entries / MIN_ENTRIES_PER_THREAD).max(1)));
     let step = entries.div_ceil(threads).max(1);
     let ranges: Vec<_> = (0..entries)
         .step_by(step)

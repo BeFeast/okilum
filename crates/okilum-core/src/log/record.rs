@@ -422,10 +422,51 @@ pub struct Record {
     pub logger: Option<usize>,
 }
 
+/// Maximum owned field data for one record, including vector growth. In
+/// particular, flattened JSON keys must not amplify a short source into an
+/// unbounded decoded allocation. Snapshots omit the entire offending record.
+pub(crate) const DECODE_BYTES: usize = 1024 * 1024;
+
+/// Borrowing preflight: never join paths or decode values just to count them.
+/// Scanner-owned path components are bounded by the 64 KiB source head.
+pub(crate) fn within_decode_budget(
+    line: &[u8],
+    format: Format,
+    regex: Option<&super::regex_text::RegexParser>,
+) -> bool {
+    let head = block::head(line);
+    if head.len() > super::window::WINDOW_LINE_BYTES {
+        return false;
+    }
+    // Builtin scanners emit at most one field per source byte. With <=512
+    // bytes, even charging every field the entire head (threefold UTF-8
+    // expansion), vector growth and decoded temporaries stays below 1 MiB.
+    // Regex names/captures are supplied externally and need the full check.
+    if head.len() <= 512 && regex.is_none() {
+        return true;
+    }
+    let line = ansi::strip(head);
+    let mut bytes = 0usize;
+    let _ = scan_with_regex(&line, format, regex, &mut |path, value| {
+        if bytes > DECODE_BYTES {
+            return;
+        }
+        let key = path.iter().map(|key| key.len()).sum::<usize>() + path.len().saturating_sub(1);
+        // Invalid UTF-8 may expand threefold. Values may need simultaneous
+        // unescape/ANSI scratch. Vec<Field> grows geometrically (at least 4).
+        bytes = bytes
+            .saturating_add(key)
+            .saturating_add(value.raw.len().saturating_mul(6))
+            .saturating_add(std::mem::size_of::<Field>() * 4);
+    });
+    bytes <= DECODE_BYTES
+}
+
 impl Record {
     /// `None` when the entry is not a record in `format`. Fields come from
     /// the entry's first line; its continuation lines (block.rs) are not
-    /// fields.
+    /// fields. Also returns `None` when the head/decoded-field budget is
+    /// exceeded; product snapshots exclude such records before exposing them.
     pub fn parse(line: &[u8], format: Format) -> Option<Record> {
         Self::parse_with_regex(line, format, None)
     }
@@ -435,6 +476,9 @@ impl Record {
         format: Format,
         regex: Option<&super::regex_text::RegexParser>,
     ) -> Option<Record> {
+        if !within_decode_budget(line, format, regex) {
+            return None;
+        }
         let line = ansi::strip(block::head(line));
         let mut record = Record::default();
         let mut roles = Roles::<usize>::new();

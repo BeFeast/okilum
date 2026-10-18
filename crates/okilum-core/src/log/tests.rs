@@ -246,7 +246,10 @@ fn throughput_100mb_with_known_counts() {
         independent_errors, errors,
         "generator and byte search agree"
     );
-    assert!(errors > 0 && frames > 0, "the controls are not vacuous");
+    assert!(
+        written > frames && errors > 0 && frames > 0,
+        "the controls are not vacuous"
+    );
     assert_eq!(
         data.first(),
         Some(&b'{'),
@@ -261,13 +264,16 @@ fn throughput_100mb_with_known_counts() {
     let started = std::time::Instant::now();
     let file = LogFile::open(&path).unwrap();
     let parallel = started.elapsed();
-    assert!(file.is_mapped());
+    assert!(!file.is_mapped() && file.window().tail);
+    assert!(file.bytes().len() <= window::WINDOW_BYTES);
     let index = file.index();
     assert_eq!(index.format(), Format::JsonLines);
-    assert_eq!(index.len() as u64, written - frames);
-    assert_eq!(index.stats().count(Level::Error), errors);
+    assert!(index.len() <= window::WINDOW_LINES);
+    let loaded_errors =
+        memchr::memmem::find_iter(file.bytes(), b"\"level\":\"error\"").count() as u64;
+    assert_eq!(index.stats().count(Level::Error), loaded_errors);
     assert_eq!(index.stats().unparsed(), 0);
-    assert_eq!(index.stats().timestamped, written - frames);
+    assert_eq!(index.stats().timestamped, index.len() as u64);
 
     let started = std::time::Instant::now();
     let single = LogIndex::build_with_threads(file.bytes(), 1);

@@ -3,9 +3,11 @@
 //! JSON lines, logfmt and the text formats of text.rs (spdlog, glog, access
 //! logs, syslog) are detected from the head of a file and indexed in
 //! parallel chunks into compact entries (byte range, line, level, timestamp).
-//! Fields are decoded lazily per record and losslessly: keys keep their
-//! spelling, values their text, duplicates their place. A line that is not a
-//! record stays a row with `Level::Unparsed`; it is never dropped.
+//! Fields of loaded records are decoded lazily and losslessly: keys keep
+//! their spelling, values their text, duplicates their place. A line that is
+//! not a record stays a row with `Level::Unparsed`. Product file/tail snapshots
+//! bound retained bytes, lines and decoding; excluded prefixes and oversized
+//! records are identified by `WindowInfo`, never implied to be fully loaded.
 //!
 //! Design reference: hl (github.com/pamburus/hl, MIT) for field aliases,
 //! level normalisation and parallel chunked scanning. No hl code is used; see
@@ -29,10 +31,13 @@ pub mod query;
 mod record;
 pub mod regex_text;
 pub mod saved_query;
+mod snapshot;
 pub mod source_link;
 pub mod tail;
 mod text;
 pub mod timestamp;
+pub mod window;
+pub mod window_budget;
 
 use std::path::Path;
 
@@ -48,6 +53,7 @@ pub use level::Level;
 pub use merge::{FileId, MergeUpdate, MergedLog, MergedRow};
 pub use query::{Query, QueryError};
 pub use record::{Field, Record, Role, ValueKind};
+pub use snapshot::{LogSnapshot, WindowInfo};
 pub use tail::LogTail;
 
 /// File extensions the log viewer opens.

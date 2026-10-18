@@ -190,7 +190,10 @@ mod tests {
         assert_eq!(files, 17, "positive control: inspected the sample pack");
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/log/regex-pipe.log");
-        let file = LogFile::open(&path).unwrap().with_regex(parser(PATTERN));
+        let file = LogFile::open(&path)
+            .unwrap()
+            .with_regex(parser(PATTERN))
+            .unwrap();
         let index = file.index();
         let data = file.bytes();
         assert_eq!(index.format(), Format::Regex);
@@ -228,6 +231,7 @@ mod tests {
         let end = file.record(1).unwrap().stamp().unwrap();
         assert_eq!(elapsed::between(start, end), "+1.234 s");
         let row = export::Row {
+            window: Some(file.window()),
             data,
             entry: &index.entries()[1],
             format: index.format(),
@@ -250,7 +254,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("custom.log");
         std::fs::write(&path, DATA).unwrap();
-        let mut tail = crate::log::LogTail::open(&path).unwrap().with_regex(regex);
+        let mut tail = crate::log::LogTail::open(&path)
+            .unwrap()
+            .with_regex(regex)
+            .unwrap();
         std::fs::OpenOptions::new()
             .append(true)
             .open(&path)

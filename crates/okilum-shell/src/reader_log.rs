@@ -21,7 +21,7 @@ use okilum_core::log::source_link::{self, Open, SourceLocation};
 use okilum_core::log::tail::{ResetReason, TailEvent};
 use okilum_core::log::{
     ansi, block, filter, timestamp, FilterGenerations, Format, Level, LogFile, LogFilter, LogIndex,
-    LogTail, Query, Record, Role, TimeWindow, ValueKind,
+    LogSnapshot, LogTail, Query, Record, Role, TimeWindow, ValueKind, WindowInfo,
 };
 use std::ops::Range;
 
@@ -150,17 +150,18 @@ fn open_with_regex(
     only_plain: bool,
 ) -> anyhow::Result<LogFile> {
     let file = LogFile::open(path)?;
-    Ok(match regex {
+    match regex {
         Some(regex) if !only_plain || file.index().format() == Format::Plain => {
             file.with_regex(regex)
         }
-        _ => file,
-    })
+        _ => Ok(file),
+    }
 }
 
 enum State {
     Indexing,
     Ready(LogDocument),
+    Following { rel: String },
     Failed(String),
 }
 
@@ -171,6 +172,7 @@ pub(crate) trait LogData {
     fn raw(&self, index: usize) -> Option<&[u8]>;
     fn record(&self, index: usize) -> Option<Record>;
     fn path(&self) -> &Path;
+    fn window(&self) -> WindowInfo;
 }
 
 impl LogData for LogFile {
@@ -188,6 +190,9 @@ impl LogData for LogFile {
     }
     fn path(&self) -> &Path {
         LogFile::path(self)
+    }
+    fn window(&self) -> WindowInfo {
+        LogFile::window(self)
     }
 }
 
@@ -207,13 +212,16 @@ impl LogData for LogTail {
     fn path(&self) -> &Path {
         LogTail::path(self)
     }
+    fn window(&self) -> WindowInfo {
+        LogTail::window(self)
+    }
 }
 
 /// A copy of what a background filter run reads.
 enum Snapshot {
     File(Arc<LogFile>),
     Segment(Arc<Segment>),
-    Owned { index: LogIndex, bytes: Vec<u8> },
+    Held(Arc<LogSnapshot>),
 }
 
 /// The name being typed to save the shown filter (#1169).
@@ -284,6 +292,7 @@ impl ExportJob {
                 return Ok(());
             };
             let row = export::Row {
+                window: Some(snapshot.window()),
                 data,
                 entry,
                 format: index.format(),
@@ -304,26 +313,26 @@ impl ExportJob {
 }
 
 /// The index of a source for a background count, without its bytes.
-enum IndexCopy {
-    Held(Snapshot),
-    Copied(LogIndex),
-}
-
+struct IndexCopy(Snapshot);
 impl IndexCopy {
     fn get(&self) -> &LogIndex {
-        match self {
-            IndexCopy::Held(snapshot) => snapshot.parts().0,
-            IndexCopy::Copied(index) => index,
-        }
+        self.0.parts().0
     }
 }
 
 impl Snapshot {
+    fn window(&self) -> WindowInfo {
+        match self {
+            Self::File(file) => file.window(),
+            Self::Segment(segment) => segment.window(),
+            Self::Held(snapshot) => snapshot.window(),
+        }
+    }
     fn parts(&self) -> (&LogIndex, &[u8]) {
         match self {
             Snapshot::File(file) => (file.index(), file.bytes()),
             Snapshot::Segment(segment) => (segment.index(), segment.bytes()),
-            Snapshot::Owned { index, bytes } => (index, bytes),
+            Snapshot::Held(snapshot) => (snapshot.index(), snapshot.bytes()),
         }
     }
 }
@@ -398,6 +407,9 @@ impl LogData for Segment {
     fn path(&self) -> &Path {
         &self.path
     }
+    fn window(&self) -> WindowInfo {
+        self.segment.window()
+    }
 }
 
 /// Several shown sources in time order. Rows of the view are rows of `log`.
@@ -445,6 +457,8 @@ pub(crate) struct LogView {
     rows: Option<Arc<Vec<u32>>>,
     /// A run for the latest filter is under way; the previous rows stay up.
     filtering: bool,
+    filter_again: bool,
+    filter_running: Option<u64>,
     text_input: Entity<InputState>,
     query_input: Entity<InputState>,
     /// The query field's text as typed; the filter keeps the last one that
@@ -474,7 +488,10 @@ pub(crate) struct LogView {
     /// Records per level over time for the shown rows (#1168), the rows it
     /// was counted for, and where the bars were last drawn.
     histogram: Option<Arc<Histogram>>,
-    histogram_for: Option<(usize, usize)>,
+    histogram_for: Option<(usize, usize, u64)>,
+    histogram_running: Option<(usize, usize, u64)>,
+    window_revision: u64,
+    history_limited: bool,
     histogram_at: Option<std::time::Instant>,
     histogram_bounds: Rc<std::cell::Cell<Bounds<Pixels>>>,
     /// A press on the bars: where it started and where the pointer is.
@@ -541,6 +558,8 @@ impl LogView {
             generations: FilterGenerations::default(),
             rows: None,
             filtering: false,
+            filter_again: false,
+            filter_running: None,
             text_input,
             query_input,
             query_text: String::new(),
@@ -562,6 +581,9 @@ impl LogView {
             request_back: None,
             histogram: None,
             histogram_for: None,
+            histogram_running: None,
+            window_revision: 0,
+            history_limited: false,
             histogram_at: None,
             histogram_bounds: Rc::default(),
             histogram_press: None,
@@ -592,6 +614,7 @@ impl LogView {
         if let Some(regex) = apply {
             view.apply_regex(Some(regex), cx);
         }
+        view.reveal_tail();
         view
     }
 
@@ -623,6 +646,7 @@ impl LogView {
                 if let State::Ready(document) = &this.state {
                     record_ready(document, cx);
                 }
+                this.reveal_tail();
                 cx.notify();
             });
         });
@@ -657,18 +681,12 @@ impl LogView {
 
     fn snapshot_of(&self, source: usize) -> Option<Snapshot> {
         match (source, &self.follow) {
-            (0, Some(follow)) => Some(Snapshot::Owned {
-                index: follow.tail.index().clone(),
-                bytes: follow.tail.bytes()[..follow.tail.index().bytes() as usize].to_vec(),
-            }),
+            (0, Some(follow)) => Some(Snapshot::Held(follow.tail.snapshot())),
             (0, None) => self.file().cloned().map(Snapshot::File),
             (n, _) => self.extra.get(n - 1).map(|extra| match &extra.data {
                 SourceData::File(file) => Snapshot::File(file.clone()),
                 SourceData::Segment(segment) => Snapshot::Segment(segment.clone()),
-                SourceData::Tail(tail) => Snapshot::Owned {
-                    index: tail.index().clone(),
-                    bytes: tail.bytes()[..tail.index().bytes() as usize].to_vec(),
-                },
+                SourceData::Tail(tail) => Snapshot::Held(tail.snapshot()),
             }),
         }
     }
@@ -1081,6 +1099,9 @@ impl LogView {
         for source in 0..self.source_count() {
             if let Some(regex) = self.source(source).and_then(|data| data.index().regex()) {
                 for name in regex.named_groups() {
+                    if names.len() >= 256 {
+                        return names;
+                    }
                     if !names.iter().any(|known| known == name) {
                         names.push(name.to_owned());
                     }
@@ -1096,6 +1117,9 @@ impl LogView {
                 continue;
             };
             for field in record.fields {
+                if names.len() >= 256 {
+                    return names;
+                }
                 if !names.contains(&field.key) {
                     names.push(field.key);
                 }
@@ -1113,7 +1137,8 @@ impl LogView {
             Some(at) => {
                 columns.remove(at);
             }
-            None => columns.push(key.to_owned()),
+            None if columns.len() < 256 => columns.push(key.to_owned()),
+            None => return,
         }
         reader_ui_state::set_log_columns(&file, columns, cx);
         cx.notify();
@@ -1123,8 +1148,11 @@ impl LogView {
     /// changed since the last count (#1168). While a log is followed a count
     /// starts at most once a second, like a time window that moves with it.
     fn recount(&mut self, cx: &mut Context<Self>) {
-        let signature = (self.visible_len(), self.total());
-        if self.histogram_for == Some(signature) || self._histogram_wait.is_some() {
+        let signature = (self.visible_len(), self.total(), self.window_revision);
+        if self.histogram_for == Some(signature)
+            || self._histogram_wait.is_some()
+            || self.histogram_running.is_some()
+        {
             return;
         }
         if let Some(last) = self.histogram_at.filter(|_| self.following()) {
@@ -1143,6 +1171,7 @@ impl LogView {
             }
         }
         self.histogram_for = Some(signature);
+        self.histogram_running = Some(signature);
         self.histogram_at = Some(std::time::Instant::now());
         let sources: Vec<usize> = match &self.merge {
             Some(merge) => merge.sources.clone(),
@@ -1191,10 +1220,16 @@ impl LogView {
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
+                if this.histogram_running != Some(signature) {
+                    return;
+                }
+                this.histogram_running = None;
+                this._histogram = None;
                 if this.histogram_for == Some(signature) {
                     this.histogram = (!counted.is_empty()).then(|| Arc::new(counted));
                     cx.notify();
                 }
+                this.recount(cx);
             });
         }));
     }
@@ -1202,18 +1237,7 @@ impl LogView {
     /// The index of `source` for a background count: shared where the source
     /// is a file, a copy of the index (not of the bytes) where it grows.
     fn index_copy(&self, source: usize) -> Option<IndexCopy> {
-        let tail = match (source, &self.follow) {
-            (0, Some(follow)) => Some(&follow.tail),
-            (0, None) => None,
-            (n, _) => match self.extra.get(n - 1).map(|extra| &extra.data) {
-                Some(SourceData::Tail(tail)) => Some(tail.as_ref()),
-                _ => None,
-            },
-        };
-        match tail {
-            Some(tail) => Some(IndexCopy::Copied(tail.index().clone())),
-            None => self.snapshot_of(source).map(IndexCopy::Held),
-        }
+        self.snapshot_of(source).map(IndexCopy)
     }
 
     /// The bar under `x`, or `None` before the first count.
@@ -1712,6 +1736,13 @@ impl LogView {
     /// Starts a run for the current filter. Every earlier run is cancelled by
     /// the new generation, and a result that arrives late is dropped.
     fn refilter(&mut self, cx: &mut Context<Self>) {
+        // One background filter at a time. Cancellation is cooperative; merely
+        // dropping its UI task must not create a queue of retained snapshots.
+        if self.filtering {
+            self.generations.next();
+            self.filter_again = true;
+            return;
+        }
         if self.merge.is_some() {
             return self.refilter_merged(cx);
         }
@@ -1737,8 +1768,10 @@ impl LogView {
             return;
         }
         self.filtering = true;
+        self.filter_running = Some(ticket.generation());
         let filter = self.filter.clone();
         self._filtering = Some(cx.spawn(async move |this, cx| {
+            let generation = ticket.generation();
             let outcome = cx
                 .background_executor()
                 .spawn(async move {
@@ -1746,10 +1779,21 @@ impl LogView {
                     filter::evaluate(&filter, index, bytes, &ticket)
                 })
                 .await;
-            let Some(outcome) = outcome else {
-                return;
-            };
             let _ = this.update(cx, |this, cx| {
+                if this.filter_running != Some(generation) {
+                    return;
+                }
+                this.filter_running = None;
+                this._filtering = None;
+                this.filtering = false;
+                if this.filter_again {
+                    this.filter_again = false;
+                    this.refilter(cx);
+                    return;
+                }
+                let Some(outcome) = outcome else {
+                    return;
+                };
                 if !this.generations.is_current(outcome.generation) {
                     return;
                 }
@@ -1789,6 +1833,7 @@ impl LogView {
             .collect();
         let positions = merge.positions.clone();
         self.filtering = true;
+        self.filter_running = Some(ticket.generation());
         let filter = self.filter.clone();
         self._filtering = Some(cx.spawn(async move |this, cx| {
             let generation = ticket.generation();
@@ -1826,10 +1871,21 @@ impl LogView {
                     Some(rows)
                 })
                 .await;
-            let Some(rows) = rows else {
-                return;
-            };
             let _ = this.update(cx, |this, cx| {
+                if this.filter_running != Some(generation) {
+                    return;
+                }
+                this.filter_running = None;
+                this._filtering = None;
+                this.filtering = false;
+                if this.filter_again {
+                    this.filter_again = false;
+                    this.refilter(cx);
+                    return;
+                }
+                let Some(rows) = rows else {
+                    return;
+                };
                 if !this.generations.is_current(generation) {
                     return;
                 }
@@ -1888,11 +1944,11 @@ impl LogView {
                         Option<Arc<okilum_core::log::regex_text::RegexParser>>,
                     )| {
                         let interval = okilum_core::log::tail::poll_interval_for(&path);
-                        LogTail::open(&path).map(|tail| {
+                        LogTail::open(&path).and_then(|tail| {
                             let tail = tail.with_interval(interval);
                             match regex {
                                 Some(regex) => tail.with_regex(regex),
-                                None => tail,
+                                None => Ok(tail),
                             }
                         })
                     };
@@ -1905,8 +1961,20 @@ impl LogView {
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
+                let mut changed_sources = Vec::new();
                 match primary {
                     Some(Ok(tail)) => {
+                        if this.data().is_some_and(|old| {
+                            old.window() != tail.window()
+                                || old.index().len() != tail.index().len()
+                                || old.bytes() != tail.bytes()
+                        }) {
+                            changed_sources.push(0);
+                        }
+                        if let State::Ready(document) = &this.state {
+                            let rel = document.rel.clone();
+                            this.state = State::Following { rel };
+                        }
                         this.follow = Some(Follow {
                             tail,
                             poll: None,
@@ -1927,6 +1995,13 @@ impl LogView {
                 for (slot, tail) in added {
                     match (tail, this.extra.get_mut(slot)) {
                         (Ok(tail), Some(extra)) if matches!(extra.data, SourceData::File(_)) => {
+                            let old = extra.data.data();
+                            if old.window() != tail.window()
+                                || old.index().len() != tail.index().len()
+                                || old.bytes() != tail.bytes()
+                            {
+                                changed_sources.push(slot + 1);
+                            }
                             extra.data = SourceData::Tail(Box::new(tail))
                         }
                         (Err(error), _) => this.follow_failed = Some(format!("{error:#}")),
@@ -1938,7 +2013,18 @@ impl LogView {
                     follow.unseen = 0;
                     follow.poll = Some(Self::start_poll(cx));
                 }
-                // Same bytes from the start: the selection keeps its record.
+                // The file can grow/slide between static open and enabling
+                // Follow. Only identical windows preserve entry identities.
+                if !changed_sources.is_empty() {
+                    this.selected = None;
+                    this.anchor = None;
+                    this.marks
+                        .retain(|(source, _)| !changed_sources.contains(source));
+                    this.rows = None;
+                    this.filtered_upto = 0;
+                    this.window_revision = this.window_revision.wrapping_add(1);
+                    this.histogram_for = None;
+                }
                 this.rebuild_merge();
                 this.refilter(cx);
                 this.keep_pinned();
@@ -1957,7 +2043,7 @@ impl LogView {
                 return;
             };
             cx.background_executor().timer(interval).await;
-            let Ok(requests) = this.update(cx, |this, _| this.begin_polls()) else {
+            let Ok(requests) = this.update(cx, |this, cx| this.begin_polls(cx)) else {
                 return;
             };
             if requests.is_empty() {
@@ -1981,7 +2067,38 @@ impl LogView {
         })
     }
 
-    fn begin_polls(&mut self) -> Vec<(usize, okilum_core::log::tail::PollRequest)> {
+    fn begin_polls(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Vec<(usize, okilum_core::log::tail::PollRequest)> {
+        if LogSnapshot::memory_used() > 192 * 1024 * 1024
+            && self
+                .extra
+                .iter()
+                .any(|extra| matches!(extra.data, SourceData::Segment(_)))
+        {
+            let old = std::mem::take(&mut self.extra);
+            let mut mapping = vec![Some(0)];
+            for extra in old {
+                if matches!(extra.data, SourceData::Segment(_)) {
+                    mapping.push(None);
+                } else {
+                    mapping.push(Some(self.extra.len() + 1));
+                    self.extra.push(extra);
+                }
+            }
+            for (slot, extra) in self.extra.iter_mut().enumerate() {
+                extra.owner = slot + 1;
+            }
+            self.marks = std::mem::take(&mut self.marks)
+                .into_iter()
+                .filter_map(|(source, entry)| {
+                    Some((mapping.get(source).copied().flatten()?, entry))
+                })
+                .collect();
+            self.history_limited = true;
+            self.invalidate_window(usize::MAX, cx);
+        }
         let Some(follow) = self.follow.as_mut() else {
             return Vec::new();
         };
@@ -2048,11 +2165,23 @@ impl LogView {
         };
         match event {
             TailEvent::Unchanged | TailEvent::Stale => {}
+            TailEvent::Deferred(error) => {
+                if let Some(follow) = self.follow.as_mut() {
+                    follow.error = Some(error);
+                }
+            }
+            TailEvent::WindowChanged => {
+                self.invalidate_window(source, cx);
+            }
             TailEvent::Appended {
                 entries,
                 reindexed,
                 grown,
             } => {
+                if reindexed {
+                    self.invalidate_window(source, cx);
+                    return;
+                }
                 let time_moves = self.filter.time.follows_newest();
                 let due = self.follow.as_ref().is_some_and(|follow| {
                     follow
@@ -2105,7 +2234,13 @@ impl LogView {
                         follow.unseen = 0;
                     }
                 }
-                if earlier > 0 {
+                let keep_history = !previous.window().tail
+                    && previous.bytes().len() <= 2 * 1024 * 1024
+                    && previous.snapshot().reserved_bytes() <= 12 * 1024 * 1024;
+                if earlier > 0 && !keep_history {
+                    self.history_limited = true;
+                }
+                if earlier > 0 && keep_history {
                     let what = match reason {
                         ResetReason::Truncated => "before truncation",
                         ResetReason::Rotated => "before rotation",
@@ -2114,12 +2249,30 @@ impl LogView {
                     let seq = self
                         .extra
                         .iter()
-                        .filter(|extra| extra.owner == source)
                         .filter(|extra| matches!(extra.data, SourceData::Segment(_)))
-                        .count();
+                        .map(|extra| extra.seq)
+                        .max()
+                        .map_or(0, |seq| seq + 1);
                     // Marks on the earlier content move with it (#1386): the
                     // segment keeps its entries, the file starts again at 0.
-                    let segment = self.extra.len() + 1;
+                    let retained: Vec<_> = self
+                        .extra
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, extra)| matches!(extra.data, SourceData::Segment(_)))
+                        .map(|(slot, _)| slot)
+                        .collect();
+                    let recycle = (retained.len() >= 6).then(|| {
+                        *retained
+                            .iter()
+                            .min_by_key(|&&slot| self.extra[slot].seq)
+                            .unwrap()
+                    });
+                    let segment = recycle.map_or(self.extra.len() + 1, |slot| slot + 1);
+                    if recycle.is_some() {
+                        self.history_limited = true;
+                        self.marks.retain(|&(at, _)| at != segment);
+                    }
                     self.marks = std::mem::take(&mut self.marks)
                         .into_iter()
                         .map(|(at, entry)| {
@@ -2130,7 +2283,7 @@ impl LogView {
                             }
                         })
                         .collect();
-                    self.extra.push(ExtraSource {
+                    let extra = ExtraSource {
                         data: SourceData::Segment(Arc::new(Segment {
                             path: PathBuf::from(format!("{name} ({what})")),
                             segment: previous,
@@ -2138,16 +2291,18 @@ impl LogView {
                         enabled: true,
                         owner: source,
                         seq,
-                    });
+                    };
+                    if let Some(slot) = recycle {
+                        self.extra[slot] = extra;
+                    } else {
+                        self.extra.push(extra);
+                    }
                 }
                 // Nothing earlier to keep: marks on this file have no record.
-                if earlier == 0 {
+                if earlier == 0 || !keep_history {
                     self.marks.retain(|&(at, _)| at != source);
                 }
-                self.selected = None;
-                self.anchor = None;
-                self.rebuild_merge();
-                self.refilter(cx);
+                self.invalidate_window(source, cx);
             }
         }
     }
@@ -2296,6 +2451,7 @@ impl LogView {
     /// Keeps a selection the new rows still list, in view; otherwise drops
     /// it and returns to the top.
     fn after_rows_changed(&mut self) {
+        self.window_revision = self.window_revision.wrapping_add(1);
         self.histogram_for = None;
         if self
             .anchor
@@ -2312,6 +2468,45 @@ impl LogView {
                     self.scroll.scroll_to_item(0, ScrollStrategy::Top);
                 }
             }
+        }
+    }
+
+    fn reveal_tail(&self) {
+        if self.data().is_some_and(|data| data.window().tail) && self.visible_len() > 0 {
+            self.scroll
+                .scroll_to_item(self.visible_len() - 1, ScrollStrategy::Bottom);
+        }
+    }
+    fn invalidate_window(&mut self, source: usize, cx: &mut Context<Self>) {
+        self.selected = None;
+        self.anchor = None;
+        self.marks.retain(|&(at, _)| at != source);
+        self.rows = None;
+        self.filtered_upto = 0;
+        self.window_revision = self.window_revision.wrapping_add(1);
+        self.histogram_for = None;
+        self.rebuild_merge();
+        self.refilter(cx);
+        self.after_rows_changed();
+    }
+    fn window_notice(&self) -> Option<String> {
+        let windows: Vec<_> = self
+            .enabled_sources()
+            .into_iter()
+            .filter_map(|source| self.source(source))
+            .map(|data| data.window())
+            .collect();
+        if windows.iter().any(|w| w.tail) || self.history_limited {
+            let mut text = "End of file only — search, filters, counts and export cover the loaded window. Older rows are discarded as Follow advances; their selections and marks are cleared.".to_owned();
+            if windows.iter().any(|w| w.oversized) {
+                text.push_str(" Oversized records were excluded (64 KiB source / 1 MiB decoded-field budget).");
+            }
+            if self.history_limited {
+                text.push_str(" Earlier rotated data was discarded.");
+            }
+            Some(text)
+        } else {
+            None
         }
     }
 
@@ -2361,12 +2556,20 @@ impl LogView {
                 continue;
             };
             let (raw, line_ending) = export::raw_with_ending(file.bytes(), entry);
+            if bytes.len() + raw.len() + line_ending.len() > 4 * 1024 * 1024 {
+                reader_toast::error(
+                    "Selection exceeds the 4 MiB copy budget; export it instead",
+                    window,
+                    cx,
+                );
+                return;
+            }
             bytes.extend_from_slice(raw);
             bytes.extend_from_slice(line_ending);
             ending = line_ending.len();
         }
         // Lines, not a file: no ending after the last one.
-        bytes.truncate(bytes.len() - ending);
+        bytes.truncate(bytes.len().saturating_sub(ending));
         cx.write_to_clipboard(ClipboardItem::new_string(
             String::from_utf8_lossy(&bytes).into_owned(),
         ));
@@ -2408,23 +2611,22 @@ impl LogView {
                     return div().into_any_element();
                 };
                 let level = entry.level();
-                let cells: Vec<Option<String>> = if columns.is_empty() {
-                    Vec::new()
-                } else {
-                    let record = file.record(local);
-                    columns
-                        .iter()
-                        .map(|key| {
-                            record.as_ref().and_then(|record| {
-                                record
-                                    .fields
-                                    .iter()
-                                    .find(|field| &field.key == key)
-                                    .map(|field| field.value.clone())
+                let cells: Vec<Option<String>> =
+                    if columns.is_empty() {
+                        Vec::new()
+                    } else {
+                        let record = file.record(local);
+                        columns
+                            .iter()
+                            .map(|key| {
+                                record.as_ref().and_then(|record| {
+                                    record.fields.iter().find(|field| &field.key == key).map(
+                                        |field| field.value.chars().take(ROW_TEXT_LIMIT).collect(),
+                                    )
+                                })
                             })
-                        })
-                        .collect()
-                };
+                            .collect()
+                    };
                 let row = row_text(file, local);
                 let lines = row.lines;
                 let selected = chosen.as_ref().is_some_and(|rows| rows.contains(&position));
@@ -2720,6 +2922,16 @@ impl LogView {
                             None => String::new(),
                         },
                         match lines {
+                            _ if file.window().offset > 0 => format!(
+                                "window line {} · {}byte {}",
+                                grouped(entry.line()),
+                                if file.window().decoded {
+                                    "decoded "
+                                } else {
+                                    ""
+                                },
+                                grouped(file.window().absolute_offset(entry))
+                            ),
                             1 => format!("line {}", grouped(entry.line())),
                             n => format!(
                                 "lines {}–{}",
@@ -2780,6 +2992,9 @@ impl LogView {
         let faint = brand::reader_palette(cx).text_faint;
         let record = file.record(index);
         let is_record = record.is_some();
+        let fields_limited = record
+            .as_ref()
+            .is_some_and(|record| record.fields.len() > 256);
         let links = record
             .as_ref()
             .map(source_link::in_record)
@@ -2789,6 +3004,7 @@ impl LogView {
                 detail_rows(&record, entry.timestamp())
                     .into_iter()
                     .zip(&record.fields)
+                    .take(256)
                     .enumerate()
                     .map(|(position, ((key, value, kind), field))| {
                         let group = SharedString::from(format!("log-field-{position}"));
@@ -2800,6 +3016,7 @@ impl LogView {
                             .map(|found| found.location.clone())
                             .collect();
                         let (field_key, field_value) = (field.key.clone(), field.value.clone());
+                        let value = bounded_detail(&value);
                         h_flex()
                             .group(group.clone())
                             .items_start()
@@ -2901,7 +3118,7 @@ impl LogView {
                     },
                 ))
                 .child({
-                    let text = String::from_utf8_lossy(&ansi::strip(raw)).into_owned();
+                    let text = bounded_detail(&String::from_utf8_lossy(&ansi::strip(raw)));
                     let found = source_link::find(&text);
                     div()
                         .debug_selector(|| "log-detail-raw".into())
@@ -2910,12 +3127,18 @@ impl LogView {
                         .child(self.linked("log-detail-raw", text, found, cx))
                 }),
         };
+        let body =
+            body.when(fields_limited, |body| {
+                body.child(div().text_sm().text_color(muted).child(
+                    "Showing the first 256 fields; copy or export the record for all fields.",
+                ))
+            });
         // A record's continuation lines, frame by frame as written; an entry
         // that is no record shows all its lines above.
         let body = body.when_some(
             block::continuation(raw).filter(|_| is_record),
             |body, rest| {
-                let text = String::from_utf8_lossy(&ansi::strip(rest)).into_owned();
+                let text = bounded_detail(&String::from_utf8_lossy(&ansi::strip(rest)));
                 let found = source_link::find(&text);
                 body.child(
                     div()
@@ -2942,7 +3165,7 @@ impl LogView {
         let level = self.filter.level;
         let time = self.filter.time;
         let timestamped = self
-            .file()
+            .data()
             .is_some_and(|file| file.index().stats().timestamped > 0)
             || self
                 .extra
@@ -3201,12 +3424,13 @@ impl LogView {
         regex: Option<Arc<okilum_core::log::regex_text::RegexParser>>,
         cx: &mut Context<Self>,
     ) {
-        let Some(file) = self.file() else {
+        let Some(data) = self.data() else {
             return;
         };
-        let path = file.path().to_owned();
+        let path = data.path().to_owned();
         let rel = match &self.state {
             State::Ready(document) => document.rel.clone(),
+            State::Following { rel } => rel.clone(),
             _ => return,
         };
         self.regex_error = None;
@@ -3223,7 +3447,10 @@ impl LogView {
                         this.follow = None;
                         this.generations.next();
                         this._filtering = None;
+                        this.filter_running = None;
+                        this.filter_again = false;
                         this._histogram = None;
+                        this.histogram_running = None;
                         this.state = State::Ready(LogDocument {
                             rel,
                             file: Arc::new(file),
@@ -3237,6 +3464,7 @@ impl LogView {
                         this.rebuild_merge();
                         this.after_rows_changed();
                         this.refilter(cx);
+                        this.reveal_tail();
                     }
                     Err(error) => this.regex_error = Some(format!("Cannot apply regex: {error:#}")),
                 }
@@ -3954,7 +4182,7 @@ impl LogView {
         let mut text = match (&self.state, &self.follow) {
             (State::Indexing, _) => "Indexing…".to_owned(),
             (State::Failed(error), _) => format!("Cannot show this log: {error}"),
-            (State::Ready(_), Some(follow)) => {
+            (State::Ready(_) | State::Following { .. }, Some(follow)) => {
                 let mut text = index_status(follow.tail.index());
                 if let Some(error) = &follow.error {
                     text.push_str(&format!(" · Cannot read the file: {error}"));
@@ -3986,6 +4214,7 @@ impl LogView {
                 Some(error) => format!("{} · Cannot follow: {error}", status_text(document)),
                 None => status_text(document),
             },
+            (State::Following { .. }, None) => "Preparing Follow…".to_owned(),
         };
         if !self.extra.is_empty() {
             // Follow already reports the primary file above. A merged view
@@ -4096,7 +4325,7 @@ impl Render for LogView {
             )
         } else {
             let message = match &self.state {
-                State::Ready(_) => "This log is empty",
+                State::Ready(_) | State::Following { .. } => "This log is empty",
                 State::Indexing | State::Failed(_) => "",
             };
             list.flex()
@@ -4235,6 +4464,16 @@ impl Render for LogView {
             .when(has_entries || self.follow.is_some(), |view| {
                 view.child(self.render_filter_bar(cx))
             })
+            .children(self.window_notice().map(|text| {
+                div()
+                    .id("log-window-scope")
+                    .debug_selector(|| "log-window-scope".into())
+                    .flex_none()
+                    .px_3()
+                    .py_2()
+                    .text_sm()
+                    .child(text)
+            }))
             .children(self.render_regex_editor(cx))
             .children(self.regex_error.clone().map(|error| {
                 div()
@@ -4529,6 +4768,16 @@ impl RowBuilder {
 
 /// Detail pane rows: every field in source order, with the parsed UTC time
 /// added beside an epoch number so the raw value stays as written.
+fn bounded_detail(text: &str) -> String {
+    const MAX_CHARS: usize = 8192;
+    let mut chars = text.chars();
+    let mut shown: String = chars.by_ref().take(MAX_CHARS).collect();
+    if chars.next().is_some() {
+        shown.push_str("… (preview limited; copy or export for full text)");
+    }
+    shown
+}
+
 fn detail_rows(record: &Record, timestamp: Option<i64>) -> Vec<(String, String, ValueKind)> {
     let time_field = record.time;
     record
@@ -4686,6 +4935,16 @@ mod tests {
     use super::*;
     use ::core::prelude::v1::test;
 
+    // GPUI's TestPlatform::quit is a no-op. Explicit shutdown also runs the
+    // VisualTestContext::into_mut cleanup callbacks; otherwise separate tests
+    // retain whole windows/snapshots and exhaust the real process-wide pool.
+    struct TestShutdown(TestAppContext);
+    impl Drop for TestShutdown {
+        fn drop(&mut self) {
+            self.0.quit();
+        }
+    }
+
     fn log(text: &str) -> (tempfile::TempDir, LogFile) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("app.jsonl");
@@ -4802,6 +5061,7 @@ mod tests {
     /// keeps its height for the next log and the next launch.
     #[gpui::test]
     fn detail_pane_resizes_collapses_and_remembers_its_height(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let directory = tempfile::tempdir().unwrap();
         let (root, state) = (
             directory.path().join("vault"),
@@ -4961,6 +5221,7 @@ mod tests {
 
     #[gpui::test]
     fn vault_tree_logs_publish_records_copy_and_return_to_notes(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         cx.update(|cx| {
             gpui_component::init(cx);
             crate::bind_keys(cx);
@@ -5049,6 +5310,7 @@ mod tests {
 
     #[gpui::test]
     fn a_log_opens_in_the_quick_viewer_and_copies_its_raw_line(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         cx.update(|cx| {
             gpui_component::init(cx);
             crate::bind_keys(cx);
@@ -5144,6 +5406,7 @@ mod tests {
 
     #[gpui::test]
     fn queued_note_open_wins_over_the_initial_log_publication(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         cx.update(|cx| {
             gpui_component::init(cx);
             crate::bind_keys(cx);
@@ -5283,6 +5546,7 @@ mod tests {
 
     #[gpui::test]
     fn a_rotated_gzip_log_opens_decoded_and_without_follow(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         // Packed by the system gzip; the text is the pack's 649-line access log.
         let packed = include_bytes!("../../okilum-core/tests/fixtures/log/names/access.log.1.gz");
         let (_directory, reader, visual) = open_named("app.log.1.gz", packed, cx);
@@ -5302,6 +5566,7 @@ mod tests {
 
     #[gpui::test]
     fn a_glog_file_name_opens_in_the_log_view(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let name = "ordgw.trade-gw-01.god.log.INFO.20261010-060400.4411";
         let text = include_bytes!(
             "../../okilum-core/tests/fixtures/log/names/ordgw.trade-gw-01.god.log.INFO.20261010-060400.4411"
@@ -5329,7 +5594,7 @@ mod tests {
         view.read_with(visual, |view, _| {
             match_counter(
                 view.rows.as_ref().map(|rows| rows.len()),
-                view.file().unwrap().index().len(),
+                view.data().unwrap().index().len(),
                 view.filtering,
             )
         })
@@ -5337,6 +5602,7 @@ mod tests {
 
     #[gpui::test]
     fn filters_narrow_rows_in_the_background_and_keep_the_selection(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let text = concat!(
             r#"{"ts":"2025-10-01T00:00:00Z","level":"info","msg":"boot","status":200}"#,
             "\n",
@@ -5435,6 +5701,7 @@ mod tests {
     /// same query, and applied queries are kept per file.
     #[gpui::test]
     fn query_bar_filters_reports_typos_and_remembers_queries(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let text = concat!(
             r#"{"level":"info","msg":"boot","status":200,"pod":"checkout-1"}"#,
             "\n",
@@ -5543,6 +5810,7 @@ mod tests {
     /// none twice and none missing, and the view stays pinned.
     #[gpui::test]
     fn follow_mode_stays_exact_over_many_polls_and_a_rotation(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         use std::io::Write as _;
         let line = |n: usize| {
             let level = if n.is_multiple_of(10) { "warn" } else { "info" };
@@ -5605,6 +5873,7 @@ mod tests {
     /// and announces a rotation and a truncation instead of a silent reset.
     #[gpui::test]
     fn follow_mode_appends_filters_pauses_and_announces_resets(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         use std::io::Write as _;
         let line =
             |level: &str, msg: &str| format!("{{\"level\":\"{level}\",\"msg\":\"{msg}\"}}\n");
@@ -5742,6 +6011,7 @@ mod tests {
     /// following, from an empty result through appends and a rotation.
     #[gpui::test]
     fn a_followed_merged_view_with_a_query_stays_at_the_newest_match(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         use std::io::Write as _;
         let line = |n: u32, level: &str, msg: &str| {
             format!(
@@ -5837,6 +6107,7 @@ mod tests {
     /// query applies to both, and a rotated added file keeps its records.
     #[gpui::test]
     fn follow_covers_every_file_of_a_merged_view(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         use std::io::Write as _;
         let line = |second: u32, level: &str, msg: &str| {
             format!(
@@ -5938,6 +6209,7 @@ mod tests {
     /// and a time window ends at the newest record of all files.
     #[gpui::test]
     fn several_files_read_in_time_order_and_filter_together(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let samples =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../okilum-core/tests/fixtures/log/samples");
         let names = [
@@ -6112,6 +6384,7 @@ mod tests {
     /// the first.
     #[gpui::test]
     fn dropped_and_command_line_logs_join_the_view(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let line = |msg: &str| {
             format!(
                 "{{\"ts\":\"2025-10-01T00:00:0{}Z\",\"msg\":\"{msg}\"}}\n",
@@ -6184,6 +6457,7 @@ mod tests {
 
     #[gpui::test]
     fn a_followed_stack_trace_grows_its_row_and_is_filtered_again(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         use std::io::Write as _;
         let line =
             |level: &str, msg: &str| format!("{{\"level\":\"{level}\",\"msg\":\"{msg}\"}}\n");
@@ -6233,6 +6507,7 @@ mod tests {
     /// opening it asks the chosen editor for that file, line and column.
     #[gpui::test]
     fn asan_frames_open_in_the_chosen_editor(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let sample = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../okilum-core/tests/fixtures/log/samples/cpp/ordgw_tests-asan.log");
         let text = std::fs::read_to_string(sample).unwrap();
@@ -6344,6 +6619,7 @@ mod tests {
     /// and Back returns to the previous filter.
     #[gpui::test]
     fn show_this_request_filters_every_file_and_back_restores(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let fixtures = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../okilum-core/tests/fixtures/log/correlation");
         let ingress = std::fs::read_to_string(fixtures.join("ingress-nginx.jsonl")).unwrap();
@@ -6441,6 +6717,7 @@ mod tests {
     /// detail pane, and the columns are kept for the file.
     #[gpui::test]
     fn apache_access_reads_in_columns_at_1440(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let sample = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../okilum-core/tests/fixtures/log/samples/apache/apache-access.logfmt");
         let text = std::fs::read_to_string(sample).unwrap();
@@ -6532,6 +6809,7 @@ mod tests {
     /// and the width is kept; the Columns menu offers the records' fields.
     #[gpui::test]
     fn columns_resize_by_drag_and_the_menu_lists_fields(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let sample = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../okilum-core/tests/fixtures/log/samples/apache/apache-access.logfmt");
         let text = std::fs::read_to_string(sample).unwrap();
@@ -6592,6 +6870,7 @@ mod tests {
     /// window, Clear brings every row back, and a click on a bar jumps to it.
     #[gpui::test]
     fn kibana_outage_is_a_red_cluster_and_dragging_selects_it(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let sample = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../okilum-core/tests/fixtures/log/samples/kibana/kibana.ndjson");
         let text = std::fs::read_to_string(sample).unwrap();
@@ -6715,6 +6994,7 @@ mod tests {
     /// query only the rows it shows.
     #[gpui::test]
     fn the_bars_count_every_file_of_a_merged_view(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let samples =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../okilum-core/tests/fixtures/log/samples");
         let directory = tempfile::tempdir().unwrap();
@@ -6789,6 +7069,7 @@ mod tests {
     /// a row without a timestamp says so.
     #[gpui::test]
     fn elapsed_time_between_rows_of_two_files_and_since_a_row(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         // api.jsonl writes milliseconds, worker.jsonl microseconds.
         let api = concat!(
             "{\"ts\":\"2025-10-01T00:00:00.120Z\",\"msg\":\"api start\"}\n",
@@ -6867,6 +7148,7 @@ mod tests {
     /// chosen time range stays put as newer records come in.
     #[gpui::test]
     fn the_bars_follow_appends_and_a_range_stays_put(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         use std::io::Write as _;
         let line = |second: u32, level: &str| {
             format!(
@@ -6940,6 +7222,7 @@ mod tests {
 
     #[gpui::test]
     fn regex_entry_shows_errors_saves_and_reports_zero_matches(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let state = tempfile::tempdir().unwrap();
         cx.update(|cx| reader_ui_state::install(state.path(), cx));
         let (directory, reader, visual) = open_log("first line\n  second line\n", cx);
@@ -7090,6 +7373,7 @@ mod tests {
     /// read is reported without changing the rows.
     #[gpui::test]
     fn a_saved_filter_applies_to_another_log(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let first = concat!(
             r#"{"level":"info","msg":"boot","status":200}"#,
             "\n",
@@ -7221,6 +7505,7 @@ mod tests {
     /// there is nothing to ask for.
     #[gpui::test]
     fn export_writes_exactly_the_shown_rows_and_never_over_the_log(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let sample = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../okilum-core/tests/fixtures/log/samples/apache/apache-access.logfmt");
         let text = std::fs::read_to_string(sample).unwrap();
@@ -7303,6 +7588,7 @@ mod tests {
     /// marks (they live only while the view is open, Oleg 18.10).
     #[gpui::test]
     fn marks_keep_their_records_and_export_on_their_own(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         use std::io::Write as _;
         let line = |i: usize| {
             let level = if i % 5 == 2 || i == 4 { "warn" } else { "info" };
@@ -7463,6 +7749,7 @@ mod tests {
     /// ordered again.
     #[gpui::test]
     fn marks_in_a_merged_view_stay_on_their_records(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let samples =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../okilum-core/tests/fixtures/log/samples");
         let directory = tempfile::tempdir().unwrap();
@@ -7550,6 +7837,7 @@ mod tests {
     /// record; a CSV parser gets the values back.
     #[gpui::test]
     fn csv_export_writes_the_columns_of_column_mode_one_row_per_record(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let text = "\
 {\"ts\":\"2025-10-01T00:00:05Z\",\"level\":\"error\",\"msg\":\"cache miss, \\\"cold\\\"\",\"status\":500,\"path\":\"/v1/notes\"}
   at frame one
@@ -7628,6 +7916,7 @@ mod tests {
     /// default; "Raw values" writes them as they are in the log.
     #[gpui::test]
     fn csv_export_guards_formula_cells_unless_raw_values_is_on(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let text = "\
 {\"ts\":\"2025-10-01T00:00:05Z\",\"level\":\"info\",\"msg\":\"-5\"}
 {\"ts\":\"2025-10-01T00:00:06Z\",\"level\":\"info\",\"msg\":\"=HYPERLINK(\\\"http://x\\\",\\\"y\\\")\"}
@@ -7692,6 +7981,7 @@ mod tests {
     /// copy as their lines and export on their own.
     #[gpui::test]
     fn shift_selection_copies_several_records_and_exports_them(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let lines: Vec<String> = (0..6)
             .map(|i| format!(r#"{{"level":"info","msg":"row {i}"}}"#))
             .collect();
@@ -7760,6 +8050,7 @@ mod tests {
     /// shown, each JSON line saying which file it came from.
     #[gpui::test]
     fn export_of_a_merged_view_names_each_source(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let samples =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../okilum-core/tests/fixtures/log/samples");
         let directory = tempfile::tempdir().unwrap();
@@ -7840,7 +8131,197 @@ mod tests {
     }
 
     #[gpui::test]
+    fn bounded_window_scope_is_visible_and_initially_reveals_the_real_end(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
+        let mut text = "older\n".repeat(okilum_core::log::window::WINDOW_LINES + 32);
+        text.push_str("FINAL_REAL_ROW_1389\n");
+        let (_directory, reader, visual) = open_named("density.log", text.as_bytes(), cx);
+        let view = log_view(&reader, visual);
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        view.read_with(visual, |view, _| {
+            let data = view.data().unwrap();
+            assert!(data.window().tail && data.window().offset > 0);
+            assert_eq!(
+                data.raw(data.index().len() - 1).unwrap(),
+                b"FINAL_REAL_ROW_1389"
+            );
+            let notice = view.window_notice().unwrap();
+            for scope in ["search", "filters", "counts", "export", "loaded window"] {
+                assert!(notice.contains(scope));
+            }
+            let handle = view.scroll.0.borrow();
+            let max = handle.base_handle.max_offset();
+            assert!(max.y > px(0.), "positive: list actually overflows");
+            assert!(
+                -handle.base_handle.offset().y >= max.y - px(2.),
+                "first layout must reveal the final real rows"
+            );
+        });
+        assert!(
+            visual.debug_bounds("log-window-scope").is_some(),
+            "scope is painted, not only a tooltip"
+        );
+    }
+
+    #[gpui::test]
+    fn sliding_window_clears_evicted_marks_and_rejects_an_older_filter(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
+        use std::io::Write as _;
+        let lines = okilum_core::log::window::WINDOW_LINES;
+        let text = "keep\n".repeat(lines);
+        let (directory, reader, visual) = open_named("sliding.log", text.as_bytes(), cx);
+        let view = log_view(&reader, visual);
+        view.update(visual, |view, cx| view.toggle_follow(cx));
+        visual.run_until_parked();
+        view.update_in(visual, |view, window, cx| {
+            assert!(
+                matches!(view.state, State::Following { .. }),
+                "release the redundant original file snapshot"
+            );
+            view.select(0, false, window, cx);
+            view.toggle_mark(cx);
+            assert!(
+                view.marks.contains(&(0, 0)),
+                "positive: mark existed before eviction"
+            );
+            view.set_text("keep".into(), cx);
+            assert!(view.filtering);
+        });
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(directory.path().join("sliding.log"))
+            .unwrap()
+            .write_all(b"new\nnew\nnew\n")
+            .unwrap();
+        let request = view.update(visual, |view, _| {
+            view.follow.as_mut().unwrap().tail.begin_poll()
+        });
+        let read = request.read().unwrap();
+        view.update(visual, |view, cx| view.apply_poll(0, Ok(read), cx));
+        visual.run_until_parked();
+        view.read_with(visual, |view, _| {
+            assert!(view.data().unwrap().window().offset > 0);
+            assert!(view.marks.is_empty() && view.selected.is_none() && view.anchor.is_none());
+            assert_eq!(
+                view.visible_len(),
+                lines - 3,
+                "a stale result cannot publish old window IDs"
+            );
+            assert!(!view.filtering && !view.filter_again && view.filter_running.is_none());
+            let snapshot = view.snapshot_of(0).unwrap();
+            let Snapshot::Held(snapshot) = snapshot else {
+                panic!("Follow must share a leased snapshot")
+            };
+            assert!(Arc::ptr_eq(
+                &snapshot,
+                &view.follow.as_ref().unwrap().tail.snapshot()
+            ));
+        });
+    }
+
+    #[gpui::test]
+    fn enabling_follow_after_same_shape_rewrite_invalidates_record_identities(
+        cx: &mut TestAppContext,
+    ) {
+        let _shutdown = TestShutdown(cx.clone());
+        let (directory, reader, visual) = open_named("rewrite.log", b"aaa\nbbb\n", cx);
+        let view = log_view(&reader, visual);
+        view.update_in(visual, |view, window, cx| {
+            view.select(0, false, window, cx);
+            view.toggle_mark(cx);
+            assert!(view.marks.contains(&(0, 0)));
+        });
+        std::fs::write(directory.path().join("rewrite.log"), b"ccc\nddd\n").unwrap();
+        view.update(visual, |view, cx| view.toggle_follow(cx));
+        visual.run_until_parked();
+        view.read_with(visual, |view, _| {
+            assert!(matches!(view.state, State::Following { .. }));
+            assert_eq!(view.data().unwrap().raw(0).unwrap(), b"ccc");
+            assert!(view.marks.is_empty() && view.selected.is_none() && view.anchor.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn enabling_follow_invalidates_an_equal_shape_rewritten_additional_source(
+        cx: &mut TestAppContext,
+    ) {
+        let _shutdown = TestShutdown(cx.clone());
+        let (directory, reader, visual) = open_named("primary.log", b"primary\n", cx);
+        let added = directory.path().join("additional.log");
+        std::fs::write(&added, b"aaa\nbbb\n").unwrap();
+        let view = log_view(&reader, visual);
+        view.update(visual, |view, cx| view.add_files(vec![added.clone()], cx));
+        visual.run_until_parked();
+        view.update_in(visual, |view, window, cx| {
+            let id = (0..view.total())
+                .find(|&id| view.locate(id) == Some((1, 0)))
+                .unwrap();
+            view.select(id, false, window, cx);
+            view.toggle_mark(cx);
+            assert!(view.marks.contains(&(1, 0)));
+        });
+        std::fs::write(&added, b"ccc\nddd\n").unwrap();
+        view.update(visual, |view, cx| view.toggle_follow(cx));
+        visual.run_until_parked();
+        view.read_with(visual, |view, _| {
+            assert!(matches!(view.extra[0].data, SourceData::Tail(_)));
+            assert_eq!(view.source(1).unwrap().raw(0).unwrap(), b"ccc");
+            assert!(view.marks.is_empty() && view.selected.is_none() && view.anchor.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn bounded_rotation_history_retains_the_latest_six_segments(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
+        let (directory, reader, visual) = open_named("rotation.log", b"generation-0\n", cx);
+        let view = log_view(&reader, visual);
+        view.update(visual, |view, cx| view.toggle_follow(cx));
+        visual.run_until_parked();
+        for generation in 1..=9 {
+            std::fs::rename(
+                directory.path().join("rotation.log"),
+                directory.path().join(format!("rotation.log.{generation}")),
+            )
+            .unwrap();
+            std::fs::write(
+                directory.path().join("rotation.log"),
+                format!("generation-{generation}\n"),
+            )
+            .unwrap();
+            let request = view.update(visual, |view, _| {
+                view.follow.as_mut().unwrap().tail.begin_poll()
+            });
+            let read = request.read().unwrap();
+            view.update(visual, |view, cx| view.apply_poll(0, Ok(read), cx));
+            visual.run_until_parked();
+        }
+        view.read_with(visual, |view, _| {
+            let mut retained: Vec<_> = view
+                .extra
+                .iter()
+                .filter_map(|extra| {
+                    let SourceData::Segment(segment) = &extra.data else {
+                        return None;
+                    };
+                    Some(String::from_utf8(segment.segment.raw(0).unwrap().to_vec()).unwrap())
+                })
+                .collect();
+            retained.sort();
+            assert_eq!(
+                retained,
+                (3..=8)
+                    .map(|n| format!("generation-{n}"))
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(view.data().unwrap().raw(0).unwrap(), b"generation-9");
+            assert!(view.history_limited && view.window_notice().is_some());
+        });
+    }
+
+    #[gpui::test]
     fn a_late_result_never_replaces_the_latest_filter(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let mut text = String::new();
         for i in 0..40_000 {
             text.push_str(&format!(
