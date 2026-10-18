@@ -465,6 +465,17 @@ impl Reader {
                         .update(cx, |input, cx| input.set_selected_range(body..body, cx));
                 }
                 self.announce_creation(&created, Some(source), window, cx);
+                if let Some(folder) = templates
+                    .as_ref()
+                    .filter(|catalog| catalog.missing())
+                    .map(|catalog| catalog.folder.display().to_string())
+                {
+                    reader_toast::transient(
+                        format!("Created without a template: the templates folder «{folder}» is not in this vault."),
+                        window,
+                        cx,
+                    );
+                }
                 self.queue_vault_mutation(
                     okilum_core::Changes {
                         changed: std::collections::BTreeSet::from([created]),
@@ -1018,6 +1029,102 @@ mod tests {
         });
         let saved = std::fs::read_to_string(root.join("Friend new note.md")).unwrap();
         assert_eq!(saved, "# Friend new note\nBody");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// #1394: a templates folder chosen in Settings applies to new notes,
+    /// like one from `.obsidian/templates.json`; a chosen folder that is not
+    /// in the vault still lets the note be created, without a template, and
+    /// says so.
+    #[gpui::test]
+    fn new_note_uses_the_templates_folder_chosen_in_settings(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_reduce_motion(true);
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let dir = std::env::temp_dir().join(format!("okilum-create-{}", uuid::Uuid::new_v4()));
+        let root = dir.join("notes");
+        std::fs::create_dir_all(root.join("templates")).unwrap();
+        std::fs::create_dir_all(root.join("obsidian-templates")).unwrap();
+        let root = root.canonicalize().unwrap();
+        let state = dir.join("state");
+        std::fs::write(root.join("start.md"), "start").unwrap();
+        std::fs::write(
+            root.join("templates/Note.md"),
+            "# {{title}}\n\nFrom Settings\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("obsidian-templates/Note.md"),
+            "# {{title}}\n\nFrom Obsidian\n",
+        )
+        .unwrap();
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        open_path: Some(root.join("start.md")),
+                        index_dir: Some(dir.join("index")),
+                        session_directory: Some(state.clone()),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        let mut create = |name: &str| {
+            reader.update_in(visual, |reader, window, cx| {
+                reader.new_note(None, window, cx);
+                let input = reader.creation.as_ref().unwrap().input.clone();
+                input.update(cx, |input, cx| input.set_value(name, window, cx));
+            });
+            visual.run_until_parked();
+            visual.simulate_keystrokes("enter");
+            visual.run_until_parked();
+            reader.update_in(visual, |reader, window, cx| {
+                assert!(reader.leave_source(cx));
+                reader.cancel_creation(window, cx);
+            });
+            std::fs::read_to_string(root.join(format!("{name}.md"))).ok()
+        };
+        // Positive control: without a choice the note is just its title.
+        assert_eq!(create("Plain").as_deref(), Some("# Plain\n"));
+        // The folder chosen in Settings.
+        reader_templates::save(&root, &state, &root.join("templates")).unwrap();
+        assert_eq!(
+            create("Chosen").as_deref(),
+            Some("# Chosen\n\nFrom Settings\n"),
+            "created, with the Settings template"
+        );
+        // The folder from Obsidian's own settings, with no Settings choice.
+        std::fs::remove_file(reader_templates::preferences_path(&root, &state).unwrap()).unwrap();
+        std::fs::create_dir_all(root.join(".obsidian")).unwrap();
+        std::fs::write(
+            root.join(".obsidian/templates.json"),
+            r#"{"folder":"obsidian-templates"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            create("Obsidian").as_deref(),
+            Some("# Obsidian\n\nFrom Obsidian\n")
+        );
+        // A chosen folder that is not in the vault: created, no template.
+        reader_templates::save(&root, &state, &root.join("templates")).unwrap();
+        std::fs::remove_dir_all(root.join("templates")).unwrap();
+        assert_eq!(create("Missing").as_deref(), Some("# Missing\n"));
+        reader.read_with(visual, |reader, _| {
+            assert!(reader
+                .creation_templates()
+                .is_ok_and(|catalog| catalog.missing()));
+        });
         std::fs::remove_dir_all(dir).unwrap();
     }
 

@@ -9,7 +9,7 @@ pub const DEFAULT_FOLDER: &str = "_Assets/Templates";
 #[cfg(all(test, unix))]
 const MAX_TEMPLATE_BYTES: u64 = 1024 * 1024;
 
-fn preferences_path(root: &Path, state: &Path) -> Result<PathBuf> {
+pub(super) fn preferences_path(root: &Path, state: &Path) -> Result<PathBuf> {
     let root = root.canonicalize()?;
     let keyed = reader_sidebar::State::path(state, &root);
     let path = state

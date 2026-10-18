@@ -209,7 +209,7 @@ pub fn create_from_template(
     if catalog.contains_target(relative) {
         bail!("Choose a note destination outside the templates folder");
     }
-    let current = crate::note_templates::Catalog::load(root)?;
+    let current = catalog.reload(root)?;
     if &current != catalog {
         bail!("Templates changed. Cancel and choose New File again");
     }
@@ -295,6 +295,50 @@ mod tests {
         assert_eq!(body_start("# T\n"), "# T\n".len());
         assert_eq!(body_start("plain"), 0);
         assert_eq!(body_start("---\nopen"), "---\nopen".len());
+    }
+
+    /// #1394: a catalog loaded with a folder chosen in Settings is reloaded
+    /// with that folder, not with the default, so creating a note works.
+    #[test]
+    fn a_folder_chosen_in_settings_survives_the_reload_before_create() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("templates")).unwrap();
+        std::fs::write(root.join("templates/Note.md"), "# {{title}}\nchosen\n").unwrap();
+        let catalog =
+            crate::note_templates::Catalog::load_with_folder(root, Some("templates")).unwrap();
+        assert!(!catalog.missing());
+        let selected = catalog.default_file();
+        let source = create_from_template(
+            root,
+            Path::new("A.md"),
+            time::macros::datetime!(2026-10-18 09:07 UTC),
+            state.path(),
+            &catalog,
+            selected.as_deref(),
+        )
+        .unwrap();
+        assert_eq!(source, "# A\nchosen\n");
+        // A chosen folder that is not there: no template, and it says so.
+        let gone =
+            crate::note_templates::Catalog::load_with_folder(root, Some("elsewhere")).unwrap();
+        assert!(gone.missing());
+        assert!(gone.default_file().is_none());
+        let plain = create_from_template(
+            root,
+            Path::new("B.md"),
+            time::macros::datetime!(2026-10-18 09:07 UTC),
+            state.path(),
+            &gone,
+            None,
+        )
+        .unwrap();
+        assert_eq!(plain, "# B\n");
+        // The default folder missing is normal and not reported.
+        assert!(!crate::note_templates::Catalog::load(root)
+            .unwrap()
+            .missing());
     }
 
     #[test]
