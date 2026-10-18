@@ -36,7 +36,7 @@ fn export(file: &LogFile, rows: &[u32], format: ExportFormat) -> Vec<u8> {
             format: file.index().format(),
             source: None,
         };
-        write_row(&mut out, &row, format).unwrap();
+        write_row(&mut out, &row, &format).unwrap();
     }
     out
 }

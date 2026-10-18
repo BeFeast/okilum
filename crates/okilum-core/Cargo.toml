@@ -62,6 +62,9 @@ url = "2"
 markdown = "1.0.0"
 # Hand-written ZIP fixtures in archive.rs; already in Cargo.lock.
 crc32fast = "1"
+# An independent CSV parser for the log CSV export (#1387): the test reads the
+# file back with code that did not write it.
+csv = "1"
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1", features = ["fs"] }
