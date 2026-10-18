@@ -181,7 +181,10 @@ fn compact_vault_path(root: &Path) -> String {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Section {
     Appearance,
-    Files,
+    /// The vault's name, colour and files (#1355: was «Files»).
+    Vault,
+    /// Log source links: for logs of software you build (#1355).
+    Logs,
     Updates,
     About,
     Inbox,
@@ -192,7 +195,8 @@ impl Section {
     fn icon(self) -> Icon {
         match self {
             Self::Appearance => Icon::new(IconName::Palette),
-            Self::Files => Icon::new(IconName::Folder),
+            Self::Vault => Icon::new(IconName::Folder),
+            Self::Logs => Icon::new(IconName::SquareTerminal),
             Self::Updates => Icon::default().path("icons/arrow-down-circle.svg"),
             Self::About => Icon::new(IconName::Info),
             Self::Inbox => Icon::new(IconName::Inbox),
@@ -203,7 +207,8 @@ impl Section {
     fn label(self) -> &'static str {
         match self {
             Self::Appearance => "Appearance",
-            Self::Files => "Files",
+            Self::Vault => "Vault",
+            Self::Logs => "Logs",
             Self::Updates => "Updates",
             Self::About => "About",
             Self::Inbox => "Inbox",
@@ -230,6 +235,9 @@ struct Settings {
     template_error: Option<String>,
     #[cfg(any(unix, windows))]
     template_pending: bool,
+    /// The templates folder is not in the vault yet (#1355).
+    #[cfg(any(unix, windows))]
+    template_missing: bool,
     #[cfg(any(unix, windows))]
     template_epoch: u64,
     /// The custom editor command line for log source links (#1165), made
@@ -267,6 +275,8 @@ impl Settings {
             template_error: None,
             #[cfg(any(unix, windows))]
             template_pending: false,
+            #[cfg(any(unix, windows))]
+            template_missing: false,
             #[cfg(any(unix, windows))]
             template_epoch: 0,
         }
@@ -336,6 +346,7 @@ impl Settings {
         self.template_folder = reader_templates::DEFAULT_FOLDER.into();
         self.template_error = None;
         self.template_pending = false;
+        self.template_missing = false;
         let Some((root, state)) = current else {
             return;
         };
@@ -348,7 +359,10 @@ impl Settings {
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { reader_templates::load(&root, &state) })
+                .spawn(async move {
+                    reader_templates::load(&root, &state)
+                        .map(|folder| (!root.join(&folder).is_dir(), folder))
+                })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if this.template_epoch != epoch {
@@ -356,8 +370,15 @@ impl Settings {
                 }
                 this.template_pending = false;
                 match result {
-                    Ok(folder) => this.template_folder = folder,
-                    Err(error) => this.template_error = Some(format!("{error:#}")),
+                    Ok((missing, folder)) => {
+                        this.template_missing = missing;
+                        this.template_folder = folder;
+                    }
+                    Err(error) => {
+                        // The error says what is wrong; no second message.
+                        this.template_missing = false;
+                        this.template_error = Some(format!("{error:#}"));
+                    }
                 }
                 cx.notify();
             });
@@ -418,6 +439,8 @@ impl Settings {
                 this.template_pending = false;
                 match result {
                     Ok(folder) => {
+                        // Chosen in the picker, so it is there.
+                        this.template_missing = false;
                         this.template_folder = folder;
                         this.template_error = None;
                     }
@@ -620,7 +643,11 @@ impl Settings {
                 .gap_2()
                 .child(setting_row(
                     "Templates folder",
-                    "Templates for new notes.",
+                    if self.template_missing && !self.template_pending {
+                        "Templates for new notes. This folder is not in the vault yet."
+                    } else {
+                        "Templates for new notes."
+                    },
                     h_flex()
                         .gap_2()
                         .child(
@@ -742,12 +769,11 @@ impl Settings {
                     )
                     .into_any_element()
             }
-            Section::Files => {
+            Section::Vault => {
                 if let Some(reader) = self.vault(cx) {
                     let state = reader.read(cx);
                     let hidden = state.sidebar.show_hidden;
                     let root = state.vault_root.clone();
-                    let map_root = root.clone();
                     let name = crate::vault_name::shown(&root, cx);
                     let rename_root = root.clone();
                     let full_path = okilum_core::vault::display_path(&root);
@@ -866,8 +892,6 @@ impl Settings {
                             },
                         )
                         .child(self.template_controls(cx))
-                        .child(self.log_editor_controls(cx))
-                        .child(self.source_map_controls(&map_root, cx))
                         .children(self.vault(cx).map(|reader| {
                             #[cfg(any(unix, windows))]
                             {
@@ -882,10 +906,23 @@ impl Settings {
                         .into_any_element()
                 } else {
                     content
-                        .child("Open a vault to change its file visibility.")
-                        .child(self.log_editor_controls(cx))
+                        .child("Open a vault to change its name, colour and files.")
                         .into_any_element()
                 }
+            }
+            Section::Logs => {
+                let root = self
+                    .vault(cx)
+                    .map(|reader| reader.read(cx).vault_root.clone());
+                content
+                    .child(
+                        div().text_sm().text_color(p.text_muted).child(
+                            "For log files of software you build: where file:line links open.",
+                        ),
+                    )
+                    .child(self.log_editor_controls(cx))
+                    .children(root.map(|root| self.source_map_controls(&root, cx)))
+                    .into_any_element()
             }
             Section::Updates => {
                 let content =
@@ -1086,11 +1123,13 @@ impl Render for Settings {
                     .children(
                         [
                             Section::Appearance,
-                            Section::Files,
+                            Section::Vault,
                             Section::Updates,
                             Section::Inbox,
                             #[cfg(target_os = "linux")]
                             Section::Sync,
+                            // Developer options sit low (#1355).
+                            Section::Logs,
                             // Platform convention: About comes last (#995).
                             Section::About,
                         ]
@@ -1338,7 +1377,7 @@ mod tests {
         let (_, visual) = cx.add_window_view(|window, cx| {
             let settings = cx.new(|cx| {
                 let mut settings = Settings::new(Some(weak), cx);
-                settings.section = Section::Files;
+                settings.section = Section::Vault;
                 settings
             });
             Root::new(settings, window, cx)
@@ -1422,7 +1461,7 @@ mod tests {
         let (_, visual) = cx.add_window_view(|window, cx| {
             let settings = cx.new(|cx| {
                 let mut settings = Settings::new(Some(weak), cx);
-                settings.section = Section::Files;
+                settings.section = Section::Vault;
                 settings
             });
             Root::new(settings, window, cx)
@@ -1514,7 +1553,7 @@ mod tests {
         let (_, visual) = cx.add_window_view(|window, cx| {
             let settings = cx.new(|cx| {
                 let mut settings = Settings::new(Some(weak), cx);
-                settings.section = Section::Files;
+                settings.section = Section::Vault;
                 settings
             });
             Root::new(settings, window, cx)
@@ -1542,6 +1581,77 @@ mod tests {
             narrow > wide,
             "at 683 px the help wraps onto more lines ({narrow:?}) instead of being cut ({wide:?})"
         );
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    /// #1355: the vault's settings and the log options live apart, and a
+    /// templates folder that is not in the vault says so.
+    #[gpui::test]
+    fn vault_and_log_settings_are_separate_sections(cx: &mut TestAppContext) {
+        let temp = std::env::temp_dir().join(format!("okilum-settings-{}", uuid::Uuid::new_v4()));
+        let (root, state) = (temp.join("vault"), temp.join("state"));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(root.join("start.md"), "# Start\n").unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            reader_ui_state::install(&state, cx);
+        });
+        let mut reader = None;
+        cx.add_window(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("start.md".into()),
+                        session_directory: Some(state.clone()),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let weak = reader.unwrap().downgrade();
+        cx.run_until_parked();
+        let mut settings = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                let mut settings = Settings::new(Some(weak), cx);
+                settings.section = Section::Vault;
+                settings
+            });
+            settings = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let settings = settings.unwrap();
+        let shown = |visual: &mut gpui::VisualTestContext, label: &str| {
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            // `debug_bounds` takes a static selector; leaking a few is fine here.
+            let selector: &'static str =
+                Box::leak(format!("setting-help-{label}").into_boxed_str());
+            visual.debug_bounds(selector).is_some()
+        };
+        assert!(shown(visual, "Vault colour"), "positive control");
+        assert!(shown(visual, "Templates folder"));
+        assert!(!shown(visual, "Open log source links in"));
+        assert!(!shown(visual, "Log source paths"));
+        settings.read_with(visual, |settings, _| {
+            assert!(
+                settings.template_missing,
+                "_Assets/Templates is not in the vault"
+            );
+        });
+        settings.update(visual, |settings, cx| {
+            settings.section = Section::Logs;
+            cx.notify();
+        });
+        assert!(shown(visual, "Open log source links in"));
+        assert!(shown(visual, "Log source paths"));
+        assert!(!shown(visual, "Vault colour"));
         std::fs::remove_dir_all(temp).unwrap();
     }
 
@@ -1648,7 +1758,8 @@ mod tests {
             root.view().clone().downcast::<Settings>().unwrap()
         });
         for (section, selector) in [
-            (Section::Files, "settings-section-Files"),
+            (Section::Vault, "settings-section-Vault"),
+            (Section::Logs, "settings-section-Logs"),
             (Section::Updates, "settings-section-Updates"),
             (Section::About, "settings-section-About"),
             (Section::Inbox, "settings-section-Inbox"),
@@ -1748,7 +1859,7 @@ mod tests {
         });
         settings.update(visual, |settings, cx| {
             settings.set_reader(Some(reader.downgrade()), cx);
-            settings.section = Section::Files;
+            settings.section = Section::Vault;
         });
         visual.run_until_parked();
         reader.read_with(visual, |reader, _| assert!(!reader.sidebar.show_hidden));
@@ -1801,7 +1912,7 @@ mod tests {
         visual.run_until_parked();
         settings.update(visual, |settings, cx| {
             settings.set_reader(Some(reader.downgrade()), cx);
-            settings.section = Section::Files;
+            settings.section = Section::Vault;
         });
         visual.run_until_parked();
         // The offer's own toast goes away first, so the button clicked is the Settings one.

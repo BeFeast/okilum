@@ -56,7 +56,7 @@ merged work is a baseline to preserve, not permission to claim current native PA
 | Keyboard shortcut sheet / help action | `reader_shortcuts.rs::render_shortcut_sheet` | 5, 8, 9 | Inspect filtered empty state and platform keys | S |
 | Reading controls / reading control popup | `reader_reading_controls.rs::render` | 4, 5 | Inspect text size/width alignment | S |
 | Settings: Appearance / settings navigation | `reader_settings.rs`, `Section::Appearance` | 4, 5; labelled theme segments are explicitly allowed | Inspect baseline and theme selection | S |
-| Settings: Files / settings navigation | `reader_settings.rs`, `Section::Files` | 5, 7, 8 | Inspect no-vault and populated states | S |
+| Settings: Vault / settings navigation | `reader_settings.rs`, `Section::Vault` | 5, 7, 8 | Inspect no-vault and populated states | S |
 | Settings: Updates / settings navigation | `reader_settings.rs`, `Section::Updates` | 3, 7, 9 | Inspect update states with release owner | M |
 | Settings: About / About action | `reader_settings.rs`, `Section::About` | 1: #810 moves About into Settings | Preserve single Settings window routing | S |
 | Settings: Inbox / settings navigation | `reader_settings.rs`, `Section::Inbox` | 7: explicit optional connection explanation | Inspect current disconnected state; no new integration implied | S |
