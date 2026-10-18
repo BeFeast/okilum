@@ -601,7 +601,7 @@ impl Render for SyncSettings {
                 .as_ref()
                 .and_then(|p| p.file_name())
                 .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "3. Choose a folder".into());
+                .unwrap_or_else(|| "No folder chosen yet".into());
             if order.steps_first {
                 content = content.child(div().text_sm().text_color(p.text_muted).child(
                     "Keep this vault on your computers. Fill in the three steps, then turn Sync on.",
@@ -610,9 +610,9 @@ impl Render for SyncSettings {
             content = content
                 .child(v_flex().gap_2().child("1. Sync service").child(Input::new(&self.address).disabled(self.busy)).children(self.field_error(ErrorField::Address)))
                 .child(v_flex().gap_2().child("2. This computer").child(Input::new(&self.name).disabled(self.busy)).children(self.field_error(ErrorField::Name)))
-                .child(h_flex().justify_between().child(destination).child(Button::new("sync-folder")
+                .child(v_flex().gap_2().child("3. Folder").child(h_flex().justify_between().child(div().text_sm().text_color(p.text_muted).child(destination)).child(Button::new("sync-folder")
                     .icon(IconName::Folder).ghost().disabled(self.busy).accessibility_label("Choose vault folder").tooltip("Choose an empty folder or a known copy")
-                    .on_click(cx.listener(|this, _, _, cx| this.choose_folder(cx)))))
+                    .on_click(cx.listener(|this, _, _, cx| this.choose_folder(cx))))))
                 .children(self.field_error(ErrorField::Folder))
                 .child(div().text_sm().text_color(p.text_muted).child("Start with an empty folder, or reuse a known copy. Your files stay on this computer when Sync is removed."));
             if !self.candidates.is_empty() {
