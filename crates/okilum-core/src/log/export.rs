@@ -130,6 +130,8 @@ pub struct Row<'a> {
     pub entry: &'a LogEntry,
     pub format: Format,
     pub regex: Option<&'a super::regex_text::RegexParser>,
+    /// Nonzero origin means whole-file line numbers are unknown.
+    pub window: Option<super::WindowInfo>,
     /// The file the row came from, for a view of several files.
     pub source: Option<&'a str>,
 }
@@ -269,7 +271,20 @@ pub fn json_line(row: &Row) -> String {
     if let Some(source) = row.source {
         json.push_str(&format!("\"source\":{},", string(source)));
     }
-    json.push_str(&format!("\"line\":{},", row.entry.line()));
+    if let Some(window) = row.window.filter(|window| window.offset > 0) {
+        json.push_str(&format!(
+            "\"line\":null,\"window_line\":{},\"{}\":{},",
+            row.entry.line(),
+            if window.decoded {
+                "decoded_byte_offset"
+            } else {
+                "byte_offset"
+            },
+            window.absolute_offset(row.entry)
+        ));
+    } else {
+        json.push_str(&format!("\"line\":{},", row.entry.line()));
+    }
     let Some(record) = record_of(row, bytes) else {
         json.push_str(&format!(
             "\"level\":\"raw\",\"raw\":{}}}",
@@ -360,6 +375,7 @@ mod tests {
             .entries()
             .iter()
             .map(|entry| Row {
+                window: None,
                 data,
                 entry,
                 format: index.format(),

@@ -2,6 +2,7 @@ use std::io::Write;
 use std::time::Instant;
 
 use super::*;
+use crate::log::detect::SAMPLE_LINES;
 use crate::log::{Format, Level, LogEntry};
 
 fn append(path: &Path, bytes: &[u8]) {
@@ -228,7 +229,7 @@ fn a_stale_read_never_overwrites_a_newer_state() {
         .join()
         .unwrap();
     assert!(
-        matches!(slow.change, Change::Grew(ref bytes) if !bytes.is_empty()),
+        matches!(slow.change, Change::Grew { ref bytes, .. } if !bytes.is_empty()),
         "positive control: the stale read did see the new bytes"
     );
     assert_eq!(appended(tail.apply(fast.read().unwrap())), 1..2);

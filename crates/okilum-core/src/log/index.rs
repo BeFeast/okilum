@@ -21,7 +21,7 @@ pub struct LogEntry {
 }
 
 impl LogEntry {
-    /// Byte offset of the first line in the file.
+    /// Byte offset within the snapshot. Add WindowInfo::offset for a file offset.
     pub fn offset(&self) -> u64 {
         self.offset
     }
@@ -33,7 +33,8 @@ impl LogEntry {
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
-    /// One-based number of the first line in the file, blank lines included.
+    /// One-based snapshot line, blank lines included. WindowInfo::file_line
+    /// returns None when the original file prefix is not loaded.
     pub fn line(&self) -> u64 {
         u64::from(self.line) + 1
     }
@@ -118,11 +119,20 @@ impl LogIndex {
         regex: Option<std::sync::Arc<super::regex_text::RegexParser>>,
         threads: usize,
     ) -> Self {
+        Self::build_format(data, detect::detect(data), regex, threads)
+    }
+
+    pub(super) fn build_format(
+        data: &[u8],
+        format: Format,
+        regex: Option<std::sync::Arc<super::regex_text::RegexParser>>,
+        threads: usize,
+    ) -> Self {
         let mut index = LogIndex {
             format: if regex.is_some() {
                 Format::Regex
             } else {
-                detect::detect(data)
+                format
             },
             regex,
             entries: Vec::new(),
@@ -173,7 +183,7 @@ impl LogIndex {
             })
         };
         self.entries
-            .reserve(chunks.iter().map(|c| c.entries.len()).sum());
+            .reserve_exact(chunks.iter().map(|c| c.entries.len()).sum());
         for chunk in chunks {
             let base = self.stats.lines as u32;
             self.entries

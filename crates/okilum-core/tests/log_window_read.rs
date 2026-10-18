@@ -1,11 +1,6 @@
-// Kept independent of the parser while #1388 owns the shared log modules.
-// The production module is wired into log/file and tail after that merge.
-#[path = "../src/log/window.rs"]
-mod window;
-
+use okilum_core::log::window::{self, read_tail, ReadAt, ReadBudget};
 use std::cell::{Cell, RefCell};
 use std::io;
-use window::{read_tail, ReadAt, ReadBudget};
 
 struct Guarded {
     len: u64,

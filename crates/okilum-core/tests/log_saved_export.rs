@@ -31,6 +31,7 @@ fn export(file: &LogFile, rows: &[u32], format: ExportFormat) -> Vec<u8> {
     let mut out = Vec::new();
     for &row in rows {
         let row = Row {
+            window: Some(file.window()),
             data: file.bytes(),
             entry: &file.index().entries()[row as usize],
             format: file.index().format(),

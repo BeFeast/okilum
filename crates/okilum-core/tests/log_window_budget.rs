@@ -1,8 +1,5 @@
-#[path = "../src/log/window_budget.rs"]
-mod window_budget;
-
+use okilum_core::log::window_budget::MemoryBudget;
 use std::sync::{Arc, Barrier};
-use window_budget::MemoryBudget;
 
 #[test]
 fn retained_background_snapshots_cannot_bypass_the_budget() {

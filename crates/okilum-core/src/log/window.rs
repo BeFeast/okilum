@@ -9,7 +9,7 @@ use std::io;
 
 pub const WINDOW_BYTES: usize = 64 * 1024 * 1024;
 pub const WINDOW_LINES: usize = 262_144;
-pub const WINDOW_LINE_BYTES: usize = 1024 * 1024;
+pub const WINDOW_LINE_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Copy, Debug)]
 pub struct ReadBudget {
@@ -162,7 +162,7 @@ fn read_into(source: &impl ReadAt, bytes: &mut [u8], start: u64) -> io::Result<u
     Ok(filled)
 }
 
-fn bound_lines(window: &mut ReadWindow, budget: ReadBudget) {
+pub(super) fn bound_lines(window: &mut ReadWindow, budget: ReadBudget) {
     let mut lines = usize::from(!window.bytes.is_empty() && !window.bytes.ends_with(b"\n"));
     let mut keep = 0;
     for at in memchr::memrchr_iter(b'\n', &window.bytes) {

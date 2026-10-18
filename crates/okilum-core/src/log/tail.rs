@@ -1,146 +1,90 @@
-//! Follow mode for one log file (#602, slice 5).
-//!
-//! A [`LogTail`] holds the bytes read so far from the followed file and their
-//! [`LogIndex`]. It owns no thread and no watcher: the caller polls it, at
-//! [`LogTail::interval`], and decides where each step runs.
-//!
-//! A poll has two halves so the slow one can leave the UI thread:
-//!
-//! - [`LogTail::begin_poll`] captures what is held (a cheap, `Send` request);
-//!   [`PollRequest::read`] does all file IO and can run on any worker.
-//! - [`LogTail::apply`] indexes the new bytes into the held index. A read taken
-//!   at an older generation is discarded as [`TailEvent::Stale`], so a slow
-//!   poll that finishes late never overwrites a newer state.
-//!
-//! [`LogTail::poll`] does both in place.
-//!
-//! What a read can find:
-//!
-//! - **Append.** Only the new bytes are read and indexed; old entries are not
-//!   parsed again. A last line without its newline is held back, not indexed,
-//!   until the newline arrives.
-//! - **Truncate** (the file shrank, or the bytes just before the read offset
-//!   changed: copy-truncate followed by a larger rewrite). The held content is
-//!   finished and handed back; indexing restarts at byte 0.
-//! - **Rotate** (the path now names a different file: rename and recreate).
-//!   The old file is read to its end and finished, then the new one is
-//!   followed from byte 0. Identity is device and inode on Unix, volume serial
-//!   number and file index on Windows.
-//!
-//! The followed file is read with positional reads through a shared-mode
-//! handle and is never mapped, so the writer stays free to truncate, rename or
-//! delete it (docs/research/602-hl-log-viewer.md, §3.6). Nothing is written.
-
-use std::fs::File;
-use std::io;
-use std::ops::Range;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-
+//! Bounded, incremental Follow over shared immutable snapshots (#1389).
+use super::window::{ReadAt, WINDOW_BYTES};
+use super::window_budget::Reservation;
+use super::{LogIndex, LogSnapshot, Record, WindowInfo};
 use anyhow::{ensure, Context, Result};
-
-use super::detect::{self, SAMPLE_BYTES, SAMPLE_LINES};
-use super::{LogIndex, Record, MAX_LOG_BYTES};
-
-/// Poll interval for a file on a local disk.
+use std::{
+    fs::File,
+    io,
+    ops::Range,
+    path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    time::{Duration, Instant},
+};
 pub const LOCAL_POLL_INTERVAL: Duration = Duration::from_millis(250);
-/// Poll interval for a file on a network root, where every poll is a round
-/// trip and native change events from other clients are not reliable.
 pub const NETWORK_POLL_INTERVAL: Duration = Duration::from_secs(2);
-/// Bytes before the read offset compared on every growing poll. A file that
-/// was truncated and rewritten past the old offset between two polls differs
-/// there; one that rewrote these bytes identically is indistinguishable.
+pub(super) const POLL_BYTES: usize = 4 * 1024 * 1024;
 const GUARD_BYTES: usize = 64;
-
-/// Generations are unique in the process, so a read taken from one follower
-/// can never be accepted by another.
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
-
 fn next_generation() -> u64 {
     NEXT_GENERATION.fetch_add(1, Ordering::Relaxed)
 }
-
-/// The poll interval suited to `path`'s file system. It probes the file
-/// system, so call it off the UI thread.
 pub fn poll_interval_for(path: &Path) -> Duration {
-    let root = path.parent().unwrap_or(path);
-    if crate::watch::is_network_root(root) {
+    if crate::watch::is_network_root(path.parent().unwrap_or(path)) {
         NETWORK_POLL_INTERVAL
     } else {
         LOCAL_POLL_INTERVAL
     }
 }
-
-/// Bytes and index of a file incarnation that follow mode finished, after a
-/// truncation or rotation. Its last line is indexed even without a newline.
 #[derive(Debug)]
 pub struct LogSegment {
-    bytes: Vec<u8>,
-    index: LogIndex,
+    snapshot: Arc<LogSnapshot>,
 }
-
 impl LogSegment {
     pub fn bytes(&self) -> &[u8] {
-        &self.bytes
+        self.snapshot.bytes()
     }
     pub fn index(&self) -> &LogIndex {
-        &self.index
+        self.snapshot.index()
+    }
+    pub fn window(&self) -> WindowInfo {
+        self.snapshot.window()
+    }
+    pub fn snapshot(&self) -> Arc<LogSnapshot> {
+        self.snapshot.clone()
     }
     pub fn is_empty(&self) -> bool {
-        self.bytes.is_empty()
+        self.bytes().is_empty()
     }
-    /// The exact bytes of entry `index`, without its line ending.
     pub fn raw(&self, index: usize) -> Option<&[u8]> {
-        self.index.raw(&self.bytes, index)
+        self.snapshot.raw(index)
     }
-    /// Entry `index` decoded into fields; `None` for an unparsed line.
     pub fn record(&self, index: usize) -> Option<Record> {
-        self.index.record(self.raw(index)?)
+        self.snapshot.record(index)
     }
 }
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResetReason {
-    /// Same file, but it shrank or its earlier bytes changed.
     Truncated,
-    /// The path names a different file now.
     Rotated,
 }
-
 #[derive(Debug)]
 pub enum TailEvent {
-    /// No new entry. Bytes of an unfinished line may have been held back.
     Unchanged,
-    /// The read was taken at an older generation and was discarded. Poll again.
     Stale,
-    /// `entries` are new. With `reindexed`, the format verdict changed while
-    /// the file was still shorter than the detection sample, and every earlier
-    /// entry was indexed again (the entry count before `entries` is unchanged).
-    /// With `grown`, the entry just before `entries` took new lines as its
-    /// continuation (block.rs): its range and row changed, its place did not.
+    /// No state was advanced: retry after background snapshots release memory.
+    Deferred(String),
+    /// The loaded prefix was evicted. All window-relative entry IDs changed.
+    WindowChanged,
     Appended {
         entries: Range<usize>,
         reindexed: bool,
         grown: bool,
     },
-    /// The previous content was finished and handed back; the index restarted
-    /// at byte 0 and `entries` are what the file holds now.
     Reset {
         reason: ResetReason,
         previous: LogSegment,
         entries: Range<usize>,
     },
 }
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct FileId {
     device: u64,
     index: u64,
 }
-
-/// What a poll needs from the follower. Holds no borrow; send it to a worker.
 pub struct PollRequest {
     generation: u64,
     path: PathBuf,
@@ -148,146 +92,147 @@ pub struct PollRequest {
     id: FileId,
     offset: u64,
     guard: Vec<u8>,
+    regex: Option<Arc<super::regex_text::RegexParser>>,
 }
-
-/// The result of [`PollRequest::read`], to hand to [`LogTail::apply`].
 pub struct PollRead {
     generation: u64,
     missing: bool,
     change: Change,
+    _lease: Option<Reservation>,
 }
-
 impl PollRead {
     pub fn generation(&self) -> u64 {
         self.generation
     }
 }
-
 enum Change {
     None,
-    Grew(Vec<u8>),
-    Truncated(Vec<u8>),
-    Rotated {
-        old_tail: Vec<u8>,
+    Grew {
+        bytes: Vec<u8>,
+        end: u64,
+        file_len: u64,
+        guard: Vec<u8>,
+    },
+    Window {
+        snapshot: Arc<LogSnapshot>,
+        guard: Vec<u8>,
+    },
+    Reset {
+        reason: ResetReason,
+        snapshot: Arc<LogSnapshot>,
+        guard: Vec<u8>,
         file: Arc<File>,
         id: FileId,
-        bytes: Vec<u8>,
+        old_snapshot: Option<Arc<LogSnapshot>>,
+        old_tail: Vec<u8>,
+        old_end: u64,
+        old_len: u64,
     },
 }
-
 pub struct LogTail {
     path: PathBuf,
     file: Arc<File>,
     id: FileId,
-    /// Everything read from the current file incarnation, including an
-    /// unfinished last line after `index.bytes()`.
-    bytes: Vec<u8>,
-    index: LogIndex,
-    /// Whether the format verdict has seen its whole sample and is final.
-    settled: bool,
+    snapshot: Arc<LogSnapshot>,
+    guard: Vec<u8>,
     missing: bool,
     epoch: u64,
     generation: u64,
     interval: Duration,
     last_poll: Option<Instant>,
+    skip_partial: bool,
 }
-
 impl LogTail {
-    /// Opens `path` and reads what it holds now. Nothing is written.
     pub fn open(path: &Path) -> Result<Self> {
         ensure!(
             super::compression(path).is_none(),
             "A compressed log does not grow and cannot be followed"
         );
-        let file = open_shared(path).context("The log file cannot be opened")?;
-        let id = identity(&file).context("The log file cannot be inspected")?;
-        let mut tail = Self {
+        let file = Arc::new(open_shared(path).context("The log file cannot be opened")?);
+        let id = identity(&file)?;
+        let snapshot = LogSnapshot::read(&file, true, None)?;
+        let guard = snapshot_guard(&file, &snapshot)?;
+        let skip_partial = snapshot.bytes().is_empty()
+            && snapshot.window().offset > 0
+            && guard.last() != Some(&b'\n');
+        Ok(Self {
             path: path.to_owned(),
-            file: Arc::new(file),
+            file,
             id,
-            bytes: Vec::new(),
-            index: LogIndex::build(&[]),
-            settled: false,
+            snapshot,
+            guard,
             missing: false,
             epoch: 0,
             generation: next_generation(),
             interval: LOCAL_POLL_INTERVAL,
-            last_poll: None,
-        };
-        tail.poll()?;
-        Ok(tail)
+            last_poll: Some(Instant::now()),
+            skip_partial,
+        })
     }
-
+    pub fn with_regex(mut self, regex: Arc<super::regex_text::RegexParser>) -> Result<Self> {
+        LogSnapshot::mutable(&mut self.snapshot)?.set_regex(regex);
+        Ok(self)
+    }
     pub fn with_interval(mut self, interval: Duration) -> Self {
         self.interval = interval;
         self
     }
-
     pub fn path(&self) -> &Path {
         &self.path
     }
-    /// The bytes read so far, an unfinished last line included.
     pub fn bytes(&self) -> &[u8] {
-        &self.bytes
+        self.snapshot.bytes()
     }
-    /// The index over the complete lines of [`Self::bytes`].
     pub fn index(&self) -> &LogIndex {
-        &self.index
+        self.snapshot.index()
     }
-    /// An unfinished last line, held until its newline arrives.
+    pub fn window(&self) -> WindowInfo {
+        self.snapshot.window()
+    }
+    pub fn snapshot(&self) -> Arc<LogSnapshot> {
+        self.snapshot.clone()
+    }
     pub fn pending(&self) -> &[u8] {
-        &self.bytes[self.index.bytes() as usize..]
+        &self.bytes()[self.index().bytes() as usize..]
     }
-    /// The exact bytes of entry `index`, without its line ending.
     pub fn raw(&self, index: usize) -> Option<&[u8]> {
-        self.index.raw(&self.bytes, index)
+        self.snapshot.raw(index)
     }
-    /// Entry `index` decoded into fields; `None` for an unparsed line.
     pub fn record(&self, index: usize) -> Option<Record> {
-        self.index.record(self.raw(index)?)
+        self.snapshot.record(index)
     }
-    /// Counts truncations and rotations since opening.
     pub fn epoch(&self) -> u64 {
         self.epoch
     }
-    /// Changes whenever the held state changes. A read taken at another
-    /// generation is stale.
     pub fn generation(&self) -> u64 {
         self.generation
     }
-    /// The path named no file at the last poll (mid-rotation, or deleted).
-    /// The open file is still followed meanwhile.
     pub fn is_missing(&self) -> bool {
         self.missing
     }
     pub fn interval(&self) -> Duration {
         self.interval
     }
-    /// Whether a poll is due at `now`, one interval after the last one began.
     pub fn is_due(&self, now: Instant) -> bool {
         self.last_poll
             .is_none_or(|last| now.saturating_duration_since(last) >= self.interval)
     }
-
-    /// Reads and applies in place.
     pub fn poll(&mut self) -> Result<TailEvent> {
         let read = self.begin_poll().read()?;
         Ok(self.apply(read))
     }
-
     pub fn begin_poll(&mut self) -> PollRequest {
         self.last_poll = Some(Instant::now());
-        let end = self.bytes.len();
         PollRequest {
             generation: self.generation,
             path: self.path.clone(),
-            file: Arc::clone(&self.file),
+            file: self.file.clone(),
             id: self.id,
-            offset: end as u64,
-            guard: self.bytes[end.saturating_sub(GUARD_BYTES)..].to_vec(),
+            offset: self.window().end,
+            guard: self.guard.clone(),
+            regex: self.index().regex().cloned(),
         }
     }
-
     pub fn apply(&mut self, read: PollRead) -> TailEvent {
         if read.generation != self.generation {
             return TailEvent::Stale;
@@ -295,214 +240,265 @@ impl LogTail {
         self.missing = read.missing;
         match read.change {
             Change::None => TailEvent::Unchanged,
-            Change::Grew(bytes) => {
+            Change::Grew {
+                bytes,
+                end,
+                file_len,
+                guard,
+            } => {
+                let before = self.index().len();
+                let snapshot = match LogSnapshot::mutable(&mut self.snapshot) {
+                    Ok(snapshot) => snapshot,
+                    Err(e) => return TailEvent::Deferred(format!("{e:#}")),
+                };
+                let mut incoming = bytes.as_slice();
+                if self.skip_partial {
+                    if let Err(error) = snapshot.prepare_skip_append(incoming.len()) {
+                        return TailEvent::Deferred(format!("{error:#}"));
+                    }
+                    let skip = memchr::memchr(b'\n', incoming).map_or(incoming.len(), |at| at + 1);
+                    snapshot.skip_to(end - incoming.len() as u64 + skip as u64, file_len);
+                    self.skip_partial = skip == incoming.len() && incoming.last() != Some(&b'\n');
+                    incoming = &incoming[skip..];
+                }
+                let (slid, grown, reindexed) = match snapshot.append(incoming, end, file_len) {
+                    Ok(result) => result,
+                    Err(e) => return TailEvent::Deferred(format!("{e:#}")),
+                };
+                self.skip_partial = snapshot.bytes().is_empty()
+                    && snapshot.window().offset > 0
+                    && guard.last() != Some(&b'\n');
+                self.guard = guard;
                 self.generation = next_generation();
-                self.bytes.extend_from_slice(&bytes);
-                self.index_complete_lines()
+                if slid {
+                    TailEvent::WindowChanged
+                } else if self.index().len() == before && !grown && !reindexed {
+                    TailEvent::Unchanged
+                } else {
+                    TailEvent::Appended {
+                        entries: before..self.index().len(),
+                        reindexed: reindexed && before > 0,
+                        grown,
+                    }
+                }
             }
-            Change::Truncated(bytes) => self.reset(ResetReason::Truncated, &[], None, bytes),
-            Change::Rotated {
-                old_tail,
+            Change::Window { snapshot, guard } => {
+                self.snapshot = snapshot;
+                self.guard = guard;
+                self.skip_partial = self.bytes().is_empty() && self.guard.last() != Some(&b'\n');
+                self.generation = next_generation();
+                TailEvent::WindowChanged
+            }
+            Change::Reset {
+                reason,
+                snapshot,
+                guard,
                 file,
                 id,
-                bytes,
-            } => self.reset(ResetReason::Rotated, &old_tail, Some((file, id)), bytes),
-        }
-    }
-
-    fn index_complete_lines(&mut self) -> TailEvent {
-        let start = self.index.bytes() as usize;
-        let Some(at) = memchr::memrchr(b'\n', &self.bytes[start..]) else {
-            return TailEvent::Unchanged;
-        };
-        let before = self.index.len();
-        let (rebuilt, grown) = self.index_to(start + at + 1);
-        let reindexed = rebuilt && before > 0;
-        if self.index.len() == before && !reindexed && !grown {
-            return TailEvent::Unchanged;
-        }
-        TailEvent::Appended {
-            entries: before..self.index.len(),
-            reindexed,
-            grown,
-        }
-    }
-
-    /// Indexes the held bytes up to `end`. Returns whether the whole index
-    /// was rebuilt because the format verdict changed, and whether the last
-    /// entry took new lines.
-    pub fn with_regex(mut self, regex: Arc<super::regex_text::RegexParser>) -> Self {
-        let end = self.index.bytes() as usize;
-        self.index = LogIndex::build_regex(&self.bytes[..end], regex);
-        self.settled = true;
-        self
-    }
-
-    fn index_to(&mut self, end: usize) -> (bool, bool) {
-        let mut rebuilt = false;
-        let mut grown = false;
-        if !self.settled && self.index.regex().is_none() {
-            // The verdict reads at most the first SAMPLE_LINES non-blank lines
-            // or SAMPLE_BYTES, so re-detecting here touches only a short file.
-            let format = detect::detect(&self.bytes[..end]);
-            if format != self.index.format() {
-                self.index = LogIndex::build(&self.bytes[..end]);
-                rebuilt = true;
+                old_snapshot,
+                old_tail,
+                old_end,
+                old_len,
+            } => {
+                // A backlog larger than one poll is captured as a bounded
+                // final suffix, never an arbitrary prefix cut mid-record.
+                let previous = if let Some(old) = old_snapshot {
+                    self.snapshot = snapshot;
+                    LogSegment { snapshot: old }
+                } else {
+                    let old = match LogSnapshot::mutable(&mut self.snapshot) {
+                        Ok(old) => old,
+                        Err(e) => return TailEvent::Deferred(format!("{e:#}")),
+                    };
+                    if !old_tail.is_empty() {
+                        let mut incoming = old_tail.as_slice();
+                        if self.skip_partial {
+                            if let Err(error) = old.prepare_skip_append(incoming.len()) {
+                                return TailEvent::Deferred(format!("{error:#}"));
+                            }
+                            let skip =
+                                memchr::memchr(b'\n', incoming).map_or(incoming.len(), |at| at + 1);
+                            old.skip_to(old_end - incoming.len() as u64 + skip as u64, old_len);
+                            incoming = &incoming[skip..];
+                        }
+                        if let Err(error) = old.append(incoming, old_end, old_len) {
+                            return TailEvent::Deferred(format!("{error:#}"));
+                        }
+                    }
+                    old.finish();
+                    LogSegment {
+                        snapshot: std::mem::replace(&mut self.snapshot, snapshot),
+                    }
+                };
+                self.guard = guard;
+                self.file = file;
+                self.id = id;
+                self.skip_partial = self.bytes().is_empty() && self.guard.last() != Some(&b'\n');
+                self.epoch += 1;
+                self.generation = next_generation();
+                TailEvent::Reset {
+                    reason,
+                    previous,
+                    entries: 0..self.index().len(),
+                }
             }
-        }
-        if !rebuilt {
-            grown = self.index.extend(&self.bytes, end);
-        }
-        self.settled = end >= SAMPLE_BYTES || self.index.len() >= SAMPLE_LINES;
-        (rebuilt, grown)
-    }
-
-    fn reset(
-        &mut self,
-        reason: ResetReason,
-        old_tail: &[u8],
-        file: Option<(Arc<File>, FileId)>,
-        bytes: Vec<u8>,
-    ) -> TailEvent {
-        // Finish the old incarnation: its last line is complete now, newline
-        // or not, and nothing that was read is dropped.
-        self.bytes.extend_from_slice(old_tail);
-        self.index_to(self.bytes.len());
-        let next = self.index.regex().cloned().map_or_else(
-            || LogIndex::build(&[]),
-            |regex| LogIndex::build_regex(&[], regex),
-        );
-        let previous = LogSegment {
-            bytes: std::mem::replace(&mut self.bytes, bytes),
-            index: std::mem::replace(&mut self.index, next),
-        };
-        if let Some((file, id)) = file {
-            self.file = file;
-            self.id = id;
-        }
-        self.settled = false;
-        self.epoch += 1;
-        self.generation = next_generation();
-        self.index_complete_lines();
-        TailEvent::Reset {
-            reason,
-            previous,
-            entries: 0..self.index.len(),
         }
     }
 }
-
 impl PollRequest {
-    /// Does the file IO of one poll. Blocking; run it wherever the caller
-    /// likes. The follower is not touched.
     pub fn read(self) -> Result<PollRead> {
         let at_path = path_identity(&self.path).context("The log file cannot be inspected")?;
-        let change = match at_path {
-            Some(id) if id != self.id => self.rotated()?,
-            _ => self.same_file()?,
+        let missing = at_path.is_none();
+        let (change, lease) = if at_path.is_some_and(|id| id != self.id) {
+            let file =
+                Arc::new(open_shared(&self.path).context("The rotated log cannot be opened")?);
+            let id = identity(&file)?;
+            let old_len = self.file.metadata()?.len();
+            let old_end = old_len.min(self.offset + POLL_BYTES as u64);
+            let large_backlog = old_len.saturating_sub(self.offset) > POLL_BYTES as u64;
+            let lease = super::snapshot::reserve(if large_backlog {
+                1
+            } else {
+                old_end.saturating_sub(self.offset) as usize
+            })?;
+            let old_snapshot = if large_backlog {
+                let old = LogSnapshot::read(&self.file, false, self.regex.clone())?;
+                snapshot_guard(&self.file, &old)?;
+                Some(old)
+            } else {
+                None
+            };
+            let old_tail = if large_backlog {
+                Vec::new()
+            } else {
+                read_range(&self.file, self.offset, old_end.max(self.offset))?
+            };
+            let snapshot = LogSnapshot::read(&file, true, self.regex.clone())?;
+            let guard = snapshot_guard(&file, &snapshot)?;
+            (
+                Change::Reset {
+                    reason: ResetReason::Rotated,
+                    snapshot,
+                    guard,
+                    file,
+                    id,
+                    old_snapshot,
+                    old_tail,
+                    old_end,
+                    old_len,
+                },
+                Some(lease),
+            )
+        } else {
+            let len = self.file.metadata()?.len();
+            let same_guard = len >= self.offset && guard_at(&self.file, self.offset)? == self.guard;
+            if !same_guard {
+                let snapshot = LogSnapshot::read(&self.file, true, self.regex.clone())?;
+                let guard = snapshot_guard(&self.file, &snapshot)?;
+                (
+                    Change::Reset {
+                        reason: ResetReason::Truncated,
+                        snapshot,
+                        guard,
+                        file: self.file.clone(),
+                        id: self.id,
+                        old_snapshot: None,
+                        old_tail: Vec::new(),
+                        old_end: self.offset,
+                        old_len: self.offset,
+                    },
+                    None,
+                )
+            } else if len == self.offset {
+                (Change::None, None)
+            } else if len - self.offset > WINDOW_BYTES as u64 {
+                let snapshot = LogSnapshot::read(&self.file, true, self.regex.clone())?;
+                let guard = snapshot_guard(&self.file, &snapshot)?;
+                (Change::Window { snapshot, guard }, None)
+            } else {
+                let end = len.min(self.offset + POLL_BYTES as u64);
+                let lease = super::snapshot::reserve((end - self.offset) as usize)?;
+                let bytes = read_range(&self.file, self.offset, end)?;
+                let end = self.offset + bytes.len() as u64;
+                if guard_at(&self.file, self.offset)? != self.guard {
+                    let snapshot = LogSnapshot::read(&self.file, true, self.regex.clone())?;
+                    let guard = snapshot_guard(&self.file, &snapshot)?;
+                    return Ok(PollRead {
+                        generation: self.generation,
+                        missing,
+                        change: Change::Reset {
+                            reason: ResetReason::Truncated,
+                            snapshot,
+                            guard,
+                            file: self.file.clone(),
+                            id: self.id,
+                            old_snapshot: None,
+                            old_tail: Vec::new(),
+                            old_end: self.offset,
+                            old_len: self.offset,
+                        },
+                        _lease: Some(lease),
+                    });
+                }
+                let guard = guard_at(&self.file, end)?;
+                (
+                    Change::Grew {
+                        bytes,
+                        end,
+                        file_len: len,
+                        guard,
+                    },
+                    Some(lease),
+                )
+            }
         };
         Ok(PollRead {
             generation: self.generation,
-            missing: at_path.is_none(),
+            missing,
             change,
-        })
-    }
-
-    fn same_file(&self) -> Result<Change> {
-        let len = checked_len(&self.file)?;
-        if len < self.offset {
-            return Ok(Change::Truncated(read_all(&self.file)?));
-        }
-        if len == self.offset {
-            return Ok(Change::None);
-        }
-        // Read the guard bytes again with the new ones; one read either way.
-        let start = self.offset - self.guard.len() as u64;
-        let mut bytes =
-            read_range(&self.file, start, len).context("The log file cannot be read")?;
-        if !bytes.starts_with(&self.guard) {
-            return Ok(Change::Truncated(read_all(&self.file)?));
-        }
-        bytes.drain(..self.guard.len());
-        Ok(Change::Grew(bytes))
-    }
-
-    fn rotated(&self) -> Result<Change> {
-        // A writer keeps appending to the renamed file until it reopens the
-        // path; read the old file to its end before leaving it.
-        let old_len = checked_len(&self.file)?;
-        let old_tail = if old_len > self.offset {
-            read_range(&self.file, self.offset, old_len).context("The log file cannot be read")?
-        } else {
-            Vec::new()
-        };
-        let file = open_shared(&self.path).context("The rotated log file cannot be opened")?;
-        let id = identity(&file).context("The rotated log file cannot be inspected")?;
-        let bytes = read_all(&file)?;
-        Ok(Change::Rotated {
-            old_tail,
-            file: Arc::new(file),
-            id,
-            bytes,
+            _lease: lease,
         })
     }
 }
-
-fn checked_len(file: &File) -> Result<u64> {
-    let len = file
-        .metadata()
-        .context("The log file cannot be inspected")?
-        .len();
-    ensure!(
-        len <= MAX_LOG_BYTES,
-        "The log file is larger than the viewer's {} GiB limit",
-        MAX_LOG_BYTES >> 30
-    );
-    Ok(len)
+fn snapshot_guard(file: &File, snapshot: &LogSnapshot) -> io::Result<Vec<u8>> {
+    let guard = guard_at(file, snapshot.window().end)?;
+    let suffix = snapshot.bytes();
+    let n = guard.len().min(suffix.len());
+    if guard[guard.len() - n..] != suffix[suffix.len() - n..] {
+        return Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "Log changed while reading the window; retry",
+        ));
+    }
+    Ok(guard)
 }
-
-fn read_all(file: &File) -> Result<Vec<u8>> {
-    let len = checked_len(file)?;
-    read_range(file, 0, len).context("The log file cannot be read")
+fn guard_at(file: &File, end: u64) -> io::Result<Vec<u8>> {
+    read_range(file, end.saturating_sub(GUARD_BYTES as u64), end)
 }
-
-/// Reads `start..end` with positional reads, shorter if the file ends first.
-/// The handle's cursor is never used, so requests can share it.
 fn read_range(file: &File, start: u64, end: u64) -> io::Result<Vec<u8>> {
+    if end.saturating_sub(start) > (POLL_BYTES + GUARD_BYTES) as u64 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Unbounded log poll rejected",
+        ));
+    }
     let mut bytes = vec![0; end.saturating_sub(start) as usize];
-    let mut filled = 0;
-    while filled < bytes.len() {
-        match read_at(file, &mut bytes[filled..], start + filled as u64) {
+    let mut n = 0;
+    while n < bytes.len() {
+        match file.read_at(&mut bytes[n..], start + n as u64) {
             Ok(0) => break,
-            Ok(n) => filled += n,
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(error) => return Err(error),
+            Ok(k) => n += k,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
         }
     }
-    bytes.truncate(filled);
+    bytes.truncate(n);
     Ok(bytes)
-}
-
-#[cfg(unix)]
-fn read_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<usize> {
-    std::os::unix::fs::FileExt::read_at(file, buf, offset)
-}
-
-#[cfg(windows)]
-fn read_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<usize> {
-    std::os::windows::fs::FileExt::seek_read(file, buf, offset)
-}
-
-#[cfg(not(any(unix, windows)))]
-fn read_at(mut file: &File, buf: &mut [u8], offset: u64) -> io::Result<usize> {
-    use std::io::{Read, Seek, SeekFrom};
-    file.seek(SeekFrom::Start(offset))?;
-    file.read(buf)
 }
 
 /// Read-only, and on Windows shared for read, write and delete, so the writer
 /// can still truncate, rename or delete the file while it is followed.
-fn open_shared(path: &Path) -> io::Result<File> {
+pub(super) fn open_shared(path: &Path) -> io::Result<File> {
     let mut options = File::options();
     options.read(true);
     #[cfg(windows)]

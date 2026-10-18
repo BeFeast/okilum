@@ -57,6 +57,38 @@ impl MemoryBudget {
     }
 }
 
+impl Reservation {
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
+    /// Adjust before changing allocation capacity; failure keeps the old lease.
+    pub fn resize(&mut self, bytes: usize) -> bool {
+        if bytes > self.pool.limit {
+            return false;
+        }
+        if bytes > self.bytes {
+            let extra = bytes - self.bytes;
+            if self
+                .pool
+                .used
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+                    used.checked_add(extra)
+                        .filter(|&next| next <= self.pool.limit)
+                })
+                .is_err()
+            {
+                return false;
+            }
+        } else {
+            self.pool
+                .used
+                .fetch_sub(self.bytes - bytes, Ordering::AcqRel);
+        }
+        self.bytes = bytes;
+        true
+    }
+}
+
 impl Drop for Reservation {
     fn drop(&mut self) {
         self.pool.used.fetch_sub(self.bytes, Ordering::AcqRel);

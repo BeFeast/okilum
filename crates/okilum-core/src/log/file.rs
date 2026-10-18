@@ -1,174 +1,107 @@
-//! A log file opened read-only, its bytes, and its index.
-
-use std::path::{Path, PathBuf};
-
+//! Read-only log files backed by leased, bounded immutable snapshots.
+use super::{LogIndex, LogSnapshot, Record, WindowInfo};
 use anyhow::{ensure, Context, Result};
-
-use super::{LogIndex, Record};
-
-/// Files up to this size use a vector; larger ones use an anonymous mapped
-/// snapshot. Neither storage borrows the mutable canonical file's pages.
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+/// Legacy threshold retained for callers; snapshots now use bounded reads.
 pub const MAP_THRESHOLD_BYTES: u64 = 32 * 1024 * 1024;
-/// Upper bound for one in-memory index. Larger files are refused with a
-/// message, never truncated silently.
+/// Legacy public constant; large uncompressed files now use bounded tails.
 pub const MAX_LOG_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-
-enum Bytes {
-    Owned(Vec<u8>),
-    Mapped { map: memmap2::Mmap, len: usize },
-}
-
-impl std::ops::Deref for Bytes {
-    type Target = [u8];
-    fn deref(&self) -> &[u8] {
-        match self {
-            Bytes::Owned(bytes) => bytes,
-            Bytes::Mapped { map, len } => &map[..*len],
-        }
-    }
-}
 
 pub struct LogFile {
     path: PathBuf,
-    bytes: Bytes,
-    index: LogIndex,
+    snapshot: Arc<LogSnapshot>,
 }
-
 impl LogFile {
-    /// Opens and indexes `path`. Nothing is written anywhere.
     pub fn open(path: &Path) -> Result<Self> {
-        Self::open_with(path, MAP_THRESHOLD_BYTES)
-    }
-
-    fn open_with(path: &Path, map_threshold: u64) -> Result<Self> {
-        let file = std::fs::File::open(path).context("The log file cannot be opened")?;
-        if let Some(ext) = super::compression(path) {
-            let bytes = decompress(file, ext)?;
-            let index = LogIndex::build(&bytes);
-            return Ok(Self {
-                path: path.to_owned(),
-                bytes: Bytes::Owned(bytes),
-                index,
-            });
-        }
-        let len = file
-            .metadata()
-            .context("The log file cannot be inspected")?
-            .len();
-        ensure!(
-            len <= MAX_LOG_BYTES,
-            "The log file is larger than the viewer's {} GiB limit",
-            MAX_LOG_BYTES >> 30
-        );
-        let bytes = if len > map_threshold {
-            use std::io::Read;
-            // A canonical log can be truncated or overwritten at any time.
-            // Copy into anonymous pages before publishing a read-only map:
-            // file-backed maps can fault after truncation and expose changed
-            // bytes that no longer match their already-published index.
-            let mut map = memmap2::MmapOptions::new()
-                .len(len as usize)
-                .map_anon()
-                .context("The log snapshot cannot be allocated")?;
-            let mut source = (&file).take(len);
-            let mut copied = 0;
-            while copied < map.len() {
-                match source.read(&mut map[copied..]) {
-                    Ok(0) => break,
-                    Ok(n) => copied += n,
-                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                    Err(error) => return Err(error).context("The log file cannot be read"),
-                }
-            }
-            let map = map
-                .make_read_only()
-                .context("The log snapshot cannot be protected")?;
-            Bytes::Mapped { map, len: copied }
+        let file = super::tail::open_shared(path).context("The log file cannot be opened")?;
+        let snapshot = if let Some(ext) = super::compression(path) {
+            let lease = super::snapshot::reserve(super::window::WINDOW_BYTES + 40 * 1024 * 1024)?;
+            LogSnapshot::decoded(decompress(file, ext)?, lease)?
         } else {
-            use std::io::Read;
-            let mut bytes = Vec::with_capacity(len as usize);
-            (&file)
-                .take(len)
-                .read_to_end(&mut bytes)
-                .context("The log file cannot be read")?;
-            Bytes::Owned(bytes)
+            LogSnapshot::read(&file, false, None)?
         };
-        let index = LogIndex::build(&bytes);
         Ok(Self {
             path: path.to_owned(),
-            bytes,
-            index,
+            snapshot,
         })
     }
-
-    /// Rebuilds derived data over the same immutable snapshot.
-    pub fn with_regex(mut self, regex: std::sync::Arc<super::regex_text::RegexParser>) -> Self {
-        self.index = LogIndex::build_regex(&self.bytes, regex);
-        self
+    pub fn with_regex(mut self, regex: Arc<super::regex_text::RegexParser>) -> Result<Self> {
+        LogSnapshot::mutable(&mut self.snapshot)?.set_regex(regex);
+        Ok(self)
     }
-
     pub fn path(&self) -> &Path {
         &self.path
     }
     pub fn bytes(&self) -> &[u8] {
-        &self.bytes
+        self.snapshot.bytes()
     }
     pub fn index(&self) -> &LogIndex {
-        &self.index
+        self.snapshot.index()
     }
-    /// Whether the bytes were decoded from a compressed file, which does not
-    /// grow and cannot be followed.
+    pub fn window(&self) -> WindowInfo {
+        self.snapshot.window()
+    }
+    pub fn snapshot(&self) -> Arc<LogSnapshot> {
+        self.snapshot.clone()
+    }
     pub fn is_compressed(&self) -> bool {
         super::compression(&self.path).is_some()
     }
+    /// Bounded owned snapshots remain valid across canonical truncation.
     pub fn is_mapped(&self) -> bool {
-        matches!(self.bytes, Bytes::Mapped { .. })
+        false
     }
-    /// The exact bytes of entry `index`, without its line ending.
     pub fn raw(&self, index: usize) -> Option<&[u8]> {
-        self.index.raw(&self.bytes, index)
+        self.snapshot.raw(index)
     }
-    /// Entry `index` decoded into fields; `None` for an unparsed line.
     pub fn record(&self, index: usize) -> Option<Record> {
-        self.index.record(self.raw(index)?)
+        self.snapshot.record(index)
     }
 }
 
-/// The decoded bytes of a compressed log, in memory, up to the viewer's
-/// size limit. Concatenated gzip and bzip2 members (what `cat a.gz b.gz`
-/// and some rotators write) are read to the end.
+/// Compressed streams cannot seek to a suffix without scanning their prefix.
+/// Keep ordinary small streams, refuse an expansion beyond the memory budget.
 fn decompress(file: std::fs::File, ext: &str) -> Result<Vec<u8>> {
     use std::io::Read;
     let file = std::io::BufReader::new(file);
-    let reader: Box<dyn Read> = match ext.to_ascii_lowercase().as_str() {
+    let mut reader: Box<dyn Read> = match ext.to_ascii_lowercase().as_str() {
         "gz" => Box::new(flate2::read::MultiGzDecoder::new(file)),
-        "zst" => Box::new(
-            zstd::stream::read::Decoder::with_buffer(file)
-                .context("The compressed log cannot be read")?,
-        ),
+        "zst" => {
+            let mut decoder = zstd::stream::read::Decoder::with_buffer(file)
+                .context("The compressed log cannot be read")?;
+            decoder
+                .window_log_max(23)
+                .context("The compressed log window exceeds its memory budget")?;
+            Box::new(decoder)
+        }
         "bz2" => Box::new(bzip2::read::MultiBzDecoder::new(file)),
         other => anyhow::bail!("`.{other}` logs cannot be decoded"),
     };
-    let mut bytes = Vec::new();
-    reader
-        .take(MAX_LOG_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .context("The compressed log cannot be decoded")?;
-    ensure!(
-        bytes.len() as u64 <= MAX_LOG_BYTES,
-        "The decompressed log is larger than the viewer's {} GiB limit",
-        MAX_LOG_BYTES >> 30
-    );
+    let mut bytes = Vec::with_capacity(super::window::WINDOW_BYTES);
+    let mut chunk = [0; 64 * 1024];
+    loop {
+        let n = reader
+            .read(&mut chunk)
+            .context("The compressed log cannot be decoded")?;
+        if n == 0 {
+            break;
+        }
+        ensure!(bytes.len() + n <= super::window::WINDOW_BYTES,
+            "The compressed log exceeds the 64 MiB decoded budget; open an uncompressed copy for bounded tail viewing");
+        bytes.extend_from_slice(&chunk[..n]);
+    }
     Ok(bytes)
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::log::Level;
 
     #[test]
-    fn mapped_and_read_files_index_identically() {
+    fn owned_snapshot_indexes_exact_bytes() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("app.jsonl");
         let mut text = String::new();
@@ -181,13 +114,13 @@ mod tests {
         text.push_str("tail without newline");
         std::fs::write(&path, &text).unwrap();
         let read = LogFile::open(&path).unwrap();
-        let mapped = LogFile::open_with(&path, 0).unwrap();
-        assert!(!read.is_mapped() && mapped.is_mapped());
-        assert_eq!(read.index(), mapped.index());
-        assert_eq!(mapped.index().stats().count(Level::Error), 200);
-        assert_eq!(mapped.raw(2_000).unwrap(), b"tail without newline");
-        assert_eq!(mapped.record(1).unwrap().fields[1].value, "m1");
-        assert!(mapped.record(2_000).is_none());
+        let reopened = LogFile::open(&path).unwrap();
+        assert!(!read.is_mapped());
+        assert_eq!(read.index(), reopened.index());
+        assert_eq!(reopened.index().stats().count(Level::Error), 200);
+        assert_eq!(reopened.raw(2_000).unwrap(), b"tail without newline");
+        assert_eq!(reopened.record(1).unwrap().fields[1].value, "m1");
+        assert!(reopened.record(2_000).is_none());
         // Opening never writes: the file is byte-identical afterwards.
         assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
     }
@@ -197,11 +130,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("empty.log");
         std::fs::write(&path, "").unwrap();
-        assert!(LogFile::open_with(&path, 0).unwrap().index().is_empty());
+        assert!(LogFile::open(&path).unwrap().index().is_empty());
         assert!(LogFile::open(&dir.path().join("absent.log")).is_err());
     }
     #[test]
-    fn mapped_snapshot_survives_canonical_truncation() {
+    fn owned_snapshot_survives_canonical_truncation() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("mutable.logfmt");
         std::fs::write(
@@ -212,7 +145,7 @@ mod tests {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "log::file::tests::mapped_snapshot_truncation_child",
+                "log::file::tests::owned_snapshot_truncation_child",
                 "--ignored",
                 "--nocapture",
             ])
@@ -221,7 +154,7 @@ mod tests {
             .unwrap();
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
-            stdout.contains("mapped snapshot opened"),
+            stdout.contains("owned snapshot opened"),
             "child never opened the snapshot: {stdout}"
         );
         assert!(
@@ -234,15 +167,15 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "invoked in an isolated process by mapped_snapshot_survives_canonical_truncation"]
-    fn mapped_snapshot_truncation_child() {
+    #[ignore = "invoked in an isolated process by owned_snapshot_survives_canonical_truncation"]
+    fn owned_snapshot_truncation_child() {
         let path = PathBuf::from(std::env::var_os("OKILUM_LOG_TRUNCATION_FIXTURE").unwrap());
-        let snapshot = LogFile::open_with(&path, 0).unwrap();
+        let snapshot = LogFile::open(&path).unwrap();
         assert!(
-            snapshot.is_mapped(),
-            "positive control: exercise the large-file storage path"
+            !snapshot.is_mapped(),
+            "positive control: canonical bytes are copied into a bounded snapshot"
         );
-        println!("mapped snapshot opened");
+        println!("owned snapshot opened");
         std::fs::write(&path, []).unwrap();
         assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
         assert_eq!(snapshot.raw(0).unwrap(), b"level=info message=first");
