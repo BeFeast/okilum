@@ -191,6 +191,12 @@ impl VaultWatcher {
                 // be recovered with stat. Known Markdown endpoints use a source
                 // batch; moved trees report both directory scopes.
                 if p.is_dir()
+                    // Windows removes entries without their old type. Once
+                    // gone, stat and the extension cannot identify a folder.
+                    || matches!(
+                        ev.kind,
+                        EventKind::Remove(notify::event::RemoveKind::Any)
+                    )
                     || matches!(
                         ev.kind,
                         EventKind::Create(notify::event::CreateKind::Folder)
@@ -269,6 +275,40 @@ impl VaultWatcher {
 #[cfg(test)]
 mod topology_tests {
     use super::*;
+    #[test]
+    fn deleted_folder_untyped_event_keeps_topology_hint() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut watcher = VaultWatcher::new(temp.path()).unwrap();
+        let (tx, rx) = mpsc::channel();
+        watcher.rx = rx;
+        // Windows reports FILE_ACTION_REMOVED without the old entry's type.
+        // Include a .md directory: an extension is not proof it was a file.
+        for name in ["mytpl", "folder.md"] {
+            let folder = temp.path().join(name);
+            std::fs::create_dir(&folder).unwrap();
+            std::fs::write(folder.join("Note.md"), "# Note").unwrap();
+            std::fs::remove_dir_all(&folder).unwrap();
+            tx.send(Ok(Event::new(EventKind::Remove(
+                notify::event::RemoveKind::Any,
+            ))
+            .add_path(folder)))
+                .unwrap();
+        }
+        // A regular note removal remains visible too (positive control).
+        tx.send(Ok(Event::new(EventKind::Remove(
+            notify::event::RemoveKind::Any,
+        ))
+        .add_path(temp.path().join("Ordinary.md"))))
+            .unwrap();
+        watcher.poll();
+        watcher.last_event = Some(Instant::now() - QUIET_WINDOW);
+        let changes = watcher.poll().expect("removed note positive control");
+        assert!(changes.removed.contains("Ordinary.md"));
+        assert!(changes.directories.contains("mytpl"));
+        assert!(changes.directories.contains("folder.md"));
+        assert!(!changes.rescan);
+    }
+
     #[test]
     fn parent_metadata_is_a_hint_but_dropped_events_require_rescan() {
         let temp = tempfile::tempdir().unwrap();

@@ -1117,7 +1117,7 @@ impl Reader {
     }
 
     pub(super) fn leave_source(&mut self, cx: &mut Context<Self>) -> bool {
-        if !self.save_source(cx) {
+        if !self.save_source_for_navigation(cx) {
             return false;
         }
         // Document preparation can call leave_source again after the editor
@@ -1130,6 +1130,36 @@ impl Reader {
             };
         }
         self.editing = None;
+        true
+    }
+
+    /// A vanished source must not trap this window. Keep the latest durable
+    /// draft for Recover notes instead; conflicts and failed recovery writes
+    /// still block navigation. Explicit Save continues to report failure.
+    pub(super) fn save_source_for_navigation(&mut self, cx: &mut Context<Self>) -> bool {
+        let (saved, protected) = self.save_source_outcome(cx);
+        if saved {
+            return true;
+        }
+        if !protected
+            || !self.editing.as_ref().is_some_and(|editing| {
+                std::fs::symlink_metadata(editing.store.path())
+                    .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+            })
+        {
+            return false;
+        }
+        let handle = self.reader_window;
+        cx.spawn(async move |_, cx| {
+            let _ = handle.update(cx, |_, window, cx| {
+                reader_toast::transient(
+                    "The file was moved or deleted. Draft kept in recovery. Use More → Recover notes… to save your edits to a new location.",
+                    window,
+                    cx,
+                );
+            });
+        })
+        .detach();
         true
     }
 

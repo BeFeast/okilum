@@ -747,8 +747,8 @@ struct RecoveryDraft {
     text: String,
 }
 
-// Acknowledged journals are not unsaved drafts. Expire old ones only while
-// holding the same per-note lock used by editors and background draft writers.
+// Acknowledged journals with a surviving source are not unsaved drafts. Expire
+// old ones only while holding the same lock used by editors and draft writers.
 fn prune_clean_journals(drafts: &Path, now: u64) -> Result<()> {
     use sha2::{Digest, Sha256};
     if !drafts.exists() {
@@ -777,7 +777,9 @@ fn prune_clean_journals(drafts: &Path, now: u64) -> Result<()> {
                 "{:x}",
                 Sha256::digest(draft.path.as_os_str().as_encoded_bytes())
             );
-            if path.file_stem().is_none_or(|stem| stem != key.as_str()) || draft.text != draft.base
+            if path.file_stem().is_none_or(|stem| stem != key.as_str())
+                || draft.text != draft.base
+                || source_missing(&draft.path)
             {
                 return Ok(());
             }
@@ -823,7 +825,7 @@ pub fn drafts(drafts: &Path, root: &Path) -> Result<Listing> {
         match loaded {
             Ok(draft)
                 if draft.path.starts_with(&root)
-                    && draft.text != draft.base
+                    && (draft.text != draft.base || source_missing(&draft.path))
                     && fs::read_to_string(&draft.path).map_or(true, |disk| disk != draft.text) =>
             {
                 let created = fs::metadata(&path)?
@@ -848,6 +850,10 @@ pub fn drafts(drafts: &Path, root: &Path) -> Result<Listing> {
         }
     }
     Ok(result)
+}
+
+fn source_missing(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
 }
 
 /// Link-move history and whole-operation rollback read identical preimages.
@@ -1035,6 +1041,44 @@ pub fn legacy_preimages(drafts: &Path, root: &Path) -> Result<Listing> {
 mod tests {
     use super::*;
     use crate::file_editor::{FileEditor, Save};
+    #[test]
+    fn deleted_folder_clean_snapshot_remains_recoverable() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let state = root.join("drafts");
+        fs::create_dir(root.join("mytpl")).unwrap();
+        let path = root.join("mytpl/Note.md");
+        fs::write(&path, "# Saved שלום\r\n").unwrap();
+        let mut editor = FileEditor::open(&path, &state).unwrap();
+        editor.set_text(editor.text().to_owned()).unwrap();
+        assert!(
+            drafts(&state, &root).unwrap().versions.is_empty(),
+            "surviving clean source positive control"
+        );
+        fs::remove_dir_all(root.join("mytpl")).unwrap();
+        assert!(editor.save().is_err());
+        drop(editor);
+        prune_at(&state, now() + 2 * MAX_AGE).unwrap();
+        let listing = drafts(&state, &root).unwrap();
+        assert_eq!(
+            listing.versions.len(),
+            1,
+            "the only surviving copy must not expire"
+        );
+        assert_eq!(listing.versions[0].text, "# Saved שלום\r\n");
+        save_copy(
+            &root,
+            Path::new("Recovered.md"),
+            &state,
+            &listing.versions[0].text,
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("Recovered.md")).unwrap(),
+            "# Saved שלום\r\n"
+        );
+    }
+
     #[test]
     fn alias_paths_discover_canonical_history_and_broken_journal_does_not_block_pruning() {
         let dir = tempfile::tempdir().unwrap();
