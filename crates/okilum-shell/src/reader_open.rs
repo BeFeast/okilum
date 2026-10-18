@@ -865,13 +865,19 @@ pub(crate) fn open_deep_link(link: &str, cx: &mut App) {
 
 /// `open_deep_link` against an explicit list of known vault roots.
 fn open_deep_link_among(link: &str, known: &[PathBuf], cx: &mut App) {
-    use okilum_core::deep_link::{parse, resolve, Resolution};
+    use okilum_core::deep_link::{parse, resolve, Env, Resolution};
     super::reader_startup::supersede(cx);
     let link = match parse(link) {
         Ok(link) => link,
         Err(refused) => return show_error(anyhow::anyhow!(refused.message()), cx),
     };
-    match resolve(&link, known, &|path| path.is_file()) {
+    let env = Env {
+        is_file: &|path| path.is_file(),
+        // Verbatim on Windows, like the known roots (#1391).
+        canonical: &|path| okilum_core::vault::canonical_root(path).ok(),
+        vault_id: &super::vault_name::read_id,
+    };
+    match resolve(&link, known, &env) {
         Resolution::Open {
             root,
             rel,
@@ -906,7 +912,28 @@ fn open_deep_link_among(link: &str, known: &[PathBuf], cx: &mut App) {
                     show_error(error, cx);
                 }
             } else {
-                confirm_link_vault(root, opts, cx);
+                confirm_link_vault(root, None, opts, cx);
+            }
+        }
+        // A file in no known vault opens on its own, as the single-file view
+        // (docs/deep-links.md). The first link into a folder asks, like the
+        // first link to a vault.
+        Resolution::Single { path, position } => {
+            let Some(folder) = path.parent().map(Path::to_path_buf) else {
+                return show_error(anyhow::anyhow!("This file has no folder."), cx);
+            };
+            let opts = super::Opts {
+                open_path: Some(path.clone()),
+                landing: Some(position),
+                reusable_roots: reusable_roots(cx),
+                ..Default::default()
+            };
+            if super::reader_ui_state::link_trusted(&folder, cx) {
+                if let Err(error) = open_window(opts, cx) {
+                    show_error(error, cx);
+                }
+            } else {
+                confirm_link_vault(folder, Some(path), opts, cx);
             }
         }
         // Several vaults share the name: the user picks, never a guess.
@@ -1244,8 +1271,10 @@ struct LinkPrompts(std::collections::BTreeMap<PathBuf, (AnyWindowHandle, super::
 impl Global for LinkPrompts {}
 
 /// The first external link to a vault asks before opening it (#1049,
-/// docs/deep-links.md «Security»). Open remembers the vault for links.
-fn confirm_link_vault(root: PathBuf, opts: super::Opts, cx: &mut App) {
+/// docs/deep-links.md «Security»). Open remembers the vault for links. A link
+/// to a file in no vault (`file`) asks the same way, once per folder; `root`
+/// is then the file's folder.
+fn confirm_link_vault(root: PathBuf, file: Option<PathBuf>, opts: super::Opts, cx: &mut App) {
     let open = cx
         .default_global::<LinkPrompts>()
         .0
@@ -1276,6 +1305,7 @@ fn confirm_link_vault(root: PathBuf, opts: super::Opts, cx: &mut App) {
         let view = cx.new(|cx| LinkConfirm {
             root: view_root,
             name,
+            file,
             focus: cx.focus_handle(),
         });
         // Focused from the start, so Enter and Esc answer it (#1271).
@@ -1424,7 +1454,7 @@ impl Render for LinkVaultChoice {
             .gap_3()
             .child(TitleBar::new().child("Open link"))
             .child(format!(
-                "Several vaults are named \u{201c}{}\u{201d}. Choose the one this link is for.",
+                "Several vaults match \u{201c}{}\u{201d}. Choose the one this link is for.",
                 self.vault
             ))
             .children(rows)
@@ -1444,6 +1474,8 @@ impl Render for LinkVaultChoice {
 struct LinkConfirm {
     root: PathBuf,
     name: String,
+    /// A file in no vault: what the link opens (`root` is its folder).
+    file: Option<PathBuf>,
     focus: FocusHandle,
 }
 impl Render for LinkConfirm {
@@ -1464,18 +1496,29 @@ impl Render for LinkConfirm {
             .p_4()
             .gap_3()
             .child(TitleBar::new().child("Open link"))
-            .child(format!(
-                "A link asks to open vault \u{201c}{}\u{201d}.",
-                self.name
-            ))
+            .child(match &self.file {
+                Some(file) => format!(
+                    "A link asks to open the file \u{201c}{}\u{201d}, which is not in a vault.",
+                    file.file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_default()
+                ),
+                None => format!("A link asks to open vault \u{201c}{}\u{201d}.", self.name),
+            })
             .child(
                 div()
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
                     // Without Windows' `\\?\` prefix (#1270).
-                    .child(okilum_core::vault::display_path(&self.root)),
+                    .child(okilum_core::vault::display_path(
+                        self.file.as_deref().unwrap_or(&self.root),
+                    )),
             )
-            .child("Links only open notes. Okilum asks once per vault.")
+            .child(if self.file.is_some() {
+                "Links only open files. Okilum asks once per folder."
+            } else {
+                "Links only open notes. Okilum asks once per vault."
+            })
             .child(
                 h_flex()
                     .gap_2()
@@ -2575,14 +2618,19 @@ mod entry_tests {
         cx.update(|cx| {
             assert_eq!(vault_name::shown(&roots[1], cx), "Work");
             // The link still names the folder, never the display name.
-            let link =
-                super::super::reader_files::okilum_link(&roots[1], "Plan.md", &Default::default());
+            let link = super::super::reader_files::okilum_link(
+                &roots[1],
+                "Plan.md",
+                &Default::default(),
+                cx,
+            );
             assert!(link.contains("Gate2") && !link.contains("Work"), "{link}");
         });
         // The link opens the renamed vault: its window comes forward, no
         // new window and no error.
-        let link =
-            super::super::reader_files::okilum_link(&roots[1], "Plan.md", &Default::default());
+        let link = cx.update(|cx| {
+            super::super::reader_files::okilum_link(&roots[1], "Plan.md", &Default::default(), cx)
+        });
         cx.update(|cx| open_deep_link_among(&link, &roots, cx));
         cx.run_until_parked();
         assert_eq!(
@@ -3379,6 +3427,242 @@ mod entry_tests {
         open("okilum://v/Notes/target.md?line=81", cx);
         settle(cx);
         assert_eq!(landed(cx), ("target.md".into(), 40, None), "running window");
+    }
+
+    /// #1414: `okilum://file/…` to a file in no known vault opens that file on
+    /// its own, as the doc promises: the first link into a folder asks (Enter
+    /// opens and trusts the folder), the line lands, and a later link into the
+    /// same folder opens at once. A file that is not there opens nothing.
+    #[gpui::test]
+    fn a_file_link_outside_every_vault_opens_the_file_on_its_own(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let vault = fixture.path().join("Notes");
+        let loose = fixture.path().join("loose");
+        std::fs::create_dir_all(&vault).unwrap();
+        std::fs::create_dir_all(&loose).unwrap();
+        std::fs::write(vault.join("Plan.md"), "# Plan\n").unwrap();
+        // Paragraph i is block i-1 on file line 2i-1 (line 81: block 40).
+        let body: String = (1..=60).map(|i| format!("Paragraph {i}.\n\n")).collect();
+        std::fs::write(loose.join("target.md"), &body).unwrap();
+        std::fs::write(loose.join("other.md"), &body).unwrap();
+        let vault = vault.canonicalize().unwrap();
+        let loose = loose.canonicalize().unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            super::super::bind_keys(cx);
+            install(cx);
+            super::super::reader_ui_state::install(&fixture.path().join("ui-state"), cx);
+        });
+        let settle = |cx: &mut TestAppContext| {
+            for _ in 0..5 {
+                cx.run_until_parked();
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_millis(300));
+            }
+            cx.run_until_parked();
+        };
+        // The file as a link spells it: plain, `/`-separated (`C:/…` on Windows).
+        let link = |name: &str, query: &str| {
+            let path = okilum_core::vault::display_path(&loose.join(name)).replace('\\', "/");
+            format!("okilum://file/{path}{query}")
+        };
+        let known = [vault.clone()];
+        let open = |link: String, cx: &mut TestAppContext| {
+            cx.update(|cx| open_deep_link_among(&link, &known, cx));
+            settle(cx);
+        };
+        let readers = |cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                cx.global::<Readers>()
+                    .0
+                    .iter()
+                    .filter_map(|(weak, _)| weak.upgrade())
+                    .map(|reader| {
+                        let reader = reader.read(cx);
+                        (
+                            reader.single_file,
+                            reader.current_rel.clone(),
+                            reader
+                                .content
+                                .read(cx)
+                                .list_state()
+                                .logical_scroll_top()
+                                .item_ix,
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+        };
+
+        // A file that is not there: nothing asks, nothing opens.
+        open(link("gone.md", ""), cx);
+        assert!(readers(cx).is_empty());
+        assert!(cx.update(|cx| cx
+            .try_global::<LinkPrompts>()
+            .is_none_or(|prompts| prompts.0.is_empty())));
+
+        // First link into the folder: it asks, and nothing opens yet.
+        open(link("target.md", "?line=81"), cx);
+        assert!(readers(cx).is_empty(), "asks before opening");
+        let prompt = cx.update(|cx| {
+            cx.global::<LinkPrompts>()
+                .0
+                .get(&loose)
+                .map(|(handle, _)| *handle)
+                .expect("the link asks first, keyed by the file's folder")
+        });
+        let mut visual = gpui::VisualTestContext::from_window(prompt, cx);
+        visual.simulate_keystrokes("enter");
+        settle(cx);
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(500));
+        settle(cx);
+        let opened = readers(cx);
+        assert_eq!(opened.len(), 1, "the file opened");
+        assert!(opened[0].0, "as a single file, not as a vault");
+        assert_eq!(opened[0].2, 40, "on the line of the link");
+        assert!(cx.update(|cx| super::super::reader_ui_state::link_trusted(&loose, cx)));
+
+        // Trusted now: another file of the folder opens without asking.
+        open(link("other.md", ""), cx);
+        assert!(cx.update(|cx| cx
+            .try_global::<LinkPrompts>()
+            .is_none_or(|prompts| prompts.0.is_empty())));
+        assert!(!readers(cx).is_empty());
+        assert!(readers(cx).iter().all(|(single, ..)| *single));
+    }
+
+    /// #1414: the same synced vault is «Obsidian Vault» on one machine and
+    /// «Brain» on another. A link copied from the first carries the vault's id
+    /// (written into the vault, where Syncthing takes it along), and opens the
+    /// second under its own folder name; a vault of that name with another id
+    /// is not taken for it.
+    #[gpui::test]
+    fn a_link_opens_the_same_vault_under_another_folder_name(cx: &mut TestAppContext) {
+        use super::super::vault_name;
+        let fixture = tempfile::tempdir().unwrap();
+        let (maestro, idunn, stranger) = (
+            fixture.path().join("maestro/Obsidian Vault"),
+            fixture.path().join("idunn/Brain"),
+            fixture.path().join("other/Obsidian Vault"),
+        );
+        for root in [&maestro, &idunn, &stranger] {
+            std::fs::create_dir_all(root).unwrap();
+            std::fs::write(root.join("Plan.md"), "# Plan\n").unwrap();
+        }
+        let (maestro, idunn, stranger) = (
+            maestro.canonicalize().unwrap(),
+            idunn.canonicalize().unwrap(),
+            stranger.canonicalize().unwrap(),
+        );
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            super::super::bind_keys(cx);
+            install(cx);
+            super::super::reader_ui_state::install(&fixture.path().join("ui-state"), cx);
+            for root in [&maestro, &idunn, &stranger] {
+                super::super::reader_ui_state::trust_for_links(root, cx);
+            }
+        });
+        let settle = |cx: &mut TestAppContext| {
+            for _ in 0..5 {
+                cx.run_until_parked();
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_millis(300));
+            }
+            cx.run_until_parked();
+        };
+        let open_roots = |cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                let mut roots: Vec<_> = cx
+                    .global::<Readers>()
+                    .0
+                    .iter()
+                    .map(|(_, root)| root.clone())
+                    .collect();
+                roots.sort();
+                roots
+            })
+        };
+        // The vault on «maestro» is open in a window, so a link copied from it
+        // may give it an id; a vault nobody opened never gets a file.
+        cx.update(|cx| {
+            open_deep_link_among(
+                "okilum://v/Obsidian%20Vault/Plan.md",
+                std::slice::from_ref(&maestro),
+                cx,
+            )
+        });
+        settle(cx);
+        assert_eq!(
+            open_roots(cx),
+            vec![maestro.clone()],
+            "positive control: the vault is open"
+        );
+        assert_eq!(
+            vault_name::read_id(&maestro),
+            None,
+            "no id before a link is copied"
+        );
+        let link = cx.update(|cx| {
+            super::super::reader_files::okilum_link(&maestro, "Plan.md", &Default::default(), cx)
+        });
+        let id = vault_name::read_id(&maestro).expect("copying a link gives the vault an id");
+        assert_eq!(link, format!("okilum://v/Obsidian%20Vault/Plan.md?id={id}"));
+        assert_eq!(
+            cx.update(|cx| super::super::reader_files::okilum_link(
+                &maestro,
+                "Plan.md",
+                &Default::default(),
+                cx
+            )),
+            link,
+            "the id is kept: the same link again"
+        );
+        assert_eq!(
+            vault_name::read_id(&idunn),
+            None,
+            "a vault never opened gets no file"
+        );
+
+        // Control, before the id reaches «idunn»: that machine knows only
+        // `Brain`, so the folder name finds nothing.
+        cx.update(|cx| open_deep_link_among(&link, std::slice::from_ref(&idunn), cx));
+        settle(cx);
+        assert_eq!(
+            open_roots(cx),
+            vec![maestro.clone()],
+            "no vault of that name or id"
+        );
+
+        // Syncthing brings the vault's file to idunn: now the id finds it.
+        std::fs::create_dir_all(idunn.join(vault_name::DIRECTORY)).unwrap();
+        std::fs::copy(
+            maestro.join(vault_name::DIRECTORY).join("vault.json"),
+            idunn.join(vault_name::DIRECTORY).join("vault.json"),
+        )
+        .unwrap();
+        cx.update(|cx| open_deep_link_among(&link, std::slice::from_ref(&idunn), cx));
+        settle(cx);
+        let mut both = vec![maestro.clone(), idunn.clone()];
+        both.sort();
+        assert_eq!(open_roots(cx), both, "the link opened «Brain» by its id");
+
+        // A different vault that happens to have the link's folder name has
+        // its own id: it is not offered.
+        std::fs::create_dir_all(stranger.join(vault_name::DIRECTORY)).unwrap();
+        std::fs::write(
+            stranger.join(vault_name::DIRECTORY).join("vault.json"),
+            r#"{"version":1,"id":"0a9b8c7d-1111-4222-8333-444455556666"}"#,
+        )
+        .unwrap();
+        cx.update(|cx| open_deep_link_among(&link, std::slice::from_ref(&stranger), cx));
+        settle(cx);
+        assert_eq!(
+            open_roots(cx),
+            both,
+            "another vault of the same name stays closed"
+        );
     }
 
     /// #1271: the link confirmation answers the keyboard like any dialog:

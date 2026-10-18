@@ -63,10 +63,10 @@ pub(crate) fn run(action: FileAction, root: &Path, rel: &str, window: &mut Windo
                     None
                 }
             }
-            FileAction::Absolute
-            | FileAction::Relative
-            | FileAction::Wiki
-            | FileAction::OkilumLink => copied_text(action, root, rel, &path),
+            FileAction::OkilumLink => Some(okilum_link(root, rel, &Default::default(), cx)),
+            FileAction::Absolute | FileAction::Relative | FileAction::Wiki => {
+                copied_text(action, rel, &path)
+            }
         };
         if let Some(text) = copied {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
@@ -86,28 +86,33 @@ pub(crate) fn run(action: FileAction, root: &Path, rel: &str, window: &mut Windo
 
 /// What a «Copy …» action puts on the clipboard; `path` is the checked, canonical
 /// file. The absolute path is the plain one the user knows, not `\\?\C:\…` (#1391).
-fn copied_text(action: FileAction, root: &Path, rel: &str, path: &Path) -> Option<String> {
+fn copied_text(action: FileAction, rel: &str, path: &Path) -> Option<String> {
     match action {
         FileAction::Absolute => Some(okilum_core::vault::display_path(path)),
         FileAction::Relative => Some(rel.to_owned()),
         FileAction::Wiki => Some(format!("[[{rel}|{}]]", Vault::title_of(rel))),
-        FileAction::OkilumLink => Some(okilum_link(root, rel, &Default::default())),
-        FileAction::Reveal | FileAction::Open | FileAction::QuickLook => None,
+        // The link needs the app (the vault's id): `run` makes it.
+        FileAction::OkilumLink | FileAction::Reveal | FileAction::Open | FileAction::QuickLook => {
+            None
+        }
     }
 }
 
 /// The external link to `rel` in the vault at `root`: the vault is named by
-/// its folder, as links resolve it (docs/deep-links.md).
+/// its folder and carries its own id, which finds it on a machine where the
+/// folder is called something else (docs/deep-links.md, #1414).
 pub(crate) fn okilum_link(
     root: &Path,
     rel: &str,
     position: &okilum_core::deep_link::Position,
+    cx: &App,
 ) -> String {
     let vault = root
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
-    okilum_core::deep_link::build(&vault, rel, position)
+    let id = super::vault_name::link_id(root, cx);
+    okilum_core::deep_link::build_with_id(&vault, id.as_deref(), rel, position)
 }
 
 /// Shows the item in the platform file manager; a failure of every route is
@@ -755,7 +760,7 @@ mod tests {
         std::fs::create_dir_all(root.join("sub")).unwrap();
         std::fs::write(root.join("sub").join("a.md"), "# A\n").unwrap();
         let path = checked_path(&root, "sub/a.md").unwrap();
-        let copied = copied_text(FileAction::Absolute, &root, "sub/a.md", &path).unwrap();
+        let copied = copied_text(FileAction::Absolute, "sub/a.md", &path).unwrap();
         assert!(!copied.starts_with(r"\\?\"), "{copied}");
         let pasted = Path::new(&copied);
         assert!(pasted.is_absolute() && pasted.is_file(), "{copied}");
@@ -1148,7 +1153,10 @@ mod tests {
                 cx.read_from_clipboard().unwrap().text().unwrap(),
                 "[[diagram.svg|diagram]]"
             );
-            // #1049: the external link names the vault by its folder.
+            // #1049: the external link names the vault by its folder. This
+            // Reader is built without a window, so it is no registered vault
+            // window and its link carries no id (#1414: the id of a window's
+            // vault is tested in reader_open).
             reader.file_action(FileAction::OkilumLink, window, cx);
             let link = cx.read_from_clipboard().unwrap().text().unwrap();
             assert_eq!(link, "okilum://v/vault/diagram.svg");
@@ -1157,7 +1165,11 @@ mod tests {
                 okilum_core::deep_link::resolve(
                     &parsed,
                     std::slice::from_ref(&reader.vault_root),
-                    &|path| { path.is_file() }
+                    &okilum_core::deep_link::Env {
+                        is_file: &|path| path.is_file(),
+                        canonical: &|path| path.canonicalize().ok(),
+                        vault_id: &|_| None,
+                    }
                 ),
                 okilum_core::deep_link::Resolution::Open {
                     root: reader.vault_root.clone(),

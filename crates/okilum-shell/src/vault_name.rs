@@ -1,7 +1,8 @@
 //! A vault's display name (#1327): what Okilum calls the vault everywhere it
 //! names one, without renaming its folder. An empty or blank name means the
 //! folder name. Links and every other lookup keep using the folder (and its
-//! canonical root); the display name is never an identity.
+//! canonical root); the display name is never an identity. The vault's id
+//! (#1414) is: it lives in the same file.
 use gpui::*;
 use gpui_component::{
     button::{Button, ButtonVariants},
@@ -44,10 +45,63 @@ pub(crate) fn read(root: &Path) -> Option<String> {
     clean(value.get("name")?.as_str()?)
 }
 
+/// The vault's own id (#1414), which names it in links when its folder is
+/// called something else on another machine. Lives in the same file as the
+/// display name, so it travels with the vault; `None` when the file has none
+/// or it is not an id. Reading never writes.
+pub(crate) fn read_id(root: &Path) -> Option<String> {
+    let bytes = std::fs::read(file(root)).ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let id = value.get("id")?.as_str()?;
+    okilum_core::deep_link::valid_vault_id(id).then(|| id.to_owned())
+}
+
+/// The id of the vault at `root` for a link that is being copied: the one in
+/// its file, or a new one written there now (the first link copied from a
+/// vault gives it an id, and Syncthing carries it to the other machines).
+/// Only for a vault open in a window as a vault: a single-file view's folder
+/// is no vault and gets no file. `None` when the vault cannot be written
+/// (read-only share): the link then names the folder only, as before ids.
+pub(crate) fn link_id(root: &Path, cx: &App) -> Option<String> {
+    let is_vault = crate::reader_open::readers(cx).iter().any(|reader| {
+        let reader = reader.read(cx);
+        reader.vault_root == root && !reader.single_file
+    });
+    if !is_vault {
+        return None;
+    }
+    read_id(root).or_else(|| {
+        let id = uuid::Uuid::new_v4().to_string();
+        write_with(root, |object| {
+            object.insert("id".into(), id.clone().into());
+        })
+        .ok()?;
+        // Another machine may have written one in the same moment; the file
+        // that won is the id.
+        read_id(root)
+    })
+}
+
 /// Write the name into the vault's file, keeping anything else in it; `None`
-/// removes the name. Written to a temporary file in the same folder and
-/// renamed, so another machine never syncs half a file.
+/// removes the name.
 fn write(root: &Path, name: Option<&str>) -> anyhow::Result<()> {
+    write_with(root, |object| match name {
+        Some(name) => {
+            object.insert("name".into(), name.into());
+        }
+        None => {
+            object.remove("name");
+        }
+    })
+}
+
+/// Change the vault's file, keeping anything else in it. Written to a
+/// temporary file in the same folder and renamed, so another machine never
+/// syncs half a file.
+fn write_with(
+    root: &Path,
+    change: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>),
+) -> anyhow::Result<()> {
     let directory = root.join(DIRECTORY);
     std::fs::create_dir_all(&directory)?;
     let mut value = std::fs::read(file(root))
@@ -57,10 +111,7 @@ fn write(root: &Path, name: Option<&str>) -> anyhow::Result<()> {
         .unwrap_or_else(|| serde_json::json!({}));
     let object = value.as_object_mut().expect("an object");
     object.insert("version".into(), 1.into());
-    match name {
-        Some(name) => object.insert("name".into(), name.into()),
-        None => object.remove("name"),
-    };
+    change(object);
     let temporary = directory.join(format!(".{FILE}.{}.tmp", uuid::Uuid::new_v4()));
     let bytes = serde_json::to_vec_pretty(&value)?;
     // A failed write or rename leaves no temporary file to sync.

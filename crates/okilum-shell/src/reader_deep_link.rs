@@ -235,6 +235,7 @@ impl Reader {
                 heading: Some(heading),
                 ..Default::default()
             },
+            cx,
         );
         cx.write_to_clipboard(ClipboardItem::new_string(link));
         crate::reader_toast::transient("Link copied", window, cx);
@@ -254,6 +255,7 @@ impl Reader {
                 column: Some(caret.character + 1),
                 ..Default::default()
             },
+            cx,
         );
         cx.write_to_clipboard(ClipboardItem::new_string(link));
         crate::reader_toast::transient("Link copied", window, cx);

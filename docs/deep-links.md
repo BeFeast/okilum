@@ -10,7 +10,7 @@ One scheme, `okilum:`. Every external link has an *address* and optional
 *position*:
 
 ```
-okilum://v/<vault>/<path>[?line=<n>[&column=<n>]][&page=<n>][#<heading> | #^<block>]
+okilum://v/<vault>/<path>[?line=<n>[&column=<n>]][&page=<n>][&id=<vault-id>][#<heading> | #^<block>]
 okilum://file/<absolute path>[?line=<n>[&column=<n>]][&page=<n>][#…]
 okilum://note/<note-id>      (reserved, see «Stable ids»)
 okilum://task/<task-id>      (reserved)
@@ -18,13 +18,20 @@ okilum://project/<project-id> (reserved, projects of the server model)
 ```
 
 - `v/<vault>/<path>`: the canonical form, which «Copy Okilum link» produces.
-  `<vault>` is the vault's folder name and `<path>` is vault-relative, with
-  its extension. It works on all three of Oleg's machines because the same
-  synced vault has the same folder name there. Example:
+  `<vault>` is the vault's folder name on the machine that made the link and
+  `<path>` is vault-relative, with its extension. Example:
   `okilum://v/Notes/Projects/Launch%20plan.md?line=12&column=4`.
+- `id=<vault-id>` (#1414): the vault's own id. The same synced vault can have
+  another folder name on another machine (`Obsidian Vault` on three, `Brain`
+  on idunn), so the name alone does not find it there. «Copy Okilum link»
+  adds the id; a link without one (every link made before) is looked up by
+  folder name, as before. An id that is not 8–64 letters, digits and `-` is
+  ignored. Older Okilum versions ignore the parameter and use the name.
 - `file/<absolute path>`: for tools that know a file but not a vault
   (T3 Code, editors, terminals). The path is absolute, `/`-separated; on
-  Windows it is `file/C:/Users/…`. Okilum finds the vault that contains it.
+  Windows it is `file/C:/Users/…` (`C:\…` and the verbatim `\\?\C:\…` form
+  are read too: they are the same file). Okilum finds the vault that contains
+  it; a file in no known vault opens on its own (see Resolution).
 - `line`, `column`: 1-based. Column counts Unicode characters (scalar values),
   not bytes or UTF-16 units, so Hebrew and Cyrillic lines behave like
   Latin ones. Out of range is clamped to the last line or column.
@@ -50,19 +57,33 @@ rendered link is rewritten to the `v/` form.
 ## Resolution
 
 1. **Vault.**
-   - `v/<vault>` matches the folder name of the known vaults: open windows
-     first, then reading history. The comparison is exact after NFC and is
-     case-insensitive on macOS and Windows.
+   - `v/<vault>` looks at the known vaults: open windows first, then reading
+     history. With an `id`, the vault that carries that id is the one,
+     whatever its folder is called here. Without an `id`, or when no known
+     vault carries it, the folder name decides (exact after NFC, and
+     case-insensitive on macOS and Windows); but with an `id` a folder of that
+     name that carries a *different* id is another vault and is not taken for
+     this one. A folder of that name with no id yet (never linked from, or
+     not synced yet) still matches by name.
+   - A vault's id is a UUID in `.okilum/vault.json` (`"id"`), the file that
+     already holds its display name and travels with it (Syncthing). The first
+     «Copy Okilum link» from a vault open in a window writes it, if the vault
+     is writable; reading a link never writes. (The Syncthing folder id is not
+     used: it lives in Syncthing's own configuration, not in the vault, and not
+     every vault is a Syncthing folder.)
    - One match: use it.
    - None: «Vault “X” is not on this computer.» with Open folder….
-   - Several: a chooser listing the full paths. It never guesses (AGENTS:
-     ambiguity is surfaced). A vault without the note is listed but cannot be
-     chosen; choosing one counts as the first-use consent below. A newer link
-     replaces an open chooser.
-   - `file/<path>`: canonicalize, then the known vault whose root contains it,
-     with the deepest root winning. If no known vault contains it, the file
-     opens on its own as today's single-file mode, after the first-use
-     confirmation below.
+   - Several (two copies of one vault, or two vaults named alike): a chooser
+     listing the full paths. It never guesses (AGENTS: ambiguity is
+     surfaced). A vault without the note is listed but cannot be chosen;
+     choosing one counts as the first-use consent below. A newer link replaces
+     an open chooser.
+   - `file/<path>`: canonicalize (on Windows to the verbatim `\\?\` form the
+     known roots have), then the known vault whose root contains it, with the
+     deepest root winning. If no known vault contains it, the file opens on its
+     own as the single-file view, after the first-use confirmation below. A
+     file that is not there is said: «This file does not exist on this
+     computer.»
 2. **Note.**
    - Exact vault-relative path. If it has no extension and only `<path>.md`
      exists, that file opens. Otherwise nothing is guessed.
@@ -128,7 +149,10 @@ rendered link is rewritten to the `v/` form.
   remembered per vault (`link_trusted_vaults` in `reader-ui.json`), so only
   the first link to a vault asks. A vault already open in a window opens
   without asking: the link only moves within what is on screen. The same
-  confirmation will apply to a file outside every known vault.
+  confirmation applies to a file outside every known vault: «A link asks to
+  open the file “X”, which is not in a vault.» with its full path; Open is
+  remembered per folder (the file's), so only the first link into a folder
+  asks.
 - Rejected outright, with a message: unknown hosts, internal hosts, relative
   or `..` paths, NUL or control characters, links over 4096 bytes, and
   non-`okilum` schemes passed as the argument.
@@ -165,9 +189,18 @@ a newer Okilum» and do nothing.
 4. The `okilum.app/open` page (site repository), linked from Copy link with
    a modifier.
 
+## Decisions (Oleg, 18.10, #1414)
+
+- `file/` outside every known vault is implemented as the doc said (not
+  dropped from the doc): the file opens as the single-file view, after the
+  first-use confirmation, remembered per folder.
+- A vault's identity in links is an id stored in the vault (`.okilum/vault.json`),
+  with the folder name as the fallback; old links keep working.
+
 ## Decisions (Oleg, 10.10)
 
 - Vault is identified by **folder name**; several known vaults with that name
-  show a chooser.
+  show a chooser. (Since #1414 the vault's id comes first when the link has
+  one; the folder name is the fallback.)
 - A link to a note with unsaved edits moves the caret **without asking**.
 - `okilum://project/<id>` is reserved next to `note/` and `task/`.

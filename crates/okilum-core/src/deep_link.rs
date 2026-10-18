@@ -6,9 +6,12 @@
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Address {
     /// Vault by folder name and a vault-relative path with `/` separators.
+    /// `id` is the vault's own id (`?id=`), which names it when the folder has
+    /// another name on this computer; the folder name is the fallback.
     Vault {
         vault: String,
         path: String,
+        id: Option<String>,
     },
     /// An absolute file path (`/…` or `C:/…`), as written.
     File(String),
@@ -70,9 +73,15 @@ pub enum Resolution {
         rel: String,
         position: Position,
     },
-    /// Several known vaults have this name: the user picks one (never
-    /// guessed). Each root carries the note's path there, or `None` when the
-    /// note is not in that vault.
+    /// A file in no known vault (`file/…`): it opens on its own, as the
+    /// single-file view. `path` is canonical.
+    Single {
+        path: std::path::PathBuf,
+        position: Position,
+    },
+    /// Several known vaults match the link (same name, or same id): the user
+    /// picks one (never guessed). Each root carries the note's path there, or
+    /// `None` when the note is not in that vault.
     Choose {
         vault: String,
         roots: Vec<(std::path::PathBuf, Option<String>)>,
@@ -82,14 +91,22 @@ pub enum Resolution {
     Unavailable(String),
 }
 
-/// Match `link` against `known` vault roots (canonical paths). `exists`
-/// reports whether a path is a file; injectable for tests.
-pub fn resolve(
-    link: &Link,
-    known: &[std::path::PathBuf],
-    exists: &dyn Fn(&std::path::Path) -> bool,
-) -> Resolution {
+/// What resolving a link asks of the machine; injectable for tests.
+pub struct Env<'a> {
+    /// Whether a path is a file.
+    pub is_file: &'a dyn Fn(&std::path::Path) -> bool,
+    /// The canonical form of an existing path (on Windows the verbatim
+    /// `\\?\` form, as the known vault roots have it); `None` when it is
+    /// missing.
+    pub canonical: &'a dyn Fn(&std::path::Path) -> Option<std::path::PathBuf>,
+    /// The id a vault carries in its own files, if it has one.
+    pub vault_id: &'a dyn Fn(&std::path::Path) -> Option<String>,
+}
+
+/// Match `link` against `known` vault roots (canonical paths).
+pub fn resolve(link: &Link, known: &[std::path::PathBuf], env: &Env) -> Resolution {
     use std::path::{Path, PathBuf};
+    let exists = env.is_file;
     let position = link.position.clone();
     let name_of = |root: &Path| {
         root.file_name()
@@ -112,11 +129,28 @@ pub fn resolve(
         (Path::new(rel).extension().is_none() && exists(&root.join(&md))).then_some(md)
     };
     match &link.address {
-        Address::Vault { vault, path } => {
+        Address::Vault { vault, path, id } => {
             let mut roots: Vec<PathBuf> = Vec::new();
-            for root in known {
-                if same_name(&name_of(root), vault) && !roots.contains(root) {
-                    roots.push(root.clone());
+            // A vault that carries the link's id is that vault, whatever its
+            // folder is called here. Without one, the folder name decides; a
+            // vault of that name with another id is another vault, so it is
+            // not offered: the user would open the wrong notes.
+            if let Some(id) = id {
+                for root in known {
+                    if (env.vault_id)(root).as_deref() == Some(id.as_str()) && !roots.contains(root)
+                    {
+                        roots.push(root.clone());
+                    }
+                }
+            }
+            if roots.is_empty() {
+                for root in known {
+                    if same_name(&name_of(root), vault)
+                        && !roots.contains(root)
+                        && (id.is_none() || (env.vault_id)(root).is_none())
+                    {
+                        roots.push(root.clone());
+                    }
                 }
             }
             match roots.len() {
@@ -147,36 +181,87 @@ pub fn resolve(
             }
         }
         Address::File(file) => {
-            let file = Path::new(file);
+            // The file as the file system knows it: a link may spell a
+            // Windows path `C:/…` while the known roots are `\\?\C:\…`, or
+            // go through a symlink.
+            let Some(file) = (env.canonical)(Path::new(file)).filter(|file| exists(file)) else {
+                return Resolution::Unavailable(
+                    "This file does not exist on this computer.".into(),
+                );
+            };
+            let fold = cfg!(any(target_os = "macos", windows));
+            let file_parts = parts(&file.to_string_lossy());
             // The deepest known vault that contains the file.
             let root = known
                 .iter()
-                .filter(|root| file.starts_with(root) && file != root.as_path())
-                .max_by_key(|root| root.components().count());
+                .filter_map(|root| {
+                    let root_parts = parts(&root.to_string_lossy());
+                    (file_parts.len() > root_parts.len()
+                        && root_parts
+                            .iter()
+                            .zip(&file_parts)
+                            .all(|(a, b)| same_part(a, b, fold)))
+                    .then_some((root, root_parts.len()))
+                })
+                .max_by_key(|(_, depth)| *depth);
             match root {
-                Some(root) if exists(file) => Resolution::Open {
+                Some((root, depth)) => Resolution::Open {
                     root: root.clone(),
-                    rel: file
-                        .strip_prefix(root)
-                        .map(|r| {
-                            r.components()
-                                .map(|c| c.as_os_str().to_string_lossy())
-                                .collect::<Vec<_>>()
-                                .join("/")
-                        })
-                        .unwrap_or_default(),
+                    rel: file_parts[depth..].join("/"),
                     position,
                 },
-                Some(_) => Resolution::Unavailable("This file no longer exists.".into()),
-                None => Resolution::Unavailable(
-                    "This file is not in a vault you have opened in Okilum.".into(),
-                ),
+                // No known vault has it: the file opens on its own.
+                None => Resolution::Single {
+                    path: file,
+                    position,
+                },
             }
         }
         Address::Note(_) | Address::Task(_) | Address::Project(_) => {
             Resolution::Unavailable(Refused::UnknownKind.message().into())
         }
     }
+}
+
+/// The parts of an absolute path as written on any OS. A Windows path
+/// (`C:/x`, `C:\x`, `\\server\share`, or the verbatim `\\?\C:\x` and
+/// `\\?\UNC\server\share` forms of #1391) is split at `/` and `\` with the
+/// verbatim prefix dropped, so every spelling of one file gives the same
+/// parts; any other path is split at `/` only (a backslash is a name
+/// character there).
+fn parts(path: &str) -> Vec<String> {
+    let bytes = path.as_bytes();
+    let windows = path.starts_with(r"\\")
+        || path.starts_with("//")
+        || (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':');
+    let path = if windows {
+        let path = path.replace('\\', "/");
+        match path.strip_prefix("//?/") {
+            Some(rest) => rest.strip_prefix("UNC/").unwrap_or(rest).to_owned(),
+            None => path,
+        }
+    } else {
+        path.to_owned()
+    };
+    path.split('/')
+        .filter(|part| !part.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn same_part(a: &str, b: &str, fold: bool) -> bool {
+    if fold {
+        a.to_lowercase() == b.to_lowercase()
+    } else {
+        a == b
+    }
+}
+
+/// A vault id as written in a link: what `Uuid` prints, but any run of
+/// letters, digits and `-` of a sane length is read, so another writer's ids
+/// still match.
+pub fn valid_vault_id(id: &str) -> bool {
+    (8..=64).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
 /// Hosts the Reader uses for links inside rendered notes.
@@ -216,12 +301,19 @@ pub fn parse(link: &str) -> Result<Link, Refused> {
             if vault.is_empty() || vault.contains('/') {
                 return Err(Refused::Malformed);
             }
-            Address::Vault { vault, path }
+            Address::Vault {
+                vault,
+                path,
+                id: None,
+            }
         }
         "file" => {
             let path = decode(target);
-            let windows =
-                path.as_bytes().get(1) == Some(&b':') && path.as_bytes()[0].is_ascii_alphabetic();
+            // A verbatim path (`\\?\C:\…`, `\\?\UNC\…`) as Windows hands it
+            // over; every other form must be absolute.
+            let windows = path.as_bytes().get(1) == Some(&b':')
+                && path.as_bytes()[0].is_ascii_alphabetic()
+                || path.starts_with(r"\\?\");
             if !(path.starts_with('/') || windows) {
                 return Err(Refused::Malformed);
             }
@@ -244,6 +336,7 @@ pub fn parse(link: &str) -> Result<Link, Refused> {
         "" => return Err(Refused::Malformed),
         _ => return Err(Refused::UnknownKind),
     };
+    let mut address = address;
     let mut position = Position::default();
     for pair in query.split('&').filter(|p| !p.is_empty()) {
         let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
@@ -252,6 +345,13 @@ pub fn parse(link: &str) -> Result<Link, Refused> {
             "line" => position.line = number(),
             "column" => position.column = number(),
             "page" => position.page = number(),
+            // The vault's own id; one that is not an id is ignored, so the
+            // folder name still decides.
+            "id" => {
+                if let Address::Vault { id, .. } = &mut address {
+                    *id = Some(decode(value)).filter(|value| valid_vault_id(value));
+                }
+            }
             // Forward compatible: unknown parameters are ignored.
             _ => {}
         }
@@ -277,6 +377,13 @@ fn strip_scheme(link: &str) -> Option<&str> {
 /// percent-encoded as UTF-8 with `/` kept, then `line`/`column`/`page` and a
 /// `#heading` or `#^block` fragment. `parse` reads it back exactly.
 pub fn build(vault: &str, rel: &str, position: &Position) -> String {
+    build_with_id(vault, None, rel, position)
+}
+
+/// `build`, with the vault's own id as `?id=` when it has one: the link then
+/// finds the vault on a machine where the folder has another name. A link
+/// without it (every link made before ids) keeps working by folder name.
+pub fn build_with_id(vault: &str, id: Option<&str>, rel: &str, position: &Position) -> String {
     let path = rel.split('/').map(encode).collect::<Vec<_>>().join("/");
     let mut link = format!("okilum://v/{}/{path}", encode(vault));
     let mut query = Vec::new();
@@ -288,6 +395,9 @@ pub fn build(vault: &str, rel: &str, position: &Position) -> String {
     }
     if let Some(page) = position.page {
         query.push(format!("page={page}"));
+    }
+    if let Some(id) = id.filter(|id| valid_vault_id(id)) {
+        query.push(format!("id={id}"));
     }
     if !query.is_empty() {
         link.push('?');
@@ -429,7 +539,7 @@ mod tests {
     fn vault(link: &str) -> (String, String, Position) {
         match parse(link).unwrap() {
             Link {
-                address: Address::Vault { vault, path },
+                address: Address::Vault { vault, path, .. },
                 position,
             } => (vault, path, position),
             other => panic!("{other:?}"),
@@ -495,6 +605,7 @@ mod tests {
                 parsed.address,
                 Address::Vault {
                     vault: vault.into(),
+                    id: None,
                     path: rel.into()
                 },
                 "{link}"
@@ -592,7 +703,14 @@ mod tests {
         ]
         .map(PathBuf::from)
         .to_vec();
-        let r = |link: &str, known: &[PathBuf]| resolve(&parse(link).unwrap(), known, &exists);
+        let canonical = |p: &Path| Some(p.to_owned());
+        let no_id = |_: &Path| None;
+        let env = Env {
+            is_file: &exists,
+            canonical: &canonical,
+            vault_id: &no_id,
+        };
+        let r = |link: &str, known: &[PathBuf]| resolve(&parse(link).unwrap(), known, &env);
         assert_eq!(
             r("okilum://v/Notes/Projects/Plan.md?line=3", &known),
             Resolution::Open {
@@ -634,13 +752,253 @@ mod tests {
             r("okilum://file//home/me/Notes/Sub/Vault/Deep.md", &known),
             Resolution::Open { root, rel, .. } if root == Path::new("/home/me/Notes/Sub/Vault") && rel == "Deep.md"
         ));
+        // A file in no known vault opens on its own (docs/deep-links.md).
+        assert_eq!(
+            r("okilum://file//work/Notes/Plan.md?line=4", &known),
+            Resolution::Single {
+                path: "/work/Notes/Plan.md".into(),
+                position: Position {
+                    line: Some(4),
+                    ..Default::default()
+                }
+            }
+        );
+        // A file that is not there is said, never opened or guessed.
         assert!(matches!(
-            r("okilum://file//work/Notes/Plan.md", &known),
-            Resolution::Unavailable(m) if m.contains("not in a vault")
+            r("okilum://file//work/Notes/Gone.md", &known),
+            Resolution::Unavailable(m) if m.contains("does not exist")
         ));
         // Reserved ids answer with the newer-Okilum message.
         assert!(
             matches!(r("okilum://project/p1", &known), Resolution::Unavailable(m) if m.contains("newer"))
+        );
+    }
+
+    #[test]
+    fn a_vault_id_rides_in_the_link_and_a_bad_one_is_ignored() {
+        let id = "6f1c2a9e-3b7d-4c55-9a10-0d2e8f4b7c31";
+        let link = build_with_id("Brain", Some(id), "Dev/Plan.md", &Position::default());
+        assert_eq!(link, format!("okilum://v/Brain/Dev/Plan.md?id={id}"));
+        assert_eq!(
+            parse(&link).unwrap().address,
+            Address::Vault {
+                vault: "Brain".into(),
+                path: "Dev/Plan.md".into(),
+                id: Some(id.into())
+            }
+        );
+        // With a position the id sits beside it, and both read back.
+        let at = Position {
+            line: Some(7),
+            column: Some(2),
+            ..Default::default()
+        };
+        let link = build_with_id("Brain", Some(id), "Plan.md", &at);
+        assert_eq!(
+            link,
+            format!("okilum://v/Brain/Plan.md?line=7&column=2&id={id}")
+        );
+        let parsed = parse(&link).unwrap();
+        assert_eq!(parsed.position, at);
+        assert!(matches!(parsed.address, Address::Vault { id: Some(_), .. }));
+        // A link made before ids has none and still parses; `build` makes it.
+        assert_eq!(
+            build("Brain", "Plan.md", &Position::default()),
+            "okilum://v/Brain/Plan.md"
+        );
+        assert!(matches!(
+            parse("okilum://v/Brain/Plan.md").unwrap().address,
+            Address::Vault { id: None, .. }
+        ));
+        // Not an id (too short, odd characters, empty): ignored, the folder
+        // name decides, the link is not refused.
+        for bad in [
+            "",
+            "abc",
+            "a b c d e f g h",
+            "../../etc/passwd",
+            "ünïcode-ünïcode",
+        ] {
+            let parsed = parse(&format!("okilum://v/Brain/Plan.md?id={bad}")).unwrap();
+            assert!(
+                matches!(parsed.address, Address::Vault { id: None, .. }),
+                "{bad:?}"
+            );
+        }
+        assert_eq!(
+            build_with_id("Brain", Some("short"), "Plan.md", &at),
+            build("Brain", "Plan.md", &at)
+        );
+        // The id belongs to a vault address only.
+        assert_eq!(
+            parse(&format!("okilum://file//a/b.md?id={id}"))
+                .unwrap()
+                .address,
+            Address::File("/a/b.md".into())
+        );
+    }
+
+    /// The same synced vault is «Obsidian Vault» on three machines and «Brain»
+    /// on idunn: its id finds it under either name (#1414).
+    #[test]
+    fn a_vault_is_found_by_its_id_whatever_its_folder_is_called() {
+        use std::path::{Path, PathBuf};
+        let id = "6f1c2a9e-3b7d-4c55-9a10-0d2e8f4b7c31";
+        let other = "0a9b8c7d-1111-4222-8333-444455556666";
+        let files = [
+            "/home/god/Obsidian Vault/Dev/Plan.md",
+            "/home/god/Notes/Dev/Plan.md",
+            "/srv/copy/Brain/Dev/Plan.md",
+            "/mnt/Brain/Dev/Plan.md",
+        ];
+        let exists = |p: &Path| files.iter().any(|f| Path::new(f) == p);
+        let canonical = |p: &Path| Some(p.to_owned());
+        let ids = |p: &Path| match p.to_str().unwrap() {
+            "/home/god/Obsidian Vault" | "/srv/copy/Brain" => Some(id.to_owned()),
+            "/home/god/Notes" => Some(other.to_owned()),
+            _ => None,
+        };
+        let env = Env {
+            is_file: &exists,
+            canonical: &canonical,
+            vault_id: &ids,
+        };
+        let r = |link: &str, known: &[&str]| {
+            let known: Vec<PathBuf> = known.iter().map(PathBuf::from).collect();
+            resolve(&parse(link).unwrap(), &known, &env)
+        };
+        let from_idunn = format!("okilum://v/Brain/Dev/Plan.md?id={id}&line=5");
+        // Another folder name here: found by id.
+        match r(&from_idunn, &["/home/god/Obsidian Vault", "/data/Archive"]) {
+            Resolution::Open {
+                root,
+                rel,
+                position,
+            } => {
+                assert_eq!(root, Path::new("/home/god/Obsidian Vault"));
+                assert_eq!(rel, "Dev/Plan.md");
+                assert_eq!(position.line, Some(5));
+            }
+            other => panic!("{other:?}"),
+        }
+        // Positive control: the same link without the id is looked up by the
+        // name «Brain» only, and this machine has no such folder.
+        assert!(matches!(
+            r("okilum://v/Brain/Dev/Plan.md", &["/home/god/Obsidian Vault"]),
+            Resolution::Unavailable(m) if m.contains("Brain")
+        ));
+        // An old link (folder name, no id) still opens the vault of that name.
+        assert!(matches!(
+            r(
+                "okilum://v/Obsidian%20Vault/Dev/Plan.md",
+                &["/home/god/Obsidian Vault"]
+            ),
+            Resolution::Open { .. }
+        ));
+        // A folder with the link's name but another id is another vault: not
+        // offered, so the link never opens the wrong notes.
+        assert!(matches!(
+            r(
+                &format!("okilum://v/Notes/Dev/Plan.md?id={id}"),
+                &["/home/god/Notes"]
+            ),
+            Resolution::Unavailable(m) if m.contains("not on this computer")
+        ));
+        // A folder with the name and no id yet (never linked from, or not
+        // synced yet): the name still decides.
+        assert!(matches!(
+            r(
+                &format!("okilum://v/Brain/Dev/Plan.md?id={id}"),
+                &["/mnt/Brain"]
+            ),
+            Resolution::Open { root, .. } if root == Path::new("/mnt/Brain")
+        ));
+        // Two copies of the vault carry the id: a choice, never a guess, and
+        // each says whether the note is there.
+        match r(
+            &from_idunn,
+            &["/home/god/Obsidian Vault", "/srv/copy/Brain"],
+        ) {
+            Resolution::Choose { roots, .. } => {
+                assert_eq!(roots.len(), 2);
+                assert_eq!(roots[0].1.as_deref(), Some("Dev/Plan.md"));
+                assert_eq!(roots[1].1.as_deref(), Some("Dev/Plan.md"));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// #1391/#1414: a Windows file link may spell the path `C:/…`, `C:\…` or
+    /// `\\?\C:\…`, while the known roots are verbatim (`\\?\C:\…`): all of
+    /// them are the same file.
+    #[test]
+    fn windows_spellings_of_one_path_are_the_same_parts() {
+        let same = [
+            r"C:/Users/me/Notes/a.md",
+            r"C:\Users\me\Notes\a.md",
+            r"\\?\C:\Users\me\Notes\a.md",
+        ];
+        for spelling in same {
+            assert_eq!(
+                parts(spelling),
+                ["C:", "Users", "me", "Notes", "a.md"],
+                "{spelling}"
+            );
+        }
+        assert_eq!(parts(r"\\?\UNC\srv\share\Notes"), ["srv", "share", "Notes"]);
+        assert_eq!(parts(r"\\srv\share\Notes"), ["srv", "share", "Notes"]);
+        // Elsewhere a backslash is part of a name.
+        assert_eq!(parts("/home/me/a\\b.md"), ["home", "me", "a\\b.md"]);
+        assert_eq!(parts("/"), Vec::<String>::new());
+        // Folding the case is the caller's decision.
+        assert!(same_part("Notes", "notes", true) && !same_part("Notes", "notes", false));
+
+        // The resolver: a verbatim root and a plain spelling of a file in it.
+        let root = std::path::PathBuf::from(r"\\?\C:\Users\me\Notes");
+        let exists = |_: &std::path::Path| true;
+        let canonical = |p: &std::path::Path| {
+            // What `canonicalize` returns on Windows.
+            let text = p.to_str().unwrap().replace('/', r"\");
+            Some(std::path::PathBuf::from(format!(r"\\?\{text}")))
+        };
+        let no_id = |_: &std::path::Path| None;
+        let env = Env {
+            is_file: &exists,
+            canonical: &canonical,
+            vault_id: &no_id,
+        };
+        let known = [root.clone()];
+        for link in [
+            "okilum://file/C:/Users/me/Notes/Sub/a.md?line=3",
+            "okilum://file/C:%5CUsers%5Cme%5CNotes%5CSub%5Ca.md",
+        ] {
+            match resolve(&parse(link).unwrap(), &known, &env) {
+                Resolution::Open { root: r, rel, .. } => {
+                    assert_eq!(r, root, "{link}");
+                    assert_eq!(rel, "Sub/a.md", "{link}");
+                }
+                other => panic!("{link}: {other:?}"),
+            }
+        }
+        // Another folder on the same drive is not inside the vault.
+        assert!(matches!(
+            resolve(
+                &parse("okilum://file/C:/Users/me/NotesOld/a.md").unwrap(),
+                &known,
+                &env
+            ),
+            Resolution::Single { .. }
+        ));
+        // The verbatim form itself is accepted as a link, and `..` is not.
+        assert_eq!(
+            parse("okilum://file/%5C%5C%3F%5CC%3A%5CUsers%5Cme%5Ca.md")
+                .unwrap()
+                .address,
+            Address::File(r"\\?\C:\Users\me\a.md".into())
+        );
+        assert_eq!(
+            parse("okilum://file/%5C%5C%3F%5CC%3A%5CUsers%5C..%5Ca.md").unwrap_err(),
+            Refused::UnsafePath
         );
     }
 
