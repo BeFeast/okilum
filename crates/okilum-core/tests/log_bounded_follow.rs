@@ -382,3 +382,64 @@ fn rotation_does_not_resurrect_the_remainder_of_an_excluded_unfinished_line() {
     assert_eq!(previous.raw(0).unwrap(), b"actual-final-old");
     assert_eq!(follow.raw(0).unwrap(), b"new");
 }
+
+#[test]
+fn excluded_structured_block_waits_across_polls_for_a_whole_new_head() {
+    let _serial = HEAVY.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("continued.ndjson");
+    std::fs::write(&path, message("TOO_LARGE_BLOCK")).unwrap();
+    let mut follow = LogTail::open(&path).unwrap();
+    append(&path, "    old stack frame\n".repeat(4000).as_bytes());
+    follow.poll().unwrap();
+    assert!(follow.window().oversized && follow.index().is_empty());
+    // Every continuation is newline-terminated; physical-line skip alone is
+    // insufficient to keep the excluded record from reappearing as fragments.
+    for _ in 0..3 {
+        append(&path, b"    ORPHAN_CONTINUATION\n");
+        follow.poll().unwrap();
+        assert!(follow.index().is_empty());
+    }
+    let next = message("REAL_HEAD_AFTER_BLOCK שלום🙂");
+    let cut = next.len() - 4;
+    append(&path, &next.as_bytes()[..cut]);
+    follow.poll().unwrap();
+    assert!(follow.index().is_empty());
+    assert!(
+        !follow.pending().is_empty(),
+        "positive: retain a bounded candidate head"
+    );
+    append(&path, &next.as_bytes()[cut..]);
+    follow.poll().unwrap();
+    assert_eq!(follow.index().len(), 1);
+    assert_eq!(
+        follow.record(0).unwrap().role(Role::Message).unwrap().value,
+        "REAL_HEAD_AFTER_BLOCK שלום🙂"
+    );
+    let absolute = std::fs::metadata(&path).unwrap().len() - next.len() as u64;
+    assert_eq!(
+        follow
+            .window()
+            .absolute_offset(follow.index().get(0).unwrap()),
+        absolute
+    );
+    // A rotation while waiting must not publish an unfinished orphan either.
+    append(&path, "    old stack frame\n".repeat(4000).as_bytes());
+    follow.poll().unwrap();
+    append(&path, b"    unfinished orphan");
+    follow.poll().unwrap();
+    assert!(follow.index().is_empty());
+    std::fs::rename(&path, dir.path().join("old.ndjson")).unwrap();
+    std::fs::write(&path, message("rotated-real")).unwrap();
+    let TailEvent::Reset { previous, .. } = follow.poll().unwrap() else {
+        panic!("rotation detected");
+    };
+    assert!(
+        previous.index().is_empty(),
+        "excluded continuation cannot reappear at finish"
+    );
+    assert_eq!(
+        follow.record(0).unwrap().role(Role::Message).unwrap().value,
+        "rotated-real"
+    );
+}

@@ -148,7 +148,7 @@ impl LogSnapshot {
     ) -> Result<Self> {
         window::bound_lines(&mut w, ReadBudget::default());
         if w.offset > 0 {
-            align(&mut w, format, regex.is_some());
+            align(&mut w, format, regex.is_some(), complete);
         }
         let end = indexed_end(&w.bytes, complete);
         let index = LogIndex::build_format(&w.bytes[..end], format, regex, 1);
@@ -216,16 +216,20 @@ impl LogSnapshot {
         );
     }
     fn discard(&mut self, mut count: usize) {
-        if count == 0 {
-            return;
-        }
         if self.index.format() != Format::Plain && self.index.regex().is_none() {
             while count < self.bytes.len()
                 && !(record::is_record(block::head(&self.bytes[count..]), self.index.format())
                     || block::block_kind(&self.bytes[count..]).is_some())
             {
-                count = memchr::memchr(b'\n', &self.bytes[count..])
-                    .map_or(self.bytes.len(), |at| count + at + 1);
+                let Some(at) = memchr::memchr(b'\n', &self.bytes[count..]) else {
+                    // A possible next head can still be incomplete. Keep it
+                    // pending, never indexed, until a later poll proves it.
+                    if !self.complete_only {
+                        count = self.bytes.len();
+                    }
+                    break;
+                };
+                count += at + 1;
             }
         }
         let bytes = &mut self.bytes;
@@ -323,8 +327,15 @@ impl LogSnapshot {
             oversized: self.info.oversized,
         };
         window::bound_lines(&mut w, ReadBudget::default());
-        if w.offset != self.info.offset {
-            align(&mut w, self.index.format(), self.index.regex().is_some());
+        if w.offset != self.info.offset || (self.info.tail && self.index.is_empty()) {
+            // Empty structured tail = still awaiting a proven record head,
+            // including across polls after excluding a complete long block.
+            align(
+                &mut w,
+                self.index.format(),
+                self.index.regex().is_some(),
+                self.complete_only,
+            );
         }
         self.info.offset = w.offset;
         self.info.oversized |= w.oversized;
@@ -354,7 +365,11 @@ impl LogSnapshot {
         Ok((self.info.offset != old_offset, grown, reindexed))
     }
     pub(super) fn finish(&mut self) {
+        let awaiting_head = self.info.tail && self.index.is_empty();
         self.complete_only = false;
+        if awaiting_head {
+            self.discard(0);
+        }
         self.info.tail |= self.info.end < self.info.file_len;
         self.rebuild();
         self.exclude_oversized();
@@ -387,12 +402,14 @@ fn indexed_end(bytes: &[u8], complete: bool) -> usize {
         bytes.len()
     }
 }
-fn align(w: &mut ReadWindow, format: Format, regex: bool) {
+fn align(w: &mut ReadWindow, format: Format, regex: bool, complete: bool) {
     if regex || format == Format::Plain {
         return;
     }
     w.align_record(|raw| {
-        record::is_record(block::head(raw), format) || block::block_kind(raw).is_some()
+        (complete && !raw.contains(&b'\n'))
+            || record::is_record(block::head(raw), format)
+            || block::block_kind(raw).is_some()
     });
 }
 
