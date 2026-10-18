@@ -26,6 +26,10 @@ BUILD_STEP = "Compile Reader and run quick native regressions"
 class Unavailable(Exception):
     """The remote service could not provide a native result."""
 
+    def __init__(self, message, *, status=None):
+        super().__init__(message)
+        self.status = status
+
 
 class GitHub:
     def __init__(self, token):
@@ -42,7 +46,8 @@ class GitHub:
 
         request = urllib.request.Request(
             f"https://api.github.com/repos/{REPOSITORY}/actions/artifacts/{artifact_id}/zip",
-            headers={"Authorization": f"Bearer {self.token}", "Accept": "application/vnd.github+json"})
+            headers={**({"Authorization": f"Bearer {self.token}"} if self.token else {}),
+                     "Accept": "application/vnd.github+json"})
         try:
             opener = urllib.request.build_opener(NoRedirect)
             try:
@@ -72,7 +77,7 @@ class GitHub:
             f"https://api.github.com/repos/{REPOSITORY}/{path}",
             data=json.dumps(data).encode() if data is not None else None,
             method=method,
-            headers={"Authorization": f"Bearer {self.token}",
+            headers={**({"Authorization": f"Bearer {self.token}"} if self.token else {}),
                      "Accept": "application/vnd.github+json",
                      "X-GitHub-Api-Version": "2022-11-28"},
         )
@@ -83,7 +88,10 @@ class GitHub:
         except (urllib.error.URLError, TimeoutError,
                 http.client.RemoteDisconnected, ConnectionResetError) as error:
             # Avoid printing HTTP response bodies or credential-bearing commands.
-            raise Unavailable(f"GitHub {method} {path.split('?')[0]}: {type(error).__name__}") from None
+            status = error.code if isinstance(error, urllib.error.HTTPError) else None
+            if isinstance(error, urllib.error.HTTPError):
+                error.close()
+            raise Unavailable(f"GitHub {method} {path.split('?')[0]}: {type(error).__name__}", status=status) from None
 
 
 def ref_name(number, sha, run_id, attempt, invocation=None):

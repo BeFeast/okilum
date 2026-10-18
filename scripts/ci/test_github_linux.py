@@ -55,6 +55,7 @@ class LinuxBridgeTests(unittest.TestCase):
                      patch.object(linux.transport, 'GitHub'), \
                      patch.object(linux, 'archived', return_value=None), \
                      patch.object(linux, 'discover', return_value=(None, [])), \
+                     patch.object(linux, 'read_claim', return_value=None), \
                      patch.object(linux, 'resolve'), \
                      patch.object(linux.transport, 'wait_for_run', return_value=(result, 'test')):
                     self.assertEqual(linux.main(), code)

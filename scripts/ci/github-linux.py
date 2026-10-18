@@ -68,8 +68,14 @@ def pages(api, path, key):
     raise transport.Unavailable('Artifact discovery exceeded pagination limit')
 
 
-def jobs(api, run):
+def jobs(api, run, *, allow_pending=False):
     result = pages(api, f"actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs", 'jobs')
+    # Only this API shape conclusively identifies an unstarted cancelled follower.
+    # Missing jobs on success/failure, or a cancelled job with real steps, stay strict.
+    if not result and run['status'] == 'completed' and run['conclusion'] == 'cancelled':
+        return None
+    if not result and allow_pending and run['status'] != 'completed':
+        return None  # The bridge may observe the run before its job materializes.
     native = [job for job in result if job['name'] == 'linux']
     payload.require(len(native) == 1, 'Missing/ambiguous Linux job')
     return native[0]
@@ -78,7 +84,7 @@ def jobs(api, run):
 def accepted(api, run):
     payload.require(run['status'] == 'completed' and run['conclusion'] == 'success', 'Producer not successful')
     job = jobs(api, run)
-    payload.require(job['conclusion'] == 'success' and all(
+    payload.require(job is not None and job['conclusion'] == 'success' and all(
         len([s for s in job['steps'] if s['name'] == name and s['conclusion'] == 'success' and s.get('started_at')]) == 1
         for name in (BUILD_STEP, PRODUCE_STEP)), 'Missing executed full gate/production step')
     return job
@@ -100,6 +106,8 @@ def discover(api, sha, configuration, exclude=None):
             active.append(run)
             continue
         job = jobs(api, run)
+        if job is None:
+            continue
         steps = [s for s in job['steps'] if s['name'] == PRODUCE_STEP and s.get('started_at') and s.get('conclusion') != 'skipped']
         if steps:
             attempted.append(run)
@@ -121,27 +129,104 @@ def discover(api, sha, configuration, exclude=None):
     return None, active
 
 
+def claim_ref(sha, configuration):
+    return 'tags/okilum-production-claims/' + payload.artifact_name(sha, configuration)
+
+
+def read_claim(api, sha, configuration):
+    """An immutable annotated tag outlives runs/artifacts. Only 404 means absent."""
+    ref = claim_ref(sha, configuration)
+    try:
+        result = api.request('git/ref/' + ref)
+    except transport.Unavailable as error:
+        if error.status == 404:
+            return None
+        raise
+    payload.require(result['ref'] == 'refs/' + ref and result['object']['type'] == 'tag', 'Invalid production claim ref')
+    tag = api.request('git/tags/' + result['object']['sha'])
+    value = json.loads(tag['message'])
+    payload.require(tag['tag'] == ref.removeprefix('tags/') and tag['object']['type'] == 'commit' and tag['object']['sha'] == sha
+        and value.get('schema') == 1 and value.get('identity') == payload.artifact_name(sha, configuration),
+        'Invalid production claim identity')
+    producer(value['run'], sha)
+    return value
+
+
+def authorize_claim(api, run, sha, configuration):
+    """Bridge-only mutation while the hosted lock holder waits before Cargo.
+
+    Creating the ref is the atomic ownership operation; never update/delete it.
+    A lost POST response is reconciled by reading the winner, not by overwriting.
+    """
+    if run['status'] != 'in_progress':
+        return
+    p = producer(run, sha)
+    job = jobs(api, run, allow_pending=True)
+    if job is None:
+        return
+    if not any(s['name'] == PRODUCE_STEP and s.get('started_at') and s.get('status') == 'in_progress'
+               for s in job['steps']):
+        return
+    # Reruns may reuse accepted bytes, but cannot acquire a new compiler claim.
+    if p['attempt'] != 1:
+        return
+    payload.require(sum(s['name'] == BUILD_STEP and s.get('conclusion') == 'success'
+                    and bool(s.get('started_at')) for s in job['steps']) == 1, 'Claim requires first attempt and executed full gate')
+    expected = dict(schema=1, identity=payload.artifact_name(sha, configuration), run={
+        **{k: run[k] for k in ('id', 'run_attempt', 'head_sha', 'event', 'path', 'head_branch')},
+        'repository': {'full_name': p['repository']}})
+    existing = read_claim(api, sha, configuration)
+    if existing is None:
+        ref = claim_ref(sha, configuration)
+        tag = api.request('git/tags', 'POST', dict(tag=ref.removeprefix('tags/'),
+            message=json.dumps(expected, sort_keys=True), object=sha, type='commit'))
+        try:
+            api.request('git/refs', 'POST', dict(ref='refs/' + ref, sha=tag['sha']))
+        except transport.Unavailable:
+            # Includes create conflict and ambiguous network failure. A failed read
+            # remains unavailable; absence never grants permission to the compiler.
+            existing = read_claim(api, sha, configuration)
+            payload.require(existing is not None, 'Production claim creation not confirmed')
+        else:
+            existing = read_claim(api, sha, configuration)
+    # An already accepted owner's follower may be reusing bytes. The producer
+    # itself enforces ownership if it actually needs a new compiler invocation.
+    return existing == expected
+
+
+def await_claim(api, current, sha, configuration, *, sleep=time.sleep, clock=time.monotonic, timeout=180):
+    deadline = clock() + timeout
+    while True:
+        claim = read_claim(api, sha, configuration)
+        if claim is not None:
+            payload.require(claim['run']['id'] == current['id'] and claim['run']['run_attempt'] == 1
+                            and producer(claim['run'], sha) == producer(current, sha)
+                            and claim['run']['head_branch'] == current['head_branch'],
+                            'Production identity already claimed; explicit recovery required')
+            return
+        payload.require(clock() < deadline, 'Bridge did not confirm durable production claim; no compilation')
+        sleep(5)
+
+
 def download(api, match, sha, configuration, output, inspector=payload.verify_binary):
     run, p, artifact, job = match
     saved = output / 'receipt.json'
     if saved.exists():
         payload.require(not saved.is_symlink(), 'Unsafe saved receipt')
         receipt = json.loads(saved.read_text())
-        m = payload.validate_receipt(receipt, sha, configuration)
+        m = payload.validate_receipt(receipt, sha, configuration, trusted_envelope=True)
         payload.require(m['producer'] == p and receipt['artifact_id'] == artifact['id']
                         and receipt['artifact_api_digest'] == artifact['digest'], 'Saved receipt differs from accepted producer')
-        binary = output / 'payload/okilum'
-        payload.require(binary.is_file() and not binary.is_symlink() and not binary.parent.is_symlink(), 'Unsafe saved executable')
-        actual = inspector(binary, m)
-        payload.require(all(actual[k] == m['elf'][k] for k in actual if k != 'runtime_libraries'), 'Saved binary facts changed')
-        archive = output / (payload.artifact_name(sha, configuration) + '.tar.zst')
-        if archive.exists():
-            payload.require(not archive.is_symlink() and payload.digest(archive.read_bytes()) == receipt['archive_sha256'],
-                            'Saved archive checksum mismatch')
-            payload.require(archive.with_suffix('.zst.sha256').read_text() == receipt['archive_sha256'] + '  ' + archive.name + '\n',
-                            'Saved outer checksum changed')
-        return receipt
-    data = api.download_artifact(artifact['id'])
+    else:
+        receipt = None
+    zip_path = output / 'artifact.zip'
+    if receipt and zip_path.exists():
+        payload.require(zip_path.is_file() and not zip_path.is_symlink(), 'Unsafe saved artifact ZIP')
+        data = zip_path.read_bytes()
+    else:
+        # Legacy saved outputs lack the original ZIP: redownload, never trust tar
+        # or digests supplied by the same unsigned receipt being checked.
+        data = api.download_artifact(artifact['id'])
     # upload-artifact v4 hashes the immutable ZIP stream; enforce the API's
     # SHA256 as well as the independent packaged tar and per-file checksums.
     payload.require(artifact['digest'] == 'sha256:' + payload.digest(data), 'Hosted artifact digest mismatch')
@@ -153,6 +238,29 @@ def download(api, match, sha, configuration, output, inspector=payload.verify_bi
                     and e.file_size < 1024 ** 3 for e in entries), 'Unsafe/incomplete artifact ZIP')
         packed = archive.read(name)
         checksum = archive.read(name + '.sha256').decode()
+    if receipt:
+        with tempfile.TemporaryDirectory() as temporary:
+            verified = Path(temporary) / 'payload'
+            canonical = payload.unpack(packed, checksum, verified, sha, configuration, p, payload.verify_binary)
+            payload.require(canonical == m and payload.digest(packed) == receipt['archive_sha256'],
+                            'Saved receipt differs from immutable artifact')
+            destination = output / 'payload'
+            payload.require(destination.is_dir() and not destination.is_symlink(), 'Unsafe saved payload')
+            for member in payload.FILES | {'SHA256SUMS'}:
+                local = destination / member
+                payload.require(local.is_file() and not local.is_symlink()
+                                and local.read_bytes() == (verified / member).read_bytes(), 'Saved payload differs from immutable artifact')
+            inspector(destination / 'okilum', canonical)
+        archive_path = output / name
+        if archive_path.exists():
+            payload.require(archive_path.is_file() and not archive_path.is_symlink()
+                            and archive_path.read_bytes() == packed, 'Saved tar differs from immutable artifact')
+            outer = archive_path.with_suffix('.zst.sha256')
+            payload.require(outer.is_file() and not outer.is_symlink()
+                            and outer.read_text() == checksum, 'Saved outer checksum differs from immutable artifact')
+        if not zip_path.exists():
+            zip_path.write_bytes(data)
+        return receipt
     m = payload.unpack(packed, checksum, output / 'payload', sha, configuration, p, inspector)
     # Retain all three checksum layers independently in the durable receipt.
     receipt = dict(schema=1, manifest=m, artifact_id=artifact['id'], producer=p,
@@ -164,6 +272,7 @@ def download(api, match, sha, configuration, output, inspector=payload.verify_bi
     (output / 'receipt.json').write_bytes(payload.encode(receipt))
     (output / name).write_bytes(packed)
     (output / (name + '.sha256')).write_text(checksum)
+    zip_path.write_bytes(data)
     return receipt
 
 
@@ -214,13 +323,13 @@ def archived(sha, configuration, output, *, fetch=public_read, verify=verify_sig
                             and payload.digest(data) == asset['sha256'], 'Archived asset checksum mismatch')
             (root / asset['name']).write_bytes(data)
         verify(root / name, root / (name + '.sig'))
-        receipt, binary = payload.package_receipt(root / name, sha, build)
-    m = payload.validate_receipt(receipt, sha, configuration)
+        receipt, binary = payload.package_receipt(root / name, sha, build, trusted_envelope=True)
+    m = payload.validate_receipt(receipt, sha, configuration, trusted_envelope=True)
     destination = output / 'payload'
     if destination.exists():
         saved = output / 'receipt.json'
         payload.require(saved.is_file() and not saved.is_symlink() and not destination.is_symlink(), 'Incomplete saved archive payload')
-        previous = payload.validate_receipt(json.loads(saved.read_text()), sha, configuration)
+        previous = payload.validate_receipt(json.loads(saved.read_text()), sha, configuration, trusted_envelope=True)
         payload.require(previous == m and (destination / 'okilum').is_file()
                         and not (destination / 'okilum').is_symlink()
                         and (destination / 'okilum').read_bytes() == binary, 'Saved signed-archive payload changed')
@@ -237,7 +346,7 @@ def archived(sha, configuration, output, *, fetch=public_read, verify=verify_sig
 
 
 def resolve(api, sha, output, *, configuration=None, timeout=6300, sleep=time.sleep, clock=time.monotonic,
-            inspector=payload.verify_binary):
+            inspector=payload.verify_binary, authorize=False):
     configuration = configuration or payload.config()
     evidence = output / 'delivery.jsonl'
     event(evidence, 'artifact_requested', sha, config=configuration)
@@ -255,6 +364,9 @@ def resolve(api, sha, output, *, configuration=None, timeout=6300, sleep=time.sl
                   qa_state='waiting')
             return receipt
         payload.require(active, 'No canonical producer/artifact for this exact source; no compiler fallback')
+        if authorize:
+            for run in active:
+                authorize_claim(api, run, sha, configuration)
         event(evidence, 'producer_queued_or_running', sha, runs=[dict(id=r['id'], state=r['status'],
               created_at=r['created_at'], run_started_at=r.get('run_started_at')) for r in active])
         payload.require(clock() < deadline, 'Existing producer wait deadline exceeded; not redispatched')
@@ -280,17 +392,6 @@ def provenance():
                      'cargo_incremental': '0', 'cargo_build_jobs': '4', 'profile_overrides': 'repository defaults'})
 
 
-def admit_new_source(sha, clock=time.time):
-    # Run discovery is the production tombstone while hosted artifacts expire.
-    # Refuse old cold identities, so eventual CI-history retention cannot turn an
-    # expired/unavailable payload into permission to compile it again. Archived
-    # signed payloads are resolved before this admission check, without an age limit.
-    committed = int(subprocess.check_output(['git', 'show', '-s', '--format=%ct', sha], text=True).strip())
-    age = clock() - committed
-    payload.require(-300 <= age < 3 * 86400,
-                    'No accepted payload for an old/future source; explicit recovery required')
-
-
 def produce(api, sha, output, *, run_id=None):
     """Called only inside the workflow SHA/config lock, after the unchanged full gate."""
     configuration = payload.config()
@@ -314,7 +415,18 @@ def produce(api, sha, output, *, run_id=None):
         raise ValueError('Rerun has no accepted payload; explicit recovery required')
     payload.require(subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == sha,
                     'Checkout differs from production source')
-    admit_new_source(sha)
+    # The durable tag binds the exact workflow run/attempt under this lock. Hosted
+    # credentials only read it; the bridge creates it while this step waits.
+    await_claim(api, current, sha, configuration)
+    output.mkdir(parents=True, exist_ok=True)
+    # Actions never restarts a step in the same run attempt. Also fail closed on
+    # manual process restarts in that workspace; reruns on new runners increment
+    # GITHUB_RUN_ATTEMPT and were rejected above, even after artifact/history loss.
+    # Keep this outside the configurable output directory: changing the output
+    # path in the same Actions attempt must not authorize a second invocation.
+    invocation = Path(os.environ['RUNNER_TEMP']) / (payload.artifact_name(sha, configuration) + '-compiler.claim')
+    with invocation.open('x') as marker:
+        marker.write(json.dumps(p, sort_keys=True))
     m = dict(timing={'hosted_created': current['created_at'], 'hosted_run_started': current.get('run_started_at'),
                     'hosted_job_started': jobs(api, current)['started_at']},
         schema=1, source_sha=sha, config=configuration, target=payload.TARGET,
@@ -359,9 +471,11 @@ def main(command='request'):
                 return 0
             match, active = discover(api, sha, configuration)
             if match or active:
-                resolve(api, sha, output, configuration=configuration)
+                resolve(api, sha, output, configuration=configuration, authorize=True)
                 result = 'success'
                 return 0
+            payload.require(read_claim(api, sha, configuration) is None,
+                            'Production identity previously claimed but payload unavailable; explicit recovery required')
             # Cold exact source: unique request metadata carries the original
             # Forgejo number; the workflow SHA lock arbitrates simultaneous requests.
             branch = transport.ref_name(os.environ.get('PR_NUMBER') or '1', sha, os.environ['GITHUB_RUN_ID'],
@@ -375,6 +489,7 @@ def main(command='request'):
             transport.push_head(branch, sha, token)
             observed = []
             def record_run(run):
+                authorize_claim(api, run, sha, configuration)
                 state = (run['id'], run['status'], run.get('conclusion'))
                 if not observed or observed[-1] != state:
                     observed.append(state)

@@ -140,17 +140,17 @@ class LinuxBinaryTests(unittest.TestCase):
             entries = [('usr/bin/okilum', binary_bytes(), tarfile.REGTYPE),
                        ('usr/share/okilum/production-receipt.json', package.encode(receipt()), tarfile.REGTYPE)]
             path.write_bytes(tar_data(entries))
-            r, binary = package.package_receipt(path, SHA, 14108)
+            r, binary = package.package_receipt(path, SHA, 14108, trusted_envelope=True)
             self.assertEqual(binary, binary_bytes())
             self.assertEqual(r['manifest']['producer']['forgejo_run_number'], 9108)
             for wrong in (entries[:1], entries + [entries[0]],
                           [(entries[0][0], b'stripped', tarfile.REGTYPE), entries[1]]):
                 path.write_bytes(tar_data(wrong))
                 with self.assertRaises(ValueError):
-                    package.package_receipt(path, SHA, 14108)
+                    package.package_receipt(path, SHA, 14108, trusted_envelope=True)
             path.write_bytes(tar_data(entries))
             with self.assertRaises(ValueError):
-                package.package_receipt(path, SHA, 14109)
+                package.package_receipt(path, SHA, 14109, trusted_envelope=True)
 
     def test_executed_inspector_detects_elf_runtime_and_harness_controls(self):
         from unittest.mock import patch

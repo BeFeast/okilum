@@ -4,7 +4,9 @@ import argparse
 from datetime import datetime
 import hashlib
 import io
+import importlib.util
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -197,7 +199,12 @@ def unpack(data, checksum, output, sha, configuration, producer=None, inspector=
     return m
 
 
-def validate_receipt(receipt, source, configuration):
+def validate_receipt(receipt, source, configuration, *, trusted_envelope=False):
+    """Validate fields and independently authenticate unsigned local receipts.
+
+    Only the resolver's API-digest-bound ZIP or verified package signature can
+    supply trusted_envelope=True. Local tar/checksum/receipt fields cannot.
+    """
     m = validate_manifest(receipt.get('manifest', {}), source, configuration, receipt.get('producer'))
     require(receipt.get('schema') == 1 and receipt.get('producer') == m['producer']
             and type(receipt.get('artifact_id')) is int and receipt['artifact_id'] > 0
@@ -208,10 +215,31 @@ def validate_receipt(receipt, source, configuration):
     require(receipt['artifact_api_digest'] == 'sha256:' + receipt['artifact_zip_sha256']
             and timestamp(receipt['hosted_created']) <= timestamp(receipt['hosted_job_started'])
             <= timestamp(receipt['verified_at']) < timestamp(receipt['expires_at']), 'Invalid accepted checksum/timing receipt')
+    if not trusted_envelope:
+        authenticate_receipt(receipt, source, configuration)
     return m
 
 
-def package_receipt(path, source, build):
+def receipt_authority():
+    # Lazy import avoids a module initialization cycle with the transport. No
+    # app execution: the resolver uses the static ELF/digest inspector here.
+    spec = importlib.util.spec_from_file_location('receipt_authority', Path(__file__).with_name('github-linux.py'))
+    authority = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(authority)
+    return authority
+
+
+def authenticate_receipt(receipt, source, configuration):
+    authority = receipt_authority()
+    api = authority.transport.GitHub(os.environ.get('MIRROR_TOKEN') or os.environ.get('GH_TOKEN') or '')
+    with tempfile.TemporaryDirectory() as temporary:
+        canonical = authority.resolve(api, source, Path(temporary), configuration=configuration)
+    require(all(receipt.get(k) == canonical.get(k) for k in (
+        'manifest', 'producer', 'artifact_id', 'artifact_api_digest', 'artifact_zip_sha256', 'archive_sha256')),
+        'Unsigned receipt differs from independently authenticated artifact')
+
+
+def package_receipt(path, source, build, *, trusted_envelope=False):
     """Read exact regular members without extracting package-controlled paths."""
     raw = subprocess.check_output(['zstd', '-q', '-d', '-c', str(path)])
     with tarfile.open(fileobj=io.BytesIO(raw), mode='r:') as archive:
@@ -227,7 +255,7 @@ def package_receipt(path, source, build):
             require(len(entries) == 1 and entries[0].isfile(), 'Missing/unsafe production package member')
             wanted[name] = archive.extractfile(entries[0]).read()
     receipt = json.loads(wanted['usr/share/okilum/production-receipt.json'])
-    m = validate_receipt(receipt, source, receipt.get('manifest', {}).get('config', ''))
+    m = validate_receipt(receipt, source, receipt.get('manifest', {}).get('config', ''), trusted_envelope=trusted_envelope)
     require(m['build'] == build and digest(wanted['usr/bin/okilum']) == m['binary_sha256'],
             'Package/source/build/binary drift (including stripping)')
     return receipt, wanted['usr/bin/okilum']

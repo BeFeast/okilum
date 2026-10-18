@@ -34,6 +34,12 @@ PR_HEAD_SHA="$(git rev-parse HEAD)" python3 scripts/ci/github-linux.py resolve
 This discovers the full SHA/config identity, verifies the successful full gate,
 producer/run attempt, artifact lifetime/linkage, immutable ZIP digest, outer tar
 checksum, complete internal checksums and production manifest before extracting.
+Saved output retains the original `artifact.zip`. Every resume fetches accepted
+API metadata again and hashes that ZIP against the API digest, then derives the
+manifest and compares every payload member through its checked inner tar. A
+legacy output without the ZIP redownloads it. Edited receipt/tar checksums alone
+cannot authorize changed executable bytes.
+
 The bridge validates ELF identity and the producer's executed build-info receipt
 without launching the app. Arch repeats build-info/ELF/runtime validation before
 packaging. Run native QA on the verified `dist/linux-production/payload/okilum`
@@ -48,12 +54,39 @@ the temporary ref; GitHub run numbers and later packaging runs never renumber it
 PR-head bytes cannot be relabelled as merge-SHA bytes. Repeated accepted requests
 reuse evidence; active requests wait. Simultaneous cold requests are serialized
 by the existing workflow's SHA lock and recheck acceptance before compiling.
-If an attempted producer has no valid artifact, recovery requires an explicit
-investigation; there is no cache-miss compiler fallback. A cold source must be
-less than three days old (and not future-dated by more than five minutes). Older
-cold identities are unavailable rather than rebuilt after CI-history retention;
-accepted hosted or signed archive payloads are resolved before this age check. GitHub can cancel excess
-pending concurrency requests; such a request fails, never counts as success.
+Commit timestamps do not control first-build eligibility: old and future-dated
+never-attempted source commits use the same path. The bridge uses its existing
+mirror credential to create an annotated Git tag under
+`refs/tags/okilum-production-claims/<artifact-name>`. The artifact name includes
+full SHA, target, profile and configuration. The tag points at the source commit
+and records the exact hosted run ID/attempt/ref and original Forgejo identity.
+It is durable operational state: never delete this namespace with temporary
+invocation refs, artifacts, CI history or caches.
+
+The bridge creates this claim only while the hosted workflow lock holder is
+executing the production step after its successful full gate. The hosted process
+waits up to three minutes for the claim, using only its existing read-only token.
+No extra hosted secrets or write permissions are needed. Ref creation is atomic;
+competing bridge observers read the winner rather than updating it. A lost create
+response is reconciled by reading the same ref. Only an explicit API 404 means
+no claim; permission errors and outages never authorize compilation.
+
+The first run attempt matching that claim may invoke the shipping compiler once.
+Actions step execution is once per run attempt; an exclusive invocation marker in `RUNNER_TEMP`
+additionally rejects a process restart even with a different output directory. A GitHub rerun
+on a fresh runner has a higher attempt and cannot compile. Another run cannot use
+the claim, even if the earlier run's API history and artifact have disappeared.
+Accepted hosted or signed archive bytes are resolved first, including on reruns.
+If a claimed identity has no valid bytes, explicit recovery is required. There
+is no automatic claim deletion, transfer or cache-miss compiler fallback.
+
+A crash before claim creation has not authorized compilation. A crash after
+claim creation, including before Cargo starts or during upload, conservatively
+leaves a tombstone; it can strand an identity, never silently rebuild it. Recovery
+is an operator-authorized exception outside the normal request helper. GitHub
+may cancel excess pending runs. A completed/cancelled run with **no jobs** is
+ignored during discovery; success with missing jobs is still invalid, and an
+actual production step retains its no-recompile tombstone.
 
 Hosted production artifacts expire after three days. Once packaged, the existing
 signed Arch archive retains the exact executable and original producer receipt;
@@ -131,3 +164,33 @@ API run id, so `GET /actions/runs/6123/jobs` reads another run or nothing.
     (likely infrastructure).
 
   Files are kept for 30 days. Start with `column -t -s$'\t' index.tsv | tail`.
+
+## Receipt and fork consumer interfaces (#1431)
+
+`validate_receipt(receipt, source, configuration)` and
+`package_receipt(path, source, build)` authenticate unsigned local receipts by
+resolving the original accepted hosted artifact or a signed archive independently.
+They use static ELF/digest inspection before any native execution. Public reads
+can be anonymous; an existing `MIRROR_TOKEN`/`GH_TOKEN` supports authenticated API
+reads without forwarding Authorization to artifact storage.
+
+The optional `trusted_envelope=True` skips only that independent fetch. It is for
+the resolver after API ZIP digest verification, or after the caller has verified
+the package signature using the configured key. It must never be inferred from
+editable receipt fields, tar checksums, a file's local existence, or fork CI
+success. Package/manifest/source/build/binary checks still apply.
+
+The parallel Arch `reuse-package.py` owner should validate the signed package
+with this option **after** `verify_signature`, compare its canonical manifest and
+immutable receipt fields with the selected prebuilt bytes, and retain the signed
+receipt. This also permits build-archive recovery before source descriptor
+publication. Parsing untrusted fields to find that archive is not authorization.
+Fixture tests at those call sites must inject `receipt_authority()` with a fake
+resolver or explicitly mock `authenticate_receipt`; they must not call live APIs.
+
+Fork validation remains a separate isolated, unsigned producer/consumer path.
+It must not request canonical claims, receive mirror credentials, adopt canonical
+producer eligibility or use `trusted_envelope=True` to relabel a fork receipt.
+Its own schema and local gate evidence are owned by the fork helper/workflow.
+`public_read` and `verify_signature` interfaces are unchanged. No fork workflow
+or Arch-owned file is changed by the transport fixes.
