@@ -88,7 +88,7 @@ binary.write_bytes(bytes.fromhex(os.environ['FAKE_ELF']))
     def produce(self):
         return fork.produce(self.out, IDENTITY, f.CONFIG, inspector)
 
-    def test_one_production_compilation_reuse_and_no_secret_requirement(self):
+    def test_one_local_production_compilation_reuse_and_no_secret_requirement(self):
         with patch.dict(os.environ, {'MIRROR_TOKEN': '', 'GH_TOKEN': '', 'FORGEJO_TOKEN': ''}):
             self.assertTrue(self.produce())
             self.assertFalse(self.produce())
@@ -102,6 +102,23 @@ binary.write_bytes(bytes.fromhex(os.environ['FAKE_ELF']))
         # Positive detector control: a second direct compiler invocation is seen.
         subprocess.run(['cargo', 'build'], check=True)
         self.assertEqual(self.counter.read_text(), 'compile\ncompile\n')
+
+    def test_independent_fork_run_same_source_has_only_local_deduplication(self):
+        # Accepted #1431 boundary: unsigned fork compatibility has no canonical
+        # lifetime claim. Another independent first-attempt run may compile.
+        self.assertTrue(self.produce())
+        self.assertFalse(self.produce())
+        other = dict(IDENTITY, run_id=IDENTITY['run_id'] + 1, run_number=IDENTITY['run_number'] + 1)
+        output = self.root / 'independent-run/dist/linux-fork'
+        self.assertTrue(fork.produce(output, other, f.CONFIG, inspector))
+        self.assertFalse(fork.produce(output, other, f.CONFIG, inspector))
+        fork.verify(output, other, f.CONFIG, inspector)
+        self.assertEqual(self.counter.read_text(), 'compile\ncompile\n')
+        for path in (self.out, output):
+            receipt = json.loads((path / 'receipt.json').read_text())
+            self.assertEqual(receipt['manifest']['source_sha'], f.SHA)
+            self.assertEqual(receipt['manifest']['config'], f.CONFIG)
+            self.assertFalse(receipt['publication_eligible'])
 
     def test_failed_attempt_or_missing_payload_cannot_trigger_consumer_compile(self):
         self.out.mkdir(parents=True)

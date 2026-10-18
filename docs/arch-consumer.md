@@ -15,8 +15,10 @@ checkout against the selected SHA before resolution, and payload consumption
 continues to validate that source and its production configuration digest. A
 historical source with different tooling fails without source substitution.
 
-Before `makepkg`, `scripts/arch/reuse-package.py` looks up the immutable archive by
-the verified receipt's original producer build number. This does not depend on a
+Before unsigned receipt resolution or `makepkg`, `scripts/arch/reuse-package.py`
+looks up the immutable archive by the structurally validated receipt's original
+producer build number. Those unsigned fields locate bytes; the package signature
+establishes authority before its embedded receipt is trusted. This does not depend on a
 source catalog descriptor: the archive can already exist when feed/catalog
 publication was interrupted. An existing archive must have its original signed
 package, matching archive checksum, full source/configuration, embedded producer
@@ -25,7 +27,16 @@ signature and original embedded receipt into the packaging artifact. A fresh
 hosted download may advance verification timestamps, but cannot change any of
 those immutable identities. No new package counter is assigned.
 
-Only an entirely absent build archive permits `makepkg`. A partial archive needs
+The caller uses trusted receipt field validation only after the helper has proved
+signed reuse; neither environment nor receipt flags select it. Static source,
+configuration and executable digest checks and executed ELF/build-info inspection
+remain before success. Thus a supplied prebuilt can recover a signed build archive
+after hosted expiry even when its source descriptor has not yet been published.
+The upstream resolver still needs hosted evidence or a source descriptor to
+discover an otherwise unknown build; this does not add build discovery.
+
+Only an entirely absent build archive with independently authenticated unsigned
+receipt authority permits `makepkg`. A partial archive needs
 explicit recovery. An existing local package with different metadata is rejected;
 immutable archive contents are never overwritten to accommodate repackaging.
 The protected publisher also verifies and retains the archived signature on an

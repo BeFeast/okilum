@@ -1,5 +1,6 @@
 """Historical selection and exact-package recovery; fake transport/signing/tools only."""
 import argparse
+import base64
 import copy
 import importlib.util
 import json
@@ -413,6 +414,195 @@ class SignedAuthority(unittest.TestCase):
     def reuse(self):
         return recovery.reuse(SHA, self.prebuilt, self.root / 'out',
                               fetch=self.fetch, verify=self.verify)
+
+    def entrypoint(self, case, *, inspection=''):
+        """Actual shell entrypoint, real receipt authority, fixture-only external I/O.
+
+        No authenticate_receipt/resolve/inspect substitution: ZIP/API validation,
+        package parsing and executed build-info parsing all run. Only API/storage,
+        byte-bound signature verification and native command output are doubles.
+        """
+        root = self.root / case
+        root.mkdir()
+        (root / 'scripts').symlink_to(ROOT / 'scripts', target_is_directory=True)
+        tools = root / 'tools'
+        tools.mkdir()
+        state = dict(runs=self.hosted.runs, artifacts=self.hosted.artifacts, jobs=self.hosted.jobs,
+            data={k: base64.b64encode(v).decode() for k, v in self.hosted.data.items()},
+            objects={k: base64.b64encode(v).decode() for k, v in self.objects.items()},
+            package=base64.b64encode(self.data).decode(), signature=base64.b64encode(self.signature).decode(),
+            receipt=self.receipt)
+        (root / 'fixture.json').write_text(json.dumps(state))
+        for tool in ('cargo', 'rustc', 'makepkg'):
+            path = tools / tool
+            path.write_text('#!/bin/sh\necho ' + tool + ' >> "$TOOL_COUNTER"\nexit 97\n')
+            path.chmod(0o755)
+        (tools / 'git').write_text('#!/bin/sh\n[ "$*" = "rev-parse HEAD" ] || exit 98\necho ' + SHA + '\n')
+        (tools / 'git').chmod(0o755)
+        bootstrap = r'''import base64, importlib.util, json, os, pathlib, runpy, subprocess, sys
+sys.path.insert(0, os.environ['FIXTURE_CI'])
+from test_linux_artifact_reuse import Store
+state = json.loads(pathlib.Path('fixture.json').read_text())
+def log(name, value):
+    with pathlib.Path(name).open('a') as stream: stream.write(value + '\n')
+class API(Store):
+    def request(self, path, method='GET', data=None):
+        log('api-called', method + ' ' + path)
+        assert method == 'GET', 'Consumer cannot mutate canonical claims or dispatch'
+        return super().request(path, method, data)
+    def download_artifact(self, artifact_id):
+        log('zip-downloaded', str(artifact_id))
+        return super().download_artifact(artifact_id)
+api = API()
+for field in ('runs', 'artifacts', 'jobs'):
+    setattr(api, field, {int(k): v for k, v in state[field].items()})
+api.data = {int(k): base64.b64decode(v) for k, v in state['data'].items()}
+def fetch(key):
+    log('storage-read', key)
+    raw = state['objects'].get(key)
+    return base64.b64decode(raw) if raw is not None else None
+def verify(package, signature):
+    assert package.read_bytes() == base64.b64decode(state['package']), 'Unauthenticated package bytes'
+    assert signature.read_bytes() == base64.b64decode(state['signature']), 'Unauthenticated signature bytes'
+    log('verified', 'exact archived bytes')
+# The synthetic ELF is never executed. Real inspect/build_info consume these
+# external-command outputs, including deliberately wrong identity/ELF controls.
+original_output, original_run = subprocess.check_output, subprocess.run
+def command(args, **kwargs):
+    if args[0] == 'readelf':
+        log('inspected', ' '.join(args[:2]))
+        if args[1] == '-lW': return '[Requesting program interpreter: /lib64/ld-linux-x86-64.so.2]'
+        if args[1] == '-dW':
+            return '(NEEDED) [changed.so]' if os.environ['BAD_INSPECTION'] == 'elf' else '(NEEDED) [libc.so.6]'
+        if args[1] == '-VW': return 'GLIBC_2.39'
+        raise AssertionError(args)
+    if args[-1] == '--build-info':
+        log('inspected', '--build-info')
+        facts = dict(state['receipt']['manifest']['elf']['build_info'])
+        if os.environ['BAD_INSPECTION'] == 'identity': facts['brain'] = 'no'
+        return ''.join(k + ': ' + v + '\n' for k, v in facts.items())
+    if args[0] == 'ldd':
+        log('inspected', 'ldd')
+        return 'fixture runtime resolved'
+    return original_output(args, **kwargs)
+def run(args, **kwargs):
+    if args[-1] == '--help':
+        log('inspected', '--help')
+        return subprocess.CompletedProcess(args, 0)
+    return original_run(args, **kwargs)
+subprocess.check_output, subprocess.run = command, run
+original = importlib.util.spec_from_file_location
+def spec(name, path, *a, **kw):
+    result = original(name, path, *a, **kw)
+    execute = result.loader.exec_module
+    def load(module):
+        execute(module)
+        if str(path).endswith('package-linux-binary.py'):
+            module.config = lambda: state['receipt']['manifest']['config']
+        if str(path).endswith('github-linux.py'):
+            module.transport.GitHub = lambda token: api
+            module.public_read, module.verify_signature = fetch, verify
+            archived = module.archived
+            module.archived = lambda *a, **kw: archived(*a, fetch=fetch, verify=verify, **kw)
+    result.loader.exec_module = load
+    return result
+importlib.util.spec_from_file_location = spec
+if sys.argv[1] == '-':
+    exec(compile(sys.stdin.read(), '<build.sh inline>', 'exec'))
+else:
+    sys.argv = sys.argv[1:]
+    runpy.run_path(sys.argv[0], run_name='__main__')
+'''
+        (tools / 'python3').write_text('#!' + sys.executable + '\n' + bootstrap)
+        (tools / 'python3').chmod(0o755)
+        env = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ['PATH'],
+            OKILUM_PREBUILT_DIR=str(self.prebuilt), FIXTURE_CI=str(ROOT / 'scripts/ci'),
+            TOOL_COUNTER=str(root / 'tools-called'), BAD_INSPECTION=inspection,
+            OKILUM_FORK_VALIDATION='0', OKILUM_SETTINGS_UI_HARNESS='0', MIRROR_TOKEN='', GH_TOKEN='')
+        result = subprocess.run(['bash', str(ROOT / 'scripts/arch/build.sh')], cwd=root,
+                                env=env, text=True, capture_output=True)
+        return result, root, env
+
+    def test_whole_entrypoint_signed_recovery_after_expiry_with_positive_tool_detectors(self):
+        self.hosted.artifacts[1][0]['expired'] = True
+        # Exercise the actual default authority first: no descriptor and expired
+        # hosted metadata reject the selected receipt without a signed envelope.
+        self.assertNotIn(f'okilum/releases/{SHA}/linux.json', self.objects)
+        with self.assertRaisesRegex(ValueError, 'Production artifact expired'):
+            recovery.payload.validate_receipt(self.receipt, SHA, CONFIG)
+        result, root, env = self.entrypoint('signed')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((root / 'dist/arch' / self.name).read_bytes(), self.data)
+        self.assertEqual((root / 'dist/arch' / (self.name + '.sig')).read_bytes(), self.signature)
+        self.assertEqual((root / 'dist/arch/production-receipt.json').read_bytes(), payload.encode(self.receipt))
+        self.assertEqual((root / 'verified').read_text(), 'exact archived bytes\n')
+        self.assertEqual((root / 'inspected').read_text().splitlines(),
+                         ['readelf -lW', 'readelf -dW', 'readelf -VW', '--build-info', '--help', 'ldd'])
+        self.assertFalse((root / 'api-called').exists())
+        self.assertFalse((root / 'tools-called').exists())
+        for tool in ('cargo', 'rustc', 'makepkg'):
+            self.assertEqual(subprocess.run([tool, 'build'], env=env, capture_output=True).returncode, 97)
+        self.assertEqual((root / 'tools-called').read_text(), 'cargo\nrustc\nmakepkg\n')
+
+    def test_whole_entrypoint_missing_archive_uses_real_unsigned_authority(self):
+        self.objects.clear()
+        result, root, _ = self.entrypoint('fresh')
+        # Valid immutable ZIP permits reaching makepkg, which is a refusing stub.
+        self.assertEqual(result.returncode, 97, result.stdout + result.stderr)
+        self.assertEqual((root / 'tools-called').read_text(), 'makepkg\n')
+        self.assertTrue((root / 'zip-downloaded').exists())
+        self.assertIn(f'okilum/releases/{SHA}/linux.json', (root / 'storage-read').read_text())
+        bad = copy.deepcopy(self.receipt)
+        edited = binary_bytes() + b'consistent unsigned forgery'
+        bad['manifest']['binary_sha256'] = payload.digest(edited)
+        (self.prebuilt / 'receipt.json').write_bytes(payload.encode(bad))
+        (self.prebuilt / 'payload/okilum').write_bytes(edited)
+        result, root, _ = self.entrypoint('forged')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('independently authenticated', result.stderr)
+        self.assertFalse((root / 'tools-called').exists())
+        self.assertFalse((root / 'inspected').exists())
+        (self.prebuilt / 'payload/okilum').write_bytes(binary_bytes())
+        # Editable receipt flags cannot turn absent authority into trusted reuse.
+        (self.prebuilt / 'receipt.json').write_bytes(payload.encode(dict(self.receipt, trusted_envelope=True)))
+        self.hosted.artifacts[1][0]['expired'] = True
+        result, root, _ = self.entrypoint('expired')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Production artifact expired', result.stderr)
+        self.assertFalse((root / 'tools-called').exists())
+        self.assertFalse((root / 'inspected').exists())
+        self.assertTrue((root / 'api-called').exists())
+
+    def test_whole_entrypoint_tamper_partial_and_executed_identity_fail_closed(self):
+        original = dict(self.objects)
+        for change in ('signature', 'package', 'missing_signature', 'missing_package', 'missing_manifest',
+                       'binary', 'config', 'identity', 'elf'):
+            with self.subTest(change=change):
+                self.objects = dict(original)
+                (self.prebuilt / 'receipt.json').write_bytes(payload.encode(self.receipt))
+                (self.prebuilt / 'payload/okilum').write_bytes(binary_bytes())
+                if change.startswith('missing_'):
+                    suffix = {'missing_signature': self.name + '.sig', 'missing_package': self.name,
+                              'missing_manifest': 'manifest.json'}[change]
+                    del self.objects[f'{self.prefix}/{suffix}']
+                elif change == 'signature':
+                    self.objects[f'{self.prefix}/{self.name}.sig'] = b'forged'
+                elif change == 'package':
+                    forged = package_bytes(2, self.receipt)
+                    self.objects[f'{self.prefix}/{self.name}'] = forged
+                    self.objects[f'{self.prefix}/manifest.json'] = payload.encode(
+                        dict(self.manifest, sha256=payload.digest(forged)))
+                elif change == 'binary':
+                    (self.prebuilt / 'payload/okilum').write_bytes(binary_bytes() + b'forged')
+                elif change == 'config':
+                    bad = copy.deepcopy(self.receipt)
+                    bad['manifest']['config'] = 'b' * 64
+                    (self.prebuilt / 'receipt.json').write_bytes(payload.encode(bad))
+                result, root, _ = self.entrypoint(change, inspection=change)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertFalse((root / 'tools-called').exists())
+                self.assertFalse((root / 'api-called').exists())
+                self.assertEqual((root / 'inspected').exists(), change in ('identity', 'elf'))
 
     def test_signed_build_archive_recovers_without_descriptor_or_hosted_authority(self):
         self.hosted.artifacts[1][0]['expired'] = True

@@ -48,7 +48,12 @@ The old `forgejo-linux-binary` workflow is a compatibility consumer with no Carg
 
 The identity is full source SHA + `x86_64-unknown-linux-gnu` + release/default
 `brain` + no harness/test-support + a configuration digest covering the pinned
-inputs and producer code. The app-only Cargo invocation follows the unchanged
+inputs and producer code. **The lifetime one-production-compilation guarantee
+applies only to this canonical trusted artifact used for QA/release.** It requires
+the durable identity claim/tombstone below. A lost artifact, expired/deleted run
+history or cancelled job never authorizes recompilation or a hidden Cargo
+fallback. It is not a global once-per-SHA promise for every CI configuration.
+The app-only Cargo invocation follows the unchanged
 full gate. Build version is **5000 + originating Forgejo run number**, carried in
 the temporary ref; GitHub run numbers and later packaging runs never renumber it.
 PR-head bytes cannot be relabelled as merge-SHA bytes. Repeated accepted requests
@@ -180,17 +185,47 @@ the package signature using the configured key. It must never be inferred from
 editable receipt fields, tar checksums, a file's local existence, or fork CI
 success. Package/manifest/source/build/binary checks still apply.
 
-The parallel Arch `reuse-package.py` owner should validate the signed package
-with this option **after** `verify_signature`, compare its canonical manifest and
-immutable receipt fields with the selected prebuilt bytes, and retain the signed
-receipt. This also permits build-archive recovery before source descriptor
-publication. Parsing untrusted fields to find that archive is not authorization.
-Fixture tests at those call sites must inject `receipt_authority()` with a fake
-resolver or explicitly mock `authenticate_receipt`; they must not call live APIs.
+The canonical `build.sh` first calls `reuse-package.py`, which validates the signed
+package with this option **after** `verify_signature`, compares its canonical
+manifest and immutable receipt fields with the selected prebuilt bytes, and
+retains the exact original package, signature and embedded receipt. Only the
+helper's verified reuse result permits the caller's trusted field validation;
+no environment variable or receipt flag grants that authority. Static source,
+configuration and binary-digest checks, followed by executed ELF/build-info
+inspection, still precede success. Reuse skips makepkg and re-signing. This permits
+recovery with a supplied prebuilt after hosted expiry, even before source
+descriptor publication. Discovery of an unknown build when both the descriptor
+and hosted payload are absent remains unsupported. An entirely absent archive
+requires independent unsigned receipt authority before initial packaging; partial
+or invalid archives fail closed. Parsing unsigned archive keys is not authorization.
 
-Fork validation remains a separate isolated, unsigned producer/consumer path.
-It must not request canonical claims, receive mirror credentials, adopt canonical
-producer eligibility or use `trusted_envelope=True` to relabel a fork receipt.
-Its own schema and local gate evidence are owned by the fork helper/workflow.
-`public_read` and `verify_signature` interfaces are unchanged. No fork workflow
-or Arch-owned file is changed by the transport fixes.
+Structural fixture tests may inject an external authority or explicitly mock
+`authenticate_receipt`; they are not provenance proof. Dedicated whole-entrypoint
+controls use the real canonical receipt authority against immutable ZIP/API
+fixtures, a signature double accepting only exact archived bytes, expiry/missing
+descriptor controls and counted compiler/packager stubs. These establish local
+control flow and provenance comparisons, not live transport, cryptographic or
+native acceptance. No fixture test may contact live APIs.
+
+**Manager-accepted fork boundary (#1431):** fork validation is a separate isolated,
+unsigned compatibility check, with deduplication only inside the retained local
+workspace/run. Local repeat invocations reuse retained bytes; interrupted attempts
+cannot silently compile again there. A new independent first-attempt fork workflow
+for the same SHA/configuration may compile again. This is an explicit limitation,
+not the canonical lifetime guarantee, and #1431 adds no trusted fork coordinator.
+
+Forks receive no mirror credentials or signing/publication secrets, create no
+canonical claims, and cannot become trusted QA/release artifacts. Their
+`okilum-untrusted-fork-v1` schema and local checksums establish consistency only;
+`trusted_envelope=True` cannot relabel them as canonical. Protected publication
+checks Forgejo run metadata and rejects fork/PR/non-main runs before artifact
+reading, signing or writes, even with a forged canonical receipt. Required full
+checks, package installation, ldd, X11 and smoke validation remain intact.
+
+Validation distinguishes the two guarantees: canonical counting-compiler,
+durable-claim/history-loss/expiry/no-artifact controls remain, while fork controls
+count one local compilation and explicitly allow one per independent run. Full
+required CI, the live claim handshake/upload/download and Ubuntu-to-supported-Arch
+unchanged-binary install/ldd/X11 acceptance remain delivery gates; Python/stub
+results alone do not complete #1431 acceptance. `public_read` and
+`verify_signature` interfaces are unchanged.
