@@ -179,7 +179,8 @@ fn compact_vault_path(root: &Path) -> String {
 }
 
 /// Settings → Inbox (#1356): what it is, and that there is nothing to set up.
-const INBOX_HELP: &str = "Inbox brings in notes sent from your phone or other apps through an Inbox server. Connecting to one is not available in Settings yet. Your vault works fully without it.";
+const INBOX_HELP: &str =
+    "Inbox brings in notes you send from your phone or other apps. Connecting to it will come later.";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Section {
