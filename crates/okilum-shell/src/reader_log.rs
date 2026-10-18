@@ -398,6 +398,10 @@ pub(crate) struct LogView {
     /// the query, the filter or the shown files change and while follow adds
     /// rows. Only while this view is open: never stored (Oleg, 18.10).
     marks: std::collections::BTreeSet<(usize, usize)>,
+    /// A CSV export writes the cells as they are in the log, without the
+    /// formula guard (#1387 follow-up). Off by default; only while this view is
+    /// open, like the marks.
+    csv_raw_values: bool,
     /// An export is being chosen or written; one at a time.
     exporting: bool,
     scroll: UniformListScrollHandle,
@@ -494,6 +498,7 @@ impl LogView {
             selected: None,
             anchor: None,
             marks: Default::default(),
+            csv_raw_values: false,
             exporting: false,
             scroll: UniformListScrollHandle::new(),
             focus: cx.focus_handle(),
@@ -969,8 +974,17 @@ impl LogView {
 
     /// What a CSV export writes as columns (#1387): the field columns shown
     /// now, in their order, and the file's name when several files are merged.
+    /// Cells carry the formula guard unless "Raw values" is on.
     fn csv_columns(&self, cx: &App) -> CsvColumns {
-        CsvColumns::new(self.columns(cx), self.merge.is_some())
+        CsvColumns::new(self.columns(cx), self.merge.is_some()).with_raw_values(self.csv_raw_values)
+    }
+
+    /// The "Raw values in CSV" switch of the export menu.
+    fn set_csv_raw_values(&mut self, raw: bool, cx: &mut Context<Self>) {
+        if self.csv_raw_values != raw {
+            self.csv_raw_values = raw;
+            cx.notify();
+        }
     }
 
     /// Column `key`'s width: the dragged one, or the default for its key.
@@ -3450,6 +3464,7 @@ impl LogView {
         let selected = self.selection().map_or(0, |rows| rows.len());
         let marked = self.marked_rows().len();
         let csv = ExportFormat::Csv(self.csv_columns(cx));
+        let raw_values = self.csv_raw_values;
         bar_button("log-export", false)
             .icon(IconName::ArrowDown)
             .tooltip("Export rows")
@@ -3488,7 +3503,17 @@ impl LogView {
                         );
                     }
                 }
-                menu
+                // A spreadsheet runs a cell that starts with = + - @ as a
+                // formula; CSV cells get an apostrophe there unless this is on.
+                let view = view.clone();
+                menu.separator().item(
+                    PopupMenuItem::new("Raw values in CSV")
+                        .checked(raw_values)
+                        .on_click(move |_, _, cx| {
+                            let _ = view
+                                .update(cx, |this, cx| this.set_csv_raw_values(!raw_values, cx));
+                        }),
+                )
             })
             .into_any_element()
     }
@@ -7114,6 +7139,70 @@ mod tests {
                 ],
             ],
             "the shown rows only, the stack trace in its record's row"
+        );
+    }
+
+    /// #1387 follow-up (Oleg, 18.10): the CSV export guards formula cells by
+    /// default; "Raw values" writes them as they are in the log.
+    #[gpui::test]
+    fn csv_export_guards_formula_cells_unless_raw_values_is_on(cx: &mut TestAppContext) {
+        let text = "\
+{\"ts\":\"2025-10-01T00:00:05Z\",\"level\":\"info\",\"msg\":\"-5\"}
+{\"ts\":\"2025-10-01T00:00:06Z\",\"level\":\"info\",\"msg\":\"=HYPERLINK(\\\"http://x\\\",\\\"y\\\")\"}
+{\"ts\":\"2025-10-01T00:00:07Z\",\"level\":\"info\",\"msg\":\"a=b\"}
+";
+        let (directory, reader, visual) = open_named("formulas.jsonl", text.as_bytes(), cx);
+        let root = directory.path().canonicalize().unwrap();
+        let view = log_view(&reader, visual);
+        visual.run_until_parked();
+        assert_eq!(
+            view.read_with(visual, |view, _| view.visible_len()),
+            3,
+            "positive control: the log is loaded"
+        );
+        // The messages a CSV export of the shown rows holds, in a file `name`.
+        let export = |name: &str, visual: &mut VisualTestContext| -> Vec<String> {
+            let format = view.read_with(visual, |view, cx| ExportFormat::Csv(view.csv_columns(cx)));
+            view.update_in(visual, |view, window, cx| {
+                view.export_rows(ExportScope::Shown, format, window, cx)
+            });
+            assert!(visual.did_prompt_for_new_path(), "asks where to save");
+            let out = root.join(name);
+            let target = out.clone();
+            visual.simulate_new_path_selection(move |_| Some(target));
+            visual.run_until_parked();
+            let mut csv = csv::ReaderBuilder::new()
+                .flexible(false)
+                .from_path(&out)
+                .expect("the file exists and starts with a header");
+            let at = csv
+                .headers()
+                .unwrap()
+                .iter()
+                .position(|name| name == "message")
+                .expect("a message column");
+            csv.records()
+                .map(|row| row.unwrap()[at].to_owned())
+                .collect()
+        };
+
+        // Default: guarded.
+        assert!(!view.read_with(visual, |view, _| view.csv_raw_values));
+        assert_eq!(
+            export("guarded.csv", visual),
+            ["'-5", "'=HYPERLINK(\"http://x\",\"y\")", "a=b"]
+        );
+        // The switch of the export menu: raw.
+        view.update(visual, |view, cx| view.set_csv_raw_values(true, cx));
+        assert_eq!(
+            export("raw.csv", visual),
+            ["-5", "=HYPERLINK(\"http://x\",\"y\")", "a=b"]
+        );
+        // And back: guarded again.
+        view.update(visual, |view, cx| view.set_csv_raw_values(false, cx));
+        assert_eq!(
+            export("guarded-again.csv", visual),
+            ["'-5", "'=HYPERLINK(\"http://x\",\"y\")", "a=b"]
         );
     }
 
