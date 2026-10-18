@@ -235,7 +235,7 @@ impl Reader {
                 heading: Some(heading),
                 ..Default::default()
             },
-            cx,
+            self.link_scope(),
         );
         cx.write_to_clipboard(ClipboardItem::new_string(link));
         crate::reader_toast::transient("Link copied", window, cx);
@@ -255,7 +255,7 @@ impl Reader {
                 column: Some(caret.character + 1),
                 ..Default::default()
             },
-            cx,
+            self.link_scope(),
         );
         cx.write_to_clipboard(ClipboardItem::new_string(link));
         crate::reader_toast::transient("Link copied", window, cx);
@@ -387,7 +387,11 @@ mod tests {
         reader.update_in(visual, |v, window, cx| {
             v.copy_heading_link("Next steps & risks".into(), window, cx);
             let link = cx.read_from_clipboard().unwrap().text().unwrap();
-            assert_eq!(link, "okilum://v/Notes/Plan.md#Next%20steps%20%26%20risks");
+            let id = crate::vault_name::read_id(&v.vault_root).unwrap();
+            assert_eq!(
+                link,
+                format!("okilum://v/Notes/Plan.md?id={id}#Next%20steps%20%26%20risks")
+            );
             let parsed = okilum_core::deep_link::parse(&link).unwrap();
             assert_eq!(
                 parsed.position.heading.as_deref(),

@@ -59,17 +59,11 @@ pub(crate) fn read_id(root: &Path) -> Option<String> {
 /// The id of the vault at `root` for a link that is being copied: the one in
 /// its file, or a new one written there now (the first link copied from a
 /// vault gives it an id, and Syncthing carries it to the other machines).
-/// Only for a vault open in a window as a vault: a single-file view's folder
-/// is no vault and gets no file. `None` when the vault cannot be written
-/// (read-only share): the link then names the folder only, as before ids.
-pub(crate) fn link_id(root: &Path, cx: &App) -> Option<String> {
-    let is_vault = crate::reader_open::readers(cx).iter().any(|reader| {
-        let reader = reader.read(cx);
-        reader.vault_root == root && !reader.single_file
-    });
-    if !is_vault {
-        return None;
-    }
+/// The copy helper must check that this is a vault, not a single-file
+/// view's folder, without rereading a Reader leased for an update.
+/// `None` when the vault cannot be written (read-only share): the link then
+/// names the folder only, as before ids.
+pub(crate) fn link_id(root: &Path) -> Option<String> {
     read_id(root).or_else(|| {
         let id = uuid::Uuid::new_v4().to_string();
         write_with(root, |object| {

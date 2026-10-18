@@ -2622,15 +2622,18 @@ mod entry_tests {
                 &roots[1],
                 "Plan.md",
                 &Default::default(),
-                cx,
+                super::super::reader_files::LinkScope::Vault,
             );
             assert!(link.contains("Gate2") && !link.contains("Work"), "{link}");
         });
         // The link opens the renamed vault: its window comes forward, no
         // new window and no error.
-        let link = cx.update(|cx| {
-            super::super::reader_files::okilum_link(&roots[1], "Plan.md", &Default::default(), cx)
-        });
+        let link = super::super::reader_files::okilum_link(
+            &roots[1],
+            "Plan.md",
+            &Default::default(),
+            super::super::reader_files::LinkScope::Vault,
+        );
         cx.update(|cx| open_deep_link_among(&link, &roots, cx));
         cx.run_until_parked();
         assert_eq!(
@@ -3523,6 +3526,58 @@ mod entry_tests {
         assert_eq!(opened[0].2, 40, "on the line of the link");
         assert!(cx.update(|cx| super::super::reader_ui_state::link_trusted(&loose, cx)));
 
+        // Single-file actions also run inside a registered Reader update,
+        // but copying must not turn the containing folder into a vault.
+        let (reader, window) = cx.update(|cx| {
+            let reader = super::readers(cx)
+                .into_iter()
+                .find(|reader| reader.read(cx).vault_root == loose)
+                .expect("the single-file Reader is registered");
+            let window = reader.read(cx).reader_window;
+            (reader, window)
+        });
+        assert!(!loose.join(super::super::vault_name::DIRECTORY).exists());
+        let copy_single_file_links = |cx: &mut TestAppContext| {
+            window
+                .update(cx, |_, window, cx| {
+                    reader.update(cx, |reader, cx| {
+                        assert!(reader.single_file, "positive control: single-file scope");
+                        reader.file_action(
+                            super::super::reader_files::FileAction::OkilumLink,
+                            window,
+                            cx,
+                        );
+                        assert_eq!(
+                            cx.read_from_clipboard().unwrap().text().unwrap(),
+                            "okilum://v/loose/target.md"
+                        );
+                        reader.copy_heading_link("Heading".into(), window, cx);
+                        assert_eq!(
+                            cx.read_from_clipboard().unwrap().text().unwrap(),
+                            "okilum://v/loose/target.md#Heading"
+                        );
+                    });
+                    // The menu entry uses an App callback outside the lease.
+                    super::super::reader_files::run(
+                        super::super::reader_files::FileAction::OkilumLink,
+                        &loose,
+                        "target.md",
+                        window,
+                        cx,
+                    );
+                    assert_eq!(
+                        cx.read_from_clipboard().unwrap().text().unwrap(),
+                        "okilum://v/loose/target.md"
+                    );
+                })
+                .unwrap();
+            assert!(
+                !loose.join(super::super::vault_name::DIRECTORY).exists(),
+                "single-file copies never create vault metadata"
+            );
+        };
+        copy_single_file_links(cx);
+
         // Trusted now: another file of the folder opens without asking.
         open(link("other.md", ""), cx);
         assert!(cx.update(|cx| cx
@@ -3530,6 +3585,31 @@ mod entry_tests {
             .is_none_or(|prompts| prompts.0.is_empty())));
         assert!(!readers(cx).is_empty());
         assert!(readers(cx).iter().all(|(single, ..)| *single));
+
+        // A separate vault window for this same folder must not grant the
+        // single-file window permission to create metadata, including via
+        // its App-level menu callback.
+        cx.update(|cx| {
+            open_window(
+                super::super::Opts {
+                    vault: Some(loose.clone()),
+                    note: Some("target.md".into()),
+                    index_dir: Some(fixture.path().join("loose-index")),
+                    ..Default::default()
+                },
+                cx,
+            )
+            .unwrap();
+        });
+        settle(cx);
+        assert!(
+            cx.update(|cx| super::readers(cx).iter().any(|reader| {
+                let reader = reader.read(cx);
+                reader.vault_root == loose && !reader.single_file
+            })),
+            "positive control: the same folder is also open as a vault"
+        );
+        copy_single_file_links(cx);
     }
 
     /// #1414: the same synced vault is «Obsidian Vault» on one machine and
@@ -3604,21 +3684,72 @@ mod entry_tests {
             None,
             "no id before a link is copied"
         );
-        let link = cx.update(|cx| {
-            super::super::reader_files::okilum_link(&maestro, "Plan.md", &Default::default(), cx)
+        // Copy through the real registered Reader while it is leased for
+        // update, as the file action and heading menu do. Looking up scope
+        // by rereading that Reader used to panic here.
+        let (reader, window) = cx.update(|cx| {
+            let reader = readers(cx)
+                .into_iter()
+                .find(|reader| reader.read(cx).vault_root == maestro)
+                .expect("the vault's registered Reader");
+            let window = reader.read(cx).reader_window;
+            (reader, window)
         });
+        let link = window
+            .update(cx, |_, window, cx| {
+                reader.update(cx, |reader, cx| {
+                    assert!(!reader.single_file, "positive control: a vault Reader");
+                    reader.file_action(
+                        super::super::reader_files::FileAction::OkilumLink,
+                        window,
+                        cx,
+                    );
+                    cx.read_from_clipboard().unwrap().text().unwrap()
+                })
+            })
+            .unwrap();
         let id = vault_name::read_id(&maestro).expect("copying a link gives the vault an id");
         assert_eq!(link, format!("okilum://v/Obsidian%20Vault/Plan.md?id={id}"));
         assert_eq!(
-            cx.update(|cx| super::super::reader_files::okilum_link(
-                &maestro,
-                "Plan.md",
-                &Default::default(),
-                cx
-            )),
+            window
+                .update(cx, |_, window, cx| {
+                    reader.update(cx, |reader, cx| {
+                        reader.file_action(
+                            super::super::reader_files::FileAction::OkilumLink,
+                            window,
+                            cx,
+                        );
+                        cx.read_from_clipboard().unwrap().text().unwrap()
+                    })
+                })
+                .unwrap(),
             link,
             "the id is kept: the same link again"
         );
+        window
+            .update(cx, |_, window, cx| {
+                reader.update(cx, |reader, cx| {
+                    reader.copy_heading_link("Plan".into(), window, cx);
+                    assert_eq!(
+                        cx.read_from_clipboard().unwrap().text().unwrap(),
+                        format!("{link}#Plan"),
+                        "heading copy uses the same id without rereading its Reader"
+                    );
+                });
+                super::super::reader_files::run(
+                    super::super::reader_files::FileAction::OkilumLink,
+                    &maestro,
+                    "Plan.md",
+                    window,
+                    cx,
+                );
+                assert_eq!(
+                    cx.read_from_clipboard().unwrap().text().unwrap(),
+                    link,
+                    "positive control: the menu identifies its vault window"
+                );
+            })
+            .unwrap();
         assert_eq!(
             vault_name::read_id(&idunn),
             None,

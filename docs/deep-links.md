@@ -68,7 +68,8 @@ rendered link is rewritten to the `v/` form.
    - A vault's id is a UUID in `.okilum/vault.json` (`"id"`), the file that
      already holds its display name and travels with it (Syncthing). The first
      «Copy Okilum link» from a vault open in a window writes it, if the vault
-     is writable; reading a link never writes. (The Syncthing folder id is not
+     is writable; a single-file view never creates this file, and reading a
+     link never writes. (The Syncthing folder id is not
      used: it lives in Syncthing's own configuration, not in the vault, and not
      every vault is a Syncthing folder.)
    - One match: use it.
@@ -80,7 +81,9 @@ rendered link is rewritten to the `v/` form.
      an open chooser.
    - `file/<path>`: canonicalize (on Windows to the verbatim `\\?\` form the
      known roots have), then the known vault whose root contains it, with the
-     deepest root winning. If no known vault contains it, the file opens on its
+     deepest root winning. Canonical POSIX paths retain their case, including
+     on case-sensitive macOS volumes; Windows path spelling and prefix variants
+     still match. If no known vault contains it, the file opens on its
      own as the single-file view, after the first-use confirmation below. A
      file that is not there is said: «This file does not exist on this
      computer.»

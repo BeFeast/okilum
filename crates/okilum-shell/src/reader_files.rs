@@ -16,6 +16,13 @@ pub(crate) enum FileAction {
     QuickLook,
 }
 
+/// The copying Reader's scope, passed explicitly while it is leased for update.
+#[derive(Clone, Copy)]
+pub(crate) enum LinkScope {
+    Vault,
+    SingleFile,
+}
+
 pub(crate) fn checked_path(root: &Path, rel: &str) -> anyhow::Result<PathBuf> {
     let root = root.canonicalize()?;
     let path = root.join(rel).canonicalize()?;
@@ -24,6 +31,30 @@ pub(crate) fn checked_path(root: &Path, rel: &str) -> anyhow::Result<PathBuf> {
 }
 
 pub(crate) fn run(action: FileAction, root: &Path, rel: &str, window: &mut Window, cx: &mut App) {
+    // Menu callbacks run outside a Reader update. Use the owning window's
+    // scope, even if a vault window also happens to show this folder.
+    let scope = if matches!(action, FileAction::OkilumLink)
+        && crate::reader_open::readers(cx).iter().any(|reader| {
+            let reader = reader.read(cx);
+            reader.reader_window == window.window_handle()
+                && reader.vault_root == root
+                && !reader.single_file
+        }) {
+        LinkScope::Vault
+    } else {
+        LinkScope::SingleFile
+    };
+    run_in_scope(action, root, rel, scope, window, cx);
+}
+
+fn run_in_scope(
+    action: FileAction,
+    root: &Path,
+    rel: &str,
+    scope: LinkScope,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let result = (|| -> anyhow::Result<()> {
         let path = checked_path(root, rel)?;
         let copied = match action {
@@ -63,7 +94,7 @@ pub(crate) fn run(action: FileAction, root: &Path, rel: &str, window: &mut Windo
                     None
                 }
             }
-            FileAction::OkilumLink => Some(okilum_link(root, rel, &Default::default(), cx)),
+            FileAction::OkilumLink => Some(okilum_link(root, rel, &Default::default(), scope)),
             FileAction::Absolute | FileAction::Relative | FileAction::Wiki => {
                 copied_text(action, rel, &path)
             }
@@ -91,7 +122,7 @@ fn copied_text(action: FileAction, rel: &str, path: &Path) -> Option<String> {
         FileAction::Absolute => Some(okilum_core::vault::display_path(path)),
         FileAction::Relative => Some(rel.to_owned()),
         FileAction::Wiki => Some(format!("[[{rel}|{}]]", Vault::title_of(rel))),
-        // The link needs the app (the vault's id): `run` makes it.
+        // The link needs the caller's scope (the vault's id): `run` makes it.
         FileAction::OkilumLink | FileAction::Reveal | FileAction::Open | FileAction::QuickLook => {
             None
         }
@@ -105,13 +136,16 @@ pub(crate) fn okilum_link(
     root: &Path,
     rel: &str,
     position: &okilum_core::deep_link::Position,
-    cx: &App,
+    scope: LinkScope,
 ) -> String {
     let vault = root
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let id = super::vault_name::link_id(root, cx);
+    let id = match scope {
+        LinkScope::Vault => super::vault_name::link_id(root),
+        LinkScope::SingleFile => None,
+    };
     okilum_core::deep_link::build_with_id(&vault, id.as_deref(), rel, position)
 }
 
@@ -331,7 +365,15 @@ impl Reader {
         } else {
             self.selected_file()
         };
-        run(action, &self.vault_root, rel, window, cx);
+        run_in_scope(action, &self.vault_root, rel, self.link_scope(), window, cx);
+    }
+
+    pub(crate) fn link_scope(&self) -> LinkScope {
+        if self.single_file {
+            LinkScope::SingleFile
+        } else {
+            LinkScope::Vault
+        }
     }
 
     pub(crate) fn selected_file(&self) -> &str {
@@ -1153,13 +1195,12 @@ mod tests {
                 cx.read_from_clipboard().unwrap().text().unwrap(),
                 "[[diagram.svg|diagram]]"
             );
-            // #1049: the external link names the vault by its folder. This
-            // Reader is built without a window, so it is no registered vault
-            // window and its link carries no id (#1414: the id of a window's
-            // vault is tested in reader_open).
+            // #1414: the caller knows it is a vault even when this test
+            // constructs the Reader without registering it.
             reader.file_action(FileAction::OkilumLink, window, cx);
             let link = cx.read_from_clipboard().unwrap().text().unwrap();
-            assert_eq!(link, "okilum://v/vault/diagram.svg");
+            let id = crate::vault_name::read_id(&reader.vault_root).unwrap();
+            assert_eq!(link, format!("okilum://v/vault/diagram.svg?id={id}"));
             let parsed = okilum_core::deep_link::parse(&link).unwrap();
             assert_eq!(
                 okilum_core::deep_link::resolve(
@@ -1168,7 +1209,7 @@ mod tests {
                     &okilum_core::deep_link::Env {
                         is_file: &|path| path.is_file(),
                         canonical: &|path| path.canonicalize().ok(),
-                        vault_id: &|_| None,
+                        vault_id: &crate::vault_name::read_id,
                     }
                 ),
                 okilum_core::deep_link::Resolution::Open {

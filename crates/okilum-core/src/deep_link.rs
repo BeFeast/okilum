@@ -105,6 +105,17 @@ pub struct Env<'a> {
 
 /// Match `link` against `known` vault roots (canonical paths).
 pub fn resolve(link: &Link, known: &[std::path::PathBuf], env: &Env) -> Resolution {
+    resolve_with_name_case(link, known, env, cfg!(any(target_os = "macos", windows)))
+}
+
+// Keep the platform's vault-name fallback injectable so tests can exercise
+// macOS/Windows name matching and canonical containment together on Linux.
+fn resolve_with_name_case(
+    link: &Link,
+    known: &[std::path::PathBuf],
+    env: &Env,
+    fold_names: bool,
+) -> Resolution {
     use std::path::{Path, PathBuf};
     let exists = env.is_file;
     let position = link.position.clone();
@@ -114,7 +125,7 @@ pub fn resolve(link: &Link, known: &[std::path::PathBuf], env: &Env) -> Resoluti
             .unwrap_or_default()
     };
     let same_name = |a: &str, b: &str| {
-        if cfg!(any(target_os = "macos", windows)) {
+        if fold_names {
             a.to_lowercase() == b.to_lowercase()
         } else {
             a == b
@@ -189,7 +200,10 @@ pub fn resolve(link: &Link, known: &[std::path::PathBuf], env: &Env) -> Resoluti
                     "This file does not exist on this computer.".into(),
                 );
             };
-            let fold = cfg!(any(target_os = "macos", windows));
+            // Canonical POSIX paths retain their case, including on a
+            // case-sensitive macOS volume. Windows spelling compatibility
+            // depends on the path syntax, so it is also testable on Linux.
+            let fold = windows_path(&file.to_string_lossy());
             let file_parts = parts(&file.to_string_lossy());
             // The deepest known vault that contains the file.
             let root = known
@@ -230,11 +244,7 @@ pub fn resolve(link: &Link, known: &[std::path::PathBuf], env: &Env) -> Resoluti
 /// parts; any other path is split at `/` only (a backslash is a name
 /// character there).
 fn parts(path: &str) -> Vec<String> {
-    let bytes = path.as_bytes();
-    let windows = path.starts_with(r"\\")
-        || path.starts_with("//")
-        || (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':');
-    let path = if windows {
+    let path = if windows_path(path) {
         let path = path.replace('\\', "/");
         match path.strip_prefix("//?/") {
             Some(rest) => rest.strip_prefix("UNC/").unwrap_or(rest).to_owned(),
@@ -247,6 +257,13 @@ fn parts(path: &str) -> Vec<String> {
         .filter(|part| !part.is_empty())
         .map(str::to_owned)
         .collect()
+}
+
+fn windows_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    path.starts_with(r"\\")
+        || path.starts_with("//")
+        || (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
 }
 
 fn same_part(a: &str, b: &str, fold: bool) -> bool {
@@ -928,6 +945,58 @@ mod tests {
         }
     }
 
+    /// #1414: canonical paths on case-sensitive macOS volumes must not
+    /// borrow the case-insensitive folder-name fallback used by `v/` links.
+    /// Injected canonical paths exercise the same containment on every OS.
+    #[test]
+    fn canonical_posix_file_containment_preserves_case() {
+        use std::path::{Path, PathBuf};
+        let file = PathBuf::from("/data/notes/a.md");
+        let canonical = |_: &Path| Some(file.clone());
+        let is_file = |path: &Path| path == file;
+        let env = Env {
+            is_file: &is_file,
+            canonical: &canonical,
+            vault_id: &|_| None,
+        };
+        let link = parse("okilum://file//data/notes/a.md?line=3").unwrap();
+        let position = link.position.clone();
+        let other = PathBuf::from("/data/Notes");
+        // Use the macOS/Windows vault-name policy even on Linux. That
+        // policy must never fold canonical POSIX containment as a side effect.
+        let resolve =
+            |link: &Link, roots: &[PathBuf]| resolve_with_name_case(link, roots, &env, true);
+        assert_eq!(
+            resolve(&link, std::slice::from_ref(&other)),
+            Resolution::Single {
+                path: file.clone(),
+                position: position.clone(),
+            },
+            "a differently cased sibling is not the file's vault"
+        );
+        // Positive control: the containing vault matches; the differently
+        // cased root listed last cannot win a tie at the same depth.
+        let root = PathBuf::from("/data/notes");
+        assert_eq!(
+            resolve(&link, &[root.clone(), other]),
+            Resolution::Open {
+                root: root.clone(),
+                rel: "a.md".into(),
+                position,
+            }
+        );
+        assert!(
+            matches!(
+                resolve(
+                    &parse("okilum://v/Notes/a.md").unwrap(),
+                    std::slice::from_ref(&root)
+                ),
+                Resolution::Open { root: matched, .. } if matched == root
+            ),
+            "positive control: case-insensitive vault-name fallback is active"
+        );
+    }
+
     /// #1391/#1414: a Windows file link may spell the path `C:/…`, `C:\…` or
     /// `\\?\C:\…`, while the known roots are verbatim (`\\?\C:\…`): all of
     /// them are the same file.
@@ -971,6 +1040,7 @@ mod tests {
         for link in [
             "okilum://file/C:/Users/me/Notes/Sub/a.md?line=3",
             "okilum://file/C:%5CUsers%5Cme%5CNotes%5CSub%5Ca.md",
+            "okilum://file/c:/users/ME/notes/Sub/a.md",
         ] {
             match resolve(&parse(link).unwrap(), &known, &env) {
                 Resolution::Open { root: r, rel, .. } => {
