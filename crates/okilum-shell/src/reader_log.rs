@@ -8,6 +8,7 @@
 //! `okilum_core::log::merge`, each with its colour and name, and any file can
 //! be hidden without indexing anything again.
 use super::*;
+use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::scroll::ScrollableElement as _;
 use okilum_core::log::correlation;
 use okilum_core::log::elapsed::{self, Stamp};
@@ -93,9 +94,15 @@ actions!(
         ExtendPreviousRecord,
         ExtendNextRecord,
         CopyRawLine,
-        FocusLogFilter
+        FocusLogFilter,
+        ToggleMark,
+        NextMark,
+        PreviousMark
     ]
 );
+
+/// Marks (#1386), as in most editors and LogMX: toggle, next, previous.
+const MARK_KEY: &str = "secondary-f2";
 
 pub(crate) fn bind_keys(cx: &mut App) {
     cx.bind_keys([
@@ -105,6 +112,9 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("shift-down", ExtendNextRecord, Some(CONTEXT)),
         KeyBinding::new(COPY_KEY, CopyRawLine, Some(CONTEXT)),
         KeyBinding::new(FILTER_KEY, FocusLogFilter, Some(CONTEXT)),
+        KeyBinding::new(MARK_KEY, ToggleMark, Some(CONTEXT)),
+        KeyBinding::new("f2", NextMark, Some(CONTEXT)),
+        KeyBinding::new("shift-f2", PreviousMark, Some(CONTEXT)),
     ]);
 }
 
@@ -188,6 +198,8 @@ enum ExportScope {
     Shown,
     /// The selected rows.
     Selected,
+    /// The marked rows the filters show (#1386).
+    Marked,
 }
 
 /// The rows of an export, as the view held them when it was asked for.
@@ -381,6 +393,10 @@ pub(crate) struct LogView {
     selected: Option<usize>,
     /// Where a range of selected rows started (#1169); `selected` is its other end.
     anchor: Option<usize>,
+    /// Marked records (#1386) as (source, entry): they keep their record when
+    /// the query, the filter or the shown files change and while follow adds
+    /// rows. Only while this view is open: never stored (Oleg, 18.10).
+    marks: std::collections::BTreeSet<(usize, usize)>,
     /// An export is being chosen or written; one at a time.
     exporting: bool,
     scroll: UniformListScrollHandle,
@@ -476,6 +492,7 @@ impl LogView {
             state,
             selected: None,
             anchor: None,
+            marks: Default::default(),
             exporting: false,
             scroll: UniformListScrollHandle::new(),
             focus: cx.focus_handle(),
@@ -1399,6 +1416,105 @@ impl LogView {
         self.step_by(delta, false, window, cx)
     }
 
+    /// The list positions of the marked rows the filters show, in order.
+    fn marked_rows(&self) -> Vec<usize> {
+        let mut rows: Vec<usize> = self
+            .marks
+            .iter()
+            .filter_map(|&(source, entry)| self.row_of(self.id_of(source, entry)?))
+            .collect();
+        rows.sort_unstable();
+        rows
+    }
+
+    /// Marks the selected rows, or removes their marks when all of them are
+    /// marked already.
+    fn toggle_mark(&mut self, cx: &mut Context<Self>) {
+        let Some(rows) = self.selection() else {
+            return;
+        };
+        let keys: Vec<(usize, usize)> = rows
+            .filter_map(|row| self.locate(self.entry_at(row)?))
+            .collect();
+        if keys.iter().all(|key| self.marks.contains(key)) {
+            for key in &keys {
+                self.marks.remove(key);
+            }
+        } else {
+            self.marks.extend(keys);
+        }
+        cx.notify();
+    }
+
+    /// The row menu's toggle: the selected rows when `id` is one of them,
+    /// otherwise just row `id`.
+    fn toggle_mark_at(&mut self, id: usize, cx: &mut Context<Self>) {
+        let in_selection = self
+            .row_of(id)
+            .zip(self.selection())
+            .is_some_and(|(row, rows)| rows.contains(&row));
+        if !in_selection {
+            self.selected = Some(id);
+            self.anchor = None;
+        }
+        self.toggle_mark(cx);
+    }
+
+    /// The row menu's next and previous: counted from row `id`.
+    fn step_mark_from(
+        &mut self,
+        id: usize,
+        forward: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.selected = Some(id);
+        self.anchor = None;
+        self.step_mark(forward, window, cx);
+    }
+
+    fn clear_marks(&mut self, cx: &mut Context<Self>) {
+        self.marks.clear();
+        cx.notify();
+    }
+
+    /// The next (or previous) marked row the filters show, wrapping at the
+    /// ends. Following, a mark above the newest row pauses follow, as
+    /// scrolling up does.
+    fn step_mark(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let rows = self.marked_rows();
+        if rows.is_empty() {
+            let message = if self.marks.is_empty() {
+                "No marked rows. Mark one with the row menu"
+            } else {
+                "No marked row is shown"
+            };
+            reader_toast::error(message, window, cx);
+            return;
+        }
+        let current = self.selected.and_then(|id| self.row_of(id));
+        let target = if forward {
+            current
+                .and_then(|row| rows.iter().find(|&&marked| marked > row))
+                .or(rows.first())
+        } else {
+            current
+                .and_then(|row| rows.iter().rev().find(|&&marked| marked < row))
+                .or(rows.last())
+        };
+        let Some(&row) = target else {
+            return;
+        };
+        if row + 1 < self.visible_len() {
+            if let Some(follow) = self.follow.as_mut().filter(|follow| follow.pinned) {
+                follow.pinned = false;
+            }
+        }
+        if let Some(id) = self.entry_at(row) {
+            self.select(id, true, window, cx);
+        }
+    }
+
     fn step_by(&mut self, delta: isize, extend: bool, window: &mut Window, cx: &mut Context<Self>) {
         let count = self.visible_len();
         if count == 0 {
@@ -1908,6 +2024,19 @@ impl LogView {
                         .filter(|extra| extra.owner == source)
                         .filter(|extra| matches!(extra.data, SourceData::Segment(_)))
                         .count();
+                    // Marks on the earlier content move with it (#1386): the
+                    // segment keeps its entries, the file starts again at 0.
+                    let segment = self.extra.len() + 1;
+                    self.marks = std::mem::take(&mut self.marks)
+                        .into_iter()
+                        .map(|(at, entry)| {
+                            if at == source && entry < earlier {
+                                (segment, entry)
+                            } else {
+                                (at, entry)
+                            }
+                        })
+                        .collect();
                     self.extra.push(ExtraSource {
                         data: SourceData::Segment(Arc::new(Segment {
                             path: PathBuf::from(format!("{name} ({what})")),
@@ -1917,6 +2046,10 @@ impl LogView {
                         owner: source,
                         seq,
                     });
+                }
+                // Nothing earlier to keep: marks on this file have no record.
+                if earlier == 0 {
+                    self.marks.retain(|&(at, _)| at != source);
                 }
                 self.selected = None;
                 self.anchor = None;
@@ -2167,6 +2300,9 @@ impl LogView {
         let muted = cx.theme().muted_foreground;
         let mono = cx.theme().mono_font_family.clone();
         let chosen = this.selection();
+        let any_marks = !this.marks.is_empty();
+        let mark_color = cx.theme().primary;
+        let view = cx.entity().downgrade();
         range
             .map(|position| {
                 let Some((index, source, file, local, entry)) =
@@ -2199,6 +2335,7 @@ impl LogView {
                 let row = row_text(file, local);
                 let lines = row.lines;
                 let selected = chosen.as_ref().is_some_and(|rows| rows.contains(&position));
+                let marked = this.marks.contains(&(source, local));
                 let text_color = if level == Level::Unparsed {
                     faint
                 } else {
@@ -2217,8 +2354,10 @@ impl LogView {
                         )
                     })
                     .collect::<Vec<_>>();
+                let menu_view = view.clone();
                 h_flex()
                     .id(("log-row", index))
+                    .relative()
                     .h(px(ROW_HEIGHT))
                     .w_full()
                     .min_w_0()
@@ -2235,6 +2374,57 @@ impl LogView {
                     })
                     .when(selected, |row| row.bg(palette.selected))
                     .when(!selected, |row| row.hover(move |style| style.bg(hover)))
+                    // A marked row (#1386): a dot in the gutter, inside the
+                    // left padding so nothing else moves.
+                    .when(marked, |row| {
+                        row.child(
+                            div()
+                                .debug_selector(move || format!("log-mark-{index}"))
+                                .absolute()
+                                .left(px(3.))
+                                .top(px((ROW_HEIGHT - 6.) / 2.))
+                                .size(px(6.))
+                                .rounded_full()
+                                .bg(mark_color),
+                        )
+                    })
+                    .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                        if event.modifiers().shift {
+                            this.extend_to(index, false, window, cx)
+                        } else {
+                            this.select(index, false, window, cx)
+                        }
+                    }))
+                    .context_menu(move |menu, _, _| {
+                        use gpui_component::menu::PopupMenuItem;
+                        let item = |label: &str,
+                                    run: fn(
+                            &mut LogView,
+                            usize,
+                            &mut Window,
+                            &mut Context<LogView>,
+                        )| {
+                            let view = menu_view.clone();
+                            PopupMenuItem::new(label.to_owned()).on_click(move |_, window, cx| {
+                                let _ = view.update(cx, |this, cx| run(this, index, window, cx));
+                            })
+                        };
+                        menu.item(item(
+                            if marked { "Remove mark" } else { "Mark row" },
+                            |this, index, _, cx| this.toggle_mark_at(index, cx),
+                        ))
+                        .separator()
+                        .item(item("Next mark", |this, index, window, cx| {
+                            this.step_mark_from(index, true, window, cx)
+                        }))
+                        .item(item("Previous mark", |this, index, window, cx| {
+                            this.step_mark_from(index, false, window, cx)
+                        }))
+                        .item(
+                            item("Clear all marks", |this, _, _, cx| this.clear_marks(cx))
+                                .disabled(!any_marks),
+                        )
+                    })
                     // Several files: a colour stripe and the file's name (#1160).
                     .when(merged, |row| {
                         row.child(
@@ -2327,13 +2517,6 @@ impl LogView {
                                 .child(format!("▸ {} lines", grouped(lines as u64))),
                         )
                     })
-                    .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                        if event.modifiers().shift {
-                            this.extend_to(index, false, window, cx)
-                        } else {
-                            this.select(index, false, window, cx)
-                        }
-                    }))
                     .into_any_element()
             })
             .collect()
@@ -3144,6 +3327,12 @@ impl LogView {
                     .filter_map(|row| self.entry_at(row).map(|id| id as u32))
                     .collect(),
             ),
+            ExportScope::Marked => ExportIds::Picked(
+                self.marked_rows()
+                    .into_iter()
+                    .filter_map(|row| self.entry_at(row).map(|id| id as u32))
+                    .collect(),
+            ),
         };
         Some(ExportJob {
             files,
@@ -3193,10 +3382,10 @@ impl LogView {
         let suggested = match format {
             ExportFormat::Raw => format!(
                 "{stem}-{}.{}",
-                if scope == ExportScope::Shown {
-                    "filtered"
-                } else {
-                    "selected"
+                match scope {
+                    ExportScope::Shown => "filtered",
+                    ExportScope::Selected => "selected",
+                    ExportScope::Marked => "marked",
                 },
                 first
                     .extension()
@@ -3204,10 +3393,10 @@ impl LogView {
             ),
             ExportFormat::JsonLines => format!(
                 "{stem}-{}.jsonl",
-                if scope == ExportScope::Shown {
-                    "filtered"
-                } else {
-                    "selected"
+                match scope {
+                    ExportScope::Shown => "filtered",
+                    ExportScope::Selected => "selected",
+                    ExportScope::Marked => "marked",
                 }
             ),
         };
@@ -3258,6 +3447,7 @@ impl LogView {
         let view = cx.entity().downgrade();
         let shown = self.visible_len();
         let selected = self.selection().map_or(0, |rows| rows.len());
+        let marked = self.marked_rows().len();
         bar_button("log-export", false)
             .icon(IconName::ArrowDown)
             .tooltip("Export rows")
@@ -3267,6 +3457,9 @@ impl LogView {
                 let mut scopes = vec![(ExportScope::Shown, shown, "shown")];
                 if selected > 1 {
                     scopes.push((ExportScope::Selected, selected, "selected"));
+                }
+                if marked > 0 {
+                    scopes.push((ExportScope::Marked, marked, "marked"));
                 }
                 for (at, (scope, count, what)) in scopes.into_iter().enumerate() {
                     if at > 0 {
@@ -3687,6 +3880,13 @@ impl Render for LogView {
             .on_action(cx.listener(|this, _: &CopyRawLine, window, cx| this.copy_raw(window, cx)))
             .on_action(
                 cx.listener(|this, _: &FocusLogFilter, window, cx| this.focus_filter(window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &ToggleMark, _, cx| this.toggle_mark(cx)))
+            .on_action(
+                cx.listener(|this, _: &NextMark, window, cx| this.step_mark(true, window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &PreviousMark, window, cx| this.step_mark(false, window, cx)),
             )
             // Log files dropped from the system join the view (#1160).
             .drag_over::<ExternalPaths>(|style, _, _, cx| {
@@ -6584,6 +6784,254 @@ mod tests {
             view.export_rows(ExportScope::Shown, ExportFormat::Raw, window, cx)
         });
         assert!(!visual.did_prompt_for_new_path());
+    }
+
+    /// #1386: three marked records stay marked through a query, a text
+    /// filter, follow and a truncation; next and previous visit exactly them,
+    /// wrapping; the marked export writes exactly them; a reopened log has no
+    /// marks (they live only while the view is open, Oleg 18.10).
+    #[gpui::test]
+    fn marks_keep_their_records_and_export_on_their_own(cx: &mut TestAppContext) {
+        use std::io::Write as _;
+        let line = |i: usize| {
+            let level = if i % 5 == 2 || i == 4 { "warn" } else { "info" };
+            format!("{{\"level\":\"{level}\",\"msg\":\"r{i}\"}}\n")
+        };
+        let text: String = (0..20).map(line).collect();
+        let (directory, reader, visual) = open_log(&text, cx);
+        let root = directory.path().canonicalize().unwrap();
+        let path = root.join("app.jsonl");
+        let view = log_view(&reader, visual);
+        let tick = |visual: &mut VisualTestContext| {
+            visual.executor().advance_clock(Duration::from_millis(600));
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+        };
+        // Two by the row menu's action, one by the shortcut.
+        for id in [2, 7] {
+            view.update(visual, |view, cx| view.toggle_mark_at(id, cx));
+        }
+        view.update_in(visual, |view, window, cx| view.select(12, true, window, cx));
+        visual.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-f2"
+        } else {
+            "ctrl-f2"
+        });
+        visual.run_until_parked();
+        let marked_lines = |visual: &mut VisualTestContext| -> Vec<String> {
+            view.read_with(visual, |view, _| {
+                view.marked_rows()
+                    .into_iter()
+                    .map(|row| {
+                        String::from_utf8_lossy(view.raw_at(view.entry_at(row).unwrap()).unwrap())
+                            .trim_end()
+                            .to_owned()
+                    })
+                    .collect()
+            })
+        };
+        let wanted: Vec<String> = [2, 7, 12].map(|i| line(i).trim_end().to_owned()).into();
+        assert_eq!(marked_lines(visual), wanted);
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            visual.debug_bounds("log-mark-2").is_some(),
+            "a dot in the gutter"
+        );
+        assert!(
+            visual.debug_bounds("log-mark-3").is_none(),
+            "positive control"
+        );
+
+        // A query that keeps them: still the same three, and next/previous
+        // visit exactly them, wrapping at both ends.
+        view.update(visual, |view, cx| view.set_query("level>=warn".into(), cx));
+        visual.run_until_parked();
+        assert_eq!(shown(&view, visual), [2, 4, 7, 12, 17]);
+        assert_eq!(marked_lines(visual), wanted);
+        let mut visits = Vec::new();
+        for _ in 0..4 {
+            view.update_in(visual, |view, window, cx| view.step_mark(true, window, cx));
+            visits.push(view.read_with(visual, |view, _| view.selected.unwrap()));
+        }
+        assert_eq!(visits, [2, 7, 12, 2], "next wraps to the first");
+        view.update_in(visual, |view, window, cx| view.step_mark(false, window, cx));
+        assert_eq!(
+            view.read_with(visual, |view, _| view.selected),
+            Some(12),
+            "previous wraps"
+        );
+        // A text filter that hides two of them: only the shown one is visited.
+        view.update(visual, |view, cx| view.set_text("r7".into(), cx));
+        visual.run_until_parked();
+        view.update_in(visual, |view, window, cx| view.step_mark(true, window, cx));
+        assert_eq!(view.read_with(visual, |view, _| view.selected), Some(7));
+        view.update(visual, |view, cx| {
+            view.set_text(String::new(), cx);
+            view.set_query(String::new(), cx);
+        });
+        visual.run_until_parked();
+        assert_eq!(marked_lines(visual), wanted, "back when the filter goes");
+
+        // Export «marked»: exactly those records, in order.
+        let out = root.join("marked.log");
+        view.update_in(visual, |view, window, cx| {
+            view.export_rows(ExportScope::Marked, ExportFormat::Raw, window, cx)
+        });
+        assert!(visual.did_prompt_for_new_path());
+        visual.simulate_new_path_selection({
+            let out = out.clone();
+            move |_| Some(out)
+        });
+        visual.run_until_parked();
+        let expected: String = [2, 7, 12].map(line).concat();
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), expected);
+
+        // Follow: new rows come in, the marks stay, next does not land on
+        // them, and a jump to a mark pauses follow.
+        view.update(visual, |view, cx| view.toggle_follow(cx));
+        visual.run_until_parked();
+        tick(visual);
+        {
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
+            file.write_all((20..25).map(line).collect::<String>().as_bytes())
+                .unwrap();
+        }
+        tick(visual);
+        assert_eq!(view.read_with(visual, |view, _| view.visible_len()), 25);
+        assert_eq!(marked_lines(visual), wanted);
+        view.update_in(visual, |view, window, cx| view.select(24, true, window, cx));
+        view.update_in(visual, |view, window, cx| view.step_mark(true, window, cx));
+        view.read_with(visual, |view, _| {
+            assert_eq!(view.selected, Some(2), "wraps past the new rows");
+            assert!(
+                !view.follow.as_ref().unwrap().pinned,
+                "the jump pauses follow"
+            );
+        });
+
+        // Truncated while followed: the earlier content keeps its marks under
+        // its own name; the new content is not marked.
+        std::fs::write(&path, line(100)).unwrap();
+        tick(visual);
+        tick(visual);
+        view.read_with(visual, |view, _| {
+            assert!(!view.extra.is_empty(), "the earlier content is kept");
+            assert!(view.marks.iter().all(|&(source, _)| source != 0));
+        });
+        assert_eq!(marked_lines(visual), wanted);
+
+        // Reopened: no marks. Nothing was stored.
+        let mut again = None;
+        let (_, second) = visual.cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        open_path: Some(path.clone()),
+                        session_directory: Some(root.join(".state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            again = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        second.run_until_parked();
+        let reopened = log_view(&again.unwrap(), second);
+        reopened.read_with(second, |view, _| {
+            assert!(view.total() > 0, "positive control: it opened");
+            assert!(view.marks.is_empty());
+        });
+    }
+
+    /// #1386: in a merged view a mark stays on its record when the files are
+    /// ordered again.
+    #[gpui::test]
+    fn marks_in_a_merged_view_stay_on_their_records(cx: &mut TestAppContext) {
+        let samples =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../okilum-core/tests/fixtures/log/samples");
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let names = ["kubernetes/kubelet.jsonl", "apache/apache-error.jsonl"];
+        let paths: Vec<PathBuf> = names
+            .iter()
+            .map(|name| {
+                let target = root.join(Path::new(name).file_name().unwrap());
+                std::fs::copy(samples.join(name), &target).unwrap();
+                target
+            })
+            .collect();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::bind_keys(cx);
+        });
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        open_path: Some(paths[0].clone()),
+                        session_directory: Some(root.join(".state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        visual.run_until_parked();
+        let view = log_view(&reader, visual);
+        view.update(visual, |view, cx| view.add_files(paths[1..].to_vec(), cx));
+        visual.run_until_parked();
+        // One record of each file.
+        let picks: Vec<(usize, usize)> = view.read_with(visual, |view, _| {
+            let mut picks = Vec::new();
+            for row in 0..view.visible_len() {
+                let key = view.locate(view.entry_at(row).unwrap()).unwrap();
+                if !picks.iter().any(|&(source, _)| source == key.0) {
+                    picks.push(key);
+                }
+            }
+            picks
+        });
+        assert_eq!(picks.len(), 2, "positive control: two files");
+        for &(source, entry) in &picks {
+            view.update(visual, |view, cx| {
+                let id = view.id_of(source, entry).unwrap();
+                view.toggle_mark_at(id, cx);
+            });
+        }
+        let marked = |visual: &mut VisualTestContext| -> Vec<(usize, usize)> {
+            view.read_with(visual, |view, _| {
+                let mut keys: Vec<_> = view
+                    .marked_rows()
+                    .into_iter()
+                    .map(|row| view.locate(view.entry_at(row).unwrap()).unwrap())
+                    .collect();
+                keys.sort();
+                keys
+            })
+        };
+        let mut wanted = picks.clone();
+        wanted.sort();
+        assert_eq!(marked(visual), wanted);
+        // Hide the added file and show it again: rows are numbered anew.
+        view.update(visual, |view, cx| view.set_source_enabled(1, false, cx));
+        visual.run_until_parked();
+        assert_eq!(
+            view.read_with(visual, |view, _| view.marked_rows().len()),
+            1
+        );
+        view.update(visual, |view, cx| view.set_source_enabled(1, true, cx));
+        visual.run_until_parked();
+        assert_eq!(marked(visual), wanted, "the same two records");
     }
 
     /// #1169: shift-click and shift-arrows select a run of records, which
