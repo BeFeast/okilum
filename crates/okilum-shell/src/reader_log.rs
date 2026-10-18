@@ -3168,7 +3168,7 @@ impl LogView {
         cx.notify();
     }
 
-    fn save_regex(&mut self, cx: &mut Context<Self>) {
+    fn save_regex(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(editor) = &self.regex_editor else {
             return;
         };
@@ -3189,6 +3189,7 @@ impl LogView {
                 Some("Cannot save regex in the app's settings file".into());
         } else {
             self.regex_editor = None;
+            self.focus.focus(window, cx);
             self.apply_regex(result.ok(), cx);
         }
         cx.notify();
@@ -3293,16 +3294,56 @@ impl LogView {
 
     fn render_regex_editor(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let editor = self.regex_editor.as_ref()?;
-        Some(v_flex().flex_none().px_3().py_2().gap_2()
-            .child("Named groups ts, level and msg fill the columns. Other named groups become fields.")
-            .child("One saved regex applies to Plain text files automatically. With several saved, choose one from Regex. Applying reopens this file and stops follow.")
-            .child(h_flex().gap_2()
-                .child(div().w(px(180.)).debug_selector(|| "log-regex-name".into()).child(Input::new(&editor.name).small()))
-                .child(div().flex_1().debug_selector(|| "log-regex-pattern".into()).child(Input::new(&editor.pattern).small()))
-                .child(Button::new("log-regex-save").small().label("Save and apply").on_click(cx.listener(|this, _, _, cx| this.save_regex(cx))))
-                .child(Button::new("log-regex-cancel").small().label("Cancel").on_click(cx.listener(|this, _, _, cx| { this.regex_editor = None; cx.notify(); }))))
-            .children(editor.error.clone().map(|error| div().debug_selector(|| "log-regex-error".into()).text_color(brand::palette(cx).danger).child(error)))
-            .into_any_element())
+        Some(
+            v_flex()
+                .flex_none()
+                .px_3()
+                .py_2()
+                .gap_2()
+                .child("Named groups ts, level and msg fill the columns. Other named groups become fields.")
+                .child("One saved regex applies to Plain text files automatically. With several saved, choose one from Regex. Applying reopens this file and stops follow.")
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            div()
+                                .w(px(180.))
+                                .debug_selector(|| "log-regex-name".into())
+                                .child(Input::new(&editor.name).small()),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .debug_selector(|| "log-regex-pattern".into())
+                                .child(Input::new(&editor.pattern).small()),
+                        )
+                        .child(
+                            Button::new("log-regex-save")
+                                .small()
+                                .label("Save and apply")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.save_regex(window, cx)
+                                })),
+                        )
+                        .child(
+                            Button::new("log-regex-cancel")
+                                .small()
+                                .label("Cancel")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.regex_editor = None;
+                                    this.focus.focus(window, cx);
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .children(editor.error.clone().map(|error| {
+                    div()
+                        .debug_selector(|| "log-regex-error".into())
+                        .text_color(brand::palette(cx).danger)
+                        .child(error)
+                }))
+                .into_any_element(),
+        )
     }
 
     /// Starts naming the shown filter to save it (#1169).
@@ -6906,7 +6947,7 @@ mod tests {
             visual.debug_bounds("log-regex-error").is_some(),
             "compile error is drawn while typing"
         );
-        view.update(visual, |view, cx| view.save_regex(cx));
+        view.update_in(visual, |view, window, cx| view.save_regex(window, cx));
         assert!(
             visual.update(|_, cx| reader_ui_state::log_regex_definitions(cx).is_empty()),
             "invalid regex is rejected"
@@ -6916,7 +6957,7 @@ mod tests {
             editor.pattern.update(cx, |input, cx| {
                 input.set_value("^(?P<msg>never)$", window, cx)
             });
-            view.save_regex(cx);
+            view.save_regex(window, cx);
         });
         visual.run_until_parked();
         visual.update(|window, cx| window.draw(cx).clear(cx));
@@ -6933,6 +6974,15 @@ mod tests {
             visual.debug_bounds("log-status").is_some(),
             "counts state is drawn"
         );
+        visual.simulate_keystrokes("down");
+        visual.run_until_parked();
+        view.read_with(visual, |view, _| {
+            assert_eq!(
+                view.selected,
+                Some(0),
+                "saving returns keyboard control to the log rows"
+            );
+        });
         visual.executor().advance_clock(Duration::from_secs(1));
         visual.run_until_parked();
         let saved: serde_json::Value =
