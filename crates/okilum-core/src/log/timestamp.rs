@@ -245,6 +245,58 @@ fn digits(b: &[u8]) -> Option<u32> {
     })
 }
 
+/// How many digits of a second a value read by `parse_text` spells: 0 for
+/// whole seconds up to 9 for nanoseconds. Elapsed times are shown at this
+/// precision and never finer (#1385). `None` when it is not a timestamp.
+pub fn digits_text(text: &[u8]) -> Option<u8> {
+    let b = text.trim_ascii();
+    parse_text(b)?;
+    if b.starts_with(b"/Date(") {
+        return Some(3);
+    }
+    if b.len() < 17 || is_number(b) {
+        return digits_number(b);
+    }
+    Some(match (b[2], b[8]) {
+        (b'/', _) => 0,
+        (_, b' ') => fraction_digits(b, 17),
+        _ => fraction_digits(b, 19),
+    })
+}
+
+/// `digits_text` for an epoch number: the unit its magnitude gives (seconds,
+/// milliseconds, microseconds, nanoseconds) plus the decimals it writes.
+pub fn digits_number(raw: &[u8]) -> Option<u8> {
+    parse_number(raw)?;
+    let text = std::str::from_utf8(raw.trim_ascii()).ok()?;
+    let unit = |whole: f64| match whole.abs() {
+        n if n < 1e11 => 0,
+        n if n < 1e14 => 3,
+        n if n < 1e17 => 6,
+        _ => 9,
+    };
+    let (int_part, frac_part) = text.split_once('.').unwrap_or((text, ""));
+    match int_part.parse::<i64>() {
+        Ok(whole) if frac_part.bytes().all(|c| c.is_ascii_digit()) => {
+            Some((unit(whole as f64) + frac_part.len()).min(9) as u8)
+        }
+        // Exponent forms: only the unit is known for sure.
+        _ => Some(unit(text.parse::<f64>().ok()?) as u8),
+    }
+}
+
+/// Digits of an optional `.`/`,` fraction at `pos`, at most nanoseconds.
+fn fraction_digits(b: &[u8], pos: usize) -> u8 {
+    if !matches!(b.get(pos), Some(b'.' | b',')) {
+        return 0;
+    }
+    b[pos + 1..]
+        .iter()
+        .take_while(|c| c.is_ascii_digit())
+        .count()
+        .min(9) as u8
+}
+
 /// `HH:MM:SS.mmm` of a Unix-nanosecond timestamp in UTC, for the row column.
 pub fn clock_utc(nanos: i64) -> String {
     let Ok(at) = ::time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(nanos)) else {
@@ -359,6 +411,34 @@ mod tests {
         assert_eq!(parse_number(b"1759276800.25"), Some(BASE + 250_000_000));
         assert_eq!(parse_number(b"nan"), None);
         assert_eq!(parse_number(b"true"), None);
+    }
+
+    /// #1385: elapsed times use the precision the source writes.
+    #[test]
+    fn digits_follow_what_the_source_writes() {
+        for (text, digits) in [
+            ("2025-10-01T00:00:00Z", Some(0)),
+            ("2025-10-01T00:00:00.240Z", Some(3)),
+            ("2025-10-01 00:00:00,5", Some(1)),
+            ("2025-10-01T00:00:00.123456+02:00", Some(6)),
+            ("2025-10-01T00:00:00.123456789123Z", Some(9)),
+            ("20251001 00:00:00.000279", Some(6)),
+            ("01/Oct/2025:02:00:00 +0200", Some(0)),
+            ("/Date(1759276800250+0300)/", Some(3)),
+            ("1759276800", Some(0)),
+            ("1759276800.25", Some(2)),
+            ("1759276800000", Some(3)),
+            ("1759276800000000", Some(6)),
+            ("1791612242497259677", Some(9)),
+            ("1759276800000000.5", Some(7)),
+            ("Oct  1 00:00:00", None),
+            ("yesterday", None),
+        ] {
+            assert_eq!(digits_text(text.as_bytes()), digits, "{text}");
+        }
+        assert_eq!(digits_number(b"1759276800.125"), Some(3));
+        assert_eq!(digits_number(b"1.7592768e9"), Some(0));
+        assert_eq!(digits_number(b"true"), None);
     }
 
     #[test]
