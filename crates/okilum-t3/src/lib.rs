@@ -12,6 +12,7 @@
 
 mod environment;
 mod gateway;
+pub mod manifest;
 mod mcp;
 pub mod oauth;
 mod token;
