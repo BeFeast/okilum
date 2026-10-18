@@ -44,6 +44,7 @@ class Prebuilt(unittest.TestCase):
         # Real immutable ZIP/API forgery controls live in test_linux_artifact_reuse.
         for module in (publication.native_payload, publish.native_payload):
             self.enterContext(patch.object(module, 'authenticate_receipt'))
+        self.enterContext(patch.object(publication.archive_authority.consumer, 'public_read', return_value=None))
 
     def test_real_pkgbuild_functions_install_identical_bytes_without_cargo(self):
         with tempfile.TemporaryDirectory() as tmp:

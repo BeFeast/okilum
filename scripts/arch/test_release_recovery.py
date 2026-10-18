@@ -415,7 +415,7 @@ class SignedAuthority(unittest.TestCase):
         return recovery.reuse(SHA, self.prebuilt, self.root / 'out',
                               fetch=self.fetch, verify=self.verify)
 
-    def entrypoint(self, case, *, inspection=''):
+    def entrypoint(self, case, *, inspection='', credential='fixture-existing-read-token'):
         """Actual shell entrypoint, real receipt authority, fixture-only external I/O.
 
         No authenticate_receipt/resolve/inspect substitution: ZIP/API validation,
@@ -451,6 +451,8 @@ class API(Store):
         assert method == 'GET', 'Consumer cannot mutate canonical claims or dispatch'
         return super().request(path, method, data)
     def download_artifact(self, artifact_id):
+        if self.token != 'fixture-existing-read-token':
+            raise ValueError('Fixture ZIP authentication required (401)')
         log('zip-downloaded', str(artifact_id))
         return super().download_artifact(artifact_id)
 api = API()
@@ -500,7 +502,10 @@ def spec(name, path, *a, **kw):
         if str(path).endswith('package-linux-binary.py'):
             module.config = lambda: state['receipt']['manifest']['config']
         if str(path).endswith('github-linux.py'):
-            module.transport.GitHub = lambda token: api
+            def authenticated_api(token):
+                api.token = token
+                return api
+            module.transport.GitHub = authenticated_api
             module.public_read, module.verify_signature = fetch, verify
             archived = module.archived
             module.archived = lambda *a, **kw: archived(*a, fetch=fetch, verify=verify, **kw)
@@ -518,7 +523,7 @@ else:
         env = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ['PATH'],
             OKILUM_PREBUILT_DIR=str(self.prebuilt), FIXTURE_CI=str(ROOT / 'scripts/ci'),
             TOOL_COUNTER=str(root / 'tools-called'), BAD_INSPECTION=inspection,
-            OKILUM_FORK_VALIDATION='0', OKILUM_SETTINGS_UI_HARNESS='0', MIRROR_TOKEN='', GH_TOKEN='')
+            OKILUM_FORK_VALIDATION='0', OKILUM_SETTINGS_UI_HARNESS='0', MIRROR_TOKEN='', GH_TOKEN=credential)
         result = subprocess.run(['bash', str(ROOT / 'scripts/arch/build.sh')], cwd=root,
                                 env=env, text=True, capture_output=True)
         return result, root, env
@@ -546,6 +551,10 @@ else:
 
     def test_whole_entrypoint_missing_archive_uses_real_unsigned_authority(self):
         self.objects.clear()
+        missing, no_token, _ = self.entrypoint('missing-token', credential='')
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn('Fixture ZIP authentication required (401)', missing.stderr)
+        self.assertFalse((no_token / 'tools-called').exists())
         result, root, _ = self.entrypoint('fresh')
         # Valid immutable ZIP permits reaching makepkg, which is a refusing stub.
         self.assertEqual(result.returncode, 97, result.stdout + result.stderr)

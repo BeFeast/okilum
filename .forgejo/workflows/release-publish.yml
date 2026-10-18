@@ -33,6 +33,7 @@ jobs:
         env:
           PLATFORM: ${{ inputs.platform }}
           SOURCE_RUN: ${{ inputs.run_id }}
+          MIRROR_TOKEN: ${{ inputs.platform == 'linux' && secrets.OKILUM_GITHUB_MIRROR || '' }}
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FORGEJO_URL: ${{ github.server_url }}
           ARCH_GPG_PRIVATE_KEY: ${{ secrets.ARCH_GPG_PRIVATE_KEY }}

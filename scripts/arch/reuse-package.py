@@ -12,14 +12,16 @@ spec.loader.exec_module(consumer)
 payload = consumer.payload
 
 
-def reuse(source, prebuilt, output, *, fetch=consumer.public_read, verify=consumer.verify_signature):
-    expected = json.loads((prebuilt / 'receipt.json').read_text())
-    # Unsigned structural fields may locate an archive, but cannot authorize
-    # bytes. Authenticate against its signature before consulting receipt authority
-    # that may no longer exist after hosted expiry/interrupted publication.
-    m = payload.validate_manifest(expected.get('manifest', {}), source, payload.config(),
-                                  expected.get('producer'))
-    build = m['build']
+def signed_archive(source, build, configuration, *, fetch=None, verify=None):
+    """Authenticate a known original build before trusting any receipt fields.
+
+    A wholly absent archive returns None; partial or invalid archives fail closed.
+    The configured signature authenticates package bytes, never the unsigned
+    archive manifest alone. This proof is shared by packaging and publication.
+    """
+    fetch = fetch if fetch is not None else consumer.public_read
+    verify = verify if verify is not None else consumer.verify_signature
+    payload.require(type(build) is int and build > 0, 'Invalid original build')
     name = f'okilum-0.1.{build}-1-x86_64.pkg.tar.zst'
     prefix = f'okilum/arch/builds/{build}'
     # The build archive is committed before feed/catalog publication. A source
@@ -27,11 +29,8 @@ def reuse(source, prebuilt, output, *, fetch=consumer.public_read, verify=consum
     raw = fetch(f'{prefix}/manifest.json')
     if raw is None:
         payload.require(fetch(f'{prefix}/{name}') is None and fetch(f'{prefix}/{name}.sig') is None,
-                        'Incomplete Arch archive; explicit recovery required before packaging')
-        # No signed envelope exists. Preserve independent authority for unsigned
-        # inputs before allowing the caller to continue to initial packaging.
-        payload.validate_receipt(expected, source, m['config'])
-        return False
+                        'Incomplete Arch archive; explicit recovery required before packaging/publication')
+        return None
     archived = json.loads(raw)
     payload.require(archived.get('build') == build and archived.get('source') == source
                     and archived.get('filename') == name, 'Wrong archived package identity')
@@ -45,15 +44,45 @@ def reuse(source, prebuilt, output, *, fetch=consumer.public_read, verify=consum
         Path(str(path) + '.sig').write_bytes(signature)
         verify(path, Path(str(path) + '.sig'))
         original, binary = payload.package_receipt(path, source, build, trusted_envelope=True)
-        payload.validate_receipt(original, source, m['config'], trusted_envelope=True)
+        expected_config = original.get('manifest', {}).get('config', '') if configuration is None else configuration
+        m = payload.validate_receipt(original, source, expected_config, trusted_envelope=True)
+    payload.require(archived.get('production') == original
+                    and archived.get('binary_sha256') == m['binary_sha256'],
+                    'Archived manifest differs from signed production package')
+    return archived, package, signature, original, binary
+
+
+def publication_receipt(path, source, build, configuration, *, fetch=None, verify=None):
+    """Require independent unsigned authority or the exact signed build package."""
+    archived = signed_archive(source, build, configuration, fetch=fetch, verify=verify)
+    if archived is None:
+        receipt, binary = payload.package_receipt(path, source, build)
+        payload.require(configuration is None or receipt['manifest']['config'] == configuration,
+                        'Wrong production configuration')
+        return receipt, binary, None
+    _, package, _, receipt, binary = archived
+    payload.require(not path.is_symlink() and path.is_file() and path.read_bytes() == package,
+                    'Build already exists with different contents')
+    return receipt, binary, archived
+
+
+def reuse(source, prebuilt, output, *, fetch=consumer.public_read, verify=consumer.verify_signature):
+    expected = json.loads((prebuilt / 'receipt.json').read_text())
+    # Unsigned fields locate the original build; only its signature grants trust.
+    m = payload.validate_manifest(expected.get('manifest', {}), source, payload.config(),
+                                  expected.get('producer'))
+    result = signed_archive(source, m['build'], m['config'], fetch=fetch, verify=verify)
+    if result is None:
+        payload.validate_receipt(expected, source, m['config'])
+        return False
+    archived, package, signature, original, binary = result
+    name = archived['filename']
     # Verification/QA timestamps can advance on a fresh hosted download. All
     # immutable artifact and producer identities must still be exactly equal.
     fields = ('manifest', 'producer', 'artifact_id', 'artifact_api_digest',
               'artifact_zip_sha256', 'archive_sha256')
     selected_binary = prebuilt / 'payload/okilum'
     payload.require(all(original[k] == expected.get(k) for k in fields)
-                    and archived.get('production') == original
-                    and archived.get('binary_sha256') == m['binary_sha256']
                     and selected_binary.is_file() and not selected_binary.is_symlink()
                     and binary == selected_binary.read_bytes(),
                     'Archived package differs from selected production payload')

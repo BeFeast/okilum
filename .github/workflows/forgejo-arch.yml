@@ -31,8 +31,11 @@ jobs:
         GH_TOKEN: ${{ github.token }}
       run: python3 scripts/ci/github-linux.py resolve
     - name: Build package as an unprivileged user
+      env:
+        GH_TOKEN: ${{ github.token }}
       run: |
         chown -R builder:builder "$GITHUB_WORKSPACE" /home/builder
+        # runuser preserves GH_TOKEN for independent artifact authentication.
         # Unsigned release checks use the production package, without the QA harness.
         runuser -u builder -- env OKILUM_SETTINGS_UI_HARNESS=0 OKILUM_PREBUILT_DIR="$GITHUB_WORKSPACE/dist/linux-production" bash scripts/arch/build.sh
     - name: Validate Arch package

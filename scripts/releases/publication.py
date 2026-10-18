@@ -20,9 +20,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import prepare
 
 SCRIPTS = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location('native_payload', SCRIPTS / 'ci/package-linux-binary.py')
-native_payload = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(native_payload)
+spec = importlib.util.spec_from_file_location('archive_authority', SCRIPTS / 'arch/reuse-package.py')
+archive_authority = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(archive_authority)
+native_payload = archive_authority.payload
 WORKFLOWS = {'macos': 'macos-release.yml', 'linux': 'linux-release.yml',
              'windows': 'windows-diagnostic.yml'}
 ARTIFACTS = {'macos': {'macos-publication': 'macos'},
@@ -113,9 +114,13 @@ def one(root, pattern):
 
 def production_build(root, source):
     receipt = json.loads((root / 'arch/production-receipt.json').read_text())
-    manifest = native_payload.validate_receipt(receipt, source, receipt['manifest']['config'])
+    # Structural fields locate a known original build, not authority. Verify its
+    # signed archive before hosted lookup, which may have expired on a retry.
+    manifest = native_payload.validate_manifest(receipt.get('manifest', {}), source,
+                                               receipt['manifest']['config'], receipt.get('producer'))
     build = manifest['build']
-    embedded, _ = native_payload.package_receipt(Path(one(root / 'arch', '*.pkg.tar.zst')), source, build)
+    embedded, _, _ = archive_authority.publication_receipt(
+        Path(one(root / 'arch', '*.pkg.tar.zst')), source, build, manifest['config'])
     if embedded != receipt:
         raise ValueError('Publication receipt differs from packaged original producer')
     return build

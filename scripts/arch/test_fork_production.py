@@ -311,6 +311,55 @@ class ForkContextAndRouting(unittest.TestCase):
                 read_receipt.assert_not_called()
                 self.assertEqual(api.call.call_count, 2)
 
+    def test_full_checkout_then_shallow_selected_merge_and_workflow_full_history(self):
+        workflow = (ROOT / '.forgejo/workflows/linux-release.yml').read_text()
+        selected = workflow.split('ref: ${{ needs.select.outputs.source }}', 1)[1].split('- name:', 1)[0]
+        self.assertIn('fetch-depth: 0', selected)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            origin = root / 'origin'
+            origin.mkdir()
+            def git(where, *args, input=None):
+                return subprocess.check_output(['git', '-c', 'core.hooksPath=/dev/null',
+                    '-c', 'commit.gpgsign=false', '-c', 'user.name=Fork depth fixture',
+                    '-c', 'user.email=fork@example.invalid', *args], cwd=where,
+                    input=input, text=True, stderr=subprocess.PIPE).strip()
+            git(origin, 'init', '-q')
+            tree = git(origin, 'mktree', input='')
+            base = git(origin, 'commit-tree', tree, input='base\n')
+            head = git(origin, 'commit-tree', tree, '-p', base, input='head\n')
+            merge = git(origin, 'commit-tree', tree, '-p', base, '-p', head, input='merge\n')
+            git(origin, 'update-ref', 'refs/heads/pr-merge', merge)
+            checkout = root / 'checkout'
+            git(root, 'clone', '-q', '--no-local', '--branch', 'pr-merge', str(origin), str(checkout))
+            event = root / 'event.json'
+            event.write_text(json.dumps(dict(number=17, pull_request=dict(
+                base=dict(sha=base, repo=dict(full_name='BeFeast/okilum')),
+                head=dict(sha=head, repo=dict(full_name='contributor/okilum'))))))
+            env = dict(GITHUB_EVENT_NAME='pull_request', GITHUB_EVENT_PATH=str(event),
+                GITHUB_REPOSITORY='BeFeast/okilum', GITHUB_SHA=merge,
+                GITHUB_RUN_ID='19', GITHUB_RUN_NUMBER='23')
+            def command(*args):
+                self.assertEqual(args[0], 'git')
+                return git(checkout, *args[1:])
+            with patch.dict(os.environ, env), patch.object(fork, 'output', side_effect=command):
+                self.assertEqual(fork.context()['source_kind'], 'merge')
+                # The old second checkout reintroduces a shallow boundary even
+                # after the first complete checkout. Prove the negative fires.
+                git(checkout, 'fetch', '--depth=1', 'origin', merge)
+                self.assertEqual(git(checkout, 'rev-parse', '--is-shallow-repository'), 'true')
+                self.assertEqual(git(checkout, 'show', '-s', '--format=%P', merge), '')
+                with self.assertRaisesRegex(ValueError, 'declared base/head merge'):
+                    fork.context()
+                # checkout@v4 with fetch-depth: 0 unshallows an existing clone.
+                git(checkout, 'fetch', '--unshallow', 'origin')
+                git(checkout, 'checkout', '--detach', merge)
+                self.assertEqual(git(checkout, 'rev-parse', '--is-shallow-repository'), 'false')
+                self.assertEqual(fork.context()['source_sha'], merge)
+                # A second full-history selected fetch retains actual parents.
+                git(checkout, 'fetch', 'origin', merge)
+                self.assertEqual(fork.context()['source_kind'], 'merge')
+
     def test_existing_workflow_routes_forks_without_weakening_gates_or_guard(self):
         # Keep the ordinary Arch gate stdlib-only; CI images do not install PyYAML.
         workflow = (ROOT / '.forgejo/workflows/linux-release.yml').read_text()

@@ -176,8 +176,11 @@ API run id, so `GET /actions/runs/6123/jobs` reads another run or nothing.
 `package_receipt(path, source, build)` authenticate unsigned local receipts by
 resolving the original accepted hosted artifact or a signed archive independently.
 They use static ELF/digest inspection before any native execution. Public reads
-can be anonymous; an existing `MIRROR_TOKEN`/`GH_TOKEN` supports authenticated API
-reads without forwarding Authorization to artifact storage.
+can be anonymous, but the hosted artifact ZIP requires an existing
+`MIRROR_TOKEN`/`GH_TOKEN`. Both resolver and unprivileged packaging steps receive
+that credential on trusted workflows, as does protected initial Linux publication.
+The Forgejo API token cannot replace it. Fork steps receive no mirror credential.
+Authorization is never forwarded to artifact storage redirects.
 
 The optional `trusted_envelope=True` skips only that independent fetch. It is for
 the resolver after API ZIP digest verification, or after the caller has verified
@@ -198,6 +201,13 @@ descriptor publication. Discovery of an unknown build when both the descriptor
 and hosted payload are absent remains unsupported. An entirely absent archive
 requires independent unsigned receipt authority before initial packaging; partial
 or invalid archives fail closed. Parsing unsigned archive keys is not authorization.
+Protected `production_build()` and downstream `publish.execute()` use the same
+signature-first authority for known-build retries. They require the exact original
+signed package/receipt and matching archive fields before trusting its envelope,
+then retain its signature without replacement signing. Thus the existing feed and
+catalog path can finish after hosted expiry with a missing descriptor. Absent
+archives still require independent hosted authority; immutable-content rejection,
+feed monotonicity and the Linux-only promotion contract remain unchanged.
 
 Structural fixture tests may inject an external authority or explicitly mock
 `authenticate_receipt`; they are not provenance proof. Dedicated whole-entrypoint

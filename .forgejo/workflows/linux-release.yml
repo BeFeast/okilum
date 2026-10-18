@@ -69,6 +69,7 @@ jobs:
           # Pin the selected event source, including Forgejo's synthetic PR merge.
           # The fork receipt records that source separately from the fork head.
           ref: ${{ needs.select.outputs.source }}
+          fetch-depth: 0
           persist-credentials: false
       - name: Prepare build user
         run: useradd -m builder
@@ -108,11 +109,13 @@ jobs:
           python3 scripts/ci/github-linux.py resolve
       - name: Build package as an unprivileged user
         env:
+          MIRROR_TOKEN: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && secrets.OKILUM_GITHUB_MIRROR || '' }}
           OKILUM_FORK_VALIDATION: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && '1' || '0' }}
         run: |
           chown -R builder:builder "$GITHUB_WORKSPACE" /home/builder
           prebuilt="$GITHUB_WORKSPACE/dist/linux-production"
           if [ "$OKILUM_FORK_VALIDATION" = 1 ]; then prebuilt="$GITHUB_WORKSPACE/dist/linux-fork"; fi
+          # runuser preserves the trusted read token; the fork expression is empty.
           runuser -u builder -- env OKILUM_SETTINGS_UI_HARNESS=0 OKILUM_PREBUILT_DIR="$prebuilt" bash scripts/arch/build.sh
           # Publication distinguishes selected source from packaging run commit.
           runuser -u builder -- git -C "$GITHUB_WORKSPACE" rev-parse HEAD > dist/arch/release-source.txt

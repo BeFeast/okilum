@@ -15,9 +15,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'updater'))
 from release import R2  # noqa: E402
 import catalog
 
-spec = importlib.util.spec_from_file_location('native_payload', Path(__file__).resolve().parents[1] / 'ci/package-linux-binary.py')
-native_payload = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(native_payload)
+spec = importlib.util.spec_from_file_location('archive_authority', Path(__file__).with_name('reuse-package.py'))
+archive_authority = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(archive_authority)
+native_payload = archive_authority.payload
 
 PREFIX = 'okilum/arch'
 
@@ -110,22 +111,29 @@ def execute(args, r2, key, tmp):
     if args.command == 'publish':
         package = Path(args.package).read_bytes()
         manifest = {'build': args.build, 'filename': name, 'sha256': hashlib.sha256(package).hexdigest(), 'source': args.source}
-        receipt, _ = native_payload.package_receipt(Path(args.package), args.source, args.build)
+        # The known build's configured signature can outlive hosted artifacts and
+        # a missing source descriptor. Never let an unsigned receipt authorize it.
+        # Its authenticated receipt owns the configuration; protected publication
+        # may run at a newer revision than the selected product source.
+        receipt, _, authenticated = archive_authority.publication_receipt(
+            Path(args.package), args.source, args.build, None,
+            fetch=lambda name: r2.call('GET', name), verify=lambda path, _sig: key.verify(path))
         manifest['production'] = receipt
         manifest['binary_sha256'] = receipt['manifest']['binary_sha256']
         existing = r2.call('GET', f'{archive}/manifest.json')
+        if (existing is None) != (authenticated is None):
+            raise ValueError('Build archive changed during authentication')
         if existing is not None and json.loads(existing) != manifest:
             raise ValueError('Build already exists with different contents')
         path = tmp / name
         path.write_bytes(package)
         validate_package(path, args.build)
         if existing is not None:
-            original = r2.call('GET', f'{archive}/{name}')
-            signature = r2.call('GET', f'{archive}/{name}.sig')
+            # Reuse the exact signature already verified by the shared authority.
+            original, signature = authenticated[1:3]
             if original != package or signature is None:
                 raise ValueError('Archived package/signature missing or changed')
             Path(str(path) + '.sig').write_bytes(signature)
-            key.verify(path)
         else:
             key.sign(path)
             signature = Path(str(path) + '.sig').read_bytes()

@@ -460,6 +460,7 @@ class ReuseTests(unittest.TestCase):
                 path.write_bytes(tar_data([('usr/bin/okilum', binary, tarfile.REGTYPE),
                     ('usr/share/okilum/production-receipt.json', package.encode(value), tarfile.REGTYPE)]))
             with patch.object(publication.native_payload, 'receipt_authority', return_value=linux), \
+                    patch.object(publication.archive_authority.consumer, 'public_read', return_value=None), \
                     patch.object(linux.transport, 'GitHub', return_value=store), \
                     patch.object(linux, 'archived', return_value=None):
                 stage(r, binary_bytes())
