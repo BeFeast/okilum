@@ -126,6 +126,38 @@ pub(crate) struct LogDocument {
     pub elapsed: Duration,
 }
 
+struct RegexEditor {
+    name: Entity<InputState>,
+    pattern: Entity<InputState>,
+    error: Option<String>,
+    _events: Subscription,
+}
+
+/// One saved definition applies automatically only when detection says Plain.
+/// Several definitions require an explicit choice: no invisible winner.
+fn automatic_regex(cx: &App) -> Option<Arc<okilum_core::log::regex_text::RegexParser>> {
+    let definitions = reader_ui_state::log_regex_definitions(cx);
+    if definitions.len() == 1 {
+        definitions[0].compile().ok()
+    } else {
+        None
+    }
+}
+
+fn open_with_regex(
+    path: &Path,
+    regex: Option<Arc<okilum_core::log::regex_text::RegexParser>>,
+    only_plain: bool,
+) -> anyhow::Result<LogFile> {
+    let file = LogFile::open(path)?;
+    Ok(match regex {
+        Some(regex) if !only_plain || file.index().format() == Format::Plain => {
+            file.with_regex(regex)
+        }
+        _ => file,
+    })
+}
+
 enum State {
     Indexing,
     Ready(LogDocument),
@@ -255,6 +287,7 @@ impl ExportJob {
                 data,
                 entry,
                 format: index.format(),
+                regex: index.regex().map(|regex| regex.as_ref()),
                 source: several.then_some(name.as_str()),
             };
             export::write_row(out, &row, format)?;
@@ -451,6 +484,8 @@ pub(crate) struct LogView {
     _histogram_wait: Option<Task<()>>,
     /// Naming the shown filter to save it (#1169).
     saving: Option<SavingFilter>,
+    regex_editor: Option<RegexEditor>,
+    regex_error: Option<String>,
     /// What the last source-link click asked for, instead of launching (#1165).
     #[cfg(test)]
     last_open: Option<Open>,
@@ -533,6 +568,8 @@ impl LogView {
             _histogram: None,
             _histogram_wait: None,
             saving: None,
+            regex_editor: None,
+            regex_error: None,
             #[cfg(test)]
             last_open: None,
             _text_input_events: events,
@@ -548,7 +585,14 @@ impl LogView {
         cx: &mut Context<Self>,
     ) -> Self {
         record_ready(&document, cx);
-        Self::new(State::Ready(document), window, cx)
+        let apply = (document.file.index().format() == Format::Plain)
+            .then(|| automatic_regex(cx))
+            .flatten();
+        let mut view = Self::new(State::Ready(document), window, cx);
+        if let Some(regex) = apply {
+            view.apply_regex(Some(regex), cx);
+        }
+        view
     }
 
     /// Indexes `path` off the UI thread; the view says so meanwhile.
@@ -558,12 +602,13 @@ impl LogView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let regex = automatic_regex(cx);
         let task = cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move {
                     let started = std::time::Instant::now();
-                    LogFile::open(&path).map(|file| (file, started.elapsed()))
+                    open_with_regex(&path, regex, true).map(|file| (file, started.elapsed()))
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
@@ -765,13 +810,17 @@ impl LogView {
     /// Indexes `paths` off the UI thread and adds them to the view (#1160);
     /// while following, they are followed too.
     fn add_files(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        let regex = automatic_regex(cx);
         cx.spawn(async move |this, cx| {
             let opened = cx
                 .background_executor()
                 .spawn(async move {
                     paths
                         .into_iter()
-                        .map(|path| LogFile::open(&path).map_err(|error| (path, error)))
+                        .map(|path| {
+                            open_with_regex(&path, regex.clone(), true)
+                                .map_err(|error| (path, error))
+                        })
                         .collect::<Vec<_>>()
                 })
                 .await;
@@ -1802,16 +1851,19 @@ impl LogView {
         let primary = match &self.follow {
             Some(_) => None,
             None => match self.data() {
-                Some(data) => Some(data.path().to_owned()),
+                Some(data) => Some((data.path().to_owned(), data.index().regex().cloned())),
                 None => return,
             },
         };
-        let added: Vec<(usize, PathBuf)> = self
+        let added: Vec<_> = self
             .extra
             .iter()
             .enumerate()
             .filter_map(|(slot, extra)| match &extra.data {
-                SourceData::File(file) => Some((slot, file.path().to_owned())),
+                SourceData::File(file) => Some((
+                    slot,
+                    (file.path().to_owned(), file.index().regex().cloned()),
+                )),
                 _ => None,
             })
             .collect();
@@ -1820,14 +1872,23 @@ impl LogView {
             let (primary, added) = cx
                 .background_executor()
                 .spawn(async move {
-                    let open = |path: &Path| {
-                        let interval = okilum_core::log::tail::poll_interval_for(path);
-                        LogTail::open(path).map(|tail| tail.with_interval(interval))
+                    let open = |(path, regex): (
+                        PathBuf,
+                        Option<Arc<okilum_core::log::regex_text::RegexParser>>,
+                    )| {
+                        let interval = okilum_core::log::tail::poll_interval_for(&path);
+                        LogTail::open(&path).map(|tail| {
+                            let tail = tail.with_interval(interval);
+                            match regex {
+                                Some(regex) => tail.with_regex(regex),
+                                None => tail,
+                            }
+                        })
                     };
-                    let primary = primary.map(|path| open(&path));
+                    let primary = primary.map(open);
                     let added: Vec<_> = added
                         .into_iter()
-                        .map(|(slot, path)| (slot, open(&path)))
+                        .map(|(slot, path)| (slot, open(path)))
                         .collect();
                     (primary, added)
                 })
@@ -3046,6 +3107,7 @@ impl LogView {
                     .on_click(cx.listener(|this, _, window, cx| this.request_back(window, cx)))
             }))
             .children(history)
+            .child(self.regex_button(cx))
             .child(self.saved_button(cx))
             .child(self.export_button(cx))
             .child(self.columns_button(cx))
@@ -3066,6 +3128,170 @@ impl LogView {
                     .on_click(cx.listener(|this, _, window, cx| this.clear_filters(window, cx))),
             )
             .into_any_element()
+    }
+
+    fn begin_regex(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let name = cx.new(|cx| InputState::new(window, cx).placeholder("Regex name"));
+        let pattern = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("(?P<ts>...) (?P<level>...) (?P<msg>...)")
+        });
+        let events = cx.subscribe_in(&pattern, window, |this, input, event, _, cx| {
+            if matches!(event, InputEvent::Change) {
+                let definition = okilum_core::log::regex_text::Definition {
+                    name: String::new(),
+                    pattern: input.read(cx).value().to_string(),
+                };
+                if let Some(editor) = this.regex_editor.as_mut() {
+                    editor.error = definition.compile().err().map(|error| error.to_string());
+                }
+                cx.notify();
+            }
+        });
+        name.update(cx, |input, cx| input.focus(window, cx));
+        self.regex_editor = Some(RegexEditor {
+            name,
+            pattern,
+            error: None,
+            _events: events,
+        });
+        cx.notify();
+    }
+
+    fn save_regex(&mut self, cx: &mut Context<Self>) {
+        let Some(editor) = &self.regex_editor else {
+            return;
+        };
+        let definition = okilum_core::log::regex_text::Definition {
+            name: editor.name.read(cx).value().trim().to_owned(),
+            pattern: editor.pattern.read(cx).value().to_string(),
+        };
+        let result = definition.compile();
+        let error = if definition.name.is_empty() {
+            Some("Enter a name".to_owned())
+        } else {
+            result.as_ref().err().map(ToString::to_string)
+        };
+        if let Some(error) = error {
+            self.regex_editor.as_mut().unwrap().error = Some(error);
+        } else if !reader_ui_state::save_log_regex(definition, cx) {
+            self.regex_editor.as_mut().unwrap().error =
+                Some("Cannot save regex in the app's settings file".into());
+        } else {
+            self.regex_editor = None;
+            self.apply_regex(result.ok(), cx);
+        }
+        cx.notify();
+    }
+
+    /// Reopens the primary file off the UI thread; a newer choice cancels the job.
+    fn apply_regex(
+        &mut self,
+        regex: Option<Arc<okilum_core::log::regex_text::RegexParser>>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(file) = self.file() else {
+            return;
+        };
+        let path = file.path().to_owned();
+        let rel = match &self.state {
+            State::Ready(document) => document.rel.clone(),
+            _ => return,
+        };
+        self._follow_open = None;
+        self.follow = None;
+        self.generations.next();
+        self._filtering = None;
+        self._histogram = None;
+        self.regex_error = None;
+        self._indexing = Some(cx.spawn(async move |this, cx| {
+            let started = std::time::Instant::now();
+            let result = cx
+                .background_executor()
+                .spawn(async move { open_with_regex(&path, regex, false) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                match result {
+                    Ok(file) => {
+                        this.state = State::Ready(LogDocument {
+                            rel,
+                            file: Arc::new(file),
+                            elapsed: started.elapsed(),
+                        });
+                        this.selected = None;
+                        this.anchor = None;
+                        this.marks.retain(|(source, _)| *source != 0);
+                        this.rows = None;
+                        this.filtering = false;
+                        this.rebuild_merge();
+                        this.after_rows_changed();
+                        this.refilter(cx);
+                    }
+                    Err(error) => this.regex_error = Some(format!("Cannot apply regex: {error:#}")),
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    fn regex_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
+        let definitions = reader_ui_state::log_regex_definitions(cx);
+        let view = cx.entity().downgrade();
+        bar_button(
+            "log-regex",
+            self.data()
+                .is_some_and(|data| data.index().format() == Format::Regex),
+        )
+        .label("Regex")
+        .dropdown_caret(true)
+        .debug_selector(|| "log-regex".into())
+        .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
+            let v = view.clone();
+            let mut menu = menu.item(PopupMenuItem::new("New regex…").on_click(
+                move |_, window, cx| {
+                    let _ = v.update(cx, |this, cx| this.begin_regex(window, cx));
+                },
+            ));
+            let v = view.clone();
+            menu = menu.item(PopupMenuItem::new("Use detected format").on_click(
+                move |_, _, cx| {
+                    let _ = v.update(cx, |this, cx| this.apply_regex(None, cx));
+                },
+            ));
+            for definition in &definitions {
+                let v = view.clone();
+                let definition = definition.clone();
+                menu = menu.item(
+                    PopupMenuItem::new(format!("Apply “{}” to this file", definition.name))
+                        .on_click(move |_, _, cx| {
+                            let _ = v.update(cx, |this, cx| match definition.compile() {
+                                Ok(regex) => this.apply_regex(Some(regex), cx),
+                                Err(error) => {
+                                    this.regex_error = Some(error.to_string());
+                                    cx.notify();
+                                }
+                            });
+                        }),
+                );
+            }
+            menu
+        })
+        .into_any_element()
+    }
+
+    fn render_regex_editor(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let editor = self.regex_editor.as_ref()?;
+        Some(v_flex().flex_none().px_3().py_2().gap_2()
+            .child("Named groups ts, level and msg fill the columns. Other named groups become fields.")
+            .child("One saved regex applies to Plain text files automatically. With several saved, choose one from Regex. Applying reopens this file and stops follow.")
+            .child(h_flex().gap_2()
+                .child(div().w(px(180.)).debug_selector(|| "log-regex-name".into()).child(Input::new(&editor.name).small()))
+                .child(div().flex_1().debug_selector(|| "log-regex-pattern".into()).child(Input::new(&editor.pattern).small()))
+                .child(Button::new("log-regex-save").small().label("Save and apply").on_click(cx.listener(|this, _, _, cx| this.save_regex(cx))))
+                .child(Button::new("log-regex-cancel").small().label("Cancel").on_click(cx.listener(|this, _, _, cx| { this.regex_editor = None; cx.notify(); }))))
+            .children(editor.error.clone().map(|error| div().debug_selector(|| "log-regex-error".into()).text_color(brand::palette(cx).danger).child(error)))
+            .into_any_element())
     }
 
     /// Starts naming the shown filter to save it (#1169).
@@ -3717,7 +3943,12 @@ impl LogView {
             .border_color(brand::palette(cx).border_subtle)
             .text_size(px(12.))
             .text_color(cx.theme().muted_foreground)
-            .child(div().truncate().child(text))
+            .child(
+                div()
+                    .debug_selector(|| "log-status".into())
+                    .truncate()
+                    .child(text),
+            )
             .into_any_element()
     }
 }
@@ -3927,6 +4158,13 @@ impl Render for LogView {
             .when(has_entries || self.follow.is_some(), |view| {
                 view.child(self.render_filter_bar(cx))
             })
+            .children(self.render_regex_editor(cx))
+            .children(self.regex_error.clone().map(|error| {
+                div()
+                    .text_sm()
+                    .text_color(brand::palette(cx).danger)
+                    .child(error)
+            }))
             .children(self.render_saving(cx))
             .children(self.render_histogram(cx))
             .children(self.render_reset(cx))
@@ -4238,6 +4476,21 @@ fn status_text(document: &LogDocument) -> String {
 }
 
 fn index_status(index: &LogIndex) -> String {
+    if let (Some(regex), Some((matched, unmatched))) = (index.regex(), index.regex_counts()) {
+        let mut text = format!(
+            "Regex “{}” matched {} of {} lines",
+            regex.definition().name,
+            grouped(matched),
+            grouped(matched + unmatched)
+        );
+        if unmatched > 0 {
+            text.push_str(&format!(
+                "; {} unmatched lines shown as text",
+                grouped(unmatched)
+            ));
+        }
+        return text;
+    }
     let stats = index.stats();
     let format = index.format();
     let mut parts = vec![format.label().to_owned()];
@@ -6598,6 +6851,112 @@ mod tests {
             assert!(
                 view.follow.as_ref().unwrap().last_full_run.is_none(),
                 "a range never asks for a full run when records arrive"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn regex_entry_shows_errors_saves_and_reports_zero_matches(cx: &mut TestAppContext) {
+        let state = tempfile::tempdir().unwrap();
+        cx.update(|cx| reader_ui_state::install(state.path(), cx));
+        let (_directory, reader, visual) = open_log("first line\n  second line\n", cx);
+        let view = log_view(&reader, visual);
+        view.update_in(visual, |view, window, cx| {
+            view.begin_regex(window, cx);
+            let editor = view.regex_editor.as_ref().unwrap();
+            editor
+                .name
+                .update(cx, |input, cx| input.set_value("Pipe", window, cx));
+            editor
+                .pattern
+                .update(cx, |input, cx| input.focus(window, cx));
+        });
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        visual.simulate_input("(?P<ts>");
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        view.read_with(visual, |view, _| {
+            assert!(view
+                .regex_editor
+                .as_ref()
+                .unwrap()
+                .error
+                .as_ref()
+                .unwrap()
+                .contains("unclosed group"));
+        });
+        assert!(
+            visual.debug_bounds("log-regex-error").is_some(),
+            "compile error is drawn while typing"
+        );
+        view.update(visual, |view, cx| view.save_regex(cx));
+        assert!(
+            visual.update(|_, cx| reader_ui_state::log_regex_definitions(cx).is_empty()),
+            "invalid regex is rejected"
+        );
+        view.update_in(visual, |view, window, cx| {
+            let editor = view.regex_editor.as_ref().unwrap();
+            editor.pattern.update(cx, |input, cx| {
+                input.set_value("^(?P<msg>never)$", window, cx)
+            });
+            view.save_regex(cx);
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        view.read_with(visual, |view, _| {
+            assert!(view.regex_editor.is_none(), "valid regex was saved");
+            assert_eq!(view.data().unwrap().index().regex_counts(), Some((0, 2)));
+            assert_eq!(view.visible_len(), 2, "unmatched lines stay visible");
+            assert_eq!(
+                index_status(view.data().unwrap().index()),
+                "Regex “Pipe” matched 0 of 2 lines; 2 unmatched lines shown as text"
+            );
+        });
+        assert!(
+            visual.debug_bounds("log-status").is_some(),
+            "counts state is drawn"
+        );
+        visual.executor().advance_clock(Duration::from_secs(1));
+        visual.run_until_parked();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(state.path().join("reader-ui.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            saved["log_regex"]["Pipe"]["pattern"], "^(?P<msg>never)$",
+            "durable settings, outside the index"
+        );
+        assert_eq!(
+            visual.update(|_, cx| automatic_regex(cx).unwrap().definition().name.clone()),
+            "Pipe"
+        );
+        // A second saved definition makes automatic selection ambiguous.
+        visual.update(|_, cx| {
+            assert!(reader_ui_state::save_log_regex(
+                okilum_core::log::regex_text::Definition {
+                    name: "Another".into(),
+                    pattern: "(?P<msg>.*)".into()
+                },
+                cx
+            ));
+            assert!(automatic_regex(cx).is_none());
+        });
+        // Explicitly replacing the parser gives the partial count state and fields.
+        let regex = okilum_core::log::regex_text::Definition {
+            name: "Partial".into(),
+            pattern: "^(?P<worker>first) (?P<msg>.*)$".into(),
+        }
+        .compile()
+        .unwrap();
+        view.update(visual, |view, cx| view.apply_regex(Some(regex), cx));
+        visual.run_until_parked();
+        view.read_with(visual, |view, _| {
+            assert_eq!(
+                index_status(view.data().unwrap().index()),
+                "Regex “Partial” matched 1 of 2 lines; 1 unmatched lines shown as text"
+            );
+            assert!(
+                view.field_names().contains(&"worker".to_owned()),
+                "extra named groups are available as columns"
             );
         });
     }

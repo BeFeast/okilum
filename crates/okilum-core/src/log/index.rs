@@ -90,6 +90,7 @@ impl LogStats {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LogIndex {
     format: Format,
+    regex: Option<std::sync::Arc<super::regex_text::RegexParser>>,
     entries: Vec<LogEntry>,
     stats: LogStats,
     bytes: u64,
@@ -104,8 +105,26 @@ impl LogIndex {
 
     /// The result is identical for every thread count.
     pub fn build_with_threads(data: &[u8], threads: usize) -> Self {
+        Self::build_regex_with_threads(data, None, threads)
+    }
+
+    pub fn build_regex(data: &[u8], regex: std::sync::Arc<super::regex_text::RegexParser>) -> Self {
+        let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+        Self::build_regex_with_threads(data, Some(regex), threads)
+    }
+
+    pub fn build_regex_with_threads(
+        data: &[u8],
+        regex: Option<std::sync::Arc<super::regex_text::RegexParser>>,
+        threads: usize,
+    ) -> Self {
         let mut index = LogIndex {
-            format: detect::detect(data),
+            format: if regex.is_some() {
+                Format::Regex
+            } else {
+                detect::detect(data)
+            },
+            regex,
             entries: Vec::new(),
             stats: LogStats::default(),
             bytes: 0,
@@ -132,18 +151,19 @@ impl LogIndex {
         let span = &data[start..end];
         let threads = threads.clamp(1, (span.len() / MIN_CHUNK_BYTES).max(1));
         let mut bounds = chunk_bounds(span, threads);
-        if format != Format::Plain {
+        let regex = self.regex.as_deref();
+        if !matches!(format, Format::Plain | Format::Regex) {
             settle_bounds(span, &mut bounds, format);
         }
         let chunks: Vec<Chunk> = if bounds.len() <= 2 {
-            vec![index_chunk(data, start, end, format)]
+            vec![index_chunk(data, start, end, format, regex)]
         } else {
             std::thread::scope(|scope| {
                 let workers: Vec<_> = bounds
                     .windows(2)
                     .map(|w| {
                         let (from, to) = (start + w[0], start + w[1]);
-                        scope.spawn(move || index_chunk(data, from, to, format))
+                        scope.spawn(move || index_chunk(data, from, to, format, regex))
                     })
                     .collect();
                 workers
@@ -172,7 +192,7 @@ impl LogIndex {
     /// Indexing restarts at its first line; that line was the start of an
     /// entry, so nothing before it decides how it is read.
     fn reopen_last(&mut self, data: &[u8]) -> Option<(usize, LogEntry)> {
-        if self.format == Format::Plain {
+        if matches!(self.format, Format::Plain | Format::Regex) {
             return None;
         }
         let last = self.entries.pop()?;
@@ -183,6 +203,24 @@ impl LogIndex {
         stats.lines = u64::from(last.line);
         self.bytes = last.offset;
         Some((self.entries.len(), last))
+    }
+
+    pub fn regex(&self) -> Option<&std::sync::Arc<super::regex_text::RegexParser>> {
+        self.regex.as_ref()
+    }
+
+    pub fn record(&self, line: &[u8]) -> Option<super::Record> {
+        super::Record::parse_with_regex(line, self.format, self.regex.as_deref())
+    }
+
+    /// Regex matches and misses, including blank lines.
+    pub fn regex_counts(&self) -> Option<(u64, u64)> {
+        self.regex.as_ref().map(|_| {
+            (
+                self.stats.lines - self.stats.unparsed(),
+                self.stats.unparsed(),
+            )
+        })
     }
 
     pub fn format(&self) -> Format {
@@ -272,7 +310,13 @@ struct Chunk {
     stats: LogStats,
 }
 
-fn index_chunk(data: &[u8], start: usize, end: usize, format: Format) -> Chunk {
+fn index_chunk(
+    data: &[u8],
+    start: usize,
+    end: usize,
+    format: Format,
+    regex: Option<&super::regex_text::RegexParser>,
+) -> Chunk {
     let mut entries: Vec<LogEntry> = Vec::with_capacity((end - start) / 160);
     let mut stats = LogStats::default();
     let mut pos = start;
@@ -280,7 +324,7 @@ fn index_chunk(data: &[u8], start: usize, end: usize, format: Format) -> Chunk {
     // Whether the last entry takes continuation lines, and if it is a block,
     // every following line up to the next record.
     let mut open: Option<bool> = None;
-    let grouping = format != Format::Plain;
+    let grouping = !matches!(format, Format::Plain | Format::Regex);
     while pos < end {
         let line_end = memchr::memchr(b'\n', &data[pos..end]).map_or(end, |at| pos + at);
         let mut text_end = line_end;
@@ -288,8 +332,11 @@ fn index_chunk(data: &[u8], start: usize, end: usize, format: Format) -> Chunk {
             text_end -= 1;
         }
         let text = &data[pos..text_end];
-        if !text.trim_ascii().is_empty() {
-            let (level, ts) = record::classify(text, format);
+        if format == Format::Regex || !text.trim_ascii().is_empty() {
+            let (level, ts) = match regex {
+                Some(regex) => record::classify_with_regex(text, format, Some(regex)),
+                None => record::classify(text, format),
+            };
             let continues = level == Level::Unparsed
                 && open.is_some_and(|block| block || block::is_continuation(text))
                 && entries
@@ -502,6 +549,7 @@ mod tests {
         fn json_index() -> LogIndex {
             LogIndex {
                 format: Format::JsonLines,
+                regex: None,
                 entries: Vec::new(),
                 stats: LogStats::default(),
                 bytes: 0,

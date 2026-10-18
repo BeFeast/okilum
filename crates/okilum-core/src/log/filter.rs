@@ -295,6 +295,7 @@ struct Plan<'f> {
     chips: &'f [FieldChip],
     query: Option<&'f Query>,
     format: Format,
+    regex: Option<Arc<super::regex_text::RegexParser>>,
 }
 
 impl<'f> Plan<'f> {
@@ -318,6 +319,7 @@ impl<'f> Plan<'f> {
             chips: &filter.chips,
             query: filter.query.as_ref().filter(|query| !query.is_empty()),
             format: index.format(),
+            regex: index.regex().cloned(),
         }
     }
 
@@ -359,9 +361,17 @@ impl<'f> Plan<'f> {
                 }
                 let raw = data.get(entry.range()).unwrap_or_default();
                 if self.content_matches(raw, entry.level())
-                    && self
-                        .query
-                        .is_none_or(|query| query.matches_line(entry, raw, self.format))
+                    && self.query.is_none_or(|query| {
+                        query.matches(
+                            entry,
+                            if query.needs_record() {
+                                index.record(raw)
+                            } else {
+                                None
+                            }
+                            .as_ref(),
+                        )
+                    })
                 {
                     rows.push((block_start + offset) as u32);
                 }
@@ -378,11 +388,11 @@ impl<'f> Plan<'f> {
             None
         } else {
             if let Some(needle) = &self.needle {
-                if needle.absent_from_unescaped(raw) {
+                if self.regex.is_none() && needle.absent_from_unescaped(raw) {
                     return false;
                 }
             }
-            Record::parse(raw, self.format)
+            Record::parse_with_regex(raw, self.format, self.regex.as_deref())
         };
         let Some(record) = record else {
             // Not a record: no field can match a chip, and text is matched

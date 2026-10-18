@@ -335,7 +335,17 @@ pub(crate) fn scan<'a>(
     format: Format,
     visit: &mut dyn FnMut(&[Cow<'a, str>], RawValue<'a>),
 ) -> Result<(), ()> {
+    scan_with_regex(line, format, None, visit)
+}
+
+fn scan_with_regex<'a>(
+    line: &'a [u8],
+    format: Format,
+    regex: Option<&super::regex_text::RegexParser>,
+    visit: &mut dyn FnMut(&[Cow<'a, str>], RawValue<'a>),
+) -> Result<(), ()> {
     match format {
+        Format::Regex => regex.ok_or(())?.scan(line, visit),
         Format::JsonLines => json::scan(line, visit),
         Format::Logfmt => logfmt::scan(line, visit),
         Format::Mixed if line.trim_ascii_start().first() == Some(&b'{') => json::scan(line, visit),
@@ -348,6 +358,11 @@ pub(crate) fn scan<'a>(
     }
 }
 
+// In a user format only these three exact names have standard roles.
+fn regex_role(path: &[Cow<'_, str>]) -> bool {
+    matches!(path, [key] if matches!(key.as_ref(), "ts" | "level" | "msg"))
+}
+
 /// Whether `line` is a record in `format`, colour codes aside.
 pub(crate) fn is_record(line: &[u8], format: Format) -> bool {
     scan(&ansi::strip(line), format, &mut |_, _| {}).is_ok()
@@ -356,9 +371,20 @@ pub(crate) fn is_record(line: &[u8], format: Format) -> bool {
 /// What the index keeps per line: level and timestamp, without allocating
 /// for fields that play no role.
 pub(crate) fn classify(line: &[u8], format: Format) -> (Level, Option<i64>) {
+    classify_with_regex(line, format, None)
+}
+
+pub(crate) fn classify_with_regex(
+    line: &[u8],
+    format: Format,
+    regex: Option<&super::regex_text::RegexParser>,
+) -> (Level, Option<i64>) {
     let line = ansi::strip(line);
     let mut roles = Roles::<(Level, Option<i64>)>::new();
-    let parsed = scan(&line, format, &mut |path, value| {
+    let parsed = scan_with_regex(&line, format, regex, &mut |path, value| {
+        if regex.is_some() && !regex_role(path) {
+            return;
+        }
         roles.offer(path, &value, |role, scale| match role {
             Role::Level => (level_on(&value, scale), None),
             Role::Time => (Level::Missing, value.timestamp()),
@@ -401,12 +427,22 @@ impl Record {
     /// the entry's first line; its continuation lines (block.rs) are not
     /// fields.
     pub fn parse(line: &[u8], format: Format) -> Option<Record> {
+        Self::parse_with_regex(line, format, None)
+    }
+
+    pub fn parse_with_regex(
+        line: &[u8],
+        format: Format,
+        regex: Option<&super::regex_text::RegexParser>,
+    ) -> Option<Record> {
         let line = ansi::strip(block::head(line));
         let mut record = Record::default();
         let mut roles = Roles::<usize>::new();
-        scan(&line, format, &mut |path, value| {
+        scan_with_regex(&line, format, regex, &mut |path, value| {
             let index = record.fields.len();
-            roles.offer(path, &value, |_, _| index);
+            if regex.is_none() || regex_role(path) {
+                roles.offer(path, &value, |_, _| index);
+            }
             record.fields.push(Field {
                 key: path.join("."),
                 value: value.text().into_owned(),

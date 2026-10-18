@@ -143,6 +143,8 @@ struct Saved {
     log_column_widths: BTreeMap<String, BTreeMap<String, f32>>,
     /// Saved log filters, for every log (#1169).
     log_saved: okilum_core::log::saved_query::SavedQueries,
+    #[serde(default)]
+    log_regex: BTreeMap<String, okilum_core::log::regex_text::Definition>,
     delimited_no_header: BTreeSet<PathBuf>,
     vaults: BTreeMap<PathBuf, Layout>,
     /// Per-vault accent preset key (#774), keyed like `vaults` by the
@@ -179,6 +181,7 @@ impl Default for Saved {
             log_columns: Default::default(),
             log_column_widths: Default::default(),
             log_saved: Default::default(),
+            log_regex: Default::default(),
             delimited_no_header: Default::default(),
             vaults: Default::default(),
             vault_colors: Default::default(),
@@ -209,6 +212,7 @@ struct Store {
     log_queries_changed: BTreeSet<String>,
     log_columns_changed: BTreeSet<String>,
     log_saved_changed: BTreeSet<String>,
+    log_regex_changed: BTreeSet<String>,
     colors_changed: BTreeSet<PathBuf>,
     trust_changed: BTreeSet<PathBuf>,
     delimited_changed: BTreeSet<PathBuf>,
@@ -294,6 +298,7 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         log_queries_changed: Default::default(),
         log_columns_changed: Default::default(),
         log_saved_changed: Default::default(),
+        log_regex_changed: Default::default(),
         colors_changed: Default::default(),
         trust_changed: Default::default(),
         delimited_changed: Default::default(),
@@ -516,6 +521,7 @@ struct WriteJob {
     log_queries_changed: BTreeSet<String>,
     log_columns_changed: BTreeSet<String>,
     log_saved_changed: BTreeSet<String>,
+    log_regex_changed: BTreeSet<String>,
     colors_changed: BTreeSet<PathBuf>,
     trust_changed: BTreeSet<PathBuf>,
     delimited_changed: BTreeSet<PathBuf>,
@@ -619,6 +625,16 @@ impl WriteJob {
         }
         // By name: a filter saved in another window stays, one deleted here
         // is deleted there.
+        for name in &self.log_regex_changed {
+            match self.saved.log_regex.get(name) {
+                Some(definition) => {
+                    latest.log_regex.insert(name.clone(), definition.clone());
+                }
+                None => {
+                    latest.log_regex.remove(name);
+                }
+            }
+        }
         for name in &self.log_saved_changed {
             match self.saved.log_saved.get(name) {
                 Some(query) => {
@@ -702,6 +718,7 @@ fn job(cx: &App) -> Option<WriteJob> {
             && state.splits_changed.is_empty()
             && state.log_queries_changed.is_empty()
             && state.log_columns_changed.is_empty()
+            && state.log_regex_changed.is_empty()
             && state.log_saved_changed.is_empty()
             && state.colors_changed.is_empty()
             && state.trust_changed.is_empty()
@@ -733,6 +750,7 @@ fn job(cx: &App) -> Option<WriteJob> {
         log_queries_changed: state.log_queries_changed.clone(),
         log_columns_changed: state.log_columns_changed.clone(),
         log_saved_changed: state.log_saved_changed.clone(),
+        log_regex_changed: state.log_regex_changed.clone(),
         colors_changed: state.colors_changed.clone(),
         trust_changed: state.trust_changed.clone(),
         delimited_changed: state.delimited_changed.clone(),
@@ -1395,6 +1413,38 @@ pub(crate) fn remember_log_query(path: &str, query: &str, cx: &mut App) {
 }
 
 /// The saved log filters (#1169), empty before the state is installed.
+/// Regex definitions share the durable reader settings file with saved filters.
+pub(crate) fn log_regex_definitions(cx: &App) -> Vec<okilum_core::log::regex_text::Definition> {
+    cx.try_global::<Store>()
+        .map(|state| state.saved.log_regex.values().cloned().collect())
+        .unwrap_or_default()
+}
+
+pub(crate) fn save_log_regex(
+    definition: okilum_core::log::regex_text::Definition,
+    cx: &mut App,
+) -> bool {
+    if !installed(cx) || definition.name.trim().is_empty() || definition.compile().is_err() {
+        return false;
+    }
+    let state = cx.global_mut::<Store>();
+    let name = definition.name.clone();
+    state.saved.log_regex.insert(name.clone(), definition);
+    state.log_regex_changed.insert(name);
+    schedule(cx);
+    true
+}
+
+pub(crate) fn delete_log_regex(name: &str, cx: &mut App) {
+    if !installed(cx) {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.log_regex.remove(name);
+    state.log_regex_changed.insert(name.into());
+    schedule(cx);
+}
+
 pub(crate) fn saved_log_filters(cx: &App) -> okilum_core::log::saved_query::SavedQueries {
     cx.try_global::<Store>()
         .map(|state| state.saved.log_saved.clone())
@@ -1940,6 +1990,7 @@ mod tests {
                 log_queries_changed: Default::default(),
                 log_columns_changed: Default::default(),
                 log_saved_changed: Default::default(),
+                log_regex_changed: Default::default(),
                 colors_changed: Default::default(),
                 trust_changed: Default::default(),
                 delimited_changed: Default::default(),

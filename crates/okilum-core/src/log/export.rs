@@ -129,6 +129,7 @@ pub struct Row<'a> {
     pub data: &'a [u8],
     pub entry: &'a LogEntry,
     pub format: Format,
+    pub regex: Option<&'a super::regex_text::RegexParser>,
     /// The file the row came from, for a view of several files.
     pub source: Option<&'a str>,
 }
@@ -257,7 +258,7 @@ fn csv_line<'a>(cells: impl Iterator<Item = &'a str>, raw: bool) -> String {
 /// The decoded record of a row; `None` for a line that is not one.
 fn record_of(row: &Row, bytes: &[u8]) -> Option<Record> {
     (row.entry.level() != Level::Unparsed)
-        .then(|| Record::parse(bytes, row.format))
+        .then(|| Record::parse_with_regex(bytes, row.format, row.regex))
         .flatten()
 }
 
@@ -362,6 +363,7 @@ mod tests {
                 data,
                 entry,
                 format: index.format(),
+                regex: index.regex().map(|r| r.as_ref()),
                 source: None,
             })
             .collect()

@@ -101,6 +101,12 @@ impl LogFile {
         })
     }
 
+    /// Rebuilds derived data over the same immutable snapshot.
+    pub fn with_regex(mut self, regex: std::sync::Arc<super::regex_text::RegexParser>) -> Self {
+        self.index = LogIndex::build_regex(&self.bytes, regex);
+        self
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -124,7 +130,7 @@ impl LogFile {
     }
     /// Entry `index` decoded into fields; `None` for an unparsed line.
     pub fn record(&self, index: usize) -> Option<Record> {
-        Record::parse(self.raw(index)?, self.index.format())
+        self.index.record(self.raw(index)?)
     }
 }
 
