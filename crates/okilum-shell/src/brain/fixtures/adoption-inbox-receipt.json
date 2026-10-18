@@ -12,7 +12,7 @@
     ],
     "destination": "inbox",
     "expected_capture_revision": "sha256:8a9b613cb26cd47abff54cd0921a2857d3c07f14a68549fcdaff5b934f6f6c8b",
-    "expected_revision": "sha256:91bbc7b7aebe68ebb6b7c23db46dabb9a765f6c5a498732bc07c64f7fdc1e6d9",
+    "expected_revision": "sha256:88da09a2804507d964a8cc2f4c175c82fc80bd96f3c9fd6c87f76d5409ca7f36",
     "operation_id": "d4336746-f061-405a-899d-f2dd266b06b5",
     "proposal_id": "8d4168f95be33419c140aeeae61b9af833c42492dd8e4e234f464f2df1852c42",
     "source": {
@@ -85,7 +85,7 @@
         "operation_id": "bc073f2d-3486-476e-9546-0610b66d4812",
         "outcome": "written",
         "path": "records/proposal-8d4168f95be33419c140aeeae61b9af833c42492dd8e4e234f464f2df1852c42.md",
-        "previous_revision": "sha256:91bbc7b7aebe68ebb6b7c23db46dabb9a765f6c5a498732bc07c64f7fdc1e6d9",
+        "previous_revision": "sha256:88da09a2804507d964a8cc2f4c175c82fc80bd96f3c9fd6c87f76d5409ca7f36",
         "revision": "sha256:da13a993c690a73a88b14c06111b7e6462dbe6dc29cb5d1c28d4434b3e6bb96c"
       },
       "proposal_id": "8d4168f95be33419c140aeeae61b9af833c42492dd8e4e234f464f2df1852c42",

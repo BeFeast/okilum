@@ -24,7 +24,7 @@
     "expected_base_packet": "0327c4ef-d8bb-4e1c-a778-e839576c791c",
     "expected_base_revision": "sha256:835364f8b297e50c658d5ba587eafc17137f6ac0ba2f8a16ac24fa175a69cc35",
     "expected_goal_revision": "sha256:d7f14c14a1d39d8837b682a2db990d02501290a7d3154f564484af08e16edeb6",
-    "expected_revision": "sha256:b03e604762cb93767b5dcef21b8704c8b013fdfe92db018c441ffc021b5637cd",
+    "expected_revision": "sha256:4f099762fda391a8d03af0bef0c55bb6452695306b31f7af3a27f6758a7b8472",
     "goal_id": "97407c1d-9e05-4b40-9abe-625b138f9a3a",
     "guidance": "Manual compatibility guidance \u2014 \u96ea. Keep exact pins.\n\nAdditional inspected proposal guidance.",
     "operation_id": "4786e814-a75f-401c-bc2d-ac5ed567bd53",
@@ -64,7 +64,7 @@
         "operation_id": "aad72089-17b7-4f09-a86c-630c4bcf9e8b",
         "outcome": "written",
         "path": "records/proposal-7c484446fc5d73ae3a463ff3666d1cc899e9ce2f0eff61784870181655269b57.md",
-        "previous_revision": "sha256:b03e604762cb93767b5dcef21b8704c8b013fdfe92db018c441ffc021b5637cd",
+        "previous_revision": "sha256:4f099762fda391a8d03af0bef0c55bb6452695306b31f7af3a27f6758a7b8472",
         "revision": "sha256:68880d0271750655b05e800d3d364dadc067a8352cf17522b92e55dbce960e80"
       },
       "proposal_id": "7c484446fc5d73ae3a463ff3666d1cc899e9ce2f0eff61784870181655269b57",
