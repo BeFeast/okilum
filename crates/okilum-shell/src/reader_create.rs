@@ -432,6 +432,11 @@ impl Reader {
                 // in this new folder to render a focused, actionable input row.
                 self.tree
                     .entry_created(&rel, okilum_core::vault::EntryKind::Markdown);
+                // New note opened the sidebar for its name row. In a narrow
+                // window that sidebar covers the note, so it closes like
+                // after any other selection (#1412). The editor takes focus
+                // below.
+                self.dismiss_sidebar_after_selection(window, cx);
                 self.editing = None;
                 self.navigation.preparation_generation =
                     self.navigation.preparation_generation.wrapping_add(1);
@@ -1030,6 +1035,75 @@ mod tests {
         let saved = std::fs::read_to_string(root.join("Friend new note.md")).unwrap();
         assert_eq!(saved, "# Friend new note\nBody");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// #1412: in a narrow window (half a screen, next to Settings) the
+    /// sidebar opened for the name row lies over the document. After Enter
+    /// it closes, so the new note is not drawn under it; a wide window keeps
+    /// its docked sidebar.
+    #[gpui::test]
+    fn narrow_window_shows_the_new_note_after_create(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_reduce_motion(true);
+            gpui_component::init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        let long: String = (1..=400).map(|n| format!("Line {n}\n\n")).collect();
+        std::fs::write(root.join("Long.md"), format!("# Long\n\n{long}")).unwrap();
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("Long.md".into()),
+                        index_dir: Some(temp.path().join("cache")),
+                        session_directory: Some(temp.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        for (width, name, docked) in [(683., "Narrow", false), (1366., "Wide", true)] {
+            visual.simulate_resize(size(px(width), px(742.)));
+            visual.run_until_parked();
+            reader.update_in(visual, |r, window, cx| {
+                r.new_note(None, window, cx);
+                let input = r.creation.as_ref().unwrap().input.clone();
+                input.update(cx, |input, cx| input.set_value(name, window, cx));
+            });
+            visual.run_until_parked();
+            let notes_visible = |r: &Reader| {
+                let available = f32::from(r.body_bounds.size.width);
+                assert_eq!(reader_layout::overlay(available), !docked, "{name}");
+                r.panels.visible(reader_layout::Panel::Notes, available)
+            };
+            // Positive control: the name row shows the sidebar at both widths.
+            reader.read_with(visual, |r, _| assert!(notes_visible(r), "{name}"));
+            visual.simulate_keystrokes("enter");
+            visual.run_until_parked();
+            reader.read_with(visual, |r, _| {
+                assert_eq!(r.current_rel, format!("{name}.md"));
+                assert!(r.source_live_preview(), "{name} opens in Live Preview");
+                assert_eq!(notes_visible(r), docked, "{name}: sidebar after create");
+            });
+            // The editor keeps focus: typing lands in the new note.
+            visual.simulate_input("Body");
+            visual.run_until_parked();
+            reader.update_in(visual, |r, _, cx| {
+                let value = r.editing.as_ref().unwrap().test_input().read(cx).value();
+                assert_eq!(value.as_ref(), format!("# {name}\nBody"));
+                assert!(r.leave_source(cx));
+            });
+        }
     }
 
     /// #1394: a templates folder chosen in Settings applies to new notes,
