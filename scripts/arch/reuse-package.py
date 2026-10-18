@@ -14,7 +14,11 @@ payload = consumer.payload
 
 def reuse(source, prebuilt, output, *, fetch=consumer.public_read, verify=consumer.verify_signature):
     expected = json.loads((prebuilt / 'receipt.json').read_text())
-    m = payload.validate_receipt(expected, source, payload.config())
+    # Unsigned structural fields may locate an archive, but cannot authorize
+    # bytes. Authenticate against its signature before consulting receipt authority
+    # that may no longer exist after hosted expiry/interrupted publication.
+    m = payload.validate_manifest(expected.get('manifest', {}), source, payload.config(),
+                                  expected.get('producer'))
     build = m['build']
     name = f'okilum-0.1.{build}-1-x86_64.pkg.tar.zst'
     prefix = f'okilum/arch/builds/{build}'
@@ -24,6 +28,9 @@ def reuse(source, prebuilt, output, *, fetch=consumer.public_read, verify=consum
     if raw is None:
         payload.require(fetch(f'{prefix}/{name}') is None and fetch(f'{prefix}/{name}.sig') is None,
                         'Incomplete Arch archive; explicit recovery required before packaging')
+        # No signed envelope exists. Preserve independent authority for unsigned
+        # inputs before allowing the caller to continue to initial packaging.
+        payload.validate_receipt(expected, source, m['config'])
         return False
     archived = json.loads(raw)
     payload.require(archived.get('build') == build and archived.get('source') == source
@@ -37,17 +44,22 @@ def reuse(source, prebuilt, output, *, fetch=consumer.public_read, verify=consum
         path.write_bytes(package)
         Path(str(path) + '.sig').write_bytes(signature)
         verify(path, Path(str(path) + '.sig'))
-        original, binary = payload.package_receipt(path, source, build)
-    payload.validate_receipt(original, source, m['config'])
+        original, binary = payload.package_receipt(path, source, build, trusted_envelope=True)
+        payload.validate_receipt(original, source, m['config'], trusted_envelope=True)
     # Verification/QA timestamps can advance on a fresh hosted download. All
     # immutable artifact and producer identities must still be exactly equal.
     fields = ('manifest', 'producer', 'artifact_id', 'artifact_api_digest',
               'artifact_zip_sha256', 'archive_sha256')
-    payload.require(all(original[k] == expected[k] for k in fields)
+    selected_binary = prebuilt / 'payload/okilum'
+    payload.require(all(original[k] == expected.get(k) for k in fields)
                     and archived.get('production') == original
                     and archived.get('binary_sha256') == m['binary_sha256']
-                    and binary == (prebuilt / 'payload/okilum').read_bytes(),
+                    and selected_binary.is_file() and not selected_binary.is_symlink()
+                    and binary == selected_binary.read_bytes(),
                     'Archived package differs from selected production payload')
+    # The selected immutable fields/bytes now match the authenticated envelope.
+    # Only mutable receipt timing fields remain to be structurally validated.
+    payload.validate_receipt(expected, source, m['config'], trusted_envelope=True)
     output.mkdir(parents=True, exist_ok=True)
     existing = list(output.glob('okilum-*.pkg.tar.zst'))
     payload.require(not existing or (len(existing) == 1 and existing[0].name == name

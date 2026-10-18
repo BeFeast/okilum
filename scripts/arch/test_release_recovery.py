@@ -193,6 +193,12 @@ class SourceSelection(unittest.TestCase):
 
 
 class PackageRecovery(unittest.TestCase):
+    def setUp(self):
+        # These synthetic fixtures test structure and retry control flow only.
+        # SignedAuthority below exercises recovery without this authority adapter.
+        for module in (recovery.payload, publish.native_payload):
+            self.enterContext(patch.object(module, 'authenticate_receipt'))
+
     def reuse(self, prebuilt, store, output, **kwargs):
         with patch.object(recovery.payload, 'config', return_value=CONFIG):
             return recovery.reuse(SHA, prebuilt, output, fetch=store.objects.get,
@@ -339,6 +345,8 @@ def spec(name, path, *a, **kw):
         execute(module)
         if str(path).endswith('package-linux-binary.py'):
             module.inspect = lambda binary, m: m['elf']
+            # External authority is isolated for build.sh's synthetic fixture.
+            module.authenticate_receipt = lambda *args: None
         if str(path).endswith('github-linux.py'):
             def fetch(key):
                 p = pathlib.Path(os.environ['FAKE_STORE']) / key
@@ -370,6 +378,136 @@ else:
             for tool in ('makepkg', 'cargo', 'rustc'):
                 self.assertEqual(subprocess.run([tool, 'build'], env=env, capture_output=True).returncode, 97)
             self.assertEqual((root / 'tools-called').read_text(), 'makepkg\ncargo\nrustc\n')
+
+
+class SignedAuthority(unittest.TestCase):
+    """Real ZIP/API receipt fixture; signatures are strict byte-bound test doubles."""
+
+    def setUp(self):
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.hosted = accepted_store(self.root)
+        self.prebuilt = self.root / 'prebuilt'
+        self.receipt = linux.download(self.hosted, linux.discover(self.hosted, SHA, CONFIG)[0],
+                                      SHA, CONFIG, self.prebuilt)
+        self.name = 'okilum-0.1.14108-1-x86_64.pkg.tar.zst'
+        self.prefix = 'okilum/arch/builds/14108'
+        self.data = package_bytes(r=self.receipt)
+        self.signature = b'byte-bound fixture signature'
+        self.manifest = dict(build=14108, source=SHA, filename=self.name,
+            sha256=payload.digest(self.data), production=self.receipt,
+            binary_sha256=payload.digest(binary_bytes()))
+        self.objects = {f'{self.prefix}/manifest.json': payload.encode(self.manifest),
+            f'{self.prefix}/{self.name}': self.data,
+            f'{self.prefix}/{self.name}.sig': self.signature}
+        self.fetch = Mock(side_effect=self.objects.get)
+        self.verify = Mock(side_effect=self.verify_bytes)
+        self.authority = self.enterContext(patch.object(recovery.payload, 'receipt_authority', return_value=linux))
+        self.api = self.enterContext(patch.object(linux.transport, 'GitHub', return_value=self.hosted))
+        self.descriptor = self.enterContext(patch.object(linux, 'archived', return_value=None))
+        self.enterContext(patch.object(recovery.payload, 'config', return_value=CONFIG))
+
+    def verify_bytes(self, package, signature):
+        if package.read_bytes() != self.data or signature.read_bytes() != self.signature:
+            raise ValueError('Fixture signature does not authenticate these bytes')
+
+    def reuse(self):
+        return recovery.reuse(SHA, self.prebuilt, self.root / 'out',
+                              fetch=self.fetch, verify=self.verify)
+
+    def test_signed_build_archive_recovers_without_descriptor_or_hosted_authority(self):
+        self.hosted.artifacts[1][0]['expired'] = True
+        # Positive control: default unsigned validation really cannot resolve it.
+        with self.assertRaisesRegex(ValueError, 'Production artifact expired'):
+            recovery.payload.validate_receipt(self.receipt, SHA, CONFIG)
+        self.api.assert_called_once()
+        self.api.reset_mock()
+        self.descriptor.reset_mock()
+        with patch.object(recovery.payload, 'package_receipt', wraps=recovery.payload.package_receipt) as read:
+            def verify(package, signature):
+                read.assert_not_called()  # Package-controlled receipt is read only after authentication.
+                self.verify_bytes(package, signature)
+            self.verify.side_effect = verify
+            self.assertTrue(self.reuse())
+            self.assertTrue(read.call_args.kwargs['trusted_envelope'])
+        self.api.assert_not_called()
+        self.descriptor.assert_not_called()
+        self.verify.assert_called_once()
+        self.assertEqual([c.args[0] for c in self.fetch.call_args_list], [
+            f'{self.prefix}/manifest.json', f'{self.prefix}/{self.name}', f'{self.prefix}/{self.name}.sig'])
+        self.assertEqual((self.root / 'out' / self.name).read_bytes(), self.data)
+        self.assertEqual((self.root / 'out' / (self.name + '.sig')).read_bytes(), self.signature)
+        self.assertEqual(json.loads((self.root / 'out/production-receipt.json').read_text()), self.receipt)
+
+    def test_missing_archive_requires_unsigned_authority_and_rejects_consistent_forgery(self):
+        self.objects.clear()
+        self.assertFalse(self.reuse())  # Real independently authenticated ZIP/API positive control.
+        self.verify.assert_not_called()
+        self.api.assert_called_once()
+        bad = copy.deepcopy(self.receipt)
+        edited = binary_bytes() + b'forged executable'
+        bad['manifest']['binary_sha256'] = payload.digest(edited)
+        (self.prebuilt / 'payload/okilum').write_bytes(edited)
+        (self.prebuilt / 'receipt.json').write_bytes(payload.encode(bad))
+        with self.assertRaisesRegex(ValueError, 'independently authenticated'):
+            self.reuse()
+        self.assertFalse((self.root / 'out').exists())
+
+    def test_signed_archive_rejects_unsigned_identity_and_binary_substitution(self):
+        for change in ('artifact_id', 'archive_sha256', 'artifact_zip_sha256', 'producer',
+                       'source', 'build', 'config', 'binary', 'symlink', 'receipt_schema'):
+            with self.subTest(change=change):
+                bad = copy.deepcopy(self.receipt)
+                binary = self.prebuilt / 'payload/okilum'
+                if binary.is_symlink():
+                    binary.unlink()
+                binary.write_bytes(binary_bytes())
+                if change == 'producer':
+                    bad['producer']['run_id'] += 1
+                elif change in ('source', 'build', 'config'):
+                    field = {'source': 'source_sha', 'build': 'build', 'config': 'config'}[change]
+                    bad['manifest'][field] = 14109 if change == 'build' else 'b' * (40 if change == 'source' else 64)
+                elif change == 'binary':
+                    binary.write_bytes(binary_bytes() + b'forged')
+                    bad['manifest']['binary_sha256'] = payload.digest(binary.read_bytes())
+                elif change == 'symlink':
+                    binary.unlink()
+                    binary.symlink_to(self.root / 'fake-binary')
+                elif change == 'receipt_schema':
+                    bad['schema'] = 2
+                elif change == 'artifact_id':
+                    bad[change] += 1
+                else:
+                    bad[change] = 'b' * 64
+                    if change == 'artifact_zip_sha256':
+                        bad['artifact_api_digest'] = 'sha256:' + bad[change]
+                (self.prebuilt / 'receipt.json').write_bytes(payload.encode(bad))
+                with self.assertRaises(ValueError):
+                    self.reuse()
+                self.assertFalse((self.root / 'out').exists())
+
+    def test_signature_and_partial_archive_fail_before_receipt_authorization(self):
+        original = dict(self.objects)
+        for change in ('signature', 'package', 'missing_signature', 'missing_package', 'missing_manifest'):
+            with self.subTest(change=change):
+                self.objects.clear()
+                self.objects.update(original)
+                if change.startswith('missing_'):
+                    suffix = {'missing_signature': self.name + '.sig', 'missing_package': self.name,
+                              'missing_manifest': 'manifest.json'}[change]
+                    del self.objects[f'{self.prefix}/{suffix}']
+                elif change == 'signature':
+                    self.objects[f'{self.prefix}/{self.name}.sig'] = b'forged signature'
+                else:
+                    # Even a matching unsigned outer checksum cannot authenticate new bytes.
+                    forged = package_bytes(2, self.receipt)
+                    self.objects[f'{self.prefix}/{self.name}'] = forged
+                    self.objects[f'{self.prefix}/manifest.json'] = payload.encode(
+                        dict(self.manifest, sha256=payload.digest(forged)))
+                with patch.object(recovery.payload, 'package_receipt', wraps=recovery.payload.package_receipt) as read:
+                    with self.assertRaises(ValueError):
+                        self.reuse()
+                    read.assert_not_called()
+                self.assertFalse((self.root / 'out').exists())
 
 
 if __name__ == '__main__':
