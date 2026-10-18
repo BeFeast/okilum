@@ -53,7 +53,11 @@ class SigningKey:
         self.verify(path)
 
     def verify(self, path):
-        self.gpg('--verify', str(path) + '.sig', str(path))
+        status = self.gpg('--status-fd', '1', '--verify', str(path) + '.sig', str(path)).decode()
+        signatures = [line.split() for line in status.splitlines() if line.startswith('[GNUPG:] VALIDSIG ')]
+        # GPG success alone accepts any imported key; require the configured signer.
+        if len(signatures) != 1 or self.fingerprint not in (signatures[0][2], signatures[0][-1]):
+            raise ValueError('Signature does not match configured fingerprint')
 
     def public(self):
         return self.gpg('--armor', '--export', self.fingerprint)

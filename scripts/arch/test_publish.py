@@ -26,6 +26,23 @@ class MemoryR2:
 
 
 class Validation(unittest.TestCase):
+    def test_signature_requires_the_configured_full_signer_fingerprint(self):
+        key = publish.SigningKey()
+        key.fingerprint = 'A' * 40
+        for signer, primary, accepted in [('A' * 40, 'A' * 40, True),
+                                           ('B' * 40, 'A' * 40, True),
+                                           ('B' * 40, 'B' * 40, False)]:
+            status = f'[GNUPG:] VALIDSIG {signer} 2026-10-18 1 0 4 0 22 10 00 {primary}\n'.encode()
+            with patch.object(key, 'gpg', return_value=status):
+                if accepted:
+                    key.verify(Path('package'))
+                else:
+                    with self.assertRaisesRegex(ValueError, 'configured fingerprint'):
+                        key.verify(Path('package'))
+        with patch.object(key, 'gpg', return_value=b''):
+            with self.assertRaises(ValueError):
+                key.verify(Path('package'))
+
     def test_build_identifier_cannot_escape_archive(self):
         for value in [0, -1, '../stable', '1/2', '01']:
             with self.assertRaises(ValueError):

@@ -22,12 +22,14 @@ credentials are available, otherwise the ordinary compiler. Arch/Windows cache
 Cargo downloads and the verified pinned vendor checkout, never per-commit target
 archives. Native macOS tests and signing/notarization remain enabled.
 
-## Stable: one accepted source, three builds
+## All-platform Stable: one accepted source, three builds
 
 CI run numbers differ between platforms. Select the **macOS build number** as the
 public release number (`v0.1.<build>`); the release notes list the Windows and Arch
-build numbers. All three must name the same source commit. Nothing is rebuilt or
-renumbered, so native updater versions remain monotonic.
+build numbers. For an all-platform promotion, all three must name the same source
+commit. Linux-only Stable can advance independently; Stable sources may differ by
+platform. Nothing is rebuilt or renumbered, so native updater versions remain
+monotonic.
 
 Each successful publisher writes an artifact descriptor under
 `okilum/releases/<source>/<platform>.json`. Windows also archives its portable
@@ -45,8 +47,9 @@ its own rollback guard.
 
 Rolling Beta deliberately contains the latest published build **per platform**;
 they need not share a source. Notes list each build and exact SHA. The moving tag
-anchors the macOS source, not a claim that Windows/Arch used that commit. Stable
-promotion still requires all three platforms to share one accepted source.
+anchors the macOS source, not a claim that Windows/Arch used that commit.
+All-platform Stable promotion still requires all three platforms to share one accepted source;
+Linux-only promotion uses its own accepted source/build.
 
 The GitHub prerelease named **Beta** is updated in place, with one moving `beta`
 tag. It contains the macOS ZIP, Windows installer and portable ZIP, Arch package
@@ -55,12 +58,14 @@ so partially replaced assets are not offered as a completed release.
 
 ## Stable promotion — explicit approval required
 
-The first stable promotion is gated on owner QA: all OSes must open as quickly as
-macOS. Implementing or merging this workflow does **not** authorize promotion.
+All-platform stable promotion is gated on owner QA: all OSes must open as quickly
+as macOS. The separately authorized Linux-only pilot is gated on Linux QA, review,
+required CI and manager GO, independently of macOS/Windows readiness. Implementing
+or merging this workflow does **not** authorize promotion.
 
 After approval, run **releases** on **main** with `build` set to the accepted macOS
-Beta build. This is the single supported promotion action for all OSes. The old
-platform-specific manual promotion inputs are removed.
+Beta build. This promotes all OSes together; the explicit Linux-only path below
+is independent. Use these protected coordinator paths for promotion.
 
 The action validates all artifacts and Arch signatures, mirrors the release tag
 with public main, then promotes the signed Arch repository, Windows stable feed,
@@ -86,6 +91,56 @@ The `github-mirror` job only pushes `main` and the selected reachable `v0.1.*` o
 Secrets are the existing R2, Arch signing and `OKILUM_GITHUB_MIRROR` credentials;
 `FORGEJO_TOKEN` comes from the Actions token. Stable promotion shares the macOS
 appcast publication lock; scheduled Beta does not block the macOS release queue.
+
+### Linux-only Stable (#1432)
+
+After manager GO, dispatch **releases** on **main** with both the exact Linux
+`build` and full lowercase `source` SHA, and `linux_only=true`. Leave
+`windows_only`, `skip_windows`, `supersede_pending` and `linux_rollback` false.
+For the first accepted pilot the inputs are:
+
+```json
+{"ref":"main","inputs":{"linux_only":"true","build":"14108","source":"f4b64e77f93448c6204c806204873528a699f355","linux_rollback":"false","windows_only":"false","skip_windows":"false","supersede_pending":"false"}}
+```
+
+The workflow invokes `scripts/releases/linux.py --build 14108 --source <full SHA>`
+in the existing protected publisher, under `okilum-macos-release` with cancellation
+disabled. Operators must use this protected workflow; do not invoke an Arch or
+Linux publication CLI outside it or bypass the shared lock. It does not request
+or compile any build. It verifies main ancestry, exact Linux catalog/archive source and build, expected asset paths, sizes and
+checksums, package identity, and package/repository signatures from the configured
+full signing fingerprint. No macOS or Windows artifact is required or accessed.
+It writes only Arch stable payloads/feeds and Arch promotion receipts. The shared
+public signing key, Beta, all-platform `releases/stable.json`, GitHub release and
+release tags remain unchanged. Windows signed-only enforcement remains unchanged.
+Linux Stable's authoritative head is `arch/stable/x86_64/latest.json`.
+
+The publisher uses the existing Arch channel helper to prepare the signed DB before
+any remote write. A durable receipt at
+`okilum/arch/promotions/<build>-<source>.json` saves the exact before/after feed bytes,
+identity, state and timestamps. `okilum/arch/stable/promotion.json` points at the active
+receipt. Keep these operational records. Immutable package/signature bytes precede
+feed writes; each object is read back before completion. Retry an interrupted
+promotion with **identical inputs**. The saved signed DB is reused. A different
+selection cannot replace an active interrupted transaction. Ordinary backwards
+promotion and conflicting immutable payloads are refused.
+
+For explicitly approved rollback, dispatch the same Linux-only source/build inputs
+with **`linux_rollback=true`**. This restores only that receipt's exact previous DB,
+signature and head (or removes them if none existed), retaining package downloads.
+Rollback does not downgrade installed clients. Retry an interrupted rollback with
+the same rollback inputs. Recovery refuses feed bytes that differ from both saved
+states, so it cannot overwrite a later publication. After completed rollback that
+selection cannot be promoted again; select another accepted build.
+
+**Remaining atomicity gap:** every R2 PUT is atomic for one object, but the Arch DB
+and detached signature are two objects. A client crossing their replacement can
+fail verification until retry; `latest.json` is written last but pacman does not
+use it as a generation pointer. The current consumer cannot provide atomic
+replacement of the pair. This path retains `DatabaseRequired` fail-closed behavior
+and makes interruption recoverable; it does not claim multiobject atomicity or
+change the consumer/infrastructure. A strict requirement for atomic DB/signature
+visibility remains unmet by the existing protocol.
 
 ### Promoting an older main commit (#1040)
 
