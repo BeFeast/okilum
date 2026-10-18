@@ -3197,11 +3197,6 @@ impl LogView {
             State::Ready(document) => document.rel.clone(),
             _ => return,
         };
-        self._follow_open = None;
-        self.follow = None;
-        self.generations.next();
-        self._filtering = None;
-        self._histogram = None;
         self.regex_error = None;
         self._indexing = Some(cx.spawn(async move |this, cx| {
             let started = std::time::Instant::now();
@@ -3212,6 +3207,11 @@ impl LogView {
             let _ = this.update(cx, |this, cx| {
                 match result {
                     Ok(file) => {
+                        this._follow_open = None;
+                        this.follow = None;
+                        this.generations.next();
+                        this._filtering = None;
+                        this._histogram = None;
                         this.state = State::Ready(LogDocument {
                             rel,
                             file: Arc::new(file),

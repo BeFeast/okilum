@@ -361,17 +361,9 @@ impl<'f> Plan<'f> {
                 }
                 let raw = data.get(entry.range()).unwrap_or_default();
                 if self.content_matches(raw, entry.level())
-                    && self.query.is_none_or(|query| {
-                        query.matches(
-                            entry,
-                            if query.needs_record() {
-                                index.record(raw)
-                            } else {
-                                None
-                            }
-                            .as_ref(),
-                        )
-                    })
+                    && self
+                        .query
+                        .is_none_or(|query| query.matches_indexed_line(entry, raw, index))
                 {
                     rows.push((block_start + offset) as u32);
                 }

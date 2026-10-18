@@ -163,6 +163,18 @@ impl Query {
         self.expr.matches(entry, record)
     }
 
+    /// Uses the index's selected parser, including a user regex. A `Format`
+    /// alone cannot carry a compiled definition; use this for indexed files.
+    pub fn matches_indexed_line(
+        &self,
+        entry: &LogEntry,
+        line: &[u8],
+        index: &super::LogIndex,
+    ) -> bool {
+        let record = self.needs_record.then(|| index.record(line)).flatten();
+        self.matches(entry, record.as_ref())
+    }
+
     /// Decodes `line` only when the query looks at fields.
     pub fn matches_line(&self, entry: &LogEntry, line: &[u8], format: Format) -> bool {
         let record = if self.needs_record {

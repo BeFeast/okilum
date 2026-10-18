@@ -140,6 +140,27 @@ mod tests {
     }
 
     #[test]
+    fn only_standard_named_groups_get_roles_and_optional_groups_can_be_absent() {
+        let regex = parser(r"^(?P<time>\d+):(?P<logger>\w+):(?P<msg>[^:]+)(?::(?P<level>\w+))?$");
+        let data = b"1759276800:worker:started\n1759276801:worker:failed:ERROR\n";
+        let index = LogIndex::build_regex(data, regex);
+        assert_eq!(index.regex_counts(), Some((2, 0)));
+        assert_eq!(index.entries()[0].level(), Level::Missing);
+        assert_eq!(index.entries()[1].level(), Level::Error);
+        assert_eq!(
+            index.stats().timestamped,
+            0,
+            "time is a field; only ts is the timestamp"
+        );
+        let record = index.record(index.raw(data, 0).unwrap()).unwrap();
+        assert!(
+            record.role(Role::Logger).is_none(),
+            "logger remains a field"
+        );
+        assert_eq!(record.rest().count(), 2);
+    }
+
+    #[test]
     fn regex_fixture_queries_histogram_delta_and_export() {
         // #1155's existing files are all recognized. The adjacent pipe fixture
         // exercises the extension path without changing the owner's pack.
@@ -188,8 +209,12 @@ mod tests {
         );
         let mut histogram = Histogram::new();
         histogram.add_index(&index, None);
-        assert_eq!(histogram.timed(), 3);
-        assert_eq!(histogram.untimed(), 1);
+        assert_eq!(
+            histogram.timed(),
+            4,
+            "the unmatched row inherits the preceding time for the histogram"
+        );
+        assert_eq!(histogram.untimed(), 0);
         let start = index
             .record(index.raw(DATA, 0).unwrap())
             .unwrap()

@@ -1643,6 +1643,7 @@ fn mark_saved(generation: u64, cx: &mut App) {
         state.log_queries_changed.clear();
         state.log_columns_changed.clear();
         state.log_saved_changed.clear();
+        state.log_regex_changed.clear();
         state.colors_changed.clear();
         state.trust_changed.clear();
         state.delimited_changed.clear();
@@ -1694,6 +1695,45 @@ mod tests {
     }
     use ::core::prelude::v1::test;
     use gpui_component::WindowExt;
+
+    #[gpui::test]
+    fn saved_log_regexes_persist_merge_and_clear_pending_changes(cx: &mut TestAppContext) {
+        use okilum_core::log::regex_text::Definition;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("reader-ui.json");
+        let definition = |name: &str, pattern: &str| Definition {
+            name: name.into(),
+            pattern: pattern.into(),
+        };
+        cx.update(|cx| {
+            install(directory.path(), cx);
+            assert!(save_log_regex(definition("First", "(?P<msg>first)"), cx));
+            assert!(!save_log_regex(definition("Bad", "("), cx));
+            flush(cx);
+            assert!(
+                cx.global::<Store>().log_regex_changed.is_empty(),
+                "successful writes clear pending changes"
+            );
+            let mut external = read(&path).unwrap();
+            external
+                .log_regex
+                .insert("Remote".into(), definition("Remote", "(?P<msg>remote)"));
+            std::fs::write(&path, serde_json::to_vec(&external).unwrap()).unwrap();
+            assert!(save_log_regex(definition("Second", "(?P<msg>second)"), cx));
+            delete_log_regex("First", cx);
+            flush(cx);
+            install(directory.path(), cx);
+            let definitions = log_regex_definitions(cx);
+            assert_eq!(
+                definitions
+                    .iter()
+                    .map(|d| d.name.as_str())
+                    .collect::<Vec<_>>(),
+                ["Remote", "Second"]
+            );
+            assert_eq!(definitions[1].pattern, "(?P<msg>second)");
+        });
+    }
 
     /// #1169: saved log filters are global, survive a restart, and merge by
     /// name with another process: one saved there stays, one deleted here is
