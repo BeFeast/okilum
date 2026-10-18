@@ -39,6 +39,10 @@ impl PartialEq for RegexParser {
 impl Eq for RegexParser {}
 
 impl RegexParser {
+    pub fn named_groups(&self) -> impl Iterator<Item = &str> {
+        self.regex.capture_names().flatten()
+    }
+
     pub fn definition(&self) -> &Definition {
         &self.definition
     }

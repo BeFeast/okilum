@@ -1076,6 +1076,17 @@ impl LogView {
     /// first seen: the choices of the Columns menu (#1167).
     fn field_names(&self) -> Vec<String> {
         let mut names: Vec<String> = Vec::new();
+        // A named group remains available even if it is optional or its first
+        // match lies beyond the column menu's bounded record sample.
+        for source in 0..self.source_count() {
+            if let Some(regex) = self.source(source).and_then(|data| data.index().regex()) {
+                for name in regex.named_groups() {
+                    if !names.iter().any(|known| known == name) {
+                        names.push(name.to_owned());
+                    }
+                }
+            }
+        }
         let total = self.total().min(COLUMN_MENU_SAMPLE);
         for id in 0..total {
             let Some((source, entry)) = self.locate(id) else {
