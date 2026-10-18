@@ -390,3 +390,30 @@ fn a_ten_thousand_line_append_indexes_only_the_new_lines() {
     // quadratic re-index, not a few percent.
     assert!(elapsed < Duration::from_secs(2), "{elapsed:?}");
 }
+
+#[test]
+fn append_guard_rejects_a_rewrite_after_the_data_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("append-race.log");
+    std::fs::write(&path, b"original\n").unwrap();
+    let mut tail = LogTail::open(&path).unwrap();
+    let before = tail.window();
+    let mut writer = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap();
+    use std::io::Write as _;
+    writer.write_all(b"old-append\n").unwrap();
+    drop(writer);
+    let file = open_shared(&path).unwrap();
+    let captured = read_range(&file, before.end, before.end + 11).unwrap();
+    std::fs::write(&path, b"original\nnew-append\n").unwrap();
+    let guard = guard_at(&file, before.end + 11).unwrap();
+    assert_eq!(
+        verify_guard(&captured, &guard).unwrap_err().kind(),
+        io::ErrorKind::Interrupted
+    );
+    assert_eq!(tail.window(), before, "refusal does not advance cursor");
+    assert!(matches!(tail.poll().unwrap(), TailEvent::Appended { .. }));
+    assert_eq!(tail.raw(1).unwrap(), b"new-append");
+}

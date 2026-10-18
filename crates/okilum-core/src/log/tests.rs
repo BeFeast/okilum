@@ -246,7 +246,10 @@ fn throughput_100mb_with_known_counts() {
         independent_errors, errors,
         "generator and byte search agree"
     );
-    assert!(errors > 0 && frames > 0, "the controls are not vacuous");
+    assert!(
+        written > frames && errors > 0 && frames > 0,
+        "the controls are not vacuous"
+    );
     assert_eq!(
         data.first(),
         Some(&b'{'),

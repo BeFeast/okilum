@@ -4935,6 +4935,16 @@ mod tests {
     use super::*;
     use ::core::prelude::v1::test;
 
+    // GPUI's TestPlatform::quit is a no-op. Explicit shutdown also runs the
+    // VisualTestContext::into_mut cleanup callbacks; otherwise separate tests
+    // retain whole windows/snapshots and exhaust the real process-wide pool.
+    struct TestShutdown(TestAppContext);
+    impl Drop for TestShutdown {
+        fn drop(&mut self) {
+            self.0.quit();
+        }
+    }
+
     fn log(text: &str) -> (tempfile::TempDir, LogFile) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("app.jsonl");
@@ -5051,6 +5061,7 @@ mod tests {
     /// keeps its height for the next log and the next launch.
     #[gpui::test]
     fn detail_pane_resizes_collapses_and_remembers_its_height(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let directory = tempfile::tempdir().unwrap();
         let (root, state) = (
             directory.path().join("vault"),
@@ -5210,6 +5221,7 @@ mod tests {
 
     #[gpui::test]
     fn vault_tree_logs_publish_records_copy_and_return_to_notes(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         cx.update(|cx| {
             gpui_component::init(cx);
             crate::bind_keys(cx);
@@ -5298,6 +5310,7 @@ mod tests {
 
     #[gpui::test]
     fn a_log_opens_in_the_quick_viewer_and_copies_its_raw_line(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         cx.update(|cx| {
             gpui_component::init(cx);
             crate::bind_keys(cx);
@@ -5393,6 +5406,7 @@ mod tests {
 
     #[gpui::test]
     fn queued_note_open_wins_over_the_initial_log_publication(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         cx.update(|cx| {
             gpui_component::init(cx);
             crate::bind_keys(cx);
@@ -5532,6 +5546,7 @@ mod tests {
 
     #[gpui::test]
     fn a_rotated_gzip_log_opens_decoded_and_without_follow(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         // Packed by the system gzip; the text is the pack's 649-line access log.
         let packed = include_bytes!("../../okilum-core/tests/fixtures/log/names/access.log.1.gz");
         let (_directory, reader, visual) = open_named("app.log.1.gz", packed, cx);
@@ -5551,6 +5566,7 @@ mod tests {
 
     #[gpui::test]
     fn a_glog_file_name_opens_in_the_log_view(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let name = "ordgw.trade-gw-01.god.log.INFO.20261010-060400.4411";
         let text = include_bytes!(
             "../../okilum-core/tests/fixtures/log/names/ordgw.trade-gw-01.god.log.INFO.20261010-060400.4411"
@@ -5586,6 +5602,7 @@ mod tests {
 
     #[gpui::test]
     fn filters_narrow_rows_in_the_background_and_keep_the_selection(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let text = concat!(
             r#"{"ts":"2025-10-01T00:00:00Z","level":"info","msg":"boot","status":200}"#,
             "\n",
@@ -5684,6 +5701,7 @@ mod tests {
     /// same query, and applied queries are kept per file.
     #[gpui::test]
     fn query_bar_filters_reports_typos_and_remembers_queries(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let text = concat!(
             r#"{"level":"info","msg":"boot","status":200,"pod":"checkout-1"}"#,
             "\n",
@@ -5792,6 +5810,7 @@ mod tests {
     /// none twice and none missing, and the view stays pinned.
     #[gpui::test]
     fn follow_mode_stays_exact_over_many_polls_and_a_rotation(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         use std::io::Write as _;
         let line = |n: usize| {
             let level = if n.is_multiple_of(10) { "warn" } else { "info" };
@@ -5854,6 +5873,7 @@ mod tests {
     /// and announces a rotation and a truncation instead of a silent reset.
     #[gpui::test]
     fn follow_mode_appends_filters_pauses_and_announces_resets(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         use std::io::Write as _;
         let line =
             |level: &str, msg: &str| format!("{{\"level\":\"{level}\",\"msg\":\"{msg}\"}}\n");
@@ -5991,6 +6011,7 @@ mod tests {
     /// following, from an empty result through appends and a rotation.
     #[gpui::test]
     fn a_followed_merged_view_with_a_query_stays_at_the_newest_match(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         use std::io::Write as _;
         let line = |n: u32, level: &str, msg: &str| {
             format!(
@@ -6086,6 +6107,7 @@ mod tests {
     /// query applies to both, and a rotated added file keeps its records.
     #[gpui::test]
     fn follow_covers_every_file_of_a_merged_view(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         use std::io::Write as _;
         let line = |second: u32, level: &str, msg: &str| {
             format!(
@@ -6187,6 +6209,7 @@ mod tests {
     /// and a time window ends at the newest record of all files.
     #[gpui::test]
     fn several_files_read_in_time_order_and_filter_together(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let samples =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../okilum-core/tests/fixtures/log/samples");
         let names = [
@@ -6361,6 +6384,7 @@ mod tests {
     /// the first.
     #[gpui::test]
     fn dropped_and_command_line_logs_join_the_view(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let line = |msg: &str| {
             format!(
                 "{{\"ts\":\"2025-10-01T00:00:0{}Z\",\"msg\":\"{msg}\"}}\n",
@@ -6433,6 +6457,7 @@ mod tests {
 
     #[gpui::test]
     fn a_followed_stack_trace_grows_its_row_and_is_filtered_again(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         use std::io::Write as _;
         let line =
             |level: &str, msg: &str| format!("{{\"level\":\"{level}\",\"msg\":\"{msg}\"}}\n");
@@ -6482,6 +6507,7 @@ mod tests {
     /// opening it asks the chosen editor for that file, line and column.
     #[gpui::test]
     fn asan_frames_open_in_the_chosen_editor(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let sample = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../okilum-core/tests/fixtures/log/samples/cpp/ordgw_tests-asan.log");
         let text = std::fs::read_to_string(sample).unwrap();
@@ -6593,6 +6619,7 @@ mod tests {
     /// and Back returns to the previous filter.
     #[gpui::test]
     fn show_this_request_filters_every_file_and_back_restores(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let fixtures = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../okilum-core/tests/fixtures/log/correlation");
         let ingress = std::fs::read_to_string(fixtures.join("ingress-nginx.jsonl")).unwrap();
@@ -6690,6 +6717,7 @@ mod tests {
     /// detail pane, and the columns are kept for the file.
     #[gpui::test]
     fn apache_access_reads_in_columns_at_1440(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let sample = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../okilum-core/tests/fixtures/log/samples/apache/apache-access.logfmt");
         let text = std::fs::read_to_string(sample).unwrap();
@@ -6781,6 +6809,7 @@ mod tests {
     /// and the width is kept; the Columns menu offers the records' fields.
     #[gpui::test]
     fn columns_resize_by_drag_and_the_menu_lists_fields(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let sample = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../okilum-core/tests/fixtures/log/samples/apache/apache-access.logfmt");
         let text = std::fs::read_to_string(sample).unwrap();
@@ -6841,6 +6870,7 @@ mod tests {
     /// window, Clear brings every row back, and a click on a bar jumps to it.
     #[gpui::test]
     fn kibana_outage_is_a_red_cluster_and_dragging_selects_it(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let sample = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../okilum-core/tests/fixtures/log/samples/kibana/kibana.ndjson");
         let text = std::fs::read_to_string(sample).unwrap();
@@ -6964,6 +6994,7 @@ mod tests {
     /// query only the rows it shows.
     #[gpui::test]
     fn the_bars_count_every_file_of_a_merged_view(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let samples =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../okilum-core/tests/fixtures/log/samples");
         let directory = tempfile::tempdir().unwrap();
@@ -7038,6 +7069,7 @@ mod tests {
     /// a row without a timestamp says so.
     #[gpui::test]
     fn elapsed_time_between_rows_of_two_files_and_since_a_row(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         // api.jsonl writes milliseconds, worker.jsonl microseconds.
         let api = concat!(
             "{\"ts\":\"2025-10-01T00:00:00.120Z\",\"msg\":\"api start\"}\n",
@@ -7116,6 +7148,7 @@ mod tests {
     /// chosen time range stays put as newer records come in.
     #[gpui::test]
     fn the_bars_follow_appends_and_a_range_stays_put(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         use std::io::Write as _;
         let line = |second: u32, level: &str| {
             format!(
@@ -7189,6 +7222,7 @@ mod tests {
 
     #[gpui::test]
     fn regex_entry_shows_errors_saves_and_reports_zero_matches(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let state = tempfile::tempdir().unwrap();
         cx.update(|cx| reader_ui_state::install(state.path(), cx));
         let (directory, reader, visual) = open_log("first line\n  second line\n", cx);
@@ -7339,6 +7373,7 @@ mod tests {
     /// read is reported without changing the rows.
     #[gpui::test]
     fn a_saved_filter_applies_to_another_log(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let first = concat!(
             r#"{"level":"info","msg":"boot","status":200}"#,
             "\n",
@@ -7470,6 +7505,7 @@ mod tests {
     /// there is nothing to ask for.
     #[gpui::test]
     fn export_writes_exactly_the_shown_rows_and_never_over_the_log(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let sample = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../okilum-core/tests/fixtures/log/samples/apache/apache-access.logfmt");
         let text = std::fs::read_to_string(sample).unwrap();
@@ -7552,6 +7588,7 @@ mod tests {
     /// marks (they live only while the view is open, Oleg 18.10).
     #[gpui::test]
     fn marks_keep_their_records_and_export_on_their_own(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         use std::io::Write as _;
         let line = |i: usize| {
             let level = if i % 5 == 2 || i == 4 { "warn" } else { "info" };
@@ -7712,6 +7749,7 @@ mod tests {
     /// ordered again.
     #[gpui::test]
     fn marks_in_a_merged_view_stay_on_their_records(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let samples =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../okilum-core/tests/fixtures/log/samples");
         let directory = tempfile::tempdir().unwrap();
@@ -7799,6 +7837,7 @@ mod tests {
     /// record; a CSV parser gets the values back.
     #[gpui::test]
     fn csv_export_writes_the_columns_of_column_mode_one_row_per_record(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let text = "\
 {\"ts\":\"2025-10-01T00:00:05Z\",\"level\":\"error\",\"msg\":\"cache miss, \\\"cold\\\"\",\"status\":500,\"path\":\"/v1/notes\"}
   at frame one
@@ -7877,6 +7916,7 @@ mod tests {
     /// default; "Raw values" writes them as they are in the log.
     #[gpui::test]
     fn csv_export_guards_formula_cells_unless_raw_values_is_on(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let text = "\
 {\"ts\":\"2025-10-01T00:00:05Z\",\"level\":\"info\",\"msg\":\"-5\"}
 {\"ts\":\"2025-10-01T00:00:06Z\",\"level\":\"info\",\"msg\":\"=HYPERLINK(\\\"http://x\\\",\\\"y\\\")\"}
@@ -7941,6 +7981,7 @@ mod tests {
     /// copy as their lines and export on their own.
     #[gpui::test]
     fn shift_selection_copies_several_records_and_exports_them(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let lines: Vec<String> = (0..6)
             .map(|i| format!(r#"{{"level":"info","msg":"row {i}"}}"#))
             .collect();
@@ -8009,6 +8050,7 @@ mod tests {
     /// shown, each JSON line saying which file it came from.
     #[gpui::test]
     fn export_of_a_merged_view_names_each_source(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let samples =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../okilum-core/tests/fixtures/log/samples");
         let directory = tempfile::tempdir().unwrap();
@@ -8090,6 +8132,7 @@ mod tests {
 
     #[gpui::test]
     fn bounded_window_scope_is_visible_and_initially_reveals_the_real_end(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let mut text = "older\n".repeat(okilum_core::log::window::WINDOW_LINES + 32);
         text.push_str("FINAL_REAL_ROW_1389\n");
         let (_directory, reader, visual) = open_named("density.log", text.as_bytes(), cx);
@@ -8123,6 +8166,7 @@ mod tests {
 
     #[gpui::test]
     fn sliding_window_clears_evicted_marks_and_rejects_an_older_filter(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         use std::io::Write as _;
         let lines = okilum_core::log::window::WINDOW_LINES;
         let text = "keep\n".repeat(lines);
@@ -8180,6 +8224,7 @@ mod tests {
     fn enabling_follow_after_same_shape_rewrite_invalidates_record_identities(
         cx: &mut TestAppContext,
     ) {
+        let _shutdown = TestShutdown(cx.clone());
         let (directory, reader, visual) = open_named("rewrite.log", b"aaa\nbbb\n", cx);
         let view = log_view(&reader, visual);
         view.update_in(visual, |view, window, cx| {
@@ -8201,6 +8246,7 @@ mod tests {
     fn enabling_follow_invalidates_an_equal_shape_rewritten_additional_source(
         cx: &mut TestAppContext,
     ) {
+        let _shutdown = TestShutdown(cx.clone());
         let (directory, reader, visual) = open_named("primary.log", b"primary\n", cx);
         let added = directory.path().join("additional.log");
         std::fs::write(&added, b"aaa\nbbb\n").unwrap();
@@ -8227,6 +8273,7 @@ mod tests {
 
     #[gpui::test]
     fn bounded_rotation_history_retains_the_latest_six_segments(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let (directory, reader, visual) = open_named("rotation.log", b"generation-0\n", cx);
         let view = log_view(&reader, visual);
         view.update(visual, |view, cx| view.toggle_follow(cx));
@@ -8274,6 +8321,7 @@ mod tests {
 
     #[gpui::test]
     fn a_late_result_never_replaces_the_latest_filter(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
         let mut text = String::new();
         for i in 0..40_000 {
             text.push_str(&format!(

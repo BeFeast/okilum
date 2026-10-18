@@ -276,8 +276,16 @@ impl LogSnapshot {
             .capacity()
             .max(planned.next_power_of_two().min(WINDOW_BYTES));
         let lines = physical_lines(&self.bytes) + physical_lines(incoming);
+        // Vec reallocation may hold old and new buffers simultaneously.
+        // Reserve that transient overlap before touching bytes or cursor.
+        let final_charge = charge(capacity, lines);
+        let overlap = if capacity > self.capacity() {
+            self.capacity()
+        } else {
+            0
+        };
         ensure!(
-            self.lease.resize(charge(capacity, lines)),
+            self.lease.resize(final_charge + overlap),
             "Log memory budget is busy"
         );
         let old_offset = self.info.offset;
@@ -303,6 +311,8 @@ impl LogSnapshot {
             bytes.reserve_exact(capacity - bytes.len());
         }
         bytes.extend_from_slice(incoming);
+        // The old allocation has now been released. This only shrinks.
+        assert!(self.lease.resize(final_charge));
         self.info.end = end;
         self.info.file_len = file_len;
         let mut w = ReadWindow {
@@ -445,5 +455,59 @@ mod tests {
         drop(held);
         assert_eq!(pool().used(), 0);
         println!("positive: leased COW succeeded after refusal");
+
+        // Sparse indexes do not hide the old+new raw Vec overlap. Leave
+        // exactly enough for final capacity: the pre-fix allocation fit its
+        // accounting but could overrun the pool while realloc held both.
+        use std::io::Write as _;
+        let path = dir.path().join("sparse.log");
+        let mut writer = File::create(&path).unwrap();
+        let mut line = vec![b'x'; 32 * 1024];
+        *line.last_mut().unwrap() = b'\n';
+        for _ in 0..1024 {
+            writer.write_all(&line).unwrap();
+        }
+        drop(writer);
+        let file = super::super::LogFile::open(&path).unwrap();
+        let mut snapshot = file.snapshot();
+        drop(file);
+        let incoming = b"positive-new-row\n";
+        let before = snapshot.window();
+        let lines = physical_lines(snapshot.bytes()) + physical_lines(incoming);
+        let final_charge = charge(WINDOW_BYTES, lines);
+        let free = final_charge - snapshot.reserved_bytes();
+        let pressure = pool()
+            .reserve(pool().limit() - pool().used() - free)
+            .unwrap();
+        assert!(
+            LogSnapshot::mutable(&mut snapshot)
+                .unwrap()
+                .append(
+                    incoming,
+                    before.end + incoming.len() as u64,
+                    before.end + incoming.len() as u64
+                )
+                .is_err(),
+            "negative: final capacity fits but transient raw overlap does not"
+        );
+        assert_eq!(snapshot.window(), before);
+        assert_eq!(snapshot.capacity(), 32 * 1024 * 1024);
+        drop(pressure);
+        LogSnapshot::mutable(&mut snapshot)
+            .unwrap()
+            .append(
+                incoming,
+                before.end + incoming.len() as u64,
+                before.end + incoming.len() as u64,
+            )
+            .unwrap();
+        assert_eq!(snapshot.capacity(), WINDOW_BYTES);
+        assert_eq!(
+            snapshot.raw(snapshot.index().len() - 1).unwrap(),
+            b"positive-new-row"
+        );
+        drop(snapshot);
+        assert_eq!(pool().used(), 0);
+        println!("positive: raw growth succeeded after overlap refusal");
     }
 }

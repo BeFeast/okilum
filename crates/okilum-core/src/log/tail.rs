@@ -441,6 +441,7 @@ impl PollRequest {
                     });
                 }
                 let guard = guard_at(&self.file, end)?;
+                verify_guard(&bytes, &guard)?;
                 (
                     Change::Grew {
                         bytes,
@@ -462,15 +463,18 @@ impl PollRequest {
 }
 fn snapshot_guard(file: &File, snapshot: &LogSnapshot) -> io::Result<Vec<u8>> {
     let guard = guard_at(file, snapshot.window().end)?;
-    let suffix = snapshot.bytes();
-    let n = guard.len().min(suffix.len());
-    if guard[guard.len() - n..] != suffix[suffix.len() - n..] {
+    verify_guard(snapshot.bytes(), &guard)?;
+    Ok(guard)
+}
+fn verify_guard(bytes: &[u8], guard: &[u8]) -> io::Result<()> {
+    let n = guard.len().min(bytes.len());
+    if guard[guard.len() - n..] != bytes[bytes.len() - n..] {
         return Err(io::Error::new(
             io::ErrorKind::Interrupted,
             "Log changed while reading the window; retry",
         ));
     }
-    Ok(guard)
+    Ok(())
 }
 fn guard_at(file: &File, end: u64) -> io::Result<Vec<u8>> {
     read_range(file, end.saturating_sub(GUARD_BYTES as u64), end)
