@@ -10,6 +10,7 @@
 use super::*;
 use gpui_component::scroll::ScrollableElement as _;
 use okilum_core::log::correlation;
+use okilum_core::log::elapsed::{self, Stamp};
 use okilum_core::log::export::{self, ExportFormat};
 use okilum_core::log::histogram::Histogram;
 use okilum_core::log::merge::MergedLog;
@@ -2338,6 +2339,63 @@ impl LogView {
             .collect()
     }
 
+    /// The time of row `id`: the parsed timestamp that also orders a merged
+    /// view, with the precision its time field writes (#1385). A record whose
+    /// precision cannot be read is shown in whole seconds, never finer.
+    fn stamp_of(&self, id: usize) -> Option<Stamp> {
+        let (source, entry) = self.locate(id)?;
+        let data = self.source(source)?;
+        let nanos = data.index().get(entry)?.timestamp()?;
+        let digits = data
+            .record(entry)
+            .and_then(|record| record.stamp())
+            .filter(|stamp| stamp.nanos == nanos)
+            .map_or(0, |stamp| stamp.digits);
+        Some(Stamp::new(nanos, digits))
+    }
+
+    /// Elapsed time for the selection (#1385), with its tooltip: between the
+    /// first and the last of the selected rows, signed by their order in the
+    /// view, or from the one selected record to `now` (Unix nanoseconds; while
+    /// following, every poll draws it again). A record without a timestamp says
+    /// so instead of showing a number.
+    fn elapsed_label(&self, now: i64) -> Option<(String, String)> {
+        let cursor = self.selected?;
+        let Some(anchor) = self.anchor.filter(|&anchor| anchor != cursor) else {
+            return Some(match self.stamp_of(cursor) {
+                Some(stamp) => (
+                    elapsed::since(stamp, now),
+                    "Time since this record, by this computer's clock".into(),
+                ),
+                None => ("No timestamp".into(), "This record has no timestamp".into()),
+            });
+        };
+        let (anchor_row, cursor_row) = (self.row_of(anchor)?, self.row_of(cursor)?);
+        let ((first, first_row), (last, last_row)) = if anchor_row <= cursor_row {
+            ((anchor, anchor_row), (cursor, cursor_row))
+        } else {
+            ((cursor, cursor_row), (anchor, anchor_row))
+        };
+        let shown = |row: usize| grouped(row as u64 + 1);
+        Some(match (self.stamp_of(first), self.stamp_of(last)) {
+            (Some(from), Some(to)) => (
+                format!("\u{394} {}", elapsed::between(from, to)),
+                format!(
+                    "From row {} to row {}, by their timestamps",
+                    shown(first_row),
+                    shown(last_row)
+                ),
+            ),
+            (from, _) => (
+                format!(
+                    "Row {}: no timestamp",
+                    shown(if from.is_none() { first_row } else { last_row })
+                ),
+                "Elapsed time needs a timestamp on both rows".into(),
+            ),
+        })
+    }
+
     fn render_detail(&self, cx: &mut Context<Self>) -> AnyElement {
         let columns = self.columns(cx);
         let muted = cx.theme().muted_foreground;
@@ -2395,6 +2453,19 @@ impl LogView {
                         }
                     )),
             )
+            .children(self.elapsed_label(unix_now()).map(|(label, tip)| {
+                div()
+                    .id("log-elapsed")
+                    .debug_selector(|| "log-elapsed".into())
+                    .flex_none()
+                    .text_sm()
+                    .text_color(muted)
+                    .font_family(mono.clone())
+                    .child(label)
+                    .tooltip(move |window, cx| {
+                        gpui_component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+                    })
+            }))
             .children(
                 file.record(index)
                     .as_ref()
@@ -3961,6 +4032,15 @@ fn index_status(index: &LogIndex) -> String {
     }
     parts.push(size(index.bytes()));
     parts.join(" · ")
+}
+
+/// This computer's clock as Unix nanoseconds, for "time since" (#1385).
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            i64::try_from(since.as_nanos()).unwrap_or(i64::MAX)
+        })
 }
 
 fn grouped(n: u64) -> String {
@@ -6136,6 +6216,85 @@ mod tests {
             counted(visual),
             Some(shown),
             "only the rows the query shows"
+        );
+    }
+
+    /// #1385: elapsed time between two selected rows of a merged view, from
+    /// their parsed timestamps at the files' precision; from one row to now;
+    /// a row without a timestamp says so.
+    #[gpui::test]
+    fn elapsed_time_between_rows_of_two_files_and_since_a_row(cx: &mut TestAppContext) {
+        // api.jsonl writes milliseconds, worker.jsonl microseconds.
+        let api = concat!(
+            "{\"ts\":\"2025-10-01T00:00:00.120Z\",\"msg\":\"api start\"}\n",
+            "{\"msg\":\"api no time\"}\n",
+            "{\"ts\":\"2025-10-01T00:03:05.687Z\",\"msg\":\"api end\"}\n",
+        );
+        let worker = "{\"ts\":\"2025-10-01T00:00:01.354321Z\",\"msg\":\"worker step\"}\n";
+        let (directory, reader, visual) = open_named("api.jsonl", api.as_bytes(), cx);
+        let other = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("worker.jsonl");
+        std::fs::write(&other, worker).unwrap();
+        let view = log_view(&reader, visual);
+        view.update(visual, |view, cx| view.add_files(vec![other], cx));
+        visual.run_until_parked();
+        let id = |visual: &mut VisualTestContext, marker: &str| {
+            view.read_with(visual, |view, _| {
+                (0..view.total())
+                    .find(|&id| {
+                        view.raw_at(id)
+                            .is_some_and(|raw| String::from_utf8_lossy(raw).contains(marker))
+                    })
+                    .unwrap_or_else(|| panic!("no row with {marker}"))
+            })
+        };
+        let (start, step, end, untimed) = (
+            id(visual, "api start"),
+            id(visual, "worker step"),
+            id(visual, "api end"),
+            id(visual, "api no time"),
+        );
+        assert_eq!(
+            view.read_with(visual, |view, _| view.total()),
+            4,
+            "both files"
+        );
+        let pick = |visual: &mut VisualTestContext, from: usize, to: Option<usize>| {
+            view.update_in(visual, |view, window, cx| {
+                view.select(from, false, window, cx);
+                if let Some(to) = to {
+                    view.extend_to(to, false, window, cx);
+                }
+            });
+            view.read_with(visual, |view, _| {
+                view.elapsed_label(1_759_276_812_345_678_901).unwrap().0
+            })
+        };
+        // 00:00:01.354321 − 00:00:00.120 by hand: 1.234321 s, shown at the
+        // coarser precision (ms): 1.234 s. Across the two files.
+        assert_eq!(pick(visual, start, Some(step)), "\u{394} +1.234 s");
+        // Signed by order in the view, whichever end was clicked first.
+        assert_eq!(pick(visual, step, Some(start)), "\u{394} +1.234 s");
+        // 00:03:05.687 − 00:00:00.120 = 3 min 05.567 s, both in ms.
+        assert_eq!(pick(visual, start, Some(end)), "\u{394} +3 min 05.567 s");
+        // A row without a timestamp: said, not 0.
+        let label = pick(visual, start, Some(untimed));
+        assert!(label.ends_with(": no timestamp"), "{label}");
+        assert_eq!(pick(visual, untimed, None), "No timestamp");
+        // One row: to now (00:00:12.345678901), at the row's ms precision.
+        assert_eq!(pick(visual, start, None), "12.225 s ago");
+        assert_eq!(pick(visual, step, None), "10.991 s ago");
+        // The header shows it.
+        view.update_in(visual, |view, window, cx| {
+            view.select(start, false, window, cx)
+        });
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            visual.debug_bounds("log-elapsed").is_some(),
+            "the elapsed time is drawn in the detail header"
         );
     }
 

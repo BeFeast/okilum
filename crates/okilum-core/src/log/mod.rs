@@ -15,6 +15,7 @@ pub mod ansi;
 pub mod block;
 pub mod correlation;
 mod detect;
+pub mod elapsed;
 pub mod export;
 mod file;
 pub mod filter;
