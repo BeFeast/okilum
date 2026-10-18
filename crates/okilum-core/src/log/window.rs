@@ -122,7 +122,7 @@ pub fn read_tail(
         ));
     }
     let start = file_len.saturating_sub(budget.bytes as u64);
-    let mut boundary = [b'\n'];
+    let mut boundary = *b"\n";
     if start > 0 {
         read_into(source, &mut boundary, start - 1)?;
     }
