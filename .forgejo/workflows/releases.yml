@@ -6,13 +6,21 @@ on:
   workflow_dispatch:
     inputs:
       build:
-        description: 'Owner-approved macOS beta build to promote on ALL OSes; empty refreshes Beta only (or see source)'
+        description: 'Owner-approved macOS build (Linux build with linux_only); empty refreshes Beta only (or see source)'
         required: false
         default: ''
       source:
-        description: 'Owner-approved: promote this main commit; missing Linux/Windows builds are made first (#1040)'
+        description: 'Full main SHA required with linux_only; otherwise request all-platform builds (#1040)'
         required: false
         default: ''
+      linux_only:
+        description: 'Owner-approved Linux only: exact Linux build AND full source SHA; no builds or other platform writes (#1432)'
+        type: boolean
+        default: false
+      linux_rollback:
+        description: 'With linux_only/build/source: restore the exact previous Linux feed from its receipt'
+        type: boolean
+        default: false
       windows_only:
         description: 'With build: put the re-signed Windows build of that stable build on stable; Mac, Linux, tag and notes unchanged (#1104)'
         type: boolean
@@ -48,7 +56,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Mirror release tag and publish complete release
+      - name: Publish selected release (Linux only when explicitly requested)
         env:
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FORGEJO_URL: ${{ github.server_url }}
@@ -63,9 +71,29 @@ jobs:
           PROMOTE_BUILD: ${{ inputs.build }}
           PROMOTE_SOURCE: ${{ inputs.source }}
           SUPERSEDE_PENDING: ${{ inputs.supersede_pending }}
+          LINUX_ONLY: ${{ inputs.linux_only }}
+          LINUX_ROLLBACK: ${{ inputs.linux_rollback }}
           WINDOWS_ONLY: ${{ inputs.windows_only }}
           SKIP_WINDOWS: ${{ inputs.skip_windows }}
         run: |
+          # Handle Linux before the all-platform request/build path. Never dispatch builds.
+          if [ "$LINUX_ONLY" = true ]; then
+            if [ -z "$PROMOTE_BUILD" ] || [ -z "$PROMOTE_SOURCE" ]; then
+              echo 'linux_only requires both build and full source SHA' >&2
+              exit 1
+            fi
+            if [ "$WINDOWS_ONLY" = true ] || [ "$SKIP_WINDOWS" = true ] || [ "$SUPERSEDE_PENDING" = true ]; then
+              echo 'linux_only excludes windows_only, skip_windows and supersede_pending' >&2
+              exit 1
+            fi
+            args=()
+            if [ "$LINUX_ROLLBACK" = true ]; then args+=(--rollback); fi
+            exec python scripts/releases/linux.py --source "$PROMOTE_SOURCE" --build "$PROMOTE_BUILD" "${args[@]}"
+          fi
+          if [ "$LINUX_ROLLBACK" = true ]; then
+            echo 'linux_rollback requires linux_only' >&2
+            exit 1
+          fi
           if [ -n "$PROMOTE_SOURCE" ] && [ -z "$PROMOTE_BUILD" ]; then
             # Builds what is missing for that commit; the last publication starts the promotion.
             exec python scripts/releases/prepare.py request "$PROMOTE_SOURCE"

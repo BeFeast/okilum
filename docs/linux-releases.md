@@ -97,10 +97,15 @@ The package version is `0.1.<5000 + workflow run number>-1`. PRs touching packag
 build/install the package and test signing with a disposable key; they cannot
 publish. Main builds publish beta. Workflow concurrency serializes publication.
 
-To promote, use the [unified releases workflow](releases.md) with the accepted
-macOS build number; the Arch build is selected by the same source commit. It
-verifies the archived package and GPG signature and publishes the identical bytes
-to stable. There is no rebuild and no automatic stable promotion.
+For independent Linux promotion after manager GO, use the
+[Linux-only releases path](releases.md#linux-only-stable-1432) with `linux_only=true`,
+the accepted Linux `build` and exact full `source` SHA. It uses the existing
+protected publication lock, verifies the archived package/catalog identity,
+checksums and GPG signatures, and publishes the identical package bytes to stable.
+It never dispatches or waits for macOS/Windows builds. Receipts support exact-input
+retry and explicit restoration of the previous Linux feed. There is no rebuild
+and no automatic stable promotion. The ordinary all-platform path remains available
+with its accepted macOS build number.
 
 Packages and repository databases are signed. Archives are retained under
 `arch/builds/<build>/`; `manifest.json` records the source commit and checksum.
