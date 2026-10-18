@@ -7200,6 +7200,12 @@ OPTIONS:
 ";
 
 fn main() {
+    // The clipboard reader must not initialize the updater, application state,
+    // background services or a second GUI instance.
+    #[cfg(windows)]
+    if let Some(code) = platform::exact_windows_clipboard::helper_entry() {
+        std::process::exit(code);
+    }
     // #1256: glibc gives each allocating thread its own arena. Background
     // classification and layout churn fragmented those arenas, and RSS rose by
     // megabytes per edit cycle with a flat live heap. Two arenas keep it level.

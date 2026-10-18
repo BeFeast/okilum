@@ -49,6 +49,22 @@ jobs:
         name: windows-icon
         path: target/windows-dist
     - run: bash scripts/vendor-setup.sh
+    - name: Run Windows clipboard provider regression
+      shell: pwsh
+      run: |
+        $env:OKILUM_WINDOWS_ICON = Join-Path $env:GITHUB_WORKSPACE 'target/windows-dist/okilum.ico'
+        # The test executable has libtest's main; the bounded reader must run
+        # the ordinary same-source app main. This is test support, not a QA
+        # production artifact or a second package build.
+        cargo build --locked -p okilum-shell --bin okilum
+        if ($LASTEXITCODE) { exit $LASTEXITCODE }
+        $env:OKILUM_TEST_CLIPBOARD_EXECUTABLE = Join-Path $env:GITHUB_WORKSPACE 'target/debug/okilum.exe'
+        $list = & cargo test --locked -p okilum-shell --bin okilum windows_clipboard -- --list
+        if ($LASTEXITCODE) { exit $LASTEXITCODE }
+        $list
+        if (-not ($list | Select-String ': test$')) { Write-Error 'No Windows clipboard regression matched'; exit 1 }
+        cargo test --locked -p okilum-shell --bin okilum windows_clipboard -- --nocapture --test-threads=1
+        exit $LASTEXITCODE
     - shell: pwsh
       env:
         FILTER: first_run

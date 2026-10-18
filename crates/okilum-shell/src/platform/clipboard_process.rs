@@ -1,5 +1,6 @@
-//! Finite, bounded transport for the same-executable macOS pasteboard reader.
+//! Finite, bounded transport for same-executable native clipboard readers.
 use gpui_component::input::clipboard::ClipboardReadError as Error;
+#[cfg(unix)]
 use rustix::fs::{fcntl_getfl, fcntl_setfl, OFlags};
 use std::{
     io::{ErrorKind, Read},
@@ -20,8 +21,60 @@ impl Drop for Reap {
         tests::REAPED.with(|reaped| {
             *reaped.borrow_mut() = Some((self.0.id(), status));
         });
-        #[cfg(not(all(test, target_os = "linux")))]
+        #[cfg(all(test, windows))]
+        windows_tests::REAPED.with(|reaped| {
+            *reaped.borrow_mut() = Some((self.0.id(), status));
+        });
+        #[cfg(not(any(all(test, target_os = "linux"), all(test, windows))))]
         let _ = status;
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    use std::os::windows::process::CommandExt;
+    use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+    thread_local! {
+        pub(super) static REAPED: std::cell::RefCell<Option<(u32, std::io::Result<std::process::ExitStatus>)>> = const { std::cell::RefCell::new(None) };
+    }
+
+    #[test]
+    fn windows_clipboard_pipe_deadline_and_cancel_kill_and_reap_child() {
+        for cancel in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let marker = temp.path().join("reader.pid");
+            let path = marker.to_string_lossy().replace('\'', "''");
+            let script = format!("[System.IO.File]::WriteAllText('{path}', $PID.ToString()); Start-Sleep -Seconds 30");
+            let mut command = Command::new("powershell.exe");
+            command
+                .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+                .creation_flags(CREATE_NO_WINDOW);
+            REAPED.with(|slot| *slot.borrow_mut() = None);
+            let start = Instant::now();
+            let result = read(&mut command, start + TIMEOUT, || cancel && marker.exists());
+            assert_eq!(
+                result,
+                Err(if cancel {
+                    Error::Cancelled
+                } else {
+                    Error::Timeout
+                })
+            );
+            let pid = std::fs::read_to_string(&marker)
+                .expect("child-start positive control")
+                .parse::<u32>()
+                .unwrap();
+            let (actual, status) = REAPED
+                .with(|slot| slot.borrow_mut().take())
+                .expect("cleanup ran");
+            assert_eq!(
+                actual, pid,
+                "the actual spawned process must have been reaped"
+            );
+            assert!(!status.expect("wait reaped the process").success());
+            assert!(start.elapsed() < Duration::from_secs(4));
+        }
     }
 }
 
@@ -44,8 +97,11 @@ pub(super) fn read(
         .map_err(|_| Error::Io)?;
     let mut child = Reap(child);
     let mut stdout = child.0.stdout.take().ok_or(Error::Io)?;
-    let flags = fcntl_getfl(&stdout).map_err(|_| Error::Io)?;
-    fcntl_setfl(&stdout, flags | OFlags::NONBLOCK).map_err(|_| Error::Io)?;
+    #[cfg(unix)]
+    {
+        let flags = fcntl_getfl(&stdout).map_err(|_| Error::Io)?;
+        fcntl_setfl(&stdout, flags | OFlags::NONBLOCK).map_err(|_| Error::Io)?;
+    }
     let mut bytes = Vec::new();
     let mut buffer = [0u8; 8192];
     let mut eof = false;
@@ -57,7 +113,7 @@ pub(super) fn read(
             return Err(Error::Timeout);
         }
         if !eof {
-            match stdout.read(&mut buffer) {
+            match read_available(&mut stdout, &mut buffer) {
                 Ok(0) => eof = true,
                 Ok(n) => {
                     // One status byte precedes an optional exact UTF-8 payload.
@@ -87,6 +143,50 @@ pub(super) fn read(
     }
 }
 
+/// Windows anonymous pipes are synchronous. Peek before reading, with this
+/// process as the only reader, so a delayed owner cannot block the deadline.
+#[cfg(windows)]
+fn read_available(
+    input: &mut std::process::ChildStdout,
+    buffer: &mut [u8],
+) -> std::io::Result<usize> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::{Foundation::ERROR_BROKEN_PIPE, System::Pipes::PeekNamedPipe};
+    let mut available = 0;
+    // SAFETY: the child stdout owns this live pipe handle; output is a valid u32.
+    let result = unsafe {
+        PeekNamedPipe(
+            input.as_raw_handle(),
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            &mut available,
+            std::ptr::null_mut(),
+        )
+    };
+    if result == 0 {
+        let error = std::io::Error::last_os_error();
+        return if error.raw_os_error() == Some(ERROR_BROKEN_PIPE as i32) {
+            Ok(0)
+        } else {
+            Err(error)
+        };
+    }
+    if available == 0 {
+        return Err(ErrorKind::WouldBlock.into());
+    }
+    let count = buffer.len().min(available as usize);
+    input.read(&mut buffer[..count])
+}
+
+#[cfg(unix)]
+fn read_available(
+    input: &mut std::process::ChildStdout,
+    buffer: &mut [u8],
+) -> std::io::Result<usize> {
+    input.read(buffer)
+}
+
 fn decode(bytes: &[u8]) -> Result<Option<String>, Error> {
     let (&status, payload) = bytes.split_first().ok_or(Error::Io)?;
     if status == 0 {
@@ -102,11 +202,12 @@ fn decode(bytes: &[u8]) -> Result<Option<String>, Error> {
         2 => Err(Error::TooLarge),
         3 => Err(Error::InvalidUtf8),
         4 => Err(Error::ChangedOffer),
+        6 => Err(Error::Unavailable),
         _ => Err(Error::Io),
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     // Capture the actual child handle's wait result, not a reusable /proc PID.
@@ -131,6 +232,7 @@ mod tests {
         assert_eq!(decode(&[1]), Ok(None));
         assert_eq!(decode(&[0, 255]), Err(Error::InvalidUtf8));
         assert_eq!(decode(&[4]), Err(Error::ChangedOffer));
+        assert_eq!(decode(&[6]), Err(Error::Unavailable));
         assert_eq!(decode(&[1, 0]), Err(Error::Io));
     }
     #[cfg(target_os = "linux")]
