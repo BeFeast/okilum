@@ -1417,6 +1417,13 @@ mod tests {
         assert_eq!(create("Plain").as_deref(), Some("# Plain\n"));
         // The folder chosen in Settings.
         reader_templates::save(&root, &state, &root.join("templates")).unwrap();
+        // Rejecting the vault itself keeps the chosen folder usable (#1411).
+        assert_eq!(
+            reader_templates::save(&root, &state, &root)
+                .unwrap_err()
+                .to_string(),
+            "Choose a folder inside the vault, not the vault itself"
+        );
         assert_eq!(
             create("Chosen").as_deref(),
             Some("# Chosen\n\nFrom Settings\n"),

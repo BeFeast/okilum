@@ -20,12 +20,9 @@ pub(super) fn preferences_path(root: &Path, state: &Path) -> Result<PathBuf> {
 }
 fn valid_folder(folder: &str) -> bool {
     !folder.is_empty()
-        && Path::new(folder).components().all(|p| {
-            matches!(
-                p,
-                std::path::Component::Normal(_) | std::path::Component::CurDir
-            )
-        })
+        && Path::new(folder)
+            .components()
+            .all(|p| matches!(p, std::path::Component::Normal(_)))
 }
 pub fn load(root: &Path, state: &Path) -> Result<String> {
     Ok(configured_folder(root, state)?.unwrap_or_else(|| DEFAULT_FOLDER.into()))
@@ -43,7 +40,7 @@ pub(super) fn configured_folder(root: &Path, state: &Path) -> Result<Option<Stri
         .context("Invalid template folder preference")?;
     anyhow::ensure!(
         valid_folder(folder),
-        "Choose a templates folder inside the vault"
+        "Choose a folder inside the vault, not the vault itself"
     );
     Ok(Some(folder.into()))
 }
@@ -54,11 +51,11 @@ pub fn save(root: &Path, state: &Path, chosen: &Path) -> Result<String> {
     let rel = chosen
         .strip_prefix(&root)
         .context("Choose a templates folder inside this vault")?;
-    let folder = if rel.as_os_str().is_empty() {
-        ".".into()
-    } else {
-        rel.to_str().context("Use a UTF-8 folder name")?.to_owned()
-    };
+    anyhow::ensure!(
+        !rel.as_os_str().is_empty(),
+        "Choose a folder inside the vault, not the vault itself"
+    );
+    let folder = rel.to_str().context("Use a UTF-8 folder name")?.to_owned();
     let path = preferences_path(&root, state)?;
     let parent = path.parent().context("Missing preference directory")?;
     std::fs::create_dir_all(parent)?;
@@ -237,6 +234,62 @@ mod tests {
         assert!(save(&root, &state, &other).is_err());
         assert!(save(&root, &root.join("state"), &root.join("My Templates")).is_err());
         assert!(!root.join("state").exists());
+    }
+    #[test]
+    fn vault_root_selection_is_rejected_without_replacing_the_previous_folder() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        let state = temp.path().join("state");
+        let child = root.join("My Templates");
+        std::fs::create_dir_all(&child).unwrap();
+        std::fs::write(child.join("Note.md"), "# {{title}}\n").unwrap();
+        assert_eq!(save(&root, &state, &child).unwrap(), "My Templates");
+        let path = preferences_path(&root, &state).unwrap();
+        let previous = std::fs::read(&path).unwrap();
+        let alias = temp.path().join("vault-alias");
+        std::os::unix::fs::symlink(&root, &alias).unwrap();
+        for chosen in [root.clone(), root.join("."), child.join(".."), alias] {
+            let error = save(&root, &state, &chosen).unwrap_err().to_string();
+            assert_eq!(
+                error,
+                "Choose a folder inside the vault, not the vault itself"
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), previous);
+            assert_eq!(load(&root, &state).unwrap(), "My Templates");
+            assert_eq!(
+                list(&root, "My Templates").unwrap(),
+                [child.join("Note.md")]
+            );
+        }
+    }
+    #[test]
+    fn legacy_root_preference_is_reported_without_rewriting_user_configuration() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        let state = temp.path().join("state");
+        std::fs::create_dir_all(root.join(".obsidian")).unwrap();
+        let obsidian = root.join(".obsidian/templates.json");
+        let obsidian_bytes = b"{\"folder\":\"My Templates\",\"dateFormat\":\"DD/MM/YYYY\"}\n";
+        std::fs::write(&obsidian, obsidian_bytes).unwrap();
+        std::fs::write(root.join("Note.md"), "Not a template\n").unwrap();
+        let path = preferences_path(&root, &state).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        for folder in [".", "./", "./."] {
+            let bytes = serde_json::to_vec(&serde_json::json!({"folder":folder})).unwrap();
+            std::fs::write(&path, &bytes).unwrap();
+            for error in [
+                load(&root, &state).unwrap_err(),
+                configured_folder(&root, &state).unwrap_err(),
+            ] {
+                assert_eq!(
+                    error.to_string(),
+                    "Choose a folder inside the vault, not the vault itself"
+                );
+            }
+            assert!(list(&root, folder).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            assert_eq!(std::fs::read(&obsidian).unwrap(), obsidian_bytes);
+        }
     }
     #[test]
     fn template_read_and_expansion_preserve_source_and_reject_escape() {
