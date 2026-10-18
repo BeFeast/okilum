@@ -5341,6 +5341,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "okilum-t3"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "getrandom 0.3.4",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
