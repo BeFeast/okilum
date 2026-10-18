@@ -1110,7 +1110,14 @@ fn focus_existing(opts: &super::Opts, quick_reuse: bool, cx: &mut App) -> bool {
                 if !reader.document_ready()
                     && reader.loading.as_ref().is_some_and(|load| !load.active)
                 {
+                    // A new delivery supersedes the previous load's queued intent.
+                    // Retry still keeps that intent through its separate route.
+                    let queued = (reader.queued_open_note.take(), reader.queued_landing.take());
                     reader.start_loading(opts.clone(), window, cx);
+                    if reader.loading.as_ref().is_some_and(|load| !load.active) {
+                        // A refused source transition did not start a replacement.
+                        (reader.queued_open_note, reader.queued_landing) = queued;
+                    }
                 } else if let Some(note) = &note {
                     if reader.document_ready() {
                         match &opts.landing {
@@ -4029,6 +4036,198 @@ mod entry_tests {
         cx.update(|cx| dispatch_path(&root.join("target.md"), cx));
         settle(cx);
         assert_eq!(cx.windows().len(), 3);
+    }
+
+    #[gpui::test]
+    fn cancelled_quick_load_newer_link_supersedes_queued_landing(cx: &mut TestAppContext) {
+        quick_load_restart(QuickLoadRestart::CancelThenLink, cx);
+    }
+
+    #[gpui::test]
+    fn failed_quick_load_newer_link_supersedes_queued_landing(cx: &mut TestAppContext) {
+        quick_load_restart(QuickLoadRestart::FailureThenLink, cx);
+    }
+
+    #[gpui::test]
+    fn quick_load_retry_preserves_queued_landing(cx: &mut TestAppContext) {
+        quick_load_restart(QuickLoadRestart::Retry, cx);
+    }
+
+    #[derive(Clone, Copy)]
+    enum QuickLoadRestart {
+        CancelThenLink,
+        FailureThenLink,
+        Retry,
+    }
+
+    /// Exercise the public delivery route through real consent and held validation.
+    /// Only Retry uses start_loading directly, exactly as the Retry button does.
+    fn quick_load_restart(restart: QuickLoadRestart, cx: &mut TestAppContext) {
+        use super::super::reader_history::{ReadingHistory, TestSessionDirectory};
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let root = fixture.path().join("loose");
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let target = root.join("target.md");
+        // Line 41 is block 20; the newer line 81 is block 40.
+        let body: String = (1..=60).map(|i| format!("Paragraph {i}.\n\n")).collect();
+        std::fs::write(&target, &body).unwrap();
+        let link = |line: u32| {
+            let path = okilum_core::vault::display_path(&target).replace('\\', "/");
+            format!("okilum://file/{path}?line={line}")
+        };
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            super::super::bind_keys(cx);
+            install(cx);
+            cx.set_global(TestSessionDirectory(state.clone()));
+            cx.set_quit_mode(gpui::QuitMode::Explicit);
+            super::super::reader_ui_state::install(&state.join("ui-state"), cx);
+            open_deep_link(&link(1), cx);
+        });
+        cx.run_until_parked();
+        // Retry retains the receiver, so both the cancelled worker and its
+        // replacement can be released without scheduling-dependent sends.
+        let (release, hold) = async_channel::bounded(2);
+        let prompt = cx.update(|cx| {
+            let (prompt, opts) = cx.global_mut::<LinkPrompts>().0.get_mut(&root).unwrap();
+            opts.validation_hold = Some(hold);
+            *prompt
+        });
+        gpui::VisualTestContext::from_window(prompt, cx).simulate_keystrokes("enter");
+        cx.run_until_parked();
+        let (reader, window, generation) = cx.update(|cx| {
+            let current = readers(cx);
+            assert_eq!(current.len(), 1, "positive control: reserved Reader");
+            let reader = current[0].clone();
+            let view = reader.read(cx);
+            let load = view.loading.as_ref().unwrap();
+            assert!(view.single_file && !view.document_ready() && load.active);
+            assert!(!load.published, "positive control: validation is held");
+            assert_eq!(load.opts.landing.as_ref().unwrap().line, Some(1));
+            assert_eq!(load.opts.cache_base_override, Some(state.join("cache")));
+            (reader.clone(), view.reader_window, load.generation)
+        });
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(100));
+        cx.run_until_parked();
+        assert!(cx.update(|cx| !cx.windows().contains(&prompt)));
+        cx.update(|cx| open_deep_link(&link(41), cx));
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let view = reader.read(cx);
+            assert!(view.loading.as_ref().unwrap().active && !view.document_ready());
+            assert_eq!(view.queued_open_note.as_deref(), Some("target.md"));
+            assert_eq!(
+                view.queued_landing.as_ref().unwrap().line,
+                Some(41),
+                "positive control: the older incoming link is actually queued"
+            );
+        });
+
+        if matches!(restart, QuickLoadRestart::FailureThenLink) {
+            // Fail real preparation after resolution, before First publication.
+            std::fs::remove_file(&target).unwrap();
+            release.try_send(()).unwrap();
+            cx.run_until_parked();
+        } else {
+            cx.update(|cx| reader.update(cx, |reader, cx| reader.cancel_loading(cx)));
+        }
+        cx.update(|cx| {
+            let view = reader.read(cx);
+            let load = view.loading.as_ref().unwrap();
+            assert!(!view.document_ready() && !load.active && !load.published);
+            assert_eq!(load.generation, generation);
+            if matches!(restart, QuickLoadRestart::FailureThenLink) {
+                assert!(!target.exists(), "positive control: the file is missing");
+                assert!(
+                    load.phase.contains("Resolve requested path")
+                        && load.phase.contains("target.md"),
+                    "positive control: actual preparation failure received: {}",
+                    load.phase
+                );
+            } else {
+                assert_eq!(load.phase, "Preparation cancelled");
+            }
+            assert_eq!(view.queued_open_note.as_deref(), Some("target.md"));
+            assert_eq!(view.queued_landing.as_ref().unwrap().line, Some(41));
+        });
+        if matches!(restart, QuickLoadRestart::FailureThenLink) {
+            std::fs::write(&target, &body).unwrap();
+        }
+        if matches!(restart, QuickLoadRestart::Retry) {
+            window
+                .update(cx, |_, window, cx| {
+                    reader.update(cx, |reader, cx| {
+                        let opts = reader.loading.as_ref().unwrap().opts.clone();
+                        reader.start_loading(opts, window, cx);
+                        assert!(reader.loading.as_ref().unwrap().active);
+                        assert_eq!(reader.queued_open_note.as_deref(), Some("target.md"));
+                        assert_eq!(reader.queued_landing.as_ref().unwrap().line, Some(41));
+                    });
+                })
+                .unwrap();
+            release.try_send(()).unwrap();
+            release.try_send(()).unwrap();
+        } else {
+            cx.update(|cx| open_deep_link(&link(81), cx));
+        }
+        let settle = |cx: &mut TestAppContext| {
+            for _ in 0..5 {
+                cx.run_until_parked();
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_millis(200));
+            }
+            cx.run_until_parked();
+        };
+        settle(cx);
+        if matches!(restart, QuickLoadRestart::Retry) {
+            assert!(
+                release.is_empty(),
+                "positive control: both cancelled and Retry workers consumed their releases"
+            );
+        }
+        let assert_published = |cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                let current = readers(cx);
+                assert_eq!(current.len(), 1);
+                assert_eq!(cx.windows(), vec![window]);
+                assert_eq!(current[0].entity_id(), reader.entity_id());
+                let view = reader.read(cx);
+                let load = view.loading.as_ref().unwrap();
+                assert_eq!(view.reader_window, window);
+                assert!(view.single_file && view.document_ready());
+                assert!(load.published && load.generation > generation);
+                assert_eq!(view.current_rel, "target.md");
+                assert_eq!(
+                    view.content.read(cx).list_state().logical_scroll_top().item_ix,
+                    if matches!(restart, QuickLoadRestart::Retry) { 20 } else { 40 },
+                    "restart must publish the latest intended landing (Retry: line41/block20; newer link: line81/block40)"
+                );
+                assert!(view.queued_open_note.is_none() && view.queued_landing.is_none());
+                assert!(view.index_dir.is_none() && view.cache_lease.is_none()
+                    && view.searcher.is_none() && view.watcher.is_none());
+            });
+        };
+        assert_published(cx);
+        if matches!(restart, QuickLoadRestart::CancelThenLink) {
+            // The original worker was still held during successful replacement.
+            // Its late completion must not change the entity, window or landing.
+            release.try_send(()).unwrap();
+            settle(cx);
+            assert!(
+                release.is_empty(),
+                "positive control: the stale cancelled worker resumed after replacement publication"
+            );
+            assert_published(cx);
+        }
+        assert_eq!(
+            ReadingHistory::quick_document(&state, &root)
+                .unwrap()
+                .as_deref(),
+            Some("target.md")
+        );
     }
 
     /// #1414: the same synced vault is «Obsidian Vault» on one machine and
