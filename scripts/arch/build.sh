@@ -8,6 +8,11 @@ export OKILUM_SOURCE_COMMIT
 OKILUM_PREBUILT_DIR=$(realpath "$OKILUM_PREBUILT_DIR")
 export OKILUM_PREBUILT_DIR
 [[ ${OKILUM_SETTINGS_UI_HARNESS:-0} == 0 ]] || { echo 'Production packaging rejects harness payloads' >&2; exit 1; }
+# Explicit workflow routing only; an untrusted receipt cannot select this mode.
+# The default trusted consumer and immutable signed-package reuse stay unchanged.
+if [[ ${OKILUM_FORK_VALIDATION:-0} == 1 ]]; then
+  exec python3 scripts/arch/fork-production.py package --prebuilt "$OKILUM_PREBUILT_DIR"
+fi
 export OKILUM_BUILD_VERSION
 OKILUM_BUILD_VERSION=$(python3 - <<'PY'
 import importlib.util, json, os

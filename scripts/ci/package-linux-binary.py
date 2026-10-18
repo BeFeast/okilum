@@ -142,13 +142,16 @@ def validate_manifest(m, sha, configuration, producer=None):
     return m
 
 
-def package(binary, output, manifest, inspector=inspect):
+def package(binary, output, manifest, inspector=inspect, *, manifest_validator=validate_manifest,
+            name_factory=artifact_name):
+    # Alternate schemas must be selected by isolated caller code, never by data.
+    # The trusted producer/consumers keep the canonical defaults throughout.
     require(binary.is_file() and not binary.is_symlink(), 'Expected regular compiled binary')
     m = dict(manifest, binary_sha256=digest(binary.read_bytes()))
     m['elf'] = inspector(binary, m)
-    validate_manifest(m, m['source_sha'], m['config'])
+    manifest_validator(m, m['source_sha'], m['config'])
     output.mkdir(parents=True, exist_ok=True)
-    name = artifact_name(m['source_sha'], m['config'])
+    name = name_factory(m['source_sha'], m['config'])
     archive = output / (name + '.tar.zst')
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary) / name
@@ -166,8 +169,9 @@ def package(binary, output, manifest, inspector=inspect):
     return archive
 
 
-def unpack(data, checksum, output, sha, configuration, producer=None, inspector=inspect):
-    name = artifact_name(sha, configuration)
+def unpack(data, checksum, output, sha, configuration, producer=None, inspector=inspect, *,
+           manifest_validator=validate_manifest, name_factory=artifact_name):
+    name = name_factory(sha, configuration)
     require(checksum == digest(data) + '  ' + name + '.tar.zst\n', 'Outer archive checksum mismatch')
     raw = subprocess.check_output(['zstd', '-q', '-d', '-c'], input=data)
     with tarfile.open(fileobj=io.BytesIO(raw), mode='r:') as archive:
@@ -181,7 +185,7 @@ def unpack(data, checksum, output, sha, configuration, producer=None, inspector=
         payload = {f: archive.extractfile(name + '/' + f).read() for f in FILES | {'SHA256SUMS'}}
     sums = ''.join(digest(payload[f]) + '  ' + f + '\n' for f in sorted(FILES))
     require(payload['SHA256SUMS'].decode() == sums, 'Incomplete or incorrect internal checksums')
-    m = validate_manifest(json.loads(payload['manifest.json']), sha, configuration, producer)
+    m = manifest_validator(json.loads(payload['manifest.json']), sha, configuration, producer)
     require(payload['SOURCE_SHA'] == (sha + '\n').encode()
             and digest(payload['okilum']) == m['binary_sha256'], 'Source or executable digest mismatch')
     require(not output.exists(), 'Extraction destination must be new')

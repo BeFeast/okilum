@@ -11,6 +11,7 @@ on:
       - '.forgejo/workflows/linux-release.yml'
       - '.github/workflows/forgejo-arch.yml'
       - 'scripts/ci/github-pr.py'
+      - 'scripts/ci/package-linux-binary.py'
   # Build any PR branch manually when shared dependencies need release validation.
   workflow_dispatch:
     inputs:
@@ -65,13 +66,39 @@ jobs:
         run: python3 scripts/arch/select-source.py "$OKILUM_SELECTED_SOURCE"
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
-          # An explicit older main commit (#1040) or a scheduled tick (main tip, chosen by
-          # select) sets the checkout; manual and pull-request runs keep the default ref.
-          ref: ${{ (inputs.source != '' || github.event_name == 'schedule') && needs.select.outputs.source || '' }}
+          # Pin the selected event source, including Forgejo's synthetic PR merge.
+          # The fork receipt records that source separately from the fork head.
+          ref: ${{ needs.select.outputs.source }}
           persist-credentials: false
       - name: Prepare build user
         run: useradd -m builder
+      - name: Restore fork dependency downloads and pinned vendor
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        uses: https://code.forgejo.org/actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            /home/builder/.cargo/registry/
+            /home/builder/.cargo/git/
+            vendor/gpui-component/
+          key: okilum-arch-downloads-v1-${{ hashFiles('Cargo.lock', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff') }}
+      - name: Produce isolated unsigned fork bytes
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        env:
+          OKILUM_SELECTED_SOURCE: ${{ needs.select.outputs.source }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$OKILUM_SELECTED_SOURCE"
+          chown -R builder:builder "$GITHUB_WORKSPACE" /home/builder
+          runuser -u builder -- bash -euo pipefail -c '
+            export PATH="$HOME/.cargo/bin:$PATH"
+            if ! command -v rustup >/dev/null; then
+              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+            fi
+            scripts/vendor-setup.sh
+            scripts/vendor-setup.sh --verify
+            python3 scripts/arch/fork-production.py produce
+          '
       - name: Resolve exact required-CI production bytes
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         env:
           OKILUM_SELECTED_SOURCE: ${{ needs.select.outputs.source }}
           MIRROR_TOKEN: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && secrets.OKILUM_GITHUB_MIRROR || '' }}
@@ -80,9 +107,13 @@ jobs:
           test "$PR_HEAD_SHA" = "$OKILUM_SELECTED_SOURCE"
           python3 scripts/ci/github-linux.py resolve
       - name: Build package as an unprivileged user
+        env:
+          OKILUM_FORK_VALIDATION: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && '1' || '0' }}
         run: |
           chown -R builder:builder "$GITHUB_WORKSPACE" /home/builder
-          runuser -u builder -- env OKILUM_SETTINGS_UI_HARNESS=0 OKILUM_PREBUILT_DIR="$GITHUB_WORKSPACE/dist/linux-production" bash scripts/arch/build.sh
+          prebuilt="$GITHUB_WORKSPACE/dist/linux-production"
+          if [ "$OKILUM_FORK_VALIDATION" = 1 ]; then prebuilt="$GITHUB_WORKSPACE/dist/linux-fork"; fi
+          runuser -u builder -- env OKILUM_SETTINGS_UI_HARNESS=0 OKILUM_PREBUILT_DIR="$prebuilt" bash scripts/arch/build.sh
           # Publication distinguishes selected source from packaging run commit.
           runuser -u builder -- git -C "$GITHUB_WORKSPACE" rev-parse HEAD > dist/arch/release-source.txt
       - name: Validate package and install without changing MIME defaults
@@ -93,6 +124,19 @@ jobs:
           if ldd /usr/bin/okilum | grep 'not found'; then exit 1; fi
           python -m unittest discover -s scripts/arch -p 'test_*.py'
           xvfb-run -a -s '-screen 0 1280x800x24' dbus-run-session -- bash scripts/arch/smoke-x11.sh
+      - uses: https://code.forgejo.org/actions/upload-artifact@v3
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        with:
+          name: unsigned-fork-arch
+          path: |
+            dist/arch/*.pkg.tar.zst
+            dist/arch/production-receipt.json
+            dist/arch/release-source.txt
+            dist/arch/SHA256SUMS
+            dist/linux-fork/*.tar.zst
+            dist/linux-fork/*.sha256
+          retention-days: 3
+          if-no-files-found: error
       - uses: https://code.forgejo.org/actions/upload-artifact@v3
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         with:

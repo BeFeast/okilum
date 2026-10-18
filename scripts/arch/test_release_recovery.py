@@ -184,7 +184,7 @@ class SourceSelection(unittest.TestCase):
     def test_workflow_checks_trusted_tooling_before_selected_checkout(self):
         workflow = (ROOT / '.forgejo/workflows/linux-release.yml').read_text()
         guard = workflow.index('run: python3 scripts/arch/select-source.py')
-        selected = workflow.index("ref: ${{ (inputs.source")
+        selected = workflow.index('ref: ${{ needs.select.outputs.source }}')
         resolve = workflow.index('python3 scripts/ci/github-linux.py resolve')
         self.assertLess(guard, selected)
         self.assertLess(selected, resolve)
