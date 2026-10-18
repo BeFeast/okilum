@@ -1415,11 +1415,6 @@ impl LogView {
         self.step_by(delta, false, window, cx)
     }
 
-    /// Row `id` is marked (#1386).
-    fn is_marked(&self, id: usize) -> bool {
-        self.locate(id).is_some_and(|key| self.marks.contains(&key))
-    }
-
     /// The list positions of the marked rows the filters show, in order.
     fn marked_rows(&self) -> Vec<usize> {
         let mut rows: Vec<usize> = self
