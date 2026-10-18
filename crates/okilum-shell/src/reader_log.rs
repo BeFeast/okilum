@@ -492,6 +492,7 @@ pub(crate) struct LogView {
     histogram_running: Option<(usize, usize, u64)>,
     window_revision: u64,
     history_limited: bool,
+    history_reclaim_pending: bool,
     histogram_at: Option<std::time::Instant>,
     histogram_bounds: Rc<std::cell::Cell<Bounds<Pixels>>>,
     /// A press on the bars: where it started and where the pointer is.
@@ -584,6 +585,7 @@ impl LogView {
             histogram_running: None,
             window_revision: 0,
             history_limited: false,
+            history_reclaim_pending: false,
             histogram_at: None,
             histogram_bounds: Rc::default(),
             histogram_press: None,
@@ -2071,7 +2073,12 @@ impl LogView {
         &mut self,
         cx: &mut Context<Self>,
     ) -> Vec<(usize, okilum_core::log::tail::PollRequest)> {
-        if LogSnapshot::memory_used() > 192 * 1024 * 1024
+        // A soft process-wide watermark can reflect unrelated views. Do not
+        // discard this view's history on a successful/no-op poll. A failed
+        // reservation requests reclamation for the next poll, before source
+        // IDs are captured (never midway through applying a multi-file batch).
+        let reclaim = std::mem::take(&mut self.history_reclaim_pending);
+        if reclaim
             && self
                 .extra
                 .iter()
@@ -2152,6 +2159,8 @@ impl LogView {
                 }
             }
             Err(error) => {
+                self.history_reclaim_pending |=
+                    error.is::<okilum_core::log::window_budget::BudgetBusy>();
                 let name = self.source_name(source);
                 if let Some(follow) = self.follow.as_mut() {
                     follow.error = Some(if source == 0 {
@@ -2166,8 +2175,10 @@ impl LogView {
         match event {
             TailEvent::Unchanged | TailEvent::Stale => {}
             TailEvent::Deferred(error) => {
+                self.history_reclaim_pending |=
+                    error.is::<okilum_core::log::window_budget::BudgetBusy>();
                 if let Some(follow) = self.follow.as_mut() {
-                    follow.error = Some(error);
+                    follow.error = Some(format!("{error:#}"));
                 }
             }
             TailEvent::WindowChanged => {
@@ -7561,11 +7572,13 @@ mod tests {
             "in file order"
         );
         assert!(rows[0].get("source").is_none(), "one file has no source");
-        assert!(std::fs::read_dir(&root).unwrap().all(|entry| !entry
-            .unwrap()
-            .file_name()
-            .to_string_lossy()
-            .starts_with(".tmp")));
+        assert!(std::fs::read_dir(&root).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".tmp")
+        }));
 
         // Never over the log being read.
         let log = root.join("apache-access.logfmt");
@@ -8268,6 +8281,47 @@ mod tests {
             assert!(matches!(view.extra[0].data, SourceData::Tail(_)));
             assert_eq!(view.source(1).unwrap().raw(0).unwrap(), b"ccc");
             assert!(view.marks.is_empty() && view.selected.is_none() && view.anchor.is_none());
+        });
+    }
+
+    /// A different view's reservations must not discard successful Follow
+    /// history. Reclaim only after a real budget failure, before the next batch.
+    #[gpui::test]
+    fn rotation_history_reclaims_only_after_a_budget_failure(cx: &mut TestAppContext) {
+        let _shutdown = TestShutdown(cx.clone());
+        let (directory, reader, visual) = open_named("rotation.log", b"before\n", cx);
+        let view = log_view(&reader, visual);
+        view.update(visual, |view, cx| view.toggle_follow(cx));
+        visual.run_until_parked();
+        let path = directory.path().join("rotation.log");
+        std::fs::rename(&path, directory.path().join("rotation.log.1")).unwrap();
+        std::fs::write(&path, b"after\n").unwrap();
+        let request = view.update(visual, |view, _| {
+            view.follow.as_mut().unwrap().tail.begin_poll()
+        });
+        let read = request.read().unwrap();
+        view.update(visual, |view, cx| view.apply_poll(0, Ok(read), cx));
+        visual.run_until_parked();
+        view.update(visual, |view, cx| {
+            assert_eq!(view.source_count(), 2);
+            // Positive no-op control: polling itself never requests eviction.
+            drop(view.begin_polls(cx));
+            assert_eq!(view.source_count(), 2);
+            view.apply_poll(0, Err(anyhow::anyhow!("permission denied")), cx);
+            drop(view.begin_polls(cx));
+            assert_eq!(view.source_count(), 2, "I/O failure preserves history");
+            view.apply_poll(
+                0,
+                Err(okilum_core::log::window_budget::BudgetBusy.into()),
+                cx,
+            );
+            assert_eq!(view.source_count(), 2, "do not renumber an in-flight batch");
+            let requests = view.begin_polls(cx);
+            assert_eq!(requests.len(), 1);
+            assert_eq!(requests[0].0, 0);
+            assert_eq!(view.source_count(), 1);
+            assert_eq!(view.data().unwrap().raw(0).unwrap(), b"after");
+            assert!(view.history_limited && view.window_notice().is_some());
         });
     }
 

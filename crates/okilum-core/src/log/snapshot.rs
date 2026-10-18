@@ -22,7 +22,7 @@ pub(super) fn pool() -> &'static MemoryBudget {
 pub(super) fn reserve(bytes: usize) -> Result<Reservation> {
     pool()
         .reserve(bytes.max(1))
-        .context("Log memory budget is busy; waiting for earlier filters or exports to finish")
+        .context(super::window_budget::BudgetBusy)
 }
 fn charge(capacity: usize, lines: usize) -> usize {
     capacity + lines.min(WINDOW_LINES) * std::mem::size_of::<super::LogEntry>() * 4 + SCRATCH_BYTES
@@ -177,7 +177,7 @@ impl LogSnapshot {
         ensure!(
             self.lease
                 .resize(charge(self.capacity(), physical_lines(&self.bytes))),
-            "Log memory budget is busy"
+            super::window_budget::BudgetBusy
         );
         Ok(())
     }
@@ -290,7 +290,7 @@ impl LogSnapshot {
         };
         ensure!(
             self.lease.resize(final_charge + overlap),
-            "Log memory budget is busy"
+            super::window_budget::BudgetBusy
         );
         let old_offset = self.info.offset;
         if self.bytes.len() + incoming.len() > WINDOW_BYTES {
@@ -380,7 +380,7 @@ impl LogSnapshot {
                 self.capacity().max(len.min(WINDOW_BYTES)),
                 WINDOW_LINES
             )),
-            "Log memory budget is busy"
+            super::window_budget::BudgetBusy
         );
         Ok(())
     }
