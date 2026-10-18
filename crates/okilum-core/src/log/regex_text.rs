@@ -188,13 +188,18 @@ mod tests {
             files += 1;
         }
         assert_eq!(files, 17, "positive control: inspected the sample pack");
-        let index = LogIndex::build_regex(DATA, parser(PATTERN));
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/log/regex-pipe.log");
+        let file = LogFile::open(&path).unwrap().with_regex(parser(PATTERN));
+        let index = file.index();
+        let data = file.bytes();
+        assert_eq!(index.format(), Format::Regex);
         let filter = LogFilter {
             query: Some(Query::parse("level>=warn and worker=beta").unwrap()),
             ..Default::default()
         };
         let result =
-            filter::evaluate(&filter, &index, DATA, &FilterGenerations::default().next()).unwrap();
+            filter::evaluate(&filter, index, data, &FilterGenerations::default().next()).unwrap();
         assert_eq!(result.rows, [1]);
         let text_filter = LogFilter {
             text: "worker=beta".into(),
@@ -203,8 +208,8 @@ mod tests {
         assert_eq!(
             filter::evaluate(
                 &text_filter,
-                &index,
-                DATA,
+                index,
+                data,
                 &FilterGenerations::default().next()
             )
             .unwrap()
@@ -212,26 +217,18 @@ mod tests {
             [1]
         );
         let mut histogram = Histogram::new();
-        histogram.add_index(&index, None);
+        histogram.add_index(index, None);
         assert_eq!(
             histogram.timed(),
             4,
             "the unmatched row inherits the preceding time for the histogram"
         );
         assert_eq!(histogram.untimed(), 0);
-        let start = index
-            .record(index.raw(DATA, 0).unwrap())
-            .unwrap()
-            .stamp()
-            .unwrap();
-        let end = index
-            .record(index.raw(DATA, 1).unwrap())
-            .unwrap()
-            .stamp()
-            .unwrap();
+        let start = file.record(0).unwrap().stamp().unwrap();
+        let end = file.record(1).unwrap().stamp().unwrap();
         assert_eq!(elapsed::between(start, end), "+1.234 s");
         let row = export::Row {
-            data: DATA,
+            data,
             entry: &index.entries()[1],
             format: index.format(),
             regex: index.regex().map(|regex| regex.as_ref()),
