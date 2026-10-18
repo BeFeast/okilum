@@ -4489,15 +4489,21 @@ fn status_text(document: &LogDocument) -> String {
 fn index_status(index: &LogIndex) -> String {
     if let (Some(regex), Some((matched, unmatched))) = (index.regex(), index.regex_counts()) {
         let mut text = format!(
-            "Regex “{}” matched {} of {} lines",
+            "Regex “{}” matched {} of {} {}",
             regex.definition().name,
             grouped(matched),
-            grouped(matched + unmatched)
+            grouped(matched + unmatched),
+            if matched + unmatched == 1 {
+                "line"
+            } else {
+                "lines"
+            }
         );
         if unmatched > 0 {
             text.push_str(&format!(
-                "; {} unmatched lines shown as text",
-                grouped(unmatched)
+                "; {} unmatched {} shown as text",
+                grouped(unmatched),
+                if unmatched == 1 { "line" } else { "lines" }
             ));
         }
         return text;
@@ -6963,7 +6969,7 @@ mod tests {
         view.read_with(visual, |view, _| {
             assert_eq!(
                 index_status(view.data().unwrap().index()),
-                "Regex “Partial” matched 1 of 2 lines; 1 unmatched lines shown as text"
+                "Regex “Partial” matched 1 of 2 lines; 1 unmatched line shown as text"
             );
             assert!(
                 view.field_names().contains(&"worker".to_owned()),
