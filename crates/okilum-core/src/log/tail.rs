@@ -97,7 +97,7 @@ impl LogSegment {
     }
     /// Entry `index` decoded into fields; `None` for an unparsed line.
     pub fn record(&self, index: usize) -> Option<Record> {
-        Record::parse(self.raw(index)?, self.index.format())
+        self.index.record(self.raw(index)?)
     }
 }
 
@@ -244,7 +244,7 @@ impl LogTail {
     }
     /// Entry `index` decoded into fields; `None` for an unparsed line.
     pub fn record(&self, index: usize) -> Option<Record> {
-        Record::parse(self.raw(index)?, self.index.format())
+        self.index.record(self.raw(index)?)
     }
     /// Counts truncations and rotations since opening.
     pub fn epoch(&self) -> u64 {
@@ -331,10 +331,17 @@ impl LogTail {
     /// Indexes the held bytes up to `end`. Returns whether the whole index
     /// was rebuilt because the format verdict changed, and whether the last
     /// entry took new lines.
+    pub fn with_regex(mut self, regex: Arc<super::regex_text::RegexParser>) -> Self {
+        let end = self.index.bytes() as usize;
+        self.index = LogIndex::build_regex(&self.bytes[..end], regex);
+        self.settled = true;
+        self
+    }
+
     fn index_to(&mut self, end: usize) -> (bool, bool) {
         let mut rebuilt = false;
         let mut grown = false;
-        if !self.settled {
+        if !self.settled && self.index.regex().is_none() {
             // The verdict reads at most the first SAMPLE_LINES non-blank lines
             // or SAMPLE_BYTES, so re-detecting here touches only a short file.
             let format = detect::detect(&self.bytes[..end]);
@@ -361,9 +368,13 @@ impl LogTail {
         // or not, and nothing that was read is dropped.
         self.bytes.extend_from_slice(old_tail);
         self.index_to(self.bytes.len());
+        let next = self.index.regex().cloned().map_or_else(
+            || LogIndex::build(&[]),
+            |regex| LogIndex::build_regex(&[], regex),
+        );
         let previous = LogSegment {
             bytes: std::mem::replace(&mut self.bytes, bytes),
-            index: std::mem::replace(&mut self.index, LogIndex::build(&[])),
+            index: std::mem::replace(&mut self.index, next),
         };
         if let Some((file, id)) = file {
             self.file = file;

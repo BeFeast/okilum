@@ -924,6 +924,16 @@ impl Settings {
                             "For log files of software you build: where file:line links open.",
                         ),
                     )
+                    .child(div().text_sm().child("Saved regex definitions. Create and apply them from the Regex button in a log file. One saved regex applies automatically to Plain text files; with several, choose one."))
+                    .children(reader_ui_state::log_regex_definitions(cx).into_iter().map(|definition| {
+                        let name = definition.name.clone();
+                        h_flex().gap_2()
+                            .child(div().flex_1().child(definition.name))
+                            .child(Button::new(SharedString::from(format!("delete-regex-{name}"))).small().label("Delete").on_click(cx.listener(move |_, _, _, cx| {
+                                reader_ui_state::delete_log_regex(&name, cx);
+                                cx.notify();
+                            })))
+                    }))
                     .child(self.log_editor_controls(cx))
                     .children(root.map(|root| self.source_map_controls(&root, cx)))
                     .into_any_element()

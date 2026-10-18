@@ -23,6 +23,8 @@ pub enum Format {
     Syslog,
     /// Less than half the sample parses as records; every line is raw text.
     Plain,
+    /// A user-selected regex; its compiled definition belongs to the index.
+    Regex,
 }
 
 impl Format {
@@ -36,6 +38,7 @@ impl Format {
             Format::AccessLog => "Access log",
             Format::Syslog => "syslog",
             Format::Plain => "Plain text",
+            Format::Regex => "Regex",
         }
     }
 }
