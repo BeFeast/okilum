@@ -3950,8 +3950,8 @@ impl LogView {
         )
     }
 
-    fn render_status(&self, cx: &mut Context<Self>) -> AnyElement {
-        let text = match (&self.state, &self.follow) {
+    fn status(&self) -> String {
+        let mut text = match (&self.state, &self.follow) {
             (State::Indexing, _) => "Indexing…".to_owned(),
             (State::Failed(error), _) => format!("Cannot show this log: {error}"),
             (State::Ready(_), Some(follow)) => {
@@ -3987,6 +3987,27 @@ impl LogView {
                 None => status_text(document),
             },
         };
+        if !self.extra.is_empty() {
+            // Follow already reports the primary file above. A merged view
+            // must also keep each regex's counts, including a zero match.
+            let first = usize::from(self.follow.is_some());
+            for source in first..self.source_count() {
+                if let Some(data) = self.source(source) {
+                    if data.index().regex().is_some() {
+                        text.push_str(&format!(
+                            " · {}: {}",
+                            self.source_name(source),
+                            index_status(data.index())
+                        ));
+                    }
+                }
+            }
+        }
+        text
+    }
+
+    fn render_status(&self, cx: &mut Context<Self>) -> AnyElement {
+        let text = self.status();
         h_flex()
             .flex_none()
             .h(px(28.))
@@ -3999,7 +4020,10 @@ impl LogView {
                 div()
                     .debug_selector(|| "log-status".into())
                     .truncate()
-                    .child(text),
+                    .child(text.clone())
+                    .tooltip(move |window, cx| {
+                        gpui_component::tooltip::Tooltip::new(text.clone()).build(window, cx)
+                    }),
             )
             .into_any_element()
     }
@@ -6917,7 +6941,7 @@ mod tests {
     fn regex_entry_shows_errors_saves_and_reports_zero_matches(cx: &mut TestAppContext) {
         let state = tempfile::tempdir().unwrap();
         cx.update(|cx| reader_ui_state::install(state.path(), cx));
-        let (_directory, reader, visual) = open_log("first line\n  second line\n", cx);
+        let (directory, reader, visual) = open_log("first line\n  second line\n", cx);
         let view = log_view(&reader, visual);
         view.update_in(visual, |view, window, cx| {
             view.begin_regex(window, cx);
@@ -6966,7 +6990,7 @@ mod tests {
             assert_eq!(view.data().unwrap().index().regex_counts(), Some((0, 2)));
             assert_eq!(view.visible_len(), 2, "unmatched lines stay visible");
             assert_eq!(
-                index_status(view.data().unwrap().index()),
+                view.status(),
                 "Regex “Pipe” matched 0 of 2 lines; 2 unmatched lines shown as text"
             );
         });
@@ -7018,7 +7042,7 @@ mod tests {
         visual.run_until_parked();
         view.read_with(visual, |view, _| {
             assert_eq!(
-                index_status(view.data().unwrap().index()),
+                view.status(),
                 "Regex “Partial” matched 1 of 2 lines; 1 unmatched line shown as text"
             );
             assert!(
@@ -7026,6 +7050,37 @@ mod tests {
                 "extra named groups are available as columns"
             );
         });
+        // A second file must not replace the explicit zero-match state with
+        // only the merged view's record count.
+        let regex = visual.update(|_, cx| {
+            reader_ui_state::log_regex_definitions(cx)
+                .into_iter()
+                .find(|definition| definition.name == "Pipe")
+                .unwrap()
+                .compile()
+                .unwrap()
+        });
+        view.update(visual, |view, cx| view.apply_regex(Some(regex), cx));
+        visual.run_until_parked();
+        let extra = directory.path().join("extra.jsonl");
+        std::fs::write(&extra, b"{\"msg\":\"extra\"}\n").unwrap();
+        view.update(visual, |view, cx| view.add_files(vec![extra], cx));
+        visual.run_until_parked();
+        view.read_with(visual, |view, _| {
+            assert_eq!(
+                view.source_count(),
+                2,
+                "positive control: the second file opened"
+            );
+            assert!(view
+                .status()
+                .contains("Regex “Pipe” matched 0 of 2 lines; 2 unmatched lines shown as text"));
+        });
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            visual.debug_bounds("log-status").is_some(),
+            "merged counts are drawn"
+        );
     }
 
     /// #1169 acceptance: a filter saved on one log (name, query, levels) is
