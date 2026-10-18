@@ -5,6 +5,7 @@ name: forgejo-arch
     - forgejo-arch-pr/**
 permissions:
   contents: read
+  actions: read
 concurrency:
   group: forgejo-arch-${{ github.ref }}
   cancel-in-progress: false
@@ -13,7 +14,7 @@ jobs:
     runs-on: ubuntu-24.04
     container:
       image: archlinux:base-devel@sha256:51dd3d24f7fba779e7c471caeee7804c50e8c134ad948e19685a1c83a42facc3
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
     - name: Install Arch build and packaging tools
       run: |
@@ -25,11 +26,15 @@ jobs:
         persist-credentials: false
     - name: Prepare build user
       run: useradd -m builder
+    - name: Resolve exact required-CI production bytes
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 scripts/ci/github-linux.py resolve
     - name: Build package as an unprivileged user
       run: |
         chown -R builder:builder "$GITHUB_WORKSPACE" /home/builder
         # Unsigned release checks use the production package, without the QA harness.
-        runuser -u builder -- env OKILUM_SETTINGS_UI_HARNESS=0 OKILUM_BUILD_VERSION="$((5000 + GITHUB_RUN_NUMBER))" bash scripts/arch/build.sh
+        runuser -u builder -- env OKILUM_SETTINGS_UI_HARNESS=0 OKILUM_PREBUILT_DIR="$GITHUB_WORKSPACE/dist/linux-production" bash scripts/arch/build.sh
     - name: Validate Arch package
       run: |
         desktop-file-validate scripts/arch/okilum.desktop

@@ -5,8 +5,9 @@ on:
     branches: ['forgejo-linux-pr/**']
 permissions:
   contents: read
+  actions: read
 concurrency:
-  group: forgejo-linux-${{ github.ref }}
+  group: linux-production-v1-${{ github.sha }}-x86_64-release
   cancel-in-progress: false
 jobs:
   linux:
@@ -27,7 +28,7 @@ jobs:
           sudo apt-get install -y -qq --no-install-recommends \
             build-essential cmake pkg-config curl git mold zstd \
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
-            libfontconfig-dev libfreetype-dev libxcb1-dev
+            libfontconfig-dev libfreetype-dev libxcb1-dev libvulkan1
       - name: Verify pinned toolchain
         run: |
           rustc -Vv
@@ -50,3 +51,35 @@ jobs:
           key: cargo-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff') }}
       - name: Run full Linux gate
         run: bash scripts/ci/check-linux.sh
+      - name: Identify production configuration
+        id: identity
+        run: |
+          python3 - <<'IDENTITY' >> "$GITHUB_OUTPUT"
+          import importlib.util
+          spec = importlib.util.spec_from_file_location('payload', 'scripts/ci/package-linux-binary.py')
+          payload = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(payload)
+          print('config=' + payload.config())
+          IDENTITY
+      - name: Produce canonical Linux payload
+        id: produce
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/ci/github-linux.py produce
+      - uses: actions/upload-artifact@v4
+        if: steps.produce.outputs.created == 'true'
+        with:
+          name: linux-production-v1-${{ github.sha }}-x86_64-unknown-linux-gnu-release-${{ steps.identity.outputs.config }}
+          path: |
+            dist/linux-production/*.tar.zst
+            dist/linux-production/*.tar.zst.sha256
+          retention-days: 3
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        continue-on-error: true
+        with:
+          name: linux-delivery-evidence-${{ github.sha }}
+          path: dist/linux-production/delivery.jsonl
+          retention-days: 7
+          if-no-files-found: ignore

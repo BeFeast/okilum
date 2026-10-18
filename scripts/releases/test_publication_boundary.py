@@ -14,7 +14,24 @@ macos = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(macos)
 
 
+def artifact_zip():
+    import io
+    import zipfile
+    data = io.BytesIO()
+    with zipfile.ZipFile(data, 'w') as archive:
+        archive.writestr('fixture.pkg.tar.zst', b'package transport fixture')
+    return data.getvalue()
+
+
 class PublicationBoundary(unittest.TestCase):
+    def setUp(self):
+        import publication
+        # Identity validation is exercised with real payloads below; these tests
+        # isolate completed-run routing, monotonicity and the publisher handoff.
+        self.validation = patch.object(publication, 'production_build', return_value=5042)
+        self.production = self.validation.start()
+        self.addCleanup(self.validation.stop)
+
     def test_only_successful_current_main_build_is_eligible(self):
         import publication
         run = {'workflow_id': 'windows-diagnostic.yml', 'prettyref': 'main',
@@ -42,6 +59,7 @@ class PublicationBoundary(unittest.TestCase):
             self.assertEqual(api.call.call_count, 2)
 
     def test_publication_preserves_original_build_number_and_rechecks_main(self):
+        self.production.return_value = 14108
         import publication
         import io
         import zipfile
@@ -62,7 +80,7 @@ class PublicationBoundary(unittest.TestCase):
                 publication.publish(api, 'linux', 12)
                 self.assertEqual(launch.called, expected)
                 if expected:
-                    self.assertIn('5042', launch.call_args.args[0])
+                    self.assertIn('14108', launch.call_args.args[0])
                     self.assertEqual(launch.call_args.kwargs['env']['GITHUB_RUN_NUMBER'], '42')
 
     def test_linux_finishes_after_new_merge_but_rejects_newer_published_beta(self):
@@ -79,12 +97,13 @@ class PublicationBoundary(unittest.TestCase):
         for status in ['failure', 'cancelled', 'running']:
             self.assertFalse(publication.eligible({**run, 'status': status}, 'linux', 'new-main'))
         api = Mock()
-        api.call.side_effect = [run, {'commit': {'id': 'new-main'}}]
+        api.call.side_effect = [run, {'commit': {'id': 'new-main'}},
+            [{'id': 9, 'name': 'arch-publication', 'expired': False, 'run_id': 12}], artifact_zip()]
         with patch.object(publication, 'R2') as store, patch.object(publication.subprocess, 'run') as launch:
             store.return_value.call.return_value = json.dumps({'build': 5043}).encode()
             publication.publish(api, 'linux', 12)
             launch.assert_not_called()
-            self.assertEqual(api.call.call_count, 2)
+            self.assertEqual(api.call.call_count, 4)
 
     def test_hourly_and_manual_snapshots_publish_after_main_advances(self):
         import publication
@@ -126,17 +145,24 @@ class PublicationBoundary(unittest.TestCase):
                    'is_fork_pull_request': False, 'trigger_event': 'schedule',
                    'status': 'success', 'commit_sha': 'old-main', 'index_in_repo': 42}
             api = Mock()
-            api.call.side_effect = [run, {'commit': {'id': 'new-main'}}]
+            api.call.side_effect = [run, {'commit': {'id': 'new-main'}},
+                [{'id': 9, 'name': 'arch-publication', 'expired': False, 'run_id': 12}], artifact_zip()]
             with patch.object(publication, 'R2') as store, patch.object(publication.subprocess, 'run') as launch:
                 store.return_value.call.return_value = feed
                 self.assertEqual(publication.published_build(store(), platform), 5043)
                 publication.publish(api, platform, 12)
                 launch.assert_not_called()
-                self.assertEqual(api.call.call_count, 2)
+                self.assertEqual(api.call.call_count, 4 if platform == 'linux' else 2)
 
 
 class ExplicitSourcePublication(unittest.TestCase):
-    """#1040: a manual run that built an older main commit publishes to the archive only."""
+    """#1040: explicit older-source builds archive without moving beta."""
+
+    def setUp(self):
+        import publication
+        validation = patch.object(publication, 'production_build', return_value=5042)
+        validation.start()
+        self.addCleanup(validation.stop)
 
     def publish(self, marker, final_head='c' * 40, event='workflow_dispatch', feed=9999):
         import publication

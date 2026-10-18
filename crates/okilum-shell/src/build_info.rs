@@ -41,13 +41,31 @@ pub(crate) fn gpui_test_support() -> bool {
 /// appears only when the installed package differs from the build (#1319).
 pub(crate) fn report() -> String {
     format!(
-        "version: {}\n{}build: {}\ngpui-test-support: {}\n",
+        concat!(
+            "version: {}\n{}build: {}\ngpui-test-support: {}\n",
+            "source: {}\nprofile: {}\ntarget: {}\nbrain: {}\n",
+            "settings-ui-harness: {}\nupdater-ui-harness: {}\n"
+        ),
         env!("OKILUM_RELEASE_VERSION"),
         crate::version_info::package()
             .map(|package| format!("package: {package}\n"))
             .unwrap_or_default(),
         env!("OKILUM_BUILD_VERSION"),
-        if gpui_test_support() { "yes" } else { "no" }
+        if gpui_test_support() { "yes" } else { "no" },
+        env!("OKILUM_SOURCE_COMMIT"),
+        env!("OKILUM_BUILD_PROFILE"),
+        env!("OKILUM_BUILD_TARGET"),
+        if cfg!(feature = "brain") { "yes" } else { "no" },
+        if cfg!(feature = "settings-ui-harness") {
+            "yes"
+        } else {
+            "no"
+        },
+        if cfg!(feature = "updater-ui-harness") {
+            "yes"
+        } else {
+            "no"
+        }
     )
 }
 

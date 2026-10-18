@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Hand off completed build artifacts to a non-cancellable publication workflow."""
 import argparse
+import importlib.util
 import io
 import json
 import re
@@ -19,6 +20,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import prepare
 
 SCRIPTS = Path(__file__).resolve().parents[1]
+spec = importlib.util.spec_from_file_location('native_payload', SCRIPTS / 'ci/package-linux-binary.py')
+native_payload = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(native_payload)
 WORKFLOWS = {'macos': 'macos-release.yml', 'linux': 'linux-release.yml',
              'windows': 'windows-diagnostic.yml'}
 ARTIFACTS = {'macos': {'macos-publication': 'macos'},
@@ -107,6 +111,16 @@ def one(root, pattern):
     return str(files[0])
 
 
+def production_build(root, source):
+    receipt = json.loads((root / 'arch/production-receipt.json').read_text())
+    manifest = native_payload.validate_receipt(receipt, source, receipt['manifest']['config'])
+    build = manifest['build']
+    embedded, _ = native_payload.package_receipt(Path(one(root / 'arch', '*.pkg.tar.zst')), source, build)
+    if embedded != receipt:
+        raise ValueError('Publication receipt differs from packaged original producer')
+    return build
+
+
 def publish(client, platform, run_id):
     # Dispatch is the build's final step. Wait only for its final success record;
     # a newer push cancelling it must never authorize publication.
@@ -127,7 +141,7 @@ def publish(client, platform, run_id):
     # trusted snapshots remain useful after a merge, but never roll back a feed.
     # Only a manual run can carry an explicit older source (#1040), which goes to the
     # archive instead; it is decided after reading the artifact.
-    if run['trigger_event'] != 'workflow_dispatch' and published_build(R2(), platform) > build:
+    if platform != 'linux' and run['trigger_event'] != 'workflow_dispatch' and published_build(R2(), platform) > build:
         print(f'Newer {platform} build already published: nothing changed')
         return
     artifacts = client.call('GET', f'/actions/runs/{run_id}/artifacts')
@@ -140,6 +154,8 @@ def publish(client, platform, run_id):
             data = client.call('GET', f'/actions/artifacts/{matching[0]["id"]}/zip', raw=True)
             extract(data, root / folder)
         source = built_source(root, platform, run)
+        if platform == 'linux':
+            build = production_build(root, source)
         # An explicit older commit is archived for promotion and never moves the beta feed.
         # A scheduled tick also differs from its run's commit: it builds main's tip, which
         # is newer than the tick's snapshot, so it publishes to beta as usual.

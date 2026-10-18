@@ -90,12 +90,27 @@ channel refuses backwards publication.
 
 ## Release and promotion
 
-`.forgejo/workflows/linux-release.yml` builds each merge to `main` with shared
-sccache and cached dependency downloads, in a pinned
-Arch `base-devel` container, with Rust 1.96.1 and the locked dependency graph.
-The package version is `0.1.<5000 + workflow run number>-1`. PRs touching packaging
-build/install the package and test signing with a disposable key; they cannot
-publish. Main builds publish beta. Workflow concurrency serializes publication.
+The required hosted Linux gate produces one release/default-feature app binary
+per exact source/configuration after the full checks. Trusted PR heads and main
+merge SHAs are separate identities. `.forgejo/workflows/linux-release.yml`
+coalesces main snapshots in the existing pinned Arch `base-devel` container,
+resolves those verified bytes and packages them without Cargo. Arch still runs
+installation, runtime-library and X11 smoke checks. The Ubuntu-to-Arch runtime
+compatibility gate must pass on supported Arch before release acceptance.
+
+Package version is `0.1.<original producer build>-1`, where the build is 5000 plus
+the originating Forgejo coordinator run number. A later packaging run carries
+that same version, full source, producer receipt and executable SHA256. makepkg
+stripping is disabled; post-package verification rejects byte drift. Missing,
+expired, corrupt or incompatible production payloads fail closed. There is no
+consumer compiler fallback and branch production QA cannot enable a harness.
+
+PR packaging cannot publish. Main snapshots publish beta through the unchanged
+serialized signing/publication path; monotonic checks use the original binary
+build rather than the packaging run. The signed archive includes the original
+receipt in the package and archive manifest, so later QA can reuse its exact
+executable after hosted artifact expiry. See [hosted CI](hosted-ci.md) for exact
+resolution and waiting-inclusive evidence.
 
 For independent Linux promotion after manager GO, use the
 [Linux-only releases path](releases.md#linux-only-stable-1432) with `linux_only=true`,

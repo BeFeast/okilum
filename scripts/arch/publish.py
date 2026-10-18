@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Signed Arch repositories. Promotion copies the original beta package and signature."""
 import argparse
+import importlib.util
 import hashlib
 import json
 import os
@@ -13,6 +14,10 @@ import tempfile
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'updater'))
 from release import R2  # noqa: E402
 import catalog
+
+spec = importlib.util.spec_from_file_location('native_payload', Path(__file__).resolve().parents[1] / 'ci/package-linux-binary.py')
+native_payload = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(native_payload)
 
 PREFIX = 'okilum/arch'
 
@@ -105,6 +110,9 @@ def execute(args, r2, key, tmp):
     if args.command == 'publish':
         package = Path(args.package).read_bytes()
         manifest = {'build': args.build, 'filename': name, 'sha256': hashlib.sha256(package).hexdigest(), 'source': args.source}
+        receipt, _ = native_payload.package_receipt(Path(args.package), args.source, args.build)
+        manifest['production'] = receipt
+        manifest['binary_sha256'] = receipt['manifest']['binary_sha256']
         existing = r2.call('GET', f'{archive}/manifest.json')
         if existing is not None and json.loads(existing) != manifest:
             raise ValueError('Build already exists with different contents')

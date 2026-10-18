@@ -48,15 +48,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: archlinux:base-devel@sha256:51dd3d24f7fba779e7c471caeee7804c50e8c134ad948e19685a1c83a42facc3
-    timeout-minutes: 90
-    env:
-      SCCACHE_BUCKET: ${{ vars.SCCACHE_BUCKET }}
-      SCCACHE_ENDPOINT: ${{ vars.SCCACHE_ENDPOINT }}
-      SCCACHE_REGION: ${{ vars.SCCACHE_REGION }}
-      SCCACHE_S3_USE_SSL: "false"
-      SCCACHE_S3_KEY_PREFIX: rust
-      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
+    timeout-minutes: 120
     steps:
       - name: Install Arch build and packaging tools
         run: |
@@ -71,24 +63,17 @@ jobs:
           persist-credentials: false
       - name: Prepare build user
         run: useradd -m builder
-      - name: Restore dependency downloads and pinned vendor
-        uses: https://code.forgejo.org/actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
-        with:
-          path: |
-            /home/builder/.cargo/registry/
-            /home/builder/.cargo/git/
-            vendor/gpui-component/
-          key: okilum-arch-downloads-v1-${{ hashFiles('Cargo.lock', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff') }}
+      - name: Resolve exact required-CI production bytes
+        env:
+          MIRROR_TOKEN: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && secrets.OKILUM_GITHUB_MIRROR || '' }}
+        run: |
+          export PR_HEAD_SHA="$(git rev-parse HEAD)"
+          python3 scripts/ci/github-linux.py resolve
       - name: Build package as an unprivileged user
         run: |
           chown -R builder:builder "$GITHUB_WORKSPACE" /home/builder
-          # Only branch dispatch artifacts may contain the visual QA harness.
-          harness=0
-          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$GITHUB_REF" != refs/heads/main ]; then
-            harness=1
-          fi
-          runuser -u builder -- env OKILUM_SETTINGS_UI_HARNESS="$harness" OKILUM_BUILD_VERSION="$((5000 + GITHUB_RUN_NUMBER))" bash scripts/arch/build.sh
-          # Publication reads the built commit from here, not from the run (#1040).
+          runuser -u builder -- env OKILUM_SETTINGS_UI_HARNESS=0 OKILUM_PREBUILT_DIR="$GITHUB_WORKSPACE/dist/linux-production" bash scripts/arch/build.sh
+          # Publication distinguishes selected source from packaging run commit.
           runuser -u builder -- git -C "$GITHUB_WORKSPACE" rev-parse HEAD > dist/arch/release-source.txt
       - name: Validate package and install without changing MIME defaults
         run: |
@@ -105,6 +90,7 @@ jobs:
           path: |
             dist/arch/*.pkg.tar.zst
             dist/arch/release-source.txt
+            dist/arch/production-receipt.json
           retention-days: 7
 
       # Preview artifacts let native QA inspect UI before merge. They never

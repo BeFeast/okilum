@@ -10,7 +10,7 @@ on:
         required: true
         default: linux
       baseline:
-        description: 'Also build the current main snapshot (linux-binary only)'
+        description: 'Also resolve the current main snapshot (linux-binary only)'
         type: boolean
         default: false
 permissions:
@@ -37,6 +37,17 @@ jobs:
           PR_HEAD_SHA: ${{ github.sha }}
           CI_LANE: ${{ inputs.lane || 'linux' }}
         run: python3 scripts/ci/github-pr.py
+      - uses: https://code.forgejo.org/actions/upload-artifact@v3
+        if: always()
+        with:
+          name: linux-production-receipt-${{ github.job }}
+          path: |
+            dist/linux-production/*.tar.zst
+            dist/linux-production/*.tar.zst.sha256
+            dist/linux-production/payload/okilum
+            dist/linux-production/receipt.json
+            dist/linux-production/delivery.jsonl
+          if-no-files-found: ignore
 
   baseline:
     if: >-
@@ -57,10 +68,21 @@ jobs:
           sha=$(git rev-parse HEAD)
           echo "Baseline source SHA: $sha"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
-      - name: Build exact main baseline without publication
+      - name: Resolve exact main baseline without publication
         env:
           MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
           PR_NUMBER: ${{ github.run_number }}
           PR_HEAD_SHA: ${{ steps.source.outputs.sha }}
           CI_LANE: linux-binary
         run: python3 scripts/ci/github-pr.py
+      - uses: https://code.forgejo.org/actions/upload-artifact@v3
+        if: always()
+        with:
+          name: linux-production-receipt-${{ github.job }}
+          path: |
+            dist/linux-production/*.tar.zst
+            dist/linux-production/*.tar.zst.sha256
+            dist/linux-production/payload/okilum
+            dist/linux-production/receipt.json
+            dist/linux-production/delivery.jsonl
+          if-no-files-found: ignore

@@ -59,12 +59,11 @@ jobs:
           needed=$(git diff --name-only -z "$BASE_SHA" HEAD | python3 scripts/ci/macos-scope.py)
           echo "macos=$needed" >> "$GITHUB_OUTPUT"
 
+  # Fork code stays on the unprivileged local full gate, with no mirror credential.
   linux-local:
     if: >-
-      github.event_name != 'pull_request' ||
-      github.event.pull_request.head.repo.full_name != github.repository ||
-      (vars.OKILUM_LINUX_LANE != 'hosted' &&
-       vars.OKILUM_LINUX_LANE != format('pr-{0}', github.event.pull_request.number))
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     # Vendored gpui-kit tests (vendor-tests.sh) add ~25 min when the patch stack changes.
     timeout-minutes: 80
@@ -156,12 +155,12 @@ jobs:
         if: always()
         run: if [ -n "${RUSTC_WRAPPER:-}" ]; then sccache --show-stats || true; fi
 
+  # Trusted PR heads and actual main merge SHAs share the canonical producer.
   linux-github:
     if: >-
-      github.event_name == 'pull_request' &&
-      (vars.OKILUM_LINUX_LANE == 'hosted' ||
-       vars.OKILUM_LINUX_LANE == format('pr-{0}', github.event.pull_request.number)) &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: bridge
     # Must exceed github-linux.py queue_timeout + run_timeout (15 + 90 min).
     timeout-minutes: 110
@@ -171,24 +170,35 @@ jobs:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
           persist-credentials: false
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
-      - name: Run exact PR head on GitHub Linux
+      - name: Run exact source on GitHub Linux
         id: remote
         env:
           MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.run_number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: python3 scripts/ci/github-linux.py
+
+      - uses: https://code.forgejo.org/actions/upload-artifact@v3
+        if: always()
+        continue-on-error: true
+        with:
+          name: linux-delivery-evidence
+          path: |
+            dist/linux-production/receipt.json
+            dist/linux-production/delivery.jsonl
+          retention-days: 7
+          if-no-files-found: ignore
 
   # A red main is reported to its suspects and to the "main is red" issue; a green
   # one closes that issue. Keyed on the Linux lane itself: a superseded run is
   # cancelled and leaves `check` failed or pending without saying anything.
   main-health:
-    needs: [linux-local]
+    needs: [linux]
     if: >-
       always() && github.event_name == 'push' && github.ref == 'refs/heads/main' &&
-      (needs.linux-local.result == 'success' || needs.linux-local.result == 'failure')
+      (needs.linux.result == 'success' || needs.linux.result == 'failure')
     runs-on: bridge
     timeout-minutes: 5
     permissions:
@@ -210,7 +220,7 @@ jobs:
           SHA: ${{ github.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}
           RUN_ID: ${{ github.run_id }}
-        run: python3 scripts/ci/main-health.py ${{ needs.linux-local.result == 'success' && 'green' || 'red' }}
+        run: python3 scripts/ci/main-health.py ${{ needs.linux.result == 'success' && 'green' || 'red' }}
 
   # Preserve ci/linux and existing downstream required contexts. A variable
   # switch in flight never changes which completed lane counts as evidence.

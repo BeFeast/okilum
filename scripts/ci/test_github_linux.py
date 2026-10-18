@@ -48,11 +48,14 @@ class LinuxBridgeTests(unittest.TestCase):
 
     def test_bridge_exit_failure_and_success_are_not_interchangeable(self):
         with tempfile.TemporaryDirectory() as tmp:
-            env = dict(MIRROR_TOKEN='test-token', PR_HEAD_SHA=SHA, PR_NUMBER='1', GITHUB_RUN_ID='2',
-                       GITHUB_OUTPUT=str(Path(tmp) / 'output'))
-            for result, code in [('success', 0), ('failure', 1), ('unavailable', 1)]:
+            env = dict(MIRROR_TOKEN='test-token', PR_HEAD_SHA=SHA, PR_NUMBER='1', GITHUB_RUN_ID='2', GITHUB_RUN_NUMBER='9108',
+                       GITHUB_OUTPUT=str(Path(tmp) / 'output'), OKILUM_ARTIFACT_DIR=str(Path(tmp) / 'artifact'))
+            for result, code in [('success', 0), ('failure', 1)]:
                 with patch.dict(os.environ, env), patch.object(linux.transport, 'push_head'), \
                      patch.object(linux.transport, 'GitHub'), \
+                     patch.object(linux, 'archived', return_value=None), \
+                     patch.object(linux, 'discover', return_value=(None, [])), \
+                     patch.object(linux, 'resolve'), \
                      patch.object(linux.transport, 'wait_for_run', return_value=(result, 'test')):
                     self.assertEqual(linux.main(), code)
                 self.assertTrue(Path(env['GITHUB_OUTPUT']).read_text().endswith(f'result={result}\n'))
@@ -111,9 +114,9 @@ class CanaryRoutingTests(unittest.TestCase):
             expression = ' '.join(expression.split()).replace('&&', ' and ').replace('||', ' or ')
             return eval(expression, {'__builtins__': {}, 'format': lambda pattern, n: pattern.format(n)})
         for event, value, number, fork, hosted in [
-            ('push', 'hosted', 1, False, False), ('pull_request', 'local', 1, False, False),
-            ('pull_request', 'pr-1', 1, False, True), ('pull_request', 'pr-1', 2, False, False),
-            ('pull_request', 'hosted', 2, False, True), ('pull_request', '', 1, False, False),
+            ('push', 'hosted', 1, False, True), ('pull_request', 'local', 1, False, True),
+            ('pull_request', 'pr-1', 1, False, True), ('pull_request', 'pr-1', 2, False, True),
+            ('pull_request', 'hosted', 2, False, True), ('pull_request', '', 1, False, True),
             ('pull_request', 'hosted', 2, True, False), ('pull_request', 'pr-1', 1, True, False),
         ]:
             self.assertEqual(evaluate('linux-github', event, value, number, fork), hosted)

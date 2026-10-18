@@ -17,7 +17,67 @@ cache credentials go to GitHub.
    `--nocapture --test-threads=1` on Windows 2022. For a different package/filter,
    owners use exact-source `windows-native.yml` dispatch; CI owner handles lane failures.
 
-For a runnable Linux QA build, dispatch `commit-ci` with `lane=linux-binary` (`baseline=true` also builds a pinned main snapshot); on muninn download its `linux-binary-<sha>` artifact with `gh run download <run> -R BeFeast/okilum -n linux-binary-<sha>`, verify `sha256sum -c *.tar.zst.sha256`, unpack with `tar --zstd -xf <archive>`, enter the payload directory, verify `sha256sum -c SHA256SUMS` and `SOURCE_SHA`, then run `(flock -w 2700 9 && xvfb-run -a ./okilum --vault /path/to/qa-vault 9>&-) 9>/tmp/okilum-gui-qa.lock` (omit `xvfb-run -a` for a visible session); artifacts expire after three days and require compatible Linux x86_64 runtime libraries.
+For Linux QA, select `lane=linux-binary`; `baseline=true` separately pins and
+resolves main. It waits for the existing required producer or reuses its accepted
+artifact. It cannot compile or dispatch a replacement for a missing payload. The
+Forgejo job saves the exact executable, production receipt, JSONL, and (while
+hosted) checksummed tar as `linux-production-receipt-<job>`. Native QA still uses
+the existing owner/lock; downloading is not QA completion.
+
+To resolve from an exact checked-out source on a QA machine, provide the existing
+mirror credential as `MIRROR_TOKEN` and run:
+
+```sh
+PR_HEAD_SHA="$(git rev-parse HEAD)" python3 scripts/ci/github-linux.py resolve
+```
+
+This discovers the full SHA/config identity, verifies the successful full gate,
+producer/run attempt, artifact lifetime/linkage, immutable ZIP digest, outer tar
+checksum, complete internal checksums and production manifest before extracting.
+The bridge validates ELF identity and the producer's executed build-info receipt
+without launching the app. Arch repeats build-info/ELF/runtime validation before
+packaging. Run native QA on the verified `dist/linux-production/payload/okilum`
+through the existing `/tmp/okilum-gui-qa.lock`, preserving time spent waiting.
+The old `forgejo-linux-binary` workflow is a compatibility consumer with no Cargo.
+
+The identity is full source SHA + `x86_64-unknown-linux-gnu` + release/default
+`brain` + no harness/test-support + a configuration digest covering the pinned
+inputs and producer code. The app-only Cargo invocation follows the unchanged
+full gate. Build version is **5000 + originating Forgejo run number**, carried in
+the temporary ref; GitHub run numbers and later packaging runs never renumber it.
+PR-head bytes cannot be relabelled as merge-SHA bytes. Repeated accepted requests
+reuse evidence; active requests wait. Simultaneous cold requests are serialized
+by the existing workflow's SHA lock and recheck acceptance before compiling.
+If an attempted producer has no valid artifact, recovery requires an explicit
+investigation; there is no cache-miss compiler fallback. A cold source must be
+less than three days old (and not future-dated by more than five minutes). Older
+cold identities are unavailable rather than rebuilt after CI-history retention;
+accepted hosted or signed archive payloads are resolved before this age check. GitHub can cancel excess
+pending concurrency requests; such a request fails, never counts as success.
+
+Hosted production artifacts expire after three days. Once packaged, the existing
+signed Arch archive retains the exact executable and original producer receipt;
+the resolver can verify/reuse those bytes after hosted expiry. Legacy archives
+remain valid for their existing promotion path; they cannot masquerade as the new
+full-source schema. Unarchived expired PR artifacts are unavailable.
+
+`delivery.jsonl` and `receipt.json` are outside Cargo/index caches and saved as
+workflow evidence. They retain request/observed queue times, API creation/job/step
+times, production build start/end, verification and the original build identity.
+QA and Stable availability remain null until their owners measure them. Append
+measured QA or availability facts through the same helper, for example:
+
+```sh
+PR_HEAD_SHA=<full-sha> OKILUM_ARTIFACT_DIR=<existing-evidence-directory> \
+  python3 scripts/ci/github-linux.py record --event qa_waiting \
+  --facts '{"occurred_at":"<actual-UTC-time>","reason":"existing native QA slot"}'
+```
+
+Use `task_started`, `forgejo_queued`, `qa_requested`, `qa_waiting`, `qa_started`,
+`qa_completed`, `promotion_waiting_for_go`, and `available_verified` as applicable;
+record known actual timestamps in `--facts`, retaining null for unknowns. Upload
+is not Stable availability. The approximate 60-minute delivery target includes
+all queue/QA/GO waiting and has not been established by these implementation tests.
 
 4. Read the linked GitHub run in the Forgejo job log. Check the run SHA and
    named tests; a green job with zero matches is not acceptance evidence.
@@ -32,12 +92,14 @@ when the bridge finishes; an interrupted coordinator can leave a ref for CI
 owner cleanup. There is no automatic dispatch retry. Branch CI is evidence,
 not a replacement for the unchanged required `ci/check` PR aggregate.
 
-Linux PRs use `OKILUM_LINUX_LANE=hosted` permanently. To explicitly fall back,
-set that variable to `local`; set `OKILUM_PR_LANE=local` for the supplemental
-Brain/Inbox/Arch/Windows PR jobs. Neither changes running jobs. Same-repository
-PRs use hosted bridges; untrusted forks keep the isolated local fallback and
-never execute on the bridge host with a mirror token. Existing local main,
-nightly, manual release, publish and signing workflows remain unchanged.
+Trusted same-repository PRs and actual main merge commits now use the same hosted
+Linux producer. `OKILUM_LINUX_LANE` no longer sends trusted shipping identities to
+a second compiler lane. Required `ci/linux` and `ci/check` names are unchanged;
+main-health follows the Linux aggregate and reads failed hosted/local lane logs.
+Forks keep the isolated local full gate, never receive a mirror credential and
+cannot produce trusted publication artifacts. `OKILUM_PR_LANE=local` still selects
+local supplemental jobs; trusted Arch jobs resolve the same production bytes.
+Signing, publication locks and promotion entrypoints are unchanged.
 
 The organization budget is up to 20 simultaneous standard jobs, shared across
 repositories and macOS/Windows, with a separate macOS cap. This is a capacity
@@ -45,8 +107,8 @@ limit, not a promise of immediate starts. Windows packaging uses a short Linux
 icon job followed by one `windows-latest` compiler job. Other selected lanes
 use one job each. Branch pushes run Linux only; request additional lanes when
 needed. Linux/Brain consume the existing main cache; new lanes do not save
-large per-branch target caches into the shared 10 GiB quota. Missing caches
-fall back to cold builds. Capacity incidents are reported, not retried in a loop.
+large per-branch target caches into the shared 10 GiB quota. Missing dependency caches are normal for the canonical producer; missing
+production artifacts do not permit a consumer build. Capacity incidents are reported, not retried in a loop.
 
 ## Logs of failed jobs
 

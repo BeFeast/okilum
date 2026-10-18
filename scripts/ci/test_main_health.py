@@ -146,3 +146,17 @@ class MainHealthTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class HostedMainHealth(unittest.TestCase):
+    def test_failed_hosted_lane_supplies_the_main_health_log(self):
+        from unittest.mock import Mock
+        api = Mock()
+        api.call.return_value = {'jobs': [
+            {'id': 1, 'name': 'linux-local', 'status': 'skipped'},
+            {'id': 2, 'name': 'linux-github', 'status': 'failure'}]}
+        api.text.return_value = 'positive hosted failure control'
+        self.assertEqual(health.lane_log(api, 9), 'positive hosted failure control')
+        api.text.assert_called_once_with('/actions/jobs/2/logs')
+        api.call.return_value = {'jobs': [{'id': 1, 'name': 'linux-local', 'status': 'failure'}]}
+        self.assertEqual(health.lane_log(api, 9), 'positive hosted failure control')

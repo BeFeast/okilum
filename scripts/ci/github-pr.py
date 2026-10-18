@@ -9,8 +9,6 @@ spec = importlib.util.spec_from_file_location('transport', Path(__file__).with_n
 transport = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(transport)
 LANES = {
-    'linux': ('linux', 'Run full Linux gate', 5400),
-    'linux-binary': ('linux-binary', 'Build and package Linux QA binary', 5400),
     'brain': ('brain', 'Run Brain tests', 2700),
     'inbox': ('inbox', 'Run Inbox tests', 1800),
     'arch': ('arch', 'Validate Arch package', 5400),
@@ -24,9 +22,14 @@ LANES = {
 
 
 def main():
+    lane = os.environ['CI_LANE']
+    if lane in ('linux', 'linux-binary'):
+        spec = importlib.util.spec_from_file_location('linux', Path(__file__).with_name('github-linux.py'))
+        linux = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(linux)
+        return linux.main('request' if lane == 'linux' else 'resolve')
     result, branch, api = 'failure', None, None
     try:
-        lane = os.environ['CI_LANE']
         if lane not in LANES:
             raise transport.Unavailable('Unknown hosted lane')
         job, step, timeout = LANES[lane]

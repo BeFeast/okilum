@@ -96,7 +96,7 @@ def lane_log(api, run_id):
     try:
         jobs = api.call('GET', f'/actions/runs/{run_id}/jobs')
         jobs = jobs if isinstance(jobs, list) else jobs.get('jobs', [])
-        job = next(j for j in jobs if j['name'] == 'linux-local' and j['status'] == 'failure')
+        job = next(j for j in jobs if j['name'] in ('linux-local', 'linux-github') and j['status'] == 'failure')
         return api.text(f"/actions/jobs/{job['id']}/logs")
     except Exception as error:  # a missing permission or log must not hide the red main
         print(f'Cannot read the lane log: {error}')

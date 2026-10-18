@@ -29,6 +29,14 @@ fn main() {
         });
         println!("cargo:rustc-env={name}={value}");
     }
+    println!(
+        "cargo:rustc-env=OKILUM_BUILD_PROFILE={}",
+        env::var("PROFILE").unwrap()
+    );
+    println!(
+        "cargo:rustc-env=OKILUM_BUILD_TARGET={}",
+        env::var("TARGET").unwrap()
+    );
     if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         println!("cargo:rerun-if-env-changed=OKILUM_WINDOWS_ICON");
         let icon = env::var("OKILUM_WINDOWS_ICON")

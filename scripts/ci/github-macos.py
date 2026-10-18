@@ -31,6 +31,42 @@ class GitHub:
     def __init__(self, token):
         self.token = token
 
+    def download_artifact(self, artifact_id):
+        """Follow a signed artifact redirect without forwarding the API credential."""
+        if type(artifact_id) is not int or artifact_id < 1:
+            raise Unavailable("Invalid artifact ID")
+
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *args, **kwargs):
+                return None
+
+        request = urllib.request.Request(
+            f"https://api.github.com/repos/{REPOSITORY}/actions/artifacts/{artifact_id}/zip",
+            headers={"Authorization": f"Bearer {self.token}", "Accept": "application/vnd.github+json"})
+        try:
+            opener = urllib.request.build_opener(NoRedirect)
+            try:
+                with opener.open(request, timeout=60) as response:
+                    return response.read()
+            except urllib.error.HTTPError as error:
+                if error.code not in (301, 302, 303, 307, 308):
+                    raise
+                location = error.headers.get('Location', '')
+                error.close()
+            url = urllib.parse.urlsplit(location)
+            if (url.scheme != 'https' or url.username or url.password or url.port not in (None, 443)
+                    or not url.hostname or not url.hostname.endswith(
+                        ('.blob.core.windows.net', '.actions.githubusercontent.com', '.githubusercontent.com'))):
+                raise Unavailable("Unsafe artifact redirect")
+            # This request intentionally has no Authorization; further redirects fail closed.
+            with opener.open(urllib.request.Request(location), timeout=120) as response:
+                return response.read()
+        except (urllib.error.URLError, TimeoutError, http.client.RemoteDisconnected,
+                ConnectionResetError) as error:
+            if isinstance(error, urllib.error.HTTPError):
+                error.close()
+            raise Unavailable("Artifact download failed (signed URL omitted)") from None
+
     def request(self, path, method="GET", data=None):
         request = urllib.request.Request(
             f"https://api.github.com/repos/{REPOSITORY}/{path}",
@@ -121,7 +157,7 @@ PROGRESS_EVERY = 300
 
 def wait_for_run(api, branch, sha, *, clock=time.monotonic, sleep=time.sleep,
                  queue_timeout=QUEUE_TIMEOUT, run_timeout=RUN_TIMEOUT, workflow=WORKFLOW,
-                 job_name="macos", build_step=BUILD_STEP, log=print):
+                 job_name="macos", build_step=BUILD_STEP, log=print, on_run=None):
     query = urllib.parse.urlencode({"branch": branch, "head_sha": sha,
                                     "event": "push", "per_page": 100})
     started = clock()
@@ -138,6 +174,8 @@ def wait_for_run(api, branch, sha, *, clock=time.monotonic, sleep=time.sleep,
             return "failure", "Ambiguous GitHub workflow runs"
         if matches:
             run = matches[0]
+            if on_run is not None:
+                on_run(run)
             url = run["html_url"]
             if run["status"] == "completed":
                 if run["conclusion"] == "startup_failure":

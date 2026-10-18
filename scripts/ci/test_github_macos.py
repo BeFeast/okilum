@@ -291,9 +291,6 @@ class BridgeTests(unittest.TestCase):
 
 
 
-if __name__ == '__main__':
-    unittest.main()
-
 
 class TransportRetryTests(unittest.TestCase):
     def test_socket_errors_retry_real_request_and_recover(self):
@@ -359,3 +356,60 @@ class PushRetryTests(unittest.TestCase):
         self.assertEqual(len(calls), bridge.PUSH_ATTEMPTS)
         self.assertIn('failed to push some refs', error)
         self.assertNotIn('token', error)
+
+
+class ArtifactRedirectTests(unittest.TestCase):
+    def test_signed_redirect_has_no_api_credential(self):
+        from unittest.mock import MagicMock
+        import urllib.error
+        import email.message
+        headers = email.message.Message()
+        headers['Location'] = 'https://artifact.blob.core.windows.net/file?signature=private'
+        opener = MagicMock()
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = b'ZIP control'
+        opener.open.side_effect = [urllib.error.HTTPError('https://api.github.com/', 302, '', headers, None), response]
+        with patch.object(bridge.urllib.request, 'build_opener', return_value=opener):
+            self.assertEqual(bridge.GitHub('sensitive-token').download_artifact(7), b'ZIP control')
+        original = opener.open.call_args_list[0].args[0]
+        redirected = opener.open.call_args_list[1].args[0]
+        self.assertEqual(original.get_header('Authorization'), 'Bearer sensitive-token')
+        self.assertIsNone(redirected.get_header('Authorization'))
+        self.assertNotIn('sensitive-token', redirected.full_url)
+
+    def test_wrong_redirect_host_http_and_second_redirect_fail_without_url_leak(self):
+        from unittest.mock import MagicMock
+        import urllib.error
+        import email.message
+        for location in ['https://attacker.invalid/?signature=private',
+                         'http://artifact.blob.core.windows.net/?signature=private',
+                         'https://user:secret@artifact.blob.core.windows.net/?signature=private']:
+            headers = email.message.Message()
+            headers['Location'] = location
+            opener = MagicMock()
+            opener.open.side_effect = urllib.error.HTTPError('https://api.github.com/', 302, '', headers, None)
+            with patch.object(bridge.urllib.request, 'build_opener', return_value=opener):
+                with self.assertRaises(bridge.Unavailable) as failure:
+                    bridge.GitHub('sensitive-token').download_artifact(7)
+            self.assertEqual(opener.open.call_count, 1)
+            self.assertNotIn('signature=private', str(failure.exception))
+            self.assertNotIn('sensitive-token', str(failure.exception))
+
+    def test_second_redirect_is_not_followed_and_never_exposes_signed_url(self):
+        import email.message
+        headers = email.message.Message()
+        headers['Location'] = 'https://artifact.blob.core.windows.net/?signature=private'
+        opener = MagicMock()
+        opener.open.side_effect = [
+            bridge.urllib.error.HTTPError('https://api.github.com/', 302, '', headers, None),
+            bridge.urllib.error.HTTPError(headers['Location'], 302, '', headers, None)]
+        with patch.object(bridge.urllib.request, 'build_opener', return_value=opener):
+            with self.assertRaises(bridge.Unavailable) as failure:
+                bridge.GitHub('sensitive-token').download_artifact(7)
+        self.assertEqual(opener.open.call_count, 2)
+        self.assertNotIn('signature=private', str(failure.exception))
+        self.assertNotIn('sensitive-token', str(failure.exception))
+
+
+if __name__ == '__main__':
+    unittest.main()

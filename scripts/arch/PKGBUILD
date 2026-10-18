@@ -9,28 +9,19 @@ license=('MIT')
 depends=('gcc-libs' 'glibc' 'fontconfig' 'freetype2' 'libxcb' 'libxkbcommon' 'libxkbcommon-x11' 'wayland' 'vulkan-icd-loader')
 optdepends=('syncthing: sync between devices')
 makedepends=('git' 'cmake' 'pkgconf' 'clang' 'mold' 'librsvg')
-options=('!debug' '!lto')
+options=('!debug' '!lto' '!strip')
 install=okilum.install
 
 build() {
-    cd "$OKILUM_SOURCE"
-    scripts/vendor-setup.sh
-    scripts/vendor-setup.sh --verify
-    python3 scripts/brand-assets.py verify
-    local qa_features=()
-    if [[ ${OKILUM_SETTINGS_UI_HARNESS:-0} == 1 ]]; then
-        qa_features=(--features settings-ui-harness)
-    fi
-    cargo build --release --locked -p okilum-shell "${qa_features[@]}"
-    if [[ ${OKILUM_SETTINGS_UI_HARNESS:-0} == 1 ]]; then
-        cargo test --release --locked -p okilum-shell --features settings-ui-harness \
-            reader_settings::tests
-    fi
+    # build.sh verified the required-CI receipt and ELF before makepkg.
+    test -f "$OKILUM_PREBUILT_DIR/payload/okilum"
+    test -f "$OKILUM_PREBUILT_DIR/receipt.json"
 }
 
 package() {
     cd "$OKILUM_SOURCE"
-    install -Dm755 target/release/okilum "$pkgdir/usr/bin/okilum"
+    install -Dm755 "$OKILUM_PREBUILT_DIR/payload/okilum" "$pkgdir/usr/bin/okilum"
+    install -Dm644 "$OKILUM_PREBUILT_DIR/receipt.json" "$pkgdir/usr/share/okilum/production-receipt.json"
     install -Dm644 scripts/arch/okilum.desktop "$pkgdir/usr/share/applications/okilum.desktop"
     local icon=crates/okilum-shell/assets/brand/app-icon-light.svg
     install -Dm644 "$icon" "$pkgdir/usr/share/icons/hicolor/scalable/apps/okilum.svg"

@@ -1,24 +1,45 @@
 #!/usr/bin/env bash
+# Packaging consumes verified production bytes. There is no compiler fallback.
 set -euo pipefail
-: "${OKILUM_BUILD_VERSION:?}"
-[[ $OKILUM_BUILD_VERSION =~ ^[1-9][0-9]*$ ]]
+: "${OKILUM_PREBUILT_DIR:?Resolve required CI production payload first}"
 export OKILUM_SOURCE="$PWD"
+OKILUM_SOURCE_COMMIT=$(git rev-parse HEAD)
+export OKILUM_SOURCE_COMMIT
+OKILUM_PREBUILT_DIR=$(realpath "$OKILUM_PREBUILT_DIR")
+export OKILUM_PREBUILT_DIR
+[[ ${OKILUM_SETTINGS_UI_HARNESS:-0} == 0 ]] || { echo 'Production packaging rejects harness payloads' >&2; exit 1; }
+export OKILUM_BUILD_VERSION
+OKILUM_BUILD_VERSION=$(python3 - <<'PY'
+import importlib.util, json, os
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('payload', 'scripts/ci/package-linux-binary.py')
+p = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(p)
+root = Path(os.environ['OKILUM_PREBUILT_DIR'])
+r = json.loads((root / 'receipt.json').read_text())
+m = p.validate_receipt(r, os.environ['OKILUM_SOURCE_COMMIT'], p.config())
+binary = root / 'payload/okilum'
+p.require(binary.is_file() and not binary.is_symlink() and p.digest(binary.read_bytes()) == m['binary_sha256'], 'Prebuilt binary changed')
+actual = p.inspect(binary, m)
+p.require(all(actual[k] == m['elf'][k] for k in actual if k != 'runtime_libraries'), 'Prebuilt ELF/build identity changed')
+print(m['build'])
+PY
+)
 export OKILUM_RELEASE_VERSION="0.1.$OKILUM_BUILD_VERSION"
-export OKILUM_SOURCE_COMMIT="$(git rev-parse HEAD)"
-export PATH="$HOME/.cargo/bin:$PATH"
-export CARGO_INCREMENTAL=0
-export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-4}"
-export RUSTFLAGS='-C link-arg=-fuse-ld=mold'
-if ! command -v rustup >/dev/null; then
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
-fi
-rustc --version
-source scripts/ci/release-cache.sh
 mkdir -p dist/arch
 cp scripts/arch/PKGBUILD dist/arch/PKGBUILD
 cp scripts/arch/okilum.install dist/arch/okilum.install
+cp "$OKILUM_PREBUILT_DIR/receipt.json" dist/arch/production-receipt.json
 sed -i "s/^pkgver=.*/pkgver=0.1.$OKILUM_BUILD_VERSION/" dist/arch/PKGBUILD
-cd dist/arch
-makepkg --cleanbuild --noconfirm
-
-release_cache_stats
+(cd dist/arch && makepkg --cleanbuild --noconfirm)
+# Detect stripping or any other makepkg transformation before upload/publication.
+python3 - <<'PY'
+import glob, importlib.util, os
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('payload', 'scripts/ci/package-linux-binary.py')
+p = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(p)
+packages = glob.glob('dist/arch/okilum-*.pkg.tar.zst')
+p.require(len(packages) == 1, 'Missing/ambiguous Arch package')
+p.package_receipt(Path(packages[0]), os.environ['OKILUM_SOURCE_COMMIT'], int(os.environ['OKILUM_BUILD_VERSION']))
+PY

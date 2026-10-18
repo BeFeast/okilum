@@ -52,6 +52,10 @@ class Validation(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which('repo-add'), 'Arch packaging tools required')
 class SignedRepository(unittest.TestCase):
+    # These pre-schema fixtures isolate actual GPG/repo-add behaviour. The strict
+    # production receipt boundary has real byte/mismatch controls in test_prebuilt.
+    @patch.object(publish.native_payload, 'package_receipt', new=lambda *_: (
+        {'manifest': {'binary_sha256': 'fixture'}}, b''))
     def test_publish_promote_and_reject_tampering(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -96,6 +100,8 @@ class SignedRepository(unittest.TestCase):
             publish.run('gpgconf', '--homedir', str(home), '--kill', 'all')
 
 
+    @patch.object(publish.native_payload, 'package_receipt', new=lambda *_: (
+        {'manifest': {'binary_sha256': 'fixture'}}, b''))
     def test_archive_only_records_an_older_build_without_moving_beta(self):
         """#1040: an explicit older commit is archived and promotable; beta stays newer."""
         with tempfile.TemporaryDirectory() as directory:
