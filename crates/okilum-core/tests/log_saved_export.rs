@@ -34,6 +34,7 @@ fn export(file: &LogFile, rows: &[u32], format: ExportFormat) -> Vec<u8> {
             data: file.bytes(),
             entry: &file.index().entries()[row as usize],
             format: file.index().format(),
+            regex: file.index().regex().map(|regex| regex.as_ref()),
             source: None,
         };
         write_row(&mut out, &row, &format).unwrap();
