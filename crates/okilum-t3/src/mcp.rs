@@ -1,6 +1,7 @@
 //! [`ManagerGateway`] over T3's MCP endpoint: MCP Streamable HTTP, JSON-RPC
 //! 2.0, protocol 2025-06-18, with the OAuth bearer token from [`crate::oauth`].
 
+use std::io::{BufRead, BufReader};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -217,23 +218,18 @@ impl McpGateway {
             .get(CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
             .is_some_and(|value| value.starts_with("text/event-stream"));
-        let text = response
-            .text()
-            .map_err(|error| GatewayError::Unreachable(error.without_url().to_string()))?;
         match status {
             StatusCode::UNAUTHORIZED => return Err(GatewayError::Revoked.into()),
             StatusCode::NOT_FOUND if session.is_some() => return Err(Failure::SessionGone),
             StatusCode::FORBIDDEN => {
                 return Err(GatewayError::Tool {
                     code: "forbidden".into(),
-                    message: snippet(&text),
+                    message: snippet(&response.text().unwrap_or_default()),
                 }
                 .into())
             }
             status if !status.is_success() => {
-                return Err(
-                    GatewayError::Protocol(format!("HTTP {status}: {}", snippet(&text))).into(),
-                )
+                return Err(GatewayError::Protocol(format!("HTTP {status}")).into())
             }
             _ => {}
         }
@@ -241,12 +237,15 @@ impl McpGateway {
             return Ok((None, session_id));
         };
         let reply = if event_stream {
-            reply_from_events(&text, id)
+            reply_from_events(BufReader::new(response), id)?
         } else {
+            let text = response
+                .text()
+                .map_err(|error| GatewayError::Unreachable(error.without_url().to_string()))?;
             serde_json::from_str(&text).ok()
         };
         let reply = reply.ok_or_else(|| {
-            GatewayError::Protocol(format!("no JSON-RPC reply in: {}", snippet(&text)))
+            GatewayError::Protocol("response ended without a matching JSON-RPC reply".into())
         })?;
         Ok((Some(reply), session_id))
     }
@@ -281,10 +280,17 @@ impl McpGateway {
             all.extend(items);
             match page.next_cursor {
                 Some(next) if next > cursor => cursor = next,
-                _ => return Ok(all),
+                None => return Ok(all),
+                Some(_) => {
+                    return Err(GatewayError::Protocol(format!(
+                        "{tool}: pagination cursor did not advance"
+                    )))
+                }
             }
         }
-        Ok(all)
+        Err(GatewayError::Protocol(format!(
+            "{tool}: listing exceeds {MAX_PAGES} pages"
+        )))
     }
 }
 
@@ -293,6 +299,9 @@ impl ManagerGateway for McpGateway {
         let Some(token) = self.token.lock().unwrap().clone() else {
             return GatewayStatus::NotConnected;
         };
+        if token.freshness(unix_now()) == TokenFreshness::Expired {
+            return GatewayStatus::Expired;
+        }
         if let Some((seen_with, status)) = self.observed.lock().unwrap().as_ref() {
             if *seen_with == token.access_token {
                 return status.clone();
@@ -429,17 +438,28 @@ fn tool_result(result: Value) -> GatewayResult<Value> {
 }
 
 /// The JSON-RPC message with `id` in a `text/event-stream` body.
-fn reply_from_events(body: &str, id: &Value) -> Option<Value> {
-    let normalised = body.replace("\r\n", "\n");
-    normalised.split("\n\n").find_map(|event| {
-        let data: Vec<&str> = event
-            .lines()
-            .filter_map(|line| line.strip_prefix("data:"))
-            .map(|data| data.strip_prefix(' ').unwrap_or(data))
-            .collect();
-        let message: Value = serde_json::from_str(&data.join("\n")).ok()?;
-        (message.get("id") == Some(id)).then_some(message)
-    })
+fn reply_from_events(mut body: impl BufRead, id: &Value) -> GatewayResult<Option<Value>> {
+    let mut data = Vec::new();
+    loop {
+        let mut line = String::new();
+        let read = body
+            .read_line(&mut line)
+            .map_err(|error| GatewayError::Unreachable(error.to_string()))?;
+        if read == 0 {
+            return Ok(None);
+        }
+        let line = line.trim_end_matches(['\r', '\n']);
+        if line.is_empty() {
+            if let Ok(message) = serde_json::from_str::<Value>(&data.join("\n")) {
+                if message.get("id") == Some(id) {
+                    return Ok(Some(message));
+                }
+            }
+            data.clear();
+        } else if let Some(value) = line.strip_prefix("data:") {
+            data.push(value.strip_prefix(' ').unwrap_or(value).to_owned());
+        }
+    }
 }
 
 fn snippet(text: &str) -> String {

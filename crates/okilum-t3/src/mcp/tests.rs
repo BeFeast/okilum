@@ -428,3 +428,107 @@ fn reads_a_thread_page_and_a_growing_item() {
     let calls = tool_calls(&server.requests());
     assert_eq!(calls[1]["arguments"]["textOffset"], 3);
 }
+
+#[test]
+fn an_sse_reply_returns_before_the_server_closes_the_stream() {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let env = Environment::new(
+        "test",
+        &format!("http://{}", listener.local_addr().unwrap()),
+    )
+    .unwrap();
+    let (returned, wait) = mpsc::channel();
+    let server = std::thread::spawn(move || {
+        for step in 0..3 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let mut length = 0;
+            loop {
+                line.clear();
+                reader.read_line(&mut line).unwrap();
+                if line.trim().is_empty() {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':') {
+                    if name.eq_ignore_ascii_case("content-length") {
+                        length = value.trim().parse::<usize>().unwrap();
+                    }
+                }
+            }
+            let mut bytes = vec![0; length];
+            reader.read_exact(&mut bytes).unwrap();
+            let body: Value = serde_json::from_slice(&bytes).unwrap();
+            if step == 1 {
+                stream
+                    .write_all(
+                        b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .unwrap();
+                continue;
+            }
+            let result = if step == 0 {
+                json!({})
+            } else {
+                structured(json!({"requestIds": ["q"]}))
+            };
+            let reply = json!({"jsonrpc":"2.0", "id":body["id"], "result":result});
+            if step == 0 {
+                let text = reply.to_string();
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}", text.len()).unwrap();
+            } else {
+                let event = format!("data: {reply}\r\n\r\n");
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{event}\r\n", event.len()).unwrap();
+                stream.flush().unwrap();
+                // The stream deliberately never reaches EOF while the client reads.
+                // A whole-body decoder hits an incomplete chunked response instead.
+                let _ = wait.recv_timeout(Duration::from_secs(3));
+            }
+        }
+    });
+    let gateway = McpGateway::new(env, Some(token("good"))).unwrap();
+    let result = gateway.pending_requests("t");
+    let _ = returned.send(());
+    server.join().unwrap();
+    assert_eq!(result.unwrap(), vec!["q"]);
+}
+
+#[test]
+fn an_incomplete_listing_is_an_error_instead_of_a_partial_success() {
+    for stuck in [false, true] {
+        let server = fake_t3(move |_, args| {
+            let cursor = args["cursor"].as_u64().unwrap();
+            structured(json!({"projects": [], "nextCursor": if stuck {cursor} else {cursor + 1}}))
+        });
+        let error = gateway(&server, Some(token("good")))
+            .list_projects()
+            .unwrap_err();
+        assert!(matches!(error, GatewayError::Protocol(_)));
+        assert_eq!(
+            tool_calls(&server.requests()).len(),
+            if stuck { 1 } else { MAX_PAGES }
+        );
+    }
+}
+
+#[test]
+fn expiry_takes_precedence_over_an_observed_connection_failure() {
+    let server = fake_t3(|_, _| unreachable!());
+    let gateway = gateway(&server, Some(token("good")));
+    *gateway.observed.lock().unwrap() = Some((
+        "good".into(),
+        GatewayStatus::Unreachable {
+            detail: "offline".into(),
+        },
+    ));
+    gateway.token.lock().unwrap().as_mut().unwrap().expires_at = unix_now() - 1;
+    assert_eq!(gateway.status(), GatewayStatus::Expired);
+    assert_eq!(gateway.capabilities().unwrap_err(), GatewayError::Expired);
+    assert!(server.requests().is_empty());
+}
