@@ -460,6 +460,25 @@ fn perform(desktop: &Desktop, operation: Operation) -> anyhow::Result<Output> {
     }
     Ok(output)
 }
+/// Where the Sync switch and its status go (#1356).
+#[derive(Debug, PartialEq, Eq)]
+struct Order {
+    /// Nothing is set up yet: the three setup steps, then the switch.
+    steps_first: bool,
+    /// The status line with Refresh. Hidden while setting up, when it would
+    /// only say «Off»; shown when it has news or Refresh is needed.
+    status: bool,
+}
+impl Order {
+    fn of(unsaved: bool, removed: bool, label: &str, unavailable: bool) -> Self {
+        let steps_first = unsaved && !removed;
+        Self {
+            steps_first,
+            status: !steps_first || label != "Off" || unavailable,
+        }
+    }
+}
+
 impl Render for SyncSettings {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = brand::palette(cx);
@@ -502,63 +521,72 @@ impl Render for SyncSettings {
         } else {
             state.map(FolderState::label).unwrap_or("Preparing")
         };
-        let mut content = v_flex()
-            .w_full()
-            .gap_4()
-            .child(super::reader_settings::setting_row(
-                "Sync",
-                "Keep this vault on your computers.",
-                Switch::new("sync-enabled")
-                    .checked(enabled)
-                    .disabled(
-                        self.busy
+        let order = Order::of(saved.is_none(), removed, label, self.unavailable);
+        let switch_row = super::reader_settings::setting_row(
+            "Sync",
+            if order.steps_first {
+                "Turn on once the three steps above are done."
+            } else {
+                "Keep this vault on your computers."
+            },
+            Switch::new("sync-enabled")
+                .checked(enabled)
+                .disabled(
+                    self.busy
                             || !self.loaded
                             || removed
                             || (!enabled && needs_package)
                             // Missing inventory means we cannot exclude folder overlap,
                             // even when the requested daemon would be a new managed one.
                             || (saved.is_none() && self.unavailable),
-                    )
-                    .on_click(cx.listener(|this, checked, _, cx| {
-                        if *checked {
-                            this.enable(cx);
-                        } else {
-                            this.run(Operation::Disable, cx);
-                        }
-                    })),
-                cx,
-            ))
-            .child(
-                h_flex().justify_between().gap_2().child(label).child(
-                    Button::new("sync-refresh")
-                        .icon(IconName::RotateCw)
-                        .ghost()
-                        .disabled(self.busy)
-                        .accessibility_label("Refresh Sync status")
-                        .tooltip("Refresh Sync status")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            if this.output.as_ref().is_some_and(|o| {
-                                o.snapshot.runtime.as_ref().is_some_and(|r| r.removed)
-                                    || (o.removal.is_some() && o.snapshot.setup.is_some())
-                            }) {
-                                this.run(Operation::Remove, cx);
+                )
+                .on_click(cx.listener(|this, checked, _, cx| {
+                    if *checked {
+                        this.enable(cx);
+                    } else {
+                        this.run(Operation::Disable, cx);
+                    }
+                })),
+            cx,
+        );
+        let status_row = h_flex().justify_between().gap_2().child(label).child(
+            Button::new("sync-refresh")
+                .icon(IconName::RotateCw)
+                .ghost()
+                .disabled(self.busy)
+                .accessibility_label("Refresh Sync status")
+                .tooltip("Refresh Sync status")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    if this.output.as_ref().is_some_and(|o| {
+                        o.snapshot.runtime.as_ref().is_some_and(|r| r.removed)
+                            || (o.removal.is_some() && o.snapshot.setup.is_some())
+                    }) {
+                        this.run(Operation::Remove, cx);
+                    } else {
+                        this.run(
+                            if this
+                                .output
+                                .as_ref()
+                                .is_some_and(|o| o.snapshot.setup.is_some())
+                            {
+                                Operation::Refresh
                             } else {
-                                this.run(
-                                    if this
-                                        .output
-                                        .as_ref()
-                                        .is_some_and(|o| o.snapshot.setup.is_some())
-                                    {
-                                        Operation::Refresh
-                                    } else {
-                                        Operation::Read
-                                    },
-                                    cx,
-                                );
-                            }
-                        })),
-                ),
-            );
+                                Operation::Read
+                            },
+                            cx,
+                        );
+                    }
+                })),
+        );
+        // Before anything is set up, the steps come first and the switch
+        // after them; an «Off» status says nothing new then (#1356).
+        let mut rows = Some((switch_row, status_row));
+        let mut content = v_flex().w_full().gap_4();
+        if !order.steps_first {
+            if let Some((switch_row, status_row)) = rows.take() {
+                content = content.child(switch_row).child(status_row);
+            }
+        }
         if enabled && !removed {
             if let Some(local) = local {
                 for message in okilum_sync_controller::presentation::attention_messages(local) {
@@ -573,10 +601,15 @@ impl Render for SyncSettings {
                 .as_ref()
                 .and_then(|p| p.file_name())
                 .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "Choose a folder".into());
+                .unwrap_or_else(|| "3. Choose a folder".into());
+            if order.steps_first {
+                content = content.child(div().text_sm().text_color(p.text_muted).child(
+                    "Keep this vault on your computers. Fill in the three steps, then turn Sync on.",
+                ));
+            }
             content = content
-                .child(v_flex().gap_2().child("Sync service").child(Input::new(&self.address).disabled(self.busy)).children(self.field_error(ErrorField::Address)))
-                .child(v_flex().gap_2().child("This computer").child(Input::new(&self.name).disabled(self.busy)).children(self.field_error(ErrorField::Name)))
+                .child(v_flex().gap_2().child("1. Sync service").child(Input::new(&self.address).disabled(self.busy)).children(self.field_error(ErrorField::Address)))
+                .child(v_flex().gap_2().child("2. This computer").child(Input::new(&self.name).disabled(self.busy)).children(self.field_error(ErrorField::Name)))
                 .child(h_flex().justify_between().child(destination).child(Button::new("sync-folder")
                     .icon(IconName::Folder).ghost().disabled(self.busy).accessibility_label("Choose vault folder").tooltip("Choose an empty folder or a known copy")
                     .on_click(cx.listener(|this, _, _, cx| this.choose_folder(cx)))))
@@ -627,6 +660,11 @@ impl Render for SyncSettings {
             if self.unavailable {
                 content = content.child(div().text_sm().text_color(p.text_muted)
                 .child("An existing Syncthing instance is unavailable. Start it and refresh before enabling Sync."));
+            }
+            if let Some((switch_row, status_row)) = rows.take() {
+                content = content
+                    .child(switch_row)
+                    .when(order.status, |content| content.child(status_row));
             }
         } else if let Some(setup) = saved {
             let folder = setup
@@ -841,5 +879,36 @@ impl Render for SyncSettings {
             content = content.child(div().text_sm().child(error.clone()));
         }
         content
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+
+    #[test]
+    fn setup_steps_come_before_the_switch_until_sync_is_set_up() {
+        // #1356: nothing set up yet, so the steps come first and no bare «Off».
+        assert_eq!(
+            Order::of(true, false, "Off", false),
+            Order {
+                steps_first: true,
+                status: false
+            }
+        );
+        // A status with news, or Refresh needed for an existing instance, shows.
+        assert!(Order::of(true, false, "Needs attention", false).status);
+        assert!(Order::of(true, false, "Install Syncthing to enable Sync", false).status);
+        assert!(Order::of(true, false, "Off", true).status);
+        // Set up, or being removed: the switch and its status lead, as before.
+        assert_eq!(
+            Order::of(false, false, "Off", false),
+            Order {
+                steps_first: false,
+                status: true
+            }
+        );
+        assert!(!Order::of(true, true, "Removed", false).steps_first);
     }
 }

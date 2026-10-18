@@ -178,6 +178,9 @@ fn compact_vault_path(root: &Path) -> String {
     )
 }
 
+/// Settings → Inbox (#1356): what it is, and that there is nothing to set up.
+const INBOX_HELP: &str = "Inbox brings in notes sent from your phone or other apps through an Inbox server. Connecting to one is not available in Settings yet. Your vault works fully without it.";
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Section {
     Appearance,
@@ -1058,14 +1061,11 @@ impl Settings {
             #[cfg(target_os = "linux")]
             Section::Sync => content.children(self.sync.clone()).into_any_element(),
             Section::About => content.child(about::content(cx)).into_any_element(),
+            // Nothing to do here yet, and it says so (#1356): connecting an
+            // Inbox server is not offered in the Reader.
             Section::Inbox => content
                 .child("Not connected")
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(p.text_muted)
-                        .child("Inbox is optional. Your local vault works without a connection."),
-                )
+                .child(div().text_sm().text_color(p.text_muted).child(INBOX_HELP))
                 .into_any_element(),
         }
     }
