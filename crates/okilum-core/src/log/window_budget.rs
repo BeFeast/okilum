@@ -38,7 +38,7 @@ impl MemoryBudget {
         }
         self.0
             .used
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |used| {
                 used.checked_add(bytes).filter(|&next| next <= self.0.limit)
             })
             .ok()?;
